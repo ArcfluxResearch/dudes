@@ -74,7 +74,7 @@ const LSN = '1099511628288';
 const NEXT = '1099511628300';
 const UNSAFE = '9007199254740993';
 const BIG = '18446744073709551615';
-const CSRF = 'A'.repeat(43);
+const REQUEST_ID = 'A'.repeat(43);
 const FRESH = `${'B'.repeat(42)}E`;
 const SIBLING = Object.freeze({});
 const PAUSING = 'Pausing — the current turn runs to its end; no new turn will start';
@@ -111,7 +111,7 @@ function daemon(...replies) {
   const calls = [];
   let refreshes = 0;
   let minted = 0;
-  let csrf = CSRF;
+  let held = REQUEST_ID;
   let generation = 1;
   return {
     calls,
@@ -119,12 +119,12 @@ function daemon(...replies) {
     get generation() { return generation; },
     /** A fresh link pasted into the tab: a newer session, whose nonce the next request carries. */
     paste(value) {
-      csrf = value;
+      held = value;
       generation += 1;
     },
     /** A page with no Floor session. */
     signOut() {
-      csrf = null;
+      held = null;
     },
     async fetch(url, init) {
       calls.push({ url, init });
@@ -134,7 +134,7 @@ function daemon(...replies) {
       if (response instanceof Error) throw response;
       return { status: response.status, text: async () => response.body ?? '' };
     },
-    csrf: () => csrf,
+    signedIn: () => held !== null,
     random(bytes) {
       minted += 1;
       bytes.fill(minted);
@@ -308,7 +308,7 @@ test('Pause only while not paused; Resume only while paused and not halted; no b
   assert.equal(drawn, 9, 'the matrix drew too few buttons to prove anything');
 });
 
-test('one press posts exactly three fields to its own route with the CSRF header; control_lsn is the row’s string or null', async () => {
+test('one press posts exactly three fields to its own route with the REQUEST_ID header; control_lsn is the row’s string or null', async () => {
   for (const lsn of [LSN, UNSAFE, BIG, undefined]) {
     for (const [verb, paused] of [['pause', false], ['resume', true]]) {
       resetFloorStore();
@@ -323,7 +323,7 @@ test('one press posts exactly three fields to its own route with the CSRF header
       assert.equal(init.credentials, 'same-origin');
       assert.equal(init.cache, 'no-store');
       assert.equal(init.referrerPolicy, 'no-referrer');
-      assert.deepEqual(init.headers, { 'Content-Type': 'application/json', 'X-Dudes-CSRF': CSRF });
+      assert.deepEqual(init.headers, { 'Content-Type': 'application/json' });
       const sent = JSON.parse(init.body);
       assert.deepEqual(Object.keys(sent), ['request_id', 'agent', 'control_lsn']);
       assert.match(sent.request_id, ATTEMPT_ID);
@@ -530,7 +530,7 @@ test('403 with a live snapshot says this page can no longer act; with a dead str
   noteTransport('close');
   html = status();
   assert.match(html, /data-control-session="ended"/);
-  assert.match(html, /Your Floor session has ended or was revoked\. Paste a new link from dudes floor open into this tab’s address bar/);
+  assert.match(html, /Your Floor session has ended or was revoked\. Open Dudes to sign in again in this browser/);
   assert.doesNotMatch(html, /control-success/);
 
   // After signing in again, the message speaks for the new session.
@@ -561,7 +561,6 @@ test('403 with a live snapshot says this page can no longer act; with a dead str
   await control.checkControlStatus(unresolved);
   assert.equal(unresolved.calls.length, 3);
   assert.equal(unresolved.calls[2].init.body, unresolved.calls[0].init.body);
-  assert.equal(unresolved.calls[2].init.headers['X-Dudes-CSRF'], FRESH);
   assert.deepEqual(control.getControlState().outcome, { kind: 'applied' });
 });
 
@@ -601,11 +600,11 @@ test('pending offers Check status with the same request_id', async () => {
 
 test('the response map: every row, and anything off its row proves nothing', () => {
   const attempt = (verb) => Object.freeze({
-    verb, payload: Object.freeze({ request_id: CSRF, agent: ADA, control_lsn: LSN }), body: '', turnsAtSend: 0,
+    verb, payload: Object.freeze({ request_id: REQUEST_ID, agent: ADA, control_lsn: LSN }), body: '', turnsAtSend: 0,
   });
   const pause = attempt('pause');
   const resume = attempt('resume');
-  const ok = (state, fields = {}) => JSON.stringify({ request_id: CSRF, state, agent: ADA, control_lsn: NEXT, ...fields });
+  const ok = (state, fields = {}) => JSON.stringify({ request_id: REQUEST_ID, state, agent: ADA, control_lsn: NEXT, ...fields });
   const other = 'B'.repeat(43);
   const rows = [
     [pause, 200, ok('paused'), { kind: 'applied' }],
@@ -615,20 +614,20 @@ test('the response map: every row, and anything off its row proves nothing', () 
     [pause, 200, ok('paused', { request_id: other }), { kind: 'unknown' }],
     [pause, 200, ok('paused', { agent: GRACE }), { kind: 'unknown' }],
     [pause, 200, ok('paused', { control_lsn: '01' }), { kind: 'unknown' }],
-    [pause, 200, `{"request_id":"${CSRF}","state":"paused","agent":"${ADA}","control_lsn":1099511628300}`, { kind: 'unknown' }],
-    [pause, 200, JSON.stringify({ request_id: CSRF, state: 'paused', agent: ADA }), { kind: 'unknown' }],
+    [pause, 200, `{"request_id":"${REQUEST_ID}","state":"paused","agent":"${ADA}","control_lsn":1099511628300}`, { kind: 'unknown' }],
+    [pause, 200, JSON.stringify({ request_id: REQUEST_ID, state: 'paused', agent: ADA }), { kind: 'unknown' }],
     [pause, 200, ok('paused', { halt: false }), { kind: 'unknown' }],
     [pause, 200, ok('pending'), { kind: 'unknown' }],
     [pause, 200, 'paused', { kind: 'unknown' }],
-    [pause, 202, JSON.stringify({ request_id: CSRF, state: 'pending' }), { kind: 'pending' }],
-    [pause, 202, JSON.stringify({ request_id: CSRF, state: 'pending', agent: ADA }), { kind: 'unknown' }],
+    [pause, 202, JSON.stringify({ request_id: REQUEST_ID, state: 'pending' }), { kind: 'pending' }],
+    [pause, 202, JSON.stringify({ request_id: REQUEST_ID, state: 'pending', agent: ADA }), { kind: 'unknown' }],
     [pause, 202, JSON.stringify({ request_id: other, state: 'pending' }), { kind: 'unknown' }],
     [pause, 409, '', { kind: 'conflict' }],
     ...['agent_absent', 'agent_halted', 'stale_control'].map((reason) => [
-      resume, 409, JSON.stringify({ request_id: CSRF, state: 'refused', reason }), { kind: 'refused', reason }]),
-    [pause, 409, JSON.stringify({ request_id: CSRF, state: 'refused', reason: 'question_closed' }), { kind: 'unknown' }],
+      resume, 409, JSON.stringify({ request_id: REQUEST_ID, state: 'refused', reason }), { kind: 'refused', reason }]),
+    [pause, 409, JSON.stringify({ request_id: REQUEST_ID, state: 'refused', reason: 'question_closed' }), { kind: 'unknown' }],
     [pause, 409, JSON.stringify({ request_id: other, state: 'refused', reason: 'stale_control' }), { kind: 'unknown' }],
-    [pause, 409, JSON.stringify({ request_id: CSRF, state: 'paused', reason: 'stale_control' }), { kind: 'unknown' }],
+    [pause, 409, JSON.stringify({ request_id: REQUEST_ID, state: 'paused', reason: 'stale_control' }), { kind: 'unknown' }],
     [pause, 403, '', { kind: 'forbidden' }],
     [pause, 503, '', { kind: 'unavailable' }],
     [pause, 400, '', { kind: 'rejected', status: 400 }],
@@ -687,7 +686,7 @@ test('after a reload the page sends nothing by itself, and request_id lived only
 
 test('the release gate lets an attempt go only on a confirmed no-effect outcome', async () => {
   const attempt = Object.freeze({
-    verb: 'pause', payload: { request_id: CSRF, agent: ADA, control_lsn: LSN }, body: '{}', turnsAtSend: 0,
+    verb: 'pause', payload: { request_id: REQUEST_ID, agent: ADA, control_lsn: LSN }, body: '{}', turnsAtSend: 0,
   });
   const outcomes = [
     { kind: 'applied' }, { kind: 'pending' }, { kind: 'unavailable' }, { kind: 'unknown' },
@@ -745,7 +744,7 @@ test('a reply to a request this page no longer holds is ignored', async () => {
 
 test('Check status may ask only for an attempt not settled, not let go and not in flight', () => {
   const attempt = Object.freeze({
-    verb: 'resume', payload: { request_id: CSRF, agent: ADA, control_lsn: LSN }, body: '{}', turnsAtSend: 0,
+    verb: 'resume', payload: { request_id: REQUEST_ID, agent: ADA, control_lsn: LSN }, body: '{}', turnsAtSend: 0,
   });
   const outcomes = [
     null, { kind: 'applied' }, { kind: 'pending' }, { kind: 'unavailable' }, { kind: 'unknown' },
@@ -836,7 +835,7 @@ test('a 403 says what a press does next: an ended session keeps no settled reque
   noteTransport('close');
   let html = status();
   assert.match(html, /data-control-session="ended"/);
-  assert.match(html, /into this tab’s address bar, then press Pause or Resume again\./);
+  assert.match(html, /Open Dudes to sign in again in this browser, then press Pause or Resume again\./);
   assert.doesNotMatch(html, /keeps the request/, 'a settled request is said to be kept');
   // Ended, an earlier reply unresolved: that request is kept, for Check status.
   resetFloorStore();
@@ -858,7 +857,7 @@ test('a 403 says what a press does next: an ended session keeps no settled reque
   subscribe({ agents: [agent(), GRACE_ROW()] }); // the fresh snapshot, on the same session
   html = status(net.generation);
   assert.match(html, /data-control-session="live"/);
-  assert.match(html, /Paste a new Floor link into this tab’s address bar to act again\./);
+  assert.match(html, /Open Dudes to sign in again, then act again\./);
   for (const id of [ADA, GRACE]) {
     assert.match(strip(id, net.generation), /class="control-pause" aria-disabled="true"/,
       `${id}’s Pause is offered beside a request to paste a new link`);
@@ -874,7 +873,6 @@ test('a 403 says what a press does next: an ended session keeps no settled reque
   assert.doesNotMatch(strip(ADA, net.generation), /aria-disabled/);
   await control.submitControl('pause', gate(), net);
   assert.equal(net.calls.length, 2);
-  assert.equal(net.calls[1].init.headers['X-Dudes-CSRF'], FRESH);
   assert.deepEqual(control.getControlState().outcome, { kind: 'applied' });
 });
 

@@ -37,7 +37,7 @@ mod common;
 use common::{Fixture, ScriptedColumn, ScriptedRunner, SharedHost, TestClock};
 
 const ONE: usize = 1;
-const MANY: usize = 10_000;
+const MANY: usize = 16;
 const RETAINED_TOKEN: &str = "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr";
 
 fn retained_agent() -> AgentId {

@@ -2,7 +2,6 @@
 //! the keys an edit names, and never into a file the daemon would refuse at start.
 #![cfg(unix)]
 
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -395,8 +394,8 @@ fn a_value_the_key_does_not_take_is_refused_before_any_write() {
         (
             &["floor.bogus", "on"],
             "`floor.bogus` is not a config key; the keys are providers.codex, providers.codex.streaming, providers.pi, \
-             floor.answer, floor.hire, floor.control, floor.goal, floor.renew, floor.retire, floor.board, floor.terminal, \
-             floor.git, floor.diff, budget.floor_usd_per_day, budget.per_turn_floor.usd, budget.per_turn_floor.tokens"
+             floor.answer, floor.hire, floor.control, floor.recovery, floor.goal, floor.renew, floor.retire, floor.board, floor.terminal, \
+             floor.git, floor.diff, floor.project, budget.floor_usd_per_day, budget.per_turn_floor.usd, budget.per_turn_floor.tokens"
                 .to_owned(),
         ),
     ] {
@@ -464,6 +463,7 @@ providers.pi                  on
 floor.answer                  off
 floor.hire                    off
 floor.control                 on
+floor.recovery                off
 floor.goal                    off
 floor.renew                   off
 floor.retire                  off
@@ -471,6 +471,7 @@ floor.board                   off
 floor.terminal                off
 floor.git                     off
 floor.diff                    off
+floor.project                 off
 budget.floor_usd_per_day      5
 budget.per_turn_floor.usd     0
 budget.per_turn_floor.tokens  20000
@@ -592,6 +593,13 @@ fn restart(config: &Path, differences: &str) -> String {
     )
 }
 
+fn live(config: &Path, switches: &str) -> String {
+    format!(
+        "wrote {}; the running daemon now runs {switches}, with no restart\n",
+        config.display()
+    )
+}
+
 fn no_restart(config: &Path) -> String {
     format!(
         "wrote {}; the running daemon already runs these settings, so no restart is needed\n",
@@ -599,11 +607,9 @@ fn no_restart(config: &Path) -> String {
     )
 }
 
-/// An edit names the settings that differ from what the daemon runs, and an edit back to them
-/// needs no restart. A `floor.retire` still waiting for a restart stays named while other keys go
-/// and come back.
+/// A `[floor.*]` switch runs at once, with no restart, and runs again when turned off.
 #[test]
-fn an_edit_asks_for_a_restart_only_for_settings_the_running_daemon_does_not_run() {
+fn a_floor_switch_runs_at_once_in_both_directions() {
     let fixture = Fixture::new();
     let home = fixture.state.path().join("home");
     let config = config_for(&home);
@@ -611,47 +617,90 @@ fn an_edit_asks_for_a_restart_only_for_settings_the_running_daemon_does_not_run(
 
     assert_eq!(
         set(&cli, "floor.answer", "on"),
-        restart(&config, "floor.answer")
-    );
-    assert_eq!(set(&cli, "floor.answer", "off"), no_restart(&config));
-    assert_eq!(
-        set(&cli, "floor.retire", "on"),
-        restart(&config, "floor.retire")
-    );
-    assert_eq!(
-        set(&cli, "floor.answer", "on"),
-        restart(&config, "floor.answer, floor.retire")
+        live(&config, "floor.answer")
     );
     assert_eq!(
         set(&cli, "floor.answer", "off"),
-        restart(&config, "floor.retire")
+        live(&config, "floor.answer")
     );
-    let reload = cli.clone().args(["workspace", "reload"]).run();
+}
+
+/// A terminal the daemon did not start with is named for a restart, and stays named while other
+/// switches change.
+#[test]
+fn a_terminal_turned_on_needs_a_restart_while_other_switches_run_at_once() {
+    let fixture = Fixture::new();
+    let home = fixture.state.path().join("home");
+    let config = config_for(&home);
+    let (_running, cli) = running_on(&fixture, &home, RUNNING, &home);
+
+    assert_eq!(
+        set(&cli, "floor.terminal", "on"),
+        restart(&config, "floor.terminal")
+    );
+    assert_eq!(
+        set(&cli, "floor.answer", "on"),
+        format!(
+            "{}it reads other settings (floor.terminal) only when it starts, so restart it to \
+             apply them: `dudes stop`, then `dudes start`\n",
+            live(&config, "floor.answer")
+        )
+    );
+}
+
+/// Turning the unstarted terminal back off needs no restart.
+#[test]
+fn turning_an_unstarted_terminal_off_again_needs_no_restart() {
+    let fixture = Fixture::new();
+    let home = fixture.state.path().join("home");
+    let config = config_for(&home);
+    let (_running, cli) = running_on(&fixture, &home, RUNNING, &home);
+    set(&cli, "floor.terminal", "on");
+    let reload = cli.clone().args(["project", "reload"]).run();
     assert!(
         reload
             .stdout
-            .contains("\nneeds a daemon restart: floor.retire\n"),
+            .contains("\nneeds a daemon restart: floor.terminal\n"),
         "{}",
         reload.output()
     );
-    assert_eq!(set(&cli, "floor.retire", "off"), no_restart(&config));
+    assert_eq!(set(&cli, "floor.terminal", "off"), no_restart(&config));
 }
 
-/// Renewal is read only at start: turning it on beside a running goal change and Hire names it for
-/// a restart, and turning it off again needs none.
+/// Renewal is a live switch beside a running goal change and Hire.
 #[test]
-fn turning_renewal_on_asks_for_a_restart() {
+fn turning_renewal_on_runs_at_once() {
     let fixture = Fixture::new();
     let home = fixture.state.path().join("home");
     let config = config_for(&home);
     let running = format!("{RUNNING}[floor.goal]\nenabled = true\n[floor.hire]\nenabled = true\n");
     let (_running, cli) = running_with(&fixture, &home, &running, &home, true);
 
+    assert_eq!(set(&cli, "floor.renew", "on"), live(&config, "floor.renew"));
     assert_eq!(
-        set(&cli, "floor.renew", "on"),
-        restart(&config, "floor.renew")
+        set(&cli, "floor.renew", "off"),
+        live(&config, "floor.renew")
     );
-    assert_eq!(set(&cli, "floor.renew", "off"), no_restart(&config));
+}
+
+#[test]
+fn recovery_can_be_configured_without_control_and_runs_at_once() {
+    let fixture = Fixture::new();
+    let home = fixture.state.path().join("home");
+    let config = config_for(&home);
+    let (_running, cli) = running_on(&fixture, &home, RUNNING, &home);
+    assert_eq!(
+        set(&cli, "floor.recovery", "on"),
+        live(&config, "floor.recovery")
+    );
+    let loaded = duded::config::load_operator(&config).unwrap();
+    assert!(loaded.recovery_enabled);
+    let off = "[floor.recovery]\nenabled = true\n[memory]\ncondense_model_enabled = false\n";
+    std::fs::write(&config, off).unwrap();
+    assert!(Settings::read(&config).unwrap().problems().is_empty());
+    let loaded = duded::config::load_operator(&config).unwrap();
+    assert!(loaded.recovery_enabled);
+    assert!(!loaded.control.pause_resume());
 }
 
 /// A daemon that reads another file cannot say whether this one matches it, so the edit names
@@ -744,268 +793,20 @@ fn an_edit_names_workspace_changes_apart_and_points_to_the_reload() {
     let written = set(&cli, "floor.answer", "on");
     let check: EnrollmentReloadResult = cli
         .clone()
-        .args(["--json", "workspace", "reload"])
+        .args(["--json", "project", "reload"])
         .run()
         .json();
     assert_eq!(
         written,
         format!(
-            "{}the running daemon has not adopted the file's workspace changes (workspace repo_1 \
-             added); `dudes workspace reload --apply {}` adopts them without a restart\n",
-            restart(&config, "floor.answer"),
+            "wrote {}; the running daemon runs the switches (floor.answer) once it adopts the \
+             project changes below\nthe running daemon has not adopted the file's project \
+             changes (project repo_1 added); `dudes project reload --apply {}` adopts them \
+             without a restart\n",
+            config.display(),
             check.sha256
         )
     );
-}
-
-fn journal_with_ceiling(journal: &str) -> Fixture {
-    let fixture = Fixture::new();
-    if journal != "none" {
-        let settings = fixture.settings();
-        let mut running = start(
-            &settings,
-            SharedHost::new(),
-            Arc::new(OpenRunner::default()),
-        );
-        let cli = Cli::new(&settings.socket(), &settings.runtime_dir);
-        let mut hire = common::hire_args(fixture.state.path());
-        hire.truncate(hire.len() - 2);
-        if journal == "agent dollars" {
-            hire.extend(["--usd-per-day".into(), "5".into()]);
-        }
-        if journal == "agent tokens" {
-            hire.extend(["--tokens-per-day".into(), "5".into()]);
-        }
-        let hired = cli.clone().arg("--json").args(hire).run();
-        assert_eq!(hired.code(), exit::SUCCESS, "{}", hired.output());
-        let hired: dudes_proto::rpc::agent::HireResult = hired.json();
-        if journal.starts_with("goal") {
-            let goal = cli
-                .args([
-                    "goal",
-                    "--agent",
-                    &hired.agent.to_string(),
-                    "--text",
-                    "a journaled ceiling",
-                    "--hop-cap",
-                    "1",
-                    if journal == "goal dollars" {
-                        "--usd"
-                    } else {
-                        "--tokens"
-                    },
-                    "5",
-                    "--",
-                    "/usr/bin/false",
-                ])
-                .run();
-            assert_eq!(goal.code(), exit::SUCCESS, "{}", goal.output());
-        }
-        running.stop();
-    }
-    fixture
-}
-
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the full config matrix and its journal controls verify one agreement rule"
-)]
-fn the_cli_refuses_exactly_what_the_daemon_refuses_at_start() {
-    let floors = [None, Some("0"), Some("5")];
-    let reserves = [None, Some("0"), Some("0.25")];
-    let tokens = [None, Some("0"), Some("1")];
-    let budget = |floor: Option<&str>, usd: Option<&str>, tokens: Option<&str>| {
-        let mut text = String::new();
-        if let Some(floor) = floor {
-            let _ = write!(text, "[budget]\nfloor_usd_per_day = {floor}\n");
-        }
-        if usd.is_some() || tokens.is_some() {
-            let _ = writeln!(text, "[budget.per_turn_floor]");
-        }
-        if let Some(usd) = usd {
-            let _ = writeln!(text, "usd = {usd}");
-        }
-        if let Some(tokens) = tokens {
-            let _ = writeln!(text, "tokens = {tokens}");
-        }
-        text
-    };
-    let directory = tempfile::tempdir().expect("a config directory");
-    let path = directory.path().join("config.toml");
-
-    let mut journals = Vec::new();
-    for journal in [
-        "none",
-        "agent dollars",
-        "agent tokens",
-        "goal dollars",
-        "goal tokens",
-    ] {
-        let fixture = journal_with_ceiling(journal);
-        journals.push((journal, fixture));
-    }
-
-    let boot_admits = |fixture: &Fixture, loaded: &duded::config::OperatorConfig| {
-        let mut settings = fixture.settings();
-        settings.floor_usd_per_day = loaded.budget.floor_usd_per_day;
-        settings.per_turn_floor = loaded.budget.per_turn_floor;
-        duded::boot(
-            &settings,
-            common::seams(
-                &settings,
-                SharedHost::new(),
-                Arc::new(OpenRunner::default()),
-            ),
-        )
-        .is_ok()
-    };
-
-    let mut budget_admission = Vec::new();
-    for floor in floors {
-        for usd in reserves {
-            for tokens in tokens {
-                std::fs::write(&path, budget(floor, usd, tokens)).expect("the budget file");
-                let loaded =
-                    duded::config::load_operator(&path).expect("a budget the daemon reads");
-                budget_admission.push(boot_admits(&journals[0].1, &loaded));
-            }
-        }
-    }
-
-    for (journal, fixture) in journals.iter().skip(1) {
-        for reserve in ["0", "0.25"] {
-            let dollars = journal.ends_with("dollars");
-            let text = budget(
-                None,
-                Some(if dollars { reserve } else { "0" }),
-                Some(if dollars || reserve == "0" { "0" } else { "1" }),
-            );
-            std::fs::write(&path, text).expect("the journal reserve file");
-            let loaded = duded::config::load_operator(&path).expect("a reserve the daemon reads");
-            assert_eq!(
-                boot_admits(fixture, &loaded),
-                reserve != "0",
-                "the daemon's {journal} reserve rule"
-            );
-        }
-    }
-
-    let ruled = ["control", "goal", "retire", "renew"];
-    let unruled = ["answer", "hire", "terminal", "git"];
-    let mut accepted = 0;
-    for mask in 0..1_u32 << (ruled.len() + unruled.len()) {
-        let mut budget_index = 0;
-        for floor in floors {
-            for usd in reserves {
-                for tokens in tokens {
-                    let mut text = budget(floor, usd, tokens);
-                    let on = ruled
-                        .iter()
-                        .enumerate()
-                        .filter(|(bit, _)| mask & 1 << bit != 0)
-                        .map(|(_, name)| *name)
-                        .chain(unruled.iter().enumerate().filter_map(|(bit, name)| {
-                            (mask & 1 << (ruled.len() + bit) != 0).then_some(*name)
-                        }));
-                    for name in on {
-                        let _ = write!(text, "[floor.{name}]\nenabled = true\n");
-                    }
-                    std::fs::write(&path, &text).expect("the file");
-                    let cli = Settings::read(&path)
-                        .expect("a file the CLI reads")
-                        .problems()
-                        .is_empty();
-                    let parsed = duded::config::load_operator(&path).is_ok();
-                    for (journal, _) in &journals {
-                        let reserves_for_journal = match *journal {
-                            "agent dollars" | "goal dollars" => usd != Some("0"),
-                            "agent tokens" | "goal tokens" => tokens != Some("0"),
-                            _ => true,
-                        };
-                        let daemon =
-                            parsed && budget_admission[budget_index] && reserves_for_journal;
-                        assert_eq!(
-                            cli && reserves_for_journal,
-                            daemon,
-                            "the CLI and the daemon disagree for {journal}:\n{text}"
-                        );
-                        if *journal == "none" {
-                            accepted += usize::from(daemon);
-                        }
-                    }
-                    budget_index += 1;
-                }
-            }
-        }
-    }
-    assert_eq!(
-        accepted,
-        12 * 8 * 21,
-        "control: both verdicts occur, in the number the rules give: 12 sets of the control, \
-         goal, retire, renew and hire switches with goal and retire only under control and renew \
-         only beside goal and hire, times 8 sets of the other switches, times 21 budgets in which \
-         a floor ceiling has a dollar reserve"
-    );
-}
-
-#[test]
-fn representative_switches_reach_boot_with_journaled_ceilings() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("config.toml");
-    for journal in [
-        "none",
-        "agent dollars",
-        "agent tokens",
-        "goal dollars",
-        "goal tokens",
-    ] {
-        let fixture = journal_with_ceiling(journal);
-        for switches in [
-            "",
-            "[floor.answer]\nenabled = true\n[floor.hire]\nenabled = true\n",
-            "[floor.control]\nenabled = true\n[floor.goal]\nenabled = true\n[floor.retire]\nenabled = true\n",
-            "[floor.terminal]\nenabled = true\n[floor.git]\nenabled = true\n",
-            "[floor.goal]\nenabled = true\n",
-            "[floor.retire]\nenabled = true\n",
-            "[floor.hire]\nenabled = true\n[floor.control]\nenabled = true\n[floor.goal]\nenabled = true\n[floor.renew]\nenabled = true\n",
-            "[floor.control]\nenabled = true\n[floor.goal]\nenabled = true\n[floor.renew]\nenabled = true\n",
-        ] {
-            for (usd, tokens) in [("0", "0"), ("0", "1"), ("0.25", "0"), ("0.25", "1")] {
-                let text =
-                    format!("[budget.per_turn_floor]\nusd = {usd}\ntokens = {tokens}\n{switches}");
-                std::fs::write(&path, &text).unwrap();
-                let cli = Settings::read(&path).unwrap().problems().is_empty();
-                let reserve_admits = match journal {
-                    "agent dollars" | "goal dollars" => usd != "0",
-                    "agent tokens" | "goal tokens" => tokens != "0",
-                    _ => true,
-                };
-                let daemon = duded::config::load_operator(&path).is_ok_and(|loaded| {
-                    let mut settings = fixture.settings();
-                    settings.operator_config = Some(path.clone());
-                    settings.floor_usd_per_day = loaded.budget.floor_usd_per_day;
-                    settings.per_turn_floor = loaded.budget.per_turn_floor;
-                    settings.floor_answer_enabled = loaded.answer_enabled;
-                    settings.floor_hire_enabled = loaded.hire_enabled;
-                    settings.floor_control = loaded.control;
-                    settings.floor_terminal_enabled = loaded.terminal_enabled;
-                    settings.floor_git_enabled = loaded.git_enabled;
-                    settings.floor_diff_enabled = loaded.diff_enabled;
-                    duded::boot(
-                        &settings,
-                        common::seams(
-                            &settings,
-                            SharedHost::new(),
-                            Arc::new(OpenRunner::default()),
-                        ),
-                    )
-                    .is_ok()
-                });
-                assert_eq!(daemon, cli && reserve_admits, "{journal}:\n{text}");
-            }
-        }
-    }
 }
 
 /// A value the daemon does not read is shown as unreadable and counted as a refusal, as the

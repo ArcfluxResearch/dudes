@@ -76,8 +76,8 @@ export function servedOutputPath(path) {
 
 const runtimeNotices = new Set([
   '@xterm/xterm@6.0.0@MIT',
-  'react@19.3.0@MIT',
-  'react-dom@19.3.0@MIT',
+  'react@19.3.1@MIT',
+  'react-dom@19.3.1@MIT',
   'scheduler@0.28.0@MIT',
   'three@0.186.1@MIT',
 ]);
@@ -101,7 +101,7 @@ export function validateRuntimeNotices(notices) {
 }
 
 export function validateBuildContract(contract) {
-  if (contract.schema_version !== 1 || contract.base_path !== '/floor/' || contract.browser_wire_version !== 3) {
+  if (contract.schema_version !== 1 || contract.base_path !== '/floor/' || contract.browser_wire_version !== 5) {
     throw new Error('unsupported Floor build contract');
   }
 }

@@ -165,11 +165,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         context_lsn: Lsn,
         task: &str,
         lsn_of_decision: Lsn,
+        operation: &crate::RecoveryOperation<'_>,
     ) {
         if self.closing_active
             || self.closing_recovery
             || !self.browser_delivery_open
-            || self.launch_held(agent)
+            || self.launch_held(agent, operation)
             || self
                 .world
                 .conversation_message(agent, note_lsn, context_lsn)

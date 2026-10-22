@@ -26,14 +26,14 @@ test('a Waiting agent shows its question, whole, and its row says everything but
     colour: '#b87918',
     role: 'backend engineer',
     engine: 'claude',
-    workspace: 'Workspace not recorded',
+    workspace: 'Project not recorded',
     status: 'waiting',
     activity: { kind: 'question', line: `? ${QUESTION}`, text: QUESTION, spoken: `Waiting question: ${QUESTION}` },
     liveActivity: null,
     activeCard: null,
     hold: null,
     checkout: { worktree: null, shared: false },
-    description: `backend engineer, claude, waiting, $1.49 spent today. Waiting question: ${QUESTION}. Workspace: Workspace not recorded`,
+    description: `backend engineer, claude, waiting, $1.49 spent today. Waiting question: ${QUESTION}. Project: Project not recorded`,
   });
 });
 
@@ -50,7 +50,7 @@ test('otherwise the row shows the goal, and a question riding on another status 
       text: 'Validate every parser boundary',
       spoken: 'Goal: Validate every parser boundary',
     });
-    assert.equal(crew.description, `backend engineer, claude, ${row.status}, $1.49 spent today. Goal: Validate every parser boundary. Workspace: Workspace not recorded`);
+    assert.equal(crew.description, `backend engineer, claude, ${row.status}, $1.49 spent today. Goal: Validate every parser boundary. Project: Project not recorded`);
   }
 });
 
@@ -63,7 +63,7 @@ test('an agent with no goal and no question says so, and a missing field shows a
       role: '—',
       engine: '—',
       activity: { kind: 'none', line: 'No goal', text: undefined, spoken: 'No goal' },
-      description: 'idle, $0.00 spent today. No goal. Workspace: Workspace not recorded',
+      description: 'idle, $0.00 spent today. No goal. Project: Project not recorded',
     },
   );
 });
@@ -83,7 +83,7 @@ test('a halt outranks a pause, and only a standing true flag holds a row', () =>
     hold({ paused: 'yes', halted: 1 }),
   ], [null, 'paused', 'halted', 'halted', null]);
   assert.equal(crewRowOf({ ...ada, paused: true, halted: true }).description,
-    `backend engineer, claude, waiting, $1.49 spent today, halted. Waiting question: ${QUESTION}. Workspace: Workspace not recorded`);
+    `backend engineer, claude, waiting, $1.49 spent today, halted. Waiting question: ${QUESTION}. Project: Project not recorded`);
 });
 
 test('the colour is the hire accent, or one fixed by the AgentId when the agent has none or an unknown one', () => {
@@ -105,4 +105,23 @@ test('an automatic hold replaces idle activity with its actionable reason', () =
   assert.equal(crewRowOf({ ...row, halted: true }).hold, 'halted');
   assert.equal(crewRowOf({ ...row, paused: true }).hold, 'paused');
   assert.equal(crewRowOf({ ...row, mode: 'attached' }).hold, null);
+});
+
+
+test('a running Managed agent with a recovery-required ticket needs you instead of appearing to work', () => {
+  const running = { ...ada, mode: 'managed', status: 'running', goal: { ...ada.goal, id: '01ARZ3NDEKTSV4RRFFQ69G5FAX' } };
+  const card = { id: '01ARZ3NDEKTSV4RRFFQ69G5FAW', claimed_by: ADA, status: 'blocked',
+    ticket: { reason: 'recovery_required', round: 1, goal: running.goal.id } };
+  const crew = crewRowOf(running, [card]);
+  assert.equal(crew.status, 'needs you');
+  assert.match(crew.description, /claude, needs you,/);
+  for (const [row, cards, status] of [
+    [running, [], 'running'],
+    [running, [{ ...card, ticket: { ...card.ticket, goal: undefined } }], 'running'],
+    [{ ...running, goal: { ...running.goal, id: '01ARZ3NDEKTSV4RRFFQ69G5FAZ' } }, [card], 'running'], [running, [{ ...card, claimed_by: GRACE }], 'running'],
+    [running, [{ ...card, ticket: { ...card.ticket, reason: 'held_launch' } }], 'running'],
+    [{ ...running, status: 'waiting' }, [card], 'waiting'], [{ ...running, mode: 'attached' }, [card], 'running'],
+    [{ ...running, paused: true }, [card], 'running'], [{ ...running, halted: true }, [card], 'running'],
+    [{ ...running, goal: { ...running.goal, status: 'achieved' } }, [card], 'running'],
+  ]) assert.equal(crewRowOf(row, cards).status, status);
 });

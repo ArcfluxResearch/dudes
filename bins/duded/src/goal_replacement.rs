@@ -337,7 +337,7 @@ impl GoalChanges {
             ..
         } = record
         {
-            return verify_reference(&hire.intended_goal);
+            return hire.intended_goal.as_ref().map_or(Ok(()), verify_reference);
         }
         let Record::GoalSet {
             agent,
@@ -998,7 +998,8 @@ mod tests {
                 request_digest: Hex32::new([5; 32]),
                 profile_id: "repo".into(),
                 session_digest: Hex32::new([4; 32]),
-                intended_goal: goal,
+                intended_goal: Some(goal),
+                trust_lsn: None,
             }));
             hire
         };

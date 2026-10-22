@@ -290,6 +290,72 @@ fn completed_instruction_review_keeps_project_reserved() {
 }
 
 #[test]
+fn continuing_acknowledgment_preserves_only_the_recovery_owned_wait() {
+    for recovery in [false, true] {
+        let mut fixture = ReviewFixture::ended();
+        let Record::InstructionObservationStarted { snapshot, .. } =
+            samples::record(RecordKind::InstructionObservationStarted)
+        else {
+            unreachable!();
+        };
+        fixture.append(Record::InstructionObservationFinished {
+            owner: fixture.owner,
+            ticket: Some(fixture.ticket),
+            baseline: InstructionBaselineRef::Started {
+                lsn: fixture.started_lsn,
+            },
+            settlement: InstructionSettlement::Compared {
+                end: InstructionEndBoundary::ManagedTurn {
+                    turn: fixture.turn(),
+                    end_lsn: fixture.end_lsn,
+                },
+                sampled_at: Timestamp::from_unix_millis(1),
+                recovery: false,
+                comparison: InstructionComparison {
+                    changes: Vec::new(),
+                    gaps: snapshot.gaps,
+                    usage: snapshot.usage,
+                },
+            },
+        });
+        if recovery {
+            let card = fixture.row(fixture.card()).0;
+            fixture.append(Record::CardTransition {
+                card: card.id,
+                from: card.status,
+                to: CardStatus::Blocked,
+                by: Actor::System,
+                expected_seq: card.seq,
+                reason: Some(dudes_proto::TicketReason::RecoveryRequired),
+            });
+        }
+        let before = fixture.row(fixture.card());
+        let record = fixture.review_record(InstructionReviewAction::Accept {
+            completion: InstructionAcceptCompletion::Continue,
+        });
+        fixture.append(record);
+        let after = fixture.row(fixture.card());
+        assert_eq!(
+            after.0.status,
+            if recovery {
+                CardStatus::Blocked
+            } else {
+                CardStatus::Doing
+            }
+        );
+        assert_eq!(
+            after.1.reason,
+            recovery.then_some(dudes_proto::TicketReason::RecoveryRequired)
+        );
+        assert_eq!(
+            (after.0.claimed_by, after.1.goal, after.1.round),
+            (before.0.claimed_by, before.1.goal, before.1.round)
+        );
+        assert!(!fixture.world.instructions.pending_for_goal(fixture.goal()));
+    }
+}
+
+#[test]
 fn completed_instruction_review_keeps_owner_reserved() {
     let fixture = ReviewFixture::completed();
     fixture.read(|facts| {

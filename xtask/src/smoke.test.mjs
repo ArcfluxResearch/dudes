@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import childProcess, { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -125,7 +125,9 @@ test('Chrome helper readlink denial preserves group cleanup and other identity f
 
 test('strict release check refuses missing Chrome', async () => {
   const previous = process.env.DUDES_SMOKE_REQUIRE_CHROME;
+  const previousChrome = process.env.DUDES_SMOKE_CHROME;
   try {
+    delete process.env.DUDES_SMOKE_CHROME;
     process.env.DUDES_SMOKE_REQUIRE_CHROME = '1';
     await assert.rejects(chromePath([]), /Chrome is required/);
     process.env.DUDES_SMOKE_REQUIRE_CHROME = '0';
@@ -133,6 +135,77 @@ test('strict release check refuses missing Chrome', async () => {
   } finally {
     if (previous === undefined) delete process.env.DUDES_SMOKE_REQUIRE_CHROME;
     else process.env.DUDES_SMOKE_REQUIRE_CHROME = previous;
+    if (previousChrome === undefined) delete process.env.DUDES_SMOKE_CHROME;
+    else process.env.DUDES_SMOKE_CHROME = previousChrome;
+  }
+});
+
+test('configured Chrome selects one executable path before discovery', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dudes-smoke-test-'));
+  const previous = process.env.DUDES_SMOKE_CHROME;
+  try {
+    const configured = join(root, 'selected Chrome');
+    const discovered = join(root, 'discovered Chrome');
+    for (const [program, name] of [[configured, 'configured'], [discovered, 'discovered']]) {
+      await writeFile(program, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ name: ${JSON.stringify(name)}, args: process.argv.slice(2) }));\n`, { mode: 0o700 });
+    }
+    process.env.DUDES_SMOKE_CHROME = configured;
+    assert.equal(await chromePath([discovered], false), configured);
+    const selected = await chromePath([discovered], true);
+    const { stdout } = await execute(selected, ['one argument', '--probe']);
+    assert.deepEqual(JSON.parse(stdout), { name: 'configured', args: ['one argument', '--probe'] });
+    const link = join(root, 'Chrome link');
+    await symlink(configured, link);
+    process.env.DUDES_SMOKE_CHROME = link;
+    assert.equal(await chromePath([discovered], false), link);
+    const linked = await execute(await chromePath([discovered], true), ['symlink argument']);
+    assert.deepEqual(JSON.parse(linked.stdout), { name: 'configured', args: ['symlink argument'] });
+    delete process.env.DUDES_SMOKE_CHROME;
+    assert.equal(await chromePath([discovered], false), discovered);
+    const fallback = await execute(await chromePath([discovered], true), ['discovery argument']);
+    assert.deepEqual(JSON.parse(fallback.stdout), { name: 'discovered', args: ['discovery argument'] });
+    assert.equal(await chromePath([], false), null);
+    await assert.rejects(chromePath([], true), /Chrome is required/);
+  } finally {
+    if (previous === undefined) delete process.env.DUDES_SMOKE_CHROME;
+    else process.env.DUDES_SMOKE_CHROME = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('configured Chrome refuses invalid paths without discovery fallback', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dudes-smoke-test-'));
+  const previous = process.env.DUDES_SMOKE_CHROME;
+  try {
+    const discovered = join(root, 'discovered Chrome');
+    const nonexecutable = join(root, 'nonexecutable');
+    const directory = join(root, 'directory');
+    const directoryLink = join(root, 'directory link');
+    const dangling = join(root, 'dangling');
+    await writeFile(discovered, `#!${process.execPath}\nprocess.stdout.write('discovered');\n`, { mode: 0o700 });
+    await writeFile(nonexecutable, 'not executable', { mode: 0o600 });
+    await mkdir(directory);
+    await symlink(directory, directoryLink);
+    await symlink(join(root, 'missing'), dangling);
+    for (const [name, configured] of [
+      ['empty', ''], ['relative', './chrome'], ['missing', join(root, 'missing')],
+      ['directory', directory], ['nonexecutable', nonexecutable],
+      ['directory symlink', directoryLink], ['dangling symlink', dangling],
+    ]) {
+      await t.test(name, async () => {
+        process.env.DUDES_SMOKE_CHROME = configured;
+        for (const required of [false, true]) {
+          await assert.rejects(chromePath([discovered], required), /DUDES_SMOKE_CHROME.*absolute executable file/);
+        }
+      });
+    }
+    delete process.env.DUDES_SMOKE_CHROME;
+    const { stdout } = await execute(await chromePath([discovered], false), []);
+    assert.equal(stdout, 'discovered');
+  } finally {
+    if (previous === undefined) delete process.env.DUDES_SMOKE_CHROME;
+    else process.env.DUDES_SMOKE_CHROME = previous;
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -325,6 +398,266 @@ test('cleanup requests hard stop without waiting through a saving interval', asy
   }
 });
 
+test('release build passes standard Cargo settings through isolated child environments', async (t) => {
+  t.mock.method(console, 'log', () => {});
+  const keys = ['HOME', 'PATH', 'CARGO', 'CARGO_HOME', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN',
+    'CARGO_TARGET_DIR', 'MACOSX_DEPLOYMENT_TARGET', 'DUDES_SMOKE_ORIGINAL_PATH',
+    'CARGO_BUILD_JOBS', 'CARGO_INCREMENTAL', 'DUDES_SMOKE_TEST_UNRELATED'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const [name, settings] of [
+      ['defined', { CARGO_BUILD_JOBS: '3', CARGO_INCREMENTAL: '0' }],
+      ['absent', {}],
+      ['empty', { CARGO_BUILD_JOBS: '', CARGO_INCREMENTAL: '' }],
+    ]) {
+      await t.test(name, async () => {
+        const root = await realpath(await mkdtemp(join(tmpdir(), 'dudes-smoke-test-')));
+        try {
+          const workspace = join(root, 'workspace');
+          const bin = join(root, 'tools');
+          const originalPath = join(root, 'original tools');
+          const xtask = join(bin, 'dist recorder');
+          const cargo = join(bin, 'cargo recorder');
+          const target = join(root, 'target');
+          const run = new ScratchRun(root, workspace, xtask, '', null);
+          for (const path of [bin, originalPath, run.home, run.env.TMPDIR, join(workspace, 'floor')]) {
+            await mkdir(path, { recursive: true });
+          }
+          for (const [program, stage] of [[join(bin, 'npm'), 'floor'], [xtask, 'dist'], [cargo, 'metadata']]) {
+            await writeFile(program, `#!${process.execPath}
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(join(root, `${stage}.json`))}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), env: process.env }));
+if (${JSON.stringify(stage)} === 'metadata') process.stdout.write(JSON.stringify({ target_directory: ${JSON.stringify(target)} }));
+`, { mode: 0o700 });
+          }
+          for (const key of keys) delete process.env[key];
+          Object.assign(process.env, {
+            HOME: join(root, 'parent home'), PATH: bin, CARGO: cargo,
+            CARGO_HOME: join(root, 'parent cargo'), RUSTUP_HOME: join(root, 'rustup'),
+            RUSTUP_TOOLCHAIN: 'selected-toolchain', CARGO_TARGET_DIR: target,
+            MACOSX_DEPLOYMENT_TARGET: '12.0', DUDES_SMOKE_ORIGINAL_PATH: originalPath,
+            DUDES_SMOKE_TEST_UNRELATED: 'must stay outside the child', ...settings,
+          });
+          await run.build();
+          const expected = {
+            HOME: run.home, TMPDIR: run.env.TMPDIR, PATH: originalPath, CARGO: cargo,
+            CARGO_HOME: join(root, 'cargo'), RUSTUP_HOME: join(root, 'rustup'),
+            CARGO_NET_OFFLINE: 'true', NPM_CONFIG_OFFLINE: 'true', NPM_CONFIG_UPDATE_NOTIFIER: 'false',
+            RUSTUP_TOOLCHAIN: 'selected-toolchain', DUDES_SMOKE_ORIGINAL_PATH: originalPath,
+            CARGO_TARGET_DIR: target, MACOSX_DEPLOYMENT_TARGET: '12.0', ...settings,
+          };
+          for (const [stage, args, cwd] of [
+            ['floor', ['run', 'build'], join(workspace, 'floor')],
+            ['dist', ['dist'], workspace],
+            ['metadata', ['metadata', '--locked', '--format-version=1', '--no-deps'], workspace],
+          ]) {
+            const observed = JSON.parse(await readFile(join(root, `${stage}.json`), 'utf8'));
+            if (process.platform === 'darwin') delete observed.env.__CF_USER_TEXT_ENCODING;
+            assert.deepEqual(observed, { args, cwd, env: { ...expected, PATH: stage === 'floor' ? bin : originalPath } });
+          }
+          assert.equal(run.dist, join(target, 'dist'));
+        } finally {
+          await rm(root, { recursive: true, force: true });
+        }
+      });
+    }
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('generic child capture refuses a recycled group after its child exits', async (t) => {
+  const run = new ScratchRun('', process.cwd(), '', '', null);
+  const signals = [];
+  let observations = 0;
+  t.mock.method(run, 'groupAbsent', () => ++observations !== 1);
+  t.mock.method(run, 'signalGroup', (pid, signal) => signals.push({ pid, signal }));
+  const error = await run.capture(process.execPath, ['-e', 'process.stdout.write("owned recorder")'], {
+    cwd: process.cwd(), env: {}, timeout: 5000,
+  }).then(() => null, (failure) => failure);
+  assert.deepEqual(signals, []);
+  assert.match(error?.message ?? '', /child group ownership is unproven/);
+});
+
+test('generic child cleanup refuses lost or replaced anchors', async (t) => {
+  for (const [name, status] of [
+    ['exited', { exitCode: 0 }], ['signaled', { signalCode: 'SIGTERM' }],
+    ['unregistered', {}], ['replaced', {}],
+  ]) {
+    await t.test(name, async (subtest) => {
+      const child = { pid: 800001, exitCode: null, signalCode: null, ...status };
+      const run = new ScratchRun('', process.cwd(), '', '', null);
+      run.groups = new Map(name === 'unregistered' ? [] : [[child.pid,
+        name === 'replaced' ? { ...child } : child]]);
+      const signals = [];
+      let observations = 0;
+      subtest.mock.method(run, 'groupAbsent', () => ++observations !== 1);
+      subtest.mock.method(run, 'signalGroup', (pid, signal) => signals.push({ pid, signal }));
+      subtest.mock.method(run, 'processInfo', () => assert.fail('generic cleanup must not recurse through capture'));
+      const error = await run.stopGroup(child.pid, child).then(() => null, (failure) => failure);
+      assert.deepEqual(signals, []);
+      assert.match(error?.message ?? '', /child group ownership is unproven/);
+      assert.equal(run.groups.has(child.pid), name !== 'unregistered');
+    });
+  }
+});
+
+test('generic child cleanup rechecks its anchor before escalation', async (t) => {
+  for (const name of ['exited', 'replaced', 'live']) {
+    await t.test(name, async (subtest) => {
+      subtest.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+      const child = { pid: 800002, exitCode: null, signalCode: null };
+      const run = new ScratchRun('', process.cwd(), '', '', null);
+      run.groups = new Map([[child.pid, child]]);
+      const signals = [];
+      const waiting = Promise.withResolvers();
+      let alive = true;
+      subtest.mock.method(run, 'groupAbsent', () => {
+        if (signals.length) waiting.resolve();
+        return !alive;
+      });
+      subtest.mock.method(run, 'signalGroup', (_pid, signal) => {
+        signals.push(signal);
+        if (signal === 'SIGKILL') alive = false;
+      });
+      const pending = run.stopGroup(child.pid, child).then(() => null, (failure) => failure);
+      await waiting.promise;
+      assert.deepEqual(signals, ['SIGTERM']);
+      if (name === 'exited') child.exitCode = 0;
+      if (name === 'replaced') run.groups.set(child.pid, { ...child });
+      subtest.mock.timers.tick(5000);
+      const error = await pending;
+      assert.deepEqual(signals, name === 'live' ? ['SIGTERM', 'SIGKILL'] : ['SIGTERM']);
+      if (name === 'live') {
+        assert.equal(error, null);
+        assert.equal(run.groups.has(child.pid), false);
+      } else {
+        assert.match(error?.message ?? '', /child group ownership is unproven/);
+        assert.equal(run.groups.has(child.pid), true);
+      }
+    });
+  }
+});
+
+test('generic child interruption signals only the registered live child', (t) => {
+  const run = new ScratchRun('', process.cwd(), '', '', null);
+  const live = { pid: 800003, exitCode: null, signalCode: null };
+  const exited = { pid: 800004, exitCode: 0, signalCode: null };
+  const signaled = { pid: 800005, exitCode: null, signalCode: 'SIGTERM' };
+  const replaced = { pid: 800006, exitCode: null, signalCode: null };
+  run.groups = new Map([live, exited, signaled, replaced].map((child) => [child.pid, child]));
+  const signals = [];
+  t.mock.method(run, 'signalGroup', (pid, signal) => signals.push({ pid, signal }));
+  assert.equal(run.signalChildGroup({ ...replaced }, 'SIGKILL'), false);
+  run.signalChildren('SIGTERM');
+  assert.deepEqual(signals, [
+    { pid: live.pid, signal: 'SIGTERM' }, { pid: replaced.pid, signal: 'SIGTERM' },
+  ]);
+});
+
+test('generic child group observation accepts only ESRCH as absence', async (t) => {
+  for (const code of ['ESRCH', 'EPERM', 'EIO']) {
+    await t.test(code, async (subtest) => {
+      const child = { pid: 800007, exitCode: 0, signalCode: null };
+      const run = new ScratchRun('', process.cwd(), '', '', null);
+      run.groups = new Map([[child.pid, child]]);
+      const signals = [];
+      subtest.mock.method(process, 'kill', (pid, signal) => {
+        assert.equal(pid, -child.pid);
+        assert.equal(signal, 0);
+        throw Object.assign(new Error(`group observation ${code}`), { code });
+      });
+      subtest.mock.method(run, 'signalGroup', (pid, signal) => signals.push({ pid, signal }));
+      const error = await run.stopGroup(child.pid, child).then(() => null, (failure) => failure);
+      assert.deepEqual(signals, []);
+      if (code === 'ESRCH') {
+        assert.equal(error, null);
+        assert.equal(run.groups.has(child.pid), false);
+      } else {
+        assert.equal(error?.code, code);
+        assert.equal(run.groups.has(child.pid), true);
+      }
+    });
+  }
+});
+
+test('generic child observation failure during shutdown refuses escalation', async (t) => {
+  const child = { pid: 800010, exitCode: null, signalCode: null };
+  const run = new ScratchRun('', process.cwd(), '', '', null);
+  run.groups = new Map([[child.pid, child]]);
+  const signals = [];
+  let absent = false;
+  t.mock.method(process, 'kill', (pid, signal) => {
+    assert.equal(pid, -child.pid);
+    assert.equal(signal, 0);
+    if (signals.length === 0) return true;
+    throw Object.assign(new Error('group observation failed during shutdown'), { code: absent ? 'ESRCH' : 'EPERM' });
+  });
+  t.mock.method(run, 'signalGroup', (_pid, signal) => {
+    signals.push(signal);
+    if (signal === 'SIGKILL') absent = true;
+  });
+  const error = await run.stopGroup(child.pid, child).then(() => null, (failure) => failure);
+  assert.deepEqual(signals, ['SIGTERM']);
+  assert.equal(error?.code, 'EPERM');
+  assert.equal(run.groups.has(child.pid), true);
+});
+
+test('generic child live cleanup can stop its owned group', async (t) => {
+  const child = { pid: 800008, exitCode: null, signalCode: null };
+  const run = new ScratchRun('', process.cwd(), '', '', null);
+  run.groups = new Map([[child.pid, child]]);
+  const signals = [];
+  let alive = true;
+  t.mock.method(run, 'groupAbsent', () => !alive);
+  t.mock.method(run, 'signalGroup', (pid, signal) => {
+    signals.push({ pid, signal });
+    child.exitCode = 0;
+    alive = false;
+  });
+  await run.stopGroup(child.pid, child);
+  assert.deepEqual(signals, [{ pid: child.pid, signal: 'SIGTERM' }]);
+  assert.equal(run.groups.has(child.pid), false);
+});
+
+test('generic child release timer refuses a child that already exited', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dudes-smoke-test-'));
+  const run = new ScratchRun(root, process.cwd(), 'dist-stand-in', '', null);
+  const child = Object.assign(new EventEmitter(), { pid: 800009, exitCode: null, signalCode: null });
+  const spawned = Promise.withResolvers();
+  const signals = [];
+  t.mock.method(console, 'log', () => {});
+  t.mock.method(run, 'capture', async (_program, args) => ({
+    stdout: args[0] === 'metadata' ? JSON.stringify({ target_directory: root }) : '',
+  }));
+  t.mock.method(run, 'groupAbsent', () => true);
+  t.mock.method(run, 'signalGroup', (pid, signal) => signals.push({ pid, signal }));
+  t.mock.method(childProcess, 'spawn', () => {
+    spawned.resolve();
+    return child;
+  });
+  syncBuiltinESMExports();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const pending = run.build();
+    await spawned.promise;
+    child.exitCode = 0;
+    child.emit('exit', 0);
+    t.mock.timers.tick(20 * 60_000);
+    await pending;
+    assert.deepEqual(signals, []);
+    assert.equal(run.groups.has(child.pid), false);
+  } finally {
+    t.mock.timers.reset();
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('release build keeps the selected Rustup compiler in a dependency directory', async (t) => {
   t.mock.method(console, 'log', () => {});
   const root = await mkdtemp(join(tmpdir(), 'dudes-smoke-test-'));
@@ -362,7 +695,7 @@ test('Chrome drives the page over pipes without a DevTools TCP endpoint', { time
   if (!chrome) return t.skip('Chrome absent');
   const root = await mkdtemp(join(tmpdir(), 'dudes-smoke-test-'));
   const server = createServer((_request, response) => {
-    response.end('<!doctype html><title>Smoke pipe</title><button id="hire-open-office">Hire</button>');
+    response.end('<!doctype html><title>Smoke pipe</title><button id="hire-open">Hire</button>');
   });
   const run = new ScratchRun(root, process.cwd(), '', '', chrome);
   try {

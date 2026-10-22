@@ -36,6 +36,7 @@ pub(super) struct SampleJob {
     pub(super) baseline: Option<Box<InstructionSnapshot>>,
     pub(super) ticket: Option<InstructionTicketAssociation>,
     pub(super) boot: Option<InstructionBootIdentity>,
+    pub(super) pid_namespace: Option<String>,
     pub(super) queued: Instant,
 }
 
@@ -655,6 +656,7 @@ fn unknown_seed(job: &SampleJob, sampled_at: Timestamp) -> InstructionSnapshot {
             path: None,
         }],
         usage: InstructionSampleUsage::default(),
+        pid_namespace: job.pid_namespace.clone(),
         boot: job.boot.clone(),
     }
 }
@@ -998,6 +1000,11 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
             baseline: baseline.cloned().map(Box::new),
             ticket,
             boot,
+            pid_namespace: if cfg!(target_os = "linux") {
+                self.host.pid_namespace()
+            } else {
+                None
+            },
             queued: Instant::now(),
         })
     }
@@ -1131,6 +1138,7 @@ mod tests {
         InstructionSnapshot {
             sampled_at: Timestamp::UNIX_EPOCH,
             source: InstructionSnapshotSource::Fresh,
+            pid_namespace: None,
             boot: None,
             execution_folder: Some(NativeInstructionPath::from_path(path).unwrap()),
             participants: Vec::new(),
@@ -1160,6 +1168,7 @@ mod tests {
             baseline: None,
             ticket: None,
             boot: None,
+            pid_namespace: None,
             queued: Instant::now(),
         }
     }
@@ -1237,13 +1246,19 @@ mod tests {
         sample.membership_unknown = incomplete;
         for ordinal in 1..=participants {
             let agent = AgentId::from_parts(1, ordinal as u128);
-            harness.supervisor.handle(Input::Replayed {
-                lsn: Lsn(u64::try_from(ordinal).unwrap()),
-                entry: Entry {
-                    at: Timestamp::UNIX_EPOCH,
-                    record: hired(agent, path),
-                },
-            });
+            harness
+                .supervisor
+                .handle(
+                    Input::Replayed {
+                        lsn: Lsn(u64::try_from(ordinal).unwrap()),
+                        entry: Entry {
+                            at: Timestamp::UNIX_EPOCH,
+                            record: hired(agent, path),
+                        },
+                    },
+                    &dudes_supervisor::RecoveryOperation::empty(),
+                )
+                .unwrap();
             sample
                 .sources
                 .push(harness.supervisor.instruction_source(agent).unwrap());

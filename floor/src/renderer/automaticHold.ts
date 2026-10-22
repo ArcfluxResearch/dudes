@@ -25,11 +25,27 @@ export function automaticHoldOf(row: Readonly<Record<string, unknown>>): Automat
   return null;
 }
 
-export function automaticHoldText(hold: AutomaticHold): string {
+/** The program each hireable engine runs. */
+const ENGINES: Readonly<Record<string, { readonly name: string; readonly program: string }>> = Object.freeze({
+  claude: { name: 'Claude Code', program: 'claude' },
+  codex: { name: 'Codex', program: 'codex' },
+  pi: { name: 'Pi', program: 'pi' },
+});
+
+/** The recorded reason ends in the error kind and names no engine, and other not-found errors share it, so the program is only the usual cause. */
+function missingEngineHint(hold: AutomaticHold, provider: unknown): string {
+  if (hold.kind !== 'launch_failed' || !hold.reason.endsWith('(NotFound)')) return '';
+  const engine = typeof provider === 'string' && Object.hasOwn(ENGINES, provider) ? ENGINES[provider] : undefined;
+  if (engine === undefined) return '';
+  return `. Dudes could not start ${engine.name}, usually because ${engine.program} is not installed. `
+    + 'Install it and sign in, then resume this agent, or hire an agent with an engine you have.';
+}
+
+export function automaticHoldText(hold: AutomaticHold, provider?: unknown): string {
   switch (hold.kind) {
     case 'repeated_fast_failure': return 'Repeated fast failures. Check the CLI before resuming.';
     case 'launch_refused': return `Launch refused. ${hold.reason}`;
-    case 'launch_failed': return `Launch failed. ${hold.reason}`;
+    case 'launch_failed': return `Launch failed. ${hold.reason}${missingEngineHint(hold, provider)}`;
     case 'worktree_missing': return "This agent's worktree is missing. Restore it or retire the agent, then resume.";
   }
 }

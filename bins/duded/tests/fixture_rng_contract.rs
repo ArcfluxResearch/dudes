@@ -374,8 +374,37 @@ fn daemon_and_cli_fixture_rng_fields_have_only_the_named_boundary_exceptions() {
                 "duded/tests/goal_replace.rs",
                 "invalid_record_cannot_bypass_startup_validation_through_cached_projections"
             ),
+            ("duded/tests/recovery.rs", "backend"),
+            ("duded/tests/recovery.rs", "snapshot"),
             ("duded/tests/validation_scratch.rs", "daemon_scratch_child"),
         ],
         "RNG fields are checked within named source functions, not by a Rust parser: {raw:?}"
     );
+}
+
+#[test]
+fn recorded_token_hash_excludes_the_next_fixture_candidate() {
+    let control = Fixture::new();
+    write_segment(&control.journal_dir(), 1, &encoded(&entry(1)));
+    let mut fresh = FixtureRng::from_rng(&control.settings(), FakeRng::new());
+    let candidate = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2";
+    assert_eq!(fresh.agent_token().expose(), candidate);
+
+    let fixture = Fixture::new();
+    let mut bytes = encoded(&entry(1));
+    bytes.extend(encoded(&Entry {
+        at: entry(1).at,
+        record: Record::HookTokenMinted {
+            agent: AgentId::from_parts(0, 1),
+            token_hash: dudes_supervisor::blake3_hex(candidate.as_bytes()),
+        },
+    }));
+    write_segment(&fixture.journal_dir(), 1, &bytes);
+    let before = journal_bytes(&fixture.journal_dir());
+    let mut prepared = FixtureRng::from_rng(&fixture.settings(), FakeRng::new());
+    assert_eq!(
+        prepared.agent_token().expose(),
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3"
+    );
+    assert_eq!(journal_bytes(&fixture.journal_dir()), before);
 }

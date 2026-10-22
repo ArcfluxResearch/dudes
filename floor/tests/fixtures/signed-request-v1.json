@@ -1,0 +1,17 @@
+{
+  "about": "A Floor request signed by a browser key through WebCrypto. The signature has a high s value on purpose: WebCrypto does not normalize s, so the daemon must accept both.",
+  "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMqeMA7CvYqmm3VlWQvtK0wS0KjZS1IgpgezxoWCtn1TIfdmP2PsYn7Q64c793NcH_g2MT5eEZqO5Abl4Z15TRA",
+  "device": "L60mRRPQKZAeXUxPElwEhSF_galAN9Dag4plRAko1m8",
+  "request": {
+    "method": "POST",
+    "target": "/floor/devices/keep?from=settings&x=%20y",
+    "origin": "http://127.0.0.1:7357",
+    "body": "{\"device\":\"Zm9vYmFy\"}",
+    "time": "1761100000000",
+    "request_id": "AwoRGB8mLTQ7QklQV15lbA"
+  },
+  "body_sha256": "4pxszjG7IbeJiP_huyh2xhlhXJJGNq09GbMznykz4Xo",
+  "empty_body_sha256": "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+  "message": "AAAAFmR1ZGVzLWZsb29yLXJlcXVlc3QtdjEAAAArTDYwbVJSUFFLWkFlWFV4UEVsd0VoU0ZfZ2FsQU45RGFnNHBsUkFrbzFtOAAAAARQT1NUAAAAKC9mbG9vci9kZXZpY2VzL2tlZXA_ZnJvbT1zZXR0aW5ncyZ4PSUyMHkAAAAVaHR0cDovLzEyNy4wLjAuMTo3MzU3AAAAIOKcbM4xuyG3iYj_4bsodsYZYVySRjatPRmzM58pM-F6AAAADTE3NjExMDAwMDAwMDAAAAAWQXdvUkdCOG1MVFE3UWtsUVYxNWxiQQ",
+  "signature": "mhqHWFy68nvjxPiMRcoepgHmJap8x9wTUUPM2zFFd1qgkz-dmsdQlldFwA4cJu48YSm2cKSA9Q8KRdRopFDp-Q"
+}

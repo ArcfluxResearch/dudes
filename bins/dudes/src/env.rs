@@ -30,8 +30,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use dudes_proto::rpc::hook::HookToken;
-use dudes_providers::launch::{DAEMON_ENV_ALLOWLIST, EnvVar, billing_env_vars};
-use dudes_types::{McpServerName, Provider};
+use dudes_providers::launch::{DAEMON_ENV_ALLOWLIST, EnvVar};
+use dudes_types::McpServerName;
 
 /// The local endpoint's logical name inside a runtime directory.
 ///
@@ -96,6 +96,7 @@ pub struct Environment {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     mailbox: Result<PathBuf, NoMailbox>,
     daemon: Option<PathBuf>,
+    opener: Option<PathBuf>,
     daemon_env: Vec<EnvVar>,
     agent_token: Option<HookToken>,
     config: Result<PathBuf, NoConfig>,
@@ -103,7 +104,6 @@ pub struct Environment {
     current_dir: Option<PathBuf>,
     home: Option<PathBuf>,
     declared: Declared,
-    billed: Vec<Provider>,
     upgrade_env: Vec<EnvVar>,
 }
 
@@ -324,6 +324,7 @@ impl Environment {
             |socket| Ok(PathBuf::from(socket)),
         );
         let daemon = lookup("DUDES_DAEMON").map(PathBuf::from);
+        let opener = lookup("DUDES_OPENER").map(PathBuf::from);
         // One loop over [`DAEMON_ENV_ALLOWLIST`] and no second spelling of any name: the list
         // and the construction cannot drift apart, and a name is added by editing the constant
         // that carries the reason for it. Absent names are dropped rather than forwarded empty,
@@ -338,11 +339,6 @@ impl Environment {
             .and_then(|value| value.into_string().ok())
             .and_then(|text| HookToken::new(text).ok());
         let config = operator_config_path(&lookup);
-        let set = |name: &str| lookup(name).is_some_and(|value| !value.is_empty());
-        let billed = [Provider::Claude, Provider::Codex, Provider::Pi]
-            .into_iter()
-            .filter(|provider| billing_env_vars(*provider).iter().any(|name| set(name)))
-            .collect();
         Self {
             socket,
             runtime_dir,
@@ -350,6 +346,7 @@ impl Environment {
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             mailbox,
             daemon,
+            opener,
             daemon_env,
             agent_token,
             config,
@@ -357,7 +354,6 @@ impl Environment {
             current_dir: None,
             home,
             declared: Declared::default(),
-            billed,
             upgrade_env: UPGRADE_ENV
                 .iter()
                 .filter_map(|name| Some(EnvVar::new(*name, lookup(name)?)))
@@ -378,7 +374,7 @@ impl Environment {
         self.current_dir.as_deref()
     }
 
-    /// The daemon's operator file, which `dudes workspace` edits.
+    /// The daemon's operator file, which `dudes project` edits.
     ///
     /// # Errors
     ///
@@ -445,6 +441,11 @@ impl Environment {
         &self.daemon_env
     }
 
+    /// The program `DUDES_OPENER` names, when it is set.
+    pub(crate) fn opener(&self) -> Option<&Path> {
+        self.opener.as_deref()
+    }
+
     /// The daemon `DUDES_DAEMON` names, when it is set.
     pub(crate) fn daemon_override(&self) -> Option<&Path> {
         self.daemon.as_deref()
@@ -458,12 +459,6 @@ impl Environment {
     /// The variables `dudes upgrade` passes to `curl` and the installer.
     pub(crate) fn upgrade_env(&self) -> &[EnvVar] {
         &self.upgrade_env
-    }
-
-    /// The engines for which this process holds a credential that bills each token, by the lists
-    /// the daemon's adapters use.
-    pub(crate) fn billed(&self) -> &[Provider] {
-        &self.billed
     }
 
     /// The agent token this process was given, if it was given a well-formed one.

@@ -4,7 +4,8 @@ use dudes_providers::adapter::{HookInstall, ManagedInstall};
 use dudes_providers::launch::LaunchSpec;
 use dudes_supervisor::host::{
     AdoptionKey, Liveness, NativeBoundaryAcknowledgement, NativeBoundaryReceipt,
-    OwnedTargetEvidence, OwnedTargetState, OwnedTargets, OwnedTargetsStatus, SpawnResult,
+    NativeGroupPresence, OwnedTargetEvidence, OwnedTargetState, OwnedTargets, OwnedTargetsStatus,
+    ProbeAnswer, SpawnResult,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -31,6 +32,14 @@ struct MockNativeState {
     acknowledgements: Vec<Acknowledgement>,
     answers: VecDeque<NativeBoundaryAcknowledgement>,
     next_key: Option<AdoptionKey>,
+    prior_run: Option<PriorRunObservations>,
+}
+
+struct PriorRunObservations {
+    boot: dudes_types::HostBoot,
+    namespace: Option<String>,
+    leader: ProbeAnswer,
+    group: NativeGroupPresence,
 }
 
 struct MockNativeTarget {
@@ -54,6 +63,22 @@ impl MockNativeHost {
             inner: common::SharedHost::new(),
             state: Arc::new(Mutex::new(MockNativeState::default())),
         }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn prior_run(&self, key: &AdoptionKey, group: NativeGroupPresence) {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .prior_run = Some(PriorRunObservations {
+            boot: key.boot.clone().map_or(
+                dudes_types::HostBoot::NotApplicable,
+                dudes_types::HostBoot::Read,
+            ),
+            namespace: cfg!(target_os = "linux").then(|| "pid:[4026531836]".into()),
+            leader: ProbeAnswer::NoSuchPid,
+            group,
+        });
     }
 
     fn expose_absence(&self, key: &AdoptionKey) -> NativeBoundaryReceipt {
@@ -121,7 +146,17 @@ impl ProcessHost for MockNativeHost {
                 }
             }
             Some(_) => Liveness::Unknown,
-            None => self.inner.alive(key),
+            None => state.prior_run.as_ref().map_or_else(
+                || self.inner.alive(key),
+                |prior| {
+                    let boot = match &prior.boot {
+                        dudes_types::HostBoot::Read(value) => Some(value.as_str()),
+                        dudes_types::HostBoot::NotApplicable
+                        | dudes_types::HostBoot::Unreadable(_) => None,
+                    };
+                    dudes_supervisor::host::liveness(key, boot, prior.leader)
+                },
+            ),
         }
     }
 
@@ -195,7 +230,39 @@ impl ProcessHost for MockNativeHost {
     }
 
     fn boot_identity(&self) -> dudes_types::HostBoot {
-        self.inner.boot_identity()
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .prior_run
+            .as_ref()
+            .map_or_else(|| self.inner.boot_identity(), |prior| prior.boot.clone())
+    }
+
+    fn pid_namespace(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .prior_run
+            .as_ref()
+            .and_then(|prior| prior.namespace.clone())
+    }
+
+    fn probe_native_leader(&self, _key: &AdoptionKey) -> ProbeAnswer {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .prior_run
+            .as_ref()
+            .map_or(ProbeAnswer::CouldNotAnswer, |prior| prior.leader)
+    }
+
+    fn native_group_presence(&self, _pid: u32) -> NativeGroupPresence {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .prior_run
+            .as_ref()
+            .map_or(NativeGroupPresence::Unknown, |prior| prior.group)
     }
 
     fn shutdown(&mut self) -> std::io::Result<()> {
@@ -225,6 +292,10 @@ impl Owned {
     fn new() -> Self {
         let fixture = common::Fixture::new();
         let host = MockNativeHost::new();
+        Self::open(fixture, host)
+    }
+
+    fn open(fixture: common::Fixture, host: MockNativeHost) -> Self {
         let settings = fixture.settings();
         let mut seams = common::seams(
             &settings,
@@ -268,7 +339,10 @@ impl Owned {
             let Some(input) = queue.pop_front() else {
                 break;
             };
-            self.daemon.sup.handle(input);
+            self.daemon
+                .sup
+                .handle(input, &dudes_supervisor::RecoveryOperation::empty())
+                .unwrap();
             self.daemon
                 .ctx
                 .retire_recorded_native_launches(self.daemon.sup.world());
@@ -311,9 +385,11 @@ impl Owned {
     }
 
     fn fold(&mut self, input: Input, attempt: &Attempt) {
-        let Input::InstructionJournaled { lsn, entry } = &input else {
+        let Input::InstructionJournaled { append } = &input else {
             panic!("settlement must use the instruction journal acknowledgement")
         };
+        let lsn = append.lsn();
+        let entry = append.entry();
         assert!(
             matches!(entry.record, Record::InstructionAttemptBoundarySettled {
             owner, started_lsn,
@@ -326,9 +402,12 @@ impl Owned {
             self.fixture
                 .entries()
                 .iter()
-                .any(|(written, stamped)| { written == lsn && stamped.record == entry.record })
+                .any(|(written, stamped)| { *written == lsn && stamped.record == entry.record })
         );
-        self.daemon.sup.handle(input);
+        self.daemon
+            .sup
+            .handle(input, &dudes_supervisor::RecoveryOperation::empty())
+            .unwrap();
         self.daemon
             .ctx
             .retire_recorded_native_launches(self.daemon.sup.world());
@@ -397,7 +476,10 @@ fn prepared(daemon: &mut TestDaemon, agent: AgentId) -> Effect {
                 _ => panic!("bounded preparation awaits the actual worker input"),
             }
         });
-        daemon.sup.handle(input);
+        daemon
+            .sup
+            .handle(input, &dudes_supervisor::RecoveryOperation::empty())
+            .unwrap();
         for effect in daemon.sup.take_effects() {
             if matches!(effect, Effect::Spawn { .. }) {
                 return effect;
@@ -640,4 +722,194 @@ fn a_same_key_successor_receipt_cannot_be_retired_by_the_old_folded_acknowledgem
     assert_eq!(successful[0].receipt, fresh_receipt);
     assert!(same_recorded_key(&successful[0].key, &second.key));
     assert_eq!(owned.settlements(), 2);
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn prior_run_restart(group: NativeGroupPresence) -> (Owned, Attempt) {
+    let mut original = Owned::new();
+    let key = AdoptionKey {
+        pid: 4_200,
+        start_time: 100,
+        boot: cfg!(target_os = "linux").then(|| "same-boot".into()),
+    };
+    original.host.reuse_next_key(&key);
+    original.host.prior_run(&key, NativeGroupPresence::Present);
+    let cwd = original.fixture.state.path().to_path_buf();
+    let attempt = original.spawn(&cwd);
+    let Owned {
+        daemon, fixture, ..
+    } = original;
+    drop(daemon);
+    let host = MockNativeHost::new();
+    host.prior_run(&key, group);
+    (Owned::open(fixture, host), attempt)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn prior_run_startup_settles_once_without_host_acknowledgement_or_a_new_launch() {
+    let (owned, attempt) = prior_run_restart(NativeGroupPresence::Absent);
+    assert_eq!(owned.settlements(), 1);
+    assert!(owned.host.acknowledgements().is_empty());
+    assert!(owned.daemon.ctx.native_acknowledgements.is_empty());
+    assert!(
+        owned
+            .daemon
+            .sup
+            .world()
+            .managed_native_spawn_receipt(attempt.started)
+            .is_none()
+    );
+    let settled = &owned
+        .daemon
+        .sup
+        .world()
+        .instructions
+        .attempt(attempt.started)
+        .unwrap()
+        .boundary_settled
+        .as_ref()
+        .unwrap()
+        .proof;
+    assert_eq!(
+        settled,
+        &dudes_proto::InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+            receipt: dudes_proto::InstructionNativeBoundaryReceipt::Spawned {
+                lsn: attempt.spawn_lsn
+            },
+            pid: attempt.key.pid,
+            start_time: attempt.key.start_time,
+            boot: attempt.key.boot.clone(),
+            leader: dudes_proto::PriorRunLeader::NoSuchProcess,
+        }
+    );
+    assert_eq!(
+        owned
+            .fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record, Record::TurnSpawned { .. }))
+            .count(),
+        1
+    );
+    let mut replayed = dudes_supervisor::World::default();
+    for (lsn, entry) in owned.fixture.entries() {
+        replayed.apply_checked(lsn, &entry).unwrap();
+    }
+    assert_eq!(replayed.instructions, owned.daemon.sup.world().instructions);
+    assert_eq!(replayed.managed_native_spawn_receipts().len(), 0);
+    let Owned {
+        daemon,
+        fixture,
+        host,
+    } = owned;
+    drop(daemon);
+    let restarted = Owned::open(fixture, host);
+    assert_eq!(restarted.settlements(), 1);
+    assert_eq!(
+        restarted
+            .fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record, Record::TurnSpawned { .. }))
+            .count(),
+        1
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn prior_run_append_failure_retains_the_candidate_until_one_durable_settlement() {
+    let (mut owned, attempt) = prior_run_restart(NativeGroupPresence::Present);
+    assert_eq!(owned.settlements(), 0);
+    owned
+        .host
+        .prior_run(&attempt.key, NativeGroupPresence::Absent);
+    owned
+        .daemon
+        .ctx
+        .append_failure
+        .fail_nth(NonZeroUsize::new(1).unwrap());
+    let mut queue = VecDeque::new();
+    assert!(owned.settle(&mut queue).is_err());
+    assert!(queue.is_empty());
+    assert_eq!(owned.settlements(), 0);
+    assert!(owned.settle(&mut queue).unwrap());
+    assert_eq!(owned.settlements(), 1);
+    assert_eq!(queue.len(), 1);
+    assert!(!owned.settle(&mut queue).unwrap());
+    assert!(owned.host.acknowledgements().is_empty());
+    owned
+        .daemon
+        .sup
+        .handle(
+            queue.pop_front().unwrap(),
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )
+        .unwrap();
+    assert!(owned.daemon.sup.take_effects().is_empty());
+    assert!(
+        owned
+            .daemon
+            .sup
+            .world()
+            .managed_native_spawn_receipt(attempt.started)
+            .is_none()
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn prior_run_settlement_during_closing_replays_without_admitting_work() {
+    let (mut owned, attempt) = prior_run_restart(NativeGroupPresence::Present);
+    assert_eq!(owned.settlements(), 0);
+    owned
+        .daemon
+        .closing_request(crate::closing::Request::Announce)
+        .unwrap();
+    assert!(owned.daemon.sup.is_closing());
+    let launches = owned
+        .fixture
+        .records()
+        .iter()
+        .filter(|record| {
+            matches!(
+                record,
+                Record::TurnIssued { .. } | Record::TurnSpawned { .. }
+            )
+        })
+        .count();
+    owned
+        .host
+        .prior_run(&attempt.key, NativeGroupPresence::Absent);
+    owned
+        .daemon
+        .pump_started(
+            &mut PumpReport::Discard,
+            PumpOrigin::Closing,
+            &[],
+            |_, _operation| Ok(Handled::default()),
+        )
+        .unwrap();
+    assert_eq!(owned.settlements(), 1);
+    assert!(owned.daemon.sup.is_closing());
+    assert_eq!(
+        owned
+            .fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(
+                record,
+                Record::TurnIssued { .. } | Record::TurnSpawned { .. }
+            ))
+            .count(),
+        launches
+    );
+    let mut replayed = dudes_supervisor::World::default();
+    for (lsn, entry) in owned.fixture.entries() {
+        replayed.apply_checked(lsn, &entry).unwrap();
+    }
+    assert_eq!(replayed.instructions, owned.daemon.sup.world().instructions);
+    assert_eq!(replayed.managed_native_spawn_receipts().len(), 0);
+    assert!(replayed.closing.is_some());
 }

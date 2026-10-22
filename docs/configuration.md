@@ -1,7 +1,8 @@
 # Configuration
 
-Dudes reads its settings from one operator file when the daemon starts. A change needs a restart
-(`dudes quickstart --restart`).
+Dudes reads its settings from one operator file when the daemon starts. The Floor's `floor.*`
+switches also take effect on a running daemon, with no restart, when you change them with
+`dudes config set`. Every other change needs a restart (`dudes quickstart --restart`).
 
 ## The operator file
 
@@ -25,22 +26,33 @@ dudes config set providers.codex on floor.hire on
 ```
 
 `unset` removes a key, so the daemon's default applies. An edit that breaks the file's own start
-rules is refused and names the key it needs. With a daemon running, an edit names the settings it
-runs differently, which a restart applies: `dudes stop`, then `dudes start`.
+rules is refused and names the key it needs. With a daemon running, an edit to a `floor.*` switch
+applies at once and the command says so. Turning `floor.terminal` off closes open terminals at once.
+Turning it on, like any other setting the daemon reads only at start, is named for a restart:
+`dudes stop`, then `dudes start`.
 
 - `providers.codex` and `providers.pi`, on or off, turn on those engines. Claude Code is always on.
 - `providers.codex.streaming` opts in to Codex streaming with a separate sign-in home. It defaults
   to off and requires macOS or Linux. After restarting, sign in with `dudes login codex`. See
   [Chat](chat.md).
-- `floor.answer`, `floor.hire`, `floor.control`, `floor.goal`, `floor.renew`, `floor.retire`,
-  `floor.board`, `floor.terminal`, `floor.git` and `floor.diff`, on or off, are the Floor's
-  actions. Each is off unless you turn it on. Chat is always on and has no setting. `floor.board`
+- `floor.answer`, `floor.hire`, `floor.control`, `floor.recovery`, `floor.goal`, `floor.renew`,
+  `floor.retire`, `floor.board`, `floor.project`, `floor.terminal`, `floor.git` and `floor.diff`,
+  on or off, are the Floor's actions. Each is off unless you turn it on, and `dudes quickstart`
+  turns on every one except `floor.terminal`, `floor.git` and `floor.diff` in a new file. `floor.project` lets the Floor add and remove a
+  project, and a project with an agent working in it is not removed. It also lets the Floor open your
+  system's folder window through the daemon, on macOS and on Linux with a display; a daemon started over
+  SSH, or on Windows, offers no window and the folder is typed. Chat is always on and has no setting. `floor.board`
   lets the Floor make tickets and give them to agents, which then run and spend under your account,
   so it needs `floor.control` and `floor.goal` on. `floor.diff` lets the Floor show the files a
   ticket's agent changed, so it only has an effect with `floor.git` on. See
   [The Floor](floor.md#tickets).
 - `budget.floor_usd_per_day` and `budget.per_turn_floor.usd` are in dollars, and
   `budget.per_turn_floor.tokens` is in tokens. See [Budgets](#budgets).
+
+Recovery inspection and submission need both `floor.recovery` and `floor.control` on. **Check receipt** is read-only. With a live authenticated Floor reader, it remains available
+when recovery is off while the current page retains the request. After reloading the page, use
+`dudes recovery receipt <request-id>` with the saved ID. Receipt lookup never resubmits recovery.
+See [Recover an interrupted goal](goals-and-stopping.md#recover-an-interrupted-goal).
 
 An edit that takes a per-turn reserve to zero is written with a warning, because the daemon refuses
 to start while an agent it has hired has a ceiling in that unit.
@@ -52,7 +64,7 @@ MCP servers are declared in the same file. See [Give an agent MCP servers](mcp-s
 Budgets are optional, and none is set by default. An agent with no ceiling still stops at its
 goal's hop cap, and the engine's own plan limits apply to it. A ceiling you set is checked
 before every turn: `budget.floor_usd_per_day` caps the whole floor's dollars per day,
-`dudes workspace add` takes optional ceilings for the agents and goals the Floor hires there,
+`dudes project add` takes optional ceilings for the agents and goals the Floor hires there,
 and `dudes hire` and `dudes goal` take `--usd-per-day`, `--tokens-per-day`, `--usd` and
 `--tokens`. A turn whose usage the daemon never saw counts against a set ceiling at the per-turn
 reserve: $0.25 and 20,000 tokens, unless you set `budget.per_turn_floor.usd` or

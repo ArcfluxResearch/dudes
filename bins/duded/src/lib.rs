@@ -59,6 +59,7 @@ mod codex_profile;
 mod condense_output;
 pub mod config;
 pub mod diff_capture;
+mod engine_login;
 pub mod enrollment_reload;
 /// The end-to-end gate's crash arms, and nothing else. Absent from every build that does not ask for it —
 /// `cargo build --release --workspace` does not.
@@ -68,7 +69,10 @@ pub mod fault;
 pub mod floor;
 pub mod floor_actions;
 pub mod floor_answer;
+#[cfg(any(test, feature = "testing"))]
+pub mod floor_browser;
 pub mod floor_chat;
+mod floor_chat_file;
 pub mod floor_control;
 pub mod floor_diff;
 pub mod floor_gateway;
@@ -76,19 +80,27 @@ pub mod floor_git;
 pub mod floor_goal;
 pub mod floor_look;
 pub mod floor_memory;
+mod floor_peer;
 mod floor_port;
+pub mod floor_project;
+pub mod floor_recovery;
 pub mod floor_rename;
 pub mod floor_retire;
 pub mod floor_session;
 mod floor_settings;
+pub mod floor_settings_edit;
 #[doc(hidden)]
 pub mod floor_stream;
+pub mod floor_switches;
 pub mod floor_terminal;
 pub mod floor_ticket;
 mod floor_websocket;
+pub mod folder_picker;
 pub mod git_read;
 pub mod hooks;
 mod instruction_sample;
+#[cfg(unix)]
+pub mod keeper;
 pub mod local_day;
 pub mod lock;
 mod mailbox;
@@ -106,6 +118,7 @@ mod shutdown_receipt;
 pub mod sign_in;
 pub mod socket;
 pub mod startup;
+mod ticket_recovery;
 mod work;
 pub mod worktree;
 

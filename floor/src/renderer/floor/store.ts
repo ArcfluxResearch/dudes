@@ -51,6 +51,7 @@ import { decodeSwitchSibling } from './sibling.ts';
 import { decodeCards } from '../board.ts';
 import { decodeWorkspace } from '../workspace.ts';
 import type { CardRow } from '../board.ts';
+import { applyDeviceFrame } from '../devices/devices.ts';
 import { decodeChat, exactObject } from '../chat/model.ts';
 import type { ChatView } from '../chat/model.ts';
 
@@ -62,7 +63,7 @@ import type { ChatView } from '../chat/model.ts';
 export const AGENT_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
 /**
- * The server messages browser-wire-v3 may carry, including selected output.
+ * The server messages browser-wire-v5 may carry, including selected output.
  *
  * An admission list, not an emission list: the page accepts these and refuses
  * everything else. The daemon states the same set in its own enumeration, and a
@@ -80,6 +81,9 @@ export const SERVER_MESSAGES = Object.freeze([
   'floor.output.unavailable',
   'floor.output.ended',
   'floor.output.reply',
+  'floor.device.enrolled',
+  'floor.device.acknowledged',
+  'floor.device.removed',
 ] as const);
 
 const TURN_ID = AGENT_ID;
@@ -232,6 +236,7 @@ export interface FloorState {
    * that carried it.
    */
   readonly control: boolean;
+  readonly recovery: boolean;
   /**
    * The goal-change limits from the latest snapshot, or `null` when that
    * snapshot carried none or carried something unreadable. None is the
@@ -313,6 +318,7 @@ const EMPTY: FloorState = Object.freeze({
   checks: null,
   answering: null,
   control: false,
+  recovery: false,
   goalChange: null,
   terminal: false,
   retire: false,
@@ -369,6 +375,7 @@ export function noteTransport(event: 'open' | 'close'): void {
     checks: event === 'close' ? null : state.checks,
     answering: event === 'close' ? null : state.answering,
     control: event === 'close' ? false : state.control,
+    recovery: event === 'close' ? false : state.recovery,
     goalChange: event === 'close' ? null : state.goalChange,
     terminal: event === 'close' ? false : state.terminal,
     retire: event === 'close' ? false : state.retire,
@@ -466,6 +473,7 @@ export function invalidateFloorEpoch(): void {
     checks: null,
     answering: null,
     control: false,
+    recovery: false,
     goalChange: null,
     terminal: false,
     retire: false,
@@ -482,7 +490,7 @@ export function invalidateFloorEpoch(): void {
 }
 
 /**
- * Apply one decoded browser-wire-v3 message from the subscription `epoch`.
+ * Apply one decoded browser-wire-v5 message from the subscription `epoch`.
  *
  * A frame from any other epoch is discarded whole, **before it is read**: it is
  * not parsed, it cannot move the view, it cannot confirm anything, and it
@@ -519,7 +527,7 @@ export function applyServerFrame(
         chat: null, output: emptyOutput(state.output, 'unavailable'),
         retiredAgents: Object.freeze([]),
         messages: Object.freeze([]),
-        threads: Object.freeze([]), messagesLsn: null, onboarding: null, checks: null, answering: null, control: false,
+        threads: Object.freeze([]), messagesLsn: null, onboarding: null, checks: null, answering: null, control: false, recovery: false,
         goalChange: null, terminal: false, retire: false, git: false, diff: false, ticket: false, daemon: null, settings: null, journalStopped: null,
         finishedToday: FINISHED_TODAY_UNAVAILABLE, closingTime: null });
       return;
@@ -530,6 +538,11 @@ export function applyServerFrame(
       // lsn or a phase moving here. Returning before `commit` is what keeps
       // this file's boundary — `applyServerFrame` is the one way a row reaches
       // the floor — true word for word rather than merely nearly true.
+      return;
+    case 'floor.device.enrolled':
+    case 'floor.device.acknowledged':
+    case 'floor.device.removed':
+      applyDeviceFrame(message);
       return;
     case 'floor.output.snapshot':
     case 'floor.output.chunk':
@@ -550,6 +563,7 @@ interface ServerMessage {
   readonly checks?: unknown;
   readonly answer?: unknown;
   readonly control?: unknown;
+  readonly recovery?: unknown;
   readonly goal?: unknown;
   readonly terminal?: unknown;
   readonly retire?: unknown;
@@ -799,6 +813,7 @@ function fromSnapshot(message: ServerMessage): FloorState {
     checks: decodeCheckCatalog(message.checks),
     answering: decodeAnswerLimits(message.answer),
     control: decodeSwitchSibling(message.control),
+    recovery: decodeSwitchSibling(message.control) && decodeSwitchSibling(message.recovery),
     terminal: decodeSwitchSibling(message.terminal),
     retire: decodeSwitchSibling(message.retire),
     git: decodeSwitchSibling(message.git),
@@ -948,6 +963,7 @@ function unchanged(current: FloorState, next: FloorState): boolean {
     && current.checks === next.checks
     && current.answering === next.answering
     && current.control === next.control
+    && current.recovery === next.recovery
     && current.goalChange === next.goalChange
     && current.terminal === next.terminal
     && current.retire === next.retire

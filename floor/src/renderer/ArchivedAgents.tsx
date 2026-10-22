@@ -50,7 +50,7 @@ export function ArchivedAgents({ floor, onHireAgain }: {
               <h3>{row.name}</h3>
               <p>{row.role} · {row.provider}</p>
               <ArchiveLook row={row} />
-              <p>{row.workspace_label ?? 'Workspace not recorded'}</p>
+              <p>{row.workspace_label ?? 'Project not recorded'}</p>
               {row.worktree === undefined ? null : <p>{worktreeText(row.worktree)}</p>}
               <dl>
                 <div><dt>Hired</dt><dd>{recordedTime(row.hired_at)}</dd></div>

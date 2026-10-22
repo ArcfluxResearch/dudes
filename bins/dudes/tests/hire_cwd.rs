@@ -349,7 +349,7 @@ fn hire_without_a_project_warns_that_it_cannot_take_tickets() {
     assert!(
         hired
             .stderr
-            .contains("No project yet. In your project's folder run `dudes workspace add`."),
+            .contains("No project yet. In your project's folder run `dudes project add`."),
         "{}",
         hired.output()
     );

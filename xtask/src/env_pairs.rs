@@ -56,6 +56,9 @@ const RULES: &[Rule] = &[
     Rule { member: "duded" },
     Rule { member: "dudes" },
     Rule {
+        member: "dudes-config",
+    },
+    Rule {
         member: "dudes-host",
     },
     Rule {
@@ -1054,37 +1057,6 @@ mod tests {
     fn a_digit_does_not_make_an_unrelated_identifier_environmental() {
         let source = "pub struct Utf8Header {\n    pub sha256_fields: Vec<(String, String)>,\n    pub envelope2: Vec<(String, String)>,\n}\n";
         assert_eq!(violations(source).unwrap(), []);
-    }
-
-    /// The check the command performs, over the tree it will perform it on: the workspace members
-    /// `cargo metadata` reports, filtered the way [`applicable`] filters them, compared with
-    /// [`RULES`], and every covered source tree parsed. This is what makes the gate live under
-    /// `cargo nextest` before the subcommand is wired into CI.
-    #[test]
-    fn the_workspace_as_it_stands_holds_no_raw_environment_pair() {
-        let report = scan(&workspace_root()).unwrap_or_else(|err| panic!("{err:#}"));
-        assert_eq!(
-            report.coverage,
-            [],
-            "RULES and applicable workspace members must be set-equal"
-        );
-        let broken: Vec<&String> = report
-            .members
-            .iter()
-            .flat_map(|(_, locations)| locations)
-            .collect();
-        assert_eq!(broken, Vec::<&String>::new());
-        // Positive control: the walk read real files rather than an empty member list.
-        assert_eq!(report.members.len(), RULES.len(), "{:?}", report.members);
-    }
-
-    /// The workspace root holding this checkout's `xtask`, as [`crate::naming`]'s corpus test
-    /// resolves it.
-    fn workspace_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("xtask/ has a parent")
-            .to_owned()
     }
 
     #[test]

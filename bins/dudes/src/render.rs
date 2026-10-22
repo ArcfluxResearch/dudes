@@ -2,11 +2,12 @@
 //!
 //! # Two modes, one source
 //!
-//! `--json` writes the **contract's own type**, serialised. Not a shape of this binary's invention
-//! and not the daemon's bytes echoed back: the value is deserialised into `dudes_proto`'s type first
-//! and re-serialised from there, so a `--json` run that succeeds is also a proof that the answer
-//! *was* that type. A caller parses `HireResult`, `WhyResult`, `PingResult` or
+//! `--json` writes command results as the contract's own types. The daemon's value is deserialised
+//! into `dudes_proto` and re-serialised. A caller parses `HireResult`, `WhyResult`, `PingResult` or
 //! `JournalAppendedParams` against `schemas/rpc.schema.json` and never scrapes a line of prose.
+//! Recovery submission has one client-only exception. A missing or malformed reply produces
+//! `{"state":"reply_unavailable","request_id":"..."}` rather than a daemon result. The retained ID
+//! supports a separate receipt read, and the CLI does not resend the submission.
 //!
 //! The human mode is prose and is not a contract. Nothing should parse it, which is why the
 //! machine-readable mode exists at all.
@@ -36,6 +37,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use chrono::TimeZone;
+use dudes_proto::decision::AutomaticHold;
 use dudes_proto::decision::LoopDecision;
 use dudes_proto::rpc::agent::{HireResult, McpResult, WhyResult};
 use dudes_proto::rpc::board::CardCreateResult;
@@ -46,13 +48,212 @@ use dudes_proto::rpc::system::PingResult;
 use dudes_proto::rpc::{Empty, RpcError};
 use dudes_proto::{AgentView, CardView};
 pub use dudes_types::Escaped;
-use dudes_types::Lsn;
+use dudes_types::{Lsn, Provider};
 use serde::Serialize;
 
 use crate::config;
 use crate::floor::FloorUrl;
 
 pub mod ticket;
+
+/// Explain the selected context without promising restored history or exactly-once effects.
+pub fn recovery_choice_warning(
+    out: &mut dyn Write,
+    choice: dudes_proto::rpc::recovery::RecoveryChoice,
+) -> io::Result<()> {
+    use dudes_proto::rpc::recovery::RecoveryChoice;
+    writeln!(
+        out,
+        "{}",
+        match choice {
+            RecoveryChoice::TryRecorded =>
+                "Try recorded conversation. A matching identifier does not prove provider history was restored.",
+            RecoveryChoice::FreshWithRecap =>
+                "Fresh context does not restore old conversation history. Its bounded recap may be shortened or omitted.",
+            RecoveryChoice::RepeatIssuedFresh =>
+                "Repeat the original issued task in fresh context. A child may have executed before its Spawn was recorded; prior effects may repeat.",
+        }
+    )
+}
+
+/// Render one inspected opportunity or its fixed unavailable reason.
+pub fn recovery_inspection(
+    out: &mut dyn Write,
+    machine: bool,
+    result: &dudes_proto::rpc::recovery::RecoveryInspectResult,
+) -> io::Result<()> {
+    use dudes_proto::rpc::recovery::{
+        RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectResult,
+    };
+    if machine {
+        return json(out, result);
+    }
+    match result {
+        RecoveryInspectResult::Unavailable { reason } => {
+            writeln!(out, "Recovery unavailable: {reason:?}.")
+        }
+        RecoveryInspectResult::Available {
+            through,
+            expected,
+            reason,
+            choices,
+            prior_effects_unknown,
+            waiting,
+        } => {
+            writeln!(
+                out,
+                "Recovery available for agent {}, goal {}, turn {}.",
+                expected.work.agent, expected.work.goal, expected.work.turn
+            )?;
+            writeln!(
+                out,
+                "Checked through {through}; issue {}; source {}; reason {reason:?}.",
+                expected.issue_lsn, expected.source_lsn
+            )?;
+            writeln!(
+                out,
+                "Admission waits: question={:?}, budget={:?}, hops={:?}, instruction review={:?}, instruction comparison={:?}.",
+                waiting.open_question,
+                waiting.budget,
+                waiting.hops,
+                waiting.instruction_review,
+                waiting.instruction_comparison
+            )?;
+            match choices {
+                RecoveryAllowedChoices::FreshOnly => {
+                    recovery_choice_warning(out, RecoveryChoice::FreshWithRecap)?;
+                }
+                RecoveryAllowedChoices::RecordedOrFresh => {
+                    recovery_choice_warning(out, RecoveryChoice::TryRecorded)?;
+                    recovery_choice_warning(out, RecoveryChoice::FreshWithRecap)?;
+                }
+                RecoveryAllowedChoices::RepeatIssuedFresh => {
+                    recovery_choice_warning(out, RecoveryChoice::RepeatIssuedFresh)?;
+                }
+            }
+            if *prior_effects_unknown {
+                writeln!(out, "Prior effects are unknown and may repeat.")?;
+            }
+            writeln!(
+                out,
+                "Save and review `dudes --json recovery inspect {}` before submitting a choice.",
+                expected.work.agent
+            )
+        }
+    }
+}
+
+fn recovery_recorded(
+    out: &mut dyn Write,
+    receipt: &dudes_proto::rpc::recovery::RecoveryReceiptView,
+) -> io::Result<()> {
+    use dudes_proto::rpc::recovery::RecoveryReceiptState;
+    writeln!(
+        out,
+        "Recovery authorization recorded at {}. Authorization does not promise that work launched.",
+        receipt.claim.authorization_lsn
+    )?;
+    match &receipt.status {
+        RecoveryReceiptState::Pending => {
+            writeln!(out, "Pending: the reserved turn has not been issued.")?;
+        }
+        RecoveryReceiptState::IssueBound { turn, issue_lsn } => writeln!(
+            out,
+            "Issue-bound: turn {turn}, issue {issue_lsn}; no consuming physical receipt is recorded."
+        )?,
+        RecoveryReceiptState::Consumed {
+            turn,
+            issue_lsn,
+            evidence_lsn,
+        } => writeln!(
+            out,
+            "Consumed: turn {turn}, issue {issue_lsn}, physical receipt {evidence_lsn}."
+        )?,
+        RecoveryReceiptState::Invalidated {
+            invalidation_lsn,
+            reason,
+        } => writeln!(out, "Invalidated at {invalidation_lsn}: {reason:?}.")?,
+        RecoveryReceiptState::Superseded { barrier_lsn, .. } => writeln!(
+            out,
+            "Superseded by a new recovery episode at {barrier_lsn}; the owed issue is retained."
+        )?,
+    }
+    recovery_choice_warning(out, receipt.choice)?;
+    if receipt.prior_effects_unknown {
+        writeln!(out, "Prior effects are unknown and may repeat.")?;
+    }
+    Ok(())
+}
+
+/// Render a typed daemon submission result.
+pub fn recovery_submitted(
+    out: &mut dyn Write,
+    machine: bool,
+    result: &dudes_proto::rpc::recovery::RecoverySubmitResult,
+) -> io::Result<()> {
+    use dudes_proto::rpc::recovery::RecoverySubmitResult;
+    if machine {
+        return json(out, result);
+    }
+    match result {
+        RecoverySubmitResult::Accepted { receipt } => recovery_recorded(out, receipt),
+        RecoverySubmitResult::Refused { reason, prefix } => {
+            writeln!(out, "Recovery refused: {reason:?}.")?;
+            if let Some(required) = prefix.required {
+                writeln!(out, "Required barrier already acknowledged at {required}.")?;
+            }
+            if let Some(resume) = prefix.resume {
+                writeln!(out, "Resume already acknowledged at {resume}.")?;
+            }
+            Ok(())
+        }
+        RecoverySubmitResult::Unknown { .. } => writeln!(
+            out,
+            "The daemon could not certify whether recovery was authorized. Read the retained request's receipt."
+        ),
+    }
+}
+
+/// Render a client-side missing reply separately from a daemon-produced unknown result.
+pub fn recovery_reply_unavailable(
+    out: &mut dyn Write,
+    machine: bool,
+    request_id: dudes_proto::record::Hex32,
+) -> io::Result<()> {
+    if machine {
+        return json(
+            out,
+            &serde_json::json!({"state":"reply_unavailable","request_id":request_id}),
+        );
+    }
+    writeln!(
+        out,
+        "Recovery reply unavailable. Authorization was not confirmed. Read the retained request's receipt."
+    )
+}
+
+/// Render a historical receipt without treating absence as a rollback of earlier steps.
+pub fn recovery_receipt(
+    out: &mut dyn Write,
+    machine: bool,
+    result: &dudes_proto::rpc::recovery::RecoveryReceiptResult,
+) -> io::Result<()> {
+    use dudes_proto::rpc::recovery::RecoveryReceiptResult;
+    if machine {
+        return json(out, result);
+    }
+    match result {
+        RecoveryReceiptResult::Found { receipt } => recovery_recorded(out, receipt),
+        RecoveryReceiptResult::Absent { checked_through } => writeln!(
+            out,
+            "No authorization at checked cut {checked_through}. A Required or Resume prefix may still have been recorded."
+        ),
+        RecoveryReceiptResult::Unavailable { reason } => writeln!(
+            out,
+            "Recovery receipt unavailable: {reason:?}. Neither presence nor absence is certified."
+        ),
+    }
+}
 
 /// Render the durable memory append receipt.
 pub fn memory_appended(
@@ -300,6 +501,143 @@ pub fn worktrees(
     Ok(())
 }
 
+/// How long a link stays good, in the words a person reads.
+fn link_window(seconds: u64) -> String {
+    if seconds >= 120 && seconds.is_multiple_of(60) {
+        format!("{} minutes", seconds / 60)
+    } else {
+        format!("{seconds} seconds")
+    }
+}
+
+/// `floor.devices.list`: one browser per line, newest sign-in first, in `zone`.
+///
+/// # Errors
+///
+/// Whatever writing returns.
+pub fn devices<Tz: TimeZone>(
+    out: &mut dyn Write,
+    machine: bool,
+    entries: &[dudes_proto::rpc::floor::DeviceEntry],
+    zone: &Tz,
+) -> io::Result<()>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    if machine {
+        return json(out, &entries);
+    }
+    if entries.is_empty() {
+        return writeln!(out, "no browsers are signed in; run `dudes open`");
+    }
+    let when = |at: Option<dudes_types::Timestamp>| {
+        at.map_or_else(|| "never".to_owned(), |at| zoned(at, zone))
+    };
+    writeln!(
+        out,
+        "{:<14}{:<24}{:<27}{:<27}{:<27}",
+        "ID", "NAME", "SIGNED IN", "FIRST USED", "LAST USED"
+    )?;
+    for entry in entries {
+        let id = entry.device.to_string();
+        writeln!(
+            out,
+            "{:<14}{:<24}{:<27}{:<27}{:<27}{}",
+            &id[..12],
+            Escaped(&entry.name),
+            zoned(entry.signed_in, zone),
+            when(entry.first_used),
+            when(entry.last_used),
+            if entry.new { "new" } else { "" },
+        )?;
+    }
+    Ok(())
+}
+
+/// What `devices remove` prints when the id names no browser, or more than one.
+///
+/// # Errors
+///
+/// Whatever writing returns.
+pub fn devices_unmatched<Tz: TimeZone>(
+    err: &mut dyn Write,
+    id: &str,
+    matches: &[&dudes_proto::rpc::floor::DeviceEntry],
+    zone: &Tz,
+) -> io::Result<()>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    if matches.is_empty() {
+        return writeln!(
+            err,
+            "no signed-in browser has an id starting {id}; run `dudes devices`"
+        );
+    }
+    writeln!(
+        err,
+        "{id} starts more than one browser's id; use more of it:"
+    )?;
+    for entry in matches {
+        writeln!(
+            err,
+            "  {}  {}  signed in {}",
+            entry.device,
+            Escaped(&entry.name),
+            zoned(entry.signed_in, zone)
+        )?;
+    }
+    Ok(())
+}
+
+/// What `devices remove` prints once the daemon answers.
+///
+/// # Errors
+///
+/// Whatever writing returns.
+pub fn device_removed(
+    out: &mut dyn Write,
+    machine: bool,
+    entry: &dudes_proto::rpc::floor::DeviceEntry,
+    removed: bool,
+) -> io::Result<()> {
+    if machine {
+        return json(
+            out,
+            &serde_json::json!({"device": entry.device, "removed": removed}),
+        );
+    }
+    if removed {
+        writeln!(out, "signed out {}", Escaped(&entry.name))
+    } else {
+        writeln!(out, "{} was already signed out", Escaped(&entry.name))
+    }
+}
+
+/// What `devices keep` prints once the daemon answers.
+///
+/// # Errors
+///
+/// Whatever writing returns.
+pub fn device_kept(
+    out: &mut dyn Write,
+    machine: bool,
+    entry: &dudes_proto::rpc::floor::DeviceEntry,
+    kept: bool,
+) -> io::Result<()> {
+    if machine {
+        return json(
+            out,
+            &serde_json::json!({"device": entry.device, "kept": kept}),
+        );
+    }
+    if kept {
+        writeln!(out, "kept {}", Escaped(&entry.name))
+    } else {
+        writeln!(out, "{} was already signed out", Escaped(&entry.name))
+    }
+}
+
 /// What `worktree remove` prints while the tree still exists: the command to run, with every
 /// argument single-quoted so a path with a space or a quote reads back exactly.
 ///
@@ -347,6 +685,48 @@ pub fn worktree_already_removed(
         );
     }
     writeln!(out, "worktree {worktree} was already removed")
+}
+
+/// What `dudes project trust` and `untrust` print.
+///
+/// # Errors
+///
+/// Whatever writing returns.
+pub fn trust_set(
+    out: &mut dyn Write,
+    machine: bool,
+    id: &str,
+    result: &dudes_proto::rpc::workspace::TrustResult,
+) -> io::Result<()> {
+    if machine {
+        return json(
+            out,
+            &serde_json::json!({
+                "workspace_id": id, "trusted": result.trusted, "changed": result.changed
+            }),
+        );
+    }
+    if result.trusted {
+        writeln!(
+            out,
+            "Trusted project {}. The Floor may now hire a Claude agent into its own copy of it. \
+             Anyone holding a live Floor session, including a stolen one, can then hire up to four \
+             agents into their own copies and branches of this project, and those stay until you \
+             remove them. Those agents run the repository's own Claude settings, so the settings' \
+             environment values and helper commands apply without asking. A change to the \
+             repository's .claude directory, .mcp.json or git configuration ends this until you \
+             run the command again.",
+            Escaped(id)
+        )
+    } else if result.changed {
+        writeln!(
+            out,
+            "Stopped trusting project {}. Agents already hired into copies keep working.",
+            Escaped(id)
+        )
+    } else {
+        writeln!(out, "Project {} was not trusted.", Escaped(id))
+    }
 }
 
 /// The note a removal prints.
@@ -588,9 +968,35 @@ pub fn agents(out: &mut dyn Write, machine: bool, agents: &[AgentView]) -> io::R
         )?;
         if let Some(cause) = &agent.automatic_hold {
             writeln!(out, "  held: {}", Escaped(&cause.to_string()))?;
+            if let Some(hint) = missing_engine_hint(agent.provider, cause, &agent.id.to_string()) {
+                writeln!(out, "  {hint}")?;
+            }
         }
     }
     Ok(())
+}
+
+/// The engines a newcomer may hire and the program the daemon looks for.
+const ENGINES: [(Provider, &str, &str); 3] = [
+    (Provider::Claude, "Claude Code", "claude"),
+    (Provider::Codex, "Codex", "codex"),
+    (Provider::Pi, "Pi", "pi"),
+];
+
+/// What to do about a launch that failed with a not-found error. The recorded reason ends in the
+/// error kind and names no engine, and other not-found errors share it, so the program is only
+/// the usual cause.
+fn missing_engine_hint(provider: Provider, cause: &AutomaticHold, agent: &str) -> Option<String> {
+    let AutomaticHold::LaunchFailed { reason } = cause else {
+        return None;
+    };
+    if !reason.ends_with("(NotFound)") {
+        return None;
+    }
+    let (_, name, program) = ENGINES.into_iter().find(|(known, ..)| *known == provider)?;
+    Some(format!(
+        "Dudes could not start {name}, usually because `{program}` is not installed. Install it and sign in, then run `dudes resume {agent}`, or hire an agent with an engine you have."
+    ))
 }
 
 /// Render the public roster as JSON or escaped human text.
@@ -790,9 +1196,9 @@ pub fn floor_url(
     writeln!(out, "{}", urls.printed_once)?;
     writeln!(
         out,
-        "Paste this link into any browser within {} seconds. It works once; run dudes floor open \
-         for a new one.",
-        result.expires_in_s
+        "Paste this link into any browser within {}. It works once; run dudes open for a \
+         new one.",
+        link_window(result.expires_in_s)
     )
 }
 
@@ -835,6 +1241,9 @@ pub fn reload(
     writeln!(out, "added    {}", list(&result.added))?;
     writeln!(out, "removed  {}", list(&result.removed))?;
     writeln!(out, "changed  {}", list(&changed))?;
+    if !result.switches.is_empty() {
+        writeln!(out, "switches {}", list(&result.switches))?;
+    }
     if !result.not_applied.is_empty() {
         writeln!(
             out,
@@ -856,6 +1265,7 @@ pub fn reload(
         None if result.added.is_empty()
             && result.removed.is_empty()
             && result.changed.is_empty()
+            && result.switches.is_empty()
             && result.not_applied.is_empty() =>
         {
             writeln!(
@@ -865,13 +1275,13 @@ pub fn reload(
         }
         None => writeln!(
             out,
-            "not applied; run `dudes workspace reload --apply {}` to apply this change",
+            "not applied; run `dudes project reload --apply {}` to apply this change",
             Escaped(&result.sha256)
         ),
     }
 }
 
-/// `dudes workspace list`: each id the file enrolls or the daemon runs, and where it is, or one
+/// `dudes project list`: each id the file enrolls or the daemon runs, and where it is, or one
 /// line naming the file when there is none.
 ///
 /// # Errors
@@ -896,7 +1306,7 @@ pub fn workspaces(
     if ids.is_empty() {
         return writeln!(
             out,
-            "no workspace is enrolled in {}; add one with `dudes workspace add`",
+            "no project is enrolled in {}; add one with `dudes project add`",
             Escaped(&config.display().to_string())
         );
     }
@@ -1150,6 +1560,29 @@ mod tests {
         String::from_utf8(buffer).expect("the renderer writes UTF-8")
     }
 
+    #[test]
+    fn an_ambiguous_start_lists_the_matches_and_a_missing_one_says_so() {
+        let entry = |byte: u8, name: &str| dudes_proto::rpc::floor::DeviceEntry {
+            device: dudes_proto::record::DeviceId::new([byte; 32]),
+            name: name.to_owned(),
+            signed_in: dudes_types::Timestamp::from_unix_millis(0),
+            first_used: None,
+            last_used: None,
+            new: false,
+        };
+        let (one, two) = (
+            entry(0xab, "Chrome on macOS"),
+            entry(0xac, "Firefox on Linux"),
+        );
+        let shown = text(|err| devices_unmatched(err, "a", &[&one, &two], &chrono::Utc));
+        assert!(shown.contains("starts more than one"), "{shown}");
+        let id = |byte: u8| dudes_proto::record::DeviceId::new([byte; 32]).to_string();
+        assert!(shown.contains(&id(0xab)) && shown.contains(&id(0xac)));
+        assert!(shown.contains("Chrome on macOS") && shown.contains("Firefox on Linux"));
+        let none = text(|err| devices_unmatched(err, "ffff", &[], &chrono::Utc));
+        assert!(none.contains("no signed-in browser"), "{none}");
+    }
+
     fn an_agent() -> AgentId {
         "01ARZ3NDEKTSV4RRFFQ69G5FAV".parse().expect("an agent id")
     }
@@ -1291,6 +1724,41 @@ mod tests {
         let human = text(|out| agents(out, false, &[agent]));
         assert!(human.contains("Claude  Hold"), "{human}");
         assert!(human.contains("held: launch failed: managed process could not launch (NotFound); fix the cause and resume"), "{human}");
+        assert_eq!(
+            human,
+            format!(
+                "{id}  Hector  infra  Claude  Hold\n  held: launch failed: managed process could not launch (NotFound); fix the cause and resume\n  Dudes could not start Claude Code, usually because `claude` is not installed. Install it and sign in, then run `dudes resume {id}`, or hire an agent with an engine you have.\n",
+                id = an_agent()
+            )
+        );
+    }
+
+    #[test]
+    fn a_not_found_launch_names_the_usual_program() {
+        for (provider, name, program) in [("codex", "Codex", "codex"), ("pi", "Pi", "pi")] {
+            let agent: AgentView = serde_json::from_value(serde_json::json!({
+                "id": an_agent(), "name": "Hector", "role": "infra", "department": "infra",
+                "provider": provider, "status": "idle", "mode": "managed",
+                "automatic_hold": { "kind": "launch_failed", "reason": "managed process could not launch (NotFound)" }
+            })).expect("agent view");
+            let human = text(|out| agents(out, false, &[agent]));
+            assert!(
+                human.contains(&format!(
+                    "Dudes could not start {name}, usually because `{program}` is not installed. Install it"
+                )),
+                "{human}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_launch_failures_get_no_engine_hint() {
+        let agent: AgentView = serde_json::from_value(serde_json::json!({
+            "id": an_agent(), "name": "Hector", "role": "infra", "department": "infra",
+            "provider": "claude", "status": "idle", "mode": "managed",
+            "automatic_hold": { "kind": "launch_failed", "reason": "managed process could not launch (PermissionDenied)" }
+        })).expect("agent view");
+        assert!(!text(|out| agents(out, false, &[agent])).contains("Dudes could not start"));
     }
 
     /// OSC 52 (writes the clipboard), a CSI and its one-byte C1 form, DEL, a newline that starts a
@@ -1584,6 +2052,7 @@ mod tests {
                 id: HOSTILE.to_owned(),
                 fields: vec![HOSTILE.to_owned()],
             }],
+            switches: vec![],
             not_applied: vec![HOSTILE.to_owned()],
         };
         assert_eq!(
@@ -1596,7 +2065,7 @@ mod tests {
                  changed  {SHOWN} ({SHOWN})\n\
                  needs a daemon restart: {SHOWN}\n\
                  running  {SHOWN}\n\
-                 not applied; run `dudes workspace reload --apply {SHOWN}` to apply this change\n"
+                 not applied; run `dudes project reload --apply {SHOWN}` to apply this change\n"
             )
         );
 
@@ -1618,6 +2087,7 @@ mod tests {
             added: vec![],
             removed: vec![],
             changed: vec![],
+            switches: vec![],
             not_applied: vec![],
         };
         let said = text(|out| reload(out, false, &result));
@@ -1631,7 +2101,7 @@ mod tests {
         let said = text(|out| reload(out, false, &result));
         assert!(
             said.ends_with(
-                "not applied; run `dudes workspace reload --apply abc` to apply this change\n"
+                "not applied; run `dudes project reload --apply abc` to apply this change\n"
             ),
             "a restart-only difference is still a difference: {said}"
         );
@@ -1662,7 +2132,7 @@ mod tests {
     fn the_operator_file_path_is_escaped() {
         assert_eq!(
             text(|out| workspaces(out, false, Path::new(HOSTILE), &[], None)),
-            format!("no workspace is enrolled in {SHOWN}; add one with `dudes workspace add`\n")
+            format!("no project is enrolled in {SHOWN}; add one with `dudes project add`\n")
         );
 
         let absent = tempfile::tempdir().expect("a directory with no operator file");

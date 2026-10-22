@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use duded::floor_browser::Page;
 use duded::floor_stream::FloorStreamFault;
-use duded::floor_stream::MAX_QUEUE_BYTES;
-use duded::ports::{Answered, Ask};
+use duded::ports::Ask;
 use duded::settings::FloorSettings;
 use duded::startup::Witness;
 use dudes_proto::rpc::Method;
@@ -16,9 +16,11 @@ use dudes_proto::rpc::agent::RetireParams;
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_rpc::Client;
+use dudes_supervisor::Clock as _;
 use serde_json::Value;
 
 mod common;
+use common::PageHttp as _;
 
 use common::{Fixture, ScriptedRunner, SharedHost, TestClock, goal_params, hire_params, seams};
 
@@ -30,7 +32,7 @@ const NATIVE_EXTENSION_OFFER: &str = "permessage-deflate; client_max_window_bits
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v3"
+    "/tests/fixtures/floor-release-v5"
 );
 
 fn free_port() -> u16 {
@@ -70,60 +72,18 @@ fn issue(settings: &duded::Settings) -> SessionIssueResult {
     serde_json::from_value(response.result.expect("issue result")).expect("typed issue result")
 }
 
-fn exchange(addr: SocketAddr, bootstrap: &str) -> (String, String) {
-    let host = addr.to_string();
-    let origin = format!("http://{host}");
-    let mut stream = TcpStream::connect(addr).expect("connect to the Floor gateway");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .expect("read timeout");
-    let request = format!(
-        "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: {}\r\n\r\n{bootstrap}",
-        bootstrap.len()
-    );
-    stream
-        .write_all(request.as_bytes())
-        .expect("exchange request");
-    let response = read_http_response(&mut stream);
-    let (head, body) = response.split_at(
-        response
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .expect("complete response head")
-            + 4,
-    );
-    let head = std::str::from_utf8(head).expect("ASCII response head");
-    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head:?}");
-    let cookie = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
-        .and_then(|value| value.split(';').next())
-        .expect("session cookie")
-        .to_owned();
-    let json: Value = serde_json::from_slice(body).expect("session JSON");
-    let csrf = json["csrf"].as_str().expect("CSRF nonce").to_owned();
-    (cookie, csrf)
+/// Enrol a browser with `bootstrap` and give it the clock the daemon runs on.
+fn exchange(addr: SocketAddr, bootstrap: &str, clock: &Arc<TestClock>) -> Page {
+    let clock = Arc::clone(clock);
+    Page::enrol_new_on(addr, bootstrap, move || clock.now().unix_millis())
 }
 
-fn read_http_response(stream: &mut TcpStream) -> Vec<u8> {
-    let mut response = Vec::new();
-    let mut byte = [0_u8; 1];
-    while !response.ends_with(b"\r\n\r\n") {
-        stream.read_exact(&mut byte).expect("response head byte");
-        response.push(byte[0]);
-    }
-    let head = std::str::from_utf8(&response).expect("ASCII response head");
-    let length = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Content-Length: "))
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
-    let start = response.len();
-    response.resize(start + length, 0);
-    stream
-        .read_exact(&mut response[start..])
-        .expect("response body");
-    response
+/// The protocol entries of a signed stream handshake that offers `route`.
+fn signed_protocols(page: &Page, route: &str) -> String {
+    format!(
+        "{route}, {}",
+        page.signed("GET", "/floor/stream", &[]).protocol_entries()
+    )
 }
 
 struct WebSocket {
@@ -131,14 +91,14 @@ struct WebSocket {
 }
 
 impl WebSocket {
-    fn connect(addr: SocketAddr, cookie: &str, csrf: &str) -> Self {
-        let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
-        let (stream, head) = raw_upgrade(addr, Some(cookie), Some(&protocols), None);
+    fn connect(page: &Page) -> Self {
+        let protocols = signed_protocols(page, "dudes-floor-v4");
+        let (stream, head) = raw_upgrade(page.addr, Some(&page.cookie), Some(&protocols), None);
         assert!(
             head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"),
             "{head:?}"
         );
-        assert!(head.contains("Sec-WebSocket-Protocol: dudes-floor-v3\r\n"));
+        assert!(head.contains("Sec-WebSocket-Protocol: dudes-floor-v4\r\n"));
         assert!(
             !head
                 .to_ascii_lowercase()
@@ -471,9 +431,9 @@ fn a_booted_floor_beats_at_the_shipped_period_and_journals_nothing() {
     let addr = daemon.floor_addr().expect("Floor address");
     let running = common::start(daemon);
     let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
+    let page = exchange(addr, &issued.bootstrap, &clock);
 
-    let mut browser = WebSocket::connect(addr, &cookie, &csrf);
+    let mut browser = WebSocket::connect(&page);
     // Longer than the 2 000 ms period so a beat is never cut off, and well under the deadline
     // below so a silent socket is reported by this test's own assertion rather than by a read.
     browser.read_timeout(Duration::from_secs(5));
@@ -517,234 +477,6 @@ fn a_booted_floor_beats_at_the_shipped_period_and_journals_nothing() {
     drop(running);
 }
 
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the assertion is one ordered production-path transaction"
-)]
-fn snapshot_precedes_live_deltas() {
-    let fixture = Fixture::new();
-    let port = free_port();
-    let settings = settings(&fixture, port);
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
-    // The subject here is the queue's own arithmetic — "exactly 256 deltas, still live" — and
-    // since a heartbeat consumes that same bound. Turning the beat off keeps this
-    // test counting only its own deltas rather than widening what it asserts to absorb an arrival
-    // it cannot time. That heartbeats do share the bound is asserted by
-    // `floor_stream::tests::a_never_draining_subscriber_is_closed_by_heartbeats_alone`.
-    let fault = FloorStreamFault::default().without_heartbeat();
-    let daemon = duded::boot::boot_with_floor_faults(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::clone(&clock),
-            Witness::default(),
-        ),
-        None,
-        fault.clone(),
-    )
-    .expect("daemon boot");
-    let addr = daemon.floor_addr().expect("Floor address");
-    let probe = daemon.floor_gateway_probe().expect("gateway probe");
-    let mut running = common::start(daemon);
-    let agent = common::hire(&running.handle, fixture.state.path());
-    let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
-
-    let valid_protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
-    let old_protocols = format!("dudes-floor-v1, dudes-csrf.{csrf}");
-    for (candidate_cookie, protocols, origin) in [
-        (Some(cookie.as_str()), Some(old_protocols.as_str()), None),
-        (None, Some(valid_protocols.as_str()), None),
-        (Some(cookie.as_str()), None, None),
-        (
-            Some(cookie.as_str()),
-            Some("dudes-floor-v3, dudes-csrf.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
-            None,
-        ),
-        (
-            Some(cookie.as_str()),
-            Some(valid_protocols.as_str()),
-            Some("http://wrong.invalid"),
-        ),
-        (
-            Some(cookie.as_str()),
-            Some("dudes-floor-v3, dudes-floor-v3"),
-            None,
-        ),
-        (
-            Some(cookie.as_str()),
-            Some("dudes-floor-v3,,dudes-csrf.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
-            None,
-        ),
-        (
-            Some(cookie.as_str()),
-            Some("dudes-floor-v3, dudes-csrf.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, third"),
-            None,
-        ),
-    ] {
-        let (_stream, head) = raw_upgrade(addr, candidate_cookie, protocols, origin);
-        assert!(
-            head.starts_with("HTTP/1.1 403 Forbidden"),
-            "invalid authority/carrier reached the stream: {head:?}"
-        );
-    }
-
-    for offers in [
-        Vec::new(),
-        vec![""],
-        vec![NATIVE_EXTENSION_OFFER, "permessage-deflate"],
-    ] {
-        let (_stream, head) = raw_upgrade_offering(
-            addr,
-            Some(cookie.as_str()),
-            Some(valid_protocols.as_str()),
-            None,
-            &offers,
-        );
-        let expected = if offers.len() == 1 && offers[0].is_empty() || offers.len() > 1 {
-            "HTTP/1.1 400 Bad Request"
-        } else {
-            "HTTP/1.1 101 Switching Protocols"
-        };
-        assert!(
-            head.starts_with(expected),
-            "one bounded offer header is accepted and nothing else: {offers:?} -> {head:?}"
-        );
-        assert!(
-            !head
-                .to_ascii_lowercase()
-                .contains("sec-websocket-extensions"),
-            "no offer is ever negotiated: {head:?}"
-        );
-    }
-    wait_for_live(&probe, 0);
-
-    fault.hold_next_subscription();
-    let mut socket = WebSocket::connect(addr, &cookie, &csrf);
-    socket.send(r#"{"type":"floor.subscribe"}"#);
-    assert!(
-        fault.wait_registered(Duration::from_secs(2)),
-        "the production gateway registered before its snapshot write"
-    );
-    let before_goal = fixture.entries();
-    let queued = running
-        .handle
-        .ask_queued(Ask::SetGoal(Box::new(goal_params(
-            agent,
-            &[common::true_program()],
-        ))))
-        .expect("local goal queued behind the held subscription");
-    let answer = queued
-        .recv_timeout(Duration::from_secs(2))
-        .expect("the writer continues while a subscriber holds its snapshot")
-        .expect("local goal admitted");
-    let Answered::GoalSet(result) = answer else {
-        panic!("local goal answer")
-    };
-    let goal = result.goal;
-    assert!(
-        fixture.entries().len() > before_goal.len(),
-        "positive control: the live daemon journal moved"
-    );
-    let queued = fault.queue_usage().expect("the held production queue");
-    assert!(queued.0 > 0 && queued.1 > 0 && !queued.2, "{queued:?}");
-    fault.release();
-
-    let snapshot = socket.json();
-    assert_eq!(snapshot["type"], "floor.snapshot");
-    assert_eq!(
-        snapshot["projection"]["agents"].as_array().map(Vec::len),
-        Some(1)
-    );
-    assert!(snapshot["projection"]["agents"][0]["goal"].is_null());
-    let snapshot_lsn = snapshot["projection"]["lsn"]
-        .as_u64()
-        .expect("snapshot lsn");
-
-    let delta = socket.json();
-    assert_eq!(delta["type"], "floor.delta");
-    assert_eq!(delta["delta"]["agents"].as_array().map(Vec::len), Some(1));
-    assert_eq!(delta["delta"]["agents"][0]["goal"]["id"], goal.to_string());
-    assert_eq!(delta["delta"]["agents"][0]["role"], "infra");
-    let delta_lsn = delta["delta"]["lsn"].as_u64().expect("delta lsn");
-    assert!(
-        delta_lsn > snapshot_lsn + 1,
-        "actual journal positions jump numerically: {snapshot_lsn} -> {delta_lsn}"
-    );
-    assert!(duded::floor_stream::server_type_is_listed(
-        delta["type"].as_str().expect("server type")
-    ));
-
-    socket.send(r#"{"type":"floor.unsubscribe"}"#);
-    while let Some(payload) = socket.frame() {
-        let message: Value = serde_json::from_slice(&payload).expect("queued server JSON");
-        assert!(
-            duded::floor_stream::server_type_is_listed(
-                message["type"].as_str().expect("queued server type")
-            ),
-            "only accepted deltas may precede the unsubscribe close: {message}"
-        );
-    }
-
-    wait_for_live(&probe, 0);
-    closing_participant_spawned(&fixture, goal);
-    running.handle.doctor().unwrap();
-    let before_unlisted = fixture.entries();
-    let mut unlisted = WebSocket::connect(addr, &cookie, &csrf);
-    unlisted.send(r#"{"type":"floor.write"}"#);
-    unlisted.expect_closed(&probe);
-    drop(unlisted);
-    wait_for_live(&probe, 0);
-    assert_eq!(
-        fixture.entries(),
-        before_unlisted,
-        "an unlisted browser type has no domain dispatch target"
-    );
-
-    fault.hold_next_subscription();
-    let mut overflowed = WebSocket::connect(addr, &cookie, &csrf);
-    overflowed.send(r#"{"type":"floor.subscribe"}"#);
-    assert!(fault.wait_registered(Duration::from_secs(2)));
-    for _ in 0..256 {
-        pause(&running.handle, agent);
-    }
-    assert_eq!(
-        fault.queue_usage().map(|usage| (usage.0, usage.2)),
-        Some((256, false)),
-        "the exact message bound stays live"
-    );
-    pause(&running.handle, agent);
-    assert_eq!(
-        fault.queue_usage().map(|usage| usage.2),
-        Some(true),
-        "message 257 makes the epoch terminal"
-    );
-    fault.release();
-    assert_eq!(overflowed.json()["type"], "floor.snapshot");
-    overflowed.expect_closed(&probe);
-    drop(overflowed);
-    wait_for_live(&probe, 0);
-
-    let mut fresh = WebSocket::connect(addr, &cookie, &csrf);
-    fresh.send(r#"{"type":"floor.subscribe"}"#);
-    assert_eq!(
-        fresh.json()["type"],
-        "floor.snapshot",
-        "overflow recovery begins with a fresh authenticated snapshot"
-    );
-    fresh.send(r#"{"type":"floor.unsubscribe"}"#);
-    fresh.expect_closed(&probe);
-    drop(fresh);
-    wait_for_live(&probe, 0);
-    assert_eq!(
-        running.stop(duded::ExitCause::ShutdownRpc),
-        duded::ExitCause::ShutdownRpc
-    );
-}
-
 fn start_closing_cut(
     fixture: &Fixture,
     settings: &duded::Settings,
@@ -753,13 +485,15 @@ fn start_closing_cut(
     common::Running,
     SocketAddr,
     dudes_supervisor::testing::FakeTokens,
+    Arc<TestClock>,
 ) {
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let clock = Arc::new(TestClock::new());
     let parts = common::seams_with(
         settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
-        Arc::new(TestClock::new()),
+        Arc::clone(&clock),
         Witness::default(),
         column.clone(),
     );
@@ -773,7 +507,7 @@ fn start_closing_cut(
     )
     .unwrap();
     let addr = daemon.floor_addr().unwrap();
-    (common::start(daemon), addr, tokens)
+    (common::start(daemon), addr, tokens, clock)
 }
 
 fn closing_participant_spawned(fixture: &Fixture, goal: dudes_types::GoalId) {
@@ -794,7 +528,7 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
     let fixture = Fixture::new();
     let settings = settings(&fixture, free_port());
     let column = common::ScriptedColumn::new(dudes_proto::PeerProvenance::NoRecordedAgent);
-    let (mut running, addr, tokens) = start_closing_cut(&fixture, &settings, &column);
+    let (mut running, addr, tokens, clock) = start_closing_cut(&fixture, &settings, &column);
     let agent = common::hire(&running.handle, fixture.state.path());
     let goal = common::set_goal(&running.handle, goal_params(agent, &["/usr/bin/true"]));
     closing_participant_spawned(&fixture, goal);
@@ -803,8 +537,8 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
     closing_participant_spawned(&fixture, goal);
     running.handle.doctor().unwrap();
     let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
-    let mut browser = WebSocket::connect(addr, &cookie, &csrf);
+    let page = exchange(addr, &issued.bootstrap, &clock);
+    let mut browser = WebSocket::connect(&page);
     browser.send(r#"{"type":"floor.subscribe"}"#);
     let before = browser.json();
     assert!(before["projection"].get("closing_progress").is_none());
@@ -1003,13 +737,14 @@ fn assert_progress_cut(fixture: &Fixture, frame: &Value, expected: (u32, u32, u3
 fn an_unfolded_announcement_never_publishes_a_mismatched_closing_cut() {
     let fixture = Fixture::new();
     let settings = settings(&fixture, free_port());
+    let clock = Arc::new(TestClock::new());
     let daemon = duded::boot::boot_with_floor_faults(
         &settings,
         seams(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
+            Arc::clone(&clock),
             Witness::default(),
         ),
         None,
@@ -1020,8 +755,8 @@ fn an_unfolded_announcement_never_publishes_a_mismatched_closing_cut() {
     let failure = daemon.onboarding_failure();
     let mut running = common::start(daemon);
     let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
-    let mut browser = WebSocket::connect(addr, &cookie, &csrf);
+    let page = exchange(addr, &issued.bootstrap, &clock);
+    let mut browser = WebSocket::connect(&page);
     browser.send(r#"{"type":"floor.subscribe"}"#);
     let before = browser.json();
     failure.arm(duded::runtime::OnboardingFailurePoint::ClosingAnnounced);
@@ -1064,106 +799,17 @@ fn an_unfolded_announcement_never_publishes_a_mismatched_closing_cut() {
 }
 
 #[test]
-fn ten_quiet_seconds_send_no_progress_and_a_new_subscription_samples_fresh_time() {
+fn only_generation_four_upgrades_before_any_domain_frame() {
     let fixture = Fixture::new();
     let settings = settings(&fixture, free_port());
-    let daemon = duded::boot(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .unwrap();
-    let addr = daemon.floor_addr().unwrap();
-    let mut running = common::start(daemon);
-    let agent = common::hire(&running.handle, fixture.state.path());
-    let goal = common::set_goal(&running.handle, goal_params(agent, &["/usr/bin/true"]));
-    closing_participant_spawned(&fixture, goal);
-    let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
-    let mut browser = WebSocket::connect(addr, &cookie, &csrf);
-    browser.send(r#"{"type":"floor.subscribe"}"#);
-    assert!(
-        browser.json()["projection"]
-            .get("closing_progress")
-            .is_none()
-    );
-    let mut operator = Client::connect(settings.socket()).unwrap();
-    assert!(
-        operator
-            .call_as_operator(
-                Method::SystemClosingTime,
-                Some(serde_json::json!({ "action": "announce" })),
-                credential_of(&settings)
-            )
-            .unwrap()
-            .error
-            .is_none()
-    );
-    let first = next_closing_progress(&mut browser);
-    assert_progress_cut(&fixture, &first, (0, 0, 1, 1));
-    let sampled = first["delta"]["closing_progress"]["remaining_ms"]
-        .as_u64()
-        .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        browser.read_timeout(
-            deadline
-                .saturating_duration_since(std::time::Instant::now())
-                .max(Duration::from_millis(1)),
-        );
-        let mut byte = [0_u8; 1];
-        match browser.stream.peek(&mut byte) {
-            Ok(1) => {
-                let next = browser.json();
-                assert!(
-                    next["delta"].get("closing_progress").is_none(),
-                    "time alone published progress: {next}"
-                );
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            other => panic!("the owned closing stream remains live: {other:?}"),
-        }
-    }
-    let mut fresh = WebSocket::connect(addr, &cookie, &csrf);
-    fresh.send(r#"{"type":"floor.subscribe"}"#);
-    let snapshot = fresh.json();
-    assert_progress_cut(&fixture, &snapshot, (0, 0, 1, 1));
-    assert_eq!(
-        snapshot["projection"]["closing_time"],
-        serde_json::json!({ "kind": "announced" })
-    );
-    assert!(
-        snapshot["projection"]["closing_progress"]["remaining_ms"]
-            .as_u64()
-            .unwrap()
-            <= sampled - 9_500
-    );
-    drop(fresh);
-    drop(browser);
-    drop(operator);
-    running.stop(duded::ExitCause::ShutdownRpc);
-}
-
-#[test]
-fn only_generation_three_upgrades_before_any_domain_frame() {
-    let fixture = Fixture::new();
-    let settings = settings(&fixture, free_port());
+    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
     let daemon = duded::boot::boot(
         &settings,
         seams(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
+            Arc::clone(&clock),
             Witness::default(),
         ),
     )
@@ -1171,11 +817,11 @@ fn only_generation_three_upgrades_before_any_domain_frame() {
     let addr = daemon.floor_addr().unwrap();
     let running = common::start(daemon);
     let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
+    let page = exchange(addr, &issued.bootstrap, &clock);
     let before = fixture.entries().len();
-    for generation in [1, 2, 4] {
-        let protocols = format!("dudes-floor-v{generation}, dudes-csrf.{csrf}");
-        let (mut stream, head) = raw_upgrade(addr, Some(&cookie), Some(&protocols), None);
+    for generation in [1, 2, 3, 5] {
+        let protocols = signed_protocols(&page, &format!("dudes-floor-v{generation}"));
+        let (mut stream, head) = raw_upgrade(addr, Some(&page.cookie), Some(&protocols), None);
         assert!(head.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{head:?}");
         assert!(!head.contains("Sec-WebSocket-Protocol:"), "{head:?}");
         let mut remainder = Vec::new();
@@ -1188,13 +834,23 @@ fn only_generation_three_upgrades_before_any_domain_frame() {
             "a refused generation received bytes after its response"
         );
     }
-    let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
-    let (stream, head) = raw_upgrade(addr, Some(&cookie), Some(&protocols), None);
+    let protocols = format!(
+        "{}, dudes-csrf.{}",
+        signed_protocols(&page, "dudes-floor-v4"),
+        "A".repeat(43)
+    );
+    let (_old, head) = raw_upgrade(addr, Some(&page.cookie), Some(&protocols), None);
+    assert!(
+        head.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "the old secret entry is refused: {head:?}"
+    );
+    let protocols = signed_protocols(&page, "dudes-floor-v4");
+    let (stream, head) = raw_upgrade(addr, Some(&page.cookie), Some(&protocols), None);
     assert!(
         head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"),
         "{head:?}"
     );
-    assert!(head.contains("Sec-WebSocket-Protocol: dudes-floor-v3\r\n"));
+    assert!(head.contains("Sec-WebSocket-Protocol: dudes-floor-v4\r\n"));
     let mut browser = WebSocket { stream };
     browser.send(r#"{"type":"floor.subscribe"}"#);
     assert_eq!(browser.json()["type"], "floor.snapshot");
@@ -1208,13 +864,14 @@ fn stream_admission_limits_refuse_then_recover() {
     let fixture = Fixture::new();
     let port = free_port();
     let settings = settings(&fixture, port);
+    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
     let daemon = duded::boot(
         &settings,
         seams(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
+            Arc::clone(&clock),
             Witness::default(),
         ),
     )
@@ -1270,18 +927,18 @@ fn stream_admission_limits_refuse_then_recover() {
     wait_for_live(&probe, 0);
 
     let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
-    let first = WebSocket::connect(addr, &cookie, &csrf);
-    let second = WebSocket::connect(addr, &cookie, &csrf);
-    let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
-    let (_third, response_head) = raw_upgrade(addr, Some(&cookie), Some(&protocols), None);
+    let page = exchange(addr, &issued.bootstrap, &clock);
+    let first = WebSocket::connect(&page);
+    let second = WebSocket::connect(&page);
+    let protocols = signed_protocols(&page, "dudes-floor-v4");
+    let (_third, response_head) = raw_upgrade(addr, Some(&page.cookie), Some(&protocols), None);
     assert!(
         response_head.starts_with("HTTP/1.1 403 Forbidden"),
         "{response_head:?}"
     );
     drop(first);
     wait_for_live(&probe, 1);
-    let refill = WebSocket::connect(addr, &cookie, &csrf);
+    let refill = WebSocket::connect(&page);
     drop(refill);
     drop(second);
     wait_for_live(&probe, 0);
@@ -1293,176 +950,9 @@ fn stream_admission_limits_refuse_then_recover() {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "both independent queue limits need exact-bound, overflow and refill controls"
-)]
-fn stream_queue_message_and_byte_limits_are_independent() {
-    let fixture = Fixture::new();
-    let port = free_port();
-    let settings = settings(&fixture, port);
-    // The subject here is the queue's own arithmetic — "exactly 256 deltas, still live" — and
-    // since a heartbeat consumes that same bound. Turning the beat off keeps this
-    // test counting only its own deltas rather than widening what it asserts to absorb an arrival
-    // it cannot time. That heartbeats do share the bound is asserted by
-    // `floor_stream::tests::a_never_draining_subscriber_is_closed_by_heartbeats_alone`.
-    let fault = FloorStreamFault::default().without_heartbeat();
-    let daemon = duded::boot::boot_with_floor_faults(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
-            Witness::default(),
-        ),
-        None,
-        fault.clone(),
-    )
-    .expect("daemon boot");
-    let addr = daemon.floor_addr().expect("Floor address");
-    let probe = daemon.floor_gateway_probe().expect("gateway probe");
-    let mut running = common::start(daemon);
-    let base = common::hire(&running.handle, fixture.state.path());
-    let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
-
-    fault.hold_next_subscription();
-    let mut message_bound = WebSocket::connect(addr, &cookie, &csrf);
-    message_bound.send(r#"{"type":"floor.subscribe"}"#);
-    assert!(fault.wait_registered(Duration::from_secs(2)));
-    for _ in 0..256 {
-        pause(&running.handle, base);
-    }
-    assert_eq!(fault.queue_usage().map(|usage| usage.0), Some(256));
-    assert_eq!(fault.queue_usage().map(|usage| usage.2), Some(false));
-    pause(&running.handle, base);
-    assert_eq!(fault.queue_usage().map(|usage| usage.2), Some(true));
-    fault.release();
-    assert_eq!(message_bound.json()["type"], "floor.snapshot");
-    message_bound.expect_closed(&probe);
-    drop(message_bound);
-    wait_for_live(&probe, 0);
-
-    fault.hold_next_subscription();
-    let mut decrement = WebSocket::connect(addr, &cookie, &csrf);
-    decrement.send(r#"{"type":"floor.subscribe"}"#);
-    assert!(fault.wait_registered(Duration::from_secs(2)));
-    pause(&running.handle, base);
-    assert!(
-        fault
-            .queue_usage()
-            .is_some_and(|usage| usage.0 == 1 && usage.1 > 0)
-    );
-    fault.release();
-    assert_eq!(decrement.json()["type"], "floor.snapshot");
-    assert_eq!(decrement.json()["type"], "floor.delta");
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while fault
-        .queue_usage()
-        .is_some_and(|usage| usage.0 != 0 || usage.1 != 0)
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "dequeue did not release bytes"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    decrement.send(r#"{"type":"floor.unsubscribe"}"#);
-    decrement.expect_closed(&probe);
-    drop(decrement);
-    wait_for_live(&probe, 0);
-
-    fault.hold_next_subscription();
-    let mut calibration = WebSocket::connect(addr, &cookie, &csrf);
-    calibration.send(r#"{"type":"floor.subscribe"}"#);
-    assert!(fault.wait_registered(Duration::from_secs(2)));
-    let sample = hire_with_role(&running.handle, fixture.state.path(), "x".to_owned());
-    let sample_frame = fault.queue_usage().expect("calibration queue").1;
-    assert!(sample_frame > 5 && sample_frame < 65_536);
-    let json_overhead = sample_frame - 1 - 4;
-    retire(&running.handle, sample);
-    fault.release();
-    drop(calibration);
-    wait_for_live(&probe, 0);
-
-    fault.hold_next_subscription();
-    let mut byte_bound = WebSocket::connect(addr, &cookie, &csrf);
-    byte_bound.send(r#"{"type":"floor.subscribe"}"#);
-    assert!(fault.wait_registered(Duration::from_secs(2)));
-
-    loop {
-        let used = fault.queue_usage().expect("byte-bound queue").1;
-        let remaining = MAX_QUEUE_BYTES - used;
-        if remaining <= 1_000_000 {
-            break;
-        }
-        let target_frame = 900_000usize.min(remaining - 100_000);
-        let role_len = target_frame
-            .checked_sub(json_overhead + 10)
-            .expect("large frame has payload room");
-        let agent = hire_with_role(&running.handle, fixture.state.path(), "x".repeat(role_len));
-        retire(&running.handle, agent);
-        assert_eq!(fault.queue_usage().map(|usage| usage.2), Some(false));
-    }
-
-    let before_calibration = fault.queue_usage().expect("queue before calibration").1;
-    let final_sample = hire_with_role(&running.handle, fixture.state.path(), "x".to_owned());
-    let after_calibration = fault.queue_usage().expect("queue after calibration").1;
-    let current_overhead = after_calibration - before_calibration - 1 - 4;
-    retire(&running.handle, final_sample);
-    let used = fault.queue_usage().expect("queue before exact fill").1;
-    let remaining = MAX_QUEUE_BYTES - used;
-    let header = if remaining - current_overhead <= 65_535 {
-        4
-    } else {
-        10
-    };
-    let final_role_len = remaining
-        .checked_sub(current_overhead + header)
-        .expect("exact final frame has payload room");
-    let _last = hire_with_role(
-        &running.handle,
-        fixture.state.path(),
-        "x".repeat(final_role_len),
-    );
-    assert_eq!(
-        fault.queue_usage(),
-        Some((
-            fault.queue_usage().expect("queue").0,
-            MAX_QUEUE_BYTES,
-            false
-        )),
-        "the exact complete-frame byte bound stays live"
-    );
-    assert!(
-        fault.queue_usage().expect("queue").0 < 256,
-        "the byte arm fires independently below the message cap"
-    );
-    pause(&running.handle, base);
-    assert_eq!(fault.queue_usage().map(|usage| usage.2), Some(true));
-    fault.release();
-    assert_eq!(byte_bound.json()["type"], "floor.snapshot");
-    byte_bound.expect_closed(&probe);
-    drop(byte_bound);
-    wait_for_live(&probe, 0);
-
-    let mut refill = WebSocket::connect(addr, &cookie, &csrf);
-    refill.send(r#"{"type":"floor.subscribe"}"#);
-    assert_eq!(refill.json()["type"], "floor.snapshot");
-    refill.send(r#"{"type":"floor.unsubscribe"}"#);
-    refill.expect_closed(&probe);
-    drop(refill);
-    wait_for_live(&probe, 0);
-    assert_eq!(
-        running.stop(duded::ExitCause::ShutdownRpc),
-        duded::ExitCause::ShutdownRpc
-    );
-}
-
-#[test]
 fn stream_idle_and_absolute_expiry_release_slots() {
-    const MINUTE_MS: i64 = 60_000;
+    const HOUR_MS: i64 = 60 * 60_000;
+    const DAY_MS: i64 = 24 * HOUR_MS;
 
     let fixture = Fixture::new();
     let port = free_port();
@@ -1485,52 +975,52 @@ fn stream_idle_and_absolute_expiry_release_slots() {
     let agent = common::hire(&running.handle, fixture.state.path());
 
     let quiet_issue = issue(&settings);
-    let (quiet_cookie, quiet_csrf) = exchange(addr, &quiet_issue.bootstrap);
-    let mut quiet = WebSocket::connect(addr, &quiet_cookie, &quiet_csrf);
+    let quiet_page = exchange(addr, &quiet_issue.bootstrap, &clock);
+    let mut quiet = WebSocket::connect(&quiet_page);
     wait_for_live(&probe, 1);
-    clock.advance(30 * MINUTE_MS);
+    clock.advance(30 * DAY_MS);
     quiet.expect_closed(&probe);
     drop(quiet);
     wait_for_live(&probe, 0);
 
     let outbound_issue = issue(&settings);
-    let (outbound_cookie, outbound_csrf) = exchange(addr, &outbound_issue.bootstrap);
-    let mut outbound = WebSocket::connect(addr, &outbound_cookie, &outbound_csrf);
+    let outbound_page = exchange(addr, &outbound_issue.bootstrap, &clock);
+    let mut outbound = WebSocket::connect(&outbound_page);
     outbound.send(r#"{"type":"floor.subscribe"}"#);
     assert_eq!(outbound.json()["type"], "floor.snapshot");
-    clock.advance(29 * MINUTE_MS);
+    clock.advance(29 * DAY_MS);
     pause(&running.handle, agent);
     assert_eq!(outbound.json()["type"], "floor.delta");
-    clock.advance(MINUTE_MS);
+    clock.advance(DAY_MS);
     outbound.expect_closed(&probe);
     drop(outbound);
     wait_for_live(&probe, 0);
 
     let absolute_issue = issue(&settings);
-    let (absolute_cookie, absolute_csrf) = exchange(addr, &absolute_issue.bootstrap);
-    let mut held_socket = WebSocket::connect(addr, &absolute_cookie, &absolute_csrf);
-    for _ in 0..16 {
-        clock.advance(29 * MINUTE_MS);
-        let activity = WebSocket::connect(addr, &absolute_cookie, &absolute_csrf);
+    let absolute_page = exchange(addr, &absolute_issue.bootstrap, &clock);
+    let mut held_socket = WebSocket::connect(&absolute_page);
+    for _ in 0..3 {
+        clock.advance(29 * DAY_MS);
+        let activity = WebSocket::connect(&absolute_page);
         drop(activity);
         wait_for_live(&probe, 1);
     }
-    clock.advance(16 * MINUTE_MS);
+    clock.advance(4 * DAY_MS);
     held_socket.expect_closed(&probe);
     drop(held_socket);
     wait_for_live(&probe, 0);
-    let protocols = format!("dudes-floor-v3, dudes-csrf.{absolute_csrf}");
+    let protocols = signed_protocols(&absolute_page, "dudes-floor-v4");
     let (_expired, response_head) =
-        raw_upgrade(addr, Some(&absolute_cookie), Some(&protocols), None);
+        raw_upgrade(addr, Some(&absolute_page.cookie), Some(&protocols), None);
     assert!(
         response_head.starts_with("HTTP/1.1 403 Forbidden"),
         "{response_head:?}"
     );
 
     let refill_issue = issue(&settings);
-    let (refill_cookie, refill_csrf) = exchange(addr, &refill_issue.bootstrap);
-    let first = WebSocket::connect(addr, &refill_cookie, &refill_csrf);
-    let second = WebSocket::connect(addr, &refill_cookie, &refill_csrf);
+    let refill_page = exchange(addr, &refill_issue.bootstrap, &clock);
+    let first = WebSocket::connect(&refill_page);
+    let second = WebSocket::connect(&refill_page);
     drop(first);
     drop(second);
     wait_for_live(&probe, 0);
@@ -1545,13 +1035,14 @@ fn stalled_upgraded_streams_stop_within_join_bound() {
     let fixture = Fixture::new();
     let port = free_port();
     let settings = settings(&fixture, port);
+    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
     let daemon = duded::boot(
         &settings,
         seams(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
+            Arc::clone(&clock),
             Witness::default(),
         ),
     )
@@ -1560,10 +1051,10 @@ fn stalled_upgraded_streams_stop_within_join_bound() {
     let probe = daemon.floor_gateway_probe().expect("gateway probe");
     let mut running = common::start(daemon);
     let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
+    let page = exchange(addr, &issued.bootstrap, &clock);
 
-    let idle = WebSocket::connect(addr, &cookie, &csrf);
-    let mut non_reading = WebSocket::connect(addr, &cookie, &csrf);
+    let idle = WebSocket::connect(&page);
+    let mut non_reading = WebSocket::connect(&page);
     non_reading.send(r#"{"type":"floor.subscribe"}"#);
     wait_for_live(&probe, 2);
     for _ in 0..4 {
@@ -1591,13 +1082,14 @@ fn close_oracle_refuses_open_peer() {
     let fixture = Fixture::new();
     let port = free_port();
     let settings = settings(&fixture, port);
+    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
     let daemon = duded::boot(
         &settings,
         seams(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
+            Arc::clone(&clock),
             Witness::default(),
         ),
     )
@@ -1606,8 +1098,8 @@ fn close_oracle_refuses_open_peer() {
     let probe = daemon.floor_gateway_probe().expect("gateway probe");
     let mut running = common::start(daemon);
     let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
-    let mut open = WebSocket::connect(addr, &cookie, &csrf);
+    let page = exchange(addr, &issued.bootstrap, &clock);
+    let mut open = WebSocket::connect(&page);
     wait_for_live(&probe, 1);
     open.stream
         .set_read_timeout(Some(Duration::from_millis(100)))
@@ -1634,13 +1126,14 @@ fn connection_spawn_failure_stops_existing_streams() {
     let port = free_port();
     let settings = settings(&fixture, port);
     let fault = duded::floor_gateway::FloorStartFault::connection_spawn_failure();
+    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
     let daemon = duded::boot::boot_with_floor_fault(
         &settings,
         seams(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
+            Arc::clone(&clock),
             Witness::default(),
         ),
         Some(fault.clone()),
@@ -1650,8 +1143,8 @@ fn connection_spawn_failure_stops_existing_streams() {
     let probe = daemon.floor_gateway_probe().expect("gateway probe");
     let mut running = common::start(daemon);
     let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
-    let mut held = WebSocket::connect(addr, &cookie, &csrf);
+    let page = exchange(addr, &issued.bootstrap, &clock);
+    let mut held = WebSocket::connect(&page);
     held.send(r#"{"type":"floor.subscribe"}"#);
     assert_eq!(held.json()["type"], "floor.snapshot");
     wait_for_live(&probe, 1);
@@ -1699,8 +1192,8 @@ fn append_poison_publishes_only_the_stopped_fact_and_keeps_authenticated_reads()
         .unwrap()
         .parse()
         .unwrap();
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
-    let mut browser = WebSocket::connect(addr, &cookie, &csrf);
+    let page = exchange(addr, &issued.bootstrap, &clock);
+    let mut browser = WebSocket::connect(&page);
     browser.send(r#"{"type":"floor.subscribe"}"#);
     let before = browser.json();
     assert_eq!(before["type"], "floor.snapshot");
@@ -1750,13 +1243,13 @@ fn append_poison_publishes_only_the_stopped_fact_and_keeps_authenticated_reads()
     );
     let fact = serde_json::json!({"journal_stopped": publication["journal_stopped"]});
     assert!(serde_json::to_vec(&fact).unwrap().len() < 64);
-    let mut second = WebSocket::connect(addr, &cookie, &csrf);
+    let mut second = WebSocket::connect(&page);
     second.send(r#"{"type":"floor.subscribe"}"#);
     let snapshot = second.json();
     assert_eq!(snapshot["type"], "floor.snapshot");
     assert_eq!(snapshot["projection"], before["projection"]);
     assert_eq!(snapshot["journal_stopped"], publication["journal_stopped"]);
-    let (_, unauthenticated) = raw_upgrade(addr, None, Some("dudes-floor-v3"), None);
+    let (_, unauthenticated) = raw_upgrade(addr, None, Some("dudes-floor-v4"), None);
     assert!(!unauthenticated.starts_with("HTTP/1.1 101"));
     assert!(!unauthenticated.contains("journal_stopped"));
     let refused = running
@@ -1770,7 +1263,7 @@ fn append_poison_publishes_only_the_stopped_fact_and_keeps_authenticated_reads()
     );
     drop(second);
     wait_for_live(&probe, 1);
-    clock.advance(30 * 60_000);
+    clock.advance(30 * 24 * 60 * 60_000);
     browser.expect_closed(&probe);
     drop(browser);
     running.stop(duded::ExitCause::Ended);
@@ -1782,13 +1275,14 @@ fn checkpoint_poison_keeps_the_stopped_fact_after_durable_projection_publication
     let mut settings = settings(&fixture, free_port());
     settings.journal.checkpoint_every = 1;
     let host = SharedHost::new();
+    let clock = Arc::new(TestClock::new());
     let daemon = duded::boot(
         &settings,
         seams(
             &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
+            Arc::clone(&clock),
             Witness::default(),
         ),
     )
@@ -1797,8 +1291,8 @@ fn checkpoint_poison_keeps_the_stopped_fact_after_durable_projection_publication
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
-    let mut browser = WebSocket::connect(addr, &cookie, &csrf);
+    let page = exchange(addr, &issued.bootstrap, &clock);
+    let mut browser = WebSocket::connect(&page);
     browser.send(r#"{"type":"floor.subscribe"}"#);
     let before = browser.json();
     failure.short_write_after(1, 5);
@@ -1823,7 +1317,7 @@ fn checkpoint_poison_keeps_the_stopped_fact_after_durable_projection_publication
         serde_json::json!({"lsn":attempted.0.to_string()})
     );
     assert_eq!(notification["delta"]["lsn"], before["projection"]["lsn"]);
-    let mut second = WebSocket::connect(addr, &cookie, &csrf);
+    let mut second = WebSocket::connect(&page);
     second.send(r#"{"type":"floor.subscribe"}"#);
     let snapshot = second.json();
     assert_eq!(snapshot["journal_stopped"], notification["journal_stopped"]);

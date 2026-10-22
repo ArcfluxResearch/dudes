@@ -42,9 +42,13 @@ mod common;
 
 #[cfg(unix)]
 use std::ffi::OsString;
+#[cfg(unix)]
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use dudes_host::RealHost;
+#[cfg(unix)]
+use dudes_host::{ChildExit, ChildStream, ChildStreams};
 use dudes_supervisor::host::{AdoptionKey, KillOutcome, Liveness, ProcessHost};
 
 /// Not a test. See [`common::run_if_helper`].
@@ -133,21 +137,23 @@ fn term_ignoring_spec(
     spec
 }
 
-/// The adopter has no child handle and therefore cannot wait. Its signal result only says the
-/// syscall accepted the group; the owner is the independent witness that the recorded child has
-/// actually become absent. A final heartbeat can race the signal delivery, while `Gone` cannot.
 #[cfg(unix)]
-fn await_observed_gone(owner: &RealHost, key: &AdoptionKey) {
-    let deadline = std::time::Instant::now() + GRACE;
-    loop {
-        if owner.alive(key) == Liveness::Gone {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the TERM-ignoring adopted child was not observed gone after the hard signal"
-        );
-        std::thread::sleep(Duration::from_millis(10));
+#[derive(Clone)]
+struct Exits(mpsc::Sender<ChildExit>);
+
+#[cfg(unix)]
+impl ChildStreams for Exits {
+    fn watch(&self, _key: Option<&AdoptionKey>) -> Box<dyn ChildStream> {
+        Box::new(self.clone())
+    }
+}
+
+#[cfg(unix)]
+impl ChildStream for Exits {
+    fn line(&mut self, _text: &str) {}
+
+    fn ended(self: Box<Self>, exit: ChildExit) {
+        let _ = self.0.send(exit);
     }
 }
 
@@ -158,7 +164,8 @@ fn await_observed_gone(owner: &RealHost, key: &AdoptionKey) {
 fn a_real_child_that_ignores_the_polite_signal_is_struck_by_the_hard_one() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let mark = dir.path().join("term-ignoring.pid");
-    let mut owner = ReapOnDrop(RealHost::with_grace(GRACE));
+    let (exits, exited) = mpsc::channel();
+    let mut owner = ReapOnDrop(RealHost::watching_with_grace(Arc::new(Exits(exits)), GRACE));
     let key = common::spawned(
         owner.0.spawn(
             &term_ignoring_spec(&mark, dir.path()),
@@ -176,7 +183,12 @@ fn a_real_child_that_ignores_the_polite_signal_is_struck_by_the_hard_one() {
         matches!(outcome, KillOutcome::Signalled),
         "the adopted hard-kill path did not signal: {outcome:?}"
     );
-    await_observed_gone(&owner.0, &key);
+    let exit = exited
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the owner's watcher reports the hard-killed child");
+    assert_eq!(exit.signal, Some(9));
+    assert_eq!(exit.code, None);
+    assert_eq!(owner.0.alive(&key), Liveness::Gone);
 }
 
 /// Which start value the key handed to the killer carries. The **only** difference between the two

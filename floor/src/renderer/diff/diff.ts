@@ -204,9 +204,9 @@ export function decodeDiffResponse(body: string): DiffResponse | null {
   return null;
 }
 
-export async function postDiff(request: DiffRequest, csrf: string | null,
+export async function postDiff(request: DiffRequest, signedIn: boolean,
   fetch: (url: string, init: RequestInit) => Promise<{ readonly status: number; text(): Promise<string> }>): Promise<DiffOutcome> {
-  if (csrf === null) return Object.freeze({ kind: 'forbidden' });
+  if (!signedIn) return Object.freeze({ kind: 'forbidden' });
   let status: number;
   let body: string;
   try {
@@ -215,7 +215,7 @@ export async function postDiff(request: DiffRequest, csrf: string | null,
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     });
     status = reply.status;

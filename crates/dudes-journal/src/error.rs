@@ -13,6 +13,45 @@ use crate::frame::FrameError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// A recovery projection cell is malformed or misses a required dependency.
+    #[error("projection recovery: {0}")]
+    RecoveryCache(#[from] dudes_proto::recovery_state::cache::RecoveryCacheError),
+    /// The checked recovery store cannot establish its owned journal cut.
+    #[error("recovery store: {0}")]
+    RecoveryStore(RecoveryStoreError),
+    /// A recovery relationship was refused, without exposing request or task contents.
+    #[error("recovery relationship: {0}")]
+    RecoveryState(#[from] dudes_proto::recovery_state::RecoveryStateError),
+    /// A durable recovery transition disagrees with its actual preceding history.
+    #[error("journal recovery record at {lsn}: {reason}")]
+    RecoveryRecord {
+        /// Actual offending frame position.
+        lsn: Lsn,
+        /// Fixed relationship failure, without task or request contents.
+        reason: dudes_proto::recovery_state::RecoveryStateError,
+    },
+    /// A recovery relationship was refused before any frame was written.
+    #[error("journal recovery record {kind:?} refused before append: {reason}")]
+    RecoveryAdmission {
+        /// Attempted record kind.
+        kind: dudes_proto::RecordKind,
+        /// Fixed relationship failure.
+        reason: dudes_proto::recovery_state::RecoveryStateError,
+    },
+    /// Recovery authority must use its exact required frame kind and version.
+    #[error(
+        "journal recovery header at {lsn} has kind {kind} version {version}, expected kind {expected_kind} version 2"
+    )]
+    RecoveryFrame {
+        /// Actual offending frame position.
+        lsn: Lsn,
+        /// Actual header kind.
+        kind: u16,
+        /// Actual header version.
+        version: u16,
+        /// Kind carried by the decoded payload.
+        expected_kind: u16,
+    },
     /// A keyed instruction projection cell is malformed or missing its referenced attempt.
     #[error("projection instructions: {0}")]
     InstructionCache(#[from] dudes_proto::instruction_state::cache::InstructionCacheError),
@@ -93,6 +132,14 @@ pub enum Error {
         lsn: Lsn,
         /// The unrecognized kind tag.
         kind: u16,
+    },
+    /// A mail-wake record was refused against committed history before append.
+    #[error("journal mail-wake record {kind:?} refused before append: {reason}")]
+    MailWakeAdmission {
+        /// Attempted record kind, without an invented durable position.
+        kind: dudes_proto::RecordKind,
+        /// Fixed failed relationship.
+        reason: dudes_proto::mail_wake::MailWakeError,
     },
     /// Required mail authority failed its full canonical prefix join.
     #[error("journal mail-wake record at {lsn}: {reason}")]
@@ -351,3 +398,29 @@ store_errors!(
 
 /// `Result` with the journal's error.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// Fixed reasons that a store cannot safely answer a recovery lookup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RecoveryStoreError {
+    /// The owned store or writer generation has no matching certification.
+    #[error("store generation is not certified")]
+    Uncertified,
+    /// The journal advanced outside the checked projection operation.
+    #[error("journal and projection cuts differ")]
+    JournalAdvanced,
+    /// A write may have reached the journal without a certain committed boundary.
+    #[error("journal writer is uncertain")]
+    JournalUncertain,
+    /// Projection metadata no longer matches its owning certification.
+    #[error("projection metadata differs from its certified cut")]
+    Metadata,
+    /// Canonical journal reconstruction and the stored authority rows differ.
+    #[error("projection differs from its canonical journal prefix")]
+    CanonicalMismatch,
+    /// A required canonical prefix is unavailable.
+    #[error("complete journal prefix is unavailable")]
+    IncompletePrefix,
+    /// Frames read back after the configured sync policy do not match the prepared append.
+    #[error("recorded append interval differs from its prepared entry")]
+    AppendMismatch,
+}

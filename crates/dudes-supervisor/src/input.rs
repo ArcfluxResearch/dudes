@@ -1,15 +1,15 @@
-//! What reaches the machine.
+//! Machine inputs and the durable progress made while handling them.
 //!
-//! Everything here is a *value the runtime already has* — a parsed command, an acknowledged
-//! append, an observation from the process host. Nothing in this module is JSON, and nothing in
-//! it is read from the world: the runtime parses and observes, the machine decides.
+//! Inputs carry values the runtime already has: parsed commands, acknowledged appends and process
+//! observations. The handling outcome names actual folds and request-local recovery progress. These values contain
+//! no JSON parsing or World access; the runtime observes and the machine decides.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use dudes_policy::WorkInput;
 use dudes_proto::Spend;
-use dudes_proto::goal::{Evidence, Goal, Predicate};
+use dudes_proto::goal::{Evidence, Predicate};
 use dudes_proto::record::{
     BrowserAnswer, BrowserControl, BrowserGoal, BrowserRename, BrowserRetire, Hex32,
 };
@@ -25,6 +25,335 @@ use dudes_types::{
 };
 
 use crate::host::{AdoptionKey, Liveness};
+
+/// The durable progress made by one successfully handled input.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Handled {
+    folded_through: Option<Lsn>,
+    recovery: Option<RecoveryUpdate>,
+}
+
+impl Handled {
+    pub(crate) const fn folded(through: Lsn) -> Self {
+        Self {
+            folded_through: Some(through),
+            recovery: None,
+        }
+    }
+
+    /// The actual last frame folded by this input, or no new durable fold.
+    #[must_use]
+    pub const fn folded_through(&self) -> Option<Lsn> {
+        self.folded_through
+    }
+
+    pub(crate) fn with_recovery(mut self, update: Option<RecoveryUpdate>) -> Self {
+        self.recovery = update;
+        self
+    }
+
+    /// Request-local recovery progress; this is neither a receipt nor permission to launch.
+    #[must_use]
+    pub const fn recovery(&self) -> Option<&RecoveryUpdate> {
+        self.recovery.as_ref()
+    }
+}
+
+/// Exact selectors reviewed before an operator submits recovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryExpected {
+    /// Original interrupted work.
+    pub work: dudes_proto::recovery::RecoveryWork,
+    /// Actual immutable issue.
+    pub issue_lsn: Lsn,
+    /// Actual observed eligibility source.
+    pub source_lsn: Lsn,
+    /// Canonical episode, absent before its first barrier.
+    pub episode: Option<dudes_proto::recovery::RecoveryEpisodeId>,
+    /// Exact claim the next barrier would supersede.
+    pub predecessor: Option<dudes_proto::recovery::RecoveryClaimRef>,
+    /// Reviewed control identity.
+    pub control_lsn: Option<Lsn>,
+    /// Exact reviewed ticket and round.
+    pub ticket: Option<(dudes_types::CardId, u32)>,
+}
+
+/// Operator-selected context intent, without client-supplied context contents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryChoice {
+    /// Try the still-confirmed conversation.
+    TryRecorded,
+    /// Fresh context with a bounded supplemental recap.
+    FreshWithRecap,
+    /// Fresh context for the same immutable owed issue.
+    RepeatIssuedFresh,
+}
+
+/// Pure command intent. Recorded attribution is separate from executor permission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryCommand {
+    /// Original request identity.
+    pub request_id: Hex32,
+    /// Digest of all original strictly typed caller fields.
+    pub digest: Hex32,
+    /// Original reviewed selectors, never advanced by a later discovered claim.
+    pub expected: RecoveryExpected,
+    /// Explicit context choice.
+    pub choice: RecoveryChoice,
+    /// Attribution captured at authenticated admission.
+    pub attribution: dudes_proto::recovery::RecoveryAttribution,
+}
+
+/// A clean semantic refusal, without raw journal or provider details.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryRefusal {
+    /// Same request identity with different original intent.
+    RequestConflict,
+    /// Target or immutable configuration changed.
+    StaleWork,
+    /// Eligibility source changed.
+    StaleSource,
+    /// Canonical episode changed.
+    StaleEpisode,
+    /// Current claim changed.
+    StalePredecessor,
+    /// Reviewed control changed.
+    StaleControl,
+    /// Ticket or round changed.
+    StaleTicket,
+    /// Consent already exclusively owns this opportunity.
+    Claimed,
+    /// Context choice is no longer offered.
+    ChoiceUnavailable,
+    /// The current boundary is not recoverable.
+    NotRecoverable,
+    /// Live authority was unavailable before the write.
+    AuthorityUnavailable,
+    /// Facts could not be checked coherently.
+    Unavailable,
+}
+
+/// Positions this invocation actually acknowledged, not predicted or whole-command rollback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecoveryPrefix {
+    /// Own required barrier, when written.
+    pub required: Option<Lsn>,
+    /// Own attributed Resume, when written.
+    pub resume: Option<Lsn>,
+}
+
+/// Progress carried only by the handling result of one command invocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryUpdate {
+    /// Request whose actual continuation advanced or refused.
+    pub request_id: Hex32,
+    /// Acknowledged prefix retained even after later clean refusal.
+    pub prefix: RecoveryPrefix,
+    /// Clean refusal before the current frame wrote anything.
+    pub refusal: Option<RecoveryRefusal>,
+}
+
+/// Exact command-owned append stage. This metadata alone grants no permission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryStage {
+    /// Required boundary.
+    Required,
+    /// Own Resume, without ordinary cleared-cause dispatch.
+    Resume,
+    /// Immutable consent.
+    Authorized,
+}
+
+/// Join between an emitted entry, its private continuation and the admitted executor call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryAppend {
+    /// Original request identity.
+    pub request_id: Hex32,
+    /// Exact target.
+    pub work: dudes_proto::recovery::RecoveryWork,
+    /// Expected command-owned frame.
+    pub stage: RecoveryStage,
+    /// Canonical original intent digest.
+    pub digest: Hex32,
+    /// Original reviewed selectors.
+    pub expected: RecoveryExpected,
+    /// Original context choice.
+    pub choice: RecoveryChoice,
+    /// Original admitting actor.
+    pub attribution: dudes_proto::recovery::RecoveryAttribution,
+    /// Only this command's acknowledged prefix.
+    pub prefix: RecoveryPrefix,
+}
+
+/// Exact private parked launch for a still-pending recovery issue. It grants no permission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryIssueAppend {
+    pub(crate) subject: crate::RecoverySubjectKey,
+    pub(crate) turn: TurnId,
+}
+
+impl RecoveryIssueAppend {
+    /// Original pending claim and immutable authorization.
+    #[must_use]
+    pub const fn subject(&self) -> &crate::RecoverySubjectKey {
+        &self.subject
+    }
+
+    /// Exact reserved turn carried by this unwritten issue.
+    #[must_use]
+    pub const fn turn(&self) -> TurnId {
+        self.turn
+    }
+}
+
+/// Historical opportunity derived without appending, allocating or dispatching work.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryOpportunity {
+    /// Exact source-validated boundary, including its predecessor.
+    pub required: dudes_proto::recovery::RecoveryRequired,
+    /// Selectors to preserve on submission.
+    pub expected: RecoveryExpected,
+    /// Confirmed context may be tried, without guaranteeing provider history.
+    pub recorded_available: bool,
+}
+
+/// Owned caller and checkpoint frames acknowledged by the live append boundary.
+#[derive(Debug)]
+pub struct RecordedAppend {
+    frames: Box<RecordedFrames>,
+}
+
+#[derive(Debug)]
+struct RecordedFrames {
+    main: (Lsn, Entry),
+    checkpoint: Option<(Lsn, Entry)>,
+}
+
+impl RecordedAppend {
+    /// Check the supplied physical tail and exact final cut, without certifying provenance.
+    pub fn try_new(
+        expected: Lsn,
+        main: (Lsn, Entry),
+        checkpoint: Option<(Lsn, Entry)>,
+    ) -> Result<Self, DurableInputError> {
+        if let Some((lsn, entry)) = &checkpoint {
+            let dudes_proto::Record::Checkpoint {
+                segment, offset, ..
+            } = &entry.record
+            else {
+                return Err(DurableInputError::CheckpointKind { lsn: *lsn });
+            };
+            if *lsn <= main.0 || lsn.segment() != *segment || lsn.offset() != *offset {
+                return Err(DurableInputError::CheckpointPosition { lsn: *lsn });
+            }
+            if entry.at != main.1.at {
+                return Err(DurableInputError::CheckpointTimestamp { lsn: *lsn });
+            }
+        }
+        let actual = checkpoint.as_ref().map_or(main.0, |tail| tail.0);
+        if expected != actual {
+            return Err(DurableInputError::AppendCut { expected, actual });
+        }
+        Ok(Self {
+            frames: Box::new(RecordedFrames { main, checkpoint }),
+        })
+    }
+
+    /// Actual caller frame position.
+    #[must_use]
+    pub fn lsn(&self) -> Lsn {
+        self.frames.main.0
+    }
+
+    /// Actual final frame position.
+    #[must_use]
+    pub fn through(&self) -> Lsn {
+        self.frames
+            .checkpoint
+            .as_ref()
+            .map_or(self.lsn(), |tail| tail.0)
+    }
+
+    /// Actual caller entry, used for persist-token correlation before folding.
+    #[must_use]
+    pub fn entry(&self) -> &Entry {
+        &self.frames.main.1
+    }
+
+    /// Consume the physical frames in append order.
+    #[must_use]
+    pub fn into_parts(self) -> ((Lsn, Entry), Option<(Lsn, Entry)>) {
+        let RecordedFrames { main, checkpoint } = *self.frames;
+        (main, checkpoint)
+    }
+}
+
+/// A durable input refused before its continuation may run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DurableInputError {
+    /// The supplied acknowledgment omitted or misidentified the final physical frame.
+    AppendCut {
+        /// Required final cut.
+        expected: Lsn,
+        /// Final supplied frame.
+        actual: Lsn,
+    },
+    /// The supplied tail was not a checkpoint.
+    CheckpointKind {
+        /// Supplied tail position.
+        lsn: Lsn,
+    },
+    /// A checkpoint did not follow its main frame or name its own position.
+    CheckpointPosition {
+        /// Supplied checkpoint position.
+        lsn: Lsn,
+    },
+    /// A checkpoint was not stamped with its triggering caller entry's time.
+    CheckpointTimestamp {
+        /// Supplied checkpoint position.
+        lsn: Lsn,
+    },
+    /// A known persist token acknowledged a different entry.
+    PersistedEntryMismatch {
+        /// Parked correlation identity.
+        token: PersistToken,
+        /// Actual acknowledged caller position.
+        lsn: Lsn,
+    },
+    /// The checked World fold refused this actual journal position.
+    Recovery {
+        /// The actual durable frame position.
+        lsn: Lsn,
+        /// The fixed relationship refusal.
+        reason: dudes_proto::recovery_state::RecoveryStateError,
+    },
+}
+
+impl std::fmt::Display for DurableInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AppendCut { expected, actual } => {
+                write!(f, "append cut {actual:?} differs from {expected:?}")
+            }
+            Self::CheckpointKind { lsn } => write!(f, "append tail at {lsn:?} is not a checkpoint"),
+            Self::CheckpointPosition { lsn } => {
+                write!(f, "append checkpoint position at {lsn:?} is invalid")
+            }
+            Self::CheckpointTimestamp { lsn } => {
+                write!(
+                    f,
+                    "append checkpoint timestamp at {lsn:?} differs from its caller"
+                )
+            }
+            Self::PersistedEntryMismatch { token, lsn } => {
+                write!(f, "persist {token:?} entry differs at {lsn:?}")
+            }
+            Self::Recovery { lsn, reason } => write!(f, "recovery history at {lsn:?}: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for DurableInputError {}
 
 /// The persist-before-spawn ledger's correlation id.
 ///
@@ -178,17 +507,13 @@ pub struct SpendView {
 pub enum Input {
     /// An external mailbox append was acknowledged in canonical LSN order.
     Journaled {
-        /// Canonical position, without a supervisor persist token.
-        lsn: Lsn,
-        /// The acknowledged mailbox entry.
-        entry: Entry,
+        /// Actual committed mailbox frame and optional checkpoint.
+        append: RecordedAppend,
     },
     /// A runtime-owned instruction or PTY boundary append is durable and projected in LSN order.
     InstructionJournaled {
-        /// Exact caller frame position, without a supervisor persist token.
-        lsn: Lsn,
-        /// The acknowledged instruction or existing PTY close boundary entry.
-        entry: Entry,
+        /// Actual instruction or PTY boundary frame and optional checkpoint.
+        append: RecordedAppend,
     },
     /// Current facts for exactly one still-owned mail refresh.
     MailWakeReady {
@@ -275,8 +600,8 @@ pub enum Input {
     Persisted {
         /// Which persist.
         token: PersistToken,
-        /// Where it landed.
-        lsn: Lsn,
+        /// Actual committed frames, including the entry correlated with this token.
+        append: RecordedAppend,
     },
     /// The host launched a child and read its adoption key. An observation after the fact;
     /// nothing waits on it.
@@ -477,10 +802,8 @@ pub enum Input {
     /// A board record the runtime has appended and projected durably. Fold it, invalidate the
     /// changed card's cached evidence, and judge goals holding that card before another turn.
     BoardChanged {
-        /// Where the durable record landed.
-        lsn: Lsn,
-        /// A `CardCreated`, `Claim`, or `CardTransition` entry. Other records are ignored.
-        entry: Entry,
+        /// Actual board frame and optional checkpoint; other record kinds are ignored.
+        append: RecordedAppend,
     },
     /// A bounded resolver worker returned a revocable browser launch preparation.
     BrowserLaunchReady {
@@ -506,10 +829,8 @@ pub enum Input {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Command {
-    /// One finite browser hire with a pre-minted intended goal in its durable record.
+    /// One finite browser hire.
     BrowserOnboardHire(Box<BrowserOnboardHire>),
-    /// Append only the recorded initial goal for exactly its hired agent.
-    BrowserOnboardGoal(Box<BrowserOnboardGoal>),
     /// `agent.hire`.
     Hire {
         /// Display name.
@@ -560,6 +881,19 @@ pub enum Command {
         /// The lease this one is based on.
         from: Option<dudes_types::WorktreeId>,
     },
+    /// Record that the operator trusts, or stops trusting, one enrolled project.
+    SetWorkspaceTrust {
+        /// The enrolled project.
+        workspace_id: String,
+        /// Whether it is trusted from now on.
+        trusted: bool,
+        /// The repository vouched for. Absent when `trusted` is false.
+        repository: Option<dudes_proto::record::TrustedRepository>,
+        /// The settings vouched for. Absent when `trusted` is false.
+        pin: Option<dudes_proto::record::TrustPin>,
+    },
+    /// Record a change to the Floor's device table.
+    RecordFloorDevice(FloorDeviceChange),
     /// End a lease whose tree is gone. Ignored unless the lease's state allows it:
     /// `NeverAssigned` only while pending, `Operator` only once released.
     RemoveWorktree {
@@ -848,18 +1182,6 @@ pub struct BrowserOnboardHire {
     pub budget: AgentBudget,
     /// Operator-enrolled isolation selection, for an engine that takes one.
     pub isolation: Option<IsolationMode>,
-    /// Bounded initial goal text.
-    pub goal_text: String,
-    /// Operator-enrolled completion predicate.
-    pub predicate: Predicate,
-    /// The enrolled check's name and revision, recorded on the intended goal.
-    pub completion_check: Option<dudes_proto::CompletionCheckRef>,
-    /// What the hire's check run saw before the first turn, recorded on the intended goal.
-    pub baseline: Option<dudes_proto::CheckBaseline>,
-    /// Operator-enrolled goal ceiling.
-    pub goal_budget: GoalBudget,
-    /// Operator-enrolled positive turn limit.
-    pub hop_cap: u32,
     /// Decoded browser attempt identity.
     pub attempt_id: Hex32,
     /// Digest of the canonical request fields.
@@ -870,6 +1192,10 @@ pub struct BrowserOnboardHire {
     pub workspace_label: String,
     /// Digest of the admitting Floor session.
     pub session_digest: Hex32,
+    /// The lease the agent works in, when it asked for its own copy of the project.
+    pub worktree: Option<dudes_types::WorktreeId>,
+    /// The project trust grant that admitted a hire into a copy.
+    pub trust_lsn: Option<Lsn>,
 }
 
 impl std::fmt::Debug for BrowserOnboardHire {
@@ -878,21 +1204,133 @@ impl std::fmt::Debug for BrowserOnboardHire {
     }
 }
 
-/// The exact intended goal read from a durable browser hire.
-#[derive(Clone, PartialEq, Eq)]
-pub struct BrowserOnboardGoal {
-    /// Agent named by the durable hire.
-    pub agent: AgentId,
-    /// Exact goal pre-minted and recorded on the hire.
-    pub goal: Goal,
-    /// Decoded browser attempt identity.
-    pub attempt_id: Hex32,
-    /// Digest of the session admitting this later append.
-    pub session_digest: Hex32,
+#[cfg(test)]
+mod recorded_append_tests {
+    use super::*;
+    use dudes_proto::Record;
+
+    fn checkpoint(at: Lsn) -> Entry {
+        Entry {
+            at: dudes_types::Timestamp::UNIX_EPOCH,
+            record: Record::Checkpoint {
+                projection_version: 1,
+                segment: at.segment(),
+                offset: at.offset(),
+            },
+        }
+    }
+
+    #[test]
+    fn recorded_append_requires_the_exact_tail_kind_position_and_cut() {
+        let main_lsn = Lsn::from_parts(1, 10).unwrap();
+        let tail_lsn = Lsn::from_parts(2, 0).unwrap();
+        let main = Entry {
+            at: dudes_types::Timestamp::UNIX_EPOCH,
+            record: Record::Pause {
+                agent: AgentId::from_parts(90, 1),
+                browser: None,
+            },
+        };
+        let tail = checkpoint(tail_lsn);
+        let valid = RecordedAppend::try_new(
+            tail_lsn,
+            (main_lsn, main.clone()),
+            Some((tail_lsn, tail.clone())),
+        )
+        .unwrap();
+        assert_eq!(
+            (valid.lsn(), valid.through(), valid.entry()),
+            (main_lsn, tail_lsn, &main)
+        );
+        assert_eq!(
+            valid.into_parts(),
+            ((main_lsn, main.clone()), Some((tail_lsn, tail)))
+        );
+        assert_eq!(
+            RecordedAppend::try_new(tail_lsn, (main_lsn, main.clone()), None).unwrap_err(),
+            DurableInputError::AppendCut {
+                expected: tail_lsn,
+                actual: main_lsn
+            }
+        );
+        assert_eq!(
+            RecordedAppend::try_new(
+                tail_lsn,
+                (main_lsn, main.clone()),
+                Some((tail_lsn, main.clone()))
+            )
+            .unwrap_err(),
+            DurableInputError::CheckpointKind { lsn: tail_lsn }
+        );
+        for (position, payload) in [
+            (main_lsn, checkpoint(main_lsn)),
+            (tail_lsn, checkpoint(main_lsn)),
+        ] {
+            assert_eq!(
+                RecordedAppend::try_new(
+                    tail_lsn,
+                    (main_lsn, main.clone()),
+                    Some((position, payload))
+                )
+                .unwrap_err(),
+                DurableInputError::CheckpointPosition { lsn: position }
+            );
+        }
+        assert_eq!(
+            RecordedAppend::try_new(
+                main_lsn,
+                (main_lsn, main.clone()),
+                Some((tail_lsn, checkpoint(tail_lsn)))
+            )
+            .unwrap_err(),
+            DurableInputError::AppendCut {
+                expected: main_lsn,
+                actual: tail_lsn
+            }
+        );
+        let mut wrong_time = checkpoint(tail_lsn);
+        wrong_time.at = dudes_types::Timestamp::from_unix_millis(1);
+        assert_eq!(
+            RecordedAppend::try_new(
+                tail_lsn,
+                (main_lsn, main.clone()),
+                Some((tail_lsn, wrong_time))
+            )
+            .unwrap_err(),
+            DurableInputError::CheckpointTimestamp { lsn: tail_lsn }
+        );
+        let zero = RecordedAppend::try_new(Lsn::ZERO, (Lsn::ZERO, main), None).unwrap();
+        assert_eq!((zero.lsn(), zero.through()), (Lsn::ZERO, Lsn::ZERO));
+    }
 }
 
-impl std::fmt::Debug for BrowserOnboardGoal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("BrowserOnboardGoal(<redacted>)")
-    }
+/// One change to the Floor's device table, appended as the matching journal record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FloorDeviceChange {
+    /// A browser signed in.
+    Enroll {
+        /// The new device's id: the SHA-256 of its key.
+        device: Hex32,
+        /// The Floor origin it signed in on.
+        origin: String,
+        /// Its cleaned, capped name.
+        name: String,
+        /// Its public key as SPKI DER in unpadded base64url.
+        key: String,
+        /// SHA-256 of its cookie.
+        cookie: Hex32,
+    },
+    /// A device made its first request.
+    FirstUse(Hex32),
+    /// A device made a request, at most once a day.
+    Use(Hex32),
+    /// Someone kept a new device.
+    Acknowledge(Hex32),
+    /// A device ended.
+    Remove {
+        /// The device.
+        device: Hex32,
+        /// Why.
+        reason: dudes_proto::record::FloorDeviceRemoval,
+    },
 }

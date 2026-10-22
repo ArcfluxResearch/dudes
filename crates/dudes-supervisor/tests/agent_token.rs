@@ -19,9 +19,12 @@
 use std::collections::BTreeMap;
 
 use dudes_proto::goal::Evidence;
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::rpc::hook::HOOK_TOKEN_LEN;
 use dudes_proto::{Actor, Entry, ExitStatus, PeerProvenance, Record, RecordKind, TurnOutcome};
 use dudes_providers::launch::{EnvVar, LaunchSpec};
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
 use dudes_supervisor::testing::{Harness, Seen};
 use dudes_supervisor::{Command, Effect, Input, MintedFor, PersistToken, blake3_hex};
 use dudes_types::{AgentId, GoalId, Lsn, SessionId, Timestamp, TurnId};
@@ -333,7 +336,40 @@ fn the_mint_precedes_the_first_spawn_of_the_run() {
     // the mint is in front of it.
     harness.unfsynced.clear();
     let boundary = harness.trace.len();
+    let recovery_from = harness.trace.len();
     harness.restart();
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    let handled = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
+
     let run_two = &harness.trace[boundary..];
     let mint = first_mint_position(run_two).expect("the second run mints");
     let launch = *launch_positions(run_two)
@@ -542,8 +578,6 @@ fn a_second_daemon_run_mints_again_for_a_live_agent() {
         "run 1 minted once for two launches: a token is per agent per run, not per launch"
     );
 
-    // The crash: turn 3 is issued, its launch goes out, and the host never answers — so the
-    // journal holds a `TurnIssued` with no `TurnSpawned` for crash rule (2) to re-issue.
     harness.launch = false;
     fail_turn(&mut harness, second, goal);
     let third = harness.open_turn(agent).expect("turn 3 was issued");
@@ -556,7 +590,39 @@ fn a_second_daemon_run_mints_again_for_a_live_agent() {
 
     let boundary = harness.trace.len();
     harness.launch = true;
+    let recovery_from = harness.trace.len();
     harness.restart();
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    let handled = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     let run_two = mints(&harness.trace[boundary..], agent);
     assert_eq!(
@@ -642,7 +708,7 @@ impl InOrder {
         );
         self.lsn += 1;
         let lsn = Lsn(self.lsn);
-        self.step(Input::Persisted { token, lsn })
+        self.step(self.harness.persisted(token, lsn))
     }
 
     fn outstanding(&self) -> &[PersistToken] {

@@ -1337,3 +1337,118 @@ pub(super) fn export(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use dudes_proto::{
+        ChatPendingState, ChatPendingView, MAX_CHAT_PENDING, MAX_CHAT_PENDING_BYTES,
+        MAX_CHAT_PENDING_PER_AGENT, MAX_CHAT_TEXT_BYTES,
+    };
+    use dudes_types::AgentId;
+
+    use super::admits_pending;
+
+    fn agent(n: u8) -> AgentId {
+        AgentId::from_bytes([n; 16])
+    }
+
+    fn pending(owner: u8, lsn: u64, text: &str) -> ChatPendingView {
+        ChatPendingView {
+            agent_id: agent(owner),
+            note_lsn: lsn.to_string(),
+            goal_id: None,
+            text: text.to_owned(),
+            state: ChatPendingState::Queued,
+            turn_id: None,
+            cancellable: true,
+            reason: None,
+        }
+    }
+
+    /// Fill `rows` with `count` rows spread so that no agent reaches its own cap.
+    fn spread(count: usize, text: &str) -> Vec<ChatPendingView> {
+        (0..count)
+            .map(|n| {
+                pending(
+                    u8::try_from(n / 10 + 1).unwrap(),
+                    u64::try_from(n).unwrap(),
+                    text,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn empty_and_oversized_text_is_refused() {
+        assert!(!admits_pending(&[], &pending(1, 1, "")).unwrap());
+        let longest = "x".repeat(MAX_CHAT_TEXT_BYTES);
+        assert!(admits_pending(&[], &pending(1, 1, &longest)).unwrap());
+        let too_long = "x".repeat(MAX_CHAT_TEXT_BYTES + 1);
+        assert!(!admits_pending(&[], &pending(1, 1, &too_long)).unwrap());
+    }
+
+    #[test]
+    fn the_global_count_cap_refuses_one_more() {
+        let rows = spread(MAX_CHAT_PENDING - 1, "note");
+        assert!(admits_pending(&rows, &pending(200, 999, "note")).unwrap());
+        let rows = spread(MAX_CHAT_PENDING, "note");
+        assert!(!admits_pending(&rows, &pending(200, 999, "note")).unwrap());
+    }
+
+    #[test]
+    fn the_per_agent_cap_refuses_one_more_for_that_agent_only() {
+        let rows: Vec<_> = (0..MAX_CHAT_PENDING_PER_AGENT - 1)
+            .map(|n| pending(1, u64::try_from(n).unwrap(), "note"))
+            .collect();
+        assert!(admits_pending(&rows, &pending(1, 99, "note")).unwrap());
+        let mut full = rows;
+        full.push(pending(1, 98, "note"));
+        assert!(!admits_pending(&full, &pending(1, 99, "note")).unwrap());
+        assert!(admits_pending(&full, &pending(2, 99, "note")).unwrap());
+    }
+
+    #[test]
+    fn the_byte_cap_counts_the_worst_state_and_escaped_text() {
+        // A quote escapes to two bytes, so this text costs far more than its length once encoded.
+        let escaped = "\"".repeat(MAX_CHAT_TEXT_BYTES);
+        let mut rows = Vec::new();
+        let mut owner = 1;
+        let mut lsn = 0;
+        loop {
+            if rows
+                .iter()
+                .filter(|row: &&ChatPendingView| row.agent_id == agent(owner))
+                .count()
+                == MAX_CHAT_PENDING_PER_AGENT
+            {
+                owner += 1;
+            }
+            let candidate = pending(owner, lsn, &escaped);
+            if !admits_pending(&rows, &candidate).unwrap() {
+                break;
+            }
+            rows.push(candidate);
+            lsn += 1;
+        }
+        assert!(
+            rows.len() < MAX_CHAT_PENDING,
+            "the byte bound, not the count bound, stopped admission"
+        );
+        let reserved: usize = rows
+            .iter()
+            .map(|row| row.reserved_bytes().unwrap())
+            .sum::<usize>()
+            + 2
+            + (rows.len() - 1);
+        assert!(
+            reserved <= MAX_CHAT_PENDING_BYTES,
+            "every admitted row stays inside the bound at its worst state: {reserved}"
+        );
+        let next = pending(owner, lsn, &escaped);
+        let next_cost = next.reserved_bytes().unwrap() + 1;
+        assert!(
+            reserved + next_cost > MAX_CHAT_PENDING_BYTES,
+            "the refused row really did not fit"
+        );
+    }
+}

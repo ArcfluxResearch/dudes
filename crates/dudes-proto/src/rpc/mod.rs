@@ -60,10 +60,12 @@ pub mod journal;
 pub mod mail;
 pub mod memory;
 pub mod pty;
+pub mod recovery;
 mod secret;
 pub mod system;
 pub mod team;
 pub mod ticket;
+pub mod workspace;
 pub mod worktree;
 
 use std::fmt;
@@ -650,7 +652,7 @@ names! {
     /// Issue a bounded, single-use bootstrap bearer for the read-only Floor.
     // Appended so the variant's position remains its method-table row, 35. Operator-only and
     // non-conditioned.
-    "floor.session.issue" => FloorSessionIssue / floor_session_issue : Empty => floor::SessionIssueResult;
+    "floor.session.issue" => FloorSessionIssue / floor_session_issue : floor::SessionIssueParams => floor::SessionIssueResult;
     /// Make the daemon adopt the `[floor.onboarding]` workspaces now in its own operator file,
     /// only when the file and the change are the caller's.
     // Appended so the variant's position remains its method-table row, 36. Operator-only.
@@ -686,6 +688,15 @@ names! {
     "ticket.accept" => TicketAccept / ticket_accept : ticket::TicketAcceptParams => ticket::TicketAcceptResult;
     /// Stop work on a ticket and return it to To do. The running turn finishes by itself. Operator-only.
     "ticket.stop" => TicketStop / ticket_stop : ticket::TicketStopParams => Empty;
+    /// Trust or stop trusting an enrolled project, so the Floor may hire into its own copy there.
+    /// Operator-only.
+    "workspace.trust" => WorkspaceTrust / workspace_trust : workspace::TrustParams => workspace::TrustResult;
+    /// The browsers signed in to the Floor, newest sign-in first. Operator-only.
+    "floor.devices.list" => FloorDevicesList / floor_devices_list : Empty => floor::DevicesListResult;
+    /// Sign one browser out of the Floor. Operator-only.
+    "floor.devices.remove" => FloorDevicesRemove / floor_devices_remove : floor::DeviceRemoveParams => floor::DeviceRemoveResult;
+    /// Answer a browser's "new browser" notice from the terminal: keep it. Operator-only.
+    "floor.devices.keep" => FloorDevicesKeep / floor_devices_keep : floor::DeviceKeepParams => floor::DeviceKeepResult;
 }
 
 impl From<crate::record::ConditionedMethod> for Method {
@@ -877,9 +888,13 @@ mod tests {
     fn the_method_table_keeps_old_rows_and_appends_tickets() {
         assert_eq!(
             Method::ALL.len(),
-            51,
-            "agent.mcp stays at row 44; the ticket methods append rows 45 to 51"
+            55,
+            "agent.mcp stays at row 44; the ticket methods append rows 45 to 51, workspace.trust row 52, the device methods rows 53 to 55"
         );
+        assert_eq!(Method::ALL[51], Method::WorkspaceTrust);
+        assert_eq!(Method::ALL[52], Method::FloorDevicesList);
+        assert_eq!(Method::ALL[53], Method::FloorDevicesRemove);
+        assert_eq!(Method::ALL[54], Method::FloorDevicesKeep);
         assert_eq!(Method::ALL[44], Method::TicketCreate);
         assert_eq!(Method::ALL[48], Method::TicketRead);
         assert_eq!(Method::ALL[49], Method::TicketAccept);

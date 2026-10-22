@@ -59,16 +59,22 @@ function ProviderEntry({ row }: { readonly row: ProviderRow }) {
     <li className="setup-provider" data-provider={row.provider} data-found={row.found}>
       <h3>{NAMES[row.provider]}</h3>
       {row.found ? (
-        <p>Found on the daemon’s PATH at <code>{row.path ?? 'a path this page cannot show'}</code>.</p>
+        <>
+          <p>Found.</p>
+          <details className="setup-where"><summary>Where it is</summary>
+            <p>Found on the daemon’s PATH at <code>{row.path ?? 'a path this page cannot show'}</code>.</p>
+          </details>
+        </>
       ) : (
         <>
-          {row.detail === null ? (
-            <p><code>{row.program ?? 'Its program'}</code> is not on the daemon’s PATH.</p>
-          ) : <p className="setup-refusal">{row.detail}</p>}
-          <p className="setup-note">
-            The daemon searches the PATH it started with, which can differ from your shell’s. A program installed
-            into a directory already on that PATH shows on Recheck; a changed PATH needs a daemon restart.
-          </p>
+          {row.detail === null ? <p>Not found.</p> : <p className="setup-refusal">{row.detail}</p>}
+          <details className="setup-where"><summary>Why it was not found</summary>
+            {row.detail === null ? <p><code>{row.program ?? 'Its program'}</code> is not on the daemon’s PATH.</p> : null}
+            <p className="setup-note">
+              The daemon searches the PATH it started with, which can differ from your shell’s. A program installed
+              into a directory already on that PATH shows on Recheck; a changed PATH needs a daemon restart.
+            </p>
+          </details>
           {install === undefined ? null : (
             <p className="setup-install">
               <code>{install}</code>
@@ -92,12 +98,14 @@ export function SetupView({ floor, onGuide }: { readonly floor: FloorState; read
       {report === null || state !== 'ready' ? null : (
           <>
             {floor.stale ? <p role="status">Setup unconfirmed. These values are from the last snapshot.</p> : null}
-            <dl className="setup-home">
-              <div>
-                <dt>State directory</dt>
-                <dd>{report.stateDir === null ? 'Not reported' : <code>{report.stateDir}</code>}</dd>
-              </div>
-            </dl>
+            <details className="setup-where"><summary>Where Dudes keeps its data</summary>
+              <dl className="setup-home">
+                <div>
+                  <dt>State directory</dt>
+                  <dd>{report.stateDir === null ? 'Not reported' : <code>{report.stateDir}</code>}</dd>
+                </div>
+              </dl>
+            </details>
             {report.providers.length === 0 ? <p>The daemon has no provider it can hire.</p> : (
               <ul className="setup-providers" aria-label="Providers">
                 {report.providers.map((row) => <ProviderEntry key={row.provider} row={row} />)}

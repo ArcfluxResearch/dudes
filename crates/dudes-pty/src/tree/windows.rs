@@ -64,6 +64,10 @@ pub(crate) fn spawn(spec: LaunchSpec, size: PtySize) -> io::Result<Spawned> {
 }
 
 impl Session {
+    pub(crate) fn exit_status(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
+    }
+
     pub(crate) fn close_query(&self) -> io::Result<CloseQuery> {
         if !self.reaped {
             return Err(io::Error::other("PTY direct child is not reaped"));
@@ -84,6 +88,10 @@ impl Session {
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "PTY input is closed"))?
             .write(bytes)
+    }
+
+    pub(crate) fn write_ready(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.write(&bytes[..bytes.len().min(256)])
     }
 
     pub(crate) fn resize(&mut self, size: PtySize) -> io::Result<()> {

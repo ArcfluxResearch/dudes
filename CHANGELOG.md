@@ -11,6 +11,136 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.93.0] - 2026-10-22
+
+### Highlights
+
+- **The Floor signs every request with a key the page cannot read.** When a browser signs in, it makes a key it cannot export and keeps it in IndexedDB, and the daemon keeps only the public half. Every read, action and connection the page makes carries a signature made with that key, so a copied cookie opens nothing. A browser needs WebCrypto and IndexedDB; one without them is told so on the sign-in screen. Checked in Chrome, Firefox and Safari, in normal and private windows. (#156)
+- **See and end the browsers signed in to the Floor.** Settings lists each signed-in browser by name, with when it signed in and was last used, and a Sign out button. Every other open Floor announces a new sign-in with Keep and Remove, and a signed-out page says why: you signed out, another browser or the terminal removed it, it expired, or a newer sign-in replaced it. In the terminal, `dudes devices` lists them, `dudes devices remove <id>` signs one out and closes its connections, and `dudes devices keep <id>` keeps a new one. (#150, #151)
+- **Sign-ins last longer and survive restarts.** A browser stays signed in for 30 days without use and 90 days in all, instead of 24 hours and 30 days, and stays signed in across `dudes stop`, `dudes start` and `dudes upgrade`. The daemon keeps up to eight browsers. A ninth sign-in removes one that was never used, else one nobody has kept, else the one used longest ago. (#150)
+
+### Changes
+
+- `dudes open` in a browser that is already signed in keeps it as the same browser, instead of adding another one. (#156)
+- A link printed by `dudes floor open` lives 10 minutes and has its own slot, so printing one never blocks `dudes open`, whose links live 60 seconds. (#150)
+- A held ticket's Review opens the interrupted work instead of Chat, and the recovery panel uses plainer words. (#157)
+- The README opens with the Floor, a screenshot and a two-command quick start, and links a demo that needs no account. Upgrade details moved to Get started. (#146, #155)
+
+### Fixes
+
+- A ticket whose engine turn failed shows the exit code or signal and the time on its card and in its detail. (#152)
+- Notices show over the full-screen Setup, Settings, Log and agent sheets on a phone, and several at once no longer cover most of the screen. (#149)
+- Notices no longer make the Hire and Retire buttons unreachable or cover the first-task input. (#153)
+- On a phone, the open agent panel no longer covers the receipt a held ticket points to. (#157)
+
+### Breaking
+
+- **Every browser signs in once more.** Browsers that signed in before this release hold no key, so the first 0.93.0 daemon ends each of them once. Run `dudes open` to sign in again. A page left open across the upgrade says the daemon stopped or restarted without its sign-in. (#156)
+
+## [0.92.0] - 2026-10-21
+
+### Highlights
+
+- **Run Dudes from the Floor, with no terminal.** A signed-in Floor now acts for you. Add a project from a folder path and remove it in Settings, change the Floor's switches, engines and spending limits in Settings, sign an engine in from the Hire dialog, page through finished tickets, and resume or review a held ticket's recovery. Floor switches apply to a running daemon at once, with no restart. (#123, #124, #125, #129, #131, #132, #134, #135)
+- **`dudes open` signs you in.** It starts the daemon if it is down, makes a one-time sign-in link and opens it in your browser. Over SSH it prints the link instead. A sign-in renews while you use it, stays signed in while its tab is on screen, and ends after 24 hours idle, after 30 days, or when you choose Sign out. At four sign-ins, a fifth ends the one used longest ago. (#127, #138)
+- **Agents cannot act through the Floor.** Every Floor request passes one check, and a request from inside an agent's processes is refused and recorded. Before the page sends its secret, it checks that it is talking to the real daemon. (#121, #137)
+- **Two agents in one project, each in its own copy.** Trust a project with `dudes project trust <id>`, then tick "Work in its own copy of the project" when you hire. The agent works on its own branch in a separate checkout, so two agents do not edit the same files. (#133)
+
+### Changes
+
+- The Floor, the command line and the docs say "project" everywhere, and `dudes workspace` is now `dudes project`. (#120, #139)
+- `dudes project add` in a repository with no test command uses the files-changed check, as quick start does. (#120)
+- `dudes quickstart` on a new install turns on the Floor's actions and leaves the browser terminal off. A config file that already chooses its own switches is kept as it is. (#123)
+- Hire opens as a centred dialog, with a wider sign-in terminal and Open link and Copy link buttons. Notices float under the header instead of pushing the page down, and side panels open full screen on a phone. (#143)
+- Plainer words for newcomers. Next leads through Hire, and Hire appears on its last step. A ticket that is still being worked on hides Accept and Ask for changes. Settings names each switch in plain words, and the signed-out page says how to sign in again. (#143, #144)
+
+### Fixes
+
+- If `dudes uninstall` stops partway, a rerun now removes the programs too, instead of reporting success while they are still installed. (#119)
+
+### Breaking
+
+- `dudes workspace` is removed, with no alias. Use `dudes project` (`add`, `remove`, `list`, `reload`, `check add` and `check remove`). Config keys are unchanged. (#120)
+- `dudes doctor` is removed. Run `dudes status`, which prints the same report. `dudes floor open --no-browser` is now a usage error, so drop the flag. (#140)
+
+## [0.91.0] - 2026-10-20
+
+### Highlights
+
+- **Give an agent a task from the first screen.** When an agent has nothing to do, the Floor shows "Give Kim a task" with one box and a Start button. Start creates the ticket and gives it to that agent in one step. With no agent yet, it says how to hire one, and with no coding app installed, it shows the install command. (#113)
+- **See who needs you at a glance.** A strip of agent cards under the office puts agents whose work is ready for you first, then those that need you, each with one button to review, answer or chat. Tags over the agents in the office say the same, and on a phone a ticket opens full screen with Accept and Ask for changes always in reach. (#114)
+- **Start in any repository.** Hiring from the Floor works where the project's tests already pass, and quick start in a repository with no test command offers a check that passes once the agent has changed a file, then you review the change. (#117)
+
+### Changes
+
+- Hire preselects an installed coding app and the only project, folds the role and look away, and keeps Hire on screen on a phone. A second agent in the same project gets a plain note on why its tickets wait for review, and how to avoid it. (#113)
+- The Floor uses plain words: "Dudes ran it" for a check the daemon ran, "Checks passed today", and the journal position only behind Details. (#113, #116)
+- `dudes quickstart --yes` turns on the Floor's hire, goal, control, answer and board actions when none are on yet. The terminal, renew, retire, changed-files and diff views stay off. (#115)
+
+### Fixes
+
+- The review sheet says in one sentence what Dudes could not check, the "is working on it" notice clears once a ticket is ready, and the sign-in and tab-limit messages say what to do. (#116)
+- Hire counts no bytes, and the task card says plainly how Dudes checks the work. (#115)
+
+## [0.90.0] - 2026-10-19
+
+### Highlights
+
+- **Agents end when the daemon crashes, on macOS and Linux.** A daemon that dies hard, from a crash, an out-of-memory kill or `kill -9`, now takes its agents with it within milliseconds, as it already did on Windows. Before, an agent kept working with nobody watching it. A restarted daemon ends that turn as vanished, and restart and continue resumes it. (#106, #107, #108)
+- **The hire example gives a second agent a folder of its own.** The README and Get started no longer hire a second agent into the repository that quick start set up, so the first agent's tickets keep reaching Ready for you. (#109)
+
+### Changes
+
+- On macOS and Linux, the daemon starts a small keeper process beside each agent. The keeper ends the agent's process group when the daemon dies, however it dies. A restarted daemon no longer adopts an agent that outlived its daemon, because none does. A launch whose keeper cannot start fails before any task reaches the agent, and a daemon that cannot find its own executable refuses to start. (#106, #107)
+- The README and Get started hire the example's second agent into `~/dudes-hello` and say why, and Get started names `--worktree` as the way to share one repository. (#109)
+
+### Fixes
+
+- On macOS, open an attached terminal under the same lock as every other child the daemon starts, so a terminal cannot inherit a keeper's pipe and stop its agent from ending with the daemon. Log a warning when a keeper ends on its own while its agent runs. (#108)
+
+## [0.89.1] - 2026-10-19
+
+### Highlights
+
+- **Clearer first-run failures.** When an agent cannot launch because its engine is not installed, `dudes agents` and the Floor name the engine and the next step. When the daemon's socket path is too long for the platform, `dudes quickstart` and `dudes start` say so before anything starts. (#101, #103)
+- **A Floor tab that is not signed in says so.** A refused, expired or missing sign-in link shows the problem and its remedy instead of an empty office, and the full page returns once a fresh link is pasted. (#102)
+
+### Changes
+
+- The README and Get started say to use `--provider codex` or `--provider pi` in the hire example when that is the CLI you have signed in, and the platforms page lists the Linux arm64 first-run rehearsal. (#100)
+
+### Fixes
+
+- Under a launch failure of kind NotFound, say that Dudes could not start the agent's engine, usually because its program is not installed, and give the next step, in `dudes agents` and in the Floor's drawer and crew row. (#101)
+- Refuse `dudes quickstart` and `dudes start` before the daemon starts when its socket path is longer than the platform allows, naming the path, its length and the limit. Commands that connect to the daemon report the same limit. (#103)
+- Show only the sign-in problem and its remedy on a Floor tab that holds no session, and show the full page as soon as a pasted link signs it in. (#102)
+- When a check program is inside the project's repository, suggest running a shell script through its interpreter, for example `sh test.sh`, and say that the agent can still edit that script. A ticket's Needs you reason gives the same advice. (#104)
+
+## [0.89.0] - 2026-10-18
+
+### Highlights
+
+- **Choose how an interrupted goal continues.** Inspect an eligible Managed goal in the CLI or authenticated Floor, choose an offered context, and authorize one recovery attempt. Recovery keeps the same agent and unfinished goal. Ordinary Resume does not release its recovery barrier. (#89)
+- **Review recovered ticket attempts.** Recovery keeps the same ticket round. The Floor shows recovered attempts, earlier acknowledged reviews, and whether the last check applies to current work. An earlier check becomes Historical after later work is admitted. Unknown applicability is not a pass. (#89)
+
+### Changes
+
+- Offer **Try recorded conversation**, **Start fresh with recorded recap**, or **Repeat issued task in fresh context** when the inspected boundary permits them. Recorded context does not guarantee restored provider history. Fresh context does not restore history. A recorded recap may shrink or be omitted. Repeating an issued task preserves its task and answers without a recap. A context failure never automatically falls back to fresh work. Earlier effects may repeat. (#89)
+- Keep recovery subject to budgets, hop caps, questions, instruction review, and other admission gates. Authorization does not guarantee a launch. Floor recovery requires both `floor.recovery` and `floor.control`. Quickstart's bundled Floor actions do not enable recovery. (#89)
+- Keep the recovery request ID. If the reply is lost or authorization is unknown, read that request's receipt without resubmitting. Save the Floor's ID before reloading, then use `dudes recovery receipt <request-id>` afterward. (#89)
+- After unused browser consent becomes invalidated, ordinary Resume and waiting do not reopen it. For a last Observed Failed or NoResult turn, a later explicit Pause can permit a fresh inspection and a new offered choice. See [the recovery steps](docs/goals-and-stopping.md#make-a-new-choice-after-unused-consent-is-invalidated). (#89)
+- Use one Board with consistent ticket columns. Keep plain cards whose status does not match a ticket column under **Other board cards**. (#93)
+- Add a **Workers** list to Overview for agents with their own worktrees, with their branch, state, and starting point. (#91)
+- Link the running version's release notes from About and add a release-notes link to the Floor's post-update reload notice. (#90)
+- New required recovery records and process-absence settlement data change the journal. Dudes 0.88.0 and older refuse journals containing this new data. Downgrading after it is written is unsupported. (#89)
+
+### Fixes
+
+- Explain an unknown checkout comparison when either the recorded review sample or the current sample is incomplete. (#88)
+- Cap long agent names in office tags so they do not cover neighboring agents. (#92)
+- Print the exact ticket Accept and Ask for changes commands, including the expected sequence, after the instruction comparison settles. (#94)
+- Clear inherited blocked signals before starting agent, command-check, and terminal children on macOS and Linux, so they can receive graceful stop signals. (#95)
+
 ## [0.88.0] - 2026-10-16
 
 ### Highlights
@@ -191,7 +321,13 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.88.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.93.0...HEAD
+[0.93.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.92.0...v0.93.0
+[0.92.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.91.0...v0.92.0
+[0.91.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.90.0...v0.91.0
+[0.90.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.89.1...v0.90.0
+[0.89.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.89.0...v0.89.1
+[0.89.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.88.0...v0.89.0
 [0.88.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.2...v0.88.0
 [0.87.2]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.1...v0.87.2
 [0.87.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.0...v0.87.1

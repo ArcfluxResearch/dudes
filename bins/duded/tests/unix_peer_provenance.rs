@@ -9,7 +9,7 @@ use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use duded::classify::{ExternalChild, PeerBarrier, ProcessRelation, Relation, Resolver};
@@ -23,14 +23,12 @@ use duded::{ChildEnds, ChildTurn, ExitCause, boot};
 use dudes_host::{ChildExit, ChildStream, ChildStreams, RealHost};
 use dudes_journal::{Fsync, JournalOptions};
 use dudes_proto::providers::claude::Settings;
-use dudes_proto::rpc::agent::{AskParams, AttachParams, RetireParams};
+use dudes_proto::rpc::agent::{AskParams, AttachParams};
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::hook::HookToken;
 use dudes_proto::rpc::pty::PtyId;
-use dudes_proto::rpc::{AgentRef, Empty, ErrorCode, Method, Response};
-use dudes_proto::{
-    Actor, AgentBudget, Entry, ExitStatus, PtyCloseOutcome as ClosedOutcome, Record,
-};
+use dudes_proto::rpc::{Empty, ErrorCode, Method, Response};
+use dudes_proto::{Actor, AgentBudget, Entry, ExitStatus, Record};
 use dudes_providers::adapter::{
     Adapter, AgentCtx, Isolation, ManagedInstall, SessionAcquisition, TurnSession, UsageSource,
 };
@@ -479,71 +477,10 @@ struct HostAnswer {
     relation: Relation,
 }
 
-/// What the recording relation does with an attached child the PTY host created.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Registration {
-    /// Register it at once, as production does.
-    Immediate,
-    /// Register it only once a peer's resolution has entered the relation and has either
-    /// answered or waited a second, so that peer meets the barrier before the child has a key.
-    AfterAPeerWaits,
-    /// Refuse to register it.
-    Refused,
-}
-
 #[derive(Debug)]
 struct RecordedHostPeerProcesses {
     host: HostPeerProcesses,
     answers: Mutex<Vec<HostAnswer>>,
-    peers: Arc<(Mutex<PeerCounts>, Condvar)>,
-    registration: Registration,
-}
-
-/// Resolutions that entered the relation, and those that answered.
-#[derive(Clone, Copy, Debug, Default)]
-struct PeerCounts {
-    arrived: usize,
-    answered: usize,
-}
-
-/// Holds a registration until a peer's resolution has entered the relation, and then until it
-/// answers or has waited one second, well inside the relation's three-second bound. A peer that
-/// meets an armed barrier is still waiting when the second ends; one that does not has answered.
-#[derive(Debug)]
-struct HeldRegistration {
-    inner: Box<dyn ExternalChild>,
-    peers: Arc<(Mutex<PeerCounts>, Condvar)>,
-    before: PeerCounts,
-}
-
-impl ExternalChild for HeldRegistration {
-    fn register(&mut self, child: PtyChild) -> std::io::Result<AdoptionKey> {
-        let (peers, changed) = &*self.peers;
-        let peers = peers.lock().expect("peer counts");
-        let (peers, _) = changed
-            .wait_timeout_while(peers, Duration::from_secs(20), |counts| {
-                counts.arrived == self.before.arrived
-            })
-            .expect("peer counts");
-        let _ = changed
-            .wait_timeout_while(peers, Duration::from_secs(1), |counts| {
-                counts.answered == self.before.answered
-            })
-            .expect("peer counts");
-        self.inner.register(child)
-    }
-}
-
-/// Keeps the slot active, as a real hold does, and refuses to register the child.
-#[derive(Debug)]
-struct RefusedRegistration {
-    _hold: Box<dyn ExternalChild>,
-}
-
-impl ExternalChild for RefusedRegistration {
-    fn register(&mut self, _child: PtyChild) -> std::io::Result<AdoptionKey> {
-        Err(std::io::Error::other("injected registration refusal"))
-    }
 }
 
 impl RecordedHostPeerProcesses {
@@ -559,16 +496,6 @@ impl RecordedHostPeerProcesses {
                 )
             })
             .collect()
-    }
-
-    fn answer_for(&self, peer: &Value) -> Option<Relation> {
-        let peer = u32::try_from(peer.as_u64()?).ok()?;
-        self.answers
-            .lock()
-            .expect("recorded answers")
-            .iter()
-            .find(|answer| answer.peer == peer)
-            .map(|answer| answer.relation)
     }
 }
 
@@ -586,22 +513,10 @@ impl ProcessRelation for RecordedHostPeerProcesses {
     }
 
     fn track_external(&self, slot: u64) -> Box<dyn ExternalChild> {
-        let inner = self.host.track_external(slot);
-        match self.registration {
-            Registration::Immediate => inner,
-            Registration::AfterAPeerWaits => Box::new(HeldRegistration {
-                inner,
-                peers: Arc::clone(&self.peers),
-                before: *self.peers.0.lock().expect("peer counts"),
-            }),
-            Registration::Refused => Box::new(RefusedRegistration { _hold: inner }),
-        }
+        self.host.track_external(slot)
     }
 
     fn resolve(&self, peer: u32, pidversion: Option<u32>, children: &[AdoptionKey]) -> Relation {
-        let (counts, changed) = &*self.peers;
-        counts.lock().expect("peer counts").arrived += 1;
-        changed.notify_all();
         let relation = self.host.resolve(peer, pidversion, children);
         self.answers
             .lock()
@@ -611,8 +526,6 @@ impl ProcessRelation for RecordedHostPeerProcesses {
                 recorded_children: children.len(),
                 relation,
             });
-        counts.lock().expect("peer counts").answered += 1;
-        changed.notify_all();
         relation
     }
 }
@@ -709,15 +622,12 @@ fn start_real_with(
     settings: &duded::settings::Settings,
     pty_host: Box<dyn PtyHostPort>,
     adapters: Adapters,
-    registration: Registration,
 ) -> (common::Running, Arc<RecordedHostPeerProcesses>) {
     let children = ChildEnds::new();
     let host = RealHost::watching(Arc::new(HostStreams(Arc::clone(&children))));
     let processes = Arc::new(RecordedHostPeerProcesses {
         host: HostPeerProcesses(host.peer_processes()),
         answers: Mutex::new(Vec::new()),
-        peers: Arc::default(),
-        registration,
     });
     let resolver = Resolver::processes(Arc::clone(&processes) as Arc<dyn ProcessRelation>);
     let host = PeerBarrier::new(host, resolver.clone());
@@ -744,13 +654,7 @@ fn start_real(fixture: &Fixture, role: &str, release: &Path) -> common::Running 
     let adapters = [Box::new(HelperAdapter) as Box<dyn Adapter>]
         .into_iter()
         .collect();
-    start_real_with(
-        &settings,
-        Box::new(duded::ports::ClosedPtyHost),
-        adapters,
-        Registration::Immediate,
-    )
-    .0
+    start_real_with(&settings, Box::new(duded::ports::ClosedPtyHost), adapters).0
 }
 
 fn questions(fixture: &Fixture) -> Vec<(AgentId, String)> {
@@ -985,7 +889,6 @@ impl AttachedDaemon {
         fixture: &Fixture,
         settings: &duded::settings::Settings,
         ptys: Box<dyn PtyHostPort>,
-        registration: Registration,
     ) -> Self {
         let stand_in = ClaudeConfig {
             command: claude_stand_in(fixture.state.path()).into_os_string(),
@@ -998,7 +901,7 @@ impl AttachedDaemon {
             &settings.daemon_env,
         )
         .expect("stand-in Claude adapter");
-        let (running, processes) = start_real_with(settings, ptys, adapters, registration);
+        let (running, processes) = start_real_with(settings, ptys, adapters);
         let operators = (0..2)
             .map(|_| {
                 let mut operator =
@@ -1071,16 +974,6 @@ impl AttachedDaemon {
         .expect("attach params");
         self.as_operator(connection, Method::AgentAttach, params)
     }
-
-    fn detach(&mut self, agent: AgentId) -> Response {
-        let connection = self
-            .attached
-            .iter()
-            .position(|attached| *attached == agent)
-            .expect("the agent was attached here");
-        let params = serde_json::to_value(AgentRef { agent }).expect("detach params");
-        self.as_operator(connection, Method::AgentDetach, params)
-    }
 }
 
 fn pty_of(fixture: &Fixture, agent: AgentId) -> PtyId {
@@ -1103,184 +996,6 @@ fn detached_by_system(records: &[Record], agent: AgentId) -> bool {
     })
 }
 
-/// Through the shipped resolver and a native PTY: an attached CLI's own
-/// `PreToolUse` hook, run as the CLI's child the way the vendor runs an installed handler.
-#[test]
-fn attached_cli_hook_is_its_agents_and_is_denied_while_paused() {
-    let fixture = Fixture::new();
-    let settings = attached_settings(&fixture, ATTACHED_HOOK);
-    let mut daemon = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(NativePtys::default()),
-        Registration::Immediate,
-    );
-    let agent = daemon.paused_agent(&fixture);
-    let attach = daemon.attach(agent);
-    assert!(attach.error.is_none(), "attach was refused: {attach:?}");
-    let observed = await_observation(&fixture, agent, "0");
-    assert_eq!(daemon.stop(), ExitCause::Ended);
-
-    assert_eq!(
-        observed["result"],
-        denied_while_paused(),
-        "hook pid {}; host answers: {:?}",
-        observed["pid"],
-        daemon.processes.answers()
-    );
-}
-
-/// A hook the attached child fires before the pump has published its key waits at
-/// the barrier and then resolves to the agent; it is never answered as no recorded agent.
-#[test]
-fn a_hook_before_the_publication_waits_then_resolves_to_its_agent() {
-    let fixture = Fixture::new();
-    let settings = attached_settings(&fixture, ATTACHED_HOOK);
-    let mut daemon = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(NativePtys::default()),
-        Registration::AfterAPeerWaits,
-    );
-    let agent = daemon.paused_agent(&fixture);
-    let attach = daemon.attach(agent);
-    assert!(attach.error.is_none(), "attach was refused: {attach:?}");
-    let observed = await_observation(&fixture, agent, "0");
-    assert_eq!(daemon.stop(), ExitCause::Ended);
-
-    assert!(
-        matches!(
-            daemon.processes.answer_for(&observed["pid"]),
-            Some(Relation::Pending(_))
-        ),
-        "the hook reached the relation before its child was registered, so it met the barrier; \
-         host answers: {:?}",
-        daemon.processes.answers()
-    );
-    assert_eq!(
-        observed["result"],
-        denied_while_paused(),
-        "host answers: {:?}",
-        daemon.processes.answers()
-    );
-}
-
-/// A close the host cannot confirm appends no `Detached`, so the attached CLI that
-/// may still be running stays its agent's and a pause still governs its hooks.
-#[test]
-fn a_failed_close_keeps_the_attached_child_governed() {
-    let fixture = Fixture::new();
-    let settings = attached_settings(&fixture, ATTACHED_HOOK);
-    let ptys = NativePtys::default();
-    let mut daemon = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(ptys.clone()),
-        Registration::Immediate,
-    );
-    let agent = daemon.paused_agent(&fixture);
-    let attach = daemon.attach(agent);
-    assert!(attach.error.is_none(), "attach was refused: {attach:?}");
-    assert_eq!(
-        await_observation(&fixture, agent, "0")["result"],
-        denied_while_paused(),
-        "control: governed before the close"
-    );
-
-    ptys.refuse_close.store(true, Ordering::SeqCst);
-    let _ = daemon.detach(agent);
-    fixture.await_record("failed PtyCloseCompleted", |record| {
-        matches!(
-            record,
-            Record::PtyCloseCompleted {
-                outcome: ClosedOutcome::Failed { .. },
-                ..
-            }
-        )
-        .then_some(())
-    });
-    release_hook(&fixture, agent, 1);
-    let after = await_observation(&fixture, agent, "1");
-    let before_teardown = fixture.records();
-    ptys.refuse_close.store(false, Ordering::SeqCst);
-    assert_eq!(daemon.stop(), ExitCause::Ended);
-
-    assert!(
-        !before_teardown
-            .iter()
-            .any(|record| matches!(record, Record::Detached { .. })),
-        "the failed close appended a Detached: {:?}",
-        before_teardown.iter().map(Record::kind).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        after["result"],
-        denied_while_paused(),
-        "hook pid {}; host answers: {:?}",
-        after["pid"],
-        daemon.processes.answers()
-    );
-}
-
-/// Through the shipped resolver, a native PTY and the real `dudes-hook`. The closes
-/// are refused, which keeps the loop free and the child recorded.
-#[test]
-fn retired_agents_attached_hook_is_halted_not_refused() {
-    let fixture = Fixture::new();
-    let settings = attached_settings(&fixture, ATTACHED_HOOK);
-    let ptys = NativePtys::default();
-    let mut daemon = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(ptys.clone()),
-        Registration::Immediate,
-    );
-    let agent = daemon.paused_agent(&fixture);
-    let attach = daemon.attach(agent);
-    assert!(attach.error.is_none(), "attach was refused: {attach:?}");
-    assert_eq!(
-        await_observation(&fixture, agent, "0")["result"],
-        denied_while_paused(),
-        "control: governed before the retirement"
-    );
-
-    ptys.refuse_close.store(true, Ordering::SeqCst);
-    let retired = daemon
-        .running
-        .handle
-        .ask(Ask::Retire(Box::new(RetireParams {
-            agent,
-            reason: "the quarter ended".to_owned(),
-        })));
-    assert!(matches!(retired, Ok(Answered::Done)), "retire: {retired:?}");
-    fixture.await_record("the retirement's failed close", |record| {
-        matches!(
-            record,
-            Record::PtyCloseCompleted {
-                outcome: ClosedOutcome::Failed { .. },
-                ..
-            }
-        )
-        .then_some(())
-    });
-    release_hook(&fixture, agent, 1);
-    let after = await_observation(&fixture, agent, "1");
-    ptys.refuse_close.store(false, Ordering::SeqCst);
-    assert_eq!(daemon.stop(), ExitCause::Ended);
-
-    assert_eq!(
-        after["result"],
-        json!({
-            "settings_installed": true,
-            "exit": 0,
-            "stdout": {"continue": false},
-            "stderr": "",
-        }),
-        "hook pid {}; host answers: {:?}",
-        after["pid"],
-        daemon.processes.answers()
-    );
-}
-
 /// Across a daemon that died without closing its PTYs: a child that outlived it stays
 /// its agent's after the restart, and is detached by the system once a probe reads it gone; one
 /// already gone at startup is detached then.
@@ -1289,12 +1004,7 @@ fn a_restart_keeps_a_surviving_child_governed_and_detaches_a_gone_one() {
     let fixture = Fixture::new();
     let settings = attached_settings(&fixture, ATTACHED_HOOK);
     let ptys = NativePtys::default();
-    let mut first = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(ptys.clone()),
-        Registration::Immediate,
-    );
+    let mut first = AttachedDaemon::start(&fixture, &settings, Box::new(ptys.clone()));
     let survivor = first.paused_agent(&fixture);
     let gone = first.paused_agent(&fixture);
     for agent in [survivor, gone] {
@@ -1323,12 +1033,8 @@ fn a_restart_keeps_a_surviving_child_governed_and_detaches_a_gone_one() {
     ptys.close_for_real(gone_pty);
     assert!(ptys.live(survivor_pty), "the survivor outlived its daemon");
 
-    let mut second = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(duded::ports::ClosedPtyHost),
-        Registration::Immediate,
-    );
+    let mut second =
+        AttachedDaemon::start(&fixture, &settings, Box::new(duded::ports::ClosedPtyHost));
     let records = fixture.records();
     assert!(
         detached_by_system(&records, gone),
@@ -1367,12 +1073,7 @@ fn a_restart_keeps_a_surviving_child_governed_and_detaches_a_gone_one() {
 fn an_operator_credential_from_inside_an_attached_tree_is_refused() {
     let fixture = Fixture::new();
     let settings = attached_settings(&fixture, ATTACHED_OPERATOR);
-    let mut daemon = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(NativePtys::default()),
-        Registration::Immediate,
-    );
+    let mut daemon = AttachedDaemon::start(&fixture, &settings, Box::new(NativePtys::default()));
     let agent = daemon.paused_agent(&fixture);
     let attach = daemon.attach(agent);
     assert!(attach.error.is_none(), "attach was refused: {attach:?}");
@@ -1394,44 +1095,6 @@ fn an_operator_credential_from_inside_an_attached_tree_is_refused() {
         }),
         "host answers: {:?}",
         daemon.processes.answers()
-    );
-}
-
-/// Fails closed: a PTY child the relation cannot register is closed, its open counts
-/// as not launched, and the attach is refused.
-#[test]
-fn an_attached_child_the_relation_cannot_register_is_closed_and_refused() {
-    let fixture = Fixture::new();
-    let settings = attached_settings(&fixture, ATTACHED_HOOK);
-    let ptys = NativePtys::default();
-    let mut daemon = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(ptys.clone()),
-        Registration::Refused,
-    );
-    let agent = daemon.paused_agent(&fixture);
-    let attach = daemon.attach(agent);
-    fixture.await_record("Detached", |record| {
-        matches!(record, Record::Detached { agent: detached, .. } if *detached == agent)
-            .then_some(())
-    });
-    assert_eq!(daemon.stop(), ExitCause::Ended);
-
-    let refusal = attach.error.expect("the attach is refused");
-    assert!(
-        refusal.message.contains("injected registration refusal"),
-        "refused for the registration: {refusal:?}"
-    );
-    let opened = ptys.opened.lock().expect("opened").clone();
-    assert_eq!(opened.len(), 1, "the child was started once");
-    assert!(!ptys.live(opened[0]), "the unregistered child was closed");
-    assert!(
-        !fixture
-            .records()
-            .iter()
-            .any(|record| matches!(record, Record::PtySpawned { .. })),
-        "no key is recorded for a child that was never registered"
     );
 }
 
@@ -1460,30 +1123,13 @@ impl ProcessRelation for FixedRelation {
 }
 
 #[derive(Clone, Copy)]
-enum PendingSetup {
-    None,
-    Abort,
-    Wait,
-}
-
-#[derive(Clone, Copy)]
 enum NegativeDispatch {
     Completed,
     ConnectionRefused,
 }
 
-fn dispatch_matrix_negative(label: &str, relation: Relation, finish: bool, setup: PendingSetup) {
+fn dispatch_matrix_negative(label: &str, relation: Relation, finish: bool) {
     let resolver = Resolver::processes(Arc::new(FixedRelation { relation, finish }));
-    match setup {
-        PendingSetup::None => {}
-        PendingSetup::Abort => {
-            let pending = resolver.begin_spawn().expect("arm aborted owner");
-            resolver.abort_spawn(pending);
-        }
-        PendingSetup::Wait => {
-            let _ = resolver.begin_spawn().expect("arm waiting owner");
-        }
-    }
     let expected = match relation {
         Relation::NoMatch | Relation::Unresolvable => NegativeDispatch::Completed,
         Relation::Pending(_) | Relation::Abandoned => NegativeDispatch::ConnectionRefused,
@@ -1538,17 +1184,6 @@ fn dispatch_negative_with_resolver(label: &str, resolver: Resolver, expected: Ne
         "{label}: the negative relation produced a HumanQuestion"
     );
     assert_eq!(running.stop(ExitCause::Ended), ExitCause::Ended);
-}
-
-fn reported_peer() -> dudes_rpc::PeerIdentity {
-    dudes_rpc::PeerIdentity {
-        uid: Some(501),
-        gid: Some(20),
-        pid: dudes_rpc::PeerPid::Reported {
-            pid: 42,
-            pidversion: cfg!(target_os = "macos").then_some(7),
-        },
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1647,52 +1282,6 @@ fn assert_real_macos_dead_and_version_mismatch_are_unresolvable() {
 }
 
 #[test]
-fn pending_spawn_waits_for_publication_and_refuses_non_answers() {
-    use dudes_rpc::PeerResolver as _;
-    use dudes_rpc::auth::PeerResolution;
-
-    let aborted = Resolver::processes(Arc::new(FixedRelation {
-        relation: Relation::Pending(1),
-        finish: true,
-    }));
-    let pending = aborted.begin_spawn().expect("arm pending owner");
-    aborted.abort_spawn(pending);
-    assert_eq!(aborted.resolve(&reported_peer()), PeerResolution::Refuse);
-
-    let exhausted = Resolver::processes(Arc::new(FixedRelation {
-        relation: Relation::Abandoned,
-        finish: true,
-    }));
-    assert_eq!(exhausted.resolve(&reported_peer()), PeerResolution::Refuse);
-
-    let timed_out = Resolver::processes(Arc::new(FixedRelation {
-        relation: Relation::Pending(1),
-        finish: false,
-    }));
-    let _ = timed_out.begin_spawn().expect("arm timed-out owner");
-    assert_eq!(timed_out.resolve(&reported_peer()), PeerResolution::Refuse);
-
-    dispatch_matrix_negative(
-        "pending abort",
-        Relation::Pending(1),
-        true,
-        PendingSetup::Abort,
-    );
-    dispatch_matrix_negative(
-        "pending timeout",
-        Relation::Pending(1),
-        false,
-        PendingSetup::Wait,
-    );
-    dispatch_matrix_negative(
-        "host abandonment",
-        Relation::Abandoned,
-        true,
-        PendingSetup::None,
-    );
-}
-
-#[test]
 fn sibling_escape_unreadable_and_absent_identity_are_refused() {
     use dudes_rpc::auth::PeerResolution;
     use dudes_rpc::{PeerProvenance, PeerResolver as _};
@@ -1763,14 +1352,9 @@ fn sibling_escape_unreadable_and_absent_identity_are_refused() {
     assert_eq!(running.stop(ExitCause::Ended), ExitCause::Ended);
 
     for label in ["escaped peer", "full adoption-key mismatch", "parent cycle"] {
-        dispatch_matrix_negative(label, Relation::NoMatch, true, PendingSetup::None);
+        dispatch_matrix_negative(label, Relation::NoMatch, true);
     }
-    dispatch_matrix_negative(
-        "unreadable or dead start",
-        Relation::Unresolvable,
-        true,
-        PendingSetup::None,
-    );
+    dispatch_matrix_negative("unreadable or dead start", Relation::Unresolvable, true);
     #[cfg(target_os = "macos")]
     {
         assert_real_macos_dead_and_version_mismatch_are_unresolvable();

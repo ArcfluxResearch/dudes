@@ -82,14 +82,14 @@ test('each row shows its colour, name, role and engine, workspace, activity and 
       + `aria-label="Inspect Ada in Crew" aria-describedby="crew-about-${ADA}" aria-pressed="false">`
       + '<span class="crew-dot" aria-hidden="true" style="--agent:#397ca9">A</span><span class="crew-who">'
       + '<strong class="crew-name">Ada</strong><small class="crew-meta">backend engineer · claude</small>'
-      + '<small class="crew-workspace" title="Workspace not recorded" data-recorded="false">Workspace not recorded</small>'
+      + '<small class="crew-workspace" title="Project not recorded" data-recorded="false">Project not recorded</small>'
       + `<small class="crew-activity" data-activity="question" title="${question}">? ${question}</small></span>`
       + '<span class="crew-state"><span class="crew-chip" data-status="waiting">waiting</span>'
       + '<span class="crew-hold">halted</span></span></button>');
     assert.ok(html.includes(`<span id="crew-about-${ADA}" hidden="">backend engineer, claude, waiting, $0.42 spent today, `
-      + `halted. Waiting question: ${question}. Workspace: Workspace not recorded</span>`), html);
+      + `halted. Waiting question: ${question}. Project: Project not recorded</span>`), html);
     assert.ok(row(GRACE).includes('<small class="crew-meta">frontend engineer · codex</small>'
-      + '<small class="crew-workspace" title="Workspace not recorded" data-recorded="false">Workspace not recorded</small>'
+      + '<small class="crew-workspace" title="Project not recorded" data-recorded="false">Project not recorded</small>'
       + '<small class="crew-activity" data-activity="goal" title="Polish the Floor">Polish the Floor</small>'), row(GRACE));
     assert.ok(row(GRACE).includes('<span class="crew-chip" data-status="running">running</span></span>'), row(GRACE));
     assert.doesNotMatch(html, /<canvas|cast\.png|agent-portrait/, 'Crew draws something from the office');
@@ -154,19 +154,19 @@ test('Crew says which agents write in their own worktree and which share a direc
   ];
   await withCrew((render) => {
     const html = render({ agents, selectedId: null, selectable: true });
-    assert.match(html, /<p class="crew-checkouts">Checkouts: 2 in own worktree · 3 share a directory<\/p>/);
+    assert.match(html, /<p class="crew-checkouts">Checkouts: 2 in their own copy · 3 share a directory<\/p>/);
     const entry = (name) => html.match(new RegExp(`<li class="crew-entry"[^>]*>(?:(?!</li>)[\\s\\S])*<strong class="crew-name">${name}</strong>[\\s\\S]*?</li>`))[0];
-    assert.match(entry('Ada'), /<small class="crew-checkout" data-checkout="worktree" title="Worktree dudes\/0123456789ab, in use">Worktree dudes\/0123456789ab, in use<\/small>/);
-    assert.match(entry('Grace'), />Worktree dudes\/ba9876543210, being created<\/small>/);
-    assert.match(entry('Knuth'), />Worktree dudes\/aaaaaaaaaaaa, removed<\/small>/);
+    assert.match(entry('Ada'), /<small class="crew-checkout" data-checkout="worktree" title="Own copy on branch dudes\/0123456789ab, in use">Own copy on branch dudes\/0123456789ab, in use<\/small>/);
+    assert.match(entry('Grace'), />Own copy on branch dudes\/ba9876543210, being created<\/small>/);
+    assert.match(entry('Knuth'), />Own copy on branch dudes\/aaaaaaaaaaaa, removed<\/small>/);
     const both = entry('Hamilton');
-    assert.match(both, />Worktree dudes\/bbbbbbbbbbbb, released, not yet removed<\/small>/);
+    assert.match(both, />Own copy on branch dudes\/bbbbbbbbbbbb, released, not yet removed<\/small>/);
     assert.match(both, /data-checkout="shared"[^>]*>Shared directory<\/small>/);
     assert.match(entry('Hopper'), /<small class="crew-checkout" data-checkout="shared"[^>]*>Shared directory<\/small>/);
     assert.match(entry('Hopper'), /Shared directory<\/span>/);
     assert.doesNotMatch(entry('Turing'), /crew-checkout/);
     assert.doesNotMatch(entry('Hopper'), /Worktree/);
-    assert.match(entry('Ada'), /Workspace: [^<]*\. Worktree dudes\/0123456789ab, in use<\/span>/);
+    assert.match(entry('Ada'), /Project: [^<]*\. Own copy on branch dudes\/0123456789ab, in use<\/span>/);
   });
 });
 

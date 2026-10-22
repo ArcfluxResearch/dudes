@@ -253,6 +253,128 @@ fn live_ceiling_requires_same_unit_reserve_before_append() {
     running.stop(ExitCause::Ended);
 }
 
+fn recovery_call(
+    settings: &duded::Settings,
+    method: dudes_proto::rpc::CurrentMethod,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let credential = dudes_proto::rpc::cred::OperatorCredential::new(
+        std::fs::read_to_string(
+            settings
+                .runtime_dir
+                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+        )
+        .expect("the fixture daemon minted the operator credential"),
+    )
+    .expect("the operator credential is well formed");
+    let response = dudes_rpc::Client::connect(settings.socket())
+        .expect("the operator connects")
+        .call_current_as_operator(method, Some(params), credential)
+        .expect("one authenticated recovery request answers");
+    assert!(response.error.is_none(), "{response:?}");
+    response.result.expect("the published recovery result")
+}
+
+fn authorize_vanished_work(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    agent: dudes_types::AgentId,
+    turn: dudes_types::TurnId,
+) {
+    use dudes_proto::rpc::CurrentMethod;
+    use dudes_proto::rpc::recovery::{
+        RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectParams, RecoveryInspectResult,
+        RecoverySubmitParams, RecoverySubmitResult,
+    };
+    let issued = count(&fixture.records(), |record| {
+        matches!(record, Record::TurnIssued { .. })
+    });
+    let issue_lsn = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| {
+            matches!(entry.record, Record::TurnIssued { agent: owner, turn: issued, .. }
+            if owner == agent && issued == turn)
+            .then_some(lsn)
+        })
+        .expect("the original immutable issued turn");
+    fixture.await_record("the original issue requires explicit recovery", |record| {
+        matches!(record, Record::RecoveryRequired(required)
+            if required.binding.work.agent == agent && required.binding.work.turn == turn)
+        .then_some(())
+    });
+    let inspected: RecoveryInspectResult = serde_json::from_value(recovery_call(
+        settings,
+        CurrentMethod::RecoveryInspect,
+        serde_json::to_value(RecoveryInspectParams { agent }).unwrap(),
+    ))
+    .unwrap();
+    let RecoveryInspectResult::Available {
+        expected,
+        reason,
+        choices,
+        prior_effects_unknown,
+        ..
+    } = inspected
+    else {
+        panic!("the exact owed issue offers recovery: {inspected:?}");
+    };
+    assert_eq!(expected.work.agent, agent);
+    assert_eq!(expected.work.turn, turn);
+    assert_eq!(expected.issue_lsn, issue_lsn);
+    assert_eq!(reason, dudes_proto::recovery::RecoveryReason::Vanished);
+    assert_eq!(choices, RecoveryAllowedChoices::FreshOnly);
+    assert!(prior_effects_unknown);
+    assert_eq!(
+        count(&fixture.records(), |record| matches!(record,
+            Record::TurnSpawned { turn: owned, .. } if *owned == turn
+        )),
+        1
+    );
+    let work = expected.work;
+    let request_id = dudes_proto::record::Hex32::new([233; 32]);
+    let submitted: RecoverySubmitResult = serde_json::from_value(recovery_call(
+        settings,
+        CurrentMethod::RecoverySubmit,
+        serde_json::to_value(RecoverySubmitParams {
+            request_id,
+            expected: *expected,
+            choice: RecoveryChoice::FreshWithRecap,
+        })
+        .unwrap(),
+    ))
+    .unwrap();
+    let RecoverySubmitResult::Accepted { receipt } = submitted else {
+        panic!("explicit recovery must be durably accepted: {submitted:?}");
+    };
+    assert_eq!(receipt.request_id, request_id);
+    assert_eq!(receipt.choice, RecoveryChoice::FreshWithRecap);
+    assert_eq!(receipt.claim.episode.work, work);
+    let authorization = fixture
+        .records()
+        .into_iter()
+        .find_map(|record| match record {
+            Record::RecoveryAuthorized(authorized) if authorized.request_id == request_id => {
+                Some(authorized)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(matches!(
+        authorization.plan,
+        dudes_proto::recovery::RecoveryPlan::New {
+            context: dudes_proto::recovery::RecoveryContext::Fresh { .. },
+            ..
+        }
+    ));
+    assert_eq!(
+        count(&fixture.records(), |record| matches!(record,
+            Record::TurnIssued { agent: owner, .. } if *owner == agent
+        )),
+        issued
+    );
+}
+
 fn no_goal_ceiling() -> GoalBudget {
     GoalBudget {
         usd: None,
@@ -313,15 +435,6 @@ fn costing(usd: Usd) -> Usage {
         cache_creation: Tokens::ZERO,
         usd: Some(usd),
     }
-}
-
-fn end_turn(
-    handle: &duded::Handle,
-    turn: dudes_types::TurnId,
-    usage: Option<Usage>,
-    outcome: TurnOutcome,
-) {
-    handle.input(end_payload(turn, usage, outcome));
 }
 
 fn end_payload(turn: dudes_types::TurnId, usage: Option<Usage>, outcome: TurnOutcome) -> Input {
@@ -1781,6 +1894,7 @@ fn unknown_ends_and_floor_rebuild_from_journal_and_config() {
         &host,
         end_payload(second, None, TurnOutcome::Vanished),
     );
+    authorize_vanished_work(&fixture, &settings, agent, second);
     fixture.await_record("reserved budget refusal", |record| match record {
         Record::BudgetDecision {
             spent,
@@ -1881,17 +1995,16 @@ fn an_unset_reserve_prices_an_unobserved_end_at_the_default() {
         let mut settings = fixture.settings();
         settings.floor_usd_per_day = budget.floor_usd_per_day;
         settings.per_turn_floor = budget.per_turn_floor;
-        let daemon = boot(
+        let host = SharedHost::with_native_evidence(fixture.journal_dir());
+        let runtime_seams = seams(
             &settings,
-            seams(
-                &settings,
-                SharedHost::new(),
-                Arc::new(ScriptedRunner::scripted([common::fails()])),
-                Arc::new(TestClock::new()),
-                Witness::default(),
-            ),
-        )
-        .expect("a ceiling beside unset reserves boots");
+            host.clone(),
+            Arc::new(ScriptedRunner::scripted([common::fails()])),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        );
+        host.bind_child_ends(Arc::clone(&runtime_seams.children));
+        let daemon = boot(&settings, runtime_seams).expect("a ceiling beside unset reserves boots");
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
         let mut goal = common::goal_params(agent, &[common::false_program()]);
@@ -1901,7 +2014,12 @@ fn an_unset_reserve_prices_an_unobserved_end_at_the_default() {
         };
         common::set_goal(&running.handle, goal);
         let first = await_spawned_turn(&fixture);
-        end_turn(&running.handle, first, None, TurnOutcome::Vanished);
+        common::end_turn_with_native_payload(
+            &fixture,
+            &host,
+            end_payload(first, None, TurnOutcome::Vanished),
+        );
+        authorize_vanished_work(&fixture, &settings, agent, first);
         let (ceiling, unknown_ends, per_turn_floor) =
             fixture.await_record("a refused BudgetDecision", |record| match record {
                 Record::BudgetDecision {

@@ -50,6 +50,9 @@ pub(crate) enum Error {
         configured: PathBuf,
         derived: PathBuf,
     },
+    /// The socket path cannot be bound on this platform.
+    #[error(transparent)]
+    SocketPath(#[from] SocketPathTooLong),
     /// A responding peer reported a different endpoint.
     #[error(
         "system.ping reported socket {reported}, which diverges from the endpoint {endpoint}",
@@ -165,6 +168,59 @@ fn validate_configuration(env: &Environment) -> Result<(), Error> {
     if env.socket()? != derived {
         return Err(Error::ConfiguredSocketDiverges {
             configured: env.socket()?.to_path_buf(),
+            derived,
+        });
+    }
+    check_socket_path(env.socket()?, true)?;
+    Ok(())
+}
+
+/// The longest Unix socket path, in bytes, that fits `sun_path` with its trailing NUL.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const MAX_SOCKET_PATH: Option<usize> = Some(107);
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+const MAX_SOCKET_PATH: Option<usize> = Some(103);
+#[cfg(not(unix))]
+const MAX_SOCKET_PATH: Option<usize> = None;
+
+/// A socket path longer than the platform's `sun_path`, which no daemon could bind.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "the daemon's socket path {path} is {length} bytes long, and this platform allows at most \
+     {limit}{advice}",
+    path = .path.display(),
+    advice = if *.derived { ". Use a shorter home directory, or set DUDES_RUNTIME_DIR to a shorter directory" } else { "" }
+)]
+pub(crate) struct SocketPathTooLong {
+    path: PathBuf,
+    length: usize,
+    limit: usize,
+    /// Whether the path comes from the runtime directory, the only case a shorter directory fixes.
+    derived: bool,
+}
+
+/// Whether `socket` is the one the runtime directory derives, not a `DUDES_SOCK` or configured
+/// override.
+pub(crate) fn is_derived_socket(socket: &Path, runtime_dir: Option<&Path>) -> bool {
+    runtime_dir.is_some_and(|dir| dudes_rpc::local_endpoint(dir, SOCKET_NAME) == socket)
+}
+
+pub(crate) fn check_socket_path(path: &Path, derived: bool) -> Result<(), SocketPathTooLong> {
+    check_socket_path_against(path, MAX_SOCKET_PATH, derived)
+}
+
+fn check_socket_path_against(
+    path: &Path,
+    limit: Option<usize>,
+    derived: bool,
+) -> Result<(), SocketPathTooLong> {
+    let Some(limit) = limit else { return Ok(()) };
+    let length = path.as_os_str().len();
+    if length > limit {
+        return Err(SocketPathTooLong {
+            path: path.to_path_buf(),
+            length,
+            limit,
             derived,
         });
     }
@@ -331,6 +387,33 @@ mod tests {
     use std::io::Write;
 
     use super::write_spawn_marker;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_path_one_byte_over_the_platform_limit_is_refused() {
+        use super::{MAX_SOCKET_PATH, check_socket_path};
+
+        let limit = MAX_SOCKET_PATH.expect("a Unix socket path has a limit");
+        let at_limit = std::path::PathBuf::from(format!("/{}", "a".repeat(limit - 1)));
+        assert_eq!(at_limit.as_os_str().len(), limit);
+        check_socket_path(&at_limit, true).expect("the longest path fits");
+
+        let over = std::path::PathBuf::from(format!("/{}", "a".repeat(limit)));
+        let refused = check_socket_path(&over, true).expect_err("one byte more is refused");
+        let message = refused.to_string();
+        assert!(
+            message.contains(&format!("{} bytes", limit + 1)),
+            "{message}"
+        );
+        assert!(message.contains(&format!("at most {limit}")), "{message}");
+        assert!(message.contains(&over.display().to_string()), "{message}");
+        assert!(message.contains("DUDES_RUNTIME_DIR"), "{message}");
+
+        let overridden = check_socket_path(&over, false).expect_err("an override is refused too");
+        let message = overridden.to_string();
+        assert!(message.contains(&format!("at most {limit}")), "{message}");
+        assert!(!message.contains("DUDES_RUNTIME_DIR"), "{message}");
+    }
 
     /// A sink that takes every buffer whole and counts the calls it took them in.
     ///

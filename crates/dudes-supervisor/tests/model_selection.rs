@@ -29,6 +29,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use dudes_proto::goal::Predicate;
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{AgentBudget, Entry, Goal, GoalBudget, Record};
 use dudes_providers::adapter::{
     Adapter, AgentCtx, Isolation, ManagedInstall, SessionAcquisition, TurnSession, UsageSource,
@@ -37,7 +39,9 @@ use dudes_providers::claude::SESSION_ACQUISITION;
 use dudes_providers::claude::stream::TurnStream;
 use dudes_providers::launch::LaunchSpec;
 use dudes_providers::stream::TurnReader;
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
 use dudes_supervisor::testing::{FakeClock, FakeHost, Harness, Seen};
+use dudes_supervisor::{Command, Input};
 use dudes_types::{
     AgentId, GoalId, Lsn, Mode, ModelSelection, Provider, SessionId, Tier, Timestamp, TurnId, Usd,
 };
@@ -273,7 +277,35 @@ fn a_reissue_uses_the_recorded_selection_not_the_new_configuration() {
     *cell.lock().unwrap() = Some("model-beta".to_owned());
     h.trace.clear();
     h.launch = true;
+    let recovery_from = h.trace.len();
     h.restart();
+    assert!(
+        h.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    h.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        h.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = h.supervisor.recovery_opportunity(agent).unwrap().expected;
+    let handled = h.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(h.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     assert_eq!(
         launched_under(&h, turn),
@@ -286,19 +318,49 @@ fn a_reissue_uses_the_recorded_selection_not_the_new_configuration() {
     );
 }
 
-/// **The control, and the half that carries the claim.** The same restart over a journal whose
-/// `TurnIssued` recorded **no** selection re-issues under the adapter's *current* configuration.
-///
-/// Without this the subject is satisfied by a machine that ignores configuration outright. With
-/// it, the pair says the recorded value is what decides — and that absence still means what it
-/// meant before the model was recorded, which is the only behaviour an old journal can support.
 #[test]
 fn a_legacy_issue_without_a_selection_reissues_under_current_configuration() {
     let cell = configured(Some("model-beta"));
     let mut h = harness(&cell);
     let (entries, turn) = legacy_journal();
     h.journal = entries;
+    let agent = h
+        .journal
+        .iter()
+        .find_map(|entry| match entry.record {
+            Record::AgentHired { id, .. } => Some(id),
+            _ => None,
+        })
+        .unwrap();
+    let recovery_from = h.trace.len();
     h.restart();
+    assert!(
+        h.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    h.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        h.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = h.supervisor.recovery_opportunity(agent).unwrap().expected;
+    let handled = h.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(h.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     assert_eq!(
         launched_under(&h, turn),

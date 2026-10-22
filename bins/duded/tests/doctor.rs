@@ -16,9 +16,18 @@ use std::time::{Duration, Instant};
 use duded::startup::Witness;
 use duded::{ExitCause, boot};
 use dudes_journal::Projections;
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::{
+    RecoveryContext, RecoveryEpisodeId, RecoveryPlan, RecoveryReason, RecoveryWork,
+};
 use dudes_proto::rpc::cred::OperatorCredential;
+use dudes_proto::rpc::recovery::{
+    ExpectedRecovery, RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectParams,
+    RecoveryInspectResult, RecoverySubmitParams, RecoverySubmitResult, RecoveryWaitStatus,
+    RecoveryWaitSummary,
+};
 use dudes_proto::rpc::system::{AgentHealth, DoctorResult, OpenTurnHealth};
-use dudes_proto::rpc::{JSONRPC, Method, Request, RequestId};
+use dudes_proto::rpc::{AgentRef, CurrentMethod, JSONRPC, Method, Request, RequestId};
 use dudes_proto::{Entry, ExitStatus, Record, TurnOutcome};
 use dudes_providers::launch::LaunchSpec;
 use dudes_providers::stream::ScopedUsage;
@@ -173,6 +182,244 @@ fn turn_after(fixture: &Fixture, agent: AgentId, previous: TurnId) -> TurnId {
     }
 }
 
+fn issued_turns(fixture: &Fixture, agent: AgentId) -> Vec<TurnId> {
+    fixture
+        .records()
+        .into_iter()
+        .filter_map(|record| match record {
+            Record::TurnIssued {
+                agent: owner, turn, ..
+            } if owner == agent => Some(turn),
+            _ => None,
+        })
+        .collect()
+}
+
+fn unconfirmed_expected(
+    fixture: &Fixture,
+    agent: AgentId,
+    interrupted: TurnId,
+) -> ExpectedRecovery {
+    let entries = fixture.entries();
+    let (issue_lsn, goal) = entries
+        .iter()
+        .find_map(|(lsn, entry)| match entry.record {
+            Record::TurnIssued {
+                agent: owner,
+                turn,
+                goal,
+                ..
+            } if owner == agent && turn == interrupted => Some((*lsn, goal)),
+            _ => None,
+        })
+        .expect("the interrupted issue");
+    let end_lsn = entries
+        .iter()
+        .find_map(|(lsn, entry)| {
+            matches!(entry.record, Record::TurnEnded { turn, .. } if turn == interrupted)
+                .then_some(*lsn)
+        })
+        .expect("the interrupted end");
+    let barrier_lsn = entries
+        .iter()
+        .find_map(|(lsn, entry)| match &entry.record {
+            Record::RecoveryRequired(required) if required.binding.work.turn == interrupted => {
+                Some(*lsn)
+            }
+            _ => None,
+        })
+        .expect("the durable recovery barrier");
+    let resume_lsn = entries
+        .iter()
+        .rev()
+        .find_map(|(lsn, entry)| {
+            matches!(entry.record, Record::Resume { agent: owner, .. } if owner == agent)
+                .then_some(*lsn)
+        })
+        .expect("the ordinary resume's control position");
+    let work = RecoveryWork {
+        agent,
+        goal,
+        turn: interrupted,
+    };
+    ExpectedRecovery {
+        work,
+        issue_lsn,
+        source_lsn: end_lsn,
+        episode: Some(RecoveryEpisodeId {
+            work,
+            origin: barrier_lsn,
+        }),
+        expected_predecessor: None,
+        control_lsn: Some(resume_lsn),
+        ticket: None,
+    }
+}
+
+fn recover_unconfirmed(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    host: &SharedHost,
+    agent: AgentId,
+    interrupted: TurnId,
+    request_byte: u8,
+) -> TurnId {
+    let goal = fixture
+        .records()
+        .iter()
+        .find_map(|record| match record {
+            Record::TurnIssued {
+                agent: owner,
+                turn,
+                goal,
+                ..
+            } if *owner == agent && *turn == interrupted => Some(*goal),
+            _ => None,
+        })
+        .expect("the exact interrupted goal");
+    fixture.await_record("the interrupted turn's observed false check", |record| {
+        matches!(record, Record::PredicateResult {
+            goal: checked, turn: Some(turn), provenance: Provenance::Observed, pass: false, ..
+        } if *checked == goal && *turn == interrupted)
+        .then_some(())
+    });
+    let before = issued_turns(fixture, agent);
+    let launches = host.spawned().len();
+    let mut client = Client::connect(settings.socket()).expect("connect as the operator");
+    let response = client
+        .call_as_operator(
+            Method::LoopResume,
+            Some(serde_json::to_value(AgentRef { agent }).unwrap()),
+            credential_of(settings),
+        )
+        .expect("ordinary resume answers");
+    assert!(response.error.is_none(), "{response:?}");
+    assert_eq!(
+        agent_row(&doctor(settings), agent).unconfirmed_resume,
+        Some(interrupted)
+    );
+
+    let response = client
+        .call_current_as_operator(
+            CurrentMethod::RecoveryInspect,
+            Some(serde_json::to_value(RecoveryInspectParams { agent }).unwrap()),
+            credential_of(settings),
+        )
+        .expect("recovery inspection answers");
+    assert!(response.error.is_none(), "{response:?}");
+    let inspection: RecoveryInspectResult =
+        serde_json::from_value(response.result.expect("a recovery inspection")).unwrap();
+    let RecoveryInspectResult::Available {
+        expected,
+        reason,
+        choices,
+        prior_effects_unknown,
+        waiting,
+        ..
+    } = inspection
+    else {
+        panic!("the ended unconfirmed resume offers recovery: {inspection:?}");
+    };
+    assert_eq!(reason, RecoveryReason::UnconfirmedContext);
+    assert_eq!(choices, RecoveryAllowedChoices::FreshOnly);
+    assert!(prior_effects_unknown);
+    assert_eq!(
+        waiting,
+        RecoveryWaitSummary {
+            open_question: RecoveryWaitStatus::Ready,
+            budget: RecoveryWaitStatus::Ready,
+            hops: RecoveryWaitStatus::Ready,
+            instruction_review: RecoveryWaitStatus::Ready,
+            instruction_comparison: RecoveryWaitStatus::Ready,
+        }
+    );
+    assert_eq!(*expected, unconfirmed_expected(fixture, agent, interrupted));
+    assert_eq!(
+        issued_turns(fixture, agent),
+        before,
+        "ordinary resume and inspection issue no fallback"
+    );
+    assert_eq!(
+        host.spawned().len(),
+        launches,
+        "ordinary resume and inspection launch no fallback"
+    );
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record, Record::RecoveryAuthorized(_)))
+            .count(),
+        0,
+        "ordinary resume does not invent recovery consent"
+    );
+
+    submit_fresh_recovery(fixture, settings, &expected, Hex32::new([request_byte; 32]))
+}
+
+fn submit_fresh_recovery(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    expected: &ExpectedRecovery,
+    request_id: Hex32,
+) -> TurnId {
+    let mut client = Client::connect(settings.socket()).expect("connect as the operator");
+    let response = client
+        .call_current_as_operator(
+            CurrentMethod::RecoverySubmit,
+            Some(
+                serde_json::to_value(RecoverySubmitParams {
+                    request_id,
+                    expected: *expected,
+                    choice: RecoveryChoice::FreshWithRecap,
+                })
+                .unwrap(),
+            ),
+            credential_of(settings),
+        )
+        .expect("explicit recovery consent answers");
+    assert!(response.error.is_none(), "{response:?}");
+    let submitted: RecoverySubmitResult =
+        serde_json::from_value(response.result.expect("a recovery submission result")).unwrap();
+    let RecoverySubmitResult::Accepted { receipt } = submitted else {
+        panic!("explicit fresh consent is accepted: {submitted:?}");
+    };
+    assert_eq!(receipt.request_id, request_id);
+    assert_eq!(receipt.choice, RecoveryChoice::FreshWithRecap);
+    assert_eq!(Some(receipt.claim.episode), expected.episode);
+    let authorized =
+        fixture.await_record(
+            "the explicit recovery authorization",
+            |record| match record {
+                Record::RecoveryAuthorized(authorized) if authorized.request_id == request_id => {
+                    Some(authorized.clone())
+                }
+                _ => None,
+            },
+        );
+    assert_eq!(authorized.binding.work, expected.work);
+    let RecoveryPlan::New {
+        turn,
+        context: RecoveryContext::Fresh { .. },
+    } = authorized.plan
+    else {
+        panic!("fresh consent reserves a new turn");
+    };
+    assert_eq!(
+        turn_after(fixture, expected.work.agent, expected.work.turn),
+        turn
+    );
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record, Record::RecoveryAuthorized(_)))
+            .count(),
+        1
+    );
+    turn
+}
+
 fn reported_usage() -> Usage {
     Usage {
         input: Tokens::new(3),
@@ -249,10 +496,15 @@ fn replayed_sessions(
     );
     let mut projections = Projections::in_memory().expect("fresh redb projection");
     for (lsn, entry) in entries {
-        let _ = supervisor.handle(Input::Replayed {
-            lsn: *lsn,
-            entry: entry.clone(),
-        });
+        supervisor
+            .handle(
+                Input::Replayed {
+                    lsn: *lsn,
+                    entry: entry.clone(),
+                },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .expect("the recorded doctor fixture folds");
         projections
             .apply(*lsn, 1, entry)
             .expect("the entry folds into redb");
@@ -279,10 +531,15 @@ fn replayed_session_states(
     );
     let mut projections = Projections::in_memory().expect("fresh redb projection");
     for (lsn, entry) in entries {
-        let _ = supervisor.handle(Input::Replayed {
-            lsn: *lsn,
-            entry: entry.clone(),
-        });
+        supervisor
+            .handle(
+                Input::Replayed {
+                    lsn: *lsn,
+                    entry: entry.clone(),
+                },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .expect("the recorded doctor fixture folds");
         projections.apply(*lsn, 1, entry).expect("fold entry");
     }
     let world_turn = &supervisor.world().turns[&turn];
@@ -670,9 +927,11 @@ fn an_unconfirmed_resume_falls_back_once_to_first() {
     assert_eq!(announced(&launches[1]), ("resume", session.to_string()));
 
     end(&fixture, &host, resumed, Some(reported_usage()));
-    let fallback = turn_after(&fixture, agent, resumed);
+    assert_eq!(issued_turns(&fixture, agent), [first, resumed]);
     let health = doctor(&settings);
     assert_eq!(agent_row(&health, agent).unconfirmed_resume, Some(resumed));
+    assert_eq!(host.spawned().len(), 2);
+    let fallback = recover_unconfirmed(&fixture, &settings, &host, agent, resumed, 91);
 
     let launches = await_launches(&host, 3);
     let (kind, fresh) = announced(&launches[2]);
@@ -690,7 +949,7 @@ fn an_unconfirmed_resume_falls_back_once_to_first() {
     assert_eq!(
         projection.goal(goal).unwrap().unwrap().turns_on_goal,
         3,
-        "one establishing hop, then exactly one resume and one fallback hop"
+        "one establishing hop, then exactly one resume and one consented fresh hop"
     );
     assert_eq!(
         projection.spend_by_goal(goal).unwrap().usd,
@@ -815,11 +1074,26 @@ fn another_agents_session_neither_binds_nor_clears_resume_recovery() {
     end(&fixture, &host, b_first, None);
     let b_resumed = turn_after(&fixture, agent_b, b_first);
     end(&fixture, &host, a_resumed, None);
-    let a_fallback = turn_after(&fixture, agent_a, a_resumed);
+    assert_eq!(issued_turns(&fixture, agent_a), [a_first, a_resumed]);
+    assert_eq!(host.spawned().len(), 4);
     assert_eq!(
         agent_row(&doctor(&settings), agent_a).unconfirmed_resume,
         Some(a_resumed)
     );
+    let a_fallback = recover_unconfirmed(&fixture, &settings, &host, agent_a, a_resumed, 92);
+    assert_eq!(
+        issued_turns(&fixture, agent_a),
+        [a_first, a_resumed, a_fallback]
+    );
+    assert_eq!(issued_turns(&fixture, agent_b), [b_first, b_resumed]);
+    let launches = await_launches(&host, 5);
+    let (kind, fresh) = announced(&launches[4]);
+    assert_eq!(kind, "first");
+    assert_eq!(
+        issued_session(&fixture.records(), a_fallback).as_str(),
+        fresh
+    );
+    assert_ne!(fresh, session_a.as_str());
 
     running.handle.input(Input::SessionLearned {
         turn: a_fallback,

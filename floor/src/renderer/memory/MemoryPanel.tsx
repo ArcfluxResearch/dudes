@@ -62,8 +62,7 @@ function MemoryReader({ agent, active, crew, deps, reopened, onOpen }: {
 
   async function send(request: MemoryRequest): Promise<void> {
     if (flight.current) return;
-    const csrf = deps.csrf();
-    if (csrf === null) {
+    if (!deps.signedIn()) {
       dispatch({ kind: 'lost', problem: 'no_session' });
       return;
     }
@@ -72,7 +71,7 @@ function MemoryReader({ agent, active, crew, deps, reopened, onOpen }: {
     dispatch({ kind: 'sent', request });
     const scope = scopeOf(deps);
     try {
-      const answer = await deps.pace(async () => (scopeOf(deps) === scope ? readMemory(agent, request, csrf, deps) : null));
+      const answer = await deps.pace(async () => (scopeOf(deps) === scope ? readMemory(agent, request, deps) : null));
       if (answer === null || scopeOf(deps) !== scope) {
         dispatch({ kind: 'lost', problem: 'cleared' });
         return;
@@ -167,8 +166,8 @@ function Refused({ withheld, agent, crew }: { readonly withheld: Withheld; reado
           {' · '}{plural(marker.len, 'byte', 'bytes')}
         </p>
         <p>{isSealedOperatorAppend(marker)
-          ? <>Refused: after the first hire, a process outside every agent, such as <code>dudes memory append --agent</code>,
-            cannot write memory.</>
+          ? <>Refused: once an agent has been hired, only the agents themselves can add to memory. A note from outside every
+            agent is withheld.</>
           : WITHHELD_REASON_TEXT[marker.reason]}</p>
       </li>)}
     </ol>}

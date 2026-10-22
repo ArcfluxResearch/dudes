@@ -3,13 +3,13 @@
 //! # The shape
 //!
 //! One thread owns the [`Supervisor`] and the [`Writer`]. It takes a [`Job`] at a time. A successful
-//! `pump` reaches quiescence: `handle(input)` returns effects, the executor runs them, and whatever
-//! each one produces goes on the back of the same queue. That is
+//! `pump` reaches quiescence: `handle(input)` reports folding, the executor takes and runs its
+//! effects, and whatever each one produces goes on the back of the same queue. That is
 //! `dudes_supervisor::testing::Harness`'s shape, deliberately — the fake harness the machine's own
 //! tests drive and this loop are the same algorithm over different seams, so a behaviour the tests
 //! pin is a behaviour this runs.
 //!
-//! On the first effect-execution error, the pump runs no later effect, drains no queued input,
+//! On the first handling or effect-execution error, the pump runs no later effect, drains no queued input,
 //! publishes token owners from folds completed before the error, and returns that error unchanged.
 //! That exit claims neither quiescence nor a complete folded call.
 //!
@@ -49,6 +49,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
+use dudes_journal::projections::recovery::{CheckedAppend, GuardedAppendError};
 use dudes_journal::{MemoryApply, MemoryProjection, Projections, Writer};
 use dudes_proto::goal::{Evidence, Predicate};
 use dudes_proto::record::{
@@ -66,8 +67,11 @@ use dudes_providers::launch::EnvVar;
 use dudes_providers::stream::TurnReader;
 use dudes_rpc::dispatch::error;
 use dudes_rpc::{StopFlag, Subscribers};
+#[cfg(feature = "fault-injection")]
+use dudes_supervisor::input::RecoveryStage;
 use dudes_supervisor::input::{
-    BrowserAnswerCommand, BrowserOnboardGoal, BrowserOnboardHire, MailWakeRefreshFailure, SpendView,
+    BrowserAnswerCommand, BrowserOnboardHire, DurableInputError, Handled, MailWakeRefreshFailure,
+    RecordedAppend, SpendView,
 };
 use dudes_supervisor::{
     Clock, Command, Effect, HookId, Input, KillOutcome, ProcessHost, Rng, SpawnResult, Supervisor,
@@ -77,6 +81,8 @@ use dudes_types::{
     UtcDay,
 };
 
+#[cfg(feature = "fault-injection")]
+use crate::fault::{RecoveryStopPoint, RecoveryStopTarget};
 use crate::floor_actions::{OnboardOutcome, OnboardRefusal, OnboardRequest, OnboardStep, Profile};
 use crate::floor_answer::{AnswerOutcome, AnswerRefusal, AnswerRequest};
 use crate::floor_control::{ControlOutcome, ControlRefusal, ControlRequest, ControlVerb};
@@ -84,6 +90,7 @@ use crate::floor_goal::{GoalOutcome, GoalRefusal, GoalRequest, GoalStep};
 use crate::floor_look::{LookOutcome, LookRefusal, LookRequest};
 use crate::floor_rename::{RenameOutcome, RenameRefusal, RenameRequest};
 use crate::floor_retire::{RetireOutcome, RetireRefusal, RetireRequest};
+use crate::floor_switches::ACTION_OFF;
 use crate::lock::StateLock;
 use crate::ports::{
     Answered, Ask, DoctorSnapshot, ExitCause, Handle, HookAnswer, Job, PtyCloseOutcome,
@@ -91,6 +98,7 @@ use crate::ports::{
 };
 
 mod agent_mcp;
+mod browser_project;
 mod browser_ticket;
 mod ticket_run;
 #[cfg(test)]
@@ -109,12 +117,16 @@ mod instruction_authority_tests;
 mod instruction_plan;
 pub(crate) mod instruction_sampling;
 mod native_boundaries;
+pub(crate) use native_boundaries::InheritedNativeBoundaries;
 #[cfg(all(test, unix))]
 mod native_boundaries_tests;
 #[cfg(all(test, unix))]
 mod predicate_recovery_tests;
 #[cfg(all(test, unix))]
 mod prehost_boundary_tests;
+mod recovery;
+#[cfg(all(test, unix))]
+mod recovery_fold_tests;
 mod shared_folder;
 #[cfg(all(test, unix))]
 mod shared_folder_tests;
@@ -328,6 +340,8 @@ enum PumpFailure {
 pub enum OnboardingPausePoint {
     /// After request admission and reservation, before the first append permit.
     BeforeHireAppend,
+    /// The hire's append permit is held; revocation must wait for its fsync.
+    AfterHirePermit,
     /// After the hire frame fsync, before its fold.
     AfterHireFsync,
     /// After the hire fold and before the goal continuation is queued.
@@ -666,7 +680,7 @@ impl OnboardingPause {
                 ..
             } => (
                 Some(Point::BeforeHireAppend),
-                None,
+                Some(Point::AfterHirePermit),
                 Some(Point::AfterHireFsync),
             ),
             Record::GoalSet {
@@ -837,13 +851,47 @@ impl AcceptPanic {
     }
 }
 
-/// Everything the executor acts through. Separate from the supervisor so that the two can be
-/// borrowed disjointly: `handle()` returns a slice borrowed from the machine, and the executor
-/// needs `&mut` on the writer while that slice is alive.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each is an independent `[floor.*]` operator switch, fixed for the run"
-)]
+#[cfg(feature = "fault-injection")]
+fn recovery_stop_for_append<'stop>(
+    stop: Option<&'stop crate::fault::RecoveryStop>,
+    recovery: Option<recovery::AppendSubject<'_>>,
+    entry: &Entry,
+) -> Option<(
+    &'stop crate::fault::RecoveryStop,
+    RecoveryStage,
+    RecoveryStopTarget,
+    RecoveryStopPoint,
+)> {
+    let stop = stop?;
+    let (stage, target) = match (recovery, &entry.record) {
+        (Some(recovery::AppendSubject::Command { metadata, .. }), _) => (
+            metadata.stage,
+            RecoveryStopTarget::Command {
+                work: metadata.work,
+                request_id: metadata.request_id,
+            },
+        ),
+        (None, Record::RecoveryRequired(required)) => (
+            RecoveryStage::Required,
+            RecoveryStopTarget::Startup {
+                work: required.binding.work,
+            },
+        ),
+        _ => return None,
+    };
+    let point = match stage {
+        RecoveryStage::Required => RecoveryStopPoint::AfterRequired,
+        RecoveryStage::Resume => RecoveryStopPoint::AfterResume,
+        RecoveryStage::Authorized => RecoveryStopPoint::AfterAuthorized,
+    };
+    Some((stop, stage, target, point))
+}
+
+#[cfg(test)]
+type RecoveryRecordHook = Box<dyn FnMut(&Record) + Send>;
+#[cfg(test)]
+type RecoveryInputHook = Box<dyn FnMut(&Input) + Send>;
+
 pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) writer: Writer,
     pub(crate) mailbox: Option<crate::mailbox::Mailbox>,
@@ -860,33 +908,38 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// Only attributed durable answers populate this replayable request index.
     pub(crate) answer_index: crate::floor_answer::AnswerIndex,
     pub(crate) chat_index: crate::floor_chat::ChatIndex,
+    /// `<state dir>/agents`: each agent's own folder is under it, named by its id.
+    pub(crate) agents_root: PathBuf,
     pub(crate) running_providers: crate::config::ProviderTables,
     /// The `[mcp.servers]` table this run loaded, for a reload to compare.
     pub(crate) running_mcp: dudes_providers::mcp::DeclaredServers,
     pub(crate) browser_launches: crate::chat_launch::LaunchPreparations,
     pub(crate) resolved_browser_turn: Option<(TurnId, u64)>,
-    /// `[floor.answer] enabled`, fixed for the run: whether snapshots carry the `answer` sibling.
-    pub(crate) answer_enabled: bool,
-    /// `[floor.hire] enabled`, fixed for the run: whether the Floor may hire at all.
-    pub(crate) hire_enabled: bool,
+    /// The operator file the Settings page edits and a reload reads; `None` without one.
+    pub(crate) operator_config: Option<PathBuf>,
+    /// The folders the Floor's project add will not take.
+    pub(crate) project_folders: crate::floor_project::Folders,
+    /// Every `[floor.*]` switch as the last applied reload left it, shared with the gateway.
+    pub(crate) switches: crate::floor_switches::SharedSwitches,
     /// Only attributed durable pauses and resumes populate this replayable request index.
     pub(crate) control_index: crate::floor_control::ControlIndex,
-    /// Fixed for the run: whether snapshots carry the `control`, `goal` and `retire` siblings.
-    pub(crate) control: crate::settings::FloorControl,
+    pub(crate) recovery_authority: Option<crate::floor_session::FloorRecoveryAuthority>,
+    #[cfg(test)]
+    pub(crate) before_recovery_dispatch: Option<Box<dyn FnOnce() + Send>>,
+    #[cfg(test)]
+    pub(crate) before_recovery_append: Option<RecoveryRecordHook>,
+    #[cfg(test)]
+    pub(crate) after_recovery_fsync: Option<RecoveryRecordHook>,
+    #[cfg(test)]
+    pub(crate) before_recovery_input: Option<RecoveryInputHook>,
     /// Only attributed durable goal changes populate this replayable request index.
     pub(crate) goal_index: crate::goal_replacement::GoalChanges,
     pub(crate) rename_index: crate::floor_rename::DurableRenameIndex,
     pub(crate) look_index: crate::floor_look::DurableLookIndex,
     /// Only attributed durable retirements populate this replayable request index.
     pub(crate) retire_index: crate::floor_retire::RetireIndex,
-    /// `[floor.git] enabled`, fixed for the run: whether snapshots carry the `git` sibling.
-    pub(crate) git_enabled: bool,
-    /// `[floor.diff] enabled`, fixed for the run. Nothing is advertised; it only decides whether
-    /// a reload that changes it asks for a restart.
-    pub(crate) diff_enabled: bool,
-    /// `[floor.board] enabled`, fixed for the run: whether snapshots carry the `ticket` sibling.
-    pub(crate) board_enabled: bool,
-    /// `None` while `[floor.terminal]` is off, for the whole run.
+    /// `None` once `[floor.terminal]` is off: it is off from the start, or a reload turned it off
+    /// and revoked every grant.
     pub(crate) browser_grants: Option<BTreeMap<AgentId, crate::floor_terminal::LiveGrant>>,
     #[cfg(feature = "testing")]
     pub(crate) terminal_skew: crate::floor_terminal::TerminalSkew,
@@ -899,7 +952,11 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// Set only while one typed browser intent is passing through the persist ledger.
     pub(crate) browser_session: Option<crate::floor_session::SessionIdentity>,
     pub(crate) onboarding_pause: OnboardingPause,
+    /// The system folder dialog the Floor's Add project and Hire open.
+    pub(crate) folder_picker: Arc<crate::folder_picker::FolderPicker>,
     pub(crate) onboarding_failure: OnboardingFailure,
+    #[cfg(feature = "fault-injection")]
+    pub(crate) recovery_stop: Option<crate::fault::RecoveryStop>,
     /// Applied memory rebuilt solely from journal records and immutable bodies.
     pub(crate) memory: MemoryProjection,
     pub(crate) memory_config: dudes_journal::MemoryCondenseConfig,
@@ -953,6 +1010,7 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// thread, so a goal change queued behind a verdict finds it journaled and one queued ahead
     /// of it finds the run still marked. Run-local: a restart starts none.
     pub(crate) predicate_runs: BTreeMap<GoalId, u32>,
+    pub(crate) predicate_folders: BTreeMap<(GoalId, PathBuf), u32>,
     /// New goals' check runs before their first turn, counted on this thread like
     /// `predicate_runs`, with the per-session counts the Floor's limits read. Run-local.
     pub(crate) baselines: crate::baseline::Baselines,
@@ -979,6 +1037,7 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) pending_attached_calls: BTreeMap<Lsn, dudes_proto::InstructionObservationOwner>,
     pub(crate) attached_instruction_boundaries:
         BTreeMap<Lsn, attached_observations::AttachedBoundary>,
+    pub(super) inherited_native_boundaries: native_boundaries::InheritedNativeBoundaries,
     pub(super) pending_native_launches: BTreeMap<Lsn, native_boundaries::PendingNativeLaunch>,
     pub(super) native_acknowledgements:
         BTreeMap<Lsn, native_boundaries::PendingNativeAcknowledgement>,
@@ -993,6 +1052,7 @@ pub(crate) struct CleanupPty {
 
 enum PumpReport {
     Discard,
+    Recovery(Box<recovery::CommandContext>),
     Attach {
         agent: AgentId,
         result: Option<Result<PtyId, String>>,
@@ -1000,6 +1060,20 @@ enum PumpReport {
 }
 
 impl PumpReport {
+    fn recovery_update(&mut self, handled: &Handled) -> Result<()> {
+        if let Some(update) = handled.recovery() {
+            let Self::Recovery(context) = self else {
+                anyhow::bail!("recovery progress escaped its request-local report");
+            };
+            context.observe(*update)?;
+        }
+        Ok(())
+    }
+
+    fn recovery_refused(&self) -> bool {
+        matches!(self, Self::Recovery(context) if context.refused())
+    }
+
     fn attach(agent: AgentId) -> Self {
         Self::Attach {
             agent,
@@ -1029,7 +1103,7 @@ impl PumpReport {
     fn take_attach(self) -> Option<Result<PtyId, String>> {
         match self {
             Self::Attach { result, .. } => result,
-            Self::Discard => None,
+            Self::Discard | Self::Recovery(_) => None,
         }
     }
 }
@@ -1151,6 +1225,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.provider_check.clone()
     }
 
+    /// The folder dialog, so a test can put a stand-in program in its place.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn folder_picker(&self) -> Arc<crate::folder_picker::FolderPicker> {
+        Arc::clone(&self.ctx.folder_picker)
+    }
+
     /// One ordering pause retained by an integration test before `run` consumes the daemon.
     #[doc(hidden)]
     #[must_use]
@@ -1222,6 +1303,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     ///
     /// A journal append that did not become durable.
     pub(crate) fn started(&mut self) -> Result<()> {
+        self.ctx
+            .inherited_native_boundaries
+            .capture(self.sup.world());
         let missing = self.missing_worktrees();
         self.pump(Input::MissingWorktrees(missing))?;
         self.pump(Input::Started)?;
@@ -1248,10 +1332,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
             self.detach_gone_attachments()?;
             for _ in 0..2 {
-                self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, |sup| {
-                    let _ = sup.closing_recover();
-                    Ok(())
-                })?;
+                self.pump_started(
+                    &mut PumpReport::Discard,
+                    PumpOrigin::Closing,
+                    &[],
+                    |sup, operation| {
+                        let _ = sup.closing_recover(operation);
+                        Ok(Handled::default())
+                    },
+                )?;
             }
             anyhow::ensure!(
                 !self.sup.recovering_closing(),
@@ -1359,6 +1448,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             };
             let check_run_ended =
                 matches!(job, Job::BaselineEnded { .. } | Job::PredicateEnded { .. });
+            // A switch can go off between the gateway's check and this job, so each Floor action
+            // reads the swapped snapshot again before it runs.
+            let Some(job) = refuse_action_off(self.ctx.switches.load(), job) else {
+                continue;
+            };
             match job {
                 Job::Chat {
                     session,
@@ -1366,6 +1460,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     reply,
                 } => {
                     let _ = reply.send(self.browser_chat(&session, &request));
+                }
+                Job::ChatFile { agent, reply } => {
+                    let _ = reply.send(self.chat_file_dir(agent));
                 }
                 Job::Closing(job) => {
                     let answer = self.closing_request(job.request);
@@ -1378,26 +1475,37 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     request,
                     reply,
                 } => {
-                    let next = self.onboard(&session, &request);
-                    self.onboard_next(next, session, request, reply);
+                    let _ = reply.send(self.onboard(&session, &request));
                 }
-                Job::OnboardChecked {
+                Job::OnboardCopied {
                     session,
                     request,
-                    baseline,
-                    run,
+                    worktree,
+                    trust,
                     reply,
                 } => {
-                    let next = self.onboard_checked(&session, &request, baseline, run);
-                    self.onboard_next(next, session, request, reply);
+                    let _ = reply.send(self.onboard_copied(&session, &request, worktree, &trust));
                 }
-                Job::OnboardContinue {
+                Job::InspectRecoveryFromFloor {
                     session,
+                    agent,
+                    reply,
+                } => {
+                    let _ = reply.send(self.recovery_inspect_browser(&session, agent));
+                }
+                Job::RecoveryReceiptFromFloor {
+                    reader,
                     request,
                     reply,
                 } => {
-                    let answer = self.onboard_goal(&session, &request);
-                    let _ = reply.send(OnboardStep::Answer(answer));
+                    let _ = reply.send(self.recovery_receipt_browser(&reader, request));
+                }
+                Job::RecoverFromFloor {
+                    session,
+                    intent,
+                    reply,
+                } => {
+                    let _ = reply.send(self.recovery_submit_browser(session, &intent));
                 }
                 Job::Answer {
                     session,
@@ -1478,6 +1586,22 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let answer = self.browser_retire(&session, &request);
                     let _ = reply.send(answer);
                 }
+                Job::SettingsEdit {
+                    session,
+                    request,
+                    reply,
+                } => {
+                    let answer = self.browser_settings_edit(&session, &request);
+                    let _ = reply.send(answer);
+                }
+                Job::Project {
+                    session,
+                    request,
+                    reply,
+                } => {
+                    let answer = self.browser_project(&session, &request);
+                    let _ = reply.send(answer);
+                }
                 Job::Ticket {
                     session,
                     request,
@@ -1537,10 +1661,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         }
                     }
                 }
-                Job::BaselineEnded { id } => self.ctx.baselines.end(id),
-                Job::PredicateEnded { goal, verdict } => {
+                Job::FloorPeerRefused {
+                    route,
+                    agent,
+                    reason,
+                } => {
                     if !self.ctx.journal_writes_stopped()
-                        && let Err(error) = self.predicate_ended(goal, verdict)
+                        && let Err(error) = self.floor_peer_refused(route, agent, reason)
+                    {
+                        if !self.ctx.journal_writes_stopped() {
+                            return Err(error);
+                        }
+                        tracing::error!(%error, "journal stopped; awaiting operator restart");
+                    }
+                }
+                Job::BaselineEnded { id } => self.ctx.baselines.end(id),
+                Job::PredicateEnded {
+                    goal,
+                    folder,
+                    verdict,
+                } => {
+                    if !self.ctx.journal_writes_stopped()
+                        && let Err(error) = self.predicate_ended(goal, &folder, verdict)
                     {
                         if !self.ctx.journal_writes_stopped() {
                             return Err(error);
@@ -1685,49 +1827,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 announcement,
                 after,
             } => {
-                let session = self
-                    .sup
-                    .world()
-                    .closing
-                    .as_ref()
-                    .filter(|session| session.announcement == announcement)
-                    .ok_or_else(|| refused("the closing announcement does not match"))?;
-                let mut participants: Vec<_> = session
-                    .participants
-                    .iter()
-                    .filter(|(agent, _)| after.is_none_or(|after| **agent > after))
-                    .take(129)
-                    .map(
-                        |(agent, row)| dudes_proto::rpc::closing::ClosingParticipantStatus {
-                            agent: *agent,
-                            name: row.name.clone(),
-                            acknowledged: row.acknowledged.is_some(),
-                            saving_turn: row.saving_turn,
-                            settled: self.sup.world().closing_standing(*agent, row).reason(),
-                        },
-                    )
-                    .collect();
-                let next = if participants.len() > 128 {
-                    participants.pop();
-                    participants.last().map(|row| row.agent)
-                } else {
-                    None
-                };
-                let answer = Answer::Status(dudes_proto::rpc::closing::ClosingStatus {
-                    announcement,
-                    phase: session.phase,
-                    deadline: self.closing.wall_deadline(session.announced_at),
-                    acknowledged: session
-                        .participants
-                        .values()
-                        .filter(|row| row.acknowledged.is_some())
-                        .count(),
-                    total: session.participants.len(),
-                    participants,
-                    next,
-                });
-                self.closing.responses += 1;
-                return Ok(answer);
+                return self.closing_status(announcement, after);
             }
             Request::Ack {
                 announcement,
@@ -1735,18 +1835,30 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             } => {
                 self.refuse_retired(agent)?;
                 self.require_journal_writes()?;
-                self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, move |sup| {
-                    sup.closing_ack(announcement, agent).map(|_| ())
-                })
+                self.pump_started(
+                    &mut PumpReport::Discard,
+                    PumpOrigin::Closing,
+                    &[],
+                    move |sup, _operation| {
+                        sup.closing_ack(announcement, agent)?;
+                        Ok(Handled::default())
+                    },
+                )
                 .map_err(|failure| closing_pump_error(&failure))?;
                 self.closing.responses += 1;
                 return Ok(Answer::Ack);
             }
             Request::Announce => {
                 self.require_journal_writes()?;
-                self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, |sup| {
-                    sup.closing_announce().map(|_| ())
-                })
+                self.pump_started(
+                    &mut PumpReport::Discard,
+                    PumpOrigin::Closing,
+                    &[],
+                    |sup, _operation| {
+                        sup.closing_announce()?;
+                        Ok(Handled::default())
+                    },
+                )
                 .map_err(|failure| closing_pump_error(&failure))?;
             }
         }
@@ -1774,6 +1886,57 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(answer)
     }
 
+    fn closing_status(
+        &mut self,
+        announcement: Lsn,
+        after: Option<AgentId>,
+    ) -> std::result::Result<crate::closing::Answer, RpcError> {
+        use crate::closing::Answer;
+        let session = self
+            .sup
+            .world()
+            .closing
+            .as_ref()
+            .filter(|session| session.announcement == announcement)
+            .ok_or_else(|| refused("the closing announcement does not match"))?;
+        let mut participants: Vec<_> = session
+            .participants
+            .iter()
+            .filter(|(agent, _)| after.is_none_or(|after| **agent > after))
+            .take(129)
+            .map(
+                |(agent, row)| dudes_proto::rpc::closing::ClosingParticipantStatus {
+                    agent: *agent,
+                    name: row.name.clone(),
+                    acknowledged: row.acknowledged.is_some(),
+                    saving_turn: row.saving_turn,
+                    settled: self.sup.world().closing_standing(*agent, row).reason(),
+                },
+            )
+            .collect();
+        let next = if participants.len() > 128 {
+            participants.pop();
+            participants.last().map(|row| row.agent)
+        } else {
+            None
+        };
+        let answer = Answer::Status(dudes_proto::rpc::closing::ClosingStatus {
+            announcement,
+            phase: session.phase,
+            deadline: self.closing.wall_deadline(session.announced_at),
+            acknowledged: session
+                .participants
+                .values()
+                .filter(|row| row.acknowledged.is_some())
+                .count(),
+            total: session.participants.len(),
+            participants,
+            next,
+        });
+        self.closing.responses += 1;
+        Ok(answer)
+    }
+
     fn closing_tick(&mut self) -> Result<bool> {
         if !self.sup.is_closing()
             || self.ctx.journal_writes_stopped()
@@ -1794,11 +1957,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if !expired && (self.closing.responses != 0 || !session.ready(self.sup.world())) {
             return Ok(false);
         }
-        if let Err(error) =
-            self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, move |sup| {
-                sup.closing_finish(expired).map(|_| ())
-            })
-        {
+        if let Err(error) = self.pump_started(
+            &mut PumpReport::Discard,
+            PumpOrigin::Closing,
+            &[],
+            move |sup, _operation| {
+                sup.closing_finish(expired)?;
+                Ok(Handled::default())
+            },
+        ) {
             if error.downcast_ref::<dudes_supervisor::closing::ClosingError>()
                 == Some(&dudes_supervisor::closing::ClosingError::LaunchPending)
             {
@@ -1887,17 +2054,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         at: admitted_at.unwrap_or_else(|| self.ctx.clock.now()),
                         record: record.clone(),
                     };
-                    let lsn = {
+                    let append = {
                         let supervisor = supervisor.borrow();
                         self.ctx.append(supervisor.world(), &entry)?
                     };
+                    let lsn = append.lsn();
                     if self.ctx.writer.poisoned().is_some() {
                         anyhow::bail!("mailbox append checkpoint stopped the journal");
                     }
-                    acknowledged.push_back(Input::Journaled {
-                        lsn,
-                        entry: entry.clone(),
-                    });
+                    acknowledged.push_back(Input::Journaled { append });
                     Ok((lsn, entry))
                 },
             );
@@ -1910,7 +2075,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if !fenced && !acknowledged.is_empty() {
             let mut report = PumpReport::Discard;
             if self
-                .pump_inputs(&mut report, PumpOrigin::Ordinary, acknowledged, |_| Ok(()))
+                .pump_inputs(
+                    &mut report,
+                    PumpOrigin::Ordinary,
+                    acknowledged,
+                    &[],
+                    |_, _operation| Ok(Handled::default()),
+                )
                 .is_err()
             {
                 tracing::error!("mailbox acknowledgment continuation failed");
@@ -1932,7 +2103,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .ok_or_else(|| "Floor stream unavailable".to_owned())?;
         // Offered with the switch on, a Hire slot left and, per workspace, an
         // eligible profile with at least one offered engine. No ceiling or reserve is required.
-        let offered: Vec<_> = if self.ctx.hire_enabled
+        let live = self.ctx.switches.load();
+        let offered: Vec<_> = if live.hire
             && !self.ctx.journal_writes_stopped()
             && self.ctx.onboarding_index.count(session.digest()) < 4
         {
@@ -1943,6 +2115,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 .filter(|profile| self.onboarding_profile_eligible(profile))
                 .map(|profile| (profile, self.offered_engines(profile)))
                 .filter(|(_, engines)| !engines.is_empty())
+                .map(|(profile, engines)| {
+                    let trusted = self.sup.world().workspace_trust.contains_key(&profile.id);
+                    (profile, engines, trusted)
+                })
                 .collect()
         } else {
             Vec::new()
@@ -1950,28 +2126,30 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let onboarding = (!offered.is_empty()).then(|| {
             crate::floor_actions::Enrollment::view(self.sup.config().floor_usd_per_day, offered)
         });
-        let checks = (self.ctx.hire_enabled || self.ctx.control.goal())
-            .then(|| self.ctx.enrollment.checks_view());
+        let checks = (live.hire || live.control.goal()).then(|| self.ctx.enrollment.checks_view());
         let mut switches = dudes_proto::rpc::floor::SettingsSwitches::default();
-        switches.answer = self.ctx.answer_enabled;
-        switches.hire = self.ctx.hire_enabled;
-        switches.control = self.ctx.control.pause_resume();
-        switches.goal = self.ctx.control.goal();
-        switches.renew = self.ctx.control.renew();
-        switches.retire = self.ctx.control.retire();
+        switches.answer = live.answer;
+        switches.hire = live.hire;
+        switches.control = live.control.pause_resume();
+        switches.recovery = live.serves_recovery();
+        switches.goal = live.control.goal();
+        switches.renew = live.control.renew();
+        switches.retire = live.control.retire();
         switches.terminal = self.ctx.browser_grants.is_some();
-        switches.git = self.ctx.git_enabled;
+        switches.git = live.git;
+        switches.board = live.board;
+        switches.diff = live.diff;
+        switches.project = live.project;
         let settings = crate::floor_settings::view(
             switches,
+            live.project && self.ctx.folder_picker.available(),
             self.sup.config().floor_usd_per_day,
             self.sup.config().per_turn_floor,
             &self.ctx.enrollment,
             self.sup.adapters(),
         );
-        let goal = self.ctx.control.goal().then(|| {
-            crate::floor_goal::GoalView::new(
-                self.ctx.control.renew().then_some(&self.ctx.enrollment),
-            )
+        let goal = live.control.goal().then(|| {
+            crate::floor_goal::GoalView::new(live.control.renew().then_some(&self.ctx.enrollment))
         });
         let projections = &self.ctx.projections;
         streams
@@ -1981,18 +2159,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 crate::floor_stream::Siblings {
                     onboarding: onboarding.as_ref(),
                     checks: checks.as_ref(),
-                    answer: self
-                        .ctx
-                        .answer_enabled
-                        .then_some(&crate::floor_answer::ANSWER_VIEW),
-                    control: self
-                        .ctx
+                    answer: live.answer.then_some(&crate::floor_answer::ANSWER_VIEW),
+                    control: live
                         .control
                         .pause_resume()
                         .then_some(&crate::floor_control::CONTROL_VIEW),
+                    recovery: switches
+                        .recovery
+                        .then_some(dudes_proto::rpc::floor::RecoveryView {}),
                     goal: goal.as_ref(),
-                    retire: self
-                        .ctx
+                    retire: live
                         .control
                         .retire()
                         .then_some(&crate::floor_retire::RETIRE_VIEW),
@@ -2001,16 +2177,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         .browser_grants
                         .is_some()
                         .then_some(&crate::floor_terminal::TERMINAL_VIEW),
-                    git: self
-                        .ctx
-                        .git_enabled
-                        .then_some(&crate::floor_git::GIT_SWITCH),
-                    diff: (self.ctx.git_enabled && self.ctx.diff_enabled)
+                    git: live.git.then_some(&crate::floor_git::GIT_SWITCH),
+                    diff: live
+                        .serves_diff()
                         .then_some(&crate::floor_diff::DIFF_SWITCH),
-                    ticket: self
-                        .ctx
-                        .board_enabled
-                        .then_some(&crate::floor_ticket::TICKET_SWITCH),
+                    ticket: live.board.then_some(&crate::floor_ticket::TICKET_SWITCH),
                     journal_stopped: None,
                     chat: None,
                     finished_today: None,
@@ -2031,20 +2202,23 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if read.apply.is_some() {
             self.require_journal_writes()?;
         }
-        let running = crate::config::OperatorConfig {
+        let running = self.ctx.switches.load();
+        let running_config = crate::config::OperatorConfig {
             providers: self.ctx.running_providers.clone(),
             mcp_servers: self.ctx.running_mcp.clone(),
             budget: crate::config::BudgetConfig {
                 floor_usd_per_day: self.sup.config().floor_usd_per_day,
                 per_turn_floor: self.sup.config().per_turn_floor,
             },
-            answer_enabled: self.ctx.answer_enabled,
-            hire_enabled: self.ctx.hire_enabled,
-            control: self.ctx.control,
+            answer_enabled: running.answer,
+            hire_enabled: running.hire,
+            control: running.control,
+            recovery_enabled: running.recovery,
             terminal_enabled: self.ctx.browser_grants.is_some(),
-            git_enabled: self.ctx.git_enabled,
-            diff_enabled: self.ctx.diff_enabled,
-            board_enabled: self.ctx.board_enabled,
+            git_enabled: running.git,
+            diff_enabled: running.diff,
+            board_enabled: running.board,
+            project_enabled: running.project,
             condense_model_enabled: self.ctx.condense_model_enabled,
             condense_model: self.ctx.condense_model.clone(),
             ..crate::config::OperatorConfig::default()
@@ -2053,8 +2227,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             &self.ctx.enrollment,
             &mut self.ctx.reloads,
             read,
-            &running,
+            &running_config,
             self.ctx.memory_config,
+            running,
             self.ctx.clock.now(),
         )
         .map_err(|error| crate::enrollment_reload::invalid(&error))?;
@@ -2063,6 +2238,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
         if decision.result.applied {
             self.ctx.enrollment = decision.candidate;
+            self.revoke_stale_grants();
+            self.install_switches(decision.switches);
             match decision.resync {
                 Resync::None => {}
                 Resync::Now => self.resync_floor(),
@@ -2080,6 +2257,103 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
         }
         Ok(decision.result)
+    }
+
+    /// The Settings page's edit: the same `dudes_config` edit the CLI runs, then the reload the
+    /// CLI asks for, read here on the loop thread. A reload the daemon declines leaves the edit
+    /// saved for the next one.
+    fn browser_settings_edit(
+        &mut self,
+        session: &crate::floor_session::SessionIdentity,
+        request: &crate::floor_settings_edit::SettingsRequest,
+    ) -> Result<
+        crate::floor_settings_edit::SettingsSaved,
+        crate::floor_settings_edit::SettingsRefusal,
+    > {
+        use crate::floor_settings_edit::{NotLive, SettingsRefusal, SettingsSaved};
+        use dudes_config::config::ConfigError;
+        use sha2::Digest as _;
+        if !session.is_valid() {
+            return Err(SettingsRefusal::Forbidden);
+        }
+        let path = self
+            .ctx
+            .operator_config
+            .clone()
+            .ok_or(SettingsRefusal::NoFile)?;
+        let map = |error: ConfigError| match error {
+            ConfigError::Refused(_) | ConfigError::Holds { .. } => {
+                SettingsRefusal::StartRule(error.to_string())
+            }
+            _ => SettingsRefusal::FileError,
+        };
+        let mut draft = dudes_config::config::Draft::open(&path).map_err(map)?;
+        draft.apply(&request.change).map_err(map)?;
+        if draft.zeroes_a_reserve() {
+            return Err(SettingsRefusal::ZeroesReserve);
+        }
+        let edited = draft.write().map_err(map)?;
+        tracing::info!(
+            session = %&crate::enrollment_reload::hex(&session.digest().bytes())[..16],
+            change = %request.change,
+            wrote = edited.wrote,
+            "floor settings write"
+        );
+        let mut saved = SettingsSaved {
+            wrote: edited.wrote,
+            not_live: Some(NotLive::Unread),
+            ..SettingsSaved::default()
+        };
+        let Ok(bytes) = crate::config::read_operator_for_reload(&path) else {
+            return Ok(saved);
+        };
+        let sha256 = crate::enrollment_reload::hex(&sha2::Sha256::digest(
+            bytes.as_deref().unwrap_or_default(),
+        ));
+        let Ok((startup, memory_config)) =
+            crate::config::parse_operator_and_memory_with_options(&path, bytes.as_deref())
+        else {
+            return Ok(saved);
+        };
+        let read = crate::enrollment_reload::ReloadRead {
+            seq: self.ctx.reloads.local_seq(),
+            apply: Some(dudes_proto::rpc::floor::EnrollmentApply {
+                sha256: sha256.clone(),
+                added: Vec::new(),
+                removed: Vec::new(),
+                changed: Vec::new(),
+            }),
+            sha256,
+            path,
+            config: startup.operator,
+            memory_config,
+            pid: None,
+        };
+        if let Ok(result) = self.enrollment_reload(&read) {
+            saved.restart = result.not_applied;
+            if result.applied {
+                saved.applied = result.switches;
+                saved.not_live = None;
+            } else {
+                saved.not_live = Some(NotLive::Drifted);
+            }
+        }
+        Ok(saved)
+    }
+
+    /// Swap in the switches an applied reload read. Turning the terminal off revokes every live
+    /// grant and closes its attachment first, so no socket outlives the switch.
+    fn install_switches(&mut self, next: crate::floor_switches::Switches) {
+        let was = self.ctx.switches.load();
+        if was.terminal && !next.terminal {
+            if let Some(grants) = &self.ctx.browser_grants {
+                for live in grants.values() {
+                    self.revoke_and_close(live, TERMINAL_OFF);
+                }
+            }
+            self.ctx.browser_grants = None;
+        }
+        self.ctx.switches.store(next);
     }
 
     /// Send `floor.resync` on every open projection stream.
@@ -2132,49 +2406,33 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// each of Claude, Codex and Pi that has an adapter in this run's registry, less any that the
     /// billing-credential guard withdraws because `profile` sets no ceiling that counts for it.
     fn offered_engines(&self, profile: &Profile) -> Vec<Provider> {
+        self.engines_for(&profile.agent_budget, &profile.goal_budget)
+    }
+
+    /// [`Self::offered_engines`] for a project that sets these ceilings.
+    fn engines_for(
+        &self,
+        agent: &dudes_proto::AgentBudget,
+        goal: &dudes_proto::GoalBudget,
+    ) -> Vec<Provider> {
         crate::floor_actions::BROWSER_ENGINES
             .into_iter()
             .filter(|engine| {
                 self.sup.adapters().get(*engine).is_some()
-                    && (self.guard_satisfied(
-                        *engine,
-                        &profile.agent_budget,
-                        Some(&profile.goal_budget),
-                    ) || !self.sup.billing_credential_visible(*engine))
+                    && (self.guard_satisfied(*engine, agent, Some(goal))
+                        || !self.sup.billing_credential_visible(*engine))
             })
             .collect()
     }
 
-    /// Answer a browser hire's job, or hand its reply to the job that appends its goal.
-    fn onboard_next(
-        &mut self,
-        next: OnboardNext,
-        session: crate::floor_session::SessionIdentity,
-        request: OnboardRequest,
-        reply: std::sync::mpsc::Sender<OnboardStep>,
-    ) {
-        match next {
-            OnboardNext::Reply(step) => {
-                let _ = reply.send(step);
-            }
-            OnboardNext::Goal => {
-                self.ctx
-                    .onboarding_pause
-                    .hit(OnboardingPausePoint::BetweenEffects);
-                self.handle.onboard_continue(session, request, reply);
-            }
-        }
-    }
-
     /// A browser hire's first job: the index's answer for an attempt it holds, else the new
-    /// attempt's admission and then its check's run, or the hire itself for a check that may
-    /// already pass. A partial attempt's retry runs its check again before its goal's append.
+    /// attempt's admission and the hire itself.
     fn onboard(
         &mut self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
-    ) -> OnboardNext {
-        let answer = |answer| OnboardNext::Reply(OnboardStep::Answer(answer));
+    ) -> OnboardStep {
+        let answer = OnboardStep::Answer;
         let existing = self
             .ctx
             .onboarding_index
@@ -2185,149 +2443,95 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             if attempt.metadata.request_digest != request.request_digest {
                 return answer(Err(OnboardRefusal::Conflict));
             }
-            if attempt.goal_set {
-                return answer(Ok(OnboardOutcome::Complete {
-                    attempt_id: request.attempt_wire.clone(),
-                    agent: attempt.agent,
-                    goal: attempt.metadata.intended_goal.id,
-                }));
-            }
-        }
-        if self.ctx.journal_writes_stopped() {
-            // An indexed hire may already be durable; keep its reservation pending until replay.
-            // An unindexed request is refused before any effect in this invocation, so its
-            // newly acquired reservation can be released.
-            return answer(Err(if existing.is_some() {
-                OnboardRefusal::Unavailable
-            } else {
-                OnboardRefusal::UnavailableNoEffect
+            return answer(Ok(OnboardOutcome::Complete {
+                attempt_id: request.attempt_wire.clone(),
+                agent: attempt.agent,
             }));
         }
-        let Some(attempt) = existing else {
-            return self.onboard_new(session, request);
-        };
-        if let Some(partial) = self.onboarding_goal_refusal(session, request, &attempt) {
-            return answer(Ok(partial));
-        }
-        let intended = &attempt.metadata.intended_goal;
-        let Predicate::Command { argv, timeout_s } = intended.predicate.clone() else {
-            return OnboardNext::Goal;
-        };
-        if crate::goal_replacement::may_already_pass(intended) {
-            return OnboardNext::Goal;
-        }
-        // The hire is durable, so a check that cannot run now, beside the agent's own work or past
-        // a session limit, is not a refusal of the hire. Nothing happened here, so the answer
-        // releases the request's guard and the page's Check status asks again; the onboarding
-        // index, not the guard, holds the attempt.
-        if self.work_beside(attempt.agent) {
+        if self.ctx.journal_writes_stopped() {
+            // Nothing is indexed, so this request has appended nothing: its newly acquired
+            // reservation can be released.
             return answer(Err(OnboardRefusal::UnavailableNoEffect));
         }
-        let Ok(run) = self
-            .ctx
-            .baselines
-            .start_browser(Some(attempt.agent), session.digest())
-        else {
-            return answer(Err(OnboardRefusal::UnavailableNoEffect));
-        };
-        let Some(cwd) = self
-            .sup
-            .world()
-            .agents
-            .get(&attempt.agent)
-            .map(|row| row.cwd.clone())
-        else {
-            self.ctx.baselines.end(run);
-            return answer(Err(OnboardRefusal::Unavailable));
-        };
-        match self.start_baseline(run, argv, timeout_s, cwd) {
-            Ok(Answered::CheckRunning(ticket)) => OnboardNext::Reply(OnboardStep::Check {
-                ticket: *ticket,
-                on_refusal: Some(OnboardOutcome::Partial {
-                    attempt_id: request.attempt_wire.clone(),
-                    agent: attempt.agent,
-                    reason: "goal_refused",
-                    current_goal: None,
-                    retired: false,
-                }),
-            }),
-            _ => answer(Err(OnboardRefusal::Unavailable)),
-        }
+        self.onboard_new(session, request)
     }
 
-    /// A new browser hire: the new-attempt validation, the admission, then its check's run or, for a check
-    /// that may already pass, the hire.
+    /// A new browser hire: the new-attempt validation, the admission, then the hire. The check the
+    /// hire names is validated here and run when the first ticket starts, not before the hire.
     fn onboard_new(
         &mut self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
-    ) -> OnboardNext {
-        let answer = |answer| OnboardNext::Reply(OnboardStep::Answer(answer));
-        // The goal text becomes the agent's goal, which no launch can carry with
-        // U+0000 in it. This validates a new attempt only: an attempt the index
-        // already holds never reaches it, whatever its recorded goal holds.
-        if request.goal_text.contains('\0') || request.check.is_none() {
-            return answer(Err(OnboardRefusal::InvalidInput));
+    ) -> OnboardStep {
+        if request.check.is_none() {
+            return OnboardStep::Answer(Err(OnboardRefusal::InvalidInput));
         }
-        let (profile, check) = match self.onboarding_admission(session, request) {
-            Ok(admitted) => admitted,
-            Err(refusal) => return answer(Err(refusal)),
-        };
-        if check.may_already_pass {
-            return self.hire_onboarded(
-                session,
-                request,
-                &profile,
-                &check,
-                CheckBaseline::MayAlreadyPass,
-            );
-        }
-        let Predicate::Command { argv, timeout_s } = check.predicate.clone() else {
-            return answer(Err(OnboardRefusal::Forbidden));
-        };
-        let run = match self.ctx.baselines.start_browser(None, session.digest()) {
-            Ok(run) => run,
-            Err(limit) => return answer(Err(OnboardRefusal::Check(limit.reason()))),
-        };
-        match self.start_baseline(run, argv, timeout_s, profile.cwd.clone()) {
-            Ok(Answered::CheckRunning(ticket)) => OnboardNext::Reply(OnboardStep::Check {
-                ticket: *ticket,
-                on_refusal: None,
-            }),
-            _ => answer(Err(OnboardRefusal::UnavailableNoEffect)),
+        match self.onboarding_admission(session, request) {
+            Ok((profile, _)) => self.hire_onboarded(session, request, &profile, None),
+            Err(refusal) => OnboardStep::Answer(Err(refusal)),
         }
     }
 
-    /// A browser hire once its check ran and did not pass: the new attempt's admission again,
-    /// then the hire, or for a retried partial attempt, its goal's append.
-    fn onboard_checked(
-        &mut self,
-        session: &crate::floor_session::SessionIdentity,
+    /// What a hire into its own copy needs before anything is made: a Claude agent on a platform
+    /// that makes copies, in a project the operator trusts. The agent then works in the copy and
+    /// not in the project's folder, so the shared-folder check is made on the copy later.
+    fn own_copy_admission(
+        &self,
         request: &OnboardRequest,
-        baseline: CheckBaseline,
-        run: u64,
-    ) -> OnboardNext {
-        self.ctx.baselines.end(run);
-        let indexed = self
-            .ctx
-            .onboarding_index
-            .attempt(request.attempt_id)
-            .is_some();
-        if self.exited || self.ctx.journal_writes_stopped() {
-            return OnboardNext::Reply(OnboardStep::Answer(Err(if indexed {
-                OnboardRefusal::Unavailable
-            } else {
-                OnboardRefusal::UnavailableNoEffect
-            })));
+        profile: &Profile,
+    ) -> Result<(), OnboardRefusal> {
+        use crate::floor_actions::CopyRefusal;
+        if request.provider != Provider::Claude {
+            return Err(OnboardRefusal::OwnCopy(CopyRefusal::Engine));
         }
-        if indexed {
-            return OnboardNext::Goal;
+        if cfg!(windows) {
+            return Err(OnboardRefusal::OwnCopy(CopyRefusal::Platform));
         }
-        match self.onboarding_admission(session, request) {
-            Ok((profile, check)) => {
-                self.hire_onboarded(session, request, &profile, &check, baseline)
-            }
-            Err(refusal) => OnboardNext::Reply(OnboardStep::Answer(Err(refusal))),
+        if !self.sup.world().workspace_trust.contains_key(&profile.id) {
+            return Err(OnboardRefusal::OwnCopy(CopyRefusal::NotTrusted(
+                profile.id.clone(),
+            )));
+        }
+        Ok(())
+    }
+
+    /// The copy a new hire asks for, as the params the shared worktree path takes, with the
+    /// grant it rests on. The browser sends no trust: the operator's grant is read from the journal.
+    fn copy_step(&self, request: &OnboardRequest, profile: &Profile) -> OnboardStep {
+        use crate::floor_actions::CopyRefusal;
+        let refuse = |why| OnboardStep::Answer(Err(OnboardRefusal::OwnCopy(why)));
+        let Some(grant) = self.sup.world().workspace_trust.get(&profile.id) else {
+            return refuse(CopyRefusal::NotTrusted(profile.id.clone()));
+        };
+        let ticket = crate::worktree::hire::TrustTicket {
+            workspace_id: profile.id.clone(),
+            lsn: grant.lsn,
+            vouch: crate::worktree::trust::Vouch {
+                repository: grant.repository.clone(),
+                pin: grant.pin.clone(),
+            },
+        };
+        let params = HireParams {
+            name: request.name.clone(),
+            character: request.character,
+            accent: request.accent,
+            role: request.role.clone(),
+            department: profile.department.clone(),
+            provider: request.provider,
+            cwd: profile.cwd.clone(),
+            budget: profile.agent_budget,
+            sandbox: None,
+            isolation: browser_isolation(request.provider, profile),
+            max_turns: None,
+            max_budget: None,
+            trusted: true,
+            checkout: Some(dudes_proto::rpc::agent::Checkout::Worktree),
+            from: None,
+            mcp_servers: Vec::new(),
+        };
+        OnboardStep::Copy {
+            params: Box::new(params),
+            trust: Box::new(ticket),
         }
     }
 
@@ -2338,7 +2542,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
     ) -> Result<(Profile, crate::floor_actions::EnrolledCheck), OnboardRefusal> {
-        if !self.ctx.hire_enabled || self.ctx.onboarding_index.count(session.digest()) >= 4 {
+        if !self.ctx.switches.load().hire || self.ctx.onboarding_index.count(session.digest()) >= 4
+        {
             return Err(OnboardRefusal::Forbidden);
         }
         let profile = self
@@ -2360,16 +2565,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if self.refuse_overlap(&profile.cwd, None).is_err() {
             return Err(OnboardRefusal::Forbidden);
         }
-        self.ctx
-            .admit_shared_folder(
-                &self.sup,
-                None,
-                request.provider,
-                browser_isolation(request.provider, &profile),
-                dudes_types::Mode::Managed,
-                &profile.cwd,
-            )
-            .map_err(OnboardRefusal::SharedFolder)?;
+        if request.own_copy {
+            self.own_copy_admission(request, &profile)?;
+        } else {
+            self.ctx
+                .admit_shared_folder(
+                    &self.sup,
+                    None,
+                    request.provider,
+                    browser_isolation(request.provider, &profile),
+                    dudes_types::Mode::Managed,
+                    &profile.cwd,
+                )
+                .map_err(OnboardRefusal::SharedFolder)?;
+        }
         let (id, revision) = request.check.as_ref().ok_or(OnboardRefusal::InvalidInput)?;
         let check = profile
             .check(id)
@@ -2384,21 +2593,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 
     /// Append one admitted browser hire whose intended goal carries its check and what the
-    /// check's run saw, then hand the reply on to the goal's append.
+    /// check's run saw, then hand the reply on to the goal's append. A hire that asks for its own
+    /// copy first answers with the copy to make; `copy` is that copy once it exists.
     fn hire_onboarded(
         &mut self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
         profile: &Profile,
-        check: &crate::floor_actions::EnrolledCheck,
-        baseline: CheckBaseline,
-    ) -> OnboardNext {
+        copy: Option<(crate::worktree::hire::LeaseView, dudes_types::Lsn)>,
+    ) -> OnboardStep {
+        if request.own_copy && copy.is_none() {
+            return self.copy_step(request, profile);
+        }
         // Seal before the hire command can reach the supervisor, as `LoopControl::hire` does. A
         // browser first hire ends the pre-agent epoch exactly as a local one: a connection that
         // acquires after this point, an escaped agent child included, gets no operator effect
         // authority. Irreversible, so no permit, persistence or
         // spawn failure below reopens it.
         self.operator_authority.seal();
+        let (cwd, worktree, trust_lsn) = match copy {
+            Some((lease, lsn)) => (lease.path, Some(lease.worktree), Some(lsn)),
+            None => (profile.cwd.clone(), None, None),
+        };
         match self.pump_onboarding(
             session,
             Command::BrowserOnboardHire(Box::new(BrowserOnboardHire {
@@ -2408,203 +2624,91 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 role: request.role.clone(),
                 department: profile.department.clone(),
                 provider: request.provider,
-                cwd: profile.cwd.clone(),
+                cwd,
                 budget: profile.agent_budget,
                 isolation: browser_isolation(request.provider, profile),
-                goal_text: request.goal_text.clone(),
-                completion_check: check.reference(),
-                baseline: Some(baseline),
-                predicate: check.predicate.clone(),
-                goal_budget: profile.goal_budget,
-                hop_cap: profile.hop_cap,
                 attempt_id: request.attempt_id,
                 request_digest: request.request_digest,
                 profile_id: profile.id.clone(),
                 workspace_label: profile.label.clone(),
                 session_digest: session.digest(),
-            })),
-        ) {
-            Ok(()) => OnboardNext::Goal,
-            Err(refusal) => OnboardNext::Reply(OnboardStep::Answer(Err(refusal))),
-        }
-    }
-
-    /// The initial goal's append for a hire the index holds.
-    fn onboard_goal(
-        &mut self,
-        session: &crate::floor_session::SessionIdentity,
-        request: &OnboardRequest,
-    ) -> Result<OnboardOutcome, OnboardRefusal> {
-        let attempt = self
-            .ctx
-            .onboarding_index
-            .attempt(request.attempt_id)
-            .cloned()
-            .ok_or(OnboardRefusal::Unavailable)?;
-        if attempt.metadata.request_digest != request.request_digest {
-            return Err(OnboardRefusal::Conflict);
-        }
-        if attempt.goal_set {
-            return Ok(OnboardOutcome::Complete {
-                attempt_id: request.attempt_wire.clone(),
-                agent: attempt.agent,
-                goal: attempt.metadata.intended_goal.id,
-            });
-        }
-        if self.ctx.journal_writes_stopped() {
-            return Err(OnboardRefusal::Unavailable);
-        }
-        self.finish_onboarding_goal(session, request, &attempt)
-    }
-
-    /// Why a durable hire's initial goal cannot be appended now, as the partial answer the page
-    /// reads; `None` when it can. An agent the world has not folded yet is not partial.
-    fn onboarding_goal_refusal(
-        &self,
-        session: &crate::floor_session::SessionIdentity,
-        request: &OnboardRequest,
-        attempt: &crate::floor_actions::Attempt,
-    ) -> Option<OnboardOutcome> {
-        let row = self.sup.world().agents.get(&attempt.agent)?;
-        let partial = |reason| {
-            Some(OnboardOutcome::Partial {
-                attempt_id: request.attempt_wire.clone(),
-                agent: attempt.agent,
-                reason,
-                current_goal: row.goal,
-                retired: row.retired,
-            })
-        };
-        if row.retired {
-            return partial("agent_retired");
-        }
-        if attempt.goal_conflict || row.goal.is_some() {
-            return partial("goal_conflict");
-        }
-        if let Err(reason) = session.permit() {
-            return partial(match reason {
-                crate::floor_session::PermitFailure::Expired => "session_expired",
-                crate::floor_session::PermitFailure::Revoked => "session_revoked",
-            });
-        }
-        let Some(profile) = self.ctx.enrollment.profile(&request.workspace_id) else {
-            return partial("profile_changed");
-        };
-        if !Self::recorded_profile_matches(attempt, profile, request.provider) {
-            return partial("profile_changed");
-        }
-        if !self.ctx.hire_enabled
-            || !self.onboarding_profile_eligible(profile)
-            || !self.offered_engines(profile).contains(&request.provider)
-        {
-            return partial("goal_refused");
-        }
-        None
-    }
-
-    fn finish_onboarding_goal(
-        &mut self,
-        session: &crate::floor_session::SessionIdentity,
-        request: &OnboardRequest,
-        attempt: &crate::floor_actions::Attempt,
-    ) -> Result<OnboardOutcome, OnboardRefusal> {
-        let row = self
-            .sup
-            .world()
-            .agents
-            .get(&attempt.agent)
-            .ok_or(OnboardRefusal::Unavailable)?;
-        let (current_goal, retired) = (row.goal, row.retired);
-        let partial = |reason| OnboardOutcome::Partial {
-            attempt_id: request.attempt_wire.clone(),
-            agent: attempt.agent,
-            reason,
-            current_goal,
-            retired,
-        };
-        if let Some(refused) = self.onboarding_goal_refusal(session, request, attempt) {
-            return Ok(refused);
-        }
-        let intended = attempt.metadata.intended_goal.clone();
-        match self.pump_onboarding(
-            session,
-            Command::BrowserOnboardGoal(Box::new(BrowserOnboardGoal {
-                agent: attempt.agent,
-                goal: intended.clone(),
-                attempt_id: request.attempt_id,
-                session_digest: session.digest(),
+                worktree,
+                trust_lsn,
             })),
         ) {
             Ok(()) => {
-                if self
-                    .ctx
-                    .onboarding_index
-                    .attempt(request.attempt_id)
-                    .is_some_and(|indexed| indexed.goal_set)
-                {
-                    Ok(OnboardOutcome::Complete {
-                        attempt_id: request.attempt_wire.clone(),
-                        agent: attempt.agent,
-                        goal: intended.id,
-                    })
-                } else {
-                    Err(OnboardRefusal::Unavailable)
-                }
+                self.ctx
+                    .onboarding_pause
+                    .hit(OnboardingPausePoint::BetweenEffects);
+                OnboardStep::Answer(
+                    self.ctx
+                        .onboarding_index
+                        .attempt(request.attempt_id)
+                        .map(|attempt| OnboardOutcome::Complete {
+                            attempt_id: request.attempt_wire.clone(),
+                            agent: attempt.agent,
+                        })
+                        .ok_or(OnboardRefusal::Unavailable),
+                )
             }
-            Err(OnboardRefusal::Forbidden) => {
-                let reason =
-                    session
-                        .permit()
-                        .err()
-                        .map_or("goal_refused", |failure| match failure {
-                            crate::floor_session::PermitFailure::Expired => "session_expired",
-                            crate::floor_session::PermitFailure::Revoked => "session_revoked",
-                        });
-                Ok(partial(reason))
-            }
-            Err(other) => Err(other),
+            Err(refusal) => OnboardStep::Answer(Err(refusal)),
         }
     }
 
-    /// Whether `profile` still holds every effective value the durable hire recorded, the chosen
-    /// `engine` included.
-    fn recorded_profile_matches(
-        attempt: &crate::floor_actions::Attempt,
-        profile: &Profile,
-        engine: Provider,
-    ) -> bool {
-        let Record::AgentHired {
-            department,
-            provider,
-            cwd,
-            budget,
-            isolation,
-            ..
-        } = &attempt.hire
-        else {
-            return false;
+    /// A browser hire into its own copy once the copy exists: the admission again, the grant it
+    /// rests on checked again, the shared-folder check on the copy, then the hire into it.
+    fn onboard_copied(
+        &mut self,
+        session: &crate::floor_session::SessionIdentity,
+        request: &OnboardRequest,
+        worktree: dudes_types::WorktreeId,
+        trust: &crate::worktree::hire::TrustTicket,
+    ) -> OnboardStep {
+        use crate::floor_actions::CopyRefusal;
+        let answer = OnboardStep::Answer;
+        if !self.ctx.switches.load().hire {
+            return answer(Err(OnboardRefusal::Check(ACTION_OFF)));
+        }
+        if self.exited || self.ctx.journal_writes_stopped() {
+            return answer(Err(OnboardRefusal::UnavailableNoEffect));
+        }
+        if self
+            .ctx
+            .onboarding_index
+            .attempt(request.attempt_id)
+            .is_some()
+        {
+            return answer(Err(OnboardRefusal::Unavailable));
+        }
+        let (profile, _) = match self.onboarding_admission(session, request) {
+            Ok(admitted) => admitted,
+            Err(refusal) => return answer(Err(refusal)),
         };
-        *provider == engine
-            && attempt.metadata.profile_id == profile.id
-            && *department == profile.department
-            && *cwd == profile.cwd
-            && *budget == profile.agent_budget
-            && *isolation == browser_isolation(engine, profile)
-            && Self::recorded_check_enrolled(&attempt.metadata.intended_goal, profile)
-            && attempt.metadata.intended_goal.budget == profile.goal_budget
-            && attempt.metadata.intended_goal.hop_cap == profile.hop_cap
-    }
-
-    /// Whether a hire's intended goal still names a check the workspace enrolls: the named check
-    /// with the same command and revision, or, for a hire that recorded no name, the workspace's
-    /// own check with the same command.
-    fn recorded_check_enrolled(intended: &dudes_proto::Goal, profile: &Profile) -> bool {
-        match &intended.completion_check {
-            Some(named) => profile.check(&named.id).is_some_and(|check| {
-                check.predicate == intended.predicate && check.reference().as_ref() == Some(named)
-            }),
-            None => profile.first_check().predicate == intended.predicate,
+        let Some(lease) = self.pending_lease(worktree) else {
+            return answer(Err(OnboardRefusal::OwnCopy(CopyRefusal::Failed)));
+        };
+        if self
+            .trust_still_holds(Some(trust), &lease.origin, &profile.cwd)
+            .is_err()
+        {
+            return answer(Err(OnboardRefusal::OwnCopy(CopyRefusal::TrustChanged(
+                profile.id.clone(),
+            ))));
         }
+        if self.refuse_overlap(&lease.path, Some(worktree)).is_err() {
+            return answer(Err(OnboardRefusal::Forbidden));
+        }
+        if let Err(refusal) = self.ctx.admit_shared_folder(
+            &self.sup,
+            None,
+            request.provider,
+            browser_isolation(request.provider, &profile),
+            dudes_types::Mode::Managed,
+            &lease.path,
+        ) {
+            return answer(Err(OnboardRefusal::SharedFolder(refusal)));
+        }
+        self.hire_onboarded(session, request, &profile, Some((lease, trust.lsn)))
     }
 
     fn pump_onboarding(
@@ -2650,7 +2754,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// returns its original result even while fenced, and a durable different digest conflicts;
     /// neither reads the live world. **Then the fence**, before anything that does. **Then the
     /// world**, on the supervisor's own fold: the first of `agent_retired`, `agent_attached` and
-    /// `question_closed` that holds. **Then the append**, whose permit `write_frame` takes after
+    /// `question_closed` that holds. **Then the append**, whose permit `append_checked` takes after
     /// the world check and releases after the fsync, before fold, decide or Spawn.
     fn browser_answer(
         &mut self,
@@ -2738,7 +2842,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// **Index truth first**, even while fenced: a durable same key returns its original result,
     /// and a durable different digest conflicts. **Then the fence**, before anything that reads
     /// the world. **Then the world**, on the supervisor's own fold (the refusal reasons, in order). **Then
-    /// the append**, through the existing command with the attribution beside it; `write_frame`
+    /// the append**, through the existing command with the attribution beside it; `append_checked`
     /// takes the permit after the world check and releases it after the fsync, before fold,
     /// decide or Spawn. A local command that reached this thread first moved the control identity,
     /// so the request is refused rather than laid over it.
@@ -3045,6 +3149,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if self.exited {
             return Err(GoalRefusal::UnavailableNoEffect);
         }
+        if !goal_switch_on(self.ctx.switches.load(), request) {
+            return Ok(GoalOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            });
+        }
         match self.browser_goal_admission(request) {
             Ok(change) => self.append_browser_goal(session, request, change, baseline),
             Err(answer) => answer,
@@ -3062,7 +3172,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// to have nothing left and takes its workspace's enrolled numbers; a named check must be
     /// enrolled for the agent's workspace at the revision the page read. Its caller appends in the
     /// same job, with nothing between these reads and the append, through the existing
-    /// `Command::GoalSet`; `write_frame` takes the permit and releases it after the fsync, before
+    /// `Command::GoalSet`; `append_checked` takes the permit and releases it after the fsync, before
     /// fold, decide or Spawn.
     fn browser_goal_admission(
         &self,
@@ -3562,6 +3672,33 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 "the daemon is shutting down, so the goal's check was not run",
             ));
         }
+        let Some(resolved) = shared_folder::canonical_folder(&cwd) else {
+            self.ctx.baselines.end(run);
+            let reason = if cwd.exists() {
+                format!(
+                    "the execution folder {} cannot be resolved as a directory",
+                    cwd.display()
+                )
+            } else {
+                format!("{} does not exist", cwd.display())
+            };
+            return Ok(Answered::CheckRunning(Box::new(
+                crate::baseline::Ticket::refused(
+                    run,
+                    argv,
+                    timeout_s,
+                    cwd,
+                    crate::baseline::Refusal::CannotRun(reason),
+                ),
+            )));
+        };
+        let cwd = resolved;
+        if !self.ctx.baselines.bind_folder(run, cwd.clone()) {
+            return Err(error(
+                ErrorCode::InternalError,
+                "the completion check's run mark cannot be bound",
+            ));
+        }
         let started = crate::baseline::start(
             run,
             crate::baseline::Run {
@@ -3688,7 +3825,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     ///
     /// **Index truth first**, even while fenced. **Then the fence**, before anything that reads
     /// the world. **Then the world** (the refusal reasons, in order). **Then the append**, through the
-    /// existing `Command::Retire` with the attribution beside it; `write_frame` takes the permit
+    /// existing `Command::Retire` with the attribution beside it; `append_checked` takes the permit
     /// and releases it after the fsync, before the fold and the kill. **Then the agent's
     /// terminal**, in this same job and only once the retirement has folded, so a request that
     /// lost its permit, or whose append failed, closes nothing.
@@ -3773,8 +3910,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     /// One predicate run ended: clear its mark, then hand the machine its verdict, if it observed
     /// one, in this same job.
-    fn predicate_ended(&mut self, goal: GoalId, verdict: Option<(bool, Evidence)>) -> Result<()> {
-        self.ctx.predicate_run_ended(goal);
+    fn predicate_ended(
+        &mut self,
+        goal: GoalId,
+        folder: &std::path::Path,
+        verdict: Option<(bool, Evidence)>,
+    ) -> Result<()> {
+        if !self.ctx.predicate_run_ended(goal, folder) {
+            return Ok(());
+        }
         match verdict {
             Some((pass, evidence)) => self.pump(Input::PredicateDone {
                 goal,
@@ -3804,21 +3948,26 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         {
             return Ok(());
         }
-        self.pump_started(report, PumpOrigin::Ordinary, move |sup| {
-            let _ = sup.handle(input);
-            Ok(())
-        })
+        let works = recovery::input_works(&input);
+        self.pump_started(
+            report,
+            PumpOrigin::Ordinary,
+            &works,
+            move |sup, operation| sup.handle(input, operation).map_err(anyhow::Error::new),
+        )
     }
 
     fn pump_started(
         &mut self,
         report: &mut PumpReport,
         origin: PumpOrigin,
+        start_works: &[dudes_proto::recovery::RecoveryWork],
         start: impl FnOnce(
             &mut Supervisor<Shared<C>, R>,
-        ) -> std::result::Result<(), dudes_supervisor::closing::ClosingError>,
+            &dudes_supervisor::RecoveryOperation<'_>,
+        ) -> Result<Handled>,
     ) -> Result<()> {
-        self.pump_inputs(report, origin, VecDeque::new(), start)
+        self.pump_inputs(report, origin, VecDeque::new(), start_works, start)
     }
 
     fn prepare_pump_inputs(
@@ -3886,13 +4035,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         report: &mut PumpReport,
         origin: PumpOrigin,
         queue: VecDeque<Input>,
+        start_works: &[dudes_proto::recovery::RecoveryWork],
         start: impl FnOnce(
             &mut Supervisor<Shared<C>, R>,
-        ) -> std::result::Result<(), dudes_supervisor::closing::ClosingError>,
+            &dudes_supervisor::RecoveryOperation<'_>,
+        ) -> Result<Handled>,
     ) -> Result<()> {
-        self.pump_inputs_with_work_refresh(report, origin, queue, start, |daemon, _| {
-            daemon.refresh_work()
-        })
+        self.pump_inputs_with_work_refresh(
+            report,
+            origin,
+            queue,
+            start_works,
+            start,
+            |daemon, _| daemon.refresh_work(),
+        )
     }
 
     fn execute_pump_effects(
@@ -3983,9 +4139,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         report: &mut PumpReport,
         origin: PumpOrigin,
         mut queue: VecDeque<Input>,
+        start_works: &[dudes_proto::recovery::RecoveryWork],
         start: impl FnOnce(
             &mut Supervisor<Shared<C>, R>,
-        ) -> std::result::Result<(), dudes_supervisor::closing::ClosingError>,
+            &dudes_supervisor::RecoveryOperation<'_>,
+        ) -> Result<Handled>,
         mut refresh_work: impl FnMut(&mut Self, &VecDeque<Input>) -> Result<()>,
     ) -> Result<()> {
         let (mut mail_acknowledgments, mut mail_requests) = self.prepare_pump_inputs(&mut queue)?;
@@ -4002,6 +4160,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     continue;
                 }
                 if queue.is_empty() && start.is_none() {
+                    if report.recovery_refused() {
+                        break;
+                    }
                     if native_settlements < dudes_supervisor::host::MAX_OWNED_TARGET_QUERY_ROWS {
                         match self.ctx.settle_one_attached_boundary(
                             &mut self.sup,
@@ -4034,26 +4195,35 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 let Self {
                     sup, ctx, closing, ..
                 } = self;
-                let folds_journal_record = if let Some(input) = queue.pop_front() {
-                    let folds = folds_journal_record(&input);
-                    let input = ctx.current_mail_response(input, sup);
-                    let _ = sup.handle(input);
-                    folds
+                let command_work = match &*report {
+                    PumpReport::Recovery(context) => Some(context.work()),
+                    _ => None,
+                };
+                let handling = if let Some(input) = queue.pop_front() {
+                    ctx.handle_recovery_input(sup, input, command_work)
                 } else if let Some(start) = start.take() {
-                    if let Err(error) = start(sup) {
-                        break 'work Err(anyhow::Error::new(error));
-                    }
-                    false
+                    let mut works = start_works.to_vec();
+                    works.extend(command_work);
+                    ctx.with_recovery_facts(sup, &works, start)
                 } else {
                     break;
                 };
+                let handled = match handling {
+                    Ok(handled) => handled,
+                    Err(error) => {
+                        if error.downcast_ref::<DurableInputError>().is_some() {
+                            ctx.fence_journal();
+                        }
+                        break 'work Err(error);
+                    }
+                };
+                if let Err(error) = report.recovery_update(&handled) {
+                    break 'work Err(error);
+                }
+                let folds_journal_record = handled.folded_through().is_some();
                 // Persistent and before the fallible executor: once `handle` has folded, the pump
                 // exit must publish that completed fold even if an effect below fails.
-                if folds_journal_record {
-                    ctx.retire_recorded_native_launches(sup.world());
-                    ctx.tokens.mark_folded();
-                }
-                if let Err(error) = ctx.publish_folded_floor(sup.world(), closing) {
+                if let Err(error) = ctx.publish_handled(sup.world(), &handled, closing) {
                     break 'work Err(error);
                 }
                 if let Err(error) = self.execute_pump_effects(
@@ -4076,6 +4246,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             mail_requests,
         );
 
+        self.publish_pump_outcome(outcome)
+    }
+
+    fn publish_pump_outcome(&mut self, outcome: Result<()>) -> Result<()> {
         // **Here, and not inside `append`.** On success the queue is quiescent, so the snapshot is
         // complete for the call. On error it contains only folds completed before the first failed
         // effect: no later effect runs and no queued acknowledgement is folded.
@@ -4153,8 +4327,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     fn refresh_work(&mut self) -> Result<()> {
         self.ctx.ensure_journal_ready()?;
         for (agent, view) in self.composed_work()? {
-            let effects = self.sup.handle(Input::Work { agent, view });
-            assert!(effects.is_empty(), "work refresh must be effect-free");
+            self.ctx
+                .with_recovery_facts(&mut self.sup, &[], |sup, operation| {
+                    sup.handle(Input::Work { agent, view }, operation)
+                })
+                .inspect_err(|_| self.ctx.fence_journal())?;
+            assert!(
+                self.sup.effects().is_empty(),
+                "work refresh must be effect-free"
+            );
         }
         Ok(())
     }
@@ -4254,6 +4435,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     )]
     fn ask(&mut self, ask: Ask) -> Result<Answered, RpcError> {
         let ask = match ask {
+            Ask::RecoveryInspect { agent, admission } => {
+                return self.recovery_inspect(agent, admission);
+            }
+            Ask::RecoveryReceipt { request, admission } => {
+                return Ok(self.recovery_receipt(request, admission));
+            }
+            Ask::Recover { command, admission } => {
+                return Ok(self.recovery_submit(*command, admission));
+            }
             Ask::ReplaceGoal(request) => return self.replace_goal(&request),
             Ask::ReplaceGoalChecked {
                 params,
@@ -4281,6 +4471,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
         }
         match ask {
+            Ask::RecoveryInspect { .. } | Ask::RecoveryReceipt { .. } | Ask::Recover { .. } => {
+                unreachable!("recovery routes precede the mutation fence")
+            }
             Ask::Mcp(params) => self.agent_mcp(params).map(Answered::Mcp),
             Ask::ReplaceGoal(_) => unreachable!("replacement was handled before the writer fence"),
             // The gate that keeps `agent.hire` and the launch reading one registry. Both ask
@@ -4373,9 +4566,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 origin,
                 base,
                 from,
+                trust,
             } => {
                 self.worktree_admission(&params)?;
                 self.refuse_overlap(&origin, None)?;
+                self.trust_still_holds(trust.as_deref(), &origin, &params.cwd)?;
                 if let Some(from) = from {
                     let same =
                         self.sup.world().worktrees.get(&from).is_some_and(|row| {
@@ -4523,6 +4718,53 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     how: dudes_proto::WorktreeRemoval::Operator,
                 }))?;
                 Ok(Answered::Done)
+            }
+            Ask::TrustTarget(workspace_id) => match self.ctx.enrollment.profile(&workspace_id) {
+                Some(profile) => Ok(Answered::TrustTarget(profile.cwd.clone())),
+                None => Err(error(
+                    ErrorCode::InvalidParams,
+                    format!("project trust: no project is named `{workspace_id}`"),
+                )),
+            },
+            Ask::FloorDevice(change) => {
+                self.pump_or_refuse(Input::Command(Command::RecordFloorDevice(change)))?;
+                Ok(Answered::Done)
+            }
+            Ask::TrustSet {
+                workspace_id,
+                directory,
+                vouch,
+            } => {
+                let Some((vouch, directory)) = vouch.zip(directory) else {
+                    // A revocation with no grant appends nothing, so removing a project that was
+                    // never trusted does not put a required record in anyone's journal.
+                    if !self.sup.world().workspace_trust.contains_key(&workspace_id) {
+                        return Ok(Answered::TrustSet(false));
+                    }
+                    self.revoke_grant(workspace_id)?;
+                    return Ok(Answered::TrustSet(true));
+                };
+                let enrolled = self
+                    .ctx
+                    .enrollment
+                    .profile(&workspace_id)
+                    .is_some_and(|profile| profile.cwd == directory);
+                if !enrolled {
+                    return Err(error(
+                        ErrorCode::Refused,
+                        format!(
+                            "project trust: `{workspace_id}` is no longer set up at the folder \
+                             that was read; run the command again"
+                        ),
+                    ));
+                }
+                self.pump_or_refuse(Input::Command(Command::SetWorkspaceTrust {
+                    workspace_id,
+                    trusted: true,
+                    repository: Some(vouch.repository),
+                    pin: Some(vouch.pin),
+                }))?;
+                Ok(Answered::TrustSet(true))
             }
             Ask::WorktreePending => {
                 let world = self.sup.world();
@@ -5146,6 +5388,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .map(Answered::MemoryAppended)
     }
 
+    /// Write the audit record for a Floor request refused because of its connection's owner.
+    fn floor_peer_refused(
+        &mut self,
+        route: &'static str,
+        agent: Option<AgentId>,
+        reason: dudes_proto::FloorPeerRefusal,
+    ) -> Result<()> {
+        self.ctx
+            .append_projection_only(
+                self.sup.world(),
+                &Entry {
+                    at: self.ctx.clock.now(),
+                    record: Record::FloorPeerRefused {
+                        route: route.to_owned(),
+                        agent,
+                        reason,
+                    },
+                },
+            )
+            .map(drop)
+    }
+
     fn append_memory_entry(&mut self, record: Record, action: &str) -> Result<Lsn, RpcError> {
         self.ctx
             .append_projection_only(
@@ -5492,21 +5756,29 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             at: self.ctx.clock.now(),
             record,
         };
-        let lsn = if is_close {
-            self.ctx.append(self.sup.world(), &entry)
-        } else {
-            self.ctx.append_projection_only(self.sup.world(), &entry)
-        }
-        .map_err(|failure| {
-            error(
-                ErrorCode::InternalError,
-                format!("the daemon could not {action}: {failure}"),
-            )
-        })?;
         if is_close {
-            self.fold_durable_pty_entry(lsn, entry)?;
+            let append = self
+                .ctx
+                .append(self.sup.world(), &entry)
+                .map_err(|failure| {
+                    error(
+                        ErrorCode::InternalError,
+                        format!("the daemon could not {action}: {failure}"),
+                    )
+                })?;
+            let lsn = append.lsn();
+            self.fold_durable_pty_entry(append)?;
+            Ok(lsn)
+        } else {
+            self.ctx
+                .append_projection_only(self.sup.world(), &entry)
+                .map_err(|failure| {
+                    error(
+                        ErrorCode::InternalError,
+                        format!("the daemon could not {action}: {failure}"),
+                    )
+                })
         }
-        Ok(lsn)
     }
 
     fn attachment_lost(&mut self, agent: AgentId, pty: PtyId, reason: &'static str) {
@@ -5645,7 +5917,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 outcome,
             },
         };
-        let lsn = self
+        let append = self
             .ctx
             .append(self.sup.world(), &entry)
             .map_err(|failure| {
@@ -5663,17 +5935,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 },
             );
         }
-        self.fold_durable_pty_entry(lsn, entry)
+        self.fold_durable_pty_entry(append)
     }
 
-    fn fold_durable_pty_entry(&mut self, lsn: Lsn, entry: Entry) -> Result<(), RpcError> {
-        let result = self.pump_or_refuse(Input::InstructionJournaled { lsn, entry });
+    fn fold_durable_pty_entry(&mut self, append: RecordedAppend) -> Result<(), RpcError> {
+        let through = append.through();
+        let result = self.pump_or_refuse(Input::InstructionJournaled { append });
         if result.is_err()
             && self
                 .sup
                 .world()
                 .last_applied_lsn
-                .is_none_or(|folded| folded < lsn)
+                .is_none_or(|folded| folded < through)
         {
             self.ctx.fence_journal();
         }
@@ -6032,7 +6305,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             at: self.ctx.clock.now(),
             record,
         };
-        let lsn = self
+        let append = self
             .ctx
             .append(self.sup.world(), &entry)
             .map_err(|failure| {
@@ -6041,7 +6314,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     format!("could not append board record: {failure}"),
                 )
             })?;
-        self.pump_or_refuse(Input::BoardChanged { lsn, entry })
+        self.pump_or_refuse(Input::BoardChanged { append })
     }
 
     /// A retired agent's recorded child still resolves to that agent, so its call is
@@ -6326,6 +6599,69 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
     }
 
+    /// Append the revocation of the grant for `workspace_id`.
+    fn revoke_grant(&mut self, workspace_id: String) -> Result<(), RpcError> {
+        self.pump_or_refuse(Input::Command(Command::SetWorkspaceTrust {
+            workspace_id,
+            trusted: false,
+            repository: None,
+            pin: None,
+        }))
+    }
+
+    /// Revoke every grant whose project is no longer enrolled, or is enrolled somewhere that is not
+    /// inside the repository that was vouched for. Run in the loop step that replaces the
+    /// enrollment, so a removed project cannot come back trusted. Appends only where a grant exists.
+    fn revoke_stale_grants(&mut self) {
+        let stale: Vec<String> = self
+            .sup
+            .world()
+            .workspace_trust
+            .iter()
+            .filter(|(id, grant)| {
+                self.ctx.enrollment.profile(id).is_none_or(|profile| {
+                    !crate::worktree::contains(&grant.repository.directory, &profile.cwd)
+                })
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            if let Err(error) = self.revoke_grant(id.clone()) {
+                tracing::warn!(project = %id, %error.message, "could not revoke a trust grant");
+            }
+        }
+    }
+
+    /// A copy for the Floor rests on one grant. It holds only while that grant is still the
+    /// project's latest, so an untrust or a new grant between steps ends the hire, and only while
+    /// `origin` is still the directory the grant vouched for, by path and by identity.
+    fn trust_still_holds(
+        &self,
+        ticket: Option<&crate::worktree::hire::TrustTicket>,
+        origin: &std::path::Path,
+        project: &std::path::Path,
+    ) -> Result<(), RpcError> {
+        let Some(ticket) = ticket else {
+            return Ok(());
+        };
+        let holds = self
+            .sup
+            .world()
+            .workspace_trust
+            .get(&ticket.workspace_id)
+            .is_some_and(|grant| {
+                grant.lsn == ticket.lsn
+                    && crate::worktree::trust::still_there(&grant.repository, origin, project)
+            });
+        if holds {
+            Ok(())
+        } else {
+            Err(crate::worktree::unavailable(
+                crate::worktree::hire::TRUST_CHANGED,
+            ))
+        }
+    }
+
     fn pending_lease(
         &self,
         worktree: dudes_types::WorktreeId,
@@ -6359,12 +6695,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.refuse_parked_pi();
         while let Ok(job) = self.jobs.try_recv() {
             match job {
+                Job::InspectRecoveryFromFloor { reply, .. } => {
+                    let _ = reply.send(Err(crate::ports::FloorRecoveryReadError::Unavailable));
+                }
+                Job::RecoveryReceiptFromFloor { reply, .. } => {
+                    let _ = reply.send(Err(crate::ports::FloorRecoveryReadError::Unavailable));
+                }
+                Job::RecoverFromFloor { reply, .. } => {
+                    let _ = reply.send(dudes_proto::rpc::recovery::RecoverySubmitResult::Refused {
+                        reason: dudes_proto::rpc::recovery::RecoverySubmitRefusal::Unavailable,
+                        prefix: dudes_proto::rpc::recovery::RecoveryKnownPrefix {
+                            required: None,
+                            resume: None,
+                        },
+                    });
+                }
                 Job::Chat { reply, .. } => {
                     let _ = reply.send(Err(crate::floor_chat::ChatRefusal::UnavailableNoEffect));
                 }
-                Job::Onboard { reply, .. }
-                | Job::OnboardChecked { reply, .. }
-                | Job::OnboardContinue { reply, .. } => {
+                Job::ChatFile { reply, .. } => {
+                    let _ = reply.send(Err("unavailable"));
+                }
+                Job::Onboard { reply, .. } | Job::OnboardCopied { reply, .. } => {
                     let _ = reply.send(OnboardStep::Answer(Err(OnboardRefusal::Unavailable)));
                 }
                 Job::Answer { reply, .. } => {
@@ -6389,12 +6741,24 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Job::Retire { reply, .. } => {
                     let _ = reply.send(Err(RetireRefusal::UnavailableNoEffect));
                 }
+                Job::SettingsEdit { reply, .. } => {
+                    let _ = reply.send(Err(
+                        crate::floor_settings_edit::SettingsRefusal::Unavailable,
+                    ));
+                }
+                Job::Project { reply, .. } => {
+                    let _ = reply.send(Err(crate::floor_project::Refusal::Unavailable));
+                }
                 Job::Ticket { reply, .. } => {
                     let _ = reply.send(crate::floor_ticket::TicketReply::Unavailable);
                 }
                 Job::BaselineEnded { id } => self.ctx.baselines.end(id),
-                Job::PredicateEnded { goal, verdict } => {
-                    if let Err(error) = self.predicate_ended(goal, verdict) {
+                Job::PredicateEnded {
+                    goal,
+                    folder,
+                    verdict,
+                } => {
+                    if let Err(error) = self.predicate_ended(goal, &folder, verdict) {
                         clean = false;
                         tracing::error!(%error, "a predicate verdict could not be journaled during shutdown");
                     }
@@ -6474,7 +6838,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         let _ = reply.send(Err(refused("the daemon is shutting down")));
                     }
                 }
-                Job::EnrollmentResync { .. } | Job::PiProbed { .. } | Job::Stop(_) => {}
+                Job::EnrollmentResync { .. }
+                | Job::PiProbed { .. }
+                | Job::Stop(_)
+                | Job::FloorPeerRefused { .. } => {}
             }
         }
         clean
@@ -6773,17 +7140,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 }
 
-fn folds_journal_record(input: &Input) -> bool {
-    matches!(
-        input,
-        Input::Replayed { .. }
-            | Input::Journaled { .. }
-            | Input::InstructionJournaled { .. }
-            | Input::Persisted { .. }
-            | Input::BoardChanged { .. }
-    )
-}
-
 fn mail_acknowledged_by_effect(effect: &Effect) -> bool {
     matches!(effect, Effect::MailWakeNotify { .. })
         || effect.entry().is_some_and(|entry| {
@@ -6818,6 +7174,72 @@ fn closing_pump_error(failure: &anyhow::Error) -> RpcError {
         )
 }
 const AGENT_HALTED: &str = "agent halted";
+/// Answer a Floor action whose switch is off now with [`ACTION_OFF`] and no effect, or hand the
+/// job back to run. A hire or goal change whose check already ran is refused where it resumes,
+/// because that step must also end its check run.
+pub(crate) fn refuse_action_off(live: crate::floor_switches::Switches, job: Job) -> Option<Job> {
+    match job {
+        Job::Onboard { reply, .. } if !live.hire => {
+            let _ = reply.send(OnboardStep::Answer(Err(OnboardRefusal::Check(ACTION_OFF))));
+        }
+        Job::Answer { request, reply, .. } if !live.answer => {
+            let _ = reply.send(Ok(AnswerOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            }));
+        }
+        Job::Control { request, reply, .. } if !live.control.pause_resume() => {
+            let _ = reply.send(Ok(ControlOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            }));
+        }
+        Job::Rename { request, reply, .. } if !live.control.pause_resume() => {
+            let _ = reply.send(Ok(RenameOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            }));
+        }
+        Job::Look { request, reply, .. } if !live.control.pause_resume() => {
+            let _ = reply.send(Ok(LookOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            }));
+        }
+        Job::Goal { request, reply, .. } if !goal_switch_on(live, &request) => {
+            let _ = reply.send(GoalStep::Answer(Ok(GoalOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            })));
+        }
+        Job::Retire { request, reply, .. } if !live.control.retire() => {
+            let _ = reply.send(Ok(RetireOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            }));
+        }
+        Job::Ticket { reply, .. } if !live.board => {
+            let _ = reply.send(crate::floor_ticket::TicketReply::Refused(ACTION_OFF));
+        }
+        Job::Project { reply, .. } if !live.project => {
+            let _ = reply.send(Err(crate::floor_project::Refusal::ActionOff));
+        }
+        job => return Some(job),
+    }
+    None
+}
+
+/// Whether the switch that this goal request needs is on: goal change for a text change, renewal
+/// for a renewal.
+fn goal_switch_on(live: crate::floor_switches::Switches, request: &GoalRequest) -> bool {
+    if request.renewal.is_some() {
+        live.control.renew()
+    } else {
+        live.control.goal()
+    }
+}
+
+const TERMINAL_OFF: &str = "terminal switched off";
 const JOURNAL_UNRESOLVED: &str = "journal durability unresolved";
 const DAEMON_SHUTDOWN: &str = "daemon shutdown";
 
@@ -6958,13 +7380,6 @@ fn question_closed_refusal() -> RpcError {
     }
 }
 
-/// What a browser hire's job does next: answer its request, or hand the reply to the job that
-/// appends the hire's goal.
-enum OnboardNext {
-    Reply(OnboardStep),
-    Goal,
-}
-
 /// The answer for a browser goal request whose `GoalSet` the index holds.
 fn applied(request: &GoalRequest, indexed: crate::goal_replacement::IndexedGoal) -> GoalOutcome {
     GoalOutcome::Applied {
@@ -7092,6 +7507,7 @@ fn liveness_unknown_refusal() -> RpcError {
 }
 
 pub(crate) struct PendingFloor {
+    through: Lsn,
     patch: crate::floor_stream::FloorPatch,
     notice: OutputNotice,
     publication: FloorPublication,
@@ -7140,14 +7556,49 @@ impl OutputNotice {
 }
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
+    fn require_folded_through(&self, world: &dudes_supervisor::World, through: Lsn) -> Result<()> {
+        if world.last_applied_lsn != Some(through) {
+            self.fence_journal();
+            anyhow::bail!("checked handling did not reach its exact durable cut");
+        }
+        Ok(())
+    }
+
+    fn require_handled_through(
+        &self,
+        world: &dudes_supervisor::World,
+        handled: &Handled,
+        expected: Lsn,
+    ) -> Result<()> {
+        if handled.folded_through() != Some(expected) {
+            self.fence_journal();
+            anyhow::bail!("durable acknowledgment did not report its expected fold");
+        }
+        self.require_folded_through(world, expected)
+    }
+
+    fn publish_handled(
+        &mut self,
+        world: &dudes_supervisor::World,
+        handled: &Handled,
+        waiting: &mut crate::closing::Waiting,
+    ) -> Result<()> {
+        if let Some(through) = handled.folded_through() {
+            self.require_folded_through(world, through)?;
+            self.retire_recorded_native_launches(world);
+            self.tokens.mark_folded();
+        }
+        self.publish_folded_floor(world, waiting)
+    }
+
     fn publish_folded_floor(
         &mut self,
         world: &dudes_supervisor::World,
         waiting: &mut crate::closing::Waiting,
     ) -> Result<()> {
-        while let Some((&lsn, pending)) = self.pending_floor.first_key_value() {
+        while let Some((_, pending)) = self.pending_floor.first_key_value() {
             if pending.publication == FloorPublication::AfterFold
-                && world.last_applied_lsn != Some(lsn)
+                && world.last_applied_lsn != Some(pending.through)
             {
                 break;
             }
@@ -7202,7 +7653,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             &self.local_days,
         ));
         // With the board off a ticket is a card like any other, and the page is told nothing more.
-        if !self.board_enabled {
+        if !self.switches.load().board {
             for card in &mut snapshot.cards {
                 card.ticket = None;
             }
@@ -7336,12 +7787,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                             at: self.clock.now(),
                             record: record.clone(),
                         };
-                        let lsn = self.append(sup.world(), &entry)?;
+                        let append = self.append(sup.world(), &entry)?;
+                        let lsn = append.lsn();
                         anyhow::ensure!(
                             self.writer.poisoned().is_none(),
                             "mailbox checkpoint stopped the journal"
                         );
-                        acknowledged = Some((lsn, entry.clone()));
+                        acknowledged = Some(append);
                         Ok((lsn, entry))
                     });
                     self.mailbox = Some(mailbox);
@@ -7354,9 +7806,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                         self.fence_journal();
                     }
                     result?;
-                    let (lsn, entry) = acknowledged
+                    let append = acknowledged
                         .ok_or_else(|| anyhow::anyhow!("mailbox acknowledgment is unavailable"))?;
-                    queue.push_back(Input::Journaled { lsn, entry });
+                    queue.push_back(Input::Journaled { append });
                 }
                 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
                 {
@@ -7374,9 +7826,68 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         token: dudes_supervisor::input::PersistToken,
         entry: &Entry,
         queue: &mut VecDeque<Input>,
-        sup: &Supervisor<Shared<C>, R>,
+        sup: &mut Supervisor<Shared<C>, R>,
+        report: &mut PumpReport,
     ) -> Result<()> {
-        let lsn = self.append(sup.world(), entry)?;
+        let Ok(metadata) = sup.recovery_append(token, entry) else {
+            return Ok(());
+        };
+        if let Some(metadata) = metadata
+            && !self.recovery_consent_checkout_clear(sup, metadata.work.agent)
+        {
+            let handled = sup.recovery_refused(
+                token,
+                entry,
+                &metadata,
+                dudes_supervisor::input::RecoveryRefusal::NotRecoverable,
+            );
+            report.recovery_update(&handled)?;
+            return Ok(());
+        }
+        let issue = if metadata.is_some() {
+            None
+        } else {
+            match self.classify_recovery_issue(sup, token, entry) {
+                recovery::IssueClassification::Ordinary => None,
+                recovery::IssueClassification::Held => return Ok(()),
+                recovery::IssueClassification::Recovery(issue) => Some(issue),
+            }
+        };
+        let admitted = match (metadata.as_ref(), &*report, issue.as_ref()) {
+            (Some(metadata), PumpReport::Recovery(context), _) => {
+                Some(recovery::AppendSubject::Command { context, metadata })
+            }
+            (Some(_), _, _) => anyhow::bail!("command-owned append lacks its admitted context"),
+            (None, _, Some(issue)) => Some(recovery::AppendSubject::NewIssue(issue)),
+            (None, _, None) => None,
+        };
+        let committed =
+            self.append_with_publication(sup.world(), entry, FloorPublication::AfterFold, admitted);
+        let committed = match committed {
+            Ok(committed) => committed,
+            Err(error) => {
+                if let Some(metadata) = metadata
+                    && !self.journal_writes_stopped()
+                    && let Some(reason) = recovery::known_no_write(&error)
+                {
+                    let handled = sup.recovery_refused(token, entry, &metadata, reason);
+                    report.recovery_update(&handled)?;
+                    return Ok(());
+                }
+                if let Some(issue) = &issue
+                    && !self.journal_writes_stopped()
+                    && recovery::known_no_write(&error).is_some()
+                    && sup.recovery_issue_not_written(token, entry, &issue.parked)
+                {
+                    return Ok(());
+                }
+                return Err(error);
+            }
+        };
+        let through = committed.through();
+        let (main, checkpoint) = committed.into_parts();
+        let append = RecordedAppend::try_new(through, main, checkpoint)
+            .inspect_err(|_| self.fence_journal())?;
         // Spend moves only on a `TurnEnded`, and the decision that reads it runs on this
         // very acknowledgement — so the refresh goes in front of it rather than at the top
         // of the next pump, which would be a decide too late. A browser goal change's own
@@ -7401,7 +7912,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             refreshed
         };
         refreshed.inspect_err(|_| self.fence_journal())?;
-        queue.push_back(Input::Persisted { token, lsn });
+        queue.push_back(Input::Persisted { token, append });
         Ok(())
     }
 
@@ -7466,7 +7977,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 }
             }
             Effect::Persist { token, entry } => {
-                self.persist_effect(*token, entry, queue, sup)?;
+                self.persist_effect(*token, entry, queue, sup, report)?;
             }
             Effect::Spawn {
                 turn,
@@ -7495,7 +8006,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 agent: _,
                 cwd,
                 predicate,
-            } => self.run_predicate(*goal, cwd.clone(), predicate, queue),
+            } => self.run_predicate(*goal, cwd, predicate, queue),
             Effect::CaptureBaseline { .. } | Effect::CaptureStamp { .. } => {
                 self.execute_ticket_capture(effect, sup, queue);
             }
@@ -7679,8 +8190,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
-    fn append(&mut self, world: &dudes_supervisor::World, entry: &Entry) -> Result<Lsn> {
-        self.append_with_publication(world, entry, FloorPublication::AfterFold)
+    fn append(&mut self, world: &dudes_supervisor::World, entry: &Entry) -> Result<RecordedAppend> {
+        let committed =
+            self.append_with_publication(world, entry, FloorPublication::AfterFold, None)?;
+        let through = committed.through();
+        let (main, checkpoint) = committed.into_parts();
+        RecordedAppend::try_new(through, main, checkpoint)
+            .inspect_err(|_| self.fence_journal())
+            .map_err(Into::into)
     }
 
     fn append_projection_only(
@@ -7688,7 +8205,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         world: &dudes_supervisor::World,
         entry: &Entry,
     ) -> Result<Lsn> {
-        self.append_with_publication(world, entry, FloorPublication::ProjectionOnly)
+        self.append_with_publication(world, entry, FloorPublication::ProjectionOnly, None)
+            .map(|committed| committed.lsn())
     }
 
     #[expect(
@@ -7700,7 +8218,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         world: &dudes_supervisor::World,
         entry: &Entry,
         publication: FloorPublication,
-    ) -> Result<Lsn> {
+        recovery: Option<recovery::AppendSubject<'_>>,
+    ) -> Result<CheckedAppend> {
         if matches!(
             entry.record,
             Record::Mail { .. }
@@ -7729,22 +8248,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             self.fence_journal();
             return Err(error.context("invalid live goal replacement"));
         }
-        if matches!(
-            entry.record,
-            Record::InstructionObservationStarted { .. }
-                | Record::InstructionObservationFinished { .. }
-                | Record::TicketInstructionReviewed { .. }
-                | Record::InstructionAttemptBoundarySettled { .. }
-        ) {
-            self.projections.validate_next_instruction(entry)?;
+        let committed = self.append_checked(entry, recovery)?;
+        if let Record::AgentRetired { id, .. } = &entry.record {
+            crate::floor_chat_file::remove_for(&self.agents_root, *id);
         }
-        let (lsn, crc) = self.write_frame(entry)?;
+        let lsn = committed.lsn();
+        let through = committed.through();
         let output = self.children.output();
         let post_fsync = (|| -> Result<()> {
             self.goal_index.apply(&entry.record);
-            self.projections
-                .apply(lsn, crc, entry)
-                .with_context(|| format!("projecting a {:?}", entry.record.kind()))?;
             if self.onboarding_failure.take_hire_projection(&entry.record) {
                 anyhow::bail!("injected post-projection onboarding failure");
             }
@@ -7860,6 +8372,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                             patch,
                             notice: output_notice,
                             publication,
+                            through,
                         },
                     );
                 } else {
@@ -7882,7 +8395,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             }
             return Err(error);
         }
-        Ok(lsn)
+        Ok(committed)
     }
 
     fn index_browser_record(&mut self, lsn: Lsn, record: &Record) -> Result<()> {
@@ -7909,20 +8422,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .context("indexing durable browser retire record")
     }
 
-    /// Append one frame while any browser permit is held, then release before all folds/effects.
-    fn write_frame(&mut self, entry: &Entry) -> Result<(Lsn, u32)> {
-        self.ensure_memory_ready()?;
-        self.ensure_journal_ready()?;
-        if self.append_failure.take() {
-            return Err(anyhow::Error::new(KnownNoEffect));
-        }
-        // The checksum comes back with the lsn so the projection can store the two together:
-        // a cursor whose witness were computed anywhere but from
-        // the frame that was written would witness something other than the log.
-        let session = browser_chat::attribution_session(&entry.record);
-        self.onboarding_pause
-            .at(&entry.record, AppendStage::BeforePermit);
-        let identity = session
+    fn append_browser_identity(
+        &self,
+        entry: &Entry,
+        recovery: Option<recovery::AppendSubject<'_>>,
+    ) -> Result<Option<crate::floor_session::SessionIdentity>> {
+        recovery
+            .is_none()
+            .then(|| browser_chat::attribution_session(&entry.record))
+            .flatten()
             .map(|digest| {
                 let identity = self
                     .browser_session
@@ -7934,25 +8442,130 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 );
                 Ok::<_, anyhow::Error>(identity.clone())
             })
-            .transpose()?;
-        let permit = identity
-            .as_ref()
-            .map(crate::floor_session::SessionIdentity::permit)
             .transpose()
-            .map_err(anyhow::Error::new)?;
-        self.onboarding_pause
-            .at(&entry.record, AppendStage::AfterPermit);
-        #[cfg(debug_assertions)]
-        if let Some((frames_to_skip, bytes)) = self
-            .append_failure
-            .short_write
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
+    }
+
+    /// Arm the writer's injected short write, unless this append is a device record, which is not
+    /// the one a test aims it at.
+    #[cfg(debug_assertions)]
+    fn inject_short_write(&mut self, incidental: bool) {
+        let armed = (!incidental)
+            .then(|| {
+                self.append_failure
+                    .short_write
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+            })
+            .flatten();
+        if let Some((frames_to_skip, bytes)) = armed {
             self.writer.fail_write_after(frames_to_skip, bytes);
         }
-        let written = self.writer.append_witnessed(entry);
+    }
+
+    fn append_checked(
+        &mut self,
+        entry: &Entry,
+        recovery: Option<recovery::AppendSubject<'_>>,
+    ) -> Result<CheckedAppend> {
+        self.ensure_memory_ready()?;
+        self.ensure_journal_ready()?;
+        // A browser signing in or making its first request writes a device record of its own,
+        // and an injected failure is aimed at the append a test is about.
+        let incidental = entry.record.is_floor_device();
+        if !incidental && self.append_failure.take() {
+            return Err(anyhow::Error::new(KnownNoEffect));
+        }
+        let identity = self.append_browser_identity(entry, recovery)?;
+        #[cfg(debug_assertions)]
+        self.inject_short_write(incidental);
+        let pause = &self.onboarding_pause;
+        let failure = &self.onboarding_failure;
+        let grants = self.recovery_grants();
+        let authority = self.recovery_authority.as_ref();
+        #[cfg(test)]
+        let before_recovery = &mut self.before_recovery_append;
+        #[cfg(test)]
+        let after_recovery = &mut self.after_recovery_fsync;
+        #[cfg(feature = "fault-injection")]
+        let recovery_stop = recovery_stop_for_append(self.recovery_stop.as_ref(), recovery, entry);
+        let written = (|| {
+            let mut store = self
+                .writer
+                .checked_recovery(&mut self.projections)
+                .map_err(GuardedAppendError::Journal)?;
+            store.append_guarded(
+                entry,
+                || {
+                    pause.at(&entry.record, AppendStage::BeforePermit);
+                    #[cfg(test)]
+                    if recovery.is_some()
+                        && let Some(before) = before_recovery.as_mut()
+                    {
+                        before(&entry.record);
+                    }
+                    if let Some(subject) = recovery {
+                        subject.join(entry).map_err(anyhow::Error::new)?;
+                    }
+                    #[cfg(feature = "fault-injection")]
+                    if let Some((stop, RecoveryStage::Required, target, _)) = recovery_stop {
+                        stop.park_if_matches(RecoveryStopPoint::BeforeRequired, target);
+                    }
+                    let permit = match &recovery {
+                        Some(subject) => subject
+                            .permit(authority, grants)
+                            .map_err(anyhow::Error::new)?,
+                        None => identity
+                            .as_ref()
+                            .map(crate::floor_session::SessionIdentity::permit)
+                            .transpose()
+                            .map_err(anyhow::Error::new)?,
+                    };
+                    pause.at(&entry.record, AppendStage::AfterPermit);
+                    Ok::<_, anyhow::Error>(permit)
+                },
+                || {
+                    #[cfg(test)]
+                    if recovery.is_some()
+                        && let Some(after) = after_recovery.as_mut()
+                    {
+                        after(&entry.record);
+                    }
+                    #[cfg(feature = "fault-injection")]
+                    if let Some((stop, _, target, point)) = recovery_stop {
+                        stop.park_if_matches(point, target);
+                    }
+                    if failure.take(&entry.record) {
+                        anyhow::bail!("injected post-fsync onboarding failure");
+                    }
+                    pause.at(&entry.record, AppendStage::AfterFsync);
+                    Ok::<_, anyhow::Error>(())
+                },
+            )
+        })();
+        self.publish_poisoned_journal();
+        match written {
+            Ok(committed) => Ok(committed),
+            Err(GuardedAppendError::Acquire(error)) => Err(error),
+            Err(GuardedAppendError::Journal(error)) => {
+                if recovery.is_some()
+                    && matches!(error, dudes_journal::Error::RecoveryAdmission { .. })
+                {
+                    return Err(error.into());
+                }
+                if self.writer.poisoned().is_none() {
+                    self.fence_journal();
+                }
+                Err(error).with_context(|| format!("appending a {:?}", entry.record.kind()))
+            }
+            Err(GuardedAppendError::AfterFsync { caller, source }) => {
+                self.fence_journal();
+                Err(source).with_context(|| format!("after fsync of caller at {caller:?}"))
+            }
+        }
+    }
+
+    fn publish_poisoned_journal(&self) {
         if let Some(lsn) = self.writer.poisoned() {
             self.handle.publish_journal_stopped(lsn);
             if let Some(streams) = &self.floor_streams
@@ -7962,25 +8575,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 tracing::error!(%error, "stopped-journal Floor publication failed");
             }
         }
-        // Revocation and expiry may now win; projection, callbacks and Spawn run unlocked.
-        drop(permit);
-        let (lsn, crc) = match written {
-            Ok(witness) => witness,
-            Err(error) => {
-                if self.writer.poisoned().is_none() {
-                    self.fence_journal();
-                }
-                return Err(error)
-                    .with_context(|| format!("appending a {:?}", entry.record.kind()));
-            }
-        };
-        if self.onboarding_failure.take(&entry.record) {
-            self.fence_journal();
-            anyhow::bail!("injected post-fsync onboarding failure");
-        }
-        self.onboarding_pause
-            .at(&entry.record, AppendStage::AfterFsync);
-        Ok((lsn, crc))
     }
 
     fn fence_journal(&self) {
@@ -8071,7 +8665,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     fn run_predicate(
         &mut self,
         goal: GoalId,
-        cwd: PathBuf,
+        cwd: &std::path::Path,
         predicate: &Predicate,
         queue: &mut VecDeque<Input>,
     ) {
@@ -8104,6 +8698,29 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             );
             return;
         };
+        let Some(resolved) = shared_folder::canonical_folder(cwd) else {
+            let failure = predicate::spec_for(
+                argv,
+                cwd,
+                &self.predicate_env,
+                self.predicate_path.as_deref(),
+            )
+            .err()
+            .unwrap_or_else(|| {
+                std::io::Error::other(
+                    "the predicate execution folder cannot be resolved as a directory",
+                )
+            });
+            let (pass, evidence) = predicate::refused(argv, &failure);
+            queue.push_back(Input::PredicateDone {
+                goal,
+                pass,
+                evidence,
+            });
+            return;
+        };
+        let cwd = resolved;
+        let folder = cwd.clone();
         let argv = argv.clone();
         let timeout = Duration::from_secs(*timeout_s);
         let runner = Arc::clone(&self.predicates);
@@ -8116,6 +8733,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let operator_argv = argv.clone();
 
         *self.predicate_runs.entry(goal).or_default() += 1;
+        *self
+            .predicate_folders
+            .entry((goal, folder.clone()))
+            .or_default() += 1;
         let spawned = if self.predicate_spawn_failure.take() {
             Err(std::io::Error::other(
                 "injected predicate thread spawn failure",
@@ -8127,6 +8748,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     let mut end = RunEnd {
                         handle,
                         goal,
+                        folder: cwd.clone(),
                         verdict: None,
                     };
                     let (program, spec) =
@@ -8156,13 +8778,23 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         if let Err(error) = spawned {
             tracing::error!(%error, ?goal, "could not start a thread for the predicate");
             // No thread exists to own a `RunEnd`, so this thread clears the mark it just set.
-            self.predicate_run_ended(goal);
+            self.predicate_run_ended(goal, &folder);
             queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
         }
     }
 
     /// Clear one run's mark for `goal`.
-    fn predicate_run_ended(&mut self, goal: GoalId) {
+    fn predicate_run_ended(&mut self, goal: GoalId, folder: &std::path::Path) -> bool {
+        let key = (goal, folder.to_path_buf());
+        let std::collections::btree_map::Entry::Occupied(mut matching) =
+            self.predicate_folders.entry(key)
+        else {
+            return false;
+        };
+        *matching.get_mut() -= 1;
+        if *matching.get() == 0 {
+            matching.remove();
+        }
         if let std::collections::btree_map::Entry::Occupied(mut runs) =
             self.predicate_runs.entry(goal)
         {
@@ -8171,6 +8803,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 runs.remove();
             }
         }
+        true
     }
 }
 
@@ -8181,12 +8814,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
 struct RunEnd {
     handle: Handle,
     goal: GoalId,
+    folder: PathBuf,
     verdict: Option<(bool, Evidence)>,
 }
 
 impl Drop for RunEnd {
     fn drop(&mut self) {
-        self.handle.predicate_ended(self.goal, self.verdict.take());
+        self.handle
+            .predicate_ended(self.goal, self.folder.clone(), self.verdict.take());
     }
 }
 
@@ -8541,15 +9176,17 @@ mod work_refresh_tests {
             memory_digest: "injected stale carrier".to_owned(),
             ..dudes_policy::WorkInput::default()
         };
-        assert!(
-            daemon
-                .sup
-                .handle(Input::Work {
+        daemon
+            .sup
+            .handle(
+                Input::Work {
                     agent,
-                    view: carrier.clone()
-                })
-                .is_empty()
-        );
+                    view: carrier.clone(),
+                },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .unwrap();
+        assert!(daemon.sup.effects().is_empty());
         daemon.refresh_work().unwrap();
         assert_ne!(daemon.sup.work_input(agent), carrier);
         daemon
@@ -8571,15 +9208,17 @@ mod work_refresh_tests {
                 .iter()
                 .any(|record| matches!(record, Record::AgentRetired { id, .. } if *id == agent))
         );
-        assert!(
-            daemon
-                .sup
-                .handle(Input::Work {
+        daemon
+            .sup
+            .handle(
+                Input::Work {
                     agent,
-                    view: carrier.clone()
-                })
-                .is_empty()
-        );
+                    view: carrier.clone(),
+                },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .unwrap();
+        assert!(daemon.sup.effects().is_empty());
         let frozen = fixture.records();
         assert!(daemon.refresh_work().is_err());
         assert_eq!(daemon.sup.work_input(agent), carrier);
@@ -8719,21 +9358,36 @@ mod mail_wake_fence_tests {
         fn pending(floor: Usd) -> Self {
             let mut owned = Self::completed(floor);
             let entry = owned.mail(MailId::from_parts(6, 1));
-            let lsn = owned
+            let append = owned
                 .daemon
                 .ctx
                 .append(owned.daemon.sup.world(), &entry)
                 .expect("owned receipt append");
-            owned.daemon.sup.handle(Input::Journaled { lsn, entry });
+            owned
+                .daemon
+                .sup
+                .handle(
+                    Input::Journaled { append },
+                    &dudes_supervisor::RecoveryOperation::empty(),
+                )
+                .unwrap();
             let refresh = one(owned.daemon.sup.take_effects());
             let ready = owned.execute(&refresh);
-            owned.daemon.sup.handle(ready);
+            owned
+                .daemon
+                .sup
+                .handle(ready, &dudes_supervisor::RecoveryOperation::empty())
+                .unwrap();
             let root = one(owned.daemon.sup.take_effects());
             assert!(
                 matches!(root.entry().map(|entry| &entry.record), Some(Record::MailWakeTurnDecided(value)) if matches!(value.purpose, MailWakePurpose::FreshPreparation { .. }))
             );
             let acknowledged = owned.execute(&root);
-            owned.daemon.sup.handle(acknowledged);
+            owned
+                .daemon
+                .sup
+                .handle(acknowledged, &dudes_supervisor::RecoveryOperation::empty())
+                .unwrap();
             owned.pending = owned.daemon.sup.take_effects();
             assert!(matches!(
                 owned.pending.as_slice(),
@@ -8791,17 +9445,22 @@ mod mail_wake_fence_tests {
                 at: self.clock.now(),
                 record,
             };
-            let lsn = self
+            let append = self
                 .daemon
                 .ctx
                 .append(self.daemon.sup.world(), &entry)
                 .expect("owned prefix append");
-            assert!(
+            let (main, checkpoint) = append.into_parts();
+            for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
                 self.daemon
                     .sup
-                    .handle(Input::Replayed { lsn, entry })
-                    .is_empty()
-            );
+                    .handle(
+                        Input::Replayed { lsn, entry },
+                        &dudes_supervisor::RecoveryOperation::empty(),
+                    )
+                    .unwrap();
+            }
+            assert!(self.daemon.sup.effects().is_empty());
         }
         fn execute(&mut self, effect: &Effect) -> Input {
             let mut queue = VecDeque::new();
@@ -8818,18 +9477,27 @@ mod mail_wake_fence_tests {
             assert_eq!(queue.len(), 1, "one real acknowledgment or refresh");
             queue.pop_front().unwrap()
         }
-        fn notify(&mut self) -> Effect {
+        fn refreshed_effect(&mut self) -> Effect {
             let effect = one(std::mem::take(&mut self.pending));
             let ready = self.execute(&effect);
-            self.daemon.sup.handle(ready);
-            let notify = one(self.daemon.sup.take_effects());
+            self.daemon
+                .sup
+                .handle(ready, &dudes_supervisor::RecoveryOperation::empty())
+                .unwrap();
+            one(self.daemon.sup.take_effects())
+        }
+        fn notify(&mut self) -> Effect {
+            let notify = self.refreshed_effect();
             assert!(matches!(notify, Effect::MailWakeNotify { .. }));
             notify
         }
         fn make_ready(&mut self) {
             let notify = self.notify();
             let acknowledged = self.execute(&notify);
-            self.daemon.sup.handle(acknowledged);
+            self.daemon
+                .sup
+                .handle(acknowledged, &dudes_supervisor::RecoveryOperation::empty())
+                .unwrap();
             self.pending = self.daemon.sup.take_effects();
         }
         fn post_fsync_failure(&mut self) {
@@ -9183,7 +9851,7 @@ mod mail_wake_fence_tests {
     fn abandoned_durable_mail_suffix_fences_future_progress() {
         let mut owned = Owned::pending(Usd::from_dollars(10));
         let entry = owned.mail(MailId::from_parts(6, 2));
-        let lsn = owned
+        let append = owned
             .daemon
             .ctx
             .append(owned.daemon.sup.world(), &entry)
@@ -9199,7 +9867,7 @@ mod mail_wake_fence_tests {
                 agent: owned.agent,
                 text: None,
             }),
-            Input::Journaled { lsn, entry },
+            Input::Journaled { append },
         ]);
         assert!(
             owned
@@ -9208,7 +9876,8 @@ mod mail_wake_fence_tests {
                     &mut PumpReport::Discard,
                     PumpOrigin::Ordinary,
                     queue,
-                    |_| Ok(())
+                    &[],
+                    |_, _operation| Ok(Handled::default())
                 )
                 .is_err()
         );
@@ -9232,95 +9901,88 @@ mod mail_wake_fence_tests {
     #[test]
     fn post_fsync_uncertainty_refuses_mail_refresh_and_writes() {
         let mut observed = Vec::new();
-        for fence in 0..3 {
-            for kind in 0..3 {
-                let mut owned = Owned::pending(Usd::from_dollars(10));
-                if kind == 1 {
-                    owned.make_ready();
-                }
-                let effect = match kind {
-                    0 => one(std::mem::take(&mut owned.pending)),
-                    1 => {
-                        let refresh = one(std::mem::take(&mut owned.pending));
-                        let ready = owned.execute(&refresh);
-                        owned.daemon.sup.handle(ready);
-                        one(owned.daemon.sup.take_effects())
-                    }
-                    _ => owned.notify(),
-                };
-                if fence == 1 {
-                    owned.post_fsync_failure();
-                }
-                if fence == 2 {
-                    let target = if let Effect::MailWakeNotify { target, .. } = &effect {
-                        target.clone()
-                    } else {
-                        let (lsn, record) = owned
-                            .fixture
-                            .entries()
-                            .into_iter()
-                            .find(|(_, entry)| matches!(&entry.record, Record::Mail { .. }))
-                            .expect("receipt");
-                        let Record::Mail { id, .. } = record.record else {
-                            panic!("receipt");
-                        };
-                        dudes_proto::MailWakeTarget {
-                            mail: dudes_proto::MailRef { id, lsn },
-                            original_count: u8::from(kind == 1),
-                            target_count: u8::from(kind == 1) + 1,
-                        }
-                    };
-                    let root = owned
+        for (fence, kind) in [(0, 0), (1, 1), (2, 2)] {
+            let mut owned = Owned::pending(Usd::from_dollars(10));
+            if kind == 1 {
+                owned.make_ready();
+            }
+            let effect = match kind {
+                0 => one(std::mem::take(&mut owned.pending)),
+                1 => owned.refreshed_effect(),
+                _ => owned.notify(),
+            };
+            if fence == 1 {
+                owned.post_fsync_failure();
+            }
+            if fence == 2 {
+                let target = if let Effect::MailWakeNotify { target, .. } = &effect {
+                    target.clone()
+                } else {
+                    let (lsn, record) = owned
                         .fixture
                         .entries()
                         .into_iter()
-                        .find_map(|(lsn, entry)| {
-                            matches!(
-                                entry.record,
-                                Record::MailWakeTurnDecided(dudes_proto::MailWakeDecision {
-                                    purpose: MailWakePurpose::FreshPreparation { .. },
-                                    ..
-                                })
-                            )
-                            .then_some(lsn)
-                        })
-                        .unwrap();
-                    let mailbox = owned.daemon.ctx.mailbox.as_mut().unwrap();
-                    assert!(
-                        mailbox
-                            .notify_prepared(owned.agent, root, &target, |_, _| Err(
-                                anyhow::anyhow!("owned uncertain callback")
-                            ))
-                            .is_err()
-                    );
-                    assert!(mailbox.is_fenced());
-                }
-                let before = owned.fixture.records().len();
-                let mut queue = VecDeque::new();
-                let result = owned.daemon.ctx.execute(
-                    &effect,
-                    &mut queue,
-                    &mut PumpReport::Discard,
-                    &mut owned.daemon.sup,
-                    &mut owned.daemon.closing,
+                        .find(|(_, entry)| matches!(&entry.record, Record::Mail { .. }))
+                        .expect("receipt");
+                    let Record::Mail { id, .. } = record.record else {
+                        panic!("receipt");
+                    };
+                    dudes_proto::MailWakeTarget {
+                        mail: dudes_proto::MailRef { id, lsn },
+                        original_count: u8::from(kind == 1),
+                        target_count: u8::from(kind == 1) + 1,
+                    }
+                };
+                let root = owned
+                    .fixture
+                    .entries()
+                    .into_iter()
+                    .find_map(|(lsn, entry)| {
+                        matches!(
+                            entry.record,
+                            Record::MailWakeTurnDecided(dudes_proto::MailWakeDecision {
+                                purpose: MailWakePurpose::FreshPreparation { .. },
+                                ..
+                            })
+                        )
+                        .then_some(lsn)
+                    })
+                    .unwrap();
+                let mailbox = owned.daemon.ctx.mailbox.as_mut().unwrap();
+                assert!(
+                    mailbox
+                        .notify_prepared(owned.agent, root, &target, |_, _| Err(anyhow::anyhow!(
+                            "owned uncertain callback"
+                        )))
+                        .is_err()
                 );
-                if fence == 0 {
-                    assert!(result.is_ok());
-                    assert_eq!(queue.len(), 1);
-                } else {
-                    observed.push((
-                        queue.iter().all(|input| {
-                            !matches!(
-                                input,
-                                Input::MailWakeReady { result: Ok(_), .. }
-                                    | Input::Journaled { .. }
-                                    | Input::InstructionJournaled { .. }
-                                    | Input::Persisted { .. }
-                            )
-                        }),
-                        owned.fixture.records().len() == before,
-                    ));
-                }
+                assert!(mailbox.is_fenced());
+            }
+            let before = owned.fixture.records().len();
+            let mut queue = VecDeque::new();
+            let result = owned.daemon.ctx.execute(
+                &effect,
+                &mut queue,
+                &mut PumpReport::Discard,
+                &mut owned.daemon.sup,
+                &mut owned.daemon.closing,
+            );
+            if fence == 0 {
+                assert!(result.is_ok());
+                assert_eq!(queue.len(), 1);
+            } else {
+                observed.push((
+                    queue.iter().all(|input| {
+                        !matches!(
+                            input,
+                            Input::MailWakeReady { result: Ok(_), .. }
+                                | Input::Journaled { .. }
+                                | Input::InstructionJournaled { .. }
+                                | Input::Persisted { .. }
+                        )
+                    }),
+                    owned.fixture.records().len() == before,
+                ));
             }
         }
         assert!(
@@ -9336,7 +9998,11 @@ mod mail_wake_fence_tests {
         for floor in [Usd::from_dollars(10), Usd::from_micros(500_000)] {
             let mut owned = Owned::pending(floor);
             let (_, turn) = owned.fake_open_child();
-            owned.daemon.sup.handle(Input::Tick);
+            owned
+                .daemon
+                .sup
+                .handle(Input::Tick, &dudes_supervisor::RecoveryOperation::empty())
+                .unwrap();
             let probe = one(owned.daemon.sup.take_effects());
             assert!(matches!(probe, Effect::Probe { turn: actual, .. } if actual == turn));
             let refresh = one(std::mem::take(&mut owned.pending));
@@ -9370,7 +10036,8 @@ mod mail_wake_fence_tests {
                     &mut PumpReport::Discard,
                     PumpOrigin::Ordinary,
                     queue,
-                    |_| Ok(()),
+                    &[],
+                    |_, _operation| Ok(Handled::default()),
                 )
                 .unwrap();
             assert_eq!(
@@ -9416,12 +10083,22 @@ mod mail_wake_fence_tests {
                 outcome: Some(TurnOutcome::Vanished),
             },
         };
-        let lsn = owned
+        let append = owned
             .daemon
             .ctx
             .append(owned.daemon.sup.world(), &entry)
             .unwrap();
-        owned.daemon.sup.handle(Input::Replayed { lsn, entry });
+        let (main, checkpoint) = append.into_parts();
+        for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
+            owned
+                .daemon
+                .sup
+                .handle(
+                    Input::Replayed { lsn, entry },
+                    &dudes_supervisor::RecoveryOperation::empty(),
+                )
+                .unwrap();
+        }
         let refresh = one(std::mem::take(&mut owned.pending));
         let ready = owned.execute(&refresh);
         let revision = owned.daemon.ctx.projections.last_applied_lsn();
@@ -9433,7 +10110,8 @@ mod mail_wake_fence_tests {
                 &mut PumpReport::Discard,
                 PumpOrigin::Ordinary,
                 VecDeque::from([ready]),
-                |_| Ok(()),
+                &[],
+                |_, _operation| Ok(Handled::default()),
             )
             .unwrap();
         assert_eq!(
@@ -9475,33 +10153,28 @@ mod mail_wake_fence_tests {
             &mut PumpReport::Discard,
             PumpOrigin::Ordinary,
             queue,
-            |_| Ok(()),
+            &[],
+            |_, _operation| Ok(Handled::default()),
             |daemon, queue| {
-                if let Some(Input::Journaled {
-                    lsn,
-                    entry:
-                        Entry {
-                            record:
-                                Record::MailState {
-                                    id,
-                                    state: MailState::Notified { n },
-                                },
-                            ..
-                        },
-                }) = queue.front()
+                if let Some(Input::Journaled { append }) = queue.front()
+                    && let Record::MailState {
+                        id,
+                        state: MailState::Notified { n },
+                    } = &append.entry().record
                 {
+                    let lsn = append.lsn();
                     reached += 1;
                     assert_eq!((*id, *n), (target.mail.id, target.target_count));
                     assert!(daemon.ctx.writer.poisoned().is_none());
                     assert!(daemon.ctx.mailbox.as_ref().unwrap().contains(*id));
                     assert!(!daemon.ctx.mailbox.as_ref().unwrap().is_fenced());
-                    assert_eq!(daemon.ctx.projections.last_applied_lsn(), *lsn);
+                    assert_eq!(daemon.ctx.projections.last_applied_lsn(), lsn);
                     assert!(
                         daemon
                             .sup
                             .world()
                             .last_applied_lsn
-                            .is_some_and(|world_lsn| world_lsn < *lsn)
+                            .is_some_and(|world_lsn| world_lsn < lsn)
                     );
                     assert!(
                         daemon
@@ -9560,16 +10233,17 @@ mod mail_wake_fence_tests {
         let fixture = &owned.fixture;
         let mut reached = 0;
         let result = owned.daemon.pump_inputs_with_work_refresh(&mut PumpReport::Discard, PumpOrigin::Ordinary,
-            queue, |_| Ok(()), |daemon, queue| {
-                if let Some(Input::Persisted { lsn, .. }) = queue.front() {
+            queue, &[], |_, _operation| Ok(Handled::default()), |daemon, queue| {
+                if let Some(Input::Persisted { append, .. }) = queue.front() {
+                    let lsn = append.lsn();
                     reached += 1;
-                    assert!(fixture.entries().iter().any(|(position, entry)| position == lsn && matches!(&entry.record,
+                    assert!(fixture.entries().iter().any(|(position, entry)| *position == lsn && matches!(&entry.record,
                         Record::MailWakeTurnDecided(value) if matches!(value.purpose, MailWakePurpose::ExistingPreparation { root_lsn: root } if root == root_lsn)
                             && matches!(value.decision, dudes_proto::MailWakeAdmission::Hold { reason: dudes_proto::HoldReason::Paused }))));
-                    assert_eq!(daemon.ctx.projections.last_applied_lsn(), *lsn);
+                    assert_eq!(daemon.ctx.projections.last_applied_lsn(), lsn);
                     assert!(daemon.ctx.writer.poisoned().is_none());
                     assert!(!daemon.ctx.mailbox.as_ref().unwrap().is_fenced());
-                    assert!(daemon.sup.world().last_applied_lsn.is_some_and(|world_lsn| world_lsn < *lsn));
+                    assert!(daemon.sup.world().last_applied_lsn.is_some_and(|world_lsn| world_lsn < lsn));
                     return Err(anyhow::anyhow!("owned refresh cut before committed refusal acknowledgment fold"));
                 }
                 daemon.refresh_work()

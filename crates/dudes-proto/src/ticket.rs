@@ -46,6 +46,15 @@ pub struct TicketCheckResult {
     pub at: Timestamp,
 }
 
+/// How the latest completed engine turn on a ticket ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TicketTurnEnd {
+    /// The engine process's recorded exit status.
+    pub exit: crate::ExitStatus,
+    /// When the turn's end was recorded.
+    pub at: Timestamp,
+}
+
 /// What the board keeps of a ticket beyond what every card has.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TicketRow {
@@ -75,6 +84,9 @@ pub struct TicketRow {
     /// [`MAX_SUMMARY_BYTES`]. These are the agent's own words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// The newest completed turn on the ticket's goal, retained while another turn runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_end: Option<TicketTurnEnd>,
     /// The daemon's newest run of the check on the ticket's goal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check: Option<TicketCheckResult>,
@@ -117,7 +129,8 @@ pub struct QueueKey {
 pub enum TicketReason {
     /// The project is not enrolled any more.
     ProjectUnavailable,
-    /// The check's program was not found.
+    /// The check's program was not found, or it is a file inside the project that an agent could
+    /// change.
     CheckCannotRun,
     /// A spending limit is required and none is set.
     CeilingRequired,
@@ -143,6 +156,8 @@ pub enum TicketReason {
     SharedInstructionsChanged,
     /// Shared instruction coverage is incomplete and needs Operator review.
     SharedInstructionsUnknown,
+    /// Interrupted work requires an explicit recovery choice.
+    RecoveryRequired,
 }
 
 impl TicketReason {
@@ -150,14 +165,17 @@ impl TicketReason {
     #[must_use]
     pub const fn sentence(self) -> &'static str {
         match self {
+            Self::RecoveryRequired => {
+                "This work was interrupted. Recovery keeps the same goal and ticket round. Review recovery to see what was recorded and choose how to continue. Earlier effects may repeat."
+            }
             Self::ProjectUnavailable => {
-                "This project is not set up any more. Enroll it again with `dudes workspace add`, then Give to agent, or Remove the ticket."
+                "This project is not set up any more. Enroll it again with `dudes project add`, then Give to agent, or Remove the ticket."
             }
             Self::CheckCannotRun => {
-                "The check cannot run: its program is missing, or it is a file inside the project that an agent could change. Install the program, or use one outside the project's repository, then Give to agent. If the check itself is wrong, Remove this ticket and create it again."
+                "The check cannot run: its program is missing, or it is a file inside the project that an agent could change. Install the program, or use one outside the project's repository. To use a script from the repository, run it through its interpreter, for example `sh test.sh` for a shell script; an agent can still edit that script, so review its changes before you accept the work. Then Give to agent. If the check itself is wrong, Remove this ticket and create it again."
             }
             Self::CeilingRequired => {
-                "Set a spending limit first, because your account bills per use. Add one to the project's enrollment (`dudes workspace add`) or the agent's hire, then Give to agent."
+                "Set a spending limit first, because your account bills per use. Add one to the project's enrollment (`dudes project add`) or the agent's hire, then Give to agent."
             }
             Self::ReserveMissing => {
                 "A per-turn spending reserve is missing. Run `dudes config set budget.per_turn_floor.usd <dollars>` (or `budget.per_turn_floor.tokens <count>`), then Give to agent."
@@ -175,10 +193,10 @@ impl TicketReason {
                 "The agent used all its turns on this ticket. Give to agent to try again, or Stop."
             }
             Self::HeldLaunch => {
-                "The agent's engine would not start. Fix the cause, then resume the agent in the Floor or with `dudes resume`."
+                "The agent's engine would not start. Fix the cause, then resume the agent."
             }
             Self::HeldFailing => {
-                "The agent's turns kept failing at once. Fix the cause, then resume the agent in the Floor or with `dudes resume`."
+                "The agent's turns kept failing at once. Fix the cause, then resume the agent."
             }
             Self::HeldUnsure => {
                 "Dudes could not confirm how the agent's last turn ended. Resume the agent, or Stop."

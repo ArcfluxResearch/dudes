@@ -1,12 +1,13 @@
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { access, chmod, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, readlink, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { Journey } from './journey.mjs';
 
 const execute = promisify(execFile);
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -19,6 +20,9 @@ const timeout = 30_000;
 // a generous-but-bounded wait for transient contention, not a fix for a genuinely wedged Chrome.
 export const navigateTimeout = 120_000;
 let interrupted = false;
+let journeyRun;
+
+class WaitTimeout extends Error {}
 
 function check(value, message) {
   if (!value) throw new Error(message);
@@ -45,7 +49,7 @@ async function waitFor(action, message, duration = timeout, allowInterrupted = f
     if (value) return value;
     await pause(100);
   }
-  throw new Error(message);
+  throw new WaitTimeout(message);
 }
 
 export async function chromePath(paths = [
@@ -53,7 +57,14 @@ export async function chromePath(paths = [
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
   ...(process.env.PATH ?? '').split(delimiter).flatMap((dir) =>
     ['google-chrome', 'chromium', 'chromium-browser'].map((name) => join(dir, name))),
-], required = process.env.DUDES_SMOKE_REQUIRE_CHROME === '1') {
+], required = process.env.DUDES_SMOKE_REQUIRE_CHROME === '1', configured = process.env.DUDES_SMOKE_CHROME) {
+  if (configured !== undefined) {
+    check(isAbsolute(configured)
+      && await stat(configured).then((info) => info.isFile(), () => false)
+      && await access(configured, constants.X_OK).then(() => true, () => false),
+    'DUDES_SMOKE_CHROME must name an absolute executable file');
+    return configured;
+  }
   for (const path of paths) {
     if (await access(path, constants.X_OK).then(() => true, () => false)) return path;
   }
@@ -127,16 +138,16 @@ export class DevTools {
 }
 
 export class ScratchRun {
-  constructor(root, workspace, xtask, version, chrome) {
+  constructor(root, workspace, xtask, version, chrome, prefix = join(root, 'prefix')) {
     this.root = root;
     this.workspace = workspace;
     this.xtask = xtask;
     this.version = version;
     this.chromeProgram = chrome;
-    this.groups = new Set();
+    this.groups = new Map();
     this.owned = new Map();
     this.chromeChildren = new Map();
-    this.prefix = join(root, 'prefix');
+    this.prefix = prefix;
     this.repo = join(root, 'repo');
     this.home = join(root, 'home');
     this.runtime = join(root, 'run');
@@ -158,11 +169,29 @@ export class ScratchRun {
     try { process.kill(-pid, 0); return true; } catch { return false; }
   }
 
+  groupAbsent(pid) {
+    try { process.kill(-pid, 0); return false; } catch (error) {
+      if (error.code === 'ESRCH') return true;
+      throw error;
+    }
+  }
+
   signalGroup(pid, signal) {
     try { process.kill(-pid, signal); } catch {}
   }
 
-  async stopGroup(pid) {
+  signalChildGroup(child, signal) {
+    if (!child?.pid || this.groups.get(child.pid) !== child
+      || child.exitCode !== null || child.signalCode !== null) return false;
+    this.signalGroup(child.pid, signal);
+    return true;
+  }
+
+  signalChildren(signal) {
+    for (const child of this.groups.values()) this.signalChildGroup(child, signal);
+  }
+
+  async stopGroup(pid, child = this.groups.get(pid)) {
     if (!pid) return;
     const chrome = pid === this.chrome?.pid;
     if (chrome && !this.chromeIdentity) {
@@ -170,28 +199,31 @@ export class ScratchRun {
       return;
     }
     if (chrome && !await this.chromeGroupOwned()) return;
-    if (this.groupAlive(pid)) {
+    const absent = chrome ? () => !this.groupAlive(pid) : () => this.groupAbsent(pid);
+    if (!absent()) {
       if (chrome) await this.signalChrome('SIGTERM');
-      else this.signalGroup(pid, 'SIGTERM');
-      await waitFor(() => !this.groupAlive(pid), 'child group survived shutdown', 5000, true).catch(() => {
+      else check(child?.pid === pid && this.signalChildGroup(child, 'SIGTERM'), 'child group ownership is unproven');
+      await waitFor(absent, 'child group survived shutdown', 5000, true).catch((error) => {
+        if (!(error instanceof WaitTimeout)) throw error;
         if (chrome) return this.signalChrome('SIGKILL');
-        this.signalGroup(pid, 'SIGKILL');
+        check(this.signalChildGroup(child, 'SIGKILL'), 'child group ownership is unproven');
       });
-      await waitFor(() => !this.groupAlive(pid), 'child group survived kill', 5000, true);
+      await waitFor(absent, 'child group survived kill', 5000, true);
     }
-    this.groups.delete(pid);
+    if (this.groups.get(pid) === child) this.groups.delete(pid);
   }
 
   async capture(program, args, options) {
     const pending = execute(program, args, { ...options, detached: true, killSignal: 'SIGKILL', maxBuffer: 2_000_000 });
-    const pid = pending.child.pid;
-    if (pid) this.groups.add(pid);
+    const child = pending.child;
+    const pid = child.pid;
+    if (pid) this.groups.set(pid, child);
     try {
       return await pending;
     } catch {
       throw new Error(`${program.split('/').at(-1)} failed or timed out`);
     } finally {
-      await this.stopGroup(pid);
+      await this.stopGroup(pid, child);
     }
   }
 
@@ -238,6 +270,8 @@ exec /bin/sleep 120
     if (process.env.RUSTUP_TOOLCHAIN !== undefined) this.buildEnv.RUSTUP_TOOLCHAIN = process.env.RUSTUP_TOOLCHAIN;
     if (process.env.DUDES_SMOKE_ORIGINAL_PATH) this.buildEnv.DUDES_SMOKE_ORIGINAL_PATH = process.env.DUDES_SMOKE_ORIGINAL_PATH;
     if (process.env.CARGO_TARGET_DIR) this.buildEnv.CARGO_TARGET_DIR = process.env.CARGO_TARGET_DIR;
+    if (process.env.CARGO_BUILD_JOBS !== undefined) this.buildEnv.CARGO_BUILD_JOBS = process.env.CARGO_BUILD_JOBS;
+    if (process.env.CARGO_INCREMENTAL !== undefined) this.buildEnv.CARGO_INCREMENTAL = process.env.CARGO_INCREMENTAL;
     if (process.env.MACOSX_DEPLOYMENT_TARGET) this.buildEnv.MACOSX_DEPLOYMENT_TARGET = process.env.MACOSX_DEPLOYMENT_TARGET;
     await stage('Floor build', async () => {
       await this.capture('npm', ['run', 'build'], {
@@ -246,14 +280,14 @@ exec /bin/sleep 120
     });
     await stage('release', async () => {
       const child = spawn(this.xtask, ['dist'], { cwd: this.workspace, env: this.buildEnv, detached: true, stdio: ['ignore', 'inherit', 'inherit'] });
-      if (child.pid) this.groups.add(child.pid);
-      const timer = setTimeout(() => this.signalGroup(child.pid, 'SIGKILL'), 20 * 60_000);
+      if (child.pid) this.groups.set(child.pid, child);
+      const timer = setTimeout(() => this.signalChildGroup(child, 'SIGKILL'), 20 * 60_000);
       try {
         const [code] = await once(child, 'exit');
         check(code === 0, 'release build failed');
       } finally {
         clearTimeout(timer);
-        await this.stopGroup(child.pid);
+        await this.stopGroup(child.pid, child);
       }
     });
     const { stdout } = await this.capture(this.buildEnv.CARGO, ['metadata', '--locked', '--format-version=1', '--no-deps'], {
@@ -296,7 +330,7 @@ exec /bin/sleep 120
     await this.rememberManaged();
   }
 
-  async browser() {
+  async launchChrome() {
     const profile = join(this.root, 'chrome');
     this.chrome = spawn(this.chromeProgram, [
       ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : ['--password-store=basic']),
@@ -324,9 +358,10 @@ exec /bin/sleep 120
     this.cdp.session = sessionId;
     await this.cdp.send('Page.enable', {}, sessionId);
     await this.cdp.send('Runtime.enable', {}, sessionId);
-    const { stdout } = await this.cli(['floor', 'open', '--no-browser']);
-    const link = stdout.match(/http:\/\/127\.0\.0\.1:\d+\/floor\/#bootstrap=[A-Za-z0-9_-]+/)?.[0];
-    check(link, 'Floor open returned no bootstrap link');
+  }
+
+  async openFloor(link) {
+    const sessionId = this.cdp.session;
     const navigation = await this.cdp.send('Page.navigate', { url: link, referrerPolicy: 'noReferrer' }, sessionId, navigateTimeout);
     check(!navigation.errorText && !navigation.isDownload, 'Chrome could not navigate to the Floor');
     const page = new URL(link);
@@ -337,7 +372,15 @@ exec /bin/sleep 120
       return committed.origin === page.origin && committed.pathname === '/floor/'
         && (!navigation.loaderId || frameTree.frame.loaderId === navigation.loaderId);
     }, 'Chrome did not commit the Floor navigation', navigateTimeout);
-    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-open-office'))`), 'Floor bundle did not render Hire');
+    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-open'))`), 'Floor bundle did not render Hire');
+  }
+
+  async browser() {
+    await this.launchChrome();
+    const { stdout } = await this.cli(['floor', 'open']);
+    const link = stdout.match(/http:\/\/127\.0\.0\.1:\d+\/floor\/#bootstrap=[A-Za-z0-9_-]+/)?.[0];
+    check(link, 'Floor open returned no bootstrap link');
+    await this.openFloor(link);
   }
 
   async hire() {
@@ -348,7 +391,7 @@ exec /bin/sleep 120
       el.dispatchEvent(new Event('input', { bubbles: true })); return true;
     })()`);
     const next = () => this.cdp.evaluate(`(() => { const el = [...document.querySelectorAll('.hire-actions button')].find(el => el.textContent === 'Next'); if (!el) return false; el.click(); return true; })()`);
-    check(await click('#hire-open-office'), 'Hire opener missing');
+    check(await click('#hire-open'), 'Hire opener missing');
     await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-name'))`), 'Hire wizard did not open');
     check(await fill('#hire-name', 'Smoke agent'), 'Hire name missing');
     check(await fill('#hire-role', 'First-run smoke'), 'Hire role missing');
@@ -359,8 +402,8 @@ exec /bin/sleep 120
     await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('input[name="engine"][value="codex"]'))`), 'stand-in engine was not offered');
     await click('input[name="engine"][value="codex"]');
     await next();
-    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-goal'))`), 'Hire briefing missing');
-    await fill('#hire-goal', 'Keep the smoke stand-in alive');
+    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-task'))`), 'Hire briefing missing');
+    await fill('#hire-task', 'Keep the smoke stand-in alive');
     await click('.hire-submit');
     this.agent = await waitFor(async () => {
       const result = await this.cdp.evaluate(`(() => {
@@ -528,7 +571,8 @@ exec /bin/sleep 120
     check(stopped, 'daemon still answers after stop');
   }
 
-  async cleanup() {
+  // Ends Chrome and every helper it started. Returns what went wrong, so cleanup can report it.
+  async closeChrome() {
     const failures = [];
     const clean = async (action) => {
       try { await action(); } catch (error) { failures.push(error.message); }
@@ -542,7 +586,15 @@ exec /bin/sleep 120
       for (const identity of chromeIdentities) await clean(() => this.killOwned(identity));
       await clean(() => waitFor(async () => (await Promise.all(chromeIdentities.map((identity) => this.ownedAlive(identity)))).every((alive) => !alive), 'Chrome helper survived cleanup', 10_000, true));
     }
-    for (const pid of [...this.groups]) await clean(() => this.stopGroup(pid));
+    return failures;
+  }
+
+  async cleanup() {
+    const failures = await this.closeChrome();
+    const clean = async (action) => {
+      try { await action(); } catch (error) { failures.push(error.message); }
+    };
+    for (const child of [...this.groups.values()]) await clean(() => this.stopGroup(child.pid, child));
     await clean(() => this.rememberManaged());
     await this.cli(['stop', '--hard']).catch(() => {});
     const identities = [...this.owned.values()];
@@ -554,12 +606,33 @@ exec /bin/sleep 120
   }
 }
 
+// A newcomer's whole path on a second scratch home, sharing the install: quickstart, open, then
+// only the page, up to an accepted ticket.
+async function newcomerJourney(first, chrome) {
+  const root = await mkdtemp(join(tmpdir(), 'dudes-jrny-'));
+  await chmod(root, 0o700);
+  const second = new ScratchRun(root, first.workspace, first.xtask, first.version, chrome, first.prefix);
+  // The same Chrome: a wrapper that admits one proof browser at a time would refuse a second.
+  Object.assign(second, { chrome: first.chrome, chromeChild: first.chromeChild, chromeIdentity: first.chromeIdentity,
+    chromeChildren: first.chromeChildren, cdp: first.cdp });
+  journeyRun = second;
+  try {
+    await second.prepare();
+    await new Journey(second).walk();
+    await second.stop();
+  } finally {
+    await second.cleanup();
+  }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   let run;
   const interrupt = () => {
     interrupted = true;
-    if (run?.chrome?.pid) void run.signalChrome('SIGTERM').catch(() => {});
-    for (const pid of run?.groups ?? []) run.signalGroup(pid, 'SIGTERM');
+    for (const each of [run, journeyRun]) {
+      if (each?.chrome?.pid) void each.signalChrome('SIGTERM').catch(() => {});
+      each?.signalChildren('SIGTERM');
+    }
   };
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', interrupt);
@@ -580,6 +653,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       await stage('hire and live activity', () => run.hire());
     } else console.log('SKIP browser (Chrome absent)');
     await stage('stop', () => run.stop());
+    if (chrome) await stage('journey from quickstart to an accepted ticket', () => newcomerJourney(run, chrome));
   } catch (error) {
     console.error(`smoke: ${error.message}`);
     process.exitCode = 1;

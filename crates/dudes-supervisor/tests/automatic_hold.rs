@@ -386,11 +386,18 @@ fn a_new_goal_resets_the_episode_and_ignores_an_old_turn_end() {
     assert!(h.supervisor.world().agents[&agent].automatic_hold.is_some());
 }
 
-#[test]
-fn an_unacknowledged_hold_refuses_a_pending_token_spawn() {
+fn hold_a_pending_token() -> (Harness, AgentId, GoalId, TurnId) {
     let mut h = Harness::new();
     h.unfsynced.insert(RecordKind::HookTokenMinted);
-    let (agent, _) = h.hire_with_goal(&["false"]);
+    let (agent, goal) = h.hire_with_goal(&["false"]);
+    let turn = h.open_turn(agent).unwrap();
+    let (started, attempt) = h
+        .supervisor
+        .world()
+        .instructions
+        .current_for_turn(turn)
+        .unwrap();
+    let owner = attempt.owner;
     let mint = h
         .trace
         .iter()
@@ -403,38 +410,69 @@ fn an_unacknowledged_hold_refuses_a_pending_token_spawn() {
             _ => None,
         })
         .unwrap();
-    let held = dudes_proto::Entry {
-        at: dudes_types::Timestamp::from_unix_millis(1),
-        record: Record::AgentHeld {
-            agent,
-            provenance: Provenance::Observed,
-            cause: AutomaticHold::LaunchRefused {
-                reason: "refused".into(),
-            },
-        },
-    };
-    h.drive(Input::Replayed {
-        lsn: dudes_types::Lsn(900),
-        entry: held,
+    h.unfsynced.insert(RecordKind::AgentHeld);
+    let before = h.trace.len();
+    h.drive(Input::LaunchAdmissionRefused {
+        agent,
+        turn: Some(turn),
+        refusal: dudes_supervisor::SharedFolderRefusal::CandidateFolderUnresolved,
+        dispatch_token: None,
     });
-    h.drive(Input::Persisted {
-        token: mint,
-        lsn: dudes_types::Lsn(901),
-    });
+    let held = h.trace[before..]
+        .iter()
+        .find_map(|seen| match seen {
+            Seen::Persist { token, entry } if matches!(entry.record, Record::AgentHeld { .. }) => {
+                Some(*token)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(h.supervisor.world().agents[&agent].automatic_hold.is_none());
+    h.acknowledge(mint);
     assert!(
         !h.trace
             .iter()
             .any(|seen| matches!(seen, Seen::Spawn { .. }))
     );
+    assert!(h.host.spawned.is_empty());
+    let proof = h.acknowledge(held);
+    assert!(h.journal.iter().any(|entry| matches!(&entry.record,
+        Record::InstructionObservationFinished {
+            owner: captured,
+            baseline: dudes_proto::InstructionBaselineRef::Started { lsn },
+            settlement: dudes_proto::InstructionSettlement::NoProcess {
+                proof_lsn,
+                proof: dudes_proto::InstructionNoProcessProof::NoHostCall,
+            },
+            ..
+        } if *captured == owner && *lsn == started && *proof_lsn == proof)));
+    assert!(h.supervisor.world().agents[&agent].automatic_hold.is_some());
+    assert!(!h.supervisor.recovery_launch_allowed(
+        agent,
+        turn,
+        &dudes_supervisor::RecoveryOperation::empty()
+    ));
+    assert_eq!(issued(&h), 1);
+    (h, agent, goal, turn)
+}
+
+#[test]
+fn an_unacknowledged_hold_refuses_a_pending_token_spawn() {
+    let (mut h, agent, goal, turn) = hold_a_pending_token();
+    let original = h.supervisor.world().turns[&turn].clone();
     h.drive(Input::Command(Command::Resume {
         agent,
         browser: None,
     }));
-    assert!(
-        h.trace
-            .iter()
-            .any(|seen| matches!(seen, Seen::Spawn { .. }))
-    );
+    assert_eq!(h.spawns_of(turn).len(), 1);
+    assert_eq!(h.host.spawned.len(), 1);
+    assert_eq!(h.supervisor.world().agents[&agent].goal, Some(goal));
+    assert!(h.supervisor.world().agents[&agent].automatic_hold.is_none());
+    let resumed = &h.supervisor.world().turns[&turn];
+    assert_eq!(resumed.issue_lsn, original.issue_lsn);
+    assert_eq!(resumed.task, original.task);
+    assert_eq!(resumed.goal, original.goal);
+    assert_eq!(issued(&h), 1);
 }
 
 #[test]
@@ -562,40 +600,9 @@ fn attached_and_inferred_ends_never_qualify_as_managed_failures() {
 }
 
 #[test]
-fn a_new_goal_recovers_an_issued_turn_held_before_spawn() {
-    let mut h = Harness::new();
-    h.unfsynced.insert(RecordKind::HookTokenMinted);
-    let (agent, _) = h.hire_with_goal(&["false"]);
-    let mint = h
-        .trace
-        .iter()
-        .find_map(|seen| match seen {
-            Seen::Persist { token, entry }
-                if matches!(entry.record, Record::HookTokenMinted { .. }) =>
-            {
-                Some(*token)
-            }
-            _ => None,
-        })
-        .unwrap();
-    h.drive(Input::Replayed {
-        lsn: dudes_types::Lsn(900),
-        entry: dudes_proto::Entry {
-            at: dudes_types::Timestamp::from_unix_millis(1),
-            record: Record::AgentHeld {
-                agent,
-                provenance: Provenance::Observed,
-                cause: AutomaticHold::LaunchRefused {
-                    reason: "refused".into(),
-                },
-            },
-        },
-    });
-    h.drive(Input::Persisted {
-        token: mint,
-        lsn: dudes_types::Lsn(901),
-    });
-    assert!(!h.trace.iter().any(|s| matches!(s, Seen::Spawn { .. })));
+fn a_new_goal_clears_the_hold_without_reopening_the_old_issued_turn() {
+    let (mut h, agent, old_goal, turn) = hold_a_pending_token();
+    let original = h.supervisor.world().turns[&turn].clone();
     h.drive(Input::Command(Command::GoalSet {
         completion_check: None,
         agent,
@@ -613,8 +620,34 @@ fn a_new_goal_recovers_an_issued_turn_held_before_spawn() {
         goal_replacement: None,
         baseline: None,
     }));
-    assert!(h.trace.iter().any(|s| matches!(s, Seen::Spawn { .. })));
+    let new_goal = h.supervisor.world().agents[&agent].goal.unwrap();
+    assert_ne!(new_goal, old_goal);
+    assert_eq!(h.supervisor.world().goals[&new_goal].last_turn, None);
     assert!(h.supervisor.world().agents[&agent].automatic_hold.is_none());
+    assert!(!h.supervisor.recovery_launch_allowed(
+        agent,
+        turn,
+        &dudes_supervisor::RecoveryOperation::empty()
+    ));
+    assert_eq!(
+        h.supervisor.recovery_opportunity(agent).err(),
+        Some(dudes_supervisor::input::RecoveryRefusal::NotRecoverable)
+    );
+    assert!(
+        !h.trace
+            .iter()
+            .any(|seen| matches!(seen, Seen::Spawn { .. }))
+    );
+    assert!(h.host.spawned.is_empty());
+    let unchanged = &h.supervisor.world().turns[&turn];
+    assert_eq!(unchanged.issue_lsn, original.issue_lsn);
+    assert_eq!(unchanged.task, original.task);
+    assert_eq!(unchanged.goal, Some(old_goal));
+    assert_eq!(issued(&h), 1);
+    assert!(!h.journal.iter().any(|entry| matches!(
+        entry.record,
+        Record::RecoveryAuthorized(_) | Record::TurnEnded { .. }
+    )));
 }
 
 #[test]
@@ -653,4 +686,26 @@ fn replay_of_an_old_launch_failure_excludes_execution_inputs_from_its_hold() {
             reason: "managed process could not launch (unknown error)".into()
         }
     );
+}
+
+#[test]
+fn the_actual_inferred_repeated_failure_hold_is_a_valid_recovery_source() {
+    let (h, agent, _, first, latest) = two_failures();
+    assert!(h.records().any(|record| matches!(record, Record::AgentHeld { agent: owner, provenance: Provenance::Inferred, cause: AutomaticHold::RepeatedFastFailure { first: named_first, latest: named_latest } } if *owner == agent && *named_first == first && *named_latest == latest)));
+    let view = h.supervisor.recovery_opportunity(agent).unwrap();
+    assert_eq!(
+        view.required.reason,
+        dudes_proto::recovery::RecoveryReason::HeldOrPausedFailure
+    );
+    assert!(matches!(
+        view.required.boundary,
+        dudes_proto::recovery::RecoveryBoundary::Held { first: Some(_), .. }
+    ));
+    assert_eq!(
+        h.supervisor.world().prepare_recovery(
+            dudes_proto::recovery_state::transition::RecoveryTransition::Required(&view.required)
+        ),
+        Ok(())
+    );
+    assert_eq!(issued(&h), 2);
 }

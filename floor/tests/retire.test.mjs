@@ -39,6 +39,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { loadStage } from './helpers/page.mjs';
+import { ORIGIN, enrolledSigner } from './helpers/signer.mjs';
 
 import { ATTEMPT_ID } from '../src/renderer/onboarding/hire.ts';
 import { accessibleNameOfHeading } from './helpers/heading-name.mjs';
@@ -47,7 +48,7 @@ const root = resolve(import.meta.dirname, '..');
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 const GRACE = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const RETIRE_LSN = '1099511628300';
-const CSRF = 'A'.repeat(43);
+const REQUEST_ID = 'A'.repeat(43);
 const FRESH = `${'B'.repeat(42)}E`;
 const SIBLING = Object.freeze({});
 /** The request id `mintAttemptId` makes from 32 bytes of 0x01, the first id each fake daemon hands out. */
@@ -92,7 +93,7 @@ function daemon(...replies) {
   const calls = [];
   let refreshes = 0;
   let minted = 0;
-  let csrf = CSRF;
+  let held = REQUEST_ID;
   let generation = 1;
   return {
     calls,
@@ -100,12 +101,12 @@ function daemon(...replies) {
     get generation() { return generation; },
     /** A fresh link pasted into the tab: a newer session, whose nonce the next request carries. */
     paste(value) {
-      csrf = value;
+      held = value;
       generation += 1;
     },
     /** A page with no Floor session. */
     signOut() {
-      csrf = null;
+      held = null;
     },
     async fetch(url, init) {
       calls.push({ url, init });
@@ -115,7 +116,7 @@ function daemon(...replies) {
       if (response instanceof Error) throw response;
       return { status: response.status, text: async () => response.body ?? '' };
     },
-    csrf: () => csrf,
+    signedIn: () => held !== null,
     random(bytes) {
       minted += 1;
       bytes.fill(minted);
@@ -164,6 +165,8 @@ let server;
 let retire;
 let control;
 let session;
+let transport;
+let signerModule;
 let applyServerFrame;
 let beginFloorEpoch;
 let getFloorState;
@@ -188,6 +191,8 @@ before(async () => {
   });
   retire = await server.ssrLoadModule('/src/renderer/retire/retire.ts');
   control = await server.ssrLoadModule('/src/renderer/control/control.ts');
+  transport = await server.ssrLoadModule('/src/transport.ts');
+  signerModule = await server.ssrLoadModule('/src/signer.ts');
   session = await server.ssrLoadModule('/src/session.ts');
   ({ applyServerFrame, beginFloorEpoch, getFloorState, invalidateFloorEpoch, noteStale, noteTransport,
     resetFloorStore } = await server.ssrLoadModule('/src/renderer/floor/store.ts'));
@@ -264,19 +269,28 @@ function find(node, match) {
 
 const byClass = (name) => (element) => element.props?.className === name;
 
+/** A signed request leaves after WebCrypto has signed it, which takes more than one turn. */
+async function sent(calls) {
+  for (let turn = 0; turn < 500 && calls.length === 0; turn += 1) await new Promise((done) => setTimeout(done, 1));
+  await new Promise((done) => setTimeout(done, 0));
+}
+
 /**
  * The page's own browser wiring for one run: a signed-in Floor session and a
  * `window.fetch` that records each request and answers with `reply`.
  */
 async function withBrowser(reply, run) {
   const calls = [];
-  const answer = async () => ({ ok: true, status: 200, json: async () => ({ csrf: CSRF }) });
-  await session.openFloorSessionWith({ hash: '', pathname: '/floor/', search: '' }, { replaceState() {} }, answer,
-    async () => {});
+  const { signer } = await enrolledSigner();
+  signerModule.installSigner(signer);
+  await session.openFloorSessionWith({ hash: '', pathname: '/floor/', search: '' }, { replaceState() {} },
+    { signer, plain: async () => { throw new Error('no link to spend'); }, signed: transport.floorFetch });
   globalThis.window = {
+    location: { origin: ORIGIN },
     async fetch(url, init) {
-      calls.push({ url, init });
-      const response = reply(JSON.parse(init.body), url);
+      const body = new TextDecoder().decode(init.body);
+      calls.push({ url, init: { ...init, body } });
+      const response = reply(JSON.parse(body), url);
       return { status: response.status, text: async () => response.body ?? '' };
     },
   };
@@ -284,6 +298,7 @@ async function withBrowser(reply, run) {
     await run(calls);
   } finally {
     delete globalThis.window;
+    signerModule.installSigner(undefined);
   }
 }
 
@@ -399,7 +414,7 @@ test('the confirmation comes before any request, and Cancel and the dialog’s c
     await confirm.props.onClick({ detail: 2 });
     assert.equal(calls.length, 0, 'the second click of a double-click retired the agent');
     confirm.props.onClick({ detail: 1 });
-    await new Promise((done) => setTimeout(done, 0));
+    await sent(calls);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, '/floor/retire');
     assert.deepEqual(JSON.parse(calls[0].init.body).agent, ADA);
@@ -477,7 +492,7 @@ test('Pause instead appears only while the control module offers Pause, sends th
     retire.confirmRetire(offer(), 1);
     find(DialogView(dialogProps(1)), byClass('retire-pause')).props.onClick();
     assert.equal(retire.getRetireState().confirming, null, 'Pause instead left the confirmation open');
-    await new Promise((done) => setTimeout(done, 0));
+    await sent(calls);
     assert.deepEqual(calls.map(({ url }) => url), ['/floor/pause'], 'Pause instead did not send one ordinary pause');
     assert.deepEqual(Object.keys(JSON.parse(calls[0].init.body)), ['request_id', 'agent', 'control_lsn']);
     assert.deepEqual(control.getControlState().outcome, { kind: 'applied' });
@@ -507,7 +522,7 @@ test('Pause instead appears only while the control module offers Pause, sends th
 
 // --- the request --------------------------------------------------------------------------
 
-test('Retire sends exactly the two-member body to /floor/retire with the CSRF header', async () => {
+test('Retire sends exactly the two-member body to /floor/retire', async () => {
   subscribe();
   const net = daemon(RETIRED);
   await press(net);
@@ -518,7 +533,7 @@ test('Retire sends exactly the two-member body to /floor/retire with the CSRF he
   assert.equal(init.credentials, 'same-origin');
   assert.equal(init.cache, 'no-store');
   assert.equal(init.referrerPolicy, 'no-referrer');
-  assert.deepEqual(init.headers, { 'Content-Type': 'application/json', 'X-Dudes-CSRF': CSRF });
+  assert.deepEqual(init.headers, { 'Content-Type': 'application/json' });
   assert.match(FIRST_ID, ATTEMPT_ID);
   assert.equal(init.body, `{"request_id":"${FIRST_ID}","agent":"${ADA}"}`);
   assert.equal(new TextEncoder().encode(init.body).length, 97, 'the canonical body is not 97 bytes');
@@ -621,9 +636,9 @@ test('each refusal is said as itself, lets Retire go, and nothing looks like suc
 });
 
 test('the response map: every row, and anything off its row proves nothing', () => {
-  const attempt = Object.freeze({ payload: Object.freeze({ request_id: CSRF, agent: ADA }), body: '', name: 'Ada' });
-  const ok = (fields = {}) => JSON.stringify({ request_id: CSRF, state: 'retired', agent: ADA, retire_lsn: RETIRE_LSN, ...fields });
-  const refused = (fields = {}) => JSON.stringify({ request_id: CSRF, state: 'refused', reason: 'agent_absent', ...fields });
+  const attempt = Object.freeze({ payload: Object.freeze({ request_id: REQUEST_ID, agent: ADA }), body: '', name: 'Ada' });
+  const ok = (fields = {}) => JSON.stringify({ request_id: REQUEST_ID, state: 'retired', agent: ADA, retire_lsn: RETIRE_LSN, ...fields });
+  const refused = (fields = {}) => JSON.stringify({ request_id: REQUEST_ID, state: 'refused', reason: 'agent_absent', ...fields });
   const other = 'B'.repeat(43);
   const unknown = { kind: 'unknown' };
   const rows = [
@@ -637,16 +652,16 @@ test('the response map: every row, and anything off its row proves nothing', () 
     [200, ok({ retire_lsn: '0' }), unknown],
     [200, ok({ retire_lsn: '18446744073709551616' }), unknown],
     [200, ok({ retire_lsn: null }), unknown],
-    [200, `{"request_id":"${CSRF}","state":"retired","agent":"${ADA}","retire_lsn":1099511628300}`, unknown],
-    [200, JSON.stringify({ request_id: CSRF, state: 'retired', agent: ADA }), unknown],
-    [200, JSON.stringify({ request_id: CSRF, state: 'retired', agent: ADA, control_lsn: RETIRE_LSN }), unknown],
+    [200, `{"request_id":"${REQUEST_ID}","state":"retired","agent":"${ADA}","retire_lsn":1099511628300}`, unknown],
+    [200, JSON.stringify({ request_id: REQUEST_ID, state: 'retired', agent: ADA }), unknown],
+    [200, JSON.stringify({ request_id: REQUEST_ID, state: 'retired', agent: ADA, control_lsn: RETIRE_LSN }), unknown],
     [200, ok({ reason: 'retired from the Floor' }), unknown],
     [200, 'retired', unknown],
     [200, '', unknown],
-    [202, JSON.stringify({ request_id: CSRF, state: 'pending' }), { kind: 'pending' }],
-    [202, JSON.stringify({ request_id: CSRF, state: 'pending', agent: ADA }), unknown],
+    [202, JSON.stringify({ request_id: REQUEST_ID, state: 'pending' }), { kind: 'pending' }],
+    [202, JSON.stringify({ request_id: REQUEST_ID, state: 'pending', agent: ADA }), unknown],
     [202, JSON.stringify({ request_id: other, state: 'pending' }), unknown],
-    [202, JSON.stringify({ request_id: CSRF, state: 'retired' }), unknown],
+    [202, JSON.stringify({ request_id: REQUEST_ID, state: 'retired' }), unknown],
     [409, '', { kind: 'conflict' }],
     ...['agent_absent', 'agent_halted', 'liveness_unknown'].map((reason) => [
       409, refused({ reason }), { kind: 'refused', reason }]),
@@ -744,7 +759,7 @@ test('Check status resends the same bytes, and an unresolved request holds every
 });
 
 test('the release gate lets an attempt go only on a confirmed no-effect outcome', () => {
-  const attempt = Object.freeze({ payload: { request_id: CSRF, agent: ADA }, body: '{}', name: 'Ada' });
+  const attempt = Object.freeze({ payload: { request_id: REQUEST_ID, agent: ADA }, body: '{}', name: 'Ada' });
   const outcomes = [
     { kind: 'retired' }, { kind: 'pending' }, { kind: 'unavailable' }, { kind: 'unknown' },
     { kind: 'refused', reason: 'liveness_unknown' }, { kind: 'conflict' }, { kind: 'forbidden' },
@@ -776,7 +791,7 @@ test('the release gate lets an attempt go only on a confirmed no-effect outcome'
 });
 
 test('Check status may ask only for an attempt not settled, not let go and not in flight', () => {
-  const attempt = Object.freeze({ payload: { request_id: CSRF, agent: ADA }, body: '{}', name: 'Ada' });
+  const attempt = Object.freeze({ payload: { request_id: REQUEST_ID, agent: ADA }, body: '{}', name: 'Ada' });
   const outcomes = [
     null, { kind: 'retired' }, { kind: 'pending' }, { kind: 'unavailable' }, { kind: 'unknown' },
     { kind: 'refused', reason: 'agent_halted' }, { kind: 'conflict' }, { kind: 'forbidden' },
@@ -810,7 +825,7 @@ test('a 403 says what this page can do next, and a request whose effect is unkno
   subscribe({ agents: [agent(), GRACE_ROW()] });
   let html = status(net.generation);
   assert.match(html, /data-retire-session="live"/);
-  assert.match(html, /this page can no longer retire with its session\. Paste a new Floor link into this tab’s address bar to act again\. Nothing was retired\./);
+  assert.match(html, /this page can no longer retire with its session\. Open Dudes to sign in again, then act again\. Nothing was retired\./);
   // The refused session can no longer act: every Retire waits until a new one.
   for (const id of [ADA, GRACE]) assert.match(stripView(id, net.generation), /aria-disabled="true"/, id);
   retire.confirmRetire(offer(GRACE), net.generation);
@@ -832,7 +847,7 @@ test('a 403 says what this page can do next, and a request whose effect is unkno
   noteTransport('close');
   html = status();
   assert.match(html, /data-retire-session="ended"/);
-  assert.match(html, /Your Floor session has ended or was revoked\. Paste a new link from dudes floor open into this tab’s address bar to act again\. Nothing was retired\./);
+  assert.match(html, /Your Floor session has ended or was revoked\. Open Dudes to sign in again in this browser to act again\. Nothing was retired\./);
 
   // After an unresolved reply, a 403 keeps the request, and Check status from a fresh session sends the same bytes.
   resetFloorStore();
@@ -848,7 +863,6 @@ test('a 403 says what this page can do next, and a request whose effect is unkno
   await retire.checkRetireStatus(unresolved);
   assert.equal(unresolved.calls.length, 3);
   assert.equal(unresolved.calls[2].init.body, unresolved.calls[0].init.body);
-  assert.equal(unresolved.calls[2].init.headers['X-Dudes-CSRF'], FRESH);
   assert.deepEqual(retire.getRetireState().outcome, { kind: 'retired' });
 });
 

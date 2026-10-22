@@ -52,7 +52,7 @@ use common::{Cli, Fixture, OpenRunner, Run, SharedHost, seams, start};
 /// the bytes — only that a gateway which has them answers, and one without them does not start.
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../duded/tests/fixtures/floor-release-v3"
+    "/../duded/tests/fixtures/floor-release-v5"
 );
 
 /// The repository root, for the two cross-language pins below.
@@ -257,7 +257,7 @@ fn a_caller_that_presents_no_operator_credential_is_refused() {
     // Same socket, same registrations; only the directory the credential is read from differs.
     let refused = Cli::new(&settings.socket(), fixture.empty.path())
         .env("RUST_LOG", "trace")
-        .args(["floor", "open", "--no-browser"])
+        .args(["floor", "open"])
         .run();
     assert_eq!(
         refused.code(),
@@ -375,14 +375,14 @@ fn launch_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// What the command prints besides the link.
-const PASTE: &str = "Paste this link into any browser within 60 seconds. It works once; run dudes \
-                     floor open for a new one.";
+const PASTE: &str = "Paste this link into any browser within 10 minutes. It works once; run dudes \
+                     open for a new one.";
 
 /// **The command prints the link on its own line, then where to paste it, and launches nothing.**
 ///
 /// A launched opener leaves a launch file in the runtime directory and, over SSH, a line on
 /// stderr saying why it did not run; neither appears, with or without an SSH session. The old
-/// `--no-browser` flag is accepted and prints the same.
+/// `--no-browser` flag did nothing and is now refused.
 #[test]
 fn the_command_prints_the_link_and_launches_nothing() {
     let fixture = Fixture::new();
@@ -400,18 +400,14 @@ fn the_command_prints_the_link_and_launches_nothing() {
 
     // The daemon admits four Floor sessions, so the runs below stay under that.
     let mut first: Option<Vec<String>> = None;
-    for (ssh, flag) in [(true, false), (false, false), (true, true)] {
+    for ssh in [true, false] {
         let mut cli = Cli::new(&settings.socket(), &settings.runtime_dir);
         if ssh {
             cli = cli.env("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 22");
         }
-        let mut args = vec!["floor", "open"];
-        if flag {
-            args.push("--no-browser");
-        }
-        let run = cli.args(args).run();
+        let run = cli.args(["floor", "open"]).run();
         assert_eq!(run.code(), exit::SUCCESS, "ssh={ssh}: {}", run.output());
-        assert_eq!(run.stderr, "", "ssh={ssh} flag={flag}");
+        assert_eq!(run.stderr, "", "ssh={ssh}");
         let lines: Vec<&str> = run.stdout.lines().collect();
         assert_eq!(lines.len(), 2, "{}", run.output());
         assert!(
@@ -425,6 +421,10 @@ fn the_command_prints_the_link_and_launches_nothing() {
         let shown = shape(&run.stdout);
         assert_eq!(*first.get_or_insert_with(|| shown.clone()), shown);
     }
+    let old = Cli::new(&settings.socket(), &settings.runtime_dir)
+        .args(["floor", "open", "--no-browser"])
+        .run();
+    assert_eq!(old.code(), exit::USAGE, "{}", old.output());
 }
 
 /// **`--json` needs no flag**: the contract type is what a script parses.
@@ -440,5 +440,8 @@ fn json_prints_the_contract_type() {
     let run = open(&settings, true);
     assert_eq!(run.code(), exit::SUCCESS, "{}", run.output());
     let issued: SessionIssueResult = run.json();
-    assert_eq!(issued.expires_in_s, 60);
+    assert_eq!(
+        issued.expires_in_s, 600,
+        "a link made to be printed lives ten minutes"
+    );
 }

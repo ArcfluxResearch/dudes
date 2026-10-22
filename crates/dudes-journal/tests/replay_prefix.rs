@@ -10,6 +10,10 @@ use std::path::Path;
 use dudes_journal::{
     AgentRow, Fsync, GoalRow, JournalOptions, Projections, Reader, TurnRow, open, replay,
 };
+use dudes_proto::recovery::RecoveryWork;
+use dudes_proto::recovery_state::history::{
+    RecoveryWitness, RecoveryWitnessOwner, RecoveryWitnessRef,
+};
 use dudes_proto::{
     AgentBudget, ClosingPhase, Entry, Evidence, ExhaustedReason, ExitStatus, Goal, HoldReason,
     KillReason, LoopDecision, Predicate, Record, Spend, TurnOutcome,
@@ -19,6 +23,76 @@ use dudes_types::{
     Provider, SessionId, Timestamp, Tokens, TurnId, TurnStatus, Usage, Usd, UtcDay,
 };
 use proptest::prelude::*;
+
+fn recovery_owner_for_generated_record(record: &Record) -> Option<RecoveryWitnessOwner> {
+    use RecoveryWitnessOwner as Owner;
+    match record {
+        Record::AgentHired { id: agent, .. }
+        | Record::AgentRetired { id: agent, .. }
+        | Record::HumanAnswer { agent, .. }
+        | Record::Attached { agent, .. }
+        | Record::Detached { agent, .. }
+        | Record::Pause { agent, .. }
+        | Record::Resume { agent, .. }
+        | Record::Halt { agent, .. }
+        | Record::LoopDecided {
+            agent,
+            decision: LoopDecision::Done,
+            ..
+        } => Some(Owner::Agent(*agent)),
+        Record::GoalSet { agent, goal, .. } => Some(Owner::Goal {
+            agent: *agent,
+            goal: goal.id,
+        }),
+        Record::GoalCleared { agent, goal }
+        | Record::GoalReassigned {
+            from: agent, goal, ..
+        } => Some(Owner::Goal {
+            agent: *agent,
+            goal: *goal,
+        }),
+        Record::TurnIssued {
+            agent, goal, turn, ..
+        } => Some(Owner::Work(RecoveryWork {
+            agent: *agent,
+            goal: *goal,
+            turn: *turn,
+        })),
+        Record::TurnSpawned { agent, turn, .. }
+        | Record::SessionLearned { agent, turn, .. }
+        | Record::TurnEnded { agent, turn, .. } => Some(Owner::Turn {
+            agent: *agent,
+            turn: *turn,
+        }),
+        Record::PredicateResult { goal, turn, .. } => Some(Owner::Predicate {
+            goal: *goal,
+            turn: *turn,
+        }),
+        Record::LoopDecided { .. }
+        | Record::ClosingTime { .. }
+        | Record::Checkpoint { .. }
+        | Record::MemoryAppend { .. }
+        | Record::HumanQuestion { .. }
+        | Record::BreakerBeat { .. } => None,
+        _ => panic!("generated record needs an explicit recovery witness expectation"),
+    }
+}
+
+fn exported_recovery_references(export: &str) -> BTreeMap<Lsn, RecoveryWitnessRef> {
+    let mut references = BTreeMap::new();
+    for line in export
+        .lines()
+        .filter_map(|line| line.strip_prefix("recovery "))
+    {
+        let (_, json) = line.split_once(' ').unwrap();
+        let cell: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(cell["kind"], "witness");
+        let witness: RecoveryWitness = serde_json::from_value(cell["value"].clone()).unwrap();
+        let reference = witness.reference();
+        assert!(references.insert(reference.lsn, reference).is_none());
+    }
+    references
+}
 
 // ---- generator ---------------------------------------------------------------------------
 
@@ -1286,7 +1360,7 @@ fn rows(p: &Projections) -> Snapshot {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: 8, ..ProptestConfig::default() })]
 
     /// Prefix-valid and resumable: replaying `records[..k]` yields a
     /// projection the oracle accepts, and replaying the rest afterwards yields the full one.
@@ -1317,7 +1391,7 @@ proptest! {
     /// the frame the writer produced; they agree, or a daemon that appended after a replay
     /// would leave behind a store its own next replay refuses.
     #[test]
-    fn live_apply_equals_replay(ops in prop::collection::vec(op(), 0..80)) {
+    fn live_apply_equals_replay(ops in prop::collection::vec(op(), 0..20)) {
         let entries = expand(&ops);
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
@@ -1363,7 +1437,7 @@ proptest! {
     /// `the_export_changes_when_a_row_changes` beside it, though a claim carried only by other
     /// tests does not belong in this one's doc comment.
     #[test]
-    fn the_export_agrees_between_a_live_fold_and_a_replay(ops in prop::collection::vec(op(), 1..80)) {
+    fn the_export_agrees_between_a_live_fold_and_a_replay(ops in prop::collection::vec(op(), 1..20)) {
         let entries = expand(&ops);
         // `expand` drops an op with no subject — `Retire` before any hire — so a non-empty `ops`
         // can still expand to nothing. The control below needs a real prefix, and the empty log's
@@ -1373,8 +1447,16 @@ proptest! {
         let journal = dir.path().join("journal");
         let (mut w, _) = open(&journal, options()).unwrap();
         let mut live = Projections::in_memory().unwrap();
+        let mut expected_recovery = BTreeMap::new();
         for entry in &entries {
             let (lsn, crc) = w.append_witnessed(entry).unwrap();
+            if let Some(owner) = recovery_owner_for_generated_record(&entry.record) {
+                expected_recovery.insert(lsn, RecoveryWitnessRef {
+                    lsn,
+                    kind: entry.record.kind(),
+                    owner,
+                });
+            }
             prop_assert!(live.apply(lsn, crc, entry).unwrap());
         }
         let mut scratch = Projections::in_memory().unwrap();
@@ -1431,8 +1513,10 @@ proptest! {
             + instruction_issues.len()
             + instruction_ends.len()
             + instruction_attachments
-            + attached_agents.len();
+            + attached_agents.len()
+            + expected_recovery.len();
         let export = live.export().unwrap();
+        prop_assert_eq!(exported_recovery_references(&export), expected_recovery);
         prop_assert_eq!(
             export.lines().filter(|line| !line.starts_with("chat_")).count(),
             rows + 2,

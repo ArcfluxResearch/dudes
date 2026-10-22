@@ -1,7 +1,7 @@
 //! What `dudes_policy::decide()` returns and the trace of gates that produced it. Journaled as
 //! `LoopDecided`, which is what `dudes why` reads.
 
-use dudes_types::{TurnId, WorktreeId};
+use dudes_types::{Mode, Provenance, TurnId, Usage, WorktreeId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -72,6 +72,42 @@ impl std::fmt::Display for AutomaticHold {
             Self::Unknown => f.write_str("held for a cause this version does not know; resume"),
         }
     }
+}
+
+/// Whether one recorded end contributes to the existing repeated-fast-failure hold.
+#[must_use]
+pub fn is_fast_failure(record: &crate::Record) -> bool {
+    let crate::Record::TurnEnded {
+        mode,
+        provenance,
+        exit,
+        elapsed_ms,
+        outcome,
+        usage,
+        model_usage,
+        ..
+    } = record
+    else {
+        return false;
+    };
+    *mode == Mode::Managed
+        && *provenance == Provenance::Observed
+        && exit.code.is_some_and(|code| code != 0)
+        && elapsed_ms.is_some_and(|elapsed| elapsed <= 5_000)
+        && !matches!(
+            outcome,
+            Some(
+                crate::TurnOutcome::Killed { .. }
+                    | crate::TurnOutcome::NotLaunched { .. }
+                    | crate::TurnOutcome::LaunchRefused { .. }
+            )
+        )
+        && usage.as_ref().is_none_or(no_positive_usage)
+        && model_usage.values().all(no_positive_usage)
+}
+
+fn no_positive_usage(usage: &Usage) -> bool {
+    usage.total_tokens().count() == 0 && usage.usd.is_none_or(|usd| usd.micros() == 0)
 }
 
 /// The loop's verdict for one agent at one moment.

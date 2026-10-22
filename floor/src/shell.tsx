@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
+import { createPortal } from 'react-dom';
+import { currentPage, isPageView, openPage, subscribeToPage } from './navigation.ts';
 
-import { firstLinkProblem, pastedLinkBuildMismatch, pastedLinkRefused, subscribeToPastedLink } from './connect';
+import { DeviceNotices } from './renderer/devices/DeviceNotices';
+import { getDevicesState, loadDevices, subscribeToDevices } from './renderer/devices/devices';
+import { signOutHere } from './renderer/devices/signOut';
+import {
+  firstLinkProblem, pastedLinkBuildMismatch, pastedLinkRefused, pastedLinkWaitsForReload, subscribeToPastedLink,
+} from './connect';
 import { AgentDrawer, Receipts } from './renderer/AgentDrawer';
 import { CONTROL_VIEWS, Control, ControlNav, FocusRoster, toggledView, viewButtonId } from './renderer/Control';
 import type { ControlView } from './renderer/Control';
@@ -9,18 +16,19 @@ import { CrewList, drawerHandBack } from './renderer/CrewList';
 import { CrewStats } from './renderer/CrewTotals.tsx';
 import { PauseAllControl } from './renderer/control/PauseAllControl';
 import { DoneNotices } from './renderer/DoneNotices';
+import { NeedsStrip } from './renderer/NeedsStrip';
 import { OfficeCanvas } from './renderer/OfficeCanvas';
 import { getFloorState, selectOutputAgent, subscribeToFloor } from './renderer/floor/store';
 import { refreshFloorSnapshot } from './renderer/floor/stream';
 import { HireWizard } from './renderer/onboarding/HireWizard';
 import { HireEntry, hireSwitchOn } from './renderer/onboarding/HireEntry';
 import { FirstRunGuide } from './renderer/setup/FirstRunGuide';
-import { shouldOpenFirstRunGuide } from './renderer/setup/guide';
+import { FirstTask } from './renderer/setup/FirstTask.tsx';
 import {
-  agentToReveal, getHireState, markRevealed, prepareArchiveHire, subscribeToHire,
+  agentToReveal, getHireState, leaveHire, markRevealed, prepareArchiveHire, prepareHire, subscribeToHire,
 } from './renderer/onboarding/hire';
 import type { RetiredAgentRow } from './renderer/archive';
-import { AGENT_DETAIL_HEADING_ID, closesDrawer, focusAnswer, handFocusOnLeave, restoreFocusAfterDialog } from './renderer/focus';
+import { AGENT_DETAIL_HEADING_ID, closesDrawer, closesPanel, focusAnswer, handFocusOnLeave, restoreFocusAfterDialog } from './renderer/focus';
 import { RetireDialog } from './renderer/retire/RetirePanel';
 import { selectedAgentRow } from './renderer/scene/selection';
 import { TerminalPanel } from './renderer/terminal/TerminalPanel';
@@ -29,51 +37,73 @@ import { ClosingTimeBanner } from './renderer/ClosingTimeBanner';
 import { TicketBanner } from './renderer/ticket/TicketBanner';
 import { useDesktopNotifications } from './renderer/useDesktopNotifications';
 import { requestCardSelection } from './renderer/BoardPanel';
-import { SignInExpired } from './renderer/SignInExpired';
+import { OpenCommand, SignInExpired } from './renderer/SignInExpired';
 import { StreamNotice } from './renderer/StreamNotice';
 import './failure.css';
 import {
   DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH,
   focusAgentId, isFocusShortcut, keyboardSidebarWidth, pointerSidebarWidth,
-  readGuideClosed, readViewPreferences, rememberGuideClosed, toggleTheme, writeViewPreferences,
+  readViewPreferences, rememberGuideClosed, toggleTheme, writeViewPreferences,
 } from './renderer/view';
+
+function reloadPage(): void {
+  window.location.reload();
+}
 
 /**
  * Said when the link this page was opened with, or one pasted into it, was
  * refused. Without it the page looks as it did, which reads as the link having
- * worked. It names no part of the link: the secret stays out of the page. The
- * daemon does not say why it refused a first link, so the page names both
- * causes, a link that was already used or expired and a full set of four Floor
- * sessions, with a way out of each. A closed tab frees its place only once its
- * sign-in lapses after 30 minutes without use; stopping and starting the daemon
- * ends every sign-in at once. A page opened with no link, as a
- * copied address is because a browser
- * scrubs the secret as soon as it signs in, is told its sign-in has expired.
+ * worked. It names no part of the link: the secret stays out of the page. A
+ * link is refused only when it was already used or has expired, since a full
+ * set of four Floor sessions makes room by ending the least recently used one.
+ * A page opened with no link, as a copied address is because a browser scrubs
+ * the secret as soon as it signs in, is told it is signed out.
  */
 export function PastedLinkNotice() {
   const first = useSyncExternalStore(subscribeToPastedLink, firstLinkProblem, firstLinkProblem);
   const refused = useSyncExternalStore(subscribeToPastedLink, pastedLinkRefused, pastedLinkRefused);
   const buildMismatch = useSyncExternalStore(subscribeToPastedLink, pastedLinkBuildMismatch, pastedLinkBuildMismatch);
+  const waiting = useSyncExternalStore(subscribeToPastedLink, pastedLinkWaitsForReload, pastedLinkWaitsForReload);
+  if (waiting) {
+    return (
+      <p className="link-refused" role="alert">
+        A new sign-in link was opened in this tab. Reload this page to use the new link. A reload drops anything
+        you have typed but not sent. <button type="button" className="notice-action"
+          onClick={reloadPage}>Reload</button>
+      </p>
+    );
+  }
   if (first === 'refused') {
     return (
       <p className="link-refused" role="alert">
-        This sign-in link was refused, either because it was already used or has expired, or because four Floor tabs are
-        already signed in. For a used or expired link, run <code>dudes floor open</code> for a new one and paste it here
-        within 60 seconds. For a full set of tabs, close the ones you no longer use and wait 30 minutes, or run{' '}
-        <code>dudes stop</code> then <code>dudes start</code> to sign every tab out (this ends running turns), and then{' '}
-        <code>dudes floor open</code>.
+        This sign-in link did not work. A link works once, for 60 seconds. To get a new one, run <OpenCommand /> in a terminal.
       </p>
     );
   }
   if (first === 'missing') {
     return (
       <p className="link-refused" role="alert">
-        The sign-in link in the address of this page is not one the daemon can read. Run{' '}
-        <code>dudes floor open</code> and paste the new link here within 60 seconds.
+        The sign-in link in the address of this page is not a Dudes sign-in link. To sign in, run <OpenCommand /> in a terminal.
       </p>
     );
   }
   if (first === 'expired') return <SignInExpired />;
+  if (first === 'no_key') return <SignInExpired why="This browser no longer has its sign-in key." />;
+  if (first === 'reload') {
+    return (
+      <p className="link-refused" role="alert">
+        Reload this page to finish signing in.
+      </p>
+    );
+  }
+  if (first === 'unsupported') {
+    return (
+      <p className="link-refused" role="alert">
+        This browser cannot keep a sign-in key, so it was not signed in. Some private windows block the storage
+        it needs. Try a normal window.
+      </p>
+    );
+  }
   if (!refused) return null;
   if (buildMismatch) {
     return (
@@ -87,23 +117,75 @@ export function PastedLinkNotice() {
   return (
     <p className="link-refused" role="alert">
       The Floor link pasted into this tab was refused, or the daemon could not be reached to take it. This page is
-      as it was and keeps what it holds. For a new link, run dudes floor open and paste it into this
-      tab’s address bar.
+      as it was and keeps what it holds. For a new sign-in, run <OpenCommand /> in a terminal.
     </p>
   );
 }
 
+/**
+ * What a page with no session shows: the reason and its remedy, and nothing
+ * that reads as a live office. The crew, hire, checks and board panels would
+ * all be empty for want of a session, which looks like a daemon that is down.
+ */
+function SignedOutShell() {
+  return (
+    <main className="shell shell-signed-out" aria-labelledby="floor-title" data-theme={readViewPreferences().theme}>
+      <header className="top-bar">
+        <h1 id="floor-title" className="wordmark">dudes</h1>
+        <PastedLinkNotice />
+      </header>
+      <p className="signed-out-line" role="status">This tab is not signed in, so the Floor shows no agents yet.</p>
+    </main>
+  );
+}
+
 export function WebFloorShell() {
+  const firstLink = useSyncExternalStore(subscribeToPastedLink, firstLinkProblem, firstLinkProblem);
+  return firstLink === null ? <SignedInShell /> : <SignedOutShell />;
+}
+
+function reserveNoticeRoom(shell: HTMLElement | null, stack: HTMLElement | null, office: HTMLElement | null,
+  setHost: (host: HTMLElement | null) => void) {
+  if (!shell || !stack || typeof ResizeObserver === 'undefined') return undefined;
+  const update = () => {
+    const showing = [...stack.children].some((child) => child.getBoundingClientRect().height > 0);
+    shell.toggleAttribute('data-notices', showing);
+    shell.style.setProperty('--notice-stack-height', showing ? `${Math.ceil(stack.getBoundingClientRect().height)}px` : '0px');
+  };
+  const findHost = () => {
+    const dialog = shell.querySelector<HTMLDialogElement>('.hire-dialog:modal, .retire-dialog:modal');
+    setHost(dialog ?? (office !== null && office.getClientRects().length > 0 ? office : null));
+  };
+  const observer = new ResizeObserver(() => { update(); findHost(); });
+  observer.observe(stack);
+  if (office !== null) observer.observe(office);
+  const dialogs = new MutationObserver(findHost);
+  dialogs.observe(shell, { childList: true, subtree: true, attributes: true, attributeFilter: ['open'] });
+  update();
+  findHost();
+  return () => { observer.disconnect(); dialogs.disconnect(); };
+}
+
+function SignedInShell() {
+  const { signOutFailed } = useSyncExternalStore(subscribeToDevices, getDevicesState, getDevicesState);
+  const signOut = () => { void signOutHere(); };
   const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
+  const listIsCurrent = floor.phase === 'live' && floor.snapshotEpoch === floor.epoch;
+  useEffect(() => {
+    if (listIsCurrent) void loadDevices();
+  }, [listIsCurrent, floor.epoch]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hiring, setHiring] = useState(false);
-  const [guide, setGuide] = useState<'auto' | 'open' | 'closed'>(() => readGuideClosed() ? 'closed' : 'auto');
+  const [guide, setGuide] = useState<'open' | 'closed'>('closed');
   const [archiveHireKept, setArchiveHireKept] = useState(false);
   const [officeBar, setOfficeBar] = useState<HTMLDivElement | null>(null);
   const hire = useSyncExternalStore(subscribeToHire, getHireState, getHireState);
-  const firstLink = useSyncExternalStore(subscribeToPastedLink, firstLinkProblem, firstLinkProblem);
-  const [view, setView] = useState<ControlView | null>(null);
+  const page = useSyncExternalStore(subscribeToPage, currentPage, () => null);
+  const [panel, setPanel] = useState<'overview' | 'board' | null>(null);
+  const view = page ?? panel;
   const [answerAsked, setAnswerAsked] = useState<{ readonly id: string } | null>(null);
+  const [recoveryAsked, setRecoveryAsked] = useState<{ readonly id: string } | null>(null);
+  const [recoveryReceiptAsked, setRecoveryReceiptAsked] = useState<string | null>(null);
   const [crewOpen, setCrewOpen] = useState(true);
   const [focused, setFocused] = useState(false);
   const [preferences, setPreferences] = useState(readViewPreferences);
@@ -113,6 +195,12 @@ export function WebFloorShell() {
   const hireDialog = useRef<HTMLDialogElement | null>(null);
   const hireOpener = useRef<HTMLElement | null>(null);
   const backdropPress = useRef<number | null>(null);
+  const shellRef = useRef<HTMLElement | null>(null);
+  const noticeStack = useRef<HTMLDivElement | null>(null);
+  const [officeNotices, setOfficeNotices] = useState<HTMLDivElement | null>(null);
+  const [noticeHost, setNoticeHost] = useState<HTMLElement | null>(null);
+  const modalNotices = noticeHost?.tagName === 'DIALOG';
+  useEffect(() => reserveNoticeRoom(shellRef.current, noticeStack.current, officeNotices, setNoticeHost), [noticeHost, officeNotices]);
   const selectedRow = selectedAgentRow(floor.agents, selectedId, floor.phase, floor.stale);
   const focusedId = focused ? focusAgentId(floor, selectedId) : null;
   const displayRow = focused ? selectedAgentRow(floor.agents, focusedId, floor.phase, floor.stale) : selectedRow;
@@ -128,15 +216,22 @@ export function WebFloorShell() {
     setGuide('closed');
     if (hiring) closeHire(true);
     if (target.kind === 'ticket') openCard(target.id);
-    else { setFocused(false); setView(null); setCrewOpen(true); openQuestion(target.id); }
+    else { setFocused(false); closeView(); setCrewOpen(true); openQuestion(target.id); }
   });
 
   useEffect(() => {
+    if (page === null) return;
+    setFocused(false);
+    setPanel(null);
+    if (CONTROL_VIEWS.some((entry) => entry.view === page && entry.refresh)) refreshFloorSnapshot();
+  }, [page]);
+
+  // A new agent shows in Crew and the office but is not opened: its drawer would fill a phone screen and push the bar away.
+  useEffect(() => {
     if (reveal === null) return;
     markRevealed(reveal);
-    selectAgent(reveal);
     if (hire.outcome?.kind === 'complete') {
-      closeHire(true);
+      closeHire();
       setGuide('closed');
       setFocused(false);
       setArchiveHireKept(false);
@@ -146,10 +241,6 @@ export function WebFloorShell() {
   useEffect(() => {
     writeViewPreferences(preferences);
   }, [preferences]);
-
-  useEffect(() => {
-    if (guide === 'auto' && shouldOpenFirstRunGuide(floor, false)) setGuide('open');
-  }, [guide, floor]);
 
   useEffect(() => {
     const preference = window.matchMedia('(prefers-color-scheme: dark)');
@@ -170,6 +261,14 @@ export function WebFloorShell() {
     setAnswerAsked(null);
     focusAnswer(document.getElementById('selected-agent-detail'));
   }, [answerAsked, currentSelectedId]);
+
+  useEffect(() => {
+    if (recoveryReceiptAsked === null || drawerOpen) return;
+    const receipt = document.getElementById(`recovery-receipt-${recoveryReceiptAsked}`);
+    receipt?.focus();
+    receipt?.scrollIntoView({ block: 'start' });
+    setRecoveryReceiptAsked(null);
+  }, [recoveryReceiptAsked, drawerOpen]);
 
   useEffect(() => {
     if (focused && selectedId === null && focusedId !== null) {
@@ -194,6 +293,7 @@ export function WebFloorShell() {
 
   function selectAgent(id: string): boolean {
     if (!selectable || !floor.agents.some((row) => row.id === id)) return false;
+    if (page !== null) closeView();
     selectOutputAgent(id);
     setSelectedId(id);
     return true;
@@ -203,21 +303,43 @@ export function WebFloorShell() {
     if (selectAgent(id)) setAnswerAsked({ id });
   }
 
+  function reviewRecovery(id: string): void {
+    if (!selectAgent(id)) return;
+    closeView();
+    setRecoveryAsked({ id });
+  }
+
+  function readRecoveryReceipt(id: string): void {
+    clearSelection();
+    closeView();
+    setRecoveryReceiptAsked(id);
+  }
+
   function openView(next: ControlView): void {
     setFocused(false);
-    setView(next);
-    if (CONTROL_VIEWS.some((entry) => entry.view === next && entry.refresh)) refreshFloorSnapshot();
+    if (isPageView(next)) {
+      setPanel(null);
+      openPage(next);
+    } else {
+      openPage(null);
+      setPanel(next);
+    }
+  }
+
+  function closeView(): void {
+    setPanel(null);
+    openPage(null);
   }
 
   function toggleView(next: ControlView): void {
     const target = toggledView(view, next, focused);
-    if (target === null) setView(null);
+    if (target === null) closeView();
     else openView(target);
   }
 
   function toggleCrew(): void {
-    if (view === 'board') {
-      setView(null);
+    if (page !== null || view === 'board') {
+      closeView();
       setFocused(false);
       setCrewOpen(true);
     } else if (focused) {
@@ -245,11 +367,13 @@ export function WebFloorShell() {
   function openHire(opener: HTMLElement | null): void {
     backdropPress.current = null;
     hireOpener.current = opener;
+    prepareHire(floor);
     setHiring(true);
   }
 
   function closeHire(revealed = false): void {
     backdropPress.current = null;
+    leaveHire();
     hireDialog.current?.close();
     setHiring(false);
     const ticketDialog = document.getElementById('selected-card-detail');
@@ -265,7 +389,7 @@ export function WebFloorShell() {
     if (!hiring) return;
     const dialog = hireDialog.current;
     dialog?.showModal();
-    dialog?.querySelector<HTMLElement>('#hire-title')?.focus();
+    (dialog?.querySelector<HTMLElement>('#hire-name') ?? dialog?.querySelector<HTMLElement>('#hire-title'))?.focus();
   }, [hiring]);
 
   function clearSelection(): void {
@@ -275,6 +399,7 @@ export function WebFloorShell() {
   }
 
   function toggleFocus(): void {
+    if (page !== null) closeView();
     if (!focused) {
       setHiring(false);
       const id = focusAgentId(floor, selectedId);
@@ -327,54 +452,82 @@ export function WebFloorShell() {
     onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={endResize}
     onPointerCancel={endResize} onKeyDown={keyResize} onDoubleClick={resetSidebar} />;
   const drawer = <AgentDrawer floor={floor} row={displayRow} selectedId={currentSelectedId} onClose={clearSelection}
-    leaveFocusTo={leaveDrawerTo} />;
+    leaveFocusTo={leaveDrawerTo} recoveryRequested={recoveryAsked} onRecoveryShown={() => setRecoveryAsked(null)}
+    onReadRecoveryReceipt={readRecoveryReceipt} />;
 
-  return (
-    <main className="shell" aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
-      data-theme={preferences.theme} style={{ '--side-width': `${preferences.sidebarWidth}px` } as CSSProperties}>
-      <header className="top-bar">
-        <h1 id="floor-title" className="wordmark">dudes</h1>
-        <CrewStats agents={floor.agents} cards={floor.cards} />
-        <ControlNav floor={floor} view={focused ? null : view} onToggle={toggleView} />
-        <div className="top-bar-actions" role="group" aria-label="Floor actions">
-          <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={crewOpen && !focused && view !== 'board'}
-            aria-controls={crewOpen && !focused && view !== 'board' ? 'crew-list' : undefined}
-            onClick={toggleCrew}>Crew</button>
-          <button type="button" className="focus-toggle" id="focus-toggle" aria-pressed={focused}
-            aria-keyshortcuts="Alt+Shift+F" onClick={toggleFocus}>
-            {focused ? 'Leave focus' : 'Focus agent'}
-          </button>
-          {hireSwitchOn(floor) ? <button type="button" className="hire-open" id="hire-open" aria-expanded={hiring}
-            aria-controls={hiring ? 'hire-wizard' : undefined}
-            onClick={(event) => openHire(event.currentTarget)}>Hire an agent</button> : null}
-          <PauseAllControl floor={floor} />
-          <button type="button" className="theme-toggle" aria-pressed={effectiveTheme === 'dark'}
-            onClick={() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))}>
-            Use {effectiveTheme === 'dark' ? 'light' : 'dark'} theme
-          </button>
-        </div>
+  const notices = (
+    <div className="notice-area">
+      <div className="notice-stack" ref={noticeStack} id={modalNotices ? 'modal-floor-notices' : undefined}
+        tabIndex={modalNotices ? -1 : undefined}>
         <PastedLinkNotice />
+        {signOutFailed ? <p className="link-refused" role="alert">Could not sign out, so this browser is still signed in. Try again.</p> : null}
         <JournalStoppedBanner stopped={floor.journalStopped} />
         <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
-        <TicketBanner floor={floor} onOpen={() => openView('board')} />
-        {firstLink === null ? <StreamNotice floor={floor} /> : null}
-        <div className="office-bar" ref={setOfficeBar} />
-      </header>
-      <div className="floor-stage"
+        {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
+        <StreamNotice floor={floor} />
+        <DeviceNotices />
+        <DoneNotices notices={floor.doneNotices} leaveFocusTo={modalNotices ? 'modal-floor-notices' : home} />
+      </div>
+    </div>
+  );
+
+  return (
+    <main className="shell" ref={shellRef} aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
+      data-page={page ?? undefined}
+      onKeyDown={(event) => {
+        if (page !== null && closesPanel(event)) { event.stopPropagation(); closeView(); }
+      }}
+      data-theme={preferences.theme} data-scheme={effectiveTheme} style={{ '--side-width': `${preferences.sidebarWidth}px` } as CSSProperties}>
+      <div className="top-region">
+        <header className="top-bar">
+          <h1 id="floor-title" className="wordmark">dudes</h1>
+          <CrewStats agents={floor.agents} cards={floor.cards} statuses={focused} />
+          <ControlNav floor={floor} view={focused ? null : view} onToggle={toggleView} />
+          <div className="top-bar-actions" role="group" aria-label="Floor actions">
+            {page === null ? null : <button type="button" id="office-open" onClick={closeView}>Office</button>}
+            <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={page === null && crewOpen && !focused && view !== 'board'}
+              aria-controls={page === null && crewOpen && !focused && view !== 'board' ? 'crew-list' : undefined}
+              onClick={toggleCrew}>Crew</button>
+            <button type="button" className="focus-toggle" id="focus-toggle" aria-pressed={focused}
+              aria-keyshortcuts="Alt+Shift+F" onClick={toggleFocus}>
+              {focused ? 'Leave focus' : 'Focus agent'}
+            </button>
+            {hireSwitchOn(floor) ? <button type="button" className="hire-open" id="hire-open" aria-expanded={hiring}
+              aria-controls={hiring ? 'hire-wizard' : undefined}
+              onClick={(event) => openHire(event.currentTarget)}>Hire an agent</button> : null}
+            <PauseAllControl floor={floor} />
+            <button type="button" className="theme-toggle" aria-pressed={effectiveTheme === 'dark'}
+              onClick={() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))}>
+              Use {effectiveTheme === 'dark' ? 'light' : 'dark'} theme
+            </button>
+            <button type="button" className="sign-out" onClick={signOut}>Sign out</button>
+          </div>
+          <div className="office-bar" ref={setOfficeBar} />
+        </header>
+        {noticeHost === null ? notices : createPortal(notices, noticeHost)}
+      </div>
+      <div className="floor-stage" data-page={page ?? undefined}
         onKeyDown={(event) => { if (closesDrawer(event, drawerOpen)) { event.stopPropagation(); clearSelection(); } }}>
         {crewOpen && !focused ? <CrewList agents={floor.agents} cards={floor.cards} selectedId={currentSelectedId}
           selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent}
           onOpenCard={openCard}
-          addAgent={<HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
+          addAgent={floor.agents.length === 0 && hireSwitchOn(floor) ? null
+            : <HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
         {view === null || focused ? null : <Control key={view} floor={floor} view={view} selectedId={currentSelectedId}
-          onClose={() => setView(null)} onView={openView} onOpenQuestion={openQuestion} onOpenTicket={openCard}
-          onHire={openHire} onHireAgain={hireAgain}
+          onClose={closeView} onView={openView} onOpenQuestion={openQuestion} onOpenTicket={openCard}
+          onReviewRecovery={reviewRecovery} onHire={openHire} onHireAgain={hireAgain}
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className="office-slot">
-          <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
-            onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} />
+          <div className="office-area">
+            {page === null ? <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
+              onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} /> : null}
+            <div className="office-notices" ref={setOfficeNotices} />
+            <FirstTask floor={floor} onHire={openHire} />
+          </div>
+          {focused ? null : <NeedsStrip agents={floor.agents} cards={floor.cards} selectedId={currentSelectedId}
+            selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
+            onOpenTicket={openCard} />}
         </div>
-        <DoneNotices notices={floor.doneNotices} leaveFocusTo={home} />
         <div className="stage-center">
           <TerminalPanel floor={floor} theme={effectiveTheme} />
         </div>

@@ -98,13 +98,10 @@ test('the top bar names the floor and counts the crew by status', () => {
   const stats = bar.match(/<ul class="crew-stats" aria-label="Crew by status">([\s\S]*?)<\/ul>/)[1];
   assert.deepEqual([...stats.matchAll(/<li([^>]*)>([^<]*)<\/li>/g)].map(([, attrs, words]) => [attrs.trim(), words]), [
     ['class="crew-stats-total"', '3 crew'],
-    ['data-status="running"', '1 running'],
-    ['data-status="waiting"', '1 waiting'],
-    ['data-status="idle"', '1 idle'],
-  ]);
+  ], 'the strip under the office says each status, so the top bar keeps only the count');
   assert.doesNotMatch(bar, /hire-entry-off/, 'the top bar still carries the Hire reason that Crew folds');
   const crew = html.match(/<section class="crew-list"[\s\S]*?<\/section>/)?.[0] ?? '';
-  assert.match(crew, /<details class="hire-off"><summary>Hire is unavailable<\/summary><p class="hire-entry-off">Hire needs a workspace/);
+  assert.match(crew, /<details class="hire-off"><summary>Hire is unavailable<\/summary><p class="hire-entry-off">Hire needs a project/);
   const actions = bar.match(/<div class="top-bar-actions" role="group" aria-label="Floor actions">[\s\S]*<\/div>/)[0];
   assert.match(actions, /<button type="button" class="crew-toggle" id="crew-toggle" aria-pressed="true" aria-controls="crew-list">Crew<\/button>/);
   assert.match(actions, /id="focus-toggle" aria-pressed="false" aria-keyshortcuts="Alt\+Shift\+F">Focus agent<\/button>/);
@@ -228,30 +225,24 @@ const onTerminalStage = (target, { focus = false, expanded = false } = {}) => (s
     || (expanded && part === ".floor-stage:has(.terminal-panel[data-terminal-expanded='true'])"));
 };
 
-test('while a terminal is open the Done notices keep a row of fixed height above it, at every width and in focus mode', async () => {
+test('notices overlay desktop panels and follow the office on phones without moving the office', async () => {
   const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
-  for (const width of [1440, 1024]) {
+  for (const width of [1440, 1024, 760]) {
     const rules = rulesAt(css, width);
+    const area = (property) => declared(rules, (selector) => selector === '.notice-area', property);
+    assert.equal(area('position'), 'absolute', `${width}: the notice area is in the page flow`);
+    assert.equal(area('top'), '100%', `${width}: the notice area is not anchored under the top bar`);
+    assert.equal(area('pointer-events'), 'none', `${width}: the empty area would take clicks from the office`);
+    if (width <= 800) {
+      assert.equal(declared(rules, (selector) => selector === '.office-notices > .notice-area', 'position'), 'static');
+      assert.equal(declared(rules, (selector) => selector === '.office-area', 'flex'), 'none');
+    }
+    const notice = (property) => declared(rules, (selector) => selector === '.notice-stack > *', property);
+    assert.equal(notice('pointer-events'), 'auto', `${width}: a notice cannot be pressed`);
+    assert.equal(notice('max-width'), 'min(36rem, calc(100vw - 2rem))', `${width}: a notice can grow past 36rem`);
     const stage = (property) => declared(rules, (selector) => selector === '.floor-stage:has(.terminal-panel)', property);
-    assert.equal(stage('grid-template-rows'), 'var(--notice-row) minmax(0, 1fr)', `${width}: the notices' row follows its content`);
-    assert.match(stage('--notice-row') ?? '', /^\d+(\.\d+)?rem$/, `${width}: the notices' row has no fixed height`);
-    for (const target of ['.crew-list', '.control-panel', '.office-slot', '.stage-side']) {
-      assert.equal(declared(rules, onTerminalStage(target), 'grid-row'), '2 / -1', `${width}: ${target} shares the notices' row`);
-    }
-    for (const focus of [false, true]) {
-      const of = (target, property) => declared(rules, onTerminalStage(target, { focus }), property);
-      const where = `${width}${focus ? ' in focus mode' : ''}`;
-      assert.equal(of('.done-notices', 'position'), 'relative', `${where}: the notices float over the terminal`);
-      assert.equal(of('.done-notices', 'height'), 'var(--notice-row)', `${where}: a notice changes the row's height`);
-      assert.equal(of('.done-notices', 'grid-row'), '1', where);
-      assert.equal(of('.stage-center', 'grid-row'), '2', `${where}: the terminal shares the notices' row`);
-      assert.equal(of('.done-notices', 'grid-column'), '1 / -1', `${where}: notices can overlap a docked panel`);
-      assert.equal(of('.done-notices', 'container'), 'done-row / inline-size', `${where}: the notices cannot tell a narrow column`);
-    }
+    assert.equal(stage('grid-template-rows'), undefined, `${width}: the stage keeps a row for notices`);
   }
-  const narrow = (property) => declared(rulesAt(css, 760), onTerminalStage('.done-notices'), property);
-  assert.equal(narrow('position'), 'relative', 'on a narrow screen the notices leave the page flow above the terminal');
-  assert.equal(narrow('height'), 'var(--notice-row)', 'on a narrow screen a notice moves the terminal down the page');
 });
 
 test('an expanded terminal takes the stage under the top bar and its banners, above every panel, in focus mode too', async () => {
@@ -266,7 +257,7 @@ test('an expanded terminal takes the stage under the top bar and its banners, ab
     assert.equal(layer(false), layers['layer-panels'], `${width}: the terminal beside the office left the panels' layer`);
     assert.ok(layer(true) > layers['layer-panels'], `${width}: the expanded terminal lies under the panels`);
     assert.ok(layer(true) < layers['layer-top-bar'], `${width}: the expanded terminal rises over the top bar`);
-    for (const focus of [false, true]) for (const target of ['.stage-center', '.done-notices']) {
+    for (const focus of [false, true]) for (const target of ['.stage-center']) {
       assert.equal(declared(rules, onTerminalStage(target, { focus, expanded: true }), 'grid-column'), '1 / -1',
         `${width}${focus ? ' in focus mode' : ''}: expanded, ${target} leaves part of the stage`);
     }
@@ -274,33 +265,12 @@ test('an expanded terminal takes the stage under the top bar and its banners, ab
   assert.doesNotMatch(controls, /position:\s*fixed/, 'the expanded terminal covers the top bar and its banners');
 });
 
-test('compact Done rows retain visible goal text beside the agent name and Dismiss', async () => {
+test('a Done notice keeps its goal text beside the agent name and Dismiss', async () => {
   const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
-  const blocks = [...css.matchAll(/@container done-row \(([^)]*)\) \{([\s\S]*?)\n\}/g)].map(([, query, body]) => ({ query, body }));
-  const bound = (pattern) => {
-    const block = blocks.find(({ query }) => pattern.test(query));
-    return { block, rem: Number.parseFloat(pattern.exec(block?.query ?? '')?.[1]) };
-  };
-  const row = bound(/^width >= ([\d.]+)rem$/);
-  assert.ok(row.block, 'the one-line row has no container query');
-  const goal = /\.done-notices \.done-notice-goal \{([^}]*)\}/.exec(row.block.body)?.[1] ?? '';
-  assert.match(goal, /text-overflow:\s*ellipsis/, 'long goals cover Dismiss');
-  assert.doesNotMatch(goal, /position:\s*absolute|clip-path:/, 'the goal is visually hidden');
-  assert.doesNotMatch(css, /@container done-row \(width < [^)]*\)[\s\S]*?right: 100%/, 'narrow notices still float over another panel');
-});
-
-test('Done notices get their own row above docked panels without a terminal, including focus mode', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
-  for (const width of [900, 1024, 1440]) {
-    const rules = rulesAt(css, width);
-    const stage = property => declared(rules, selector => selector === '.floor-stage', property);
-    const notices = property => declared(rules, selector => selector === '.floor-stage > .done-notices', property);
-    assert.equal(stage('grid-template-rows'), 'auto minmax(0, 1fr)');
-    assert.equal(notices('position'), 'relative');
-    assert.equal(notices('grid-row'), '1');
-    assert.equal(notices('grid-column'), '1 / -1');
-    assert.equal(declared(rules, selector => selector === '.floor-stage > *', 'grid-row'), '2 / -1');
-  }
+  const goal = declared(rulesAt(css, 1440), (selector) => selector === '.notice-stack .done-notice-goal', 'text-overflow');
+  assert.equal(goal, 'ellipsis', 'long goals cover Dismiss');
+  assert.equal(declared(rulesAt(css, 1440), (selector) => selector === '.notice-stack .done-notice-goal', 'clip-path'), undefined,
+    'the goal is visually hidden');
 });
 
 test('Board takes the working area at every width with one vertical scroll region', async () => {
@@ -330,11 +300,10 @@ test('Board steps the mounted office, crew, terminal and drawer aside at every w
     for (const target of ['.office-slot', '.crew-list', '.stage-center', '.stage-side']) {
       assert.equal(declared(rulesAt(css, width), candidate => candidate === `${stage} > ${target}`, 'display'), 'none');
     }
-    assert.equal(declared(rulesAt(css, width), candidate => candidate === `${stage} > .done-notices`, 'grid-row'), '1');
   }
 });
 
-test('Crew reveals its roster after Board enters focus mode', async () => {
+test('Crew reveals its roster from Board, a page or focus mode', async () => {
   const source = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
   const syntax = ts.createSourceFile('shell.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let callback;
@@ -345,11 +314,11 @@ test('Crew reveals its roster after Board enters focus mode', async () => {
   visit(syntax);
   assert.ok(callback);
   const code = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  for (const focused of [false, true]) {
-    const state = { view: 'board', focused, crewOpen: true };
-    const press = new Function('view', 'focused', 'crewOpen', 'setView', 'setFocused', 'setCrewOpen', `${code}\nreturn toggleCrew;`)(
-      state.view, state.focused, state.crewOpen,
-      (value) => { state.view = value; }, (value) => { state.focused = value; },
+  for (const [view, page, focused] of [['board', null, false], ['board', null, true], ['settings', 'settings', false]]) {
+    const state = { view, focused, crewOpen: true };
+    const press = new Function('view', 'page', 'focused', 'crewOpen', 'closeView', 'setFocused', 'setCrewOpen', `${code}\nreturn toggleCrew;`)(
+      state.view, page, state.focused, state.crewOpen,
+      () => { state.view = null; }, (value) => { state.focused = value; },
       (value) => { state.crewOpen = typeof value === 'function' ? value(state.crewOpen) : value; });
     press();
     assert.deepEqual(state, { view: null, focused: false, crewOpen: true });
@@ -366,18 +335,6 @@ test('Board reserves no hidden terminal row while the first-run guide is open', 
   ]);
   for (const width of [640, 1024, 1440]) {
     assert.equal(declared(rulesAt(css, width), selector => active.has(selector), 'grid-template-rows'), 'auto minmax(0, 1fr)');
-  }
-});
-
-test('Board uses compact Done notices and an empty region takes no working space', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
-  const stage = ".floor-stage:has(.control-panel[data-view='board'])";
-  for (const width of [640, 1024, 1440]) {
-    const rules = rulesAt(css, width);
-    assert.equal(declared(rules, selector => selector === stage, '--notice-row'), '2.75rem');
-    assert.equal(declared(rules, selector => selector === `${stage} > .done-notices`, 'height'), 'var(--notice-row)');
-    assert.equal(declared(rules, selector => selector === `${stage} > .done-notices`, 'container'), 'done-row / inline-size');
-    assert.equal(declared(rules, selector => selector === `${stage} > .done-notices:empty`, 'position'), 'absolute');
   }
 });
 
@@ -466,9 +423,9 @@ test('a Crew row says its workspace is not recorded only while it is selected', 
       return parts.every((part) => /^\.(crew-row|crew-workspace)\b/.test(part)) && conditions.every(([name, value]) =>
         (name === 'aria-pressed' && value === String(pressed)) || (name === 'data-recorded' && value === String(recorded)));
     }));
-  assert.equal(hidden(false, false), true, 'an unselected row still says Workspace not recorded');
-  assert.equal(hidden(true, false), false, 'the selected row hides Workspace not recorded');
-  assert.equal(hidden(false, true), false, 'a recorded workspace is hidden');
+  assert.equal(hidden(false, false), true, 'an unselected row still says Project not recorded');
+  assert.equal(hidden(true, false), false, 'the selected row hides Project not recorded');
+  assert.equal(hidden(false, true), true, 'a recorded workspace waits for the row to be selected');
   assert.equal(hidden(true, true), false, 'a recorded workspace is hidden on the selected row');
 });
 
@@ -483,16 +440,17 @@ test('closing the drawer hands focus to the Crew row only while Crew is open and
   assert.equal(handBack({ focused: true, viewOpen: true, crewOpen: false }), 'focus-toggle');
 });
 
-test('each Control view opens under its own heading, with a close button, and hands focus back to its button', () => {
+test('each Control view opens under its own heading and only office panels have a close button', () => {
   const floor = store.getFloorState();
   for (const [view, label] of [['overview', 'Overview'], ['board', 'Board'], ['log', 'Log'],
     ['setup', 'Setup'], ['settings', 'Settings']]) {
     const html = renderToStaticMarkup(createElement(Control, { floor, view, selectedId: null, onClose() {}, onView() {}, onOpenQuestion() {} }));
+    const page = ['log', 'setup', 'settings'].includes(view);
     assert.match(html, new RegExp(`^<section class="control-panel" id="control-panel" data-view="${view}" `
-      + `aria-labelledby="control-title" data-focus-on-leave="view-${view}"><header class="control-panel-head"><div class="control-heading-copy">`
+      + `aria-labelledby="control-title" ${page ? 'data-page="true" ' : ''}data-focus-on-leave="view-${view}"><header class="control-panel-head"><div class="control-heading-copy">`
       + `<h2 id="control-title" tabindex="-1">${label}</h2>`),
     view);
-    assert.match(html, new RegExp(`<button type="button" class="panel-close" aria-label="Close ${label}"`));
+    assert.equal(html.includes(`aria-label="Close ${label}"`), !page);
     assert.equal(html.includes('Give work a clear next step.'), view === 'board');
     assert.equal(html.includes('id="selected-card-detail"'), view === 'board', `${view} card detail`);
   }

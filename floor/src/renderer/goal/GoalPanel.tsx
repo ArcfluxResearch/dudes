@@ -58,7 +58,7 @@ function RenewList({ offer }: { readonly offer: RenewOffer }) {
   return (
     <>
       <p data-renew-spent={offer.spent}>{SPENT[offer.spent]}</p>
-      <p data-renew-turns={offer.hopCap}>{`A new goal gets this workspace’s allowance: ${offer.hopCap} ${offer.hopCap === '1' ? 'turn' : 'turns'}.`}</p>
+      <p data-renew-turns={offer.hopCap}>{`A new goal gets this project’s allowance: ${offer.hopCap} ${offer.hopCap === '1' ? 'turn' : 'turns'}.`}</p>
       <ul className="goal-carry">
         <li data-renew-usd={offer.usd ?? 'none'}>{offer.usd === null ? 'no dollar cap'
           : `a cap of ${formatUsdMicros(offer.usd)}`}</li>
@@ -320,11 +320,11 @@ function OutcomeBody({ outcome, attempt, goal, floor, session }: {
           {now === 'checking'
             ? 'The daemon refused this request before any effect. Checking whether this Floor session is still live…'
             : now === 'ended'
-              ? 'Your Floor session has ended or was revoked. Paste a new link from dudes floor open '
+              ? 'Your Floor session has ended or was revoked. Open Dudes to sign in again '
                 + (goal.uncertain
                   // Only a request whose effect is unknown is kept; a press after a settled one mints a new request.
-                  ? `into this tab’s address bar: this page keeps the request. ${next}`
-                  : 'into this tab’s address bar, then send the goal again.')
+                  ? `in this browser: this page keeps the request. ${next}`
+                  : 'in this browser, then send the goal again.')
               : now === 'renewed'
                 ? 'The daemon refused an earlier request before any effect, under a Floor session this page no '
                   + 'longer uses. This page has signed in again and can act now: '
@@ -332,7 +332,7 @@ function OutcomeBody({ outcome, attempt, goal, floor, session }: {
                     ? 'Check status asks again with the same request, which never applies twice.'
                     : 'send the goal again.')
                 : 'The daemon refused this request before any effect, and this page can no longer change goals '
-                  + `with its session. Paste a new Floor link into this tab’s address bar to act again. ${next}`}
+                  + `with its session. Open Dudes to sign in again, then act again. ${next}`}
         </p>
       );
     }

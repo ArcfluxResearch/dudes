@@ -7,14 +7,14 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { applyServerFrame, beginFloorEpoch, getFloorState, noteTransport, resetFloorStore } from '../src/renderer/floor/store.ts';
-import { guideSteps, shouldOpenFirstRunGuide } from '../src/renderer/setup/guide.ts';
+import { guideSteps } from '../src/renderer/setup/guide.ts';
 import { readGuideClosed, rememberGuideClosed } from '../src/renderer/view.ts';
 
 const ID = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 const SETTINGS = {
-  switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false, git: false, renew: false },
+  folder_picker: false, switches: { answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false, hire: false, git: false, renew: false, board: false, diff: false, project: false },
   budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '0', per_turn_tokens: '0' },
-  providers: ['claude'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 3 },
+  providers: ['claude'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 5 },
 };
 const WORKSPACE = { workspace_id: 'repo', label: '<Parser>', agent_usd_per_day_micros: '1000000',
   agent_tokens_per_day: null, goal_usd_micros: '1000000', goal_tokens: null };
@@ -33,7 +33,7 @@ function snapshot({ settings = SETTINGS, found = false, onboarding = null, agent
 }
 const status = (key, actionsSeen = false) =>
   guideSteps(getFloorState(), actionsSeen).find((step) => step.key === key)?.status;
-const done = (key) => status(key) === 'Done';
+const done = (key) => status(key) === 'Complete';
 const indexStatus = (html, label) => html.match(new RegExp(`>${label}<span>([^<]+)</span>`))?.[1];
 let server;
 let FirstRunGuideView;
@@ -51,16 +51,11 @@ beforeEach(() => resetFloorStore());
 const view = (step) => renderToStaticMarkup(createElement(FirstRunGuideView, { floor: getFloorState(), step,
   onStep() {}, onClose() {}, onHire() {} }));
 
-test('Welcome waits for a confirmed snapshot and opens only on an undismissed empty floor', () => {
+test('Welcome waits for a confirmed snapshot', () => {
   assert.equal(done('welcome'), false);
-  assert.equal(shouldOpenFirstRunGuide(getFloorState(), false), false);
   snapshot();
   assert.equal(done('welcome'), true);
-  assert.equal(shouldOpenFirstRunGuide(getFloorState(), false), true);
-  assert.equal(shouldOpenFirstRunGuide(getFloorState(), true), false);
   assert.match(view('welcome'), /Dudes supervises coding agents/);
-  snapshot({ agents: [{ id: ID }] });
-  assert.equal(shouldOpenFirstRunGuide(getFloorState(), false), false);
   noteTransport('close');
   assert.equal(done('welcome'), false);
 });
@@ -87,9 +82,9 @@ test('Engines is done only when Setup finds a hireable program and offers instal
 test('Workspaces changes from not done to done on the enrollment resync without a page reload', () => {
   const epoch = snapshot();
   assert.equal(done('workspaces'), false);
-  assert.match(view('workspaces'), /No enrolled workspaces/);
-  assert.match(view('workspaces'), /dudes workspace add &lt;path&gt;/);
-  assert.match(view('workspaces'), />Copy<\/button>/);
+  assert.match(view('workspaces'), /No projects yet/);
+  assert.match(view('workspaces'), /Adding a project from this page is off/);
+  assert.doesNotMatch(view('workspaces'), /dudes project add/);
   applyServerFrame('{"type":"floor.resync"}', epoch);
   assert.equal(done('workspaces'), false);
   snapshot({ settings: { ...SETTINGS, workspaces: [WORKSPACE] } });
@@ -104,13 +99,13 @@ test('Floor actions reads the real switches, the Hire switch and the Hire offer'
   snapshot();
   const html = view('actions');
   assert.match(html, /<dt>Hire switch<\/dt><dd>Off<\/dd>/);
-  assert.match(html, /<p>Hire is off\. Turn it on with dudes config set floor\.hire on, then restart the daemon\.<\/p>/);
+  assert.match(html, /<p>Hire is off\. Turn on Hire agents under Floor switches in Settings\.<\/p>/);
   assert.match(html, /<code>dudes config set floor.hire on<\/code>/);
   assert.match(html, /dudes config set floor.control on/);
   assert.match(html, /dudes config set floor.terminal on/);
   assert.doesNotMatch(html, /budget\.|positive ceilings/, 'Hire no longer needs a budget');
   snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, hire: true } } });
-  assert.match(view('actions'), /<p>Hire needs a workspace enrolled with dudes workspace add, at least one engine/);
+  assert.match(view('actions'), /<p>Hire needs a project \(add its folder in Settings\), at least one engine/);
   assert.match(view('actions'), /<code>dudes config set floor.hire off<\/code>/);
   snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, control: true, terminal: true, hire: true } },
     onboarding: CATALOG });
@@ -124,10 +119,10 @@ test('ACTIONS_GATED_ON_SWITCHES mutant: Floor actions is Optional until seen, ne
         snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, control, terminal, hire: true } }, onboarding });
         const at = `control ${control}, terminal ${terminal}, Hire ${onboarding === null ? 'unavailable' : 'available'}`;
         assert.equal(indexStatus(view('hire'), 'Floor actions'), 'Optional', at);
-        assert.equal(indexStatus(view('actions'), 'Floor actions'), 'Done', at);
-        assert.match(view('actions'), /<p class="guide-status" role="status">Done<\/p>/, at);
+        assert.equal(indexStatus(view('actions'), 'Floor actions'), 'Complete', at);
+        assert.match(view('actions'), /<p class="guide-status" role="status">Complete<\/p>/, at);
         assert.equal(status('actions'), 'Optional', at);
-        assert.equal(status('actions', true), 'Done', at);
+        assert.equal(status('actions', true), 'Complete', at);
       }
     }
   }
@@ -190,9 +185,9 @@ test('a disconnected snapshot never claims that a setup step is done', () => {
   snapshot({ found: true, settings: { ...SETTINGS, workspaces: [WORKSPACE],
     switches: { ...SETTINGS.switches, control: true, terminal: true, hire: true } }, onboarding: CATALOG,
   agents: [{ id: ID }] });
-  const unseen = ['Done', 'Done', 'Done', 'Optional', 'Done'];
+  const unseen = ['Complete', 'Complete', 'Complete', 'Optional', 'Complete'];
   assert.deepEqual(guideSteps(getFloorState(), false).map((step) => step.status), unseen);
-  assert.deepEqual(guideSteps(getFloorState(), true).map((step) => step.status), ['Done', 'Done', 'Done', 'Done', 'Done']);
+  assert.deepEqual(guideSteps(getFloorState(), true).map((step) => step.status), ['Complete', 'Complete', 'Complete', 'Complete', 'Complete']);
   const waiting = ['Not done', 'Not done', 'Not done', 'Optional', 'Not done'];
   for (const unconfirmed of [{ ...getFloorState(), stale: true },
     { ...getFloorState(), snapshotEpoch: getFloorState().epoch - 1 }]) {

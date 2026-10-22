@@ -1,44 +1,82 @@
-//! Run-local authentication for the read-only web Floor.
+//! Authentication for the web Floor: sign-in links and the devices they sign in.
 //!
-//! The local RPC route and the loopback HTTP listener share this module. Raw bootstrap, cookie and
-//! CSRF values leave only at their one required response; the retained state contains SHA-256
-//! digests. Stopping the owning listener invalidates and clears the complete state before the run
-//! releases its transport.
+//! The local RPC route and the loopback HTTP listener share this module. A browser that exchanges a
+//! link becomes a device. The device table is a projection of journal records: every change to it
+//! is handed to a [`DeviceSink`] to be made durable, and a restart seeds the table back from the
+//! journal. Links live only in memory. Raw link and cookie values leave only at their one required
+//! response; the retained state contains SHA-256 digests and each device's public key.
+//!
+//! A cookie names a device and opens nothing on its own. Every request also carries a signature
+//! made with the device's key, which [`signature`] reads and the registry checks against the clock
+//! and the device's memory of recent request ids. Stopping the owning listener invalidates and
+//! clears the complete state before the run releases its transport.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
-use dudes_proto::record::Hex32;
+use dudes_proto::record::{DeviceId, FloorDeviceRemoval, Hex32};
 use dudes_proto::rpc::floor::{
-    ExportedSession, SESSION_EXPIRES_IN_S, SessionExport, SessionIssueResult,
+    ExportedSession, LinkPurpose, SESSION_EXPIRES_IN_S, SESSION_PRINTED_EXPIRES_IN_S,
+    SessionExport, SessionIssueResult,
 };
-use dudes_supervisor::Clock;
+use dudes_supervisor::{Clock, DeviceRow, FloorDeviceChange};
 use dudes_types::Timestamp;
 use sha2::{Digest as _, Sha256};
 
 use crate::baseline::CheckRuns;
 use crate::floor_ticket::TicketLimits;
 
+mod recovery;
+pub(crate) mod signature;
+#[cfg(test)]
+pub(crate) mod test_support;
+pub(crate) use recovery::{FloorRecoveryAuthority, RecoveryGrants, RecoveryPermitFailure};
+use signature::{DeviceKey, Presented, Subject};
+
 /// Cookie name used by the read-only Floor session.
 pub const SESSION_COOKIE_NAME: &str = "dudes_floor_session";
-/// Header carrying the in-memory CSRF nonce on authenticated dynamic requests.
-pub const CSRF_HEADER_NAME: &str = "X-Dudes-CSRF";
 
-const BOOTSTRAP_EXPIRES_MS: i64 = 60_000;
-const IDLE_EXPIRES_MS: i64 = 30 * 60_000;
-const ABSOLUTE_EXPIRES_MS: i64 = 8 * 60 * 60_000;
-const RECOVERY_WINDOW_MS: i64 = 2_000;
-const MAX_PENDING_BOOTSTRAPS: usize = 4;
-const MAX_LIVE_SESSIONS: usize = 4;
+const DAY_MS: i64 = 24 * 60 * 60_000;
+/// A link made for `dudes open` lives this long.
+const OPEN_LINK_MS: i64 = 60_000;
+/// A link made to be printed and pasted lives this long.
+const PRINTED_LINK_MS: i64 = 10 * 60_000;
+/// A device ends after this long without use.
+const IDLE_EXPIRES_MS: i64 = 30 * DAY_MS;
+/// A device ends this long after sign-in, however busy it was.
+const ABSOLUTE_EXPIRES_MS: i64 = 90 * DAY_MS;
+/// A device that makes no request this long after signing in ends.
+const NEVER_USED_EXPIRES_MS: i64 = DAY_MS;
+/// Open links waiting to be exchanged. A full table refuses a new one.
+const MAX_PENDING_OPEN_LINKS: usize = 4;
+/// Printed links waiting to be exchanged. A new one replaces the oldest, so printing never
+/// takes a slot `dudes open` needs.
+const MAX_PENDING_PRINTED_LINKS: usize = 4;
+const MAX_DEVICES: usize = 8;
+/// The most often a device's use is journaled.
+const USE_JOURNAL_MS: i64 = DAY_MS;
+/// How many ended devices the daemon remembers well enough to say why one was signed out.
+const MAX_REMEMBERED_ENDED: usize = 64;
+/// The longest device name, in characters.
+const MAX_NAME_CHARS: usize = 64;
+const DEFAULT_NAME: &str = "Browser";
+/// The most often an open stream on a visible page renews its session's idle time.
+const WATCH_RENEWAL_MS: i64 = 60_000;
+/// A signed request may be this far from the daemon's clock, either way.
+const SIGNATURE_WINDOW_MS: i64 = 60_000;
+/// A request id is refused for this long after it was used.
+const REQUEST_MEMORY_MS: i64 = 2 * 60_000;
+/// The most request ids a device's memory holds. A full memory refuses until ids age out.
+const MAX_REQUEST_IDS: usize = 1024;
 const MAX_WEBSOCKETS_PER_SESSION: usize = 2;
 
-/// The issue route cannot mint another bootstrap while its bounded run-local table is full.
+/// The issue route cannot mint another link while its bounded run-local table is full.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IssueError {
-    /// Four still-live bootstraps already await exchange.
+    /// Four still-live links to open already await exchange.
     Capacity,
     /// The listener that owned this run-local state has stopped.
     RunEnded,
@@ -47,43 +85,156 @@ pub enum IssueError {
 impl fmt::Display for IssueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Capacity => f.write_str("the Floor bootstrap table is full"),
+            Self::Capacity => f.write_str("the Floor link table is full"),
             Self::RunEnded => f.write_str("the Floor session run has ended"),
         }
     }
 }
 
+/// How the device table reaches the journal and the open pages.
+///
+/// The daemon's implementation sends each change to the writer and returns once it is durable.
+/// A caller never holds the registry lock across a call, because the writer reads the registry too.
+pub(crate) trait DeviceSink: Send + Sync {
+    /// Make one change durable. False when it could not be.
+    fn record(&self, change: FloorDeviceChange) -> bool;
+    /// Tell every open page about a change that is already durable.
+    fn announce(&self, event: &DeviceEvent);
+}
+
+/// A change every open page is told about.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DeviceEvent {
+    /// A browser signed in.
+    Enrolled {
+        device: DeviceId,
+        name: String,
+        at: Timestamp,
+    },
+    /// A new device was kept.
+    Acknowledged { device: DeviceId },
+    /// A device ended.
+    Removed {
+        device: DeviceId,
+        reason: FloorDeviceRemoval,
+    },
+}
+
+/// One signed-in browser as the pages and the command line list it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DeviceView {
+    pub(crate) device: DeviceId,
+    pub(crate) name: String,
+    pub(crate) signed_in: Timestamp,
+    pub(crate) first_used: Option<Timestamp>,
+    pub(crate) last_used: Option<Timestamp>,
+    /// Whether nobody has answered its "new browser" notice yet.
+    pub(crate) new: bool,
+    /// Whether this is the browser that asked.
+    pub(crate) this: bool,
+}
+
+/// Why a device is gone, as the page that holds its cookie is told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GoneReason {
+    Removed,
+    Expired,
+    Replaced,
+}
+
+impl GoneReason {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Removed => "removed",
+            Self::Expired => "expired",
+            Self::Replaced => "replaced",
+        }
+    }
+
+    const fn of(removal: FloorDeviceRemoval) -> Option<Self> {
+        match removal {
+            FloorDeviceRemoval::SignedOut => None,
+            FloorDeviceRemoval::Removed => Some(Self::Removed),
+            FloorDeviceRemoval::Expired | FloorDeviceRemoval::NeverUsed => Some(Self::Expired),
+            FloorDeviceRemoval::Replaced => Some(Self::Replaced),
+        }
+    }
+}
+
+/// The result of asking to end a device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Removal {
+    Removed,
+    Unknown,
+    /// The journal could not take the removal, so the device is still signed in.
+    Unavailable,
+}
+
+/// The result of keeping a new device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Keep {
+    Kept,
+    Unknown,
+    /// A device cannot vouch for itself.
+    Own,
+    Unavailable,
+}
+
 /// The one response that crosses from the session module to the HTTP writer.
 pub(crate) struct Exchange {
     pub(crate) cookie: String,
-    pub(crate) csrf: String,
+    /// The device the exchange enrolled.
+    pub(crate) device: DeviceId,
+    /// How long the browser keeps the cookie, in seconds.
+    pub(crate) cookie_max_age_s: i64,
+}
+
+/// The body of a link exchange.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Enrolment {
+    link: String,
+    key: String,
+    #[serde(default)]
+    name: String,
 }
 
 impl fmt::Debug for Exchange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Exchange")
             .field("cookie", &"<redacted>")
-            .field("csrf", &"<redacted>")
-            .finish()
+            .field("device", &self.device)
+            .finish_non_exhaustive()
     }
 }
 
-/// The one fresh secret returned by a successful recovery.
-pub(crate) struct Recovery {
-    pub(crate) csrf: String,
-}
-
-impl fmt::Debug for Recovery {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Recovery")
-            .field("csrf", &"<redacted>")
-            .finish()
-    }
+/// Why an exchange enrolled nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExchangeRefusal {
+    /// The body is not an enrolment with a valid key.
+    Malformed,
+    /// The link is not good, the origin is not this listener's, the run is over, or the journal
+    /// could not take the enrolment.
+    Forbidden,
+    /// The key in the body did not sign the request, so the link is left unspent.
+    Signature,
 }
 
 /// An unforgeable admission to the future read-only projection facade.
 pub struct ReadOnlySession {
     _private: (),
+}
+
+/// One confirmed reader, retained without extending its idle deadline.
+pub struct ReceiptSession {
+    identity: SessionIdentity,
+    device: Hex32,
+}
+
+impl fmt::Debug for ReceiptSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ReceiptSession(<redacted>)")
+    }
 }
 
 impl fmt::Debug for ReadOnlySession {
@@ -105,15 +256,30 @@ impl fmt::Debug for FloorSessionAuthorizer {
 }
 
 impl FloorSessionAuthorizer {
+    pub(crate) fn validates_receipt(&self, reader: &ReceiptSession) -> bool {
+        let identity = &reader.identity;
+        if !Arc::ptr_eq(&self.0, &identity.inner) {
+            return false;
+        }
+        let registry::Locked { state, now } = self.0.registry.lock_at_now();
+        self.0.valid.load(Ordering::Acquire)
+            && !identity.revoked.load(Ordering::Acquire)
+            && state.sessions.get(&identity.cookie).is_some_and(|session| {
+                Arc::ptr_eq(&session.revoked, &identity.revoked)
+                    && session.id == reader.device
+                    && session.live_at(now)
+            })
+    }
+
     /// Revoke one presented session under the registry lock; test-only caller access.
     #[doc(hidden)]
     pub fn revoke_for_test(&self, cookie: &str) -> bool {
         let cookie = digest(cookie.as_bytes());
-        let mut state = self.0.registry.lock();
-        state.sessions.remove(&cookie).is_some_and(|session| {
-            session.revoked.store(true, Ordering::Release);
-            true
-        })
+        self.0
+            .registry
+            .lock()
+            .end(&cookie, FloorDeviceRemoval::Removed)
+            .is_some()
     }
 
     /// Run `hook` once, as the next reservation asks for the registry lock; test-only caller access.
@@ -126,76 +292,45 @@ impl FloorSessionAuthorizer {
             .unwrap_or_else(PoisonError::into_inner) = Some(Box::new(hook));
     }
 
-    /// Admit one exact-origin read and advance only its idle deadline.
-    #[must_use]
-    pub fn authorize_read(
-        &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
-    ) -> Option<ReadOnlySession> {
-        if !self.0.authority_matches(host, origin) {
-            return None;
-        }
-        if !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
-        let cookie = digest(cookie.as_bytes());
-        let csrf = digest(csrf.as_bytes());
-        let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
-        if !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
-        state.prune(now);
-        let session = state.sessions.get_mut(&cookie)?;
-        if session.csrf != Some(csrf) {
-            return None;
-        }
-        session.last_used = now;
-        Some(ReadOnlySession { _private: () })
+    /// Admit one exact-origin signed read and advance only its idle deadline.
+    pub fn authorize_read(&self, request: &Presentation<'_>) -> Result<ReadOnlySession, Refusal> {
+        self.0
+            .admit(request, IdleClock::Advance, |_| Some(()))
+            .map(|_| ReadOnlySession { _private: () })
     }
 
     /// Authenticate one browser upgrade and atomically acquire its per-session socket slot.
-    #[must_use]
     pub(crate) fn authorize_stream(
         &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
-    ) -> Option<StreamSession> {
-        let ((), cookie, revoked) = self.admit_socket(host, origin, cookie, csrf, |session| {
+        request: &Presentation<'_>,
+    ) -> Result<StreamSession, Refusal> {
+        let ((), cookie, revoked) = self.admit_socket(request, |session| {
             (session.websockets < MAX_WEBSOCKETS_PER_SESSION).then(|| session.websockets += 1)
         })?;
-        Some(StreamSession {
+        Ok(StreamSession {
             inner: Arc::clone(&self.0),
             cookie,
             revoked,
+            visible: AtomicBool::new(false),
         })
     }
 
-    #[must_use]
     pub(crate) fn authorize_terminal(
         &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
-    ) -> Option<TerminalSession> {
-        let (browser_epoch, cookie, revoked) =
-            self.admit_socket(host, origin, cookie, csrf, |session| {
-                if session.terminal.is_some() {
-                    return None;
-                }
-                let browser_epoch = self.0.last_browser_epoch.fetch_add(1, Ordering::AcqRel) + 1;
-                session.terminal = Some(TerminalSlot {
-                    browser_epoch,
-                    grant: None,
-                });
-                Some(browser_epoch)
-            })?;
-        Some(TerminalSession {
+        request: &Presentation<'_>,
+    ) -> Result<TerminalSession, Refusal> {
+        let (browser_epoch, cookie, revoked) = self.admit_socket(request, |session| {
+            if session.terminal.is_some() {
+                return None;
+            }
+            let browser_epoch = self.0.last_browser_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+            session.terminal = Some(TerminalSlot {
+                browser_epoch,
+                grant: None,
+            });
+            Some(browser_epoch)
+        })?;
+        Ok(TerminalSession {
             inner: Arc::clone(&self.0),
             cookie,
             revoked,
@@ -203,35 +338,97 @@ impl FloorSessionAuthorizer {
         })
     }
 
+    /// Authenticate one engine sign-in upgrade and claim its session's one sign-in slot.
+    pub(crate) fn authorize_login(
+        &self,
+        request: &Presentation<'_>,
+    ) -> Result<LoginSession, Refusal> {
+        let ((), cookie, revoked) = self.admit_socket(request, |session| {
+            (!session.login).then(|| session.login = true)
+        })?;
+        Ok(LoginSession {
+            inner: Arc::clone(&self.0),
+            cookie,
+            revoked,
+        })
+    }
+
     /// Authenticate one upgrade and let `take` claim its session's slot under the registry lock.
     /// Only a claimed slot advances the session's idle time.
     fn admit_socket<T>(
         &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
+        request: &Presentation<'_>,
         take: impl FnOnce(&mut Session) -> Option<T>,
-    ) -> Option<(T, [u8; 32], Arc<AtomicBool>)> {
-        if !self.0.authority_matches(host, origin) || !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
-        let cookie = digest(cookie.as_bytes());
-        let csrf = digest(csrf.as_bytes());
-        let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
-        if !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
-        state.prune(now);
-        let session = state.sessions.get_mut(&cookie)?;
-        if session.csrf != Some(csrf) {
-            return None;
-        }
-        let taken = take(session)?;
-        session.last_used = now;
-        session.recovery_pending_until = None;
-        Some((taken, cookie, Arc::clone(&session.revoked)))
+    ) -> Result<(T, [u8; 32], Arc<AtomicBool>), Refusal> {
+        let admitted = self.0.admit(request, IdleClock::Advance, take)?;
+        Ok((admitted.value, admitted.cookie, admitted.revoked))
     }
+}
+
+/// A request as the registry checks it: where it says it came from, the cookie it carried, the
+/// method, target and body its signature covers, and what its page presented. Nothing in it is
+/// believed yet.
+pub struct Presentation<'a> {
+    host: &'a str,
+    origin: &'a str,
+    cookie: &'a str,
+    method: &'a str,
+    target: &'a str,
+    body: &'a [u8],
+    signed: Option<Presented>,
+}
+
+impl<'a> Presentation<'a> {
+    /// A request with the `Host`, `Origin` and cookie it carried, and no signature yet.
+    #[must_use]
+    pub const fn new(
+        host: &'a str,
+        origin: &'a str,
+        cookie: &'a str,
+        method: &'a str,
+        target: &'a str,
+        body: &'a [u8],
+    ) -> Self {
+        Self {
+            host,
+            origin,
+            cookie,
+            method,
+            target,
+            body,
+            signed: None,
+        }
+    }
+
+    /// Add the four values a page presents: the origin it signed for, the time, the request id
+    /// and the signature. Values that are malformed leave the request unsigned.
+    #[must_use]
+    pub fn signed(mut self, origin: &str, time: &str, request: &str, signature: &str) -> Self {
+        self.signed = Presented::parse(origin, time, request, signature);
+        self
+    }
+
+    fn subject(&self) -> Subject<'a> {
+        Subject {
+            method: self.method,
+            target: self.target,
+            body: self.body,
+        }
+    }
+}
+
+/// Why a request earned no device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The cookie names no live device, or the run is over, or Host and Origin are not this
+    /// listener's.
+    Gone,
+    /// The cookie names a live device and the request did not prove it came from that device's
+    /// key: unsigned, signed for another origin, outside the clock window, a reused id, a full
+    /// memory of ids, or a signature that does not verify.
+    Signature,
+    /// The request was good and the socket slot it asked for is taken.
+    Busy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -372,11 +569,55 @@ impl Drop for TerminalSession {
     }
 }
 
+/// One authenticated engine sign-in socket. A session holds at most one.
+pub(crate) struct LoginSession {
+    inner: Arc<Inner>,
+    cookie: [u8; 32],
+    revoked: Arc<AtomicBool>,
+}
+
+impl LoginSession {
+    /// Whether the session is still live. Only typing advances its idle time, through [`Self::touch`].
+    pub(crate) fn is_valid(&self) -> bool {
+        self.check(false)
+    }
+
+    /// Count the person's own typing as session activity.
+    pub(crate) fn touch(&self) -> bool {
+        self.check(true)
+    }
+
+    fn check(&self, advance: bool) -> bool {
+        if !self.inner.valid.load(Ordering::Acquire) || self.revoked.load(Ordering::Acquire) {
+            return false;
+        }
+        let registry::Locked { mut state, now } = self.inner.registry.lock_at_now();
+        state.prune(now);
+        let Some(session) = state.sessions.get_mut(&self.cookie) else {
+            return false;
+        };
+        if advance {
+            session.last_used = now;
+        }
+        self.inner.valid.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for LoginSession {
+    fn drop(&mut self) {
+        if let Some(session) = self.inner.registry.lock().sessions.get_mut(&self.cookie) {
+            session.login = false;
+        }
+    }
+}
+
 /// One authenticated, run-local WebSocket slot. Its identity never crosses the browser wire.
 pub(crate) struct StreamSession {
     inner: Arc<Inner>,
     cookie: [u8; 32],
     revoked: Arc<AtomicBool>,
+    /// What the page last said about being on screen. A page that has said nothing is not watched.
+    visible: AtomicBool,
 }
 
 /// Internal session identity for writer-ordered Floor reads and mutation permits.
@@ -433,6 +674,7 @@ pub(crate) enum ActionKind {
     Look,
     Retire,
     Chat,
+    Project,
 }
 
 pub(crate) enum ReserveResult {
@@ -511,6 +753,33 @@ impl SessionIdentity {
         Hex32::new(self.cookie)
     }
 
+    /// How long the browser should keep this session's cookie, or `None` once the session is gone.
+    pub(crate) fn cookie_max_age_s(&self) -> Option<i64> {
+        let registry::Locked { state, now } = self.inner.registry.lock_at_now();
+        state
+            .sessions
+            .get(&self.cookie)
+            .filter(|session| session.live_at(now))
+            .map(|session| session.cookie_max_age_s(now))
+    }
+
+    /// Sign this device out. The removal is durable before the device leaves the table, and its
+    /// sockets close at their next check.
+    pub(crate) fn sign_out(&self) -> Removal {
+        self.inner
+            .remove(self.cookie, FloorDeviceRemoval::SignedOut)
+    }
+
+    /// The device this session is, while it is in the table.
+    pub(crate) fn device(&self) -> Option<Hex32> {
+        self.inner
+            .registry
+            .lock()
+            .sessions
+            .get(&self.cookie)
+            .map(|session| session.id)
+    }
+
     pub(crate) fn is_valid(&self) -> bool {
         if !self.inner.valid.load(Ordering::Acquire) || self.revoked.load(Ordering::Acquire) {
             return false;
@@ -552,21 +821,60 @@ impl StreamSession {
         self.inner.valid.load(Ordering::Acquire) && state.sessions.contains_key(&self.cookie)
     }
 
+    /// Record whether the page is on screen.
+    pub(crate) fn set_visible(&self, visible: bool) {
+        self.visible.store(visible, Ordering::Release);
+    }
+
+    /// Revalidate, and while the page is on screen renew the idle time at most once a minute. A
+    /// device past its 90-day limit is gone from the table, so renewal never extends it.
+    #[must_use]
+    pub(crate) fn renew_if_watched(&self) -> bool {
+        if !self.inner.valid.load(Ordering::Acquire) {
+            return false;
+        }
+        let (live, used) = {
+            let registry::Locked { mut state, now } = self.inner.registry.lock_at_now();
+            state.prune(now);
+            if !self.inner.valid.load(Ordering::Acquire) {
+                return false;
+            }
+            match state.sessions.get_mut(&self.cookie) {
+                None => (false, None),
+                Some(session) => {
+                    let used = (self.visible.load(Ordering::Acquire)
+                        && now.millis_since(session.last_used) >= WATCH_RENEWAL_MS)
+                        .then(|| session.note_use(now))
+                        .flatten();
+                    (true, used)
+                }
+            }
+        };
+        // The socket loop asks every few milliseconds, so it settles only when a use is due.
+        if used.is_some() {
+            self.inner.settle(used);
+        }
+        live
+    }
+
     /// A successfully decoded client `floor.subscribe` is admitted activity.
     pub(crate) fn touch_subscribe(&self) -> bool {
         if !self.inner.valid.load(Ordering::Acquire) {
             return false;
         }
-        let registry::Locked { mut state, now } = self.inner.registry.lock_at_now();
-        state.prune(now);
-        if !self.inner.valid.load(Ordering::Acquire) {
-            return false;
-        }
-        let Some(session) = state.sessions.get_mut(&self.cookie) else {
-            return false;
+        let (live, used) = {
+            let registry::Locked { mut state, now } = self.inner.registry.lock_at_now();
+            state.prune(now);
+            if !self.inner.valid.load(Ordering::Acquire) {
+                return false;
+            }
+            match state.sessions.get_mut(&self.cookie) {
+                None => (false, None),
+                Some(session) => (true, session.note_use(now)),
+            }
         };
-        session.last_used = now;
-        true
+        self.inner.settle(used);
+        live
     }
 }
 
@@ -600,6 +908,202 @@ struct Inner {
     last_browser_epoch: AtomicU64,
     registry: registry::Registry,
     reserve_hook: Mutex<Option<ReserveHook>>,
+    /// Where device changes become durable and reach the open pages. Set by the daemon.
+    sink: RwLock<Option<Arc<dyn DeviceSink>>>,
+}
+
+/// A request that earned its device, and what it claimed.
+struct Checked<T> {
+    value: T,
+    cookie: [u8; 32],
+    revoked: Arc<AtomicBool>,
+}
+
+impl Inner {
+    fn authority_matches(&self, host: &str, origin: &str) -> bool {
+        host == self.host && origin == self.origin
+    }
+
+    /// Check a request against its device and let `take` claim what it asked for under the
+    /// registry lock.
+    ///
+    /// The cookie must name a live device, or the answer is [`Refusal::Gone`] and nothing about
+    /// the request is read. Then the page's origin must be this listener's, the request's own
+    /// and the device's; its time within a minute of the clock; and its signature must verify
+    /// under the device's key. Only a request that verified spends one of the device's request
+    /// ids, so a forged request cannot use them up. `idle` says whether a good request counts as
+    /// the device's use.
+    fn admit<T>(
+        &self,
+        request: &Presentation<'_>,
+        idle: IdleClock,
+        take: impl FnOnce(&mut Session) -> Option<T>,
+    ) -> Result<Checked<T>, Refusal> {
+        if !self.authority_matches(request.host, request.origin) {
+            return Err(Refusal::Gone);
+        }
+        let cookie = digest(request.cookie.as_bytes());
+        let (device, key, device_origin, revoked, now) = {
+            let registry::Locked { mut state, now } = self.registry.lock_at_now();
+            if !self.valid.load(Ordering::Acquire) {
+                return Err(Refusal::Gone);
+            }
+            if idle == IdleClock::Advance {
+                state.prune(now);
+            }
+            let found = state
+                .sessions
+                .get(&cookie)
+                .filter(|session| session.live_at(now) && !session.revoked.load(Ordering::Acquire))
+                .map(|session| {
+                    (
+                        session.id,
+                        session.key.clone(),
+                        session.origin.clone(),
+                        Arc::clone(&session.revoked),
+                        now,
+                    )
+                });
+            let Some(found) = found else {
+                drop(state);
+                self.settle(None);
+                return Err(Refusal::Gone);
+            };
+            found
+        };
+        let presented = request.signed.as_ref().ok_or(Refusal::Signature)?;
+        if presented.origin != request.origin
+            || presented.origin != self.origin
+            || presented.origin != device_origin
+            || now.unix_millis().abs_diff(presented.millis) > SIGNATURE_WINDOW_MS.unsigned_abs()
+            || !key.verifies(device, &request.subject(), presented)
+        {
+            return Err(Refusal::Signature);
+        }
+        let (value, used) = {
+            let registry::Locked { mut state, now } = self.registry.lock_at_now();
+            if !self.valid.load(Ordering::Acquire) {
+                return Err(Refusal::Gone);
+            }
+            let Some(session) = state.sessions.get_mut(&cookie).filter(|session| {
+                Arc::ptr_eq(&session.revoked, &revoked)
+                    && session.live_at(now)
+                    && !session.revoked.load(Ordering::Acquire)
+            }) else {
+                return Err(Refusal::Gone);
+            };
+            if !session.requests.admit(now, presented.request) {
+                return Err(Refusal::Signature);
+            }
+            let Some(value) = take(session) else {
+                return Err(Refusal::Busy);
+            };
+            let used = (idle == IdleClock::Advance)
+                .then(|| session.note_use(now))
+                .flatten();
+            (value, used)
+        };
+        self.settle(used);
+        Ok(Checked {
+            value,
+            cookie,
+            revoked,
+        })
+    }
+
+    fn sink(&self) -> Option<Arc<dyn DeviceSink>> {
+        self.sink
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// A fresh cookie that no live session holds.
+    fn unused_cookie(&self) -> String {
+        let state = self.registry.lock();
+        loop {
+            let candidate = mint_secret();
+            if !state.sessions.contains_key(&digest(candidate.as_bytes())) {
+                return candidate;
+            }
+        }
+    }
+
+    /// Make one change durable. Without a sink there is nothing to make durable.
+    fn record(&self, change: FloorDeviceChange) -> bool {
+        self.sink().is_none_or(|sink| sink.record(change))
+    }
+
+    fn announce(&self, event: &DeviceEvent) {
+        if let Some(sink) = self.sink() {
+            sink.announce(event);
+        }
+    }
+
+    /// Journal what a request just did to its device, then journal the devices that ran out since
+    /// the last call. Called with no lock held, and only from a thread that is not the writer.
+    fn settle(&self, used: Option<Used>) {
+        if let Some(used) = used {
+            let change = match used.kind {
+                UseKind::First => FloorDeviceChange::FirstUse(used.device),
+                UseKind::Daily => FloorDeviceChange::Use(used.device),
+            };
+            if !self.record(change) {
+                tracing::warn!("a Floor device's use could not be recorded");
+                if let Some(session) = self
+                    .registry
+                    .lock()
+                    .sessions
+                    .values_mut()
+                    .find(|session| session.id == used.device)
+                {
+                    if used.kind == UseKind::First {
+                        session.first_used = None;
+                    }
+                    session.journaled_use = used.journaled_before;
+                }
+            }
+        }
+        let ended = std::mem::take(&mut self.registry.lock().ended);
+        for (device, reason) in ended {
+            if self.record(FloorDeviceChange::Remove { device, reason }) {
+                self.announce(&DeviceEvent::Removed {
+                    device: device.into(),
+                    reason,
+                });
+            }
+        }
+    }
+
+    /// End one device: its removal is durable first, then it leaves the table, so a removal that
+    /// could not be recorded leaves the device signed in.
+    fn remove(&self, key: [u8; 32], reason: FloorDeviceRemoval) -> Removal {
+        let Some(device) = self
+            .registry
+            .lock()
+            .sessions
+            .get(&key)
+            .map(|session| session.id)
+        else {
+            return Removal::Unknown;
+        };
+        if !self.record(FloorDeviceChange::Remove { device, reason }) {
+            return Removal::Unavailable;
+        }
+        if self.registry.lock().end(&key, reason).is_none() {
+            // Expiry ended it between the record and here. Its removal is journaled, so the
+            // expiry's own record would only repeat it.
+            self.registry
+                .lock()
+                .ended
+                .retain(|(ended, _)| *ended != device);
+        }
+        self.announce(&DeviceEvent::Removed {
+            device: device.into(),
+            reason,
+        });
+        Removal::Removed
+    }
 }
 
 /// The session registry: its state, and the clock that dates it, reachable only together.
@@ -648,72 +1152,362 @@ mod registry {
     }
 }
 
+/// A sign-in link waiting to be exchanged.
+struct Link {
+    issued: Timestamp,
+    purpose: LinkPurpose,
+}
+
+impl Link {
+    const fn lifetime_ms(&self) -> i64 {
+        match self.purpose {
+            LinkPurpose::Open => OPEN_LINK_MS,
+            LinkPurpose::Print => PRINTED_LINK_MS,
+        }
+    }
+}
+
+/// An ended device the daemon can still name, so a page holding its cookie hears why.
+struct Ended {
+    cookie: [u8; 32],
+    reason: GoneReason,
+}
+
 #[derive(Default)]
 struct State {
     imported: bool,
-    pending: BTreeMap<[u8; 32], Timestamp>,
+    pending: BTreeMap<[u8; 32], Link>,
     sessions: BTreeMap<[u8; 32], Session>,
     inflight: BTreeMap<(ActionKind, Hex32), Hex32>,
+    /// The most recent ended devices, oldest first.
+    remembered: std::collections::VecDeque<Ended>,
+    /// Devices that ran out and whose removal is not journaled yet.
+    ended: Vec<(Hex32, FloorDeviceRemoval)>,
 }
 
+/// One signed-in browser.
 struct Session {
+    id: Hex32,
+    name: String,
     revoked: Arc<AtomicBool>,
-    /// `None` for a session imported from the previous run, which matches no secret until the
-    /// recovery route issues one.
-    csrf: Option<[u8; 32]>,
+    /// The key that checks every request this device makes.
+    key: DeviceKey,
+    /// The Floor origin it signed in on. A request signed for another origin is refused.
+    origin: String,
+    /// The request ids this device used lately, so none works twice.
+    requests: Requests,
     created: Timestamp,
+    first_used: Option<Timestamp>,
     last_used: Timestamp,
+    /// The last use the journal holds, so a device is journaled at most once a day.
+    journaled_use: Timestamp,
+    /// Whether someone answered this device's "new browser" notice.
+    acknowledged: bool,
     websockets: usize,
     terminal: Option<TerminalSlot>,
-    recovery_pending_until: Option<Timestamp>,
+    /// Whether this session holds its one engine sign-in socket.
+    login: bool,
+}
+
+/// The ids of a device's recent requests. An id is refused while it is remembered, and nothing is
+/// admitted while the memory is full, so a flood of valid requests cannot grow it.
+#[derive(Default)]
+struct Requests {
+    seen: Vec<(Timestamp, [u8; 16])>,
+}
+
+impl Requests {
+    /// Remember `id` and say so, or say that it was used lately or that no room is left.
+    fn admit(&mut self, now: Timestamp, id: [u8; 16]) -> bool {
+        self.seen
+            .retain(|(at, _)| now.millis_since(*at) < REQUEST_MEMORY_MS);
+        if self.seen.len() >= MAX_REQUEST_IDS || self.seen.iter().any(|(_, seen)| *seen == id) {
+            return false;
+        }
+        self.seen.push((now, id));
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UseKind {
+    First,
+    Daily,
+}
+
+/// A use the journal has to hear about once the lock is released.
+struct Used {
+    device: Hex32,
+    kind: UseKind,
+    /// The journaled-use time before this request, restored if the journal refuses the record so
+    /// the next request records it again.
+    journaled_before: Timestamp,
 }
 
 impl Session {
     fn live_at(&self, now: Timestamp) -> bool {
         now.millis_since(self.created) < ABSOLUTE_EXPIRES_MS
             && now.millis_since(self.last_used) < IDLE_EXPIRES_MS
+            && (self.first_used.is_some() || now.millis_since(self.created) < NEVER_USED_EXPIRES_MS)
+    }
+
+    /// Why a device that is not live at `now` ran out.
+    fn expiry(&self, now: Timestamp) -> FloorDeviceRemoval {
+        if self.first_used.is_none() && now.millis_since(self.created) >= NEVER_USED_EXPIRES_MS {
+            FloorDeviceRemoval::NeverUsed
+        } else {
+            FloorDeviceRemoval::Expired
+        }
+    }
+
+    /// How long the browser should keep this session's cookie: the soonest of the limits that
+    /// apply, in whole seconds and never below one.
+    fn cookie_max_age_s(&self, now: Timestamp) -> i64 {
+        let idle = IDLE_EXPIRES_MS - now.millis_since(self.last_used);
+        let absolute = ABSOLUTE_EXPIRES_MS - now.millis_since(self.created);
+        let unused = if self.first_used.is_none() {
+            NEVER_USED_EXPIRES_MS - now.millis_since(self.created)
+        } else {
+            i64::MAX
+        };
+        (idle.min(absolute).min(unused) / 1000).max(1)
+    }
+
+    /// Count a request as use. The first request, and the first one a day after the journal last
+    /// heard of this device, must be journaled.
+    fn note_use(&mut self, now: Timestamp) -> Option<Used> {
+        self.last_used = now;
+        let journaled_before = self.journaled_use;
+        let kind = if self.first_used.is_none() {
+            self.first_used = Some(now);
+            UseKind::First
+        } else if now.millis_since(self.journaled_use) >= USE_JOURNAL_MS {
+            UseKind::Daily
+        } else {
+            return None;
+        };
+        self.journaled_use = now;
+        Some(Used {
+            device: self.id,
+            kind,
+            journaled_before,
+        })
+    }
+
+    /// The device as the table lists it.
+    fn view(&self, key: &[u8; 32], me: Option<&[u8; 32]>) -> DeviceView {
+        DeviceView {
+            device: self.id.into(),
+            name: self.name.clone(),
+            signed_in: self.created,
+            first_used: self.first_used,
+            last_used: self.first_used.map(|_| self.last_used),
+            new: !self.acknowledged,
+            this: me == Some(key),
+        }
     }
 }
 
 impl State {
     fn prune(&mut self, now: Timestamp) {
         self.pending
-            .retain(|_, issued| now.millis_since(*issued) < BOOTSTRAP_EXPIRES_MS);
-        self.sessions.retain(|_, session| session.live_at(now));
+            .retain(|_, link| now.millis_since(link.issued) < link.lifetime_ms());
+        let dead: Vec<[u8; 32]> = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| !session.live_at(now))
+            .map(|(key, _)| *key)
+            .collect();
+        for key in dead {
+            if let Some(session) = self.sessions.remove(&key) {
+                let reason = session.expiry(now);
+                self.remember(&key, reason);
+                self.ended.push((session.id, reason));
+            }
+        }
+    }
+
+    /// How many links for `purpose` still wait to be exchanged.
+    fn waiting(&self, purpose: LinkPurpose) -> usize {
+        self.pending
+            .values()
+            .filter(|link| link.purpose == purpose)
+            .count()
+    }
+
+    fn remember(&mut self, key: &[u8; 32], reason: FloorDeviceRemoval) {
+        if let Some(reason) = GoneReason::of(reason) {
+            self.remember_cookie(*key, reason);
+        }
+    }
+
+    fn remember_cookie(&mut self, cookie: [u8; 32], reason: GoneReason) {
+        if self.remembered.len() >= MAX_REMEMBERED_ENDED {
+            self.remembered.pop_front();
+        }
+        self.remembered.push_back(Ended { cookie, reason });
+    }
+
+    /// End one session: it leaves the table, and everything holding its revoked flag sees it.
+    /// Returns its device.
+    fn end(&mut self, key: &[u8; 32], reason: FloorDeviceRemoval) -> Option<Hex32> {
+        let session = self.sessions.remove(key)?;
+        session.revoked.store(true, Ordering::Release);
+        self.remember(key, reason);
+        Some(session.id)
+    }
+
+    /// The sessions to end so that at most [`MAX_DEVICES`] remain, never `keep`. A device that
+    /// never made a request goes first, then one nobody has answered the notice for, then the one
+    /// used longest ago. Equal uses go to the older sign-in, then to the smaller key, so the
+    /// choice never depends on map order.
+    fn surplus(&self, keep: Option<&[u8; 32]>) -> Vec<[u8; 32]> {
+        let excess = self.sessions.len().saturating_sub(MAX_DEVICES);
+        let mut candidates: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|(key, _)| Some(*key) != keep)
+            .map(|(key, session)| {
+                let tier = if session.first_used.is_none() {
+                    0_u8
+                } else if !session.acknowledged {
+                    1
+                } else {
+                    2
+                };
+                (
+                    tier,
+                    session.last_used.unix_millis(),
+                    session.created.unix_millis(),
+                    *key,
+                )
+            })
+            .collect();
+        candidates.sort_unstable();
+        candidates
+            .into_iter()
+            .take(excess)
+            .map(|(_, _, _, key)| key)
+            .collect()
     }
 }
 
+/// Strip control characters, trim, cap at 64 characters, and name an empty result "Browser".
+fn clean_name(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_control() && !is_format_char(*c))
+        .collect();
+    let capped: String = cleaned.trim().chars().take(MAX_NAME_CHARS).collect();
+    let capped = capped.trim_end().to_owned();
+    if capped.is_empty() {
+        DEFAULT_NAME.to_owned()
+    } else {
+        capped
+    }
+}
+
+/// Unicode format characters (category Cf) draw nothing but can reorder or hide the text around
+/// them, so a name never keeps them.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{AD}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61C}'
+            | '\u{6DD}'
+            | '\u{70F}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
 impl FloorSessions {
-    /// Admit one exact-origin browser action — onboarding, an answer, a pause or a resume — and
-    /// retain only its session digest.
+    #[cfg(test)]
+    pub(crate) fn registry_counts_for_test(&self) -> (usize, usize) {
+        let state = self.0.registry.lock();
+        (state.pending.len(), state.sessions.len())
+    }
+
+    /// The rows the journal would hold for the devices signed in now, so a test can start a run
+    /// that finds them.
+    #[cfg(test)]
+    pub(crate) fn rows_for_test(&self) -> BTreeMap<Hex32, DeviceRow> {
+        let origin = self.0.origin.clone();
+        self.0
+            .registry
+            .lock()
+            .sessions
+            .iter()
+            .map(|(cookie, session)| {
+                (
+                    session.id,
+                    DeviceRow {
+                        origin: origin.clone(),
+                        name: session.name.clone(),
+                        cookie: Hex32::new(*cookie),
+                        key: Some(session.key.text()),
+                        enrolled: session.created,
+                        first_used: session.first_used,
+                        last_used: Some(session.last_used),
+                        acknowledged: None,
+                        removed: None,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Admit one exact-origin signed browser action — onboarding, an answer, a pause or a
+    /// resume — and retain only its session digest.
     pub(crate) fn authorize_onboard(
         &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
-    ) -> Option<SessionIdentity> {
-        if !self.0.authority_matches(host, origin) {
-            return None;
-        }
-        let cookie = digest(cookie.as_bytes());
-        let csrf = digest(csrf.as_bytes());
-        let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
-        if !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
-        state.prune(now);
-        let session = state.sessions.get_mut(&cookie)?;
-        if session.csrf != Some(csrf) {
-            return None;
-        }
-        session.last_used = now;
-        Some(SessionIdentity {
-            inner: Arc::clone(&self.0),
-            cookie,
-            revoked: Arc::clone(&session.revoked),
-        })
+        request: &Presentation<'_>,
+    ) -> Result<SessionIdentity, Refusal> {
+        self.authenticate(request, IdleClock::Advance)
+            .map(|(identity, _)| identity)
     }
+
+    /// Admit a request that asks about the session itself, and leave its idle deadline alone.
+    pub(crate) fn authorize_standing(
+        &self,
+        request: &Presentation<'_>,
+    ) -> Result<SessionIdentity, Refusal> {
+        self.authenticate(request, IdleClock::Hold)
+            .map(|(identity, _)| identity)
+    }
+
+    pub(crate) fn authorize_receipt(
+        &self,
+        request: &Presentation<'_>,
+    ) -> Result<ReceiptSession, Refusal> {
+        self.authenticate(request, IdleClock::Hold)
+            .map(|(identity, device)| ReceiptSession { identity, device })
+    }
+
+    fn authenticate(
+        &self,
+        request: &Presentation<'_>,
+        idle: IdleClock,
+    ) -> Result<(SessionIdentity, Hex32), Refusal> {
+        let admitted = self.0.admit(request, idle, |session| Some(session.id))?;
+        Ok((
+            SessionIdentity {
+                inner: Arc::clone(&self.0),
+                cookie: admitted.cookie,
+                revoked: admitted.revoked,
+            },
+            admitted.value,
+        ))
+    }
+
     /// Create empty session state for the listener's exact run-local origin.
     #[must_use]
     pub fn new<C>(addr: SocketAddr, clock: Arc<C>) -> Self
@@ -729,7 +1523,80 @@ impl FloorSessions {
             last_browser_epoch: AtomicU64::new(0),
             registry: registry::Registry::new(clock),
             reserve_hook: Mutex::new(None),
+            sink: RwLock::new(None),
         }))
+    }
+
+    /// Give the device table somewhere to be made durable.
+    pub(crate) fn install_sink(&self, sink: Arc<dyn DeviceSink>) {
+        *self.0.sink.write().unwrap_or_else(PoisonError::into_inner) = Some(sink);
+    }
+
+    /// Let a test that drives the daemon's loop by hand sign browsers in without a running loop to
+    /// make them durable.
+    #[cfg(test)]
+    pub(crate) fn detach_devices_for_test(&self) {
+        *self.0.sink.write().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// Seed the table with the devices the journal holds. A device that has run out ends, and so
+    /// does any beyond the limit, and their removals are journaled by the first request or listing
+    /// that follows. A device signed in on another origin cannot be used here, so it stays out of
+    /// the table and out of the count, and is journaled as nothing: it returns if the daemon does.
+    ///
+    /// A browser that signed in before requests were signed holds no key and can never act again.
+    /// It ends once, as expired, whatever origin it signed in on, so its page hears that its
+    /// sign-in expired and the next boot finds nothing left to end.
+    pub(crate) fn seed(&self, rows: &BTreeMap<Hex32, DeviceRow>) {
+        let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
+        let mut ended: Vec<_> = rows
+            .iter()
+            .filter_map(|(device, row)| row.removed.map(|(reason, at)| (*device, row, reason, at)))
+            .collect();
+        ended.sort_by_key(|(_, _, _, at)| *at);
+        for (_, row, reason, at) in ended {
+            if let Some(reason) = GoneReason::of(reason)
+                && now.millis_since(at) < ABSOLUTE_EXPIRES_MS
+            {
+                state.remember_cookie(row.cookie.bytes(), reason);
+            }
+        }
+        for (device, row) in rows.iter().filter(|(_, row)| row.removed.is_none()) {
+            let Some((key, id)) = row.key.as_deref().and_then(DeviceKey::parse) else {
+                state.remember_cookie(row.cookie.bytes(), GoneReason::Expired);
+                state.ended.push((*device, FloorDeviceRemoval::Expired));
+                continue;
+            };
+            if id != *device || row.origin != self.0.origin {
+                continue;
+            }
+            let last_used = row.last_used.unwrap_or(row.enrolled);
+            state.sessions.insert(
+                row.cookie.bytes(),
+                Session {
+                    id: *device,
+                    name: row.name.clone(),
+                    revoked: Arc::new(AtomicBool::new(false)),
+                    key,
+                    origin: row.origin.clone(),
+                    requests: Requests::default(),
+                    created: row.enrolled,
+                    first_used: row.first_used,
+                    last_used,
+                    journaled_use: last_used,
+                    acknowledged: row.acknowledged.is_some(),
+                    websockets: 0,
+                    terminal: None,
+                    login: false,
+                },
+            );
+        }
+        state.prune(now);
+        for victim in state.surplus(None) {
+            if let Some(device) = state.end(&victim, FloorDeviceRemoval::Replaced) {
+                state.ended.push((device, FloorDeviceRemoval::Replaced));
+            }
+        }
     }
 
     /// A narrower clone that can authenticate reads but cannot mint or exchange credentials.
@@ -744,8 +1611,15 @@ impl FloorSessions {
         self.0.authority_matches(host, origin)
     }
 
-    /// Mint one 60-second bootstrap while retaining only its digest.
+    /// Mint one link to open, which lives 60 seconds, retaining only its digest.
     pub fn issue(&self) -> Result<SessionIssueResult, IssueError> {
+        self.issue_for(LinkPurpose::Open)
+    }
+
+    /// Mint one link, retaining only its digest. A link to open lives 60 seconds and is refused
+    /// while four wait. A link to print lives 10 minutes in a table of its own, where a new one
+    /// replaces the oldest, so printing never takes a slot `dudes open` needs.
+    pub fn issue_for(&self, purpose: LinkPurpose) -> Result<SessionIssueResult, IssueError> {
         if !self.0.valid.load(Ordering::Acquire) {
             return Err(IssueError::RunEnded);
         }
@@ -754,8 +1628,23 @@ impl FloorSessions {
             return Err(IssueError::RunEnded);
         }
         state.prune(now);
-        if state.pending.len() >= MAX_PENDING_BOOTSTRAPS {
-            return Err(IssueError::Capacity);
+        match purpose {
+            LinkPurpose::Open if state.waiting(purpose) >= MAX_PENDING_OPEN_LINKS => {
+                return Err(IssueError::Capacity);
+            }
+            LinkPurpose::Print => {
+                while state.waiting(purpose) >= MAX_PENDING_PRINTED_LINKS {
+                    let oldest = state
+                        .pending
+                        .iter()
+                        .filter(|(_, link)| link.purpose == purpose)
+                        .min_by_key(|(key, link)| (link.issued.unix_millis(), **key))
+                        .map(|(key, _)| *key);
+                    let Some(oldest) = oldest else { break };
+                    state.pending.remove(&oldest);
+                }
+            }
+            LinkPurpose::Open => {}
         }
         let bootstrap = loop {
             let candidate = mint_secret();
@@ -763,86 +1652,256 @@ impl FloorSessions {
                 break candidate;
             }
         };
-        state.pending.insert(digest(bootstrap.as_bytes()), now);
+        state.pending.insert(
+            digest(bootstrap.as_bytes()),
+            Link {
+                issued: now,
+                purpose,
+            },
+        );
         Ok(SessionIssueResult {
             base_url: self.0.origin.clone(),
             bootstrap,
-            expires_in_s: SESSION_EXPIRES_IN_S,
+            expires_in_s: match purpose {
+                LinkPurpose::Open => SESSION_EXPIRES_IN_S,
+                LinkPurpose::Print => SESSION_PRINTED_EXPIRES_IN_S,
+            },
         })
     }
 
-    /// Exchange one valid bearer under this listener's exact Host and Origin.
-    #[must_use]
-    pub(crate) fn exchange(&self, host: &str, origin: &str, bootstrap: &[u8]) -> Option<Exchange> {
-        if !self.0.authority_matches(host, origin) {
-            return None;
+    /// Exchange one valid link under this listener's exact Host and Origin. The body is JSON: the
+    /// link, the browser's public key as SPKI DER in unpadded base64url, and the name the browser
+    /// gives itself.
+    ///
+    /// The browser becomes a device only once its enrolment is durable, and the cookie leaves only
+    /// after that. A body without a valid key is refused before the link is touched. A link is
+    /// spent by an attempt that gets past that, so a journal that cannot take the enrolment costs
+    /// the person one more `dudes open`. A key that is already a live device is replaced: its old
+    /// cookie stops working and the browser holds the new one.
+    pub(crate) fn exchange(&self, request: &Presentation<'_>) -> Result<Exchange, ExchangeRefusal> {
+        use ExchangeRefusal::{Forbidden, Malformed, Signature};
+        let (host, origin, body) = (request.host, request.origin, request.body);
+        if !self.0.authority_matches(host, origin) || !self.0.valid.load(Ordering::Acquire) {
+            return Err(Forbidden);
         }
-        if !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
-        let bootstrap = digest(bootstrap);
-        let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
-        if !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
-        state.prune(now);
-        let issued = state.pending.remove(&bootstrap)?;
-        if now.millis_since(issued) >= BOOTSTRAP_EXPIRES_MS
-            || state.sessions.len() >= MAX_LIVE_SESSIONS
+        let Enrolment {
+            link,
+            key: key_text,
+            name,
+        } = serde_json::from_slice(body).map_err(|_| Malformed)?;
+        let (device_key, device) = DeviceKey::parse(&key_text).ok_or(Malformed)?;
+        // The key proves itself before the link is looked at, so someone who holds a live link and
+        // knows a public key cannot enrol a key whose private half they lack.
+        let presented = request.signed.as_ref().ok_or(Signature)?;
+        let now = self.0.registry.lock_at_now().now;
+        if presented.origin != request.origin
+            || now.unix_millis().abs_diff(presented.millis) > SIGNATURE_WINDOW_MS.unsigned_abs()
+            || !device_key.verifies(device, &request.subject(), presented)
         {
-            return None;
+            return Err(Signature);
         }
-        let cookie = loop {
-            let candidate = mint_secret();
-            if !state.sessions.contains_key(&digest(candidate.as_bytes())) {
-                break candidate;
+        let name = clean_name(&name);
+        let link = digest(link.as_bytes());
+        let replaced = {
+            let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
+            if !self.0.valid.load(Ordering::Acquire) {
+                return Err(Forbidden);
             }
+            state.prune(now);
+            // Pruning has dropped every expired link, so a link found here is good, and nothing
+            // after this refuses for want of room: a full table makes room instead.
+            if state.pending.remove(&link).is_none() {
+                drop(state);
+                self.0.settle(None);
+                return Err(Forbidden);
+            }
+            state
+                .sessions
+                .iter()
+                .find(|(_, session)| session.id == device)
+                .map(|(cookie, _)| *cookie)
         };
-        let csrf = mint_secret();
-        state.sessions.insert(
-            digest(cookie.as_bytes()),
-            Session {
+        if let Some(cookie) = replaced
+            && self.0.remove(cookie, FloorDeviceRemoval::Replaced) == Removal::Unavailable
+        {
+            return Err(Forbidden);
+        }
+        let cookie = self.0.unused_cookie();
+        let key = digest(cookie.as_bytes());
+        if !self.0.record(FloorDeviceChange::Enroll {
+            device,
+            origin: self.0.origin.clone(),
+            name: name.clone(),
+            key: key_text,
+            cookie: Hex32::new(key),
+        }) {
+            return Err(Forbidden);
+        }
+        let (max_age, surplus, at) = {
+            let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
+            if !self.0.valid.load(Ordering::Acquire) {
+                return Err(Forbidden);
+            }
+            let session = Session {
+                id: device,
+                name: name.clone(),
                 revoked: Arc::new(AtomicBool::new(false)),
-                csrf: Some(digest(csrf.as_bytes())),
+                key: device_key,
+                origin: self.0.origin.clone(),
+                requests: {
+                    let mut requests = Requests::default();
+                    requests.admit(now, presented.request);
+                    requests
+                },
                 created: now,
+                first_used: None,
                 last_used: now,
+                journaled_use: now,
+                acknowledged: false,
                 websockets: 0,
                 terminal: None,
-                recovery_pending_until: None,
-            },
-        );
-        Some(Exchange { cookie, csrf })
+                login: false,
+            };
+            let max_age = session.cookie_max_age_s(now);
+            state.sessions.insert(key, session);
+            (max_age, state.surplus(Some(&key)), now)
+        };
+        self.0.announce(&DeviceEvent::Enrolled {
+            device: device.into(),
+            name,
+            at,
+        });
+        for victim in surplus {
+            self.0.remove(victim, FloorDeviceRemoval::Replaced);
+        }
+        self.0.settle(None);
+        Ok(Exchange {
+            cookie,
+            device: device.into(),
+            cookie_max_age_s: max_age,
+        })
     }
 
-    /// Rotate the CSRF carrier for one live, exact-origin session.
-    #[must_use]
-    pub(crate) fn recover(&self, host: &str, origin: &str, cookie: &str) -> Option<Recovery> {
-        if !self.0.authority_matches(host, origin) || !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
+    /// Whether this run still honours sessions. Once it is stopping, an unknown session is not
+    /// news about the session, because every session was just cleared.
+    pub(crate) fn is_running(&self) -> bool {
+        self.0.valid.load(Ordering::Acquire)
+    }
+
+    /// Why the device behind this cookie is gone, when it ended for a reason the person should
+    /// hear. The reason is not authority: it opens nothing, so the cookie alone earns it.
+    pub(crate) fn gone_reason(&self, cookie: &str) -> Option<GoneReason> {
         let cookie = digest(cookie.as_bytes());
-        let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
-        if !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
-        state.prune(now);
-        let session = state.sessions.get_mut(&cookie)?;
-        if session.websockets != 0
-            || session.terminal.is_some()
-            || session
-                .recovery_pending_until
-                .is_some_and(|until| now < until)
-        {
-            return None;
-        }
-        let csrf = mint_secret();
-        session.csrf = Some(digest(csrf.as_bytes()));
-        session.last_used = now;
-        session.recovery_pending_until = Some(now.saturating_add_millis(RECOVERY_WINDOW_MS));
-        Some(Recovery { csrf })
+        let state = self.0.registry.lock();
+        state
+            .remembered
+            .iter()
+            .rev()
+            .find(|ended| ended.cookie == cookie)
+            .map(|ended| ended.reason)
     }
 
-    /// End this run's authority before its listener and connection owners are released.
+    /// Whether the cookie names a device that is live now. With `sweep`, a device that ran out is
+    /// ended and remembered here, so the refusal that follows can say why. A request that only
+    /// reads leaves the registry as it found it.
+    pub(crate) fn knows(&self, cookie: &str, sweep: bool) -> bool {
+        let cookie = digest(cookie.as_bytes());
+        let live = {
+            let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
+            if sweep {
+                state.prune(now);
+            }
+            self.0.valid.load(Ordering::Acquire)
+                && state.sessions.get(&cookie).is_some_and(|session| {
+                    session.live_at(now) && !session.revoked.load(Ordering::Acquire)
+                })
+        };
+        if sweep {
+            self.0.settle(None);
+        }
+        live
+    }
+
+    /// The signed-in devices, newest sign-in first. `me` marks the asking browser.
+    pub(crate) fn devices(&self, me: Option<&SessionIdentity>) -> Vec<DeviceView> {
+        let me = me.map(|identity| identity.cookie);
+        let views = {
+            let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
+            state.prune(now);
+            let mut views: Vec<_> = state
+                .sessions
+                .iter()
+                .map(|(key, session)| session.view(key, me.as_ref()))
+                .collect();
+            views.sort_by(|a, b| {
+                (b.signed_in.unix_millis(), b.device).cmp(&(a.signed_in.unix_millis(), a.device))
+            });
+            views
+        };
+        self.0.settle(None);
+        views
+    }
+
+    /// Sign one device out by its id.
+    pub(crate) fn remove_device(&self, device: DeviceId, reason: FloorDeviceRemoval) -> Removal {
+        let device = Hex32::from(device);
+        let key = self
+            .0
+            .registry
+            .lock()
+            .sessions
+            .iter()
+            .find(|(_, session)| session.id == device)
+            .map(|(key, _)| *key);
+        let outcome = key.map_or(Removal::Unknown, |key| self.0.remove(key, reason));
+        self.0.settle(None);
+        outcome
+    }
+
+    /// Keep a new device: someone looked at it and answered the notice. A device cannot keep
+    /// itself, because whoever holds it already could.
+    pub(crate) fn keep_device(&self, device: DeviceId, by: &SessionIdentity) -> Keep {
+        self.keep(device, Some(by.cookie))
+    }
+
+    /// Keep a new device on the operator's word, which no browser has to give.
+    pub(crate) fn keep_device_as_operator(&self, device: DeviceId) -> Keep {
+        self.keep(device, None)
+    }
+
+    fn keep(&self, device: DeviceId, by: Option<[u8; 32]>) -> Keep {
+        let device = Hex32::from(device);
+        let found = {
+            let state = self.0.registry.lock();
+            state
+                .sessions
+                .iter()
+                .find(|(_, session)| session.id == device)
+                .map(|(key, session)| (*key, session.acknowledged))
+        };
+        let Some((key, acknowledged)) = found else {
+            return Keep::Unknown;
+        };
+        if by == Some(key) {
+            return Keep::Own;
+        }
+        if acknowledged {
+            return Keep::Kept;
+        }
+        if !self.0.record(FloorDeviceChange::Acknowledge(device)) {
+            return Keep::Unavailable;
+        }
+        if let Some(session) = self.0.registry.lock().sessions.get_mut(&key) {
+            session.acknowledged = true;
+        }
+        self.0.announce(&DeviceEvent::Acknowledged {
+            device: device.into(),
+        });
+        Keep::Kept
+    }
+
+    /// End this run's authority before its listener and connection owners are released. The
+    /// devices stay in the journal: only this run's hold on them ends.
     pub(crate) fn invalidate(&self) {
         let mut state = self.0.registry.lock();
         self.0.valid.store(false, Ordering::Release);
@@ -852,14 +1911,16 @@ impl FloorSessions {
         state.pending.clear();
         state.sessions.clear();
         state.inflight.clear();
+        state.ended.clear();
     }
 }
 
-/// The Floor sessions and the run-local counts that follow them, which `dudes upgrade` carries
+/// The Floor's devices and the run-local counts that follow them, which `dudes upgrade` carries
 /// across its restart through `floor.session.export` and `floor.session.import`.
 ///
-/// Lock order is the session registry, then a count's own lock. No count's lock is held while
-/// the registry is taken.
+/// The devices themselves come back from the journal, so the export carries only what the
+/// journal does not hold: the counts. Lock order is the session registry, then a count's own
+/// lock. No count's lock is held while the registry is taken.
 #[derive(Clone)]
 pub(crate) struct FloorCarry {
     sessions: FloorSessions,
@@ -884,8 +1945,8 @@ impl FloorCarry {
         &self.sessions
     }
 
-    /// Every live session as this run holds it. Nothing is refreshed, and no cookie, CSRF secret,
-    /// pending bootstrap, terminal grant or reservation leaves.
+    /// Every live device's counts as this run holds them. Nothing is refreshed, and no cookie,
+    /// secret, link, terminal grant or reservation leaves: only digests and counts do.
     ///
     /// A run with no identity exports nothing: an import could not tell its own run from another.
     pub(crate) fn export(&self, run: Option<&str>) -> SessionExport {
@@ -924,10 +1985,11 @@ impl FloorCarry {
         exported
     }
 
-    /// Admit the sessions an earlier run exported, and say how many were admitted. Each one
-    /// becomes the session it was, except that it matches no CSRF secret until recovery issues
-    /// one. A run takes one import, from a run other than itself, and any attempt that passes the run check uses it up,
-    /// whatever else it is refused for.
+    /// Take the counts an earlier run exported for the devices this run holds, and say how many
+    /// devices that was. An entry for a digest this run does not hold is ignored, which is every
+    /// entry an earlier release exported, because it carried sessions and not devices. A run
+    /// takes one import, from a run other than itself, and any attempt that passes the run check
+    /// uses it up, whatever else it is refused for.
     pub(crate) fn import(&self, run: Option<&str>, exported: &SessionExport) -> u32 {
         let Some(run) = run else {
             return 0;
@@ -945,37 +2007,16 @@ impl FloorCarry {
         let mut restored = 0;
         for entry in &exported.sessions {
             let key = entry.digest.bytes();
-            let session = Session {
-                revoked: Arc::new(AtomicBool::new(false)),
-                csrf: None,
-                created: entry.created,
-                last_used: entry.last_used,
-                websockets: 0,
-                terminal: None,
-                recovery_pending_until: None,
-            };
-            if now.millis_since(entry.created) < 0
-                || now.millis_since(entry.last_used) < 0
-                || !session.live_at(now)
-                || state.sessions.contains_key(&key)
-                || state.sessions.len() >= MAX_LIVE_SESSIONS
-            {
+            if !state.sessions.contains_key(&key) {
                 continue;
             }
             if let Some(tickets) = &self.tickets {
                 tickets.seed(key, entry.ticket_creates, entry.ticket_assigns);
             }
             self.checks.seed(entry.digest, entry.check_runs);
-            state.sessions.insert(key, session);
             restored += 1;
         }
         restored
-    }
-}
-
-impl Inner {
-    fn authority_matches(&self, host: &str, origin: &str) -> bool {
-        host == self.host && origin == self.origin
     }
 }
 
@@ -1013,6 +2054,7 @@ mod tests {
 
     use dudes_supervisor::testing::FakeClock;
 
+    use super::test_support::Joined;
     use super::*;
 
     struct PermitProbeClock {
@@ -1050,10 +2092,10 @@ mod tests {
         let origin = "http://127.0.0.1:43123";
         let issued = sessions.issue().expect("bootstrap");
         let exchange = sessions
-            .exchange(host, origin, issued.bootstrap.as_bytes())
+            .join(host, origin, &issued.bootstrap)
             .expect("session");
         let identity = sessions
-            .authorize_onboard(host, origin, &exchange.cookie, &exchange.csrf)
+            .enter(host, origin, &exchange)
             .expect("admitted request");
         let first = identity.permit().expect("first append permit");
         let (sampled_tx, sampled_rx) = mpsc::channel();
@@ -1107,10 +2149,10 @@ mod tests {
         let origin = "http://127.0.0.1:43125";
         let first = sessions.issue().expect("first bootstrap");
         let first = sessions
-            .exchange(host, origin, first.bootstrap.as_bytes())
+            .join(host, origin, &first.bootstrap)
             .expect("first session");
         let identity = sessions
-            .authorize_onboard(host, origin, &first.cookie, &first.csrf)
+            .enter(host, origin, &first)
             .expect("first admitted identity");
         let attempt = Hex32::new([0; 32]);
         let digest = Hex32::new([1; 32]);
@@ -1120,10 +2162,10 @@ mod tests {
         };
         let second = sessions.issue().expect("other bootstrap");
         let second = sessions
-            .exchange(host, origin, second.bootstrap.as_bytes())
+            .join(host, origin, &second.bootstrap)
             .expect("other session");
         let holder = sessions
-            .authorize_onboard(host, origin, &second.cookie, &second.csrf)
+            .enter(host, origin, &second)
             .expect("other admitted identity");
         let held = holder.permit().expect("other session holds registry lock");
         let (sampled_tx, sampled_rx) = mpsc::channel();
@@ -1179,14 +2221,14 @@ mod tests {
         let origin = "http://127.0.0.1:43126";
         let first = sessions.issue().expect("first bootstrap");
         let first = sessions
-            .exchange(host, origin, first.bootstrap.as_bytes())
+            .join(host, origin, &first.bootstrap)
             .expect("first session");
         let second = sessions.issue().expect("other bootstrap");
         let second = sessions
-            .exchange(host, origin, second.bootstrap.as_bytes())
+            .join(host, origin, &second.bootstrap)
             .expect("other session");
         let holder = sessions
-            .authorize_onboard(host, origin, &second.cookie, &second.csrf)
+            .enter(host, origin, &second)
             .expect("other admitted identity");
         let held = holder.permit().expect("other session holds registry lock");
         let (sampled_tx, sampled_rx) = mpsc::channel();
@@ -1199,9 +2241,7 @@ mod tests {
         let started = Arc::clone(&barrier);
         let follower = thread::spawn(move || {
             started.wait();
-            waiting
-                .authorize_onboard(host, origin, &first.cookie, &first.csrf)
-                .is_none()
+            waiting.enter(host, origin, &first).is_none()
         });
         barrier.wait();
         let sampled_while_held = sampled_rx
@@ -1238,17 +2278,17 @@ mod tests {
         let origin = "http://127.0.0.1:43127";
         let first = sessions.issue().expect("first bootstrap");
         let first = sessions
-            .exchange(host, origin, first.bootstrap.as_bytes())
+            .join(host, origin, &first.bootstrap)
             .expect("first session");
         let identity = sessions
-            .authorize_onboard(host, origin, &first.cookie, &first.csrf)
+            .enter(host, origin, &first)
             .expect("first admitted identity");
         let second = sessions.issue().expect("other bootstrap");
         let second = sessions
-            .exchange(host, origin, second.bootstrap.as_bytes())
+            .join(host, origin, &second.bootstrap)
             .expect("other session");
         let holder = sessions
-            .authorize_onboard(host, origin, &second.cookie, &second.csrf)
+            .enter(host, origin, &second)
             .expect("other admitted identity");
         let held = holder.permit().expect("other session holds registry lock");
         let (sampled_tx, sampled_rx) = mpsc::channel();
@@ -1300,10 +2340,10 @@ mod tests {
         (clock, sessions)
     }
 
-    fn probe_session(sessions: &FloorSessions) -> Exchange {
+    fn probe_session(sessions: &FloorSessions) -> Joined {
         let issued = sessions.issue().expect("bootstrap");
         sessions
-            .exchange(PROBE_HOST, PROBE_ORIGIN, issued.bootstrap.as_bytes())
+            .join(PROBE_HOST, PROBE_ORIGIN, &issued.bootstrap)
             .expect("live session")
     }
 
@@ -1311,7 +2351,7 @@ mod tests {
     fn probe_holder(sessions: &FloorSessions) -> SessionIdentity {
         let other = probe_session(sessions);
         sessions
-            .authorize_onboard(PROBE_HOST, PROBE_ORIGIN, &other.cookie, &other.csrf)
+            .enter(PROBE_HOST, PROBE_ORIGIN, &other)
             .expect("other admitted identity")
     }
 
@@ -1360,12 +2400,11 @@ mod tests {
         let pending = sessions.issue().expect("pending bootstrap");
         let holder = probe_holder(&sessions);
         let held = holder.permit().expect("other session holds registry lock");
-        let (exchanged, sampled_while_held) =
-            behind_permit(&clock, held, BOOTSTRAP_EXPIRES_MS, || {
-                sessions
-                    .exchange(PROBE_HOST, PROBE_ORIGIN, pending.bootstrap.as_bytes())
-                    .is_some()
-            });
+        let (exchanged, sampled_while_held) = behind_permit(&clock, held, OPEN_LINK_MS, || {
+            sessions
+                .join(PROBE_HOST, PROBE_ORIGIN, &pending.bootstrap)
+                .is_some()
+        });
         assert!(
             !sampled_while_held,
             "exchange sampled expiry before the registry lock"
@@ -1383,10 +2422,9 @@ mod tests {
         let holder = probe_holder(&sessions);
         let held = holder.permit().expect("other session holds registry lock");
         let authorizer = sessions.authorizer();
+        let request = reader.present(PROBE_HOST, PROBE_ORIGIN, IDLE_EXPIRES_MS);
         let (admitted, sampled_while_held) = behind_permit(&clock, held, IDLE_EXPIRES_MS, || {
-            authorizer
-                .authorize_read(PROBE_HOST, PROBE_ORIGIN, &reader.cookie, &reader.csrf)
-                .is_some()
+            authorizer.authorize_read(&request).is_ok()
         });
         assert!(
             !sampled_while_held,
@@ -1407,7 +2445,7 @@ mod tests {
         let authorizer = sessions.authorizer();
         let (opened, sampled_while_held) = behind_permit(&clock, held, IDLE_EXPIRES_MS, || {
             authorizer
-                .authorize_stream(PROBE_HOST, PROBE_ORIGIN, &browser.cookie, &browser.csrf)
+                .stream(PROBE_HOST, PROBE_ORIGIN, &browser)
                 .is_some()
         });
         assert!(
@@ -1426,7 +2464,7 @@ mod tests {
         let owner = probe_session(&sessions);
         let stream = sessions
             .authorizer()
-            .authorize_stream(PROBE_HOST, PROBE_ORIGIN, &owner.cookie, &owner.csrf)
+            .stream(PROBE_HOST, PROBE_ORIGIN, &owner)
             .expect("one stream slot");
         let holder = probe_holder(&sessions);
         let held = holder.permit().expect("other session holds registry lock");
@@ -1448,7 +2486,7 @@ mod tests {
         let owner = probe_session(&sessions);
         let stream = sessions
             .authorizer()
-            .authorize_stream(PROBE_HOST, PROBE_ORIGIN, &owner.cookie, &owner.csrf)
+            .stream(PROBE_HOST, PROBE_ORIGIN, &owner)
             .expect("one stream slot");
         let holder = probe_holder(&sessions);
         let held = holder.permit().expect("other session holds registry lock");
@@ -1465,318 +2503,7 @@ mod tests {
     }
 
     #[test]
-    fn absolute_expired_recovery_after_registry_lock_wait_is_refused() {
-        let (clock, sessions) = probe_registry();
-        let recovering = probe_session(&sessions);
-        let authorizer = sessions.authorizer();
-        for _ in 0..16 {
-            clock.inner.advance(29 * 60_000);
-            assert!(
-                authorizer
-                    .authorize_read(
-                        PROBE_HOST,
-                        PROBE_ORIGIN,
-                        &recovering.cookie,
-                        &recovering.csrf
-                    )
-                    .is_some(),
-                "activity keeps the idle deadline fresh"
-            );
-        }
-        // One minute short of the absolute bound, fifteen minutes idle.
-        clock
-            .inner
-            .advance(ABSOLUTE_EXPIRES_MS - 16 * 29 * 60_000 - 60_000);
-        let holder = probe_holder(&sessions);
-        let held = holder.permit().expect("other session holds registry lock");
-        let (recovered, sampled_while_held) = behind_permit(&clock, held, 60_000, || {
-            sessions
-                .recover(PROBE_HOST, PROBE_ORIGIN, &recovering.cookie)
-                .is_some()
-        });
-        assert!(
-            !sampled_while_held,
-            "recovery sampled expiry before the registry lock"
-        );
-        assert!(
-            !recovered,
-            "a session that reached its absolute bound during the wait cannot recover"
-        );
-    }
-
-    fn live_session(
-        clock: Arc<FakeClock>,
-    ) -> (FloorSessions, &'static str, &'static str, Exchange) {
-        let sessions =
-            FloorSessions::new("127.0.0.1:43123".parse().expect("loopback address"), clock);
-        let host = "127.0.0.1:43123";
-        let origin = "http://127.0.0.1:43123";
-        let issued = sessions.issue().expect("one bootstrap");
-        let exchange = sessions
-            .exchange(host, origin, issued.bootstrap.as_bytes())
-            .expect("one live session");
-        (sessions, host, origin, exchange)
-    }
-
-    #[test]
-    fn recover_installs_rotated_digest_before_return() {
-        let clock = Arc::new(FakeClock::frozen(0));
-        let (sessions, host, origin, exchange) = live_session(clock);
-
-        let recovered = sessions
-            .recover(host, origin, &exchange.cookie)
-            .expect("the live zero-socket session recovers");
-
-        assert_eq!(recovered.csrf.len(), 43);
-        assert!(
-            sessions
-                .authorizer()
-                .authorize_read(host, origin, &exchange.cookie, &recovered.csrf)
-                .is_some(),
-            "the returned nonce is installed before it can cross the response seam"
-        );
-    }
-
-    #[test]
-    fn recover_retries_wait_for_delayed_socket_drop() {
-        let clock = Arc::new(FakeClock::frozen(0));
-        let (sessions, host, origin, exchange) = live_session(Arc::clone(&clock));
-        let held = sessions
-            .authorizer()
-            .authorize_stream(host, origin, &exchange.cookie, &exchange.csrf)
-            .expect("the old page owns one socket");
-
-        for delay in [0, 250, 500] {
-            clock.advance(delay);
-            assert!(
-                sessions.recover(host, origin, &exchange.cookie).is_none(),
-                "recovery waits while the old socket is still owned"
-            );
-        }
-        drop(held);
-
-        let recovered = sessions
-            .recover(host, origin, &exchange.cookie)
-            .expect("the first retry after drop wins");
-        let winner = sessions
-            .authorizer()
-            .authorize_stream(host, origin, &exchange.cookie, &recovered.csrf)
-            .expect("the winner opens with its rotated nonce");
-        for delay in [1_000, 2_000, 4_000] {
-            clock.advance(delay);
-            assert!(
-                sessions.recover(host, origin, &exchange.cookie).is_none(),
-                "loser retries cannot rotate underneath the winner"
-            );
-        }
-        drop(winner);
-    }
-
-    #[test]
-    fn recover_serializes_simultaneous_callers() {
-        let clock = Arc::new(FakeClock::frozen(0));
-        let (sessions, host, origin, exchange) = live_session(Arc::clone(&clock));
-        let barrier = Arc::new(Barrier::new(3));
-        let mut workers = Vec::new();
-        for _ in 0..2 {
-            let sessions = sessions.clone();
-            let barrier = Arc::clone(&barrier);
-            let cookie = exchange.cookie.clone();
-            workers.push(thread::spawn(move || {
-                barrier.wait();
-                sessions.recover(host, origin, &cookie)
-            }));
-        }
-        barrier.wait();
-        let recovered: Vec<_> = workers
-            .into_iter()
-            .map(|worker| worker.join().expect("recovery worker"))
-            .collect();
-        assert_eq!(
-            recovered.iter().filter(|result| result.is_some()).count(),
-            1,
-            "one lock admission produces one winning page"
-        );
-
-        clock.advance(1_999);
-        assert!(sessions.recover(host, origin, &exchange.cookie).is_none());
-        clock.advance(1);
-        assert!(
-            sessions.recover(host, origin, &exchange.cookie).is_some(),
-            "an unused winner can be replaced at window equality"
-        );
-    }
-
-    #[test]
-    fn recover_rejects_old_csrf_after_rotation() {
-        let clock = Arc::new(FakeClock::frozen(0));
-        let (sessions, host, origin, exchange) = live_session(clock);
-        let recovered = sessions
-            .recover(host, origin, &exchange.cookie)
-            .expect("recovery rotates the nonce");
-
-        assert!(
-            sessions
-                .authorizer()
-                .authorize_stream(host, origin, &exchange.cookie, &exchange.csrf)
-                .is_none(),
-            "the previous nonce fails immediately"
-        );
-        assert!(
-            sessions
-                .authorizer()
-                .authorize_stream(host, origin, &exchange.cookie, &recovered.csrf)
-                .is_some(),
-            "the returned nonce is the only current nonce"
-        );
-    }
-
-    #[test]
-    fn recover_winner_stream_clears_pending_window() {
-        let clock = Arc::new(FakeClock::frozen(0));
-        let (sessions, host, origin, exchange) = live_session(clock);
-        let recovered = sessions
-            .recover(host, origin, &exchange.cookie)
-            .expect("one recovery");
-        let winner = sessions
-            .authorizer()
-            .authorize_stream(host, origin, &exchange.cookie, &recovered.csrf)
-            .expect("the recovery winner opens");
-        drop(winner);
-
-        assert!(
-            sessions.recover(host, origin, &exchange.cookie).is_some(),
-            "a successful winner clears serialization before two seconds"
-        );
-    }
-
-    #[test]
-    fn recover_churn_preserves_absolute_age_capacity_and_two_slots() {
-        let clock = Arc::new(FakeClock::frozen(0));
-        let (sessions, host, origin, exchange) = live_session(Arc::clone(&clock));
-        let mut csrf = exchange.csrf;
-
-        for _ in 0..3 {
-            clock.advance(2_000);
-            csrf = sessions
-                .recover(host, origin, &exchange.cookie)
-                .expect("zero-socket churn stays in one session row")
-                .csrf;
-        }
-        for _ in 1..MAX_LIVE_SESSIONS {
-            let issued = sessions.issue().expect("remaining session capacity");
-            assert!(
-                sessions
-                    .exchange(host, origin, issued.bootstrap.as_bytes())
-                    .is_some(),
-                "recovery did not grow the live-session table"
-            );
-        }
-        let overflow = sessions.issue().expect("one pending bootstrap");
-        assert!(
-            sessions
-                .exchange(host, origin, overflow.bootstrap.as_bytes())
-                .is_none(),
-            "four live sessions remain the bound"
-        );
-
-        let first = sessions
-            .authorizer()
-            .authorize_stream(host, origin, &exchange.cookie, &csrf)
-            .expect("first overlap slot");
-        let second = sessions
-            .authorizer()
-            .authorize_stream(host, origin, &exchange.cookie, &csrf)
-            .expect("second overlap slot");
-        assert!(
-            sessions
-                .authorizer()
-                .authorize_stream(host, origin, &exchange.cookie, &csrf)
-                .is_none(),
-            "recovery does not expand the two-slot bound"
-        );
-        drop(first);
-        drop(second);
-
-        for _ in 0..16 {
-            clock.advance(29 * 60_000);
-            let _ = sessions
-                .recover(host, origin, &exchange.cookie)
-                .expect("activity below both lifetime bounds");
-        }
-        clock.advance(16 * 60_000 - 6_000);
-        assert!(
-            sessions.recover(host, origin, &exchange.cookie).is_none(),
-            "recovery never resets the eight-hour creation boundary"
-        );
-    }
-
-    #[test]
-    fn recover_refuses_idle_absolute_and_invalidated_with_fresh_controls() {
-        let idle_clock = Arc::new(FakeClock::frozen(0));
-        let (idle, host, origin, idle_exchange) = live_session(Arc::clone(&idle_clock));
-        idle_clock.advance(30 * 60_000);
-        assert!(idle.recover(host, origin, &idle_exchange.cookie).is_none());
-        let fresh = idle.issue().expect("fresh bootstrap beside idle refusal");
-        assert!(
-            idle.exchange(host, origin, fresh.bootstrap.as_bytes())
-                .is_some()
-        );
-
-        let absolute_clock = Arc::new(FakeClock::frozen(0));
-        let (absolute, host, origin, absolute_exchange) = live_session(Arc::clone(&absolute_clock));
-        for _ in 0..16 {
-            absolute_clock.advance(29 * 60_000);
-            assert!(
-                absolute
-                    .recover(host, origin, &absolute_exchange.cookie)
-                    .is_some()
-            );
-        }
-        absolute_clock.advance(16 * 60_000);
-        assert!(
-            absolute
-                .recover(host, origin, &absolute_exchange.cookie)
-                .is_none()
-        );
-        let fresh = absolute
-            .issue()
-            .expect("fresh bootstrap beside absolute refusal");
-        assert!(
-            absolute
-                .exchange(host, origin, fresh.bootstrap.as_bytes())
-                .is_some()
-        );
-
-        let ended_clock = Arc::new(FakeClock::frozen(0));
-        let (ended, host, origin, ended_exchange) = live_session(Arc::clone(&ended_clock));
-        ended.invalidate();
-        assert!(
-            ended.0.registry.lock().sessions.is_empty(),
-            "invalidation carries no session row into ended run state"
-        );
-        assert!(
-            ended
-                .recover(host, origin, &ended_exchange.cookie)
-                .is_none()
-        );
-        let (successor, host, origin, successor_exchange) = live_session(ended_clock);
-        assert!(
-            successor
-                .authorizer()
-                .authorize_read(
-                    host,
-                    origin,
-                    &successor_exchange.cookie,
-                    &successor_exchange.csrf,
-                )
-                .is_some(),
-            "a fresh successor bootstrap succeeds beside invalidation"
-        );
-    }
-
-    #[test]
-    fn live_and_pending_tables_are_bounded_at_four() {
+    fn the_device_table_is_bounded_at_eight_and_the_open_link_table_at_four() {
         let clock = Arc::new(FakeClock::frozen(0));
         let sessions = FloorSessions::new(
             "127.0.0.1:43123".parse().expect("loopback address"),
@@ -1785,28 +2512,1252 @@ mod tests {
         let host = "127.0.0.1:43123";
         let origin = "http://127.0.0.1:43123";
 
-        for _ in 0..MAX_LIVE_SESSIONS {
-            let issued = sessions.issue().expect("one bounded bootstrap");
-            assert!(
-                sessions
-                    .exchange(host, origin, issued.bootstrap.as_bytes())
-                    .is_some()
-            );
+        for _ in 0..MAX_DEVICES {
+            let issued = sessions.issue().expect("one bounded link");
+            assert!(sessions.join(host, origin, &issued.bootstrap).is_some());
         }
-        let fifth = sessions.issue().expect("a pending bootstrap still fits");
+        let ninth = sessions.issue().expect("a pending link still fits");
         assert!(
-            sessions
-                .exchange(host, origin, fifth.bootstrap.as_bytes())
-                .is_none(),
-            "a fifth live session is refused"
+            sessions.join(host, origin, &ninth.bootstrap).is_some(),
+            "a ninth sign-in makes room instead of being refused"
         );
+        assert_eq!(sessions.registry_counts_for_test().1, MAX_DEVICES);
 
-        for _ in 0..MAX_PENDING_BOOTSTRAPS {
-            sessions.issue().expect("one of four pending bootstraps");
+        for _ in 0..MAX_PENDING_OPEN_LINKS {
+            sessions.issue().expect("one of four pending links");
         }
         assert_eq!(sessions.issue(), Err(IssueError::Capacity));
-        clock.advance(BOOTSTRAP_EXPIRES_MS);
+        clock.advance(OPEN_LINK_MS);
         assert!(sessions.issue().is_ok(), "expiry releases pending capacity");
+    }
+
+    const HOUR_MS: i64 = 60 * 60_000;
+
+    /// Answer a new device's notice as another device would, so it ranks as an ordinary one.
+    fn keep_for_test(sessions: &FloorSessions, session: &Joined) {
+        assert!(acts(sessions, session), "a kept device has been used");
+        let mut state = sessions.0.registry.lock();
+        let device = state
+            .sessions
+            .get_mut(&digest(session.cookie.as_bytes()))
+            .expect("signed in");
+        device.acknowledged = true;
+    }
+    const LIFETIME_HOST: &str = "127.0.0.1:43124";
+    const LIFETIME_ORIGIN: &str = "http://127.0.0.1:43124";
+
+    fn lifetime_sessions() -> (Arc<FakeClock>, FloorSessions) {
+        let clock = Arc::new(FakeClock::frozen(0));
+        let sessions = FloorSessions::new(
+            LIFETIME_HOST.parse().expect("loopback address"),
+            Arc::clone(&clock),
+        );
+        (clock, sessions)
+    }
+
+    fn sign_in(sessions: &FloorSessions) -> Joined {
+        let issued = sessions.issue().expect("a bootstrap");
+        sessions
+            .join(LIFETIME_HOST, LIFETIME_ORIGIN, &issued.bootstrap)
+            .expect("a session")
+    }
+
+    fn acts(sessions: &FloorSessions, session: &Joined) -> bool {
+        sessions
+            .enter(LIFETIME_HOST, LIFETIME_ORIGIN, session)
+            .is_some()
+    }
+
+    fn watch(sessions: &FloorSessions, session: &Joined, visible: bool) -> StreamSession {
+        let stream = sessions
+            .authorizer()
+            .stream(LIFETIME_HOST, LIFETIME_ORIGIN, session)
+            .expect("an open stream");
+        stream.set_visible(visible);
+        stream
+    }
+
+    #[test]
+    fn a_visible_open_stream_keeps_its_session_and_a_hidden_one_does_not() {
+        let (clock, sessions) = lifetime_sessions();
+        let (shown, hidden) = (sign_in(&sessions), sign_in(&sessions));
+        let (shown_stream, hidden_stream) = (
+            watch(&sessions, &shown, true),
+            watch(&sessions, &hidden, false),
+        );
+        for _ in 0..31 {
+            clock.advance(DAY_MS);
+            assert!(shown_stream.renew_if_watched());
+            let _ = hidden_stream.renew_if_watched();
+        }
+        assert!(acts(&sessions, &shown), "31 days on screen, no requests");
+        assert!(
+            !acts(&sessions, &hidden),
+            "a hidden tab ended after 30 days"
+        );
+        assert!(!hidden_stream.renew_if_watched());
+        assert_eq!(shown_stream.renew_if_watched(), acts(&sessions, &shown));
+    }
+
+    #[test]
+    fn watching_never_outlasts_ninety_days_and_renews_at_most_once_a_minute() {
+        let (clock, sessions) = lifetime_sessions();
+        let shown = sign_in(&sessions);
+        let stream = watch(&sessions, &shown, true);
+        clock.advance(59_000);
+        assert!(stream.renew_if_watched());
+        clock.advance(30 * DAY_MS + 30_000 - 59_000);
+        assert!(
+            !acts(&sessions, &shown),
+            "a renewal inside a minute did not move the idle time"
+        );
+        let (clock, sessions) = lifetime_sessions();
+        let shown = sign_in(&sessions);
+        let stream = watch(&sessions, &shown, true);
+        for _ in 0..89 * 24 {
+            clock.advance(HOUR_MS);
+            assert!(stream.renew_if_watched());
+        }
+        clock.advance(24 * HOUR_MS);
+        assert!(!stream.renew_if_watched(), "the 90-day limit still ends it");
+        assert!(!acts(&sessions, &shown));
+    }
+
+    #[test]
+    fn a_watched_tab_is_not_the_one_a_ninth_sign_in_ends() {
+        let (clock, sessions) = lifetime_sessions();
+        let live: Vec<_> = (0..MAX_DEVICES)
+            .map(|_| {
+                let session = sign_in(&sessions);
+                keep_for_test(&sessions, &session);
+                clock.advance(1_000);
+                session
+            })
+            .collect();
+        let stream = watch(&sessions, &live[0], true);
+        clock.advance(HOUR_MS);
+        assert!(stream.renew_if_watched());
+        clock.advance(1_000);
+        let ninth = sign_in(&sessions);
+        assert!(
+            acts(&sessions, &live[0]),
+            "the watched oldest sign-in stays"
+        );
+        assert!(!acts(&sessions, &live[1]), "the idle one ended instead");
+        assert!(acts(&sessions, &ninth));
+    }
+
+    #[test]
+    fn a_device_ends_after_thirty_days_idle_and_after_ninety_days_in_all() {
+        let (clock, sessions) = lifetime_sessions();
+        let idle = sign_in(&sessions);
+        let busy = sign_in(&sessions);
+        assert!(acts(&sessions, &idle) && acts(&sessions, &busy));
+        clock.advance(30 * DAY_MS - 1);
+        assert!(
+            acts(&sessions, &busy),
+            "30 days less a millisecond is still live"
+        );
+        clock.advance(1);
+        assert!(!acts(&sessions, &idle), "30 days idle ends it");
+        assert!(acts(&sessions, &busy), "use renewed the other");
+
+        for _ in 0..2 {
+            clock.advance(29 * DAY_MS);
+            assert!(acts(&sessions, &busy), "use keeps it for 90 days");
+        }
+        clock.advance(2 * DAY_MS);
+        assert!(
+            !acts(&sessions, &busy),
+            "90 days in all end it, however busy"
+        );
+    }
+
+    #[test]
+    fn a_device_that_makes_no_request_within_a_day_of_signing_in_ends() {
+        let (clock, sessions) = lifetime_sessions();
+        let unused = sign_in(&sessions);
+        let used = sign_in(&sessions);
+        assert!(acts(&sessions, &used));
+        clock.advance(DAY_MS - 1);
+        assert!(acts(&sessions, &used));
+        clock.advance(1);
+        assert!(
+            !acts(&sessions, &unused),
+            "a device nobody used ends at a day"
+        );
+        assert!(acts(&sessions, &used), "a device in use does not");
+        assert_eq!(
+            sessions.gone_reason(&unused.cookie),
+            Some(GoneReason::Expired)
+        );
+    }
+
+    #[test]
+    fn the_cookie_is_kept_for_the_soonest_limit_that_applies() {
+        let (clock, sessions) = lifetime_sessions();
+        let session = sign_in(&sessions);
+        assert_eq!(
+            session.cookie_max_age_s,
+            24 * 3600,
+            "a device nobody has used is kept a day"
+        );
+        let identity = |s: &Joined| {
+            sessions
+                .enter(LIFETIME_HOST, LIFETIME_ORIGIN, s)
+                .expect("live")
+        };
+        clock.advance(6 * HOUR_MS);
+        assert_eq!(identity(&session).cookie_max_age_s(), Some(30 * 24 * 3600));
+        for _ in 0..3 {
+            clock.advance(29 * DAY_MS);
+            identity(&session);
+        }
+        clock.advance(2 * DAY_MS);
+        let near_the_end = 90 * 24 * 3600 - (6 + 89 * 24) * 3600;
+        assert_eq!(identity(&session).cookie_max_age_s(), Some(near_the_end));
+    }
+
+    #[test]
+    fn signing_out_ends_the_session_and_closes_its_sockets() {
+        let (_, sessions) = lifetime_sessions();
+        let leaving = sign_in(&sessions);
+        let staying = sign_in(&sessions);
+        let socket = sessions
+            .authorizer()
+            .stream(LIFETIME_HOST, LIFETIME_ORIGIN, &leaving)
+            .expect("a stream slot");
+        let kept = sessions
+            .authorizer()
+            .stream(LIFETIME_HOST, LIFETIME_ORIGIN, &staying)
+            .expect("a stream slot");
+        assert!(socket.is_valid() && kept.is_valid());
+
+        sessions
+            .standing(LIFETIME_HOST, LIFETIME_ORIGIN, &leaving)
+            .expect("known")
+            .sign_out();
+
+        assert!(!socket.is_valid(), "its socket closes at the next check");
+        assert!(!acts(&sessions, &leaving), "its cookie acts for no one");
+        assert!(
+            sessions
+                .standing(LIFETIME_HOST, LIFETIME_ORIGIN, &leaving)
+                .is_none(),
+            "the daemon now says the session is unknown"
+        );
+        assert!(kept.is_valid() && acts(&sessions, &staying));
+    }
+}
+
+#[cfg(test)]
+mod device_tests {
+    use std::sync::atomic::AtomicBool;
+
+    use dudes_proto::{Entry, Record};
+    use dudes_supervisor::World;
+    use dudes_supervisor::testing::FakeClock;
+    use dudes_types::Lsn;
+
+    use super::test_support::Joined;
+    use super::*;
+    use crate::floor_browser::Browser;
+
+    const HOST: &str = "127.0.0.1:43301";
+    const ORIGIN: &str = "http://127.0.0.1:43301";
+    const DAY: i64 = DAY_MS;
+
+    /// The journal as the daemon keeps it, for the part that matters here: records go through the
+    /// supervisor's own fold, so a restart seeds the table from what that fold built.
+    struct Journal {
+        clock: Arc<FakeClock>,
+        world: Mutex<(u64, World)>,
+        changes: Mutex<Vec<FloorDeviceChange>>,
+        events: Mutex<Vec<DeviceEvent>>,
+        refuse: AtomicBool,
+        during_removal: Mutex<Option<Box<dyn Fn() + Send>>>,
+    }
+
+    impl Journal {
+        fn new(clock: &Arc<FakeClock>) -> Arc<Self> {
+            Arc::new(Self {
+                clock: Arc::clone(clock),
+                world: Mutex::new((0, World::default())),
+                changes: Mutex::new(Vec::new()),
+                events: Mutex::new(Vec::new()),
+                refuse: AtomicBool::new(false),
+                during_removal: Mutex::new(None),
+            })
+        }
+
+        fn devices(&self) -> BTreeMap<Hex32, DeviceRow> {
+            self.world.lock().expect("world").1.floor_devices.clone()
+        }
+
+        fn changes(&self) -> Vec<FloorDeviceChange> {
+            self.changes.lock().expect("changes").clone()
+        }
+
+        fn events(&self) -> Vec<DeviceEvent> {
+            self.events.lock().expect("events").clone()
+        }
+
+        fn removals(&self) -> Vec<FloorDeviceRemoval> {
+            self.changes()
+                .into_iter()
+                .filter_map(|change| match change {
+                    FloorDeviceChange::Remove { reason, .. } => Some(reason),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    impl DeviceSink for Journal {
+        fn record(&self, change: FloorDeviceChange) -> bool {
+            if self.refuse.load(Ordering::Acquire) {
+                return false;
+            }
+            if matches!(change, FloorDeviceChange::Remove { .. })
+                && let Some(check) = &*self.during_removal.lock().expect("hook")
+            {
+                check();
+            }
+            let record = match change.clone() {
+                FloorDeviceChange::Enroll {
+                    device,
+                    origin,
+                    name,
+                    key,
+                    cookie,
+                } => Record::FloorDeviceKeyEnrolled {
+                    device,
+                    key,
+                    origin,
+                    name,
+                    cookie,
+                },
+                FloorDeviceChange::FirstUse(device) => Record::FloorDeviceFirstUsed { device },
+                FloorDeviceChange::Use(device) => Record::FloorDeviceUsed { device },
+                FloorDeviceChange::Acknowledge(device) => {
+                    Record::FloorDeviceAcknowledged { device }
+                }
+                FloorDeviceChange::Remove { device, reason } => {
+                    Record::FloorDeviceRemoved { device, reason }
+                }
+            };
+            let mut world = self.world.lock().expect("world");
+            world.0 += 1;
+            let lsn = Lsn::from_parts(1, world.0).expect("lsn");
+            world.1.apply(
+                lsn,
+                &Entry {
+                    at: self.clock.now(),
+                    record,
+                },
+            );
+            self.changes.lock().expect("changes").push(change);
+            true
+        }
+
+        fn announce(&self, event: &DeviceEvent) {
+            self.events.lock().expect("events").push(event.clone());
+        }
+    }
+
+    struct Daemon {
+        clock: Arc<FakeClock>,
+        journal: Arc<Journal>,
+        sessions: FloorSessions,
+    }
+
+    fn daemon() -> Daemon {
+        let clock = Arc::new(FakeClock::frozen(1_000_000));
+        let journal = Journal::new(&clock);
+        let sessions = restart_from(&clock, &journal);
+        Daemon {
+            clock,
+            journal,
+            sessions,
+        }
+    }
+
+    /// A new run over the same journal: a fresh table seeded from what the journal holds.
+    fn restart_from(clock: &Arc<FakeClock>, journal: &Arc<Journal>) -> FloorSessions {
+        let sessions = FloorSessions::new(HOST.parse().expect("loopback"), Arc::clone(clock));
+        sessions.install_sink(Arc::clone(journal) as Arc<dyn DeviceSink>);
+        sessions.seed(&journal.devices());
+        sessions
+    }
+
+    fn sign_in_named(sessions: &FloorSessions, name: &str) -> Joined {
+        let issued = sessions.issue().expect("a link");
+        sessions
+            .join_as(HOST, ORIGIN, &issued.bootstrap, Browser::new(), name)
+            .expect("a device")
+    }
+
+    fn sign_in(sessions: &FloorSessions) -> Joined {
+        sign_in_named(sessions, "Chrome on macOS")
+    }
+
+    fn acts(sessions: &FloorSessions, device: &Joined) -> bool {
+        sessions.enter(HOST, ORIGIN, device).is_some()
+    }
+
+    fn key(device: &Joined) -> [u8; 32] {
+        digest(device.cookie.as_bytes())
+    }
+
+    fn id_of(sessions: &FloorSessions, device: &Joined) -> Hex32 {
+        sessions.0.registry.lock().sessions[&key(device)].id
+    }
+
+    fn identity(sessions: &FloorSessions, device: &Joined) -> SessionIdentity {
+        sessions.standing(HOST, ORIGIN, device).expect("live")
+    }
+
+    #[test]
+    fn a_device_is_durable_before_its_cookie_leaves_and_the_journal_holds_digests_only() {
+        let d = daemon();
+        d.journal.refuse.store(true, Ordering::Release);
+        let issued = d.sessions.issue().expect("a link");
+        assert!(
+            d.sessions.join(HOST, ORIGIN, &issued.bootstrap).is_none(),
+            "no durable enrolment, no cookie"
+        );
+        assert_eq!(d.sessions.registry_counts_for_test().1, 0);
+
+        d.journal.refuse.store(false, Ordering::Release);
+        let device = sign_in(&d.sessions);
+        let rows = d.journal.devices();
+        assert_eq!(rows.len(), 1);
+        let row = rows.values().next().expect("one device");
+        assert_eq!(row.cookie.bytes(), key(&device));
+        assert_eq!(row.key.as_deref(), Some(device.browser.key()));
+        assert_eq!(row.name, "Chrome on macOS");
+        let written = format!("{:?}", d.journal.changes());
+        assert!(!written.contains(&device.cookie));
+    }
+
+    #[test]
+    fn a_name_loses_control_characters_is_capped_and_defaults_to_browser() {
+        let d = daemon();
+        let long = "é".repeat(100);
+        let capped = "é".repeat(MAX_NAME_CHARS);
+        for (sent, expected) in [
+            ("Chrome\u{7}\non\u{1b}[0m macOS", "Chromeon[0m macOS"),
+            ("Chro\u{202e}me\u{200b} on\u{feff} Mac", "Chrome on Mac"),
+            ("   ", "Browser"),
+            ("", "Browser"),
+            (long.as_str(), capped.as_str()),
+        ] {
+            let device = sign_in_named(&d.sessions, sent);
+            let id = id_of(&d.sessions, &device);
+            assert_eq!(d.journal.devices()[&id].name, expected, "{sent:?}");
+        }
+        let issued = d.sessions.issue().expect("a link");
+        let browser = Browser::new();
+        let body =
+            serde_json::json!({ "link": issued.bootstrap, "key": browser.key() }).to_string();
+        assert!(
+            d.sessions
+                .exchange_signed(HOST, ORIGIN, &browser, &body)
+                .is_ok(),
+            "a page that sends no name still signs in"
+        );
+        let id = Hex32::from(browser.device());
+        assert_eq!(d.journal.devices()[&id].name, "Browser");
+    }
+
+    #[test]
+    fn first_use_is_journaled_at_once_and_later_use_at_most_once_a_day() {
+        let d = daemon();
+        let device = sign_in(&d.sessions);
+        assert_eq!(d.journal.changes().len(), 1, "enrolled and nothing else");
+        assert!(acts(&d.sessions, &device));
+        for _ in 0..50 {
+            d.clock.advance(60_000);
+            assert!(acts(&d.sessions, &device));
+        }
+        let uses = |journal: &Journal| {
+            journal
+                .changes()
+                .iter()
+                .filter(|change| {
+                    matches!(
+                        change,
+                        FloorDeviceChange::FirstUse(_) | FloorDeviceChange::Use(_)
+                    )
+                })
+                .count()
+        };
+        assert_eq!(uses(&d.journal), 1, "an hour of requests is one record");
+        d.clock.advance(DAY);
+        assert!(acts(&d.sessions, &device));
+        assert!(acts(&d.sessions, &device));
+        assert_eq!(uses(&d.journal), 2, "the next day adds one");
+        let row = &d.journal.devices()[&id_of(&d.sessions, &device)];
+        assert!(row.first_used.is_some() && row.last_used > row.first_used);
+    }
+
+    #[test]
+    fn a_removed_device_is_refused_with_its_reason_and_its_socket_closes() {
+        let d = daemon();
+        let leaving = sign_in(&d.sessions);
+        let staying = sign_in(&d.sessions);
+        assert!(acts(&d.sessions, &leaving) && acts(&d.sessions, &staying));
+        let socket = d
+            .sessions
+            .authorizer()
+            .stream(HOST, ORIGIN, &leaving)
+            .expect("a stream slot");
+        let other = d
+            .sessions
+            .authorizer()
+            .stream(HOST, ORIGIN, &staying)
+            .expect("a stream slot");
+
+        let sessions = d.sessions.clone();
+        *d.journal.during_removal.lock().expect("hook") = Some(Box::new(move || {
+            assert_eq!(
+                sessions.registry_counts_for_test().1,
+                2,
+                "the removal is made durable while the device is still signed in"
+            );
+        }));
+        let id = id_of(&d.sessions, &leaving);
+        assert_eq!(
+            d.sessions
+                .remove_device(id.into(), FloorDeviceRemoval::Removed),
+            Removal::Removed
+        );
+
+        assert!(!socket.is_valid(), "its socket closes");
+        assert!(!acts(&d.sessions, &leaving), "its next request is refused");
+        assert_eq!(
+            d.sessions.gone_reason(&leaving.cookie),
+            Some(GoneReason::Removed)
+        );
+        assert_eq!(
+            d.sessions.gone_reason(&staying.cookie),
+            None,
+            "a device still signed in has no reason to give"
+        );
+        assert!(other.is_valid() && acts(&d.sessions, &staying));
+        assert_eq!(d.journal.removals(), [FloorDeviceRemoval::Removed]);
+        assert!(d.journal.events().contains(&DeviceEvent::Removed {
+            device: id.into(),
+            reason: FloorDeviceRemoval::Removed
+        }));
+        assert_eq!(
+            d.sessions
+                .remove_device(id.into(), FloorDeviceRemoval::Removed),
+            Removal::Unknown,
+            "a second removal finds nothing"
+        );
+    }
+
+    #[test]
+    fn a_removal_the_journal_cannot_take_leaves_the_device_signed_in() {
+        let d = daemon();
+        let device = sign_in(&d.sessions);
+        assert!(acts(&d.sessions, &device));
+        d.journal.refuse.store(true, Ordering::Release);
+        let id = id_of(&d.sessions, &device);
+        assert_eq!(
+            d.sessions
+                .remove_device(id.into(), FloorDeviceRemoval::Removed),
+            Removal::Unavailable
+        );
+        assert_eq!(
+            identity(&d.sessions, &device).sign_out(),
+            Removal::Unavailable
+        );
+        d.journal.refuse.store(false, Ordering::Release);
+        assert!(acts(&d.sessions, &device), "still signed in");
+    }
+
+    #[test]
+    fn signing_out_journals_that_reason_and_tells_the_pages() {
+        let d = daemon();
+        let device = sign_in(&d.sessions);
+        assert_eq!(identity(&d.sessions, &device).sign_out(), Removal::Removed);
+        assert_eq!(d.journal.removals(), [FloorDeviceRemoval::SignedOut]);
+        assert_eq!(
+            d.sessions.gone_reason(&device.cookie),
+            None,
+            "the person who signed out knows why"
+        );
+        assert!(matches!(
+            d.journal.events().last(),
+            Some(DeviceEvent::Removed {
+                reason: FloorDeviceRemoval::SignedOut,
+                ..
+            })
+        ));
+    }
+
+    /// Eight devices: `unused` never made a request, `new` did but nobody kept it, and the rest
+    /// are kept. Returns them in sign-in order.
+    fn full_table(d: &Daemon, unused: &[usize], new: &[usize]) -> Vec<Joined> {
+        let devices: Vec<_> = (0..MAX_DEVICES)
+            .map(|index| {
+                let device = sign_in(&d.sessions);
+                if !unused.contains(&index) {
+                    assert!(acts(&d.sessions, &device));
+                    if !new.contains(&index) {
+                        d.sessions
+                            .0
+                            .registry
+                            .lock()
+                            .sessions
+                            .get_mut(&key(&device))
+                            .expect("signed in")
+                            .acknowledged = true;
+                    }
+                }
+                d.clock.advance(1_000);
+                device
+            })
+            .collect();
+        assert_eq!(d.sessions.registry_counts_for_test().1, MAX_DEVICES);
+        devices
+    }
+
+    fn survivors(d: &Daemon, devices: &[Joined]) -> Vec<bool> {
+        devices
+            .iter()
+            .map(|device| d.sessions.gone_reason(&device.cookie).is_none())
+            .collect()
+    }
+
+    #[test]
+    fn a_ninth_sign_in_removes_a_never_used_device_first() {
+        let d = daemon();
+        let devices = full_table(&d, &[5], &[2]);
+        let ninth = sign_in(&d.sessions);
+        assert_eq!(
+            d.sessions.gone_reason(&devices[5].cookie),
+            Some(GoneReason::Replaced),
+            "the device nobody used goes before one still flagged new or the oldest"
+        );
+        assert_eq!(
+            survivors(&d, &devices)
+                .iter()
+                .filter(|alive| **alive)
+                .count(),
+            7
+        );
+        assert!(acts(&d.sessions, &ninth));
+        assert_eq!(d.journal.removals(), [FloorDeviceRemoval::Replaced]);
+        assert_eq!(d.sessions.registry_counts_for_test().1, MAX_DEVICES);
+    }
+
+    #[test]
+    fn with_none_unused_a_ninth_sign_in_removes_one_still_flagged_new() {
+        let d = daemon();
+        let devices = full_table(&d, &[], &[6]);
+        sign_in(&d.sessions);
+        assert_eq!(
+            d.sessions.gone_reason(&devices[6].cookie),
+            Some(GoneReason::Replaced),
+            "the flagged one goes though it is the newest and the oldest was used least"
+        );
+        assert!(acts(&d.sessions, &devices[0]));
+    }
+
+    #[test]
+    fn with_all_kept_a_ninth_sign_in_removes_the_least_recently_used_and_ties_go_to_the_older() {
+        let d = daemon();
+        let devices = full_table(&d, &[], &[]);
+        // Use every device but the third, and the first two at one instant: the third goes.
+        d.clock.advance(1_000);
+        for (index, device) in devices.iter().enumerate() {
+            if index != 2 {
+                assert!(acts(&d.sessions, device));
+            }
+        }
+        sign_in(&d.sessions);
+        assert_eq!(
+            d.sessions.gone_reason(&devices[2].cookie),
+            Some(GoneReason::Replaced)
+        );
+
+        let tie = daemon();
+        let devices = full_table(&tie, &[], &[]);
+        tie.clock.advance(1_000);
+        for device in &devices {
+            assert!(acts(&tie.sessions, device));
+        }
+        sign_in(&tie.sessions);
+        assert_eq!(
+            tie.sessions.gone_reason(&devices[0].cookie),
+            Some(GoneReason::Replaced),
+            "equal use goes to the older sign-in"
+        );
+        assert_eq!(
+            survivors(&tie, &devices)
+                .iter()
+                .filter(|alive| **alive)
+                .count(),
+            7
+        );
+    }
+
+    #[test]
+    fn a_device_nobody_used_goes_at_a_day_and_one_in_use_goes_at_thirty_and_ninety_days() {
+        let d = daemon();
+        let unused = sign_in(&d.sessions);
+        let idle = sign_in(&d.sessions);
+        let steady = sign_in(&d.sessions);
+        assert!(acts(&d.sessions, &idle) && acts(&d.sessions, &steady));
+        d.clock.advance(DAY - 1);
+        assert!(acts(&d.sessions, &steady));
+        d.clock.advance(1);
+        assert!(!acts(&d.sessions, &unused));
+        assert_eq!(d.journal.removals(), [FloorDeviceRemoval::NeverUsed]);
+
+        d.clock.advance(29 * DAY - 1);
+        assert!(acts(&d.sessions, &steady), "inside 30 days of its last use");
+        d.clock.advance(1);
+        assert!(!acts(&d.sessions, &idle), "30 days without use");
+        assert!(d.journal.removals().contains(&FloorDeviceRemoval::Expired));
+
+        for _ in 0..2 {
+            d.clock.advance(29 * DAY);
+            assert!(acts(&d.sessions, &steady));
+        }
+        d.clock.advance(3 * DAY);
+        assert!(!acts(&d.sessions, &steady), "90 days in all");
+        assert_eq!(
+            d.sessions.gone_reason(&steady.cookie),
+            Some(GoneReason::Expired)
+        );
+    }
+
+    #[test]
+    fn an_open_link_lives_a_minute_a_printed_one_ten_and_printing_never_blocks_opening() {
+        let d = daemon();
+        let open = d.sessions.issue_for(LinkPurpose::Open).expect("open");
+        let printed = d.sessions.issue_for(LinkPurpose::Print).expect("printed");
+        assert_eq!(open.expires_in_s, 60);
+        assert_eq!(printed.expires_in_s, 600);
+        d.clock.advance(OPEN_LINK_MS - 1);
+        let still = d.sessions.issue_for(LinkPurpose::Open).expect("open");
+        d.clock.advance(1);
+        assert!(
+            d.sessions.join(HOST, ORIGIN, &open.bootstrap).is_none(),
+            "an open link is gone at 60 s"
+        );
+        assert!(
+            d.sessions.join(HOST, ORIGIN, &printed.bootstrap).is_some(),
+            "a printed link is not"
+        );
+        d.clock.advance(PRINTED_LINK_MS - OPEN_LINK_MS);
+        assert!(d.sessions.join(HOST, ORIGIN, &still.bootstrap).is_none());
+        let printed = d.sessions.issue_for(LinkPurpose::Print).expect("printed");
+        d.clock.advance(PRINTED_LINK_MS);
+        assert!(
+            d.sessions.join(HOST, ORIGIN, &printed.bootstrap).is_none(),
+            "a printed link is gone at 10 minutes"
+        );
+
+        let printed: Vec<_> = (0..MAX_PENDING_PRINTED_LINKS)
+            .map(|_| {
+                d.clock.advance(1_000);
+                d.sessions.issue_for(LinkPurpose::Print).expect("printed")
+            })
+            .collect();
+        for _ in 0..MAX_PENDING_OPEN_LINKS {
+            d.sessions.issue_for(LinkPurpose::Open).expect("open");
+        }
+        assert_eq!(
+            d.sessions.issue_for(LinkPurpose::Open),
+            Err(IssueError::Capacity)
+        );
+        let newest = d
+            .sessions
+            .issue_for(LinkPurpose::Print)
+            .expect("a new print");
+        assert!(
+            d.sessions
+                .join(HOST, ORIGIN, &printed[0].bootstrap)
+                .is_none(),
+            "a new print replaces the oldest unused printed link"
+        );
+        assert!(
+            d.sessions
+                .join(HOST, ORIGIN, &printed[1].bootstrap)
+                .is_some()
+        );
+        assert!(d.sessions.join(HOST, ORIGIN, &newest.bootstrap).is_some());
+    }
+
+    #[test]
+    fn devices_survive_a_restart_and_a_removed_one_stays_removed() {
+        let d = daemon();
+        let kept = sign_in(&d.sessions);
+        let removed = sign_in(&d.sessions);
+        let unused = sign_in(&d.sessions);
+        assert!(acts(&d.sessions, &kept) && acts(&d.sessions, &removed));
+        let removed_id = id_of(&d.sessions, &removed);
+        d.sessions
+            .remove_device(removed_id.into(), FloorDeviceRemoval::Removed);
+        d.clock.advance(1_000);
+        assert!(acts(&d.sessions, &kept));
+        d.sessions.invalidate();
+
+        let after = restart_from(&d.clock, &d.journal);
+        assert!(acts(&after, &kept), "the same cookie and key still act");
+        assert!(!acts(&after, &removed), "a removed device stays removed");
+        assert_eq!(
+            after.gone_reason(&removed.cookie),
+            Some(GoneReason::Removed),
+            "and still hears why"
+        );
+        assert!(
+            acts(&after, &unused),
+            "an unused device is still within its day"
+        );
+        let listed = after.devices(None);
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|view| view.name == "Chrome on macOS"));
+    }
+
+    #[test]
+    fn a_restart_ends_a_device_that_ran_out_and_one_signed_in_on_another_port() {
+        let d = daemon();
+        let unused = sign_in(&d.sessions);
+        let fresh = sign_in(&d.sessions);
+        assert!(acts(&d.sessions, &fresh));
+        d.sessions.invalidate();
+        d.clock.advance(DAY);
+
+        let after = restart_from(&d.clock, &d.journal);
+        assert!(!acts(&after, &unused), "its day is over");
+        assert!(
+            d.journal
+                .removals()
+                .contains(&FloorDeviceRemoval::NeverUsed)
+        );
+
+        let moved = FloorSessions::new(
+            "127.0.0.1:43302".parse().expect("loopback"),
+            Arc::clone(&d.clock),
+        );
+        moved.install_sink(Arc::clone(&d.journal) as Arc<dyn DeviceSink>);
+        moved.seed(&d.journal.devices());
+        assert_eq!(moved.devices(None).len(), 0, "another origin cannot use it");
+        assert_eq!(
+            d.journal.removals(),
+            [FloorDeviceRemoval::NeverUsed],
+            "and nothing is journaled for it"
+        );
+
+        let home = restart_from(&d.clock, &d.journal);
+        assert!(acts(&home, &fresh), "it works again on its own origin");
+    }
+
+    #[test]
+    fn a_restart_over_the_limit_removes_the_surplus_as_replaced() {
+        let d = daemon();
+        for n in 1..=9_u8 {
+            d.clock.advance(1_000);
+            let browser = Browser::seeded(u64::from(n));
+            assert!(d.journal.record(FloorDeviceChange::Enroll {
+                device: browser.device().into(),
+                origin: ORIGIN.to_owned(),
+                name: "Browser".to_owned(),
+                key: browser.key().to_owned(),
+                cookie: Hex32::new([n; 32]),
+            }));
+        }
+        let after = restart_from(&d.clock, &d.journal);
+        let listed = after.devices(None);
+        assert_eq!(listed.len(), MAX_DEVICES);
+        assert!(
+            listed
+                .iter()
+                .all(|view| view.device != Browser::seeded(1).device()),
+            "the oldest unused one goes"
+        );
+        assert_eq!(d.journal.removals(), [FloorDeviceRemoval::Replaced]);
+    }
+
+    /// Append a record the way an older daemon wrote it, straight into the journal's fold.
+    fn append_old(journal: &Journal, record: Record) {
+        let mut world = journal.world.lock().expect("world");
+        world.0 += 1;
+        let lsn = Lsn::from_parts(1, world.0).expect("lsn");
+        world.1.apply(
+            lsn,
+            &Entry {
+                at: journal.clock.now(),
+                record,
+            },
+        );
+    }
+
+    #[test]
+    fn a_browser_from_before_signed_requests_ends_once_as_expired() {
+        let d = daemon();
+        let old_cookie = "C".repeat(43);
+        append_old(
+            &d.journal,
+            Record::FloorDeviceEnrolled {
+                device: Hex32::new([4; 32]),
+                origin: ORIGIN.to_owned(),
+                name: "Chrome on macOS".to_owned(),
+                cookie: Hex32::new(digest(old_cookie.as_bytes())),
+                secret: Hex32::new([6; 32]),
+            },
+        );
+        let keyed = sign_in(&d.sessions);
+
+        let after = restart_from(&d.clock, &d.journal);
+        assert_eq!(
+            after.devices(None).len(),
+            1,
+            "only the browser with a key is signed in"
+        );
+        assert_eq!(
+            d.journal.removals(),
+            [FloorDeviceRemoval::Expired],
+            "the old sign-in ends once, as expired"
+        );
+        assert_eq!(
+            after.gone_reason(&old_cookie),
+            Some(GoneReason::Expired),
+            "its page hears that its sign-in expired"
+        );
+        assert!(acts(&after, &keyed), "the browser with a key is untouched");
+
+        let again = restart_from(&d.clock, &d.journal);
+        assert_eq!(again.devices(None).len(), 1);
+        assert_eq!(
+            d.journal.removals(),
+            [FloorDeviceRemoval::Expired],
+            "a later start finds nothing left to end"
+        );
+        assert_eq!(again.gone_reason(&old_cookie), Some(GoneReason::Expired));
+    }
+
+    /// A request from `who` carrying the request id `n`, signed for the registry's time plus `skew`.
+    fn attempt(d: &Daemon, who: &Joined, n: u64, skew: i64) -> Result<SessionIdentity, Refusal> {
+        let mut id = [0_u8; 16];
+        id[8..].copy_from_slice(&n.to_be_bytes());
+        let signed = who.browser.sign_with_id(
+            "POST",
+            "/floor/test",
+            ORIGIN,
+            &[],
+            d.sessions.now_ms() + skew,
+            id,
+        );
+        d.sessions.authorize_onboard(
+            &Presentation::new(HOST, ORIGIN, &who.cookie, "POST", "/floor/test", &[]).signed(
+                &signed.origin,
+                &signed.time,
+                &signed.request,
+                &signed.signature,
+            ),
+        )
+    }
+
+    #[test]
+    fn a_device_remembers_at_most_1024_request_ids_and_each_for_two_minutes() {
+        let d = daemon();
+        let device = sign_in(&d.sessions);
+        let start = Timestamp::from_unix_millis(d.sessions.now_ms());
+        {
+            // Signing a thousand requests in a debug build is slow, so the memory starts one
+            // short of full, as a thousand and twenty-three earlier requests leave it. The
+            // enrolment's own request holds one place already.
+            let mut state = d.sessions.0.registry.lock();
+            let session = state
+                .sessions
+                .get_mut(&digest(device.cookie.as_bytes()))
+                .expect("signed in");
+            for n in 1..MAX_REQUEST_IDS - 1 {
+                let mut id = [0_u8; 16];
+                id[8..].copy_from_slice(&(n as u64).to_be_bytes());
+                session.requests.seen.push((start, id));
+            }
+        }
+        assert!(attempt(&d, &device, 0, 0).is_ok(), "the last free place");
+        assert_eq!(
+            attempt(&d, &device, 5000, 0).err(),
+            Some(Refusal::Signature),
+            "a full memory refuses a new id until old ones age out"
+        );
+        assert_eq!(
+            attempt(&d, &device, 1, 0).err(),
+            Some(Refusal::Signature),
+            "and an id it holds"
+        );
+        d.clock.advance(REQUEST_MEMORY_MS - 1);
+        assert!(
+            attempt(&d, &device, 5000, 0).is_err(),
+            "still within two minutes"
+        );
+        d.clock.advance(1);
+        assert!(
+            attempt(&d, &device, 5000, 0).is_ok(),
+            "two minutes on, there is room again"
+        );
+        assert!(
+            attempt(&d, &device, 1, 0).is_ok(),
+            "and an id that aged out may be used again"
+        );
+    }
+
+    #[test]
+    fn a_request_must_be_within_a_minute_of_the_daemons_clock_either_way() {
+        let d = daemon();
+        let device = sign_in(&d.sessions);
+        assert!(attempt(&d, &device, 1, SIGNATURE_WINDOW_MS).is_ok());
+        assert!(attempt(&d, &device, 2, -SIGNATURE_WINDOW_MS).is_ok());
+        assert_eq!(
+            attempt(&d, &device, 3, SIGNATURE_WINDOW_MS + 1).err(),
+            Some(Refusal::Signature)
+        );
+        assert_eq!(
+            attempt(&d, &device, 4, -SIGNATURE_WINDOW_MS - 1).err(),
+            Some(Refusal::Signature)
+        );
+        assert!(
+            attempt(&d, &device, 3, 0).is_ok(),
+            "a refused request does not use up its id"
+        );
+    }
+
+    #[test]
+    fn an_exchange_the_key_did_not_sign_is_refused_and_keeps_the_link() {
+        let d = daemon();
+        let issued = d.sessions.issue().expect("a link");
+        let browser = Browser::new();
+        let body = browser.enrolment(&issued.bootstrap, "Chrome on macOS");
+        let signed = |by: &Browser, at: i64| {
+            by.presentation(
+                HOST,
+                ORIGIN,
+                "",
+                "POST",
+                "/floor/session",
+                body.as_bytes(),
+                at,
+            )
+        };
+        let now = d.sessions.now_ms();
+        let unsigned =
+            Presentation::new(HOST, ORIGIN, "", "POST", "/floor/session", body.as_bytes());
+        assert_eq!(
+            d.sessions.exchange(&unsigned).err(),
+            Some(ExchangeRefusal::Signature),
+            "no signature"
+        );
+        assert_eq!(
+            d.sessions.exchange(&signed(&Browser::new(), now)).err(),
+            Some(ExchangeRefusal::Signature),
+            "another key's signature"
+        );
+        assert_eq!(
+            d.sessions
+                .exchange(&signed(&browser, now - SIGNATURE_WINDOW_MS - 1))
+                .err(),
+            Some(ExchangeRefusal::Signature),
+            "a signature outside the window"
+        );
+        let good = browser.presentation(
+            HOST,
+            ORIGIN,
+            "",
+            "POST",
+            "/floor/session",
+            body.as_bytes(),
+            now,
+        );
+        assert!(
+            d.sessions.exchange(&good).is_ok(),
+            "the refused attempts left the link unspent"
+        );
+        assert_eq!(
+            d.journal.changes().len(),
+            1,
+            "only the signed exchange enrolled"
+        );
+    }
+
+    #[test]
+    fn an_exchange_without_a_valid_key_is_refused_enrols_nothing_and_keeps_the_link() {
+        let d = daemon();
+        let issued = d.sessions.issue().expect("a link");
+        let key = Browser::new().key().to_owned();
+        let signer = Browser::new();
+        let refuse = |body: String| {
+            d.sessions
+                .exchange_signed(HOST, ORIGIN, &signer, &body)
+                .err()
+        };
+        for body in [
+            serde_json::json!({ "link": issued.bootstrap }),
+            serde_json::json!({ "link": issued.bootstrap, "key": "" }),
+            serde_json::json!({ "link": issued.bootstrap, "key": "AAAA" }),
+            serde_json::json!({ "link": issued.bootstrap, "key": &key[1..] }),
+            serde_json::json!({ "link": issued.bootstrap, "key": format!("{key}AA") }),
+            serde_json::json!({ "link": issued.bootstrap, "key": key, "secret": "x" }),
+        ] {
+            assert_eq!(
+                refuse(body.to_string()),
+                Some(ExchangeRefusal::Malformed),
+                "{body}"
+            );
+        }
+        assert_eq!(
+            refuse("not json".to_owned()),
+            Some(ExchangeRefusal::Malformed)
+        );
+        assert_eq!(d.journal.changes().len(), 0, "nothing was enrolled");
+        assert_eq!(d.sessions.registry_counts_for_test(), (1, 0));
+        assert!(
+            d.sessions.join(HOST, ORIGIN, &issued.bootstrap).is_some(),
+            "the link was not spent by the refusals"
+        );
+    }
+
+    #[test]
+    fn a_key_that_signs_in_again_replaces_its_own_device() {
+        let d = daemon();
+        let browser = Browser::seeded(77);
+        let issue = || d.sessions.issue().expect("a link").bootstrap;
+        let first = d
+            .sessions
+            .join_as(HOST, ORIGIN, &issue(), Browser::seeded(77), "Chrome")
+            .expect("the first sign-in");
+        let second = d
+            .sessions
+            .join_as(HOST, ORIGIN, &issue(), browser, "Chrome")
+            .expect("the second sign-in");
+        assert_ne!(first.cookie, second.cookie);
+        assert_eq!(d.sessions.devices(None).len(), 1, "one browser, one device");
+        assert!(!acts(&d.sessions, &first), "the old cookie opens nothing");
+        assert!(acts(&d.sessions, &second));
+        assert_eq!(d.journal.removals(), [FloorDeviceRemoval::Replaced]);
+        assert_eq!(
+            d.sessions.gone_reason(&first.cookie),
+            Some(GoneReason::Replaced)
+        );
+        let again = restart_from(&d.clock, &d.journal);
+        assert_eq!(
+            again.devices(None).len(),
+            1,
+            "a restart folds the later sign-in over the removed one"
+        );
+        assert!(acts(&again, &second) && !acts(&again, &first));
+    }
+
+    #[test]
+    fn a_first_use_the_journal_refused_is_recorded_by_the_next_request() {
+        let d = daemon();
+        let device = sign_in(&d.sessions);
+        d.journal.refuse.store(true, Ordering::Release);
+        assert!(acts(&d.sessions, &device), "the request is still admitted");
+        d.journal.refuse.store(false, Ordering::Release);
+        assert!(acts(&d.sessions, &device));
+        let uses = d
+            .journal
+            .changes()
+            .iter()
+            .filter(|change| matches!(change, FloorDeviceChange::FirstUse(_)))
+            .count();
+        assert_eq!(uses, 1, "the second request recorded it");
+        let id = id_of(&d.sessions, &device);
+        assert!(d.journal.devices()[&id].first_used.is_some());
+    }
+
+    #[test]
+    fn a_removal_that_raced_an_expiry_still_counts_as_removed() {
+        let d = daemon();
+        let device = sign_in(&d.sessions);
+        assert!(acts(&d.sessions, &device));
+        let id = id_of(&d.sessions, &device);
+        let sessions = d.sessions.clone();
+        let clock = Arc::clone(&d.clock);
+        *d.journal.during_removal.lock().expect("hook") = Some(Box::new(move || {
+            clock.advance(IDLE_EXPIRES_MS + 1);
+            let registry::Locked { mut state, now } = sessions.0.registry.lock_at_now();
+            state.prune(now);
+        }));
+        assert_eq!(
+            d.sessions
+                .remove_device(id.into(), FloorDeviceRemoval::Removed),
+            Removal::Removed
+        );
+        assert_eq!(
+            d.journal.removals(),
+            [FloorDeviceRemoval::Removed],
+            "journaled once, under the reason asked for"
+        );
+    }
+
+    #[test]
+    fn a_new_device_is_announced_and_only_another_device_can_keep_it() {
+        let d = daemon();
+        let first = sign_in(&d.sessions);
+        let second = sign_in_named(&d.sessions, "Firefox on Linux");
+        let second_id = id_of(&d.sessions, &second);
+        assert!(matches!(
+            d.journal.events().last(),
+            Some(DeviceEvent::Enrolled { device, name, .. })
+                if *device == DeviceId::from(second_id) && name == "Firefox on Linux"
+        ));
+        assert!(d.sessions.devices(None).iter().all(|view| view.new));
+
+        let own = identity(&d.sessions, &second);
+        assert_eq!(d.sessions.keep_device(second_id.into(), &own), Keep::Own);
+        let other = identity(&d.sessions, &first);
+        assert_eq!(d.sessions.keep_device(second_id.into(), &other), Keep::Kept);
+        assert_eq!(d.sessions.keep_device(second_id.into(), &other), Keep::Kept);
+        assert_eq!(
+            d.journal
+                .changes()
+                .iter()
+                .filter(|change| matches!(change, FloorDeviceChange::Acknowledge(_)))
+                .count(),
+            1,
+            "keeping twice records once"
+        );
+        let listed = d.sessions.devices(Some(&own));
+        let me = listed.iter().find(|view| view.this).expect("this device");
+        assert_eq!(me.device, DeviceId::from(second_id));
+        assert!(!me.new);
+        assert_eq!(listed.iter().filter(|view| view.new).count(), 1);
+        assert_eq!(
+            d.sessions.keep_device(DeviceId::new([7; 32]), &other),
+            Keep::Unknown
+        );
+    }
+
+    #[test]
+    fn listing_marks_use_and_lists_the_newest_sign_in_first() {
+        let d = daemon();
+        let older = sign_in_named(&d.sessions, "Older");
+        d.clock.advance(5_000);
+        let newer = sign_in_named(&d.sessions, "Newer");
+        assert!(acts(&d.sessions, &older));
+        let listed = d.sessions.devices(Some(&identity(&d.sessions, &older)));
+        assert_eq!(
+            listed
+                .iter()
+                .map(|view| view.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Newer", "Older"]
+        );
+        assert!(listed[1].this && !listed[0].this);
+        assert!(listed[0].first_used.is_none() && listed[0].last_used.is_none());
+        assert!(listed[1].first_used.is_some() && listed[1].last_used.is_some());
+        let _ = newer;
     }
 }
 
@@ -1814,6 +3765,7 @@ mod tests {
 mod carry_tests {
     use dudes_supervisor::testing::FakeClock;
 
+    use super::test_support::Joined;
     use super::*;
     use crate::floor_ticket::Counted;
 
@@ -1839,19 +3791,19 @@ mod carry_tests {
         }
     }
 
-    fn sign_in(run: &Run) -> Exchange {
-        let issued = run.carry.sessions().issue().expect("bootstrap");
+    fn sign_in(run: &Run) -> Joined {
+        let issued = run.carry.sessions().issue().expect("link");
         run.carry
             .sessions()
-            .exchange(HOST, ORIGIN, issued.bootstrap.as_bytes())
-            .expect("session")
+            .join(HOST, ORIGIN, &issued.bootstrap)
+            .expect("device")
     }
 
-    fn key(exchange: &Exchange) -> [u8; 32] {
+    fn key(exchange: &Joined) -> [u8; 32] {
         digest(exchange.cookie.as_bytes())
     }
 
-    fn created(run: &Run, exchange: &Exchange, creates: u32, assigns: u32, checks: u32) {
+    fn created(run: &Run, exchange: &Joined, creates: u32, assigns: u32, checks: u32) {
         for (counted, times) in [(Counted::Create, creates), (Counted::Assign, assigns)] {
             for _ in 0..times {
                 let turn = run
@@ -1864,16 +3816,21 @@ mod carry_tests {
         run.checks.seed(Hex32::new(key(exchange)), checks);
     }
 
-    fn can_read(run: &Run, exchange: &Exchange, csrf: &str) -> bool {
-        run.carry
-            .sessions()
-            .authorizer()
-            .authorize_read(HOST, ORIGIN, &exchange.cookie, csrf)
-            .is_some()
+    /// The rows the journal would hold for the devices a run has signed in.
+    fn rows_of(from: &Run) -> BTreeMap<Hex32, DeviceRow> {
+        from.carry.sessions().rows_for_test()
+    }
+
+    /// A run over the same devices: the journal brings them back with the same cookies, so the
+    /// export is all that has to carry.
+    fn same_devices(from: &Run, clock: &Arc<FakeClock>) -> Run {
+        let next = run(clock, HOST);
+        next.carry.sessions().seed(&rows_of(from));
+        next
     }
 
     #[test]
-    fn export_names_digests_times_and_counts_and_nothing_secret() {
+    fn export_names_digests_times_and_counts_and_no_secret() {
         let clock = Arc::new(FakeClock::frozen(1_000));
         let old = run(&clock, HOST);
         let one = sign_in(&old);
@@ -1883,8 +3840,6 @@ mod carry_tests {
         let exported = old.carry.export(Some(OLD_RUN));
         let text = serde_json::to_string(&exported).expect("serializes");
         let value: serde_json::Value = serde_json::from_str(&text).expect("json");
-        let top: Vec<_> = value.as_object().expect("object").keys().cloned().collect();
-        assert_eq!(top, ["origin", "run", "sessions"]);
         let row = value["sessions"][0].as_object().expect("one row");
         let fields: Vec<_> = row.keys().map(String::as_str).collect();
         assert_eq!(
@@ -1896,7 +3851,8 @@ mod carry_tests {
                 "last_used",
                 "ticket_assigns",
                 "ticket_creates"
-            ]
+            ],
+            "no secret digest leaves: the journal holds the devices"
         );
         assert_eq!(row["ticket_creates"], 3);
         assert_eq!(row["ticket_assigns"], 2);
@@ -1905,7 +3861,7 @@ mod carry_tests {
         assert_eq!(row["last_used"], 1_000, "the export refreshes nothing");
         assert_eq!(value["run"], OLD_RUN);
         assert_eq!(value["origin"], ORIGIN);
-        assert!(!text.contains(&one.cookie) && !text.contains(&one.csrf));
+        assert!(!text.contains(&one.cookie));
         let digest = row["digest"].as_str().expect("digest");
         assert!(
             !format!("{exported:?}").contains(digest),
@@ -1915,60 +3871,42 @@ mod carry_tests {
     }
 
     #[test]
-    fn an_import_restores_the_session_with_its_counts_and_no_csrf() {
+    fn an_import_restores_the_counts_of_the_devices_the_new_run_holds() {
         let clock = Arc::new(FakeClock::frozen(1_000));
         let old = run(&clock, HOST);
         let one = sign_in(&old);
         created(&old, &one, 3, 2, 5);
         let exported = old.carry.export(Some(OLD_RUN));
+        let new = same_devices(&old, &clock);
         old.carry.sessions().invalidate();
-
-        let new = run(&clock, HOST);
         assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 1);
-
-        assert!(
-            !can_read(&new, &one, &one.csrf),
-            "the old CSRF secret matches nothing"
-        );
-        assert!(!can_read(&new, &one, ""), "neither does an empty one");
-        let recovery = new
-            .carry
-            .sessions()
-            .recover(HOST, ORIGIN, &one.cookie)
-            .expect("the cookie recovers");
-        assert!(can_read(&new, &one, &recovery.csrf));
         assert_eq!(new.tickets.counts(key(&one)), (3, 2));
         assert_eq!(new.checks.started(Hex32::new(key(&one))), 5);
-        let state = new.carry.sessions().0.registry.lock();
-        let session = &state.sessions[&key(&one)];
-        assert!(session.terminal.is_none());
-        assert_eq!(session.websockets, 0);
     }
 
     #[test]
-    fn the_original_sign_in_time_keeps_counting() {
-        let now = 100_000_000;
-        let clock = Arc::new(FakeClock::frozen(now));
-        let cookie = "a-cookie-the-new-run-never-saw";
+    fn an_export_from_the_previous_release_imports_without_error_and_restores_nothing() {
+        let clock = Arc::new(FakeClock::frozen(1_000));
         let exported = SessionExport {
             run: OLD_RUN.to_owned(),
             origin: ORIGIN.to_owned(),
             sessions: vec![ExportedSession {
-                digest: Hex32::new(digest(cookie.as_bytes())),
-                created: Timestamp::from_unix_millis(now - (ABSOLUTE_EXPIRES_MS - 10_000)),
-                last_used: Timestamp::from_unix_millis(now - 1_000),
-                ticket_creates: 0,
-                ticket_assigns: 0,
-                check_runs: 0,
+                digest: Hex32::new(digest(b"a-cookie-of-the-previous-release")),
+                created: Timestamp::from_unix_millis(500),
+                last_used: Timestamp::from_unix_millis(900),
+                ticket_creates: 4,
+                ticket_assigns: 1,
+                check_runs: 2,
             }],
         };
         let new = run(&clock, HOST);
-        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 1);
-        clock.advance(10_001);
-        assert!(
-            new.carry.sessions().recover(HOST, ORIGIN, cookie).is_none(),
-            "eight hours after the original sign-in the imported session is gone"
+        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 0);
+        assert_eq!(
+            new.tickets
+                .counts(digest(b"a-cookie-of-the-previous-release")),
+            (0, 0)
         );
+        assert_eq!(new.carry.sessions().registry_counts_for_test().1, 0);
     }
 
     #[test]
@@ -1976,6 +3914,7 @@ mod carry_tests {
         let clock = Arc::new(FakeClock::frozen(10_000));
         let old = run(&clock, HOST);
         let one = sign_in(&old);
+        created(&old, &one, 1, 1, 1);
         let exported = old.carry.export(Some(OLD_RUN));
 
         assert_eq!(
@@ -1983,26 +3922,17 @@ mod carry_tests {
             0,
             "the run that exported"
         );
-        let new = run(&clock, HOST);
+        let new = same_devices(&old, &clock);
         assert_eq!(new.carry.import(Some(OLD_RUN), &exported), 0, "same run id");
 
-        let first = new.carry.import(Some(NEW_RUN), &exported);
-        assert_eq!(first, 1);
-        let later = sign_in(&old);
+        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 1);
         assert_eq!(
-            new.carry
-                .import(Some(NEW_RUN), &old.carry.export(Some(OLD_RUN))),
+            new.carry.import(Some(NEW_RUN), &exported),
             0,
-            "a second import admits nothing, not even a session the first one lacked"
-        );
-        assert!(
-            new.carry
-                .sessions()
-                .recover(HOST, ORIGIN, &later.cookie)
-                .is_none()
+            "a second import admits nothing"
         );
 
-        let other = run(&clock, HOST);
+        let other = same_devices(&old, &clock);
         let mut moved = exported.clone();
         moved.origin = "http://127.0.0.1:43212".to_owned();
         assert_eq!(
@@ -2010,100 +3940,7 @@ mod carry_tests {
             0,
             "another origin"
         );
-        assert!(
-            other
-                .carry
-                .sessions()
-                .recover(HOST, ORIGIN, &one.cookie)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn a_live_digest_is_skipped_and_never_overwritten() {
-        let clock = Arc::new(FakeClock::frozen(10_000));
-        let new = run(&clock, HOST);
-        let live = sign_in(&new);
-        created(&new, &live, 1, 1, 1);
-        let before = new.carry.export(Some(NEW_RUN)).sessions;
-        let mut entry = before[0];
-        entry.ticket_creates = 30;
-        entry.created = Timestamp::from_unix_millis(5_000);
-        let exported = SessionExport {
-            run: OLD_RUN.to_owned(),
-            origin: ORIGIN.to_owned(),
-            sessions: vec![entry],
-        };
-        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 0);
-        assert_eq!(new.carry.export(Some(NEW_RUN)).sessions, before);
-        assert!(can_read(&new, &live, &live.csrf), "its secret still works");
-    }
-
-    #[test]
-    fn expired_and_future_entries_are_dropped() {
-        let now = 100_000_000;
-        let clock = Arc::new(FakeClock::frozen(now));
-        let entry = |created: i64, last_used: i64| ExportedSession {
-            digest: Hex32::new([9; 32]),
-            created: Timestamp::from_unix_millis(created),
-            last_used: Timestamp::from_unix_millis(last_used),
-            ticket_creates: 0,
-            ticket_assigns: 0,
-            check_runs: 0,
-        };
-        let restored = |entry: ExportedSession| {
-            run(&clock, HOST).carry.import(
-                Some(NEW_RUN),
-                &SessionExport {
-                    run: OLD_RUN.to_owned(),
-                    origin: ORIGIN.to_owned(),
-                    sessions: vec![entry],
-                },
-            )
-        };
-        assert_eq!(restored(entry(now - 1_000, now - 500)), 1, "control");
-        assert_eq!(
-            restored(entry(now - IDLE_EXPIRES_MS, now - IDLE_EXPIRES_MS)),
-            0
-        );
-        assert_eq!(restored(entry(now - ABSOLUTE_EXPIRES_MS, now)), 0);
-        assert_eq!(restored(entry(now - 1_000, now + 1)), 0);
-        assert_eq!(restored(entry(now + 1, now + 1)), 0);
-    }
-
-    #[test]
-    fn an_import_keeps_the_sessions_the_run_already_issued_within_the_cap() {
-        let clock = Arc::new(FakeClock::frozen(1_000));
-        let old = run(&clock, HOST);
-        for _ in 0..MAX_LIVE_SESSIONS {
-            sign_in(&old);
-        }
-        let exported = old.carry.export(Some(OLD_RUN));
-        assert_eq!(exported.sessions.len(), MAX_LIVE_SESSIONS);
-
-        let new = run(&clock, HOST);
-        let issued = [sign_in(&new), sign_in(&new), sign_in(&new)];
-        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 1);
-        for exchange in &issued {
-            assert!(can_read(&new, exchange, &exchange.csrf));
-        }
-    }
-
-    #[test]
-    fn a_run_that_never_imports_restores_nothing_and_an_ended_run_exports_nothing() {
-        let clock = Arc::new(FakeClock::frozen(1_000));
-        let old = run(&clock, HOST);
-        let one = sign_in(&old);
-        old.carry.sessions().invalidate();
-        assert!(old.carry.export(Some(OLD_RUN)).sessions.is_empty());
-        let new = run(&clock, HOST);
-        assert!(
-            new.carry
-                .sessions()
-                .recover(HOST, ORIGIN, &one.cookie)
-                .is_none(),
-            "a plain restart signs everyone out"
-        );
+        assert_eq!(other.tickets.counts(key(&one)), (0, 0));
     }
 
     #[test]
@@ -2112,7 +3949,7 @@ mod carry_tests {
         let old = run(&clock, HOST);
         sign_in(&old);
         let exported = old.carry.export(Some(OLD_RUN));
-        let new = run(&clock, HOST);
+        let new = same_devices(&old, &clock);
         let mut wrong = exported.clone();
         wrong.origin = "http://127.0.0.1:43212".to_owned();
         assert_eq!(new.carry.import(Some(NEW_RUN), &wrong), 0);
@@ -2135,13 +3972,22 @@ mod carry_tests {
             1,
             "control: the same run exports with an identity"
         );
-        let new = run(&clock, HOST);
+        let new = same_devices(&old, &clock);
         assert_eq!(new.carry.import(None, &exported), 0);
         assert_eq!(
             new.carry.import(Some(NEW_RUN), &exported),
             1,
             "a refused import without an identity did not use the run's chance"
         );
+    }
+
+    #[test]
+    fn an_ended_run_exports_nothing() {
+        let clock = Arc::new(FakeClock::frozen(1_000));
+        let old = run(&clock, HOST);
+        sign_in(&old);
+        old.carry.sessions().invalidate();
+        assert!(old.carry.export(Some(OLD_RUN)).sessions.is_empty());
     }
 
     #[test]
@@ -2162,6 +4008,7 @@ mod carry_tests {
         let tickets = Arc::new(TicketLimits::new());
         let sessions = FloorSessions::new(HOST.parse().expect("loopback"), Arc::clone(&clock));
         let carry = FloorCarry::new(sessions, Some(Arc::clone(&tickets)), baselines.check_runs());
+        carry.sessions().seed(&rows_of(&old));
         let mut baselines = baselines;
         assert_eq!(carry.import(Some(NEW_RUN), &exported), 1);
 

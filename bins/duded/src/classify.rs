@@ -46,7 +46,8 @@ use dudes_providers::adapter::{HookInstall, ManagedInstall};
 use dudes_providers::launch::LaunchSpec;
 use dudes_supervisor::host::{
     AdoptionKey, HostBoot, KillOutcome, Liveness, NativeBoundaryAcknowledgement,
-    NativeBoundaryReceipt, OwnedTargets, ProcessHost, SpawnResult,
+    NativeBoundaryReceipt, NativeGroupPresence, OwnedTargets, ProbeAnswer, ProcessHost,
+    SpawnResult,
 };
 use dudes_supervisor::{MintedFor, World, blake3_hex};
 use dudes_types::AgentId;
@@ -268,6 +269,19 @@ impl Resolver {
             owners: Some(owners),
             processes: Some(processes),
         }
+    }
+
+    /// The agent processes alive now, read afresh by each caller.
+    #[must_use]
+    pub(crate) fn agent_roots(&self) -> Arc<dyn crate::floor_peer::AgentRoots> {
+        #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+        if let Some(owners) = &self.owners {
+            return Arc::new(ResolverRoots {
+                owners: owners.clone(),
+                processes: self.processes.clone(),
+            });
+        }
+        Arc::new(crate::floor_peer::NoAgents)
     }
 
     /// Arm the publication barrier before the host starts creating the child.
@@ -521,6 +535,41 @@ struct ProcessResolver {
     owners: WorldChildren,
 }
 
+/// The agent processes the daemon knows: the recorded children, plus any the host already tracks.
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+#[derive(Debug)]
+struct ResolverRoots {
+    owners: WorldChildren,
+    processes: Option<Arc<dyn ProcessRelation>>,
+}
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+impl crate::floor_peer::AgentRoots for ResolverRoots {
+    fn live(&self) -> Vec<crate::floor_peer::AgentRoot> {
+        let mut roots: Vec<_> = self
+            .owners
+            .snapshot()
+            .map(|recorded| {
+                recorded
+                    .agents
+                    .iter()
+                    .zip(&recorded.keys)
+                    .map(|(agent, key)| crate::floor_peer::AgentRoot {
+                        pid: key.pid,
+                        agent: Some(*agent),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for pid in self.processes.iter().flat_map(|host| host.live_pids()) {
+            if roots.iter().all(|root| root.pid != pid) {
+                roots.push(crate::floor_peer::AgentRoot { pid, agent: None });
+            }
+        }
+        roots
+    }
+}
+
 /// The process-host result the daemon maps to a peer-classification column.
 ///
 /// The daemon's mirror of `dudes_host::PeerRelation`, one hop across the crate boundary. Two enums
@@ -557,6 +606,11 @@ pub trait ProcessRelation: std::fmt::Debug + Send + Sync {
     fn published(&self, children: &[AdoptionKey]) -> Vec<(u64, usize)>;
     /// Resolve `peer` against the aligned recorded-child key slice.
     fn resolve(&self, peer: u32, pidversion: Option<u32>, children: &[AdoptionKey]) -> Relation;
+    /// Every child process the host tracks now, including one spawned a moment ago whose agent
+    /// the `World` has not yet recorded. The Floor refuses requests from inside any of them.
+    fn live_pids(&self) -> Vec<u32> {
+        Vec::new()
+    }
     /// Activate `slot` for a child another owner is about to create.
     ///
     /// The default registers nothing, so a PTY opened through a relation without it is refused.
@@ -765,6 +819,18 @@ impl<H: ProcessHost> ProcessHost for PeerBarrier<H> {
 
     fn alive(&self, key: &AdoptionKey) -> Liveness {
         self.inner.alive(key)
+    }
+
+    fn probe_native_leader(&self, key: &AdoptionKey) -> ProbeAnswer {
+        self.inner.probe_native_leader(key)
+    }
+
+    fn native_group_presence(&self, pid: u32) -> NativeGroupPresence {
+        self.inner.native_group_presence(pid)
+    }
+
+    fn pid_namespace(&self) -> Option<String> {
+        self.inner.pid_namespace()
     }
 
     fn owned_targets(&self, limit: usize) -> OwnedTargets {
@@ -1125,6 +1191,154 @@ impl MintedTokens for WorldTokens {
 }
 
 #[cfg(test)]
+pub(crate) mod native_observation_test_support {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use dudes_supervisor::host::{NativeGroupPresence, ProbeAnswer};
+
+    use super::*;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Call {
+        Leader {
+            pid: u32,
+            start_time: u64,
+            boot: Option<String>,
+        },
+        Group(u32),
+        Namespace,
+    }
+
+    #[derive(Debug)]
+    struct State {
+        calls: Vec<Call>,
+        leader: ProbeAnswer,
+        group: NativeGroupPresence,
+        namespace: Option<String>,
+    }
+
+    #[derive(Clone, Debug)]
+    pub(crate) struct Sentinel(Rc<RefCell<State>>);
+
+    impl Sentinel {
+        pub(crate) fn new() -> Self {
+            Self(Rc::new(RefCell::new(State {
+                calls: Vec::new(),
+                leader: ProbeAnswer::CouldNotAnswer,
+                group: NativeGroupPresence::Unknown,
+                namespace: None,
+            })))
+        }
+    }
+
+    impl ProcessHost for Sentinel {
+        fn spawn(&mut self, _spec: &LaunchSpec, _install: &ManagedInstall) -> SpawnResult {
+            panic!("read-only observation test must not spawn")
+        }
+
+        fn kill(&mut self, _key: &AdoptionKey) -> KillOutcome {
+            panic!("read-only observation test must not kill")
+        }
+
+        fn alive(&self, _key: &AdoptionKey) -> Liveness {
+            panic!("native observation must not substitute ordinary liveness")
+        }
+
+        fn boot_identity(&self) -> HostBoot {
+            panic!("observation wrapper must forward the requested method")
+        }
+
+        fn shutdown(&mut self) -> io::Result<()> {
+            panic!("read-only observation test must not shut down")
+        }
+
+        fn probe_native_leader(&self, key: &AdoptionKey) -> ProbeAnswer {
+            let mut state = self.0.borrow_mut();
+            state.calls.push(Call::Leader {
+                pid: key.pid,
+                start_time: key.start_time,
+                boot: key.boot.clone(),
+            });
+            state.leader
+        }
+
+        fn native_group_presence(&self, pid: u32) -> NativeGroupPresence {
+            let mut state = self.0.borrow_mut();
+            state.calls.push(Call::Group(pid));
+            state.group
+        }
+
+        fn pid_namespace(&self) -> Option<String> {
+            let mut state = self.0.borrow_mut();
+            state.calls.push(Call::Namespace);
+            state.namespace.clone()
+        }
+    }
+
+    pub(crate) fn assert_forwarded(host: &impl ProcessHost, sentinel: &Sentinel) {
+        for (index, (leader, group, namespace)) in [
+            (
+                ProbeAnswer::StartValue(991),
+                NativeGroupPresence::Present,
+                Some("pid:[7]"),
+            ),
+            (
+                ProbeAnswer::NoSuchPid,
+                NativeGroupPresence::Absent,
+                Some("pid:[11]"),
+            ),
+            (
+                ProbeAnswer::CouldNotAnswer,
+                NativeGroupPresence::Unsignallable,
+                None,
+            ),
+            (
+                ProbeAnswer::StartValue(7),
+                NativeGroupPresence::Unknown,
+                Some("pid:[13]"),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let offset = u32::try_from(index).unwrap();
+            let key = AdoptionKey {
+                pid: 42 + offset,
+                start_time: 1_000 + u64::from(offset),
+                boot: (index % 2 == 0).then(|| format!("recorded-boot-{index}")),
+            };
+            let group_pid = 142 + offset;
+            {
+                let mut state = sentinel.0.borrow_mut();
+                state.calls.clear();
+                state.leader = leader;
+                state.group = group;
+                state.namespace = namespace.map(str::to_owned);
+            }
+            let observed = (
+                host.probe_native_leader(&key),
+                host.native_group_presence(group_pid),
+                host.pid_namespace(),
+            );
+            assert_eq!(observed, (leader, group, namespace.map(str::to_owned)));
+            assert_eq!(
+                sentinel.0.borrow().calls,
+                [
+                    Call::Leader {
+                        pid: key.pid,
+                        start_time: key.start_time,
+                        boot: key.boot
+                    },
+                    Call::Group(group_pid),
+                    Call::Namespace
+                ]
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
@@ -1132,6 +1346,34 @@ mod tests {
 
     use super::{GuardedResolver, NoWalk};
     use crate::ports::Handle;
+
+    #[test]
+    fn peer_barrier_delegates_native_observations() {
+        use super::native_observation_test_support::{Sentinel, assert_forwarded};
+        let sentinel = Sentinel::new();
+        let host =
+            super::PeerBarrier::new(sentinel.clone(), super::Resolver::fixed(Arc::new(NoWalk)));
+        assert_forwarded(&host, &sentinel);
+    }
+
+    #[test]
+    fn a_peer_waiting_on_an_aborted_spawn_is_refused() {
+        let resolver = super::Resolver::processes(Arc::new(PendingRelation {
+            answer: super::Relation::Pending(1),
+            finish: true,
+        }));
+        let peer = PeerIdentity {
+            uid: Some(501),
+            gid: Some(20),
+            pid: PeerPid::Reported {
+                pid: 42,
+                pidversion: cfg!(target_os = "macos").then_some(7),
+            },
+        };
+        let pending = resolver.begin_spawn().expect("arm the pending owner");
+        resolver.abort_spawn(pending);
+        assert_eq!(resolver.resolve(&peer), PeerResolution::Refuse);
+    }
 
     /// A resolver that answers a constant, including a refusal.
     #[derive(Debug)]

@@ -164,7 +164,9 @@ impl duded::ports::PtyHostPort for MainPtyHost {
         cols: u16,
         rows: u16,
     ) -> Result<duded::ports::OpenedPty, duded::ports::PtyOpenFailure> {
-        let opened = match self.host.open(spec, dudes_pty::PtySize { cols, rows }) {
+        let opened = match dudes_host::serialize_spawn(|| {
+            self.host.open(spec, dudes_pty::PtySize { cols, rows })
+        }) {
             Ok(opened) => opened,
             Err(dudes_pty::OpenError::Failed(error)) => {
                 return Err(duded::ports::PtyOpenFailure::Failed(error));
@@ -202,6 +204,10 @@ impl duded::ports::PtyHostPort for MainPtyHost {
     /// reader bookkeeping. The count the operating system reports is the fact the daemon journals.
     fn write(&mut self, pty: PtyId, bytes: &[u8]) -> io::Result<usize> {
         self.host.write(pty, bytes)
+    }
+
+    fn write_ready(&mut self, pty: PtyId, bytes: &[u8]) -> io::Result<usize> {
+        self.host.write_ready(pty, bytes)
     }
 
     fn resize(&mut self, pty: PtyId, cols: u16, rows: u16) -> io::Result<()> {
@@ -292,6 +298,10 @@ impl duded::ports::PtyHostPort for MainPtyHost {
         true
     }
 
+    fn exit_success(&mut self, pty: PtyId) -> io::Result<Option<bool>> {
+        Ok(self.host.exit_status(pty)?.map(|status| status.success()))
+    }
+
     fn shutdown(&mut self) -> io::Result<()> {
         let result = self.host.shutdown();
         if result.is_ok() {
@@ -357,6 +367,11 @@ impl duded::classify::ProcessRelation for HostPeerProcesses {
 
     fn track_external(&self, slot: u64) -> Box<dyn duded::classify::ExternalChild> {
         Box::new(HostExternalChild(self.0.track_external(slot)))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn live_pids(&self) -> Vec<u32> {
+        self.0.live_pids()
     }
 }
 
@@ -617,6 +632,12 @@ fn invocation() -> anyhow::Result<duded::ExitCause> {
 
     let mut args = std::env::args_os().skip(1);
     if let Some(option) = args.next() {
+        // Before any daemon start-up: no lock, journal, runtime directory or tracing is touched.
+        #[cfg(unix)]
+        if option == "keeper" {
+            anyhow::ensure!(args.next().is_none(), "keeper takes no arguments");
+            return duded::keeper::run();
+        }
         if (option == "--version" || option == "-V") && args.next().is_none() {
             write_line(
                 &mut io::stdout(),
@@ -662,6 +683,11 @@ fn start() -> anyhow::Result<duded::ExitCause> {
     // the decide loop as soon as the loop's queue exists.
     let children = duded::ChildEnds::new();
     let host = RealHost::watching(Arc::new(HostStreams(Arc::clone(&children))));
+    // A keeper beside each agent is what ends its process group when this daemon dies hard. A
+    // daemon that cannot name its own executable would launch agents nothing guards, so it refuses
+    // to start.
+    #[cfg(unix)]
+    let host = host.with_keeper(keeper_executable(&settings)?);
     // Supported desktop platforms use the host-owned process-ancestry relation. Other targets keep the
     // explicit `NoWalk -> Unresolvable` fallback and publish no child mapping.
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -749,9 +775,7 @@ fn announce(
              one there), or start duded directly with DUDES_FLOOR_ASSETS"
                 .to_owned()
         },
-        |addr| {
-            format!("Floor at http://{addr}/floor/, sign in with a link from `dudes floor open`")
-        },
+        |addr| format!("Floor at http://{addr}/floor/, sign in with `dudes open`"),
     );
     // A daemon that cannot write its own log line keeps serving rather than stop over it.
     let _ = write_line(
@@ -762,6 +786,23 @@ fn announce(
             socket.display()
         ),
     );
+}
+
+/// The executable that answers `keeper`: this daemon's own.
+///
+/// On Linux that is `/proc/self/exe`, which keeps naming the running binary after an upgrade
+/// replaces the file on disk. Elsewhere it is the path the daemon was started from, so after an
+/// upgrade a newer keeper serves an older daemon until it restarts; the keeper's contract does not
+/// change, so the skew is harmless.
+#[cfg(unix)]
+fn keeper_executable(settings: &Settings) -> anyhow::Result<PathBuf> {
+    if cfg!(target_os = "linux") {
+        return Ok(PathBuf::from("/proc/self/exe"));
+    }
+    settings
+        .daemon_exe
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("cannot find this daemon's own executable to keep agents"))
 }
 
 /// Block `SIGTERM` and `SIGINT` in this thread, and therefore in every thread started after it.
@@ -866,6 +907,35 @@ mod pty_tests {
                 ),
             }
         }
+    }
+
+    /// A terminal child forked while another thread sits between a pipe's creation and its
+    /// close-on-exec mark would inherit the pipe's write end, so the terminal waits for the same
+    /// lock every other child waits for.
+    #[test]
+    fn opening_a_terminal_waits_for_any_other_child_being_started() {
+        let cwd = tempfile::tempdir().expect("scratch");
+        let cwd = cwd.path().to_path_buf();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (early, starter) = dudes_host::serialize_spawn(|| {
+            let mut host = MainPtyHost::new();
+            let starter = std::thread::spawn(move || {
+                let pty = open(&mut host, &cwd, &["/bin/sleep", "30"]);
+                let _ = done_tx.send(());
+                (host, pty)
+            });
+            let early = done_rx.recv_timeout(Duration::from_millis(300)).is_ok();
+            (early, starter)
+        });
+        assert!(
+            !early,
+            "the terminal forked while another child was being started"
+        );
+        done_rx
+            .recv_timeout(WAIT)
+            .expect("the terminal opens once the lock is free");
+        let (mut host, pty) = starter.join().expect("starter");
+        assert!(matches!(host.close(pty), PtyCloseOutcome::Closed));
     }
 
     #[test]
@@ -1140,10 +1210,13 @@ mod native_tests {
             floor_answer_enabled: false,
             floor_hire_enabled: false,
             floor_control: duded::settings::FloorControl::Off,
+            floor_recovery_enabled: false,
             floor_board_enabled: false,
             floor_terminal_enabled: false,
             floor_git_enabled: false,
             floor_diff_enabled: false,
+            floor_project_enabled: false,
+            engine_login: None,
             condense_model_enabled: true,
             condense_model: None,
             breaker: BreakerConfig::default(),
@@ -1152,6 +1225,7 @@ mod native_tests {
             predicate_path: Some("/usr/bin:/bin".into()),
             git_checkout_deadline: duded::worktree::git::CHECKOUT_DEADLINE,
             max_connections: NonZeroUsize::new(8).expect("nonzero"),
+            hook_reply_timeout: duded::ports::DEFAULT_HOOK_REPLY_TIMEOUT,
             beat: Duration::from_hours(1),
             floor: None,
             hook_command: Some({
@@ -1544,6 +1618,10 @@ fn settings_from_environment() -> anyhow::Result<(
     dudes_journal::MemoryCondenseConfig,
     duded::settings::RunOptions,
 )> {
+    #[cfg(feature = "fault-injection")]
+    let recovery_stop = duded::fault::RecoveryStop::parse(
+        std::env::var_os("DUDES_FAULT_RECOVERY_STOP").as_deref(),
+    )?;
     let profile = if cfg!(windows) {
         std::env::var_os("USERPROFILE")
     } else {
@@ -1593,10 +1671,16 @@ fn settings_from_environment() -> anyhow::Result<(
         floor_answer_enabled: operator.answer_enabled,
         floor_hire_enabled: operator.hire_enabled,
         floor_control: operator.control,
+        floor_recovery_enabled: operator.recovery_enabled,
         floor_board_enabled: operator.board_enabled,
         floor_terminal_enabled: operator.terminal_enabled,
         floor_git_enabled: operator.git_enabled,
         floor_diff_enabled: operator.diff_enabled,
+        floor_project_enabled: operator.project_enabled,
+        engine_login: Some(duded::settings::EngineLogin {
+            host: || Box::new(MainPtyHost::new()),
+            timeout: duded::settings::ENGINE_LOGIN_TIMEOUT,
+        }),
         condense_model_enabled: operator.condense_model_enabled,
         condense_model: operator.condense_model,
         breaker: BreakerConfig::default(),
@@ -1607,6 +1691,7 @@ fn settings_from_environment() -> anyhow::Result<(
         git_checkout_deadline: duded::worktree::git::CHECKOUT_DEADLINE,
         max_connections: NonZeroUsize::new(DEFAULT_MAX_CONNECTIONS)
             .expect("the default cap is not zero"),
+        hook_reply_timeout: duded::ports::DEFAULT_HOOK_REPLY_TIMEOUT,
         beat: DEFAULT_BEAT,
         floor: duded::settings::floor_from_values(
             floor_assets,
@@ -1618,7 +1703,10 @@ fn settings_from_environment() -> anyhow::Result<(
             .map(|exe| exe.with_file_name(format!("dudes-hook{}", std::env::consts::EXE_SUFFIX))),
         daemon_exe: exe,
     };
-    Ok((settings, operator.providers, memory, startup.options))
+    let options = startup.options.with_daemon_pid(Some(std::process::id()));
+    #[cfg(feature = "fault-injection")]
+    let options = options.with_recovery_stop(recovery_stop);
+    Ok((settings, operator.providers, memory, options))
 }
 
 /// The uid this daemon runs as, which an installed Floor under `share` must belong to. Windows,

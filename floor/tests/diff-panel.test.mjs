@@ -324,10 +324,10 @@ test('a snapshot signals the view only with an empty diff object, and a closed s
   assert.equal(store.getFloorState().diff, false);
 });
 
-test('the request is one POST with the CSRF header, and every status has one reading', async () => {
-  const run = async (status, body, csrf = 'c'.repeat(43)) => {
+test('the request is one POST and every status has one reading', async () => {
+  const run = async (status, body, signedIn = true) => {
     const calls = [];
-    const outcome = await postDiff({ mode: 'manifest', card: DIFF_CARD, expected_seq: 4 }, csrf, async (url, init) => {
+    const outcome = await postDiff({ mode: 'manifest', card: DIFF_CARD, expected_seq: 4 }, signedIn, async (url, init) => {
       calls.push([url, init]);
       return { status, text: async () => body };
     });
@@ -338,7 +338,6 @@ test('the request is one POST with the CSRF header, and every status has one rea
   assert.equal(ok.calls[0][0], '/floor/diff');
   assert.equal(ok.calls[0][1].method, 'POST');
   assert.equal(ok.calls[0][1].credentials, 'same-origin');
-  assert.equal(ok.calls[0][1].headers['X-Dudes-CSRF'], 'c'.repeat(43));
   assert.equal(ok.calls[0][1].body, JSON.stringify({ mode: 'manifest', card: DIFF_CARD, expected_seq: 4 }));
   assert.equal((await run(200, '{"mode":"manifest"}')).outcome.kind, 'unknown');
   assert.equal((await run(200, JSON.stringify({ mode: 'refused', reason: 'session_limit' }))).outcome.response.reason, 'session_limit');

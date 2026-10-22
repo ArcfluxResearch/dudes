@@ -27,7 +27,7 @@ function deps(replies) {
   const calls = [];
   let session = 1;
   return {
-    calls, csrf: () => 'A'.repeat(43), random: (bytes) => bytes.fill(calls.length + 1),
+    calls, signedIn: () => true, random: (bytes) => bytes.fill(calls.length + 1),
     session: () => session, renew: () => { session++; }, refresh() {},
     async fetch(url, init) {
       calls.push({ url, init });

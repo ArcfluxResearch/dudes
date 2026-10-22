@@ -69,6 +69,10 @@ enum Placement {
     Out(&'static str),
 }
 
+const RECOVERY_PREFIX_PLACEMENT: Placement = Placement::Out(
+    "joined recovery sources are covered by recovery_facts::matrix::invalidation_story_survives_automatic_checkpoints_rotation_and_physical_reopen at actual required/source positions",
+);
+
 /// Every kind, placed. **The match has no wildcard**, so a kind added to the contract does not
 /// compile until someone places it or states why it is out.
 ///
@@ -76,6 +80,10 @@ enum Placement {
 /// kind the story never writes is invisible to every assertion in this file — measured, a
 /// `question_lsn` on `AgentRow` written in the `HumanQuestion` arm left the suite green while a
 /// field the story does reach reddened it. A hand-listed corpus is a standing gap; this is not.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per record kind, and each new kind adds its arm"
+)]
 fn placement(kind: RecordKind) -> Placement {
     use Placement::At;
     match kind {
@@ -175,6 +183,19 @@ fn placement(kind: RecordKind) -> Placement {
         // The daemon's own pre-spawn admission audit for a memory-condense model call
         //: inert in every projection for the same reason `BudgetDecision` is.
         RecordKind::MemoryCondenseModelAdmitted => At(45),
+        // A Floor audit record: inert in every projection, like the admission audit above.
+        RecordKind::FloorPeerRefused => At(46),
+        RecordKind::WorkspaceTrustSet => Placement::Out(
+            "inert in every journal projection; only the supervisor's world folds it, and its own tests replay it",
+        ),
+        RecordKind::FloorDeviceEnrolled
+        | RecordKind::FloorDeviceKeyEnrolled
+        | RecordKind::FloorDeviceFirstUsed
+        | RecordKind::FloorDeviceAcknowledged
+        | RecordKind::FloorDeviceRemoved
+        | RecordKind::FloorDeviceUsed => Placement::Out(
+            "inert in every journal projection; only the supervisor's world folds them, and its own tests replay them",
+        ),
         RecordKind::WorktreeLeased | RecordKind::WorktreeRemoved => Placement::Out(
             "the lease lifecycle needs its own agent and removal order; tests/worktrees.rs replays it with and without checkpoints",
         ),
@@ -196,6 +217,9 @@ fn placement(kind: RecordKind) -> Placement {
         | RecordKind::InstructionAttemptBoundarySettled => Placement::Out(
             "instruction authority needs exact joined issue, spawn, end and review positions; standalone samples do not supply those joins",
         ),
+        RecordKind::RecoveryRequired
+        | RecordKind::RecoveryAuthorized
+        | RecordKind::RecoveryInvalidated => RECOVERY_PREFIX_PLACEMENT,
         RecordKind::AgentMcpServersChanged | RecordKind::McpLaunchGranted => Placement::Out(
             "MCP authority requires its edited policy and physical joins; required frame and cache rebuild tests cover those records separately",
         ),
@@ -575,6 +599,19 @@ fn resolve_positions(
             for (key, child) in map.iter_mut() {
                 let here = format!("{path}.{key}");
                 if names_a_position(key) {
+                    if matches!(
+                        key.as_str(),
+                        "session_lsn"
+                            | "spawn_lsn"
+                            | "end_lsn"
+                            | "confirmation_lsn"
+                            | "previous_spawn_lsn"
+                            | "previous_end_lsn"
+                            | "confirmed_session_lsn"
+                    ) && child.is_null()
+                    {
+                        continue;
+                    }
                     let raw = child
                         .as_u64()
                         .unwrap_or_else(|| panic!("{here} is not a number: {child}"));
@@ -608,6 +645,71 @@ fn resolve_positions(
 }
 
 // ---- the tests ----------------------------------------------------------------------------
+
+#[test]
+fn nullable_position_resolution_keeps_absence_zero_and_sources_distinct() {
+    let source = samples::record(RecordKind::SessionLearned);
+    let at = Lsn(7);
+    let log = BTreeMap::from([(
+        at,
+        Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: source.clone(),
+        },
+    )]);
+    let resolve = |key: &str, position: Value| {
+        let mut row = serde_json::json!({});
+        row[key] = position;
+        let mut sources = Vec::new();
+        resolve_positions(&mut row, &log, "", &mut sources);
+        (row, sources)
+    };
+    let absent = resolve("session_lsn", serde_json::to_value(None::<Lsn>).unwrap());
+    let zero = resolve(
+        "session_lsn",
+        serde_json::to_value(Some(Lsn::ZERO)).unwrap(),
+    );
+    let present = resolve("session_lsn", serde_json::to_value(Some(at)).unwrap());
+    assert_eq!(absent.0, zero.0);
+    assert_eq!(zero.0, present.0);
+    assert!(absent.1.is_empty());
+    assert_eq!(zero.1, vec![(".session_lsn".into(), None)]);
+    assert_eq!(
+        present.1,
+        vec![(".session_lsn".into(), Some(source.clone()))]
+    );
+    assert_ne!(absent, zero);
+    assert_ne!(zero, present);
+    assert_ne!(absent, present);
+
+    for key in [
+        "lsn",
+        "lsn_issued",
+        "hired_lsn",
+        "installed_lsn",
+        "future_lsn",
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| resolve(key, Value::Null)).is_err(),
+            "{key} accepted mandatory null"
+        );
+        let (_, sources) = resolve(key, serde_json::to_value(at).unwrap());
+        assert_eq!(sources, vec![(format!(".{key}"), Some(source.clone()))]);
+    }
+    for malformed in [
+        serde_json::json!("not a position"),
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!(true),
+        serde_json::json!({}),
+        serde_json::json!(999),
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| resolve("session_lsn", malformed)).is_err(),
+            "accepted a malformed or dangling optional position"
+        );
+    }
+}
 
 #[test]
 fn checkpointing_changes_no_projection() {

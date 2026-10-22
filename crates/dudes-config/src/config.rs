@@ -1,9 +1,9 @@
-//! `dudes config`: show and edit the settings the daemon reads from the operator's file only when
-//! it starts.
+//! `dudes config`: show and edit the settings the daemon reads from the operator's file when it
+//! starts. A running daemon adopts the `floor.*` switches on its next reload.
 //!
 //! An edit keeps the file's other settings and comments where `toml_edit` can. It writes line
 //! endings as LF, can respace a header it rewrites, and drops the comments of a table that `unset`
-//! empties. It is written as `dudes workspace` writes, to a temporary file beside the original that
+//! empties. It is written as `dudes project` writes, to a temporary file beside the original that
 //! is renamed over it.
 //!
 //! An edit that breaks the file's own start rules, [`RULES`], is refused before anything is
@@ -37,6 +37,8 @@ pub enum Key {
     Hire,
     /// `[floor.control] enabled`: the Floor pauses, resumes and renames an agent.
     Control,
+    /// `[floor.recovery] enabled`: the Floor recovers interrupted managed work.
+    Recovery,
     /// `[floor.goal] enabled`: the Floor changes an agent's goal.
     Goal,
     /// `[floor.renew] enabled`: the Floor gives an agent whose goal has nothing left a new goal
@@ -54,6 +56,8 @@ pub enum Key {
     /// `[floor.diff] enabled`: with `floor.git` also on, the Floor reads a ticket's changed files
     /// for its Changes view.
     Diff,
+    /// `[floor.project] enabled`: the Floor adds a project.
+    Project,
     /// `[budget] floor_usd_per_day`: the floor-wide daily dollar ceiling; none when absent.
     FloorUsdPerDay,
     /// `[budget.per_turn_floor] usd`: the dollars reserved for each turn whose cost is unseen.
@@ -112,13 +116,14 @@ const RULES: [(Key, Key); 7] = [
 
 impl Key {
     /// Every key, in the order `dudes config` shows them.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 18] = [
         Self::Codex,
         Self::CodexStreaming,
         Self::Pi,
         Self::Answer,
         Self::Hire,
         Self::Control,
+        Self::Recovery,
         Self::Goal,
         Self::Renew,
         Self::Retire,
@@ -126,6 +131,7 @@ impl Key {
         Self::Terminal,
         Self::Git,
         Self::Diff,
+        Self::Project,
         Self::FloorUsdPerDay,
         Self::PerTurnUsd,
         Self::PerTurnTokens,
@@ -141,6 +147,7 @@ impl Key {
             Self::Answer => "floor.answer",
             Self::Hire => "floor.hire",
             Self::Control => "floor.control",
+            Self::Recovery => "floor.recovery",
             Self::Goal => "floor.goal",
             Self::Renew => "floor.renew",
             Self::Retire => "floor.retire",
@@ -148,6 +155,7 @@ impl Key {
             Self::Terminal => "floor.terminal",
             Self::Git => "floor.git",
             Self::Diff => "floor.diff",
+            Self::Project => "floor.project",
             Self::FloorUsdPerDay => "budget.floor_usd_per_day",
             Self::PerTurnUsd => "budget.per_turn_floor.usd",
             Self::PerTurnTokens => "budget.per_turn_floor.tokens",
@@ -172,6 +180,7 @@ impl Key {
             Self::Answer => Place::Switch(&["floor", "answer"], "enabled"),
             Self::Hire => Place::Switch(&["floor", "hire"], "enabled"),
             Self::Control => Place::Switch(&["floor", "control"], "enabled"),
+            Self::Recovery => Place::Switch(&["floor", "recovery"], "enabled"),
             Self::Goal => Place::Switch(&["floor", "goal"], "enabled"),
             Self::Renew => Place::Switch(&["floor", "renew"], "enabled"),
             Self::Retire => Place::Switch(&["floor", "retire"], "enabled"),
@@ -179,6 +188,7 @@ impl Key {
             Self::Terminal => Place::Switch(&["floor", "terminal"], "enabled"),
             Self::Git => Place::Switch(&["floor", "git"], "enabled"),
             Self::Diff => Place::Switch(&["floor", "diff"], "enabled"),
+            Self::Project => Place::Switch(&["floor", "project"], "enabled"),
             Self::FloorUsdPerDay => Place::Dollars(&["budget"], "floor_usd_per_day"),
             Self::PerTurnUsd => Place::Dollars(&["budget", "per_turn_floor"], "usd"),
             Self::PerTurnTokens => Place::Tokens(&["budget", "per_turn_floor"], "tokens"),
@@ -541,7 +551,7 @@ impl Draft {
         apply(&mut self.settings.document, change)
     }
 
-    /// Append one workspace, checked as `dudes workspace add` checks it.
+    /// Append one workspace, checked as `dudes project add` checks it.
     ///
     /// # Errors
     ///
@@ -571,14 +581,24 @@ impl Draft {
                 }
             })?;
         }
-        let zeroed = [Key::PerTurnUsd, Key::PerTurnTokens]
+        let zeroed = self.zeroed();
+        Ok(Edited { wrote, zeroed })
+    }
+
+    /// Whether writing the draft would take a per-turn reserve from above zero to zero.
+    #[must_use]
+    pub fn zeroes_a_reserve(&self) -> bool {
+        !self.zeroed().is_empty()
+    }
+
+    fn zeroed(&self) -> Vec<Key> {
+        [Key::PerTurnUsd, Key::PerTurnTokens]
             .into_iter()
             .filter(|key| {
                 held(&self.original, *key).satisfied()
                     && !held(&self.settings.document, *key).satisfied()
             })
-            .collect();
-        Ok(Edited { wrote, zeroed })
+            .collect()
     }
 }
 

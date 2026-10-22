@@ -117,7 +117,7 @@ export function decodeResponse(verb: Verb, status: number, text: string): Outcom
   }
 }
 
-export async function postTicket(verb: Verb, payload: object, csrf: string, fetch: ControlDeps['fetch']): Promise<Outcome> {
+export async function postTicket(verb: Verb, payload: object, fetch: ControlDeps['fetch']): Promise<Outcome> {
   let status: number;
   let text: string;
   try {
@@ -126,7 +126,7 @@ export async function postTicket(verb: Verb, payload: object, csrf: string, fetc
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     status = response.status;
@@ -143,6 +143,8 @@ export interface Notice {
   readonly card: string | null;
   readonly tone: 'done' | 'problem';
   readonly text: string;
+  /** Said only while the ticket is still being worked on, so it goes when the ticket reaches review or beyond. */
+  readonly whileWorking?: true;
 }
 
 /** The sentence for an answer that was not a success. `status` is the ticket's state, used by `wrong_state`. */
@@ -222,9 +224,8 @@ function inTurn<T>(job: () => Promise<T>): Promise<T> {
 }
 
 async function send(verb: Verb, payload: object, deps: ControlDeps): Promise<Outcome> {
-  const csrf = deps.csrf();
-  if (csrf === null) return Object.freeze({ kind: 'forbidden' });
-  const sent = await inTurn(() => postTicket(verb, payload, csrf, deps.fetch));
+  if (!deps.signedIn()) return Object.freeze({ kind: 'forbidden' });
+  const sent = await inTurn(() => postTicket(verb, payload, deps.fetch));
   // An answer about another ticket proves nothing about this one.
   const asked = (payload as { card?: unknown }).card;
   const outcome = sent.kind === 'done' && verb !== 'read' && asked !== undefined && sent.card !== asked ? UNKNOWN : sent;
@@ -296,7 +297,7 @@ export async function createTicket(form: NewTicket, deps: ControlDeps = browserC
     : `Ticket created, but it was not given to ${name}. ${given.kind === 'done' ? COULD_NOT_CONFIRM : problemText(given, 'todo')}`;
   // A ticket that needs you stays said until it is dismissed, like any other problem.
   const well = started !== null && started.state !== 'needs_you';
-  finishRequest(request, { card: made.card, tone: well ? 'done' : 'problem', text });
+  finishRequest(request, { card: made.card, tone: well ? 'done' : 'problem', text, ...(started !== null ? { whileWorking: true as const } : {}) });
   return { card: made.card, saved: true };
 }
 
@@ -366,6 +367,7 @@ export async function changeTicket(card: CardRow, change: Change, deps: ControlD
     ? startText(outcome.start, agentName(getFloorState(), change.agent), holdingTicket(getFloorState(), change.agent)?.title)
     : change.verb === 'assign' ? COULD_NOT_CONFIRM : DONE_TEXT[change.verb];
   const needs = change.verb === 'assign' && outcome.start?.state === 'needs_you';
-  finishRequest(request, { card: card.id, tone: needs ? 'problem' : 'done', text });
+  finishRequest(request, { card: card.id, tone: needs ? 'problem' : 'done', text,
+    ...(change.verb === 'assign' && outcome.start !== null ? { whileWorking: true as const } : {}) });
   return true;
 }

@@ -30,10 +30,12 @@ use std::path::PathBuf;
 
 use dudes_proto::budget::{AgentBudget, GoalBudget};
 use dudes_proto::goal::Predicate;
+use dudes_proto::record::{DeviceId, Hex32};
 use dudes_proto::rpc::agent::{HireParams, LookParams, McpParams, RenameParams};
 use dudes_proto::rpc::board::{CardCreateParams, CardListParams};
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, GoalSetParams};
 use dudes_proto::rpc::journal::JournalTailParams;
+use dudes_proto::rpc::recovery::RecoveryChoice;
 use dudes_proto::rpc::ticket::TicketCreateParams;
 use dudes_types::{AgentId, CardId, CardStatus, Lsn, MailId, Provider, Seq, Tokens, Usd};
 
@@ -65,10 +67,10 @@ pub enum Command {
     /// Start the daemon when absent, then complete `system.ping`. It asks nothing, writes no
     /// configuration and hires nobody.
     Start,
+    /// Start the daemon when absent, mint a one-time Floor link and open it in the default browser.
+    Open,
     /// `system.ping`.
     Ping,
-    /// `system.doctor` diagnostics.
-    Doctor,
     /// `system.doctor` current daemon status.
     Status,
     /// `system.closingTime`, then wait for completion and the final acknowledgement census.
@@ -107,6 +109,8 @@ pub enum Command {
     Goal(Box<GoalSetParams>),
     /// Submit one locally reviewed replacement request file.
     GoalReplace(PathBuf),
+    /// Inspect recovery, submit a reviewed choice or read its receipt.
+    Recovery(RecoveryCommand),
     /// `agent.ask`. The token comes from the process environment; the daemon derives the agent.
     Ask {
         /// The question.
@@ -128,8 +132,10 @@ pub enum Command {
         /// Keep reading after the backfill instead of exiting when the response arrives.
         follow: bool,
     },
-    /// `floor.session.issue`, printed as the one URL to paste into a browser.
+    /// `floor.session.issue` for a link to print, shown as the one URL to paste into a browser.
     FloorOpen,
+    /// `devices`, `devices remove` and `devices keep`: the browsers signed in to the Floor.
+    Devices(DevicesCommand),
     /// Run an engine's own sign-in from the path the daemon found.
     Login(Provider),
     /// `workspace add|remove|reload|list`: edit `[floor.onboarding]` and have the daemon adopt
@@ -162,6 +168,22 @@ pub struct UpgradeOptions {
     pub check: bool,
     /// Restart a daemon whose agents are busy, with closing time.
     pub now: bool,
+}
+
+/// One deliberate recovery operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveryCommand {
+    /// Inspect one agent without changing work.
+    Inspect(AgentId),
+    /// Submit the exact saved opportunity with an explicit context choice.
+    Submit {
+        /// Saved JSON inspection.
+        inspection: PathBuf,
+        /// Explicit offered choice.
+        choice: RecoveryChoice,
+    },
+    /// Read only the original request identity.
+    Receipt(Hex32),
 }
 
 /// The flags of `uninstall`.
@@ -398,6 +420,23 @@ pub enum EditorSelection {
     Explicit(PathBuf),
 }
 
+/// One `devices` subcommand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DevicesCommand {
+    /// `floor.devices.list`.
+    List,
+    /// Sign one browser out: `floor.devices.remove` with the one device the prefix names.
+    Remove {
+        /// The whole id or the start of it, as the list shows it.
+        id: String,
+    },
+    /// Keep a browser nobody has kept yet: `floor.devices.keep` with the one device the prefix names.
+    Keep {
+        /// The whole id or the start of it, as the list shows it.
+        id: String,
+    },
+}
+
 /// One `worktree` subcommand.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorktreeCommand {
@@ -427,6 +466,16 @@ pub enum WorkspaceCommand {
     },
     /// The file's entries beside the running set.
     List,
+    /// Trust one enrolled project, so the Floor may hire an agent into its own copy of it.
+    Trust {
+        /// The workspace id.
+        id: String,
+    },
+    /// Stop trusting one enrolled project.
+    Untrust {
+        /// The workspace id.
+        id: String,
+    },
     /// Add one row to a workspace's checks table, then have the daemon adopt that change.
     CheckAdd(Box<crate::workspace::NewCheck>),
     /// Delete one row of a workspace's checks table, then have the daemon adopt that change.
@@ -529,34 +578,32 @@ COMMANDS
                [--hire <name> [--provider <provider>] [--role <role>] [--goal <text>]
                 [--usd-per-day <n>] [--tokens-per-day <n>]]
                [--hop-cap <n>] [--timeout-s <n>] [-- <program> [args...]]
-        Set up and start the daemon. On a terminal with no options it turns on the
-        engines it finds on your PATH, then asks, one step at a time, whether the Floor
-        may act on your agents, for a daily spending cap only when an API key is set,
-        for the current repository's completion check (suggested from its files), or
-        for a project folder when outside a repository. Enter skips that folder.
-        It asks at most five questions, including confirmation. A first hire is named
-        Kim and starts idle. Choose an installed engine or skip hiring. Use explicit
-        --hire, --goal and budget options for other choices.
-        It then writes the operator file once, starts
-        the daemon (or restarts one that runs other settings), shows where the daemon
-        found each engine and whether it is signed in, makes the hire, and prints the
-        dudes login command for each engine that is signed out. It reads no engine's
-        files. Last, so it stays on screen, it prints the Floor's one-time link to
-        paste into any browser.
-        With options it asks nothing and prints no Floor link: it prints, last, dudes
-        floor open, after dudes login <engine> for each engine that is signed out. --yes
-        takes every default, --set is `config set`, --enroll enrolls the current
-        repository, --hire hires a first agent there, and everything after `--` is
-        the completion check that the workspace and the goal share (default: at
-        most 5 turns a goal, 600 seconds a check). A running daemon with other
-        settings is restarted only with --restart, because a restart ends
-        every running turn; without it quickstart writes the file, names what differs,
-        stops nothing and exits 4. Before any restart the running daemon reads the new
-        file, and a file it would refuse is put back as it was. Ceilings are
+        Set up and start the daemon, and open the Floor. It asks no questions. It turns on
+        the engines it finds on your PATH and, when the file turns no Floor action on yet,
+        the Floor's answer, hire, control, goal, retire, board, renew, recovery and project
+        actions (the git and diff views of changed files and the terminal stay off; turn the
+        views on in the Floor's Settings). A file that already turns any Floor action on
+        keeps every Floor setting as it is. It sets no spending cap, enrolls no project and
+        hires no agent unless an option below asks. It writes the operator file once and
+        lists what it changed, starts the daemon, shows where the daemon found each engine
+        and whether it is signed in, makes the hire an option asks for, prints the dudes
+        login command for each engine that is signed out, and last opens the Floor in your
+        browser, or prints its one-time link when no browser can be opened. It reads no
+        engine's files.
+        A running daemon takes the Floor switches and project changes at once. Settings it
+        reads only at start need a restart: quickstart restarts the daemon when no agent is
+        running a turn, waiting on an answer or attached to a person, and otherwise stops
+        nothing, says which agents are busy, and exits 4. --restart restarts it anyway,
+        which ends every running turn. Before any restart the running daemon reads the new
+        file, and a file it would refuse is put back as it was.
+        --yes is accepted and changes nothing. --set is `config set`, applied after the
+        defaults. --enroll enrolls the current repository, --hire hires a first agent
+        there, and everything after `--` is the completion check that the project and the
+        goal share (default: at most 5 turns a goal, 600 seconds a check). Ceilings are
         optional.
         Without a terminal and without options it only starts the daemon when absent
         and prints its version, socket and journal position. Without a project it
-        also says to run `dudes workspace add` in your project's folder, except with --json.
+        also says to run `dudes project add` in your project's folder, except with --json.
 
     start
         Start the daemon if it is not running, then print what ping prints. Use it
@@ -565,11 +612,26 @@ COMMANDS
         If a daemon is already running it says so and leaves it alone, and when that
         daemon is not this version it says how to restart it.
 
+    open
+        Open Dudes: start the daemon if it is not running, mint a one-time Floor sign-in
+        link and open it in your default browser. The link works once, for 60 seconds.
+        It stays signed in for up to 30 days, or until a day passes without use. Over
+        SSH, or where no opener is found, it prints the link instead.
+
     ping
         Ask the daemon for its version, socket and journal position.
 
-    doctor
-        Show daemon health and any stopped-journal recovery guidance.
+    recovery inspect <agent>
+    recovery submit <inspection.json> --choice try-recorded|fresh-with-recap|repeat-issued-fresh
+    recovery receipt <request-id>
+        Save an inspection with --json, review it, then submit one offered choice.
+        Submit preserves that inspection exactly and never refreshes it automatically.
+        Try recorded conversation does not guarantee restored provider history.
+        Fresh context does not restore old conversation history. Repeating an issued
+        task keeps its original task, and prior effects may repeat.
+        Submit prints and flushes its request ID to stderr before sending, including
+        with --json. Keep that ID. If the reply is lost, use recovery receipt with
+        that ID; do not resend the submission. Authorization does not promise launch.
 
     status
         Show current daemon status and any stopped-journal recovery guidance.
@@ -690,6 +752,23 @@ COMMANDS
         server needs Claude and --trusted. Pi agents with servers need a tested release,
         currently 1.0.4; plain Pi agents need no version probe. A name or role holding a control character is refused. A role over 512 UTF-8 bytes is refused.
 
+    devices
+        The browsers signed in to the Floor: id, name, when each signed in, when it first
+        and last made a request, and a new mark on one nobody has kept yet. A browser
+        stays signed in for 30 days without use and 90 days in all, and the daemon keeps at
+        most eight.
+
+    devices remove <id>
+        Sign one browser out. The id is the whole id or the start of it, as long as it
+        names one browser. Ids use both upper and lower case letters, digits, - and _, and
+        the start must match exactly. A start that names more than one is refused with the
+        matches. An id that starts with - needs -- before it.
+
+    devices keep <id>
+        Mark a new browser as kept, which clears its new mark and puts it behind the browsers
+        still unkept when the daemon has to drop one. The Floor's Keep does the same from another
+        browser; this is for when you have no second one. The id works as for remove.
+
     worktree list
         Every worktree the daemon created that is not removed: id, state, agent, branch
         and path. A tree is pending until its agent is hired, active while the agent is
@@ -781,7 +860,7 @@ COMMANDS
     ticket show <card>
         A ticket is a board card with a title, a note, a project and a \"Done when\"
         check. Add makes one and prints its card id. Project defaults to the only
-        enrolled workspace, and Done when to that project's own check. Give starts the
+        enrolled project, and Done when to that project's own check. Give starts the
         ticket at once when the agent and the project are free, and otherwise queues
         it; it answers at once and polls nothing, and the agent must be hired into
         the ticket's project. An agent is named by its name, which must match exactly
@@ -819,7 +898,7 @@ COMMANDS
         and the explicit launch command. Windows and SSH sessions only print the directory.
         Lease verification requires macOS or Linux; other platforms refuse leased checkouts.
 
-    workspace add [<path>] [--id <id>] [--completion-check-label <text>] [--department <dept>]
+    project add [<path>] [--id <id>] [--completion-check-label <text>] [--department <dept>]
                   [--hop-cap <n>] [--timeout-s <n>] [--label <text>]
                   [--agent-usd-per-day <usd>] [--goal-usd <usd>]
                   [--tokens-per-day <n>] [--goal-tokens <n>]
@@ -829,28 +908,41 @@ COMMANDS
         which must hold .git. An explicit path must be absolute and canonical.
         Default to a unique folder slug, its suggested test command and that command's
         label, department engineering, 5 turns a goal and 600 seconds a check.
-        If no check is suggested, pass one after --. Every option overrides its default.
+        If no check is suggested, the files-changed check is used. Every option, including a check after --, overrides its default.
 
-    workspace remove <id>
-        Remove one enrolled workspace from the configuration and the running daemon.
+    project remove <id>
+        Remove one enrolled project from the configuration and the running daemon.
         No folder is touched.
 
-    workspace reload [--apply <sha256>]
+    project reload [--apply <sha256>]
         Show how the configuration differs from what the daemon runs, with the file's
         SHA-256. With --apply, adopt that change only if the file still has that hash.
 
-    workspace list
-        The configuration's workspaces beside the ones the daemon runs.
+    project list
+        The configuration's projects beside the ones the daemon runs.
 
-    workspace check add <workspace> --id <id> --label <text> [--timeout-s <n>]
+    project trust <id>
+    project untrust <id>
+        Trust an enrolled project, or stop trusting it. While a project is trusted the Floor
+        may hire a Claude agent into its own copy of it (a git worktree on a new branch). The
+        daemon records what you vouch for: the project's folder, the repository's .claude
+        directory and .mcp.json at the current commit, and its git configuration. A change
+        to any of them, or a different folder at the same path, stops the Floor's copies
+        until you trust the project again. A trusted copy runs the repository's own Claude
+        settings, so their environment values and helper commands apply without asking. The
+        grant is refused for a repository whose configuration includes other files or defines a
+        filter, or whose .claude or .mcp.json is a symbolic link. Agents already hired keep
+        working after an untrust. Needs the daemon running.
+
+    project check add <project> --id <id> --label <text> [--timeout-s <n>]
                         [--may-already-pass] -- <program> [args...]
-    workspace check remove <workspace> <id>
-        Add or remove one named completion check for an enrolled workspace, then have a
-        running daemon adopt the change. The Floor offers a workspace's checks when it
+    project check remove <project> <id>
+        Add or remove one named completion check for an enrolled project, then have a
+        running daemon adopt the change. The Floor offers a project's checks when it
         hires an agent or changes a goal there. A goal's check runs once before the first
         turn and must not already pass, unless --may-already-pass says Done may mean only
-        that the check still passes after the agent's work. The check in the workspace's
-        own entry changes through dudes workspace add.
+        that the check still passes after the agent's work. The check in the project's
+        own entry changes through dudes project add.
 
     config
     config set <key> <value> [<key> <value> ...]
@@ -860,7 +952,7 @@ COMMANDS
         providers.codex.streaming opts in to streaming with a separate sign-in home;
         it defaults to off and requires macOS or Linux. After restarting, sign in with
         dudes login codex.
-        The Floor's actions: floor.answer, floor.hire, floor.control, floor.goal,
+        The Floor's actions: floor.answer, floor.hire, floor.control, floor.recovery, floor.goal,
         floor.renew, floor.retire, floor.board, floor.terminal, floor.git and floor.diff, on or off.
         Chat is always on and has no setting. The budget: budget.floor_usd_per_day and
         budget.per_turn_floor.usd in dollars, budget.per_turn_floor.tokens in tokens.
@@ -871,13 +963,13 @@ COMMANDS
         a ceiling in that unit. With a daemon running, an edit names the settings it
         runs differently, which a restart applies: dudes stop, then dudes start.
 
-    floor open [--no-browser]
-        Mint a Floor session and print its one-time sign-in link. The session can view
+    floor open
+        Mint a Floor session and print its one-time sign-in link; `dudes open` opens it
+        for you instead. The session can view
         the Floor, and it can also act on agents (hire, answer, pause, retire and the
         rest) for each floor.* action that is on. Paste the link into any browser. It
         expires in 60 seconds and works once, in one browser; run the command again for
         a new one. Nothing is opened for you.
-        --no-browser is accepted and changes nothing: printing is now the default.
 
     login claude|codex|pi
         Sign in to an engine with its own login command: `claude auth login` or
@@ -899,6 +991,8 @@ ENVIRONMENT
     DUDES_CONFIG        The operator file, as an absolute path; a relative one is refused.
                         Wins over the platform default on every system.
     DUDES_DAEMON        The daemon executable. Default: a `duded` sibling of this binary.
+    DUDES_OPENER        The program `open` hands the link to, as an absolute path.
+                        Default: /usr/bin/open on macOS, xdg-open on Linux.
     DUDES_SOCK          The control socket. Default: <runtime dir>/duded.sock
     DUDES_RUNTIME_DIR   Where the daemon put its socket and operator credential.
                         Default: <storage root>/.local/state/dudes
@@ -997,14 +1091,11 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
             Command::Quickstart(plan)
         }
         "start" => without_arguments(tail, Command::Start)?,
+        "open" => without_arguments(tail, Command::Open)?,
         "ping" => without_arguments(tail, Command::Ping)?,
-        "doctor" | "status" => {
+        "status" => {
             reject_leftovers(tail)?;
-            if command_word == "doctor" {
-                Command::Doctor
-            } else {
-                Command::Status
-            }
+            Command::Status
         }
         "stop" => stop(tail)?,
         "closing" => closing(tail)?,
@@ -1045,6 +1136,7 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "look" => Command::Look(look(tail)?),
         "mcp" => Command::Mcp(mcp(tail, payload)?),
         "goal" => goal_command(tail, payload)?,
+        "recovery" => Command::Recovery(recovery(tail, payload)?),
         "ask" => ask(tail)?,
         "memory" => Command::Memory(memory(tail)?),
         "why" => why(tail)?,
@@ -1052,8 +1144,9 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "floor" => floor(tail)?,
         "login" if json => return Err(ArgError::TextOnly("login")),
         "login" => login(tail)?,
-        "workspace" => Command::Workspace(workspace(tail, payload)?),
+        "project" => Command::Workspace(workspace(tail, payload)?),
         "worktree" => Command::Worktree(worktree(tail)?),
+        "devices" => Command::Devices(devices(tail, payload)?),
         "board" => Command::Board(board(tail)?),
         "ticket" => Command::Ticket(ticket(tail, json)?),
         "config" if json => return Err(ArgError::TextOnly("config")),
@@ -1725,7 +1818,7 @@ fn board_status(flags: &mut Flags<'_>, flag: &'static str) -> Result<CardStatus,
     }
 }
 
-/// `floor open [--no-browser]`; the flag is accepted for scripts that still pass it.
+/// `floor open`.
 ///
 /// The only subcommand is `open`. `dudes floor` alone is refused by name rather than folded into
 /// `UnknownCommand`, because it is what an operator typing from memory will actually type.
@@ -1742,15 +1835,11 @@ fn floor(tail: &[OsString]) -> Result<Command, ArgError> {
             subcommand.to_string_lossy()
         )));
     }
-    for flag in flags {
-        if asks_for_help(flag) {
-            return Err(ArgError::HelpRequested);
-        }
-        if flag != "--no-browser" {
-            return Err(ArgError::UnknownFlag(flag.to_string_lossy().into_owned()));
-        }
+    match flags.first() {
+        None => Ok(Command::FloorOpen),
+        Some(flag) if asks_for_help(flag) => Err(ArgError::HelpRequested),
+        Some(flag) => Err(ArgError::UnknownFlag(flag.to_string_lossy().into_owned())),
     }
-    Ok(Command::FloorOpen)
 }
 
 /// `login <claude|codex|pi>`.
@@ -1846,7 +1935,7 @@ fn workspace(
     payload: Option<&[OsString]>,
 ) -> Result<WorkspaceCommand, ArgError> {
     let Some((subcommand, rest)) = tail.split_first() else {
-        return Err(ArgError::NoSubcommand("workspace"));
+        return Err(ArgError::NoSubcommand("project"));
     };
     if asks_for_help(subcommand) {
         return Err(ArgError::HelpRequested);
@@ -1880,8 +1969,24 @@ fn workspace(
             reject_leftovers(rest)?;
             Ok(WorkspaceCommand::List)
         }
+        word @ ("trust" | "untrust") => match rest {
+            [] => Err(ArgError::Missing("<id>")),
+            [first, ..] if asks_for_help(first) => Err(ArgError::HelpRequested),
+            [id] => {
+                let id = id
+                    .clone()
+                    .into_string()
+                    .map_err(|_| ArgError::NotUtf8("<id>"))?;
+                Ok(if word == "trust" {
+                    WorkspaceCommand::Trust { id }
+                } else {
+                    WorkspaceCommand::Untrust { id }
+                })
+            }
+            [_, extra, ..] => Err(ArgError::UnknownFlag(extra.to_string_lossy().into_owned())),
+        },
         "check" => workspace_check(rest, payload),
-        other => Err(ArgError::UnknownCommand(format!("workspace {other}"))),
+        other => Err(ArgError::UnknownCommand(format!("project {other}"))),
     }
 }
 
@@ -1892,7 +1997,7 @@ fn workspace_check(
     payload: Option<&[OsString]>,
 ) -> Result<WorkspaceCommand, ArgError> {
     let Some((subcommand, rest)) = tail.split_first() else {
-        return Err(ArgError::NoSubcommand("workspace check"));
+        return Err(ArgError::NoSubcommand("project check"));
     };
     if asks_for_help(subcommand) {
         return Err(ArgError::HelpRequested);
@@ -1906,10 +2011,10 @@ fn workspace_check(
         "remove" => match rest {
             [first, ..] if asks_for_help(first) => Err(ArgError::HelpRequested),
             [workspace, id] => Ok(WorkspaceCommand::CheckRemove {
-                workspace: word(workspace, "<workspace>")?,
+                workspace: word(workspace, "<project>")?,
                 id: word(id, "<id>")?,
             }),
-            [] => Err(ArgError::Missing("<workspace>")),
+            [] => Err(ArgError::Missing("<project>")),
             [_] => Err(ArgError::Missing("<id>")),
             [_, _, extra, ..] => Err(ArgError::UnknownFlag(extra.to_string_lossy().into_owned())),
         },
@@ -1927,7 +2032,7 @@ fn workspace_check(
                     other if other.starts_with('-') => {
                         return Err(ArgError::UnknownFlag(other.to_owned()));
                     }
-                    _ if workspace.is_none() => workspace = Some(word(arg, "<workspace>")?),
+                    _ if workspace.is_none() => workspace = Some(word(arg, "<project>")?),
                     other => return Err(ArgError::UnknownFlag(other.to_owned())),
                 }
             }
@@ -1944,7 +2049,7 @@ fn workspace_check(
             }
             Ok(WorkspaceCommand::CheckAdd(Box::new(
                 crate::workspace::NewCheck {
-                    workspace: required(workspace, "<workspace>")?,
+                    workspace: required(workspace, "<project>")?,
                     id: required(id, "--id")?,
                     label: required(label, "--label")?,
                     argv: argv
@@ -1956,7 +2061,7 @@ fn workspace_check(
                 },
             )))
         }
-        other => Err(ArgError::UnknownCommand(format!("workspace check {other}"))),
+        other => Err(ArgError::UnknownCommand(format!("project check {other}"))),
     }
 }
 
@@ -2237,7 +2342,6 @@ impl QuickstartFlags {
             tokens_per_day,
         });
         Ok(Plan {
-            project: None,
             changes,
             check,
             enroll,
@@ -2425,6 +2529,62 @@ fn look(tail: &[OsString]) -> Result<LookParams, ArgError> {
         character: required(character, "--character")?,
         accent: required(accent, "--accent")?,
     })
+}
+
+/// `devices`, `devices list`, `devices remove <id>` and `devices keep <id>`.
+fn devices(tail: &[OsString], payload: Option<&[OsString]>) -> Result<DevicesCommand, ArgError> {
+    let Some((subcommand, rest)) = tail.split_first() else {
+        return Ok(DevicesCommand::List);
+    };
+    if asks_for_help(subcommand) {
+        return Err(ArgError::HelpRequested);
+    }
+    match subcommand.to_string_lossy().as_ref() {
+        "list" => {
+            reject_leftovers(rest)?;
+            Ok(DevicesCommand::List)
+        }
+        verb @ ("remove" | "keep") => {
+            let mut id = None;
+            let mut name = |text: &str| {
+                let valid = (4..=DeviceId::LEN).contains(&text.len())
+                    && text
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+                if !valid {
+                    return Err(ArgError::BadValue {
+                        flag: "<id>",
+                        value: text.to_owned(),
+                        what: "a device id or its first 4 to 43 characters: letters, digits, - and _",
+                    });
+                }
+                if id.replace(text.to_owned()).is_some() {
+                    return Err(ArgError::UnknownFlag(text.to_owned()));
+                }
+                Ok(())
+            };
+            for arg in rest {
+                match arg.to_string_lossy().as_ref() {
+                    "--help" | "-h" => return Err(ArgError::HelpRequested),
+                    flag if flag.starts_with('-') => {
+                        return Err(ArgError::UnknownFlag(flag.to_owned()));
+                    }
+                    text => name(text)?,
+                }
+            }
+            // An id that starts with a dash follows `--`, where the global parser splits.
+            for arg in payload.unwrap_or_default() {
+                name(arg.to_str().ok_or(ArgError::NotUtf8("<id>"))?)?;
+            }
+            let id = id.ok_or(ArgError::Missing("<id>"))?;
+            Ok(if verb == "keep" {
+                DevicesCommand::Keep { id }
+            } else {
+                DevicesCommand::Remove { id }
+            })
+        }
+        other => Err(ArgError::UnknownCommand(format!("devices {other}"))),
+    }
 }
 
 fn worktree(tail: &[OsString]) -> Result<WorktreeCommand, ArgError> {
@@ -2699,6 +2859,37 @@ fn goal_command(tail: &[OsString], payload: Option<&[OsString]>) -> Result<Comma
         return Ok(Command::GoalReplace(PathBuf::from(&tail[2])));
     }
     Ok(Command::Goal(Box::new(goal(tail, payload)?)))
+}
+
+fn recovery(tail: &[OsString], payload: Option<&[OsString]>) -> Result<RecoveryCommand, ArgError> {
+    if tail.first().is_some_and(|word| asks_for_help(word)) {
+        return Err(ArgError::HelpRequested);
+    }
+    if payload.is_some() {
+        return Err(ArgError::UnknownFlag("recovery takes no payload".into()));
+    }
+    match tail {
+        [command, agent] if command == "inspect" => Ok(RecoveryCommand::Inspect(
+            agent.to_str().ok_or(ArgError::NotUtf8("agent"))?.parse().map_err(|_| ArgError::BadValue {
+                flag: "agent", value: agent.to_string_lossy().into_owned(), what: "a canonical agent id",
+            })?,
+        )),
+        [command, inspection, flag, choice] if command == "submit" && flag == "--choice" && !inspection.is_empty() => {
+            let choice = match choice.to_str().ok_or(ArgError::NotUtf8("--choice"))? {
+                "try-recorded" => RecoveryChoice::TryRecorded,
+                "fresh-with-recap" => RecoveryChoice::FreshWithRecap,
+                "repeat-issued-fresh" => RecoveryChoice::RepeatIssuedFresh,
+                _ => return Err(ArgError::BadValue { flag: "--choice", value: choice.to_string_lossy().into_owned(), what: "try-recorded, fresh-with-recap or repeat-issued-fresh" }),
+            };
+            Ok(RecoveryCommand::Submit { inspection: PathBuf::from(inspection), choice })
+        }
+        [command, request] if command == "receipt" => {
+            let text = request.to_str().ok_or(ArgError::NotUtf8("request-id"))?;
+            let request = serde_json::from_value(serde_json::Value::String(text.into())).map_err(|_| ArgError::BadValue { flag: "request-id", value: text.into(), what: "64 lowercase hexadecimal characters" })?;
+            Ok(RecoveryCommand::Receipt(request))
+        }
+        _ => Err(ArgError::UnknownFlag("recovery requires inspect <agent>, submit <inspection.json> --choice <choice>, or receipt <request-id>".into())),
+    }
 }
 
 fn goal(tail: &[OsString], payload: Option<&[OsString]>) -> Result<GoalSetParams, ArgError> {
@@ -3354,7 +3545,7 @@ mod tests {
         assert!(!parse(&args(&["ping"])).expect("parses").json);
     }
 
-    /// `quickstart` with no option carries no plan, so the terminal decides whether it asks; any
+    /// `quickstart` with no option carries no plan, so the terminal decides whether it sets up; any
     /// option makes the plan, and an unknown flag is refused here rather than ignored by startup.
     #[test]
     fn quickstart_options_make_a_plan() {
@@ -3388,7 +3579,6 @@ mod tests {
                 "beans.txt",
             ]),
             Ok(Command::Quickstart(Some(Box::new(Plan {
-                project: None,
                 changes: vec![Change::set(Key::Pi, "on").expect("on")],
                 check: Some(Check {
                     argv: vec![
@@ -4134,6 +4324,31 @@ mod worktree_tests {
     }
 
     #[test]
+    fn project_trust_and_untrust_take_exactly_one_project_id() {
+        let command = |parts: &[&str]| parse(&argv(parts)).map(|parsed| parsed.command);
+        assert_eq!(
+            command(&["project", "trust", "repo_1"]).unwrap(),
+            Command::Workspace(WorkspaceCommand::Trust {
+                id: "repo_1".into()
+            })
+        );
+        assert_eq!(
+            command(&["project", "untrust", "repo_1"]).unwrap(),
+            Command::Workspace(WorkspaceCommand::Untrust {
+                id: "repo_1".into()
+            })
+        );
+        assert!(matches!(
+            command(&["project", "trust"]),
+            Err(ArgError::Missing("<id>"))
+        ));
+        assert!(matches!(
+            command(&["project", "trust", "a", "b"]),
+            Err(ArgError::UnknownFlag(_))
+        ));
+    }
+
+    #[test]
     fn worktree_list_and_remove_parse_and_refuse_what_they_do_not_take() {
         let command = |parts: &[&str]| parse(&argv(parts)).map(|parsed| parsed.command);
         assert_eq!(
@@ -4225,5 +4440,61 @@ mod mcp_tests {
             Err(ArgError::Conflicting("--clear", "--mcp"))
         );
         assert_eq!(parsed(&["mcp", "--help"]), Err(ArgError::HelpRequested));
+    }
+}
+
+#[cfg(test)]
+mod devices_tests {
+    use super::*;
+
+    fn command(parts: &[&str]) -> Result<Command, ArgError> {
+        parse(&parts.iter().map(OsString::from).collect::<Vec<_>>()).map(|parsed| parsed.command)
+    }
+
+    #[test]
+    fn devices_lists_and_remove_takes_one_start_of_an_id_and_keeps_its_case() {
+        assert_eq!(
+            command(&["devices"]).unwrap(),
+            Command::Devices(DevicesCommand::List)
+        );
+        assert_eq!(
+            command(&["devices", "list"]).unwrap(),
+            Command::Devices(DevicesCommand::List)
+        );
+        assert_eq!(
+            command(&["devices", "remove", "aB12-d"]).unwrap(),
+            Command::Devices(DevicesCommand::Remove {
+                id: "aB12-d".to_owned()
+            }),
+            "the case and the dash are kept"
+        );
+        assert_eq!(
+            command(&["devices", "keep", "L60mRRPQ"]).unwrap(),
+            Command::Devices(DevicesCommand::Keep {
+                id: "L60mRRPQ".to_owned()
+            })
+        );
+        assert_eq!(
+            command(&["devices", "remove", "--", "-abc_"]).unwrap(),
+            Command::Devices(DevicesCommand::Remove {
+                id: "-abc_".to_owned()
+            }),
+            "an id that starts with a dash follows a double dash"
+        );
+        let whole = "L".repeat(43);
+        assert!(command(&["devices", "remove", &whole]).is_ok());
+        for bad in [
+            &["devices", "keep"][..],
+            &["devices", "remove"][..],
+            &["devices", "remove", "ab1"],
+            &["devices", "remove", "ab12cd+"],
+            &["devices", "remove", "ab 12cd"],
+            &["devices", "remove", &"L".repeat(44)],
+            &["devices", "remove", "-abcd"],
+            &["devices", "remove", "ab12cd", "ab12cd"],
+            &["devices", "prune"],
+        ] {
+            assert!(command(bad).is_err(), "{bad:?}");
+        }
     }
 }

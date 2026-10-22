@@ -12,7 +12,7 @@ use crate::predicate::PredicateRunner;
 
 const MAX_CHILDREN: usize = 512;
 
-fn canonical_folder(path: &Path) -> Option<PathBuf> {
+pub(super) fn canonical_folder(path: &Path) -> Option<PathBuf> {
     let canonical = std::fs::canonicalize(path).ok()?;
     std::fs::metadata(&canonical)
         .ok()?
@@ -24,6 +24,7 @@ struct Census<'a, H> {
     host: &'a H,
     world: &'a dudes_supervisor::World,
     candidate: Option<AgentId>,
+    recovery_consent: Option<&'a dudes_proto::recovery::RecoveryBinding>,
     folder: PathBuf,
     examined: usize,
     conflict: Option<(AgentId, String)>,
@@ -207,8 +208,15 @@ impl<H: ProcessHost> Census<'_, H> {
         live_ptys: &std::collections::BTreeMap<AgentId, dudes_proto::rpc::pty::PtyId>,
     ) -> Result<(), SharedFolderRefusal> {
         let world = self.world;
+        let retry = self.candidate.and_then(|agent| {
+            super::native_boundaries::owed_retry_observation(
+                world,
+                agent,
+                world.agents.get(&agent).and_then(|row| row.open_turn),
+            )
+        });
         for owner in world.instructions.unresolved_owners() {
-            for (_, attempt) in world.instructions.unresolved_launch_attempts(owner) {
+            for (started, attempt) in world.instructions.unresolved_launch_attempts(owner) {
                 if self.room().is_err() {
                     return Err(SharedFolderRefusal::ChildLimit);
                 }
@@ -225,7 +233,14 @@ impl<H: ProcessHost> Census<'_, H> {
                         }
                         dudes_proto::InstructionObservationOwner::AttachedTurn { .. } => false,
                     };
-                if !current_before_host {
+                let owed = super::native_boundaries::historical_owed_observation(
+                    world, retry, *started, attempt,
+                ) || self.recovery_consent.is_some_and(|binding| {
+                    super::native_boundaries::original_owed_observation(
+                        world, binding, *started, attempt,
+                    )
+                });
+                if !current_before_host && !owed {
                     let folder = attempt
                         .snapshot
                         .as_ref()
@@ -268,12 +283,32 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         {
             return Ok(());
         }
+        self.admit_folder_children(sup, agent, cwd)
+    }
+
+    fn admit_folder_children<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: Option<AgentId>,
+        cwd: &Path,
+    ) -> Result<(), SharedFolderRefusal> {
+        self.admit_folder_children_for(sup, agent, cwd, None)
+    }
+
+    fn admit_folder_children_for<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: Option<AgentId>,
+        cwd: &Path,
+        recovery_consent: Option<&dudes_proto::recovery::RecoveryBinding>,
+    ) -> Result<(), SharedFolderRefusal> {
         let folder = canonical_folder(cwd).ok_or(SharedFolderRefusal::CandidateFolderUnresolved)?;
         let world = sup.world();
         let mut census = Census {
             host: &self.host,
             world,
             candidate: agent,
+            recovery_consent,
             folder,
             examined: 0,
             conflict: None,
@@ -331,6 +366,90 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
         census.result()
     }
+    pub(super) fn recovery_consent_checkout_clear<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+    ) -> bool {
+        let turn = sup.world().agents.get(&agent).and_then(|row| row.open_turn);
+        let owed = super::native_boundaries::missing_spawn_binding(sup, agent, turn);
+        self.recovery_checkout_for(sup, agent, owed.as_ref())
+    }
+
+    pub(super) fn recovery_checkout_clear<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+    ) -> bool {
+        self.recovery_checkout_for(sup, agent, None)
+    }
+
+    fn recovery_checkout_for<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+        recovery_consent: Option<&dudes_proto::recovery::RecoveryBinding>,
+    ) -> bool {
+        let Some(row) = sup.world().agents.get(&agent) else {
+            return false;
+        };
+        let cwd = match row.worktree {
+            Some(lease) => match sup.world().worktrees.get(&lease) {
+                Some(lease) => lease.path.as_path(),
+                None => return false,
+            },
+            None => row.cwd.as_path(),
+        };
+        let Some(folder) = canonical_folder(cwd) else {
+            return false;
+        };
+        if !self.recovery_checks_clear(&folder) {
+            return false;
+        }
+        self.admit_folder_children_for(sup, Some(agent), &folder, recovery_consent)
+            .is_ok()
+    }
+
+    fn recovery_checks_clear(&self, folder: &Path) -> bool {
+        let active = self.baselines.active_folders(MAX_CHILDREN + 1).chain(
+            self.predicate_folders
+                .keys()
+                .map(|(_, path)| Some(path.as_path()))
+                .take(MAX_CHILDREN + 1),
+        );
+        for (index, active) in active.enumerate().take(MAX_CHILDREN + 1) {
+            if index == MAX_CHILDREN || active.is_none_or(|active| active == folder) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub(super) fn recovery_turn_checkout_clear<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        turn: dudes_types::TurnId,
+    ) -> bool {
+        let Some(row) = sup.world().turns.get(&turn) else {
+            return false;
+        };
+        let Some(goal) = row.goal else {
+            return true;
+        };
+        let Ok((state, _)) = sup.world().recovery_projection() else {
+            return false;
+        };
+        match state.work_claim(dudes_proto::recovery::RecoveryWork {
+            agent: row.agent,
+            goal,
+            turn,
+        }) {
+            Ok(None) => true,
+            Ok(Some(_)) => self.recovery_checkout_clear(sup, row.agent),
+            Err(_) => false,
+        }
+    }
+
     fn admit_runtime_peers(
         &self,
         census: &mut Census<'_, H>,

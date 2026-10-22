@@ -34,12 +34,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             at: self.clock.now(),
             record,
         };
-        let lsn = self.append(sup.world(), &entry)?;
-        sup.handle(Input::InstructionJournaled { lsn, entry });
-        anyhow::ensure!(
-            sup.world().last_applied_lsn == Some(lsn),
-            "instruction boundary was not folded"
-        );
+        let append = self.append(sup.world(), &entry)?;
+        let lsn = append.lsn();
+        let through = append.through();
+        let handled = sup
+            .handle(
+                Input::InstructionJournaled { append },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .inspect_err(|_| self.fence_journal())?;
+        self.require_handled_through(sup.world(), &handled, through)?;
         anyhow::ensure!(
             sup.effects().is_empty(),
             "instruction boundary emitted unrelated effects"
@@ -438,5 +442,75 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             waiting,
         )?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::runtime::work_test_support as common;
+    use crate::startup::Witness;
+    use dudes_supervisor::input::DurableInputError;
+    use std::sync::Arc;
+
+    #[test]
+    fn an_injected_direct_instruction_fold_fault_fences_before_publication() {
+        for fault in [false, true] {
+            let fixture = common::Fixture::new();
+            let mut settings = fixture.settings();
+            settings.journal.checkpoint_every = 1;
+            let host = common::SharedHost::new();
+            let mut daemon = crate::boot(
+                &settings,
+                common::seams(
+                    &settings,
+                    host.clone(),
+                    Arc::new(common::ScriptedRunner::default()),
+                    Arc::new(common::TestClock::new()),
+                    Witness::default(),
+                ),
+            )
+            .unwrap();
+            let before = daemon.sup.world().last_applied_lsn;
+            let lsn = daemon.ctx.writer.next_lsn().unwrap();
+            if fault {
+                daemon.sup.refuse_fold_once(
+                    lsn,
+                    dudes_proto::recovery_state::RecoveryStateError::Binding,
+                );
+            }
+            let result = daemon.ctx.append_instruction_boundary(
+                &mut daemon.sup,
+                Record::PtyCloseRequested {
+                    pty: PtyId(7),
+                    actor: dudes_proto::Actor::System,
+                    provenance: None,
+                    reason: "cleanup".into(),
+                },
+                &mut daemon.closing,
+            );
+            if fault {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<DurableInputError>(),
+                    Some(&DurableInputError::Recovery {
+                        lsn,
+                        reason: dudes_proto::recovery_state::RecoveryStateError::Binding
+                    })
+                );
+                assert_eq!(daemon.sup.world().last_applied_lsn, before);
+                assert!(daemon.ctx.journal_writes_stopped());
+            } else {
+                assert_eq!(result.unwrap(), lsn);
+                let through = daemon.ctx.projections.last_applied_lsn();
+                assert!(through > lsn);
+                assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
+                assert!(!daemon.ctx.journal_writes_stopped());
+            }
+            assert!(daemon.sup.effects().is_empty());
+            assert!(host.spawned().is_empty());
+            let mut running = common::start(daemon);
+            running.stop(crate::ExitCause::Ended);
+        }
     }
 }

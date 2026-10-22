@@ -33,6 +33,6 @@ export function WorkersList({ agents }: { readonly agents: FloorState['agents'] 
 
 function baseText(worktree: Worktree) {
   return worktree.from === undefined
-    ? "The workspace's current commit when the agent was hired"
+    ? "The project's current commit when the agent was hired"
     : <>Another agent&apos;s worktree <span className="data">{worktree.from}</span></>;
 }

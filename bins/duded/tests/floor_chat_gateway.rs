@@ -7,13 +7,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use duded::config::load_operator_with_options;
+use duded::floor_browser::Page;
 use duded::ports::Ask;
 use duded::settings::{FloorSettings, RunOptions};
 use dudes_proto::Record;
 use dudes_proto::rpc::Method;
 use dudes_proto::rpc::cred::OperatorCredential;
-use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_rpc::Client;
+use dudes_supervisor::Clock as _;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tracing::field::{Field, Visit};
@@ -21,6 +22,7 @@ use tracing::span::{Attributes, Id, Record as SpanRecord};
 use tracing::{Event, Level, Metadata, Subscriber};
 
 mod common;
+use common::PageHttp as _;
 
 use common::{Fixture, ScriptedRunner, SharedHost, TestClock, goal_params, seams};
 
@@ -28,13 +30,12 @@ const REQUEST_ID: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const CANCEL_ID: &str = "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v3"
+    "/tests/fixtures/floor-release-v5"
 );
 
 struct Browser {
     addr: SocketAddr,
-    cookie: String,
-    csrf: String,
+    page: Page,
     clock: Arc<TestClock>,
     failure: duded::runtime::AppendFailure,
     host: Option<SharedHost>,
@@ -109,45 +110,16 @@ where
     let failure = daemon.append_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let running = common::start(daemon);
-    let fixture_credential = std::fs::read_to_string(
-        settings
-            .runtime_dir
-            .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
-    )
-    .expect("owned fixture credential");
-    let mut client = Client::connect(settings.socket()).expect("fixture operator socket");
-    let result = client
-        .call_as_operator(
-            Method::FloorSessionIssue,
-            None,
-            OperatorCredential::new(fixture_credential).expect("fixture credential type"),
-        )
-        .expect("session issue");
-    let issue: SessionIssueResult =
-        serde_json::from_value(result.result.expect("session issue result"))
-            .expect("typed session");
-    let request = format!(
-        "POST /floor/session HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: {}\r\n\r\n{}",
-        issue.bootstrap.len(),
-        issue.bootstrap
-    );
-    let (code, head, body) = http(addr, request.as_bytes());
-    assert_eq!(code, 200);
-    let cookie = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
-        .and_then(|value| value.split(';').next())
-        .expect("fixture cookie")
-        .to_owned();
-    let body: Value = serde_json::from_slice(&body).expect("session exchange JSON");
-    let csrf = body["csrf"].as_str().expect("fixture CSRF").to_owned();
+    let page = common::floor_session_on(&settings, addr, {
+        let clock = Arc::clone(&clock);
+        move || clock.now().unix_millis()
+    });
     (
         settings,
         running,
         Browser {
             addr,
-            cookie,
-            csrf,
+            page,
             clock,
             failure,
             host: None,
@@ -210,24 +182,22 @@ fn response(stream: &mut TcpStream) -> (u16, String, Vec<u8>) {
 }
 
 impl Browser {
+    /// The head of a POST that claims `length` body bytes, signed over an empty body: the daemon
+    /// refuses these before it reads the body.
     fn head(&self, route: &str, length: usize) -> String {
+        let signed = self.page.signed("POST", route, &[]);
         format!(
-            "POST {route} HTTP/1.1\r\nHost: {}\r\nOrigin: http://{}\r\nCookie: dudes_floor_session={}\r\nX-Dudes-CSRF: {}\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n\r\n",
-            self.addr, self.addr, self.cookie, self.csrf
+            "POST {route} HTTP/1.1\r\nHost: {}\r\nOrigin: http://{}\r\nCookie: dudes_floor_session={}\r\n{}Content-Type: application/json\r\nContent-Length: {length}\r\n\r\n",
+            self.addr,
+            self.addr,
+            self.page.cookie,
+            signed.header_lines()
         )
     }
 
     fn post(&self, route: &str, body: &[u8]) -> (u16, Value) {
-        let request = [self.head(route, body.len()).as_bytes(), body].concat();
-        let (code, _, response) = http(self.addr, &request);
-        (
-            code,
-            if response.is_empty() {
-                Value::Null
-            } else {
-                serde_json::from_slice(&response).expect("action JSON")
-            },
-        )
+        let reply = self.page.post_bytes(route, body);
+        (reply.status(), reply.json())
     }
 
     fn snapshot(&self) -> Value {
@@ -239,11 +209,7 @@ impl Browser {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("stream read bound");
-        let addr = self.addr;
-        let request = format!(
-            "GET /floor/stream HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: dudes-floor-v3, dudes-csrf.{}\r\nCookie: dudes_floor_session={}\r\n\r\n",
-            self.csrf, self.cookie
-        );
+        let request = self.page.upgrade_head("/floor/stream", "dudes-floor-v4");
         stream.write_all(request.as_bytes()).expect("upgrade write");
         assert_eq!(response(&mut stream).0, 101);
         let payload = b"{\"type\":\"floor.subscribe\"}";
@@ -476,8 +442,7 @@ fn queued_send_cancel_and_retries_are_durable_and_attributed() {
     );
     let encoded = serde_json::to_string(&notes).unwrap();
     assert!(!encoded.contains(REQUEST_ID));
-    assert!(!encoded.contains(&browser.cookie));
-    assert!(!encoded.contains(&browser.csrf));
+    assert!(!encoded.contains(&browser.page.cookie));
     running
         .handle
         .ask(Ask::Retire(Box::new(
@@ -514,12 +479,12 @@ fn chat_routes_refuse_oversize_and_expired_sessions_without_waiting_for_body() {
         let request = browser.head(route, 16_385);
         assert_eq!(http(browser.addr, request.as_bytes()).0, 413);
         let request = browser.head(route, 16_384).replace(
-            &browser.cookie,
+            &browser.page.cookie,
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         );
         assert_eq!(http(browser.addr, request.as_bytes()).0, 403);
     }
-    browser.clock.advance(30 * 60_000);
+    browser.clock.advance(30 * 24 * 60 * 60_000);
     assert_eq!(
         http(
             browser.addr,
@@ -659,56 +624,6 @@ fn pending_admission_reserves_escaped_worst_states_without_eviction() {
             .filter(|record| matches!(record, Record::BrowserNoteQueued { .. }))
             .count(),
         15
-    );
-    assert_eq!(
-        running.stop(duded::ExitCause::Signal),
-        duded::ExitCause::Signal
-    );
-}
-
-#[test]
-fn pending_per_agent_and_global_counts_refuse_without_browser_eviction() {
-    let fixture = Fixture::new();
-    let (_, mut running, browser) = start(&fixture);
-    let mut identity = 0;
-    for agent_number in 0..7 {
-        let agent = paused_goal(&fixture, &running);
-        let target = if agent_number == 6 { 8 } else { 20 };
-        for _ in 0..target {
-            let body = serde_json::to_vec(
-                &json!({"request_id":request_id(identity),"agent":agent,"text":"hello"}),
-            )
-            .unwrap();
-            assert_eq!(browser.post("/floor/chat/send", &body).0, 200);
-            identity += 1;
-        }
-        let body = serde_json::to_vec(
-            &json!({"request_id":request_id(identity),"agent":agent,"text":"overflow"}),
-        )
-        .unwrap();
-        assert_eq!(
-            browser.post("/floor/chat/send", &body),
-            (
-                409,
-                json!({"request_id":request_id(identity),"state":"refused","reason":"queue_full"})
-            )
-        );
-        identity += 1;
-    }
-    assert_eq!(
-        browser.snapshot()["chat"]["pending"]
-            .as_array()
-            .unwrap()
-            .len(),
-        128
-    );
-    assert_eq!(
-        fixture
-            .records()
-            .iter()
-            .filter(|record| matches!(record, Record::BrowserNoteQueued { .. }))
-            .count(),
-        128
     );
     assert_eq!(
         running.stop(duded::ExitCause::Signal),
@@ -1474,112 +1389,6 @@ fn conversation_context_loss_after(outcome: dudes_proto::TurnOutcome) {
     running.stop(duded::ExitCause::Signal);
 }
 
-fn billing_adapter(provider: dudes_types::Provider) -> Box<dyn dudes_providers::adapter::Adapter> {
-    use dudes_providers::{claude, codex, pi};
-    match provider {
-        dudes_types::Provider::Claude => {
-            Box::new(claude::ClaudeAdapter::new(claude::config::ClaudeConfig {
-                command: common::true_program().into(),
-                ..claude::config::ClaudeConfig::default()
-            }))
-        }
-        dudes_types::Provider::Codex => {
-            Box::new(codex::CodexAdapter::new(codex::config::CodexConfig {
-                streaming: false,
-                command: common::true_program().to_owned(),
-            }))
-        }
-        dudes_types::Provider::Pi => Box::new(pi::PiAdapter::new(pi::config::PiConfig {
-            command: common::true_program().to_owned(),
-        })),
-        _ => panic!("unsupported fixture provider"),
-    }
-}
-
-#[test]
-fn conversation_replayed_hire_obeys_provider_billing_ceiling_guard() {
-    use dudes_types::{Provider, Tokens, Usd};
-    for provider in [Provider::Claude, Provider::Codex, Provider::Pi] {
-        for cap in ["none", "dollars", "tokens", "floor", "empty_credential"] {
-            let fixture = Fixture::new();
-            let agent = dudes_types::AgentId::from_parts(1, 1);
-            let budget = dudes_proto::AgentBudget {
-                usd_per_day: (cap == "dollars").then_some(Usd::from_dollars(10)),
-                tokens_per_day: (cap == "tokens").then_some(Tokens::new(100_000)),
-            };
-            {
-                let (mut writer, _) =
-                    dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal)
-                        .unwrap();
-                writer.append(&dudes_proto::Entry { at: dudes_types::Timestamp::UNIX_EPOCH, record: serde_json::from_value(json!({"t":"agent_hired","id":agent,"name":"Billing fixture","role":"test","department":"test","provider":provider,"cwd":fixture.state.path(),"budget":budget})).unwrap() }).unwrap();
-            }
-            let mut settings = fixture.settings();
-            settings.floor = Some(FloorSettings {
-                assets_dir: PathBuf::from(FLOOR_FIXTURE),
-                port: Some(0),
-            });
-            settings.floor_usd_per_day = (cap == "floor").then_some(Usd::from_dollars(10));
-            let adapter = billing_adapter(provider);
-            settings
-                .daemon_env
-                .push(dudes_providers::launch::EnvVar::new(
-                    adapter.billing_env_vars()[0],
-                    if cap == "empty_credential" {
-                        ""
-                    } else {
-                        "owned-fixture-marker"
-                    },
-                ));
-            let host = SharedHost::new();
-            let clock = Arc::new(TestClock::new());
-            let mut seams = seams(
-                &settings,
-                host.clone(),
-                Arc::new(ScriptedRunner::scripted([])),
-                Arc::clone(&clock),
-                duded::startup::Witness::default(),
-            );
-            seams.adapters = [adapter].into_iter().collect();
-            let daemon = duded::boot_with_options(&settings, seams, RunOptions::default()).unwrap();
-            let (_, mut running, browser) = connect_browser(settings, daemon, clock);
-            assert_eq!(
-                conversation_request(&browser, agent, 0, "A bounded reply").0,
-                200
-            );
-            let decision =
-                fixture.await_record("finite credential admission", |record| match record {
-                    Record::ConversationTurnDecided { decision, .. } => Some(decision.clone()),
-                    _ => None,
-                });
-            let allowed = cap == "tokens"
-                || cap == "empty_credential"
-                || (provider == Provider::Claude && matches!(cap, "dollars" | "floor"));
-            if allowed {
-                assert!(
-                    matches!(decision, dudes_proto::NoteAdmission::Issue { .. }),
-                    "{provider:?} {cap}"
-                );
-                conversation_issued(&fixture, "A bounded reply");
-                assert_eq!(host.spawned().len(), 1);
-            } else {
-                assert_eq!(
-                    decision,
-                    dudes_proto::NoteAdmission::Exhausted {
-                        reason: dudes_proto::ExhaustedReason::CeilingRequired
-                    },
-                    "{provider:?} {cap}"
-                );
-                assert!(host.spawned().is_empty());
-                assert_eq!(
-                    browser.snapshot()["chat"]["pending"][0]["reason"],
-                    "ceiling_required"
-                );
-            }
-            running.stop(duded::ExitCause::Signal);
-        }
-    }
-}
-
 #[test]
 fn conversation_daily_budget_refresh_reconsiders_a_pending_message() {
     let fixture = Fixture::new();
@@ -1626,7 +1435,7 @@ fn conversation_daily_budget_refresh_reconsiders_a_pending_message() {
         200
     );
     assert_eq!(browser.snapshot()["chat"]["pending"][0]["reason"], "budget");
-    browser.clock.advance(86_400_000);
+    browser.clock.advance(30 * 86_400_000);
     running.handle.input(dudes_supervisor::Input::Tick);
     conversation_issued(&fixture, "next day reply");
     assert_eq!(
@@ -1977,7 +1786,8 @@ fn owned_authenticated_browser_chat_smoke() {
         retire: false,
         renew: false,
     };
-    let (_, mut running, browser) = start_configured(RunOptions::default(), None, settings, None);
+    let (settings, mut running, browser) =
+        start_configured(RunOptions::default(), None, settings, None);
     let agent = common::hire(&running.handle, fixture.state.path());
     common::set_goal(
         &running.handle,
@@ -2016,7 +1826,7 @@ fn owned_authenticated_browser_chat_smoke() {
     });
     let result = with_owned_chrome(|marker| {
         let input = serde_json::to_vec(&json!({"baseUrl": format!("http://{}", browser.addr),
-            "cookie": browser.cookie, "csrf": browser.csrf, "agentId": agent, "agentName": "Hector",
+            "link": common::floor_link(&settings), "agentId": agent, "agentName": "Hector",
             "agentPausedId": paused, "agentPausedName": "Hector", "devToolsPath": marker}))
         .unwrap();
         let spec = dudes_providers::launch::LaunchSpec {

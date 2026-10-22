@@ -13,11 +13,15 @@ import type { FloorState } from '../floor/store.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
 import { decodeWorkspace } from '../workspace.ts';
-import { agentChoiceSentence, agentRow, boardColumns, cardWords, noProjects, otherCards, plainColumnOf, TICKET_COLUMNS } from './model.ts';
+import { agentChoiceSentence, agentRow, boardColumns, cardWords, DONE_SHOWN, noProjects, otherCards, plainColumnOf, TICKET_COLUMNS } from './model.ts';
 import type { TicketColumn } from './model.ts';
+import type { Notice } from './ticket.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
-import { agentWithoutProjectSentence, otherStateName, stateName } from './words.ts';
+import { titleOf } from '../setup/nextStep.ts';
+import type { FirstTaskAgent } from '../setup/nextStep.ts';
+import { agentWithoutProjectSentence, engineStopped, otherStateName, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
+import { NotConnected } from '../StreamNotice.tsx';
 
 const NOTICE_SECONDS = 8;
 
@@ -68,9 +72,15 @@ export function agentsFor(floor: FloorState, project: string): {
   };
 }
 
-export function TicketNotice({ card }: { readonly card?: string | null }) {
+export function TicketNotice({ card, floor }: { readonly card?: string | null; readonly floor: FloorState }) {
   const ticket = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState);
-  const notice = card === undefined || ticket.notice?.card === card ? ticket.notice : null;
+  const said = card === undefined || ticket.notice?.card === card ? ticket.notice : null;
+  const status = said?.whileWorking === true ? floor.cards.find((row) => row.id === said.card)?.status : undefined;
+  const worked = useRef<{ readonly notice: Notice | null; seen: boolean }>({ notice: null, seen: false });
+  if (worked.current.notice !== said) worked.current = { notice: said, seen: false };
+  if (status === 'todo' || status === 'claimed' || status === 'doing') worked.current.seen = true;
+  const moved = worked.current.seen && (status === 'review' || status === 'blocked' || status === 'done');
+  const notice = moved ? null : said;
   // What went well is said for a few seconds. What went wrong stays until it is dismissed.
   useEffect(() => {
     if (notice === null || notice.tone !== 'done') return undefined;
@@ -78,11 +88,54 @@ export function TicketNotice({ card }: { readonly card?: string | null }) {
     return () => clearTimeout(timer);
   }, [notice]);
   if (notice === null) return null;
-  return <p className="ticket-notice" data-tone={notice.tone} role="status">
+  // The slot takes no room in the sheet; the notice hangs from its top edge, so it never moves what is below.
+  return <div className="ticket-notice-slot"><p className="ticket-notice" data-tone={notice.tone} role="status">
     {notice.text}{' '}
     <button type="button" className="ticket-dismiss" onClick={() => dismissNotice(notice)}>Dismiss</button>
-  </p>;
+  </p></div>;
 }
+
+/** The first task: a sentence, one Start, and the ticket is made and given in the same step. */
+export function FirstTaskForm({ floor, agents }: { readonly floor: FloorState; readonly agents: readonly FirstTaskAgent[] }) {
+  const ids = useId();
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
+  const [task, setTask] = useState('');
+  const [chosen, setChosen] = useState('');
+  const agent = agents.find((entry) => entry.id === chosen) ?? agents[0]!;
+  const ready = !sending && task.trim() !== '' && floor.ticket;
+
+  async function submit(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    if (!ready) return;
+    const note = task.trim() === titleOf(task) ? '' : task.trim();
+    const made = await createTicket({
+      title: titleOf(task), note, project: null,
+      check: { id: agent.check.id, revision: agent.check.revision }, agent: agent.id,
+    });
+    if (made.saved && mounted.current) setTask('');
+  }
+
+  return <form className="ticket-form" onSubmit={(event) => { void submit(event); }} aria-label={`Give ${agent.name} a task`}>
+    <h2>Give {agent.name} a task</h2>
+    {agents.length > 1 ? <p><label htmlFor={`${ids}-who`}>Who? </label>
+      <select id={`${ids}-who`} value={agent.id} onChange={(event) => setChosen(event.target.value)}>
+        {agents.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+      </select></p> : null}
+    <label htmlFor={`${ids}-task`} className="first-task-label">What should {agent.name} do?</label>
+    <textarea id={`${ids}-task`} rows={3} maxLength={8192} value={task}
+      placeholder="For example: add a dark mode switch to the settings page"
+      onChange={(event) => setTask(event.target.value)} />
+    <p className="first-task-note">When {agent.name} says it is finished, Dudes checks it itself ({agent.check.label}) before you review it.</p>
+    <TicketNotice floor={floor} />
+    <button type="submit" className="first-task-start" disabled={!ready}>{sending ? 'Starting…' : 'Start'}</button>
+  </form>;
+}
+
 
 export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
   readonly floor: FloorState;
@@ -149,7 +202,7 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
         {checks.map((entry) => <option key={entry.id} value={entry.id}>{choiceLabel(entry)}</option>)}
       </select>
     </div> : null}
-    {noProjects(floor) ? <NoTicketProjectHint />
+    {noProjects(floor) ? <NoTicketProjectHint floor={floor} />
       : project === null ? <p className="ticket-hint">Project choices are unavailable. Open Setup to check the project and its completion check.</p>
       : usable.length === 0 ? <div className="ticket-field" data-no-agent="true">
       <p className="ticket-hint">{agentChoiceSentence(floor, project)}</p>
@@ -179,6 +232,7 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
 }) {
   const words = cardWords(floor, card);
   const row = agentRow(floor, card.claimed_by);
+  const failure = engineStopped(card.ticket?.last_turn_end);
   return <li>
     <button type="button" className="task-card ticket-card" data-card-id={card.id} data-ticket-status={card.ticket === null && plainColumnOf(card) === null ? undefined : card.status}
       aria-pressed={selected} aria-controls="selected-card-detail" aria-haspopup="dialog" disabled={!selectable}
@@ -188,6 +242,7 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
         {(card.ticket?.round ?? 0) > 1 ? <span className="ticket-round">Round {card.ticket?.round}</span> : null}
       </span>
       <strong>{card.title}</strong>
+      {failure === null ? null : <span className="ticket-note">{failure}</span>}
       {words.note === null ? null : <span className="ticket-note">{words.note}</span>}
       <span className="ticket-card-footer">
         {words.agent === null ? <span className="ticket-unassigned">Unassigned</span> : <span className="ticket-agent">
@@ -211,15 +266,16 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
 }) {
   const selectable = floor.phase === 'live' && !floor.stale;
   useRequestedCard(floor, selectable, onSelect);
-  const { columns, needsYou, doneHidden } = boardColumns(floor.cards);
+  const [doneShown, setDoneShown] = useState(DONE_SHOWN);
+  const { columns, needsYou, doneHidden } = boardColumns(floor.cards, doneShown);
   // The panel of the selected ticket says what happened; the board says it when none is open.
   const opened = forming || floor.cards.some((card) => card.id === selectedId && card.ticket !== null);
   const other = otherCards(floor.cards);
   const draw = (card: CardRow) => <TicketCard key={card.id} floor={floor} card={card} selected={card.id === selectedId}
     selectable={selectable} onSelect={onSelect} />;
   return <div className="board-view ticket-board">
-    {selectable ? null : <p className="stream-state" role="alert">View unconfirmed — waiting for the stream</p>}
-    {opened ? null : <TicketNotice />}
+    {selectable ? null : <NotConnected />}
+    {opened ? null : <TicketNotice floor={floor} />}
     {floor.ticket ? <section className="ticket-new" aria-label="New ticket">
       <button type="button" className="ticket-new-toggle" aria-expanded={forming} disabled={!ticketActionsOpen(floor)}
         aria-haspopup="dialog" onClick={(event) => onNewTicket(event.currentTarget)}>New ticket</button>
@@ -240,7 +296,8 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
           <ul>{cards.map(draw)}</ul>
           {cards.length === 0 ? <p className="ticket-empty">{(floor.ticket ? EMPTY_COLUMN : EMPTY_COLUMN_CARDS)[column.key]}</p> : null}
           {column.key === 'done' && doneHidden > 0
-            ? <p className="ticket-hint">{doneHidden} older card{doneHidden === 1 ? '' : 's'} not shown. List tickets with <code>dudes ticket list --status done</code> and other cards with <code>dudes board list</code>.</p> : null}
+            ? <p className="ticket-hint">{doneHidden} older card{doneHidden === 1 ? '' : 's'} not shown.{' '}
+              <button type="button" className="ticket-more" onClick={() => setDoneShown(doneShown + DONE_SHOWN)}>Show more</button></p> : null}
         </section>;
       })}
     </div>

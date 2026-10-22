@@ -77,6 +77,12 @@ const ALLOWED: &str = "main.rs";
 /// `boot.rs` is still caught by the scan below.
 const BOOT_TRANSPORT_CAPABILITY: &str = "dudes_host::disconnect_named_pipe";
 
+/// The one process-host leaf `floor_peer.rs` may name.
+///
+/// `tcp_peer` reads the socket tables to find who owns a loopback connection and creates nothing:
+/// no child, no signal. Naming the exact path keeps the exception smaller than the crate.
+const FLOOR_PEER_CAPABILITY: &str = "dudes_host::tcp_peer";
+
 /// Ways to reach a process without going through `dudes-host`. Allowed in **no** file, `main.rs`
 /// included: the ban has no exception, because an allow-listed module is a permanent
 /// blind spot exactly its own size.
@@ -167,6 +173,14 @@ fn only_main_names_a_concrete_child_owner() {
                 "boot.rs must name the injected named-pipe disconnect leaf"
             );
             text.replace(BOOT_TRANSPORT_CAPABILITY, "disconnect_named_pipe")
+        } else if name == "floor_peer.rs" {
+            let code = found_in_code(&text, &[FLOOR_PEER_CAPABILITY]);
+            assert_eq!(
+                code,
+                vec![FLOOR_PEER_CAPABILITY],
+                "floor_peer.rs must name the injected socket-owner leaf"
+            );
+            text.replace(FLOOR_PEER_CAPABILITY, "tcp_peer")
         } else {
             text
         };

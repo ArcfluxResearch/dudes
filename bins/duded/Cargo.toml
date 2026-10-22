@@ -26,8 +26,7 @@ name = "duded"
 path = "src/main.rs"
 
 [features]
-# Crash-recovery tests and nothing else: `src/fault.rs` and the one seam in `main.rs` that wraps
-# the host with its two stall points. **Off by default and never enabled by `--workspace`**, so the
+# Native crash-test adapters in `src/fault.rs`. Off by default and never enabled by `--workspace`, so the
 # released daemon does not contain the code — the same compile-time absence `dudes-rpc`'s `testing`
 # feature gives the permissive authorisers. `examples/two-roles/crash.sh` and
 # `examples/two-roles/crash-after-spawn.sh` build with it and each prints that it did.
@@ -58,6 +57,7 @@ name = "stub-agent"
 required-features = ["stub-provider"]
 
 [dependencies]
+dudes-config.workspace = true
 dudes-journal.workspace = true
 dudes-policy.workspace = true
 dudes-proto.workspace = true
@@ -81,6 +81,9 @@ getrandom.workspace = true
 httparse.workspace = true
 chrono.workspace = true
 sha2.workspace = true
+# The Floor's signed requests: base64url fields and the browser's P-256 public key.
+base64.workspace = true
+p256.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # The daemon is the runtime directory's other creator and verifies the inherited credential DACL.

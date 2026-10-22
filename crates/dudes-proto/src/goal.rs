@@ -201,6 +201,48 @@ impl Evidence {
     }
 }
 
+/// Whether `evidence` may support a passing result for `predicate`.
+///
+/// A [`Predicate::BoardState`] pass needs [`Evidence::Card`] naming the requested card and status,
+/// where that status can complete a goal and its author is an operator peer or the daemon. Any
+/// other evidence fails it. Every other predicate kind keeps its own judgement, so this answers
+/// `true` for it.
+///
+/// The two matches are the board-completion table with the retirement Todo row, written exhaustively so that a
+/// new status or author fails to compile here until someone decides its row.
+#[must_use]
+pub fn predicate_evidence_eligible(predicate: &Predicate, evidence: &Evidence) -> bool {
+    let card = match evidence {
+        Evidence::Card { card, status, by } => Some((*card, *status, by)),
+        _ => None,
+    };
+    predicate_card_evidence_eligible(predicate, card)
+}
+
+pub(crate) fn predicate_card_evidence_eligible(
+    predicate: &Predicate,
+    evidence: Option<(CardId, CardStatus, &Actor)>,
+) -> bool {
+    let Predicate::BoardState { card, status } = predicate else {
+        return true;
+    };
+    let Some((seen_card, seen_status, by)) = evidence else {
+        return false;
+    };
+    let status_can_complete = match status {
+        CardStatus::Doing | CardStatus::Review | CardStatus::Blocked | CardStatus::Done => true,
+        // Claim records always name the claimer, so no author could ever make a Claimed row pass.
+        // Retirement requeues the retired agent's unfinished cards to Todo as the daemon, so a
+        // passing Todo row would let one agent's retirement finish another's goal.
+        CardStatus::Claimed | CardStatus::Todo => false,
+    };
+    let author_can_complete = match by {
+        Actor::Peer { .. } | Actor::System => true,
+        Actor::Agent { .. } | Actor::BrowserSession { .. } => false,
+    };
+    seen_card == *card && seen_status == *status && status_can_complete && author_can_complete
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

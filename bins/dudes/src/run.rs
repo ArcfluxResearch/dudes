@@ -64,6 +64,7 @@ use crate::setup::{self, Plan, Stopped, Terminal};
 use crate::workspace::{self, Edit, NewWorkspace};
 use crate::{exit, render};
 
+mod recovery;
 mod ticket;
 
 /// The client this binary drives: one local connection, buffered on the read side.
@@ -75,8 +76,9 @@ type Socket = LocalClient;
 /// Takes its streams as arguments so the whole thing is drivable in-process. The binary is the only
 /// place that names `stdout` and `stderr`, which is also what keeps `clippy::print_stdout` answered
 /// by construction rather than by an `#[allow]`. `terminal` is the operator's input when both
-/// standard input and standard output are a terminal, and `None` otherwise. Quickstart asks its
-/// questions there, and retirement without explicit consent confirms there before dispatch.
+/// standard input and standard output are a terminal, and `None` otherwise. Quickstart with no
+/// options runs only on a terminal, and retirement without explicit consent confirms there before
+/// dispatch.
 ///
 /// Never panics on a daemon's answer: every shape the transport can produce maps to a code in
 /// [`crate::exit`].
@@ -138,10 +140,16 @@ pub fn run(
         }
     };
     let dispatched = match &invocation.command {
-        Command::Quickstart(plan) => {
-            quickstart(invocation.json, plan.as_deref(), terminal, env, out, err)
-        }
+        Command::Quickstart(plan) => quickstart(
+            invocation.json,
+            plan.as_deref(),
+            terminal.is_some(),
+            env,
+            out,
+            err,
+        ),
         Command::Start => start_command(invocation.json, env, out, err),
+        Command::Open => open_command(invocation.json, env, out, err),
         Command::SelectHire(params) => {
             select_hire(params, invocation.json, terminal, env, out, err)
         }
@@ -320,9 +328,7 @@ impl crate::lifecycle::Daemon for Lifecycle<'_> {
     }
 
     fn busy_agents(&self) -> Result<Vec<String>, String> {
-        let agents = operator_call(self.0, Method::AgentList, None)
-            .and_then(typed::<Vec<dudes_proto::AgentView>>)
-            .map_err(|failure| failure.message().to_owned())?;
+        let agents = agents(self.0).map_err(|failure| failure.message().to_owned())?;
         Ok(crate::lifecycle::agents_busy(&agents))
     }
 
@@ -497,7 +503,13 @@ fn dispatch(
         Command::Worktree(command) => {
             return worktree_command(command, env, invocation.json, out, err);
         }
+        Command::Devices(command) => {
+            return devices_command(command, env, invocation.json, out, err);
+        }
         Command::GoalReplace(path) => return replace_goal(path, env, invocation.json, out),
+        Command::Recovery(command) => {
+            return recovery::command(command, env, invocation.json, out, err);
+        }
         Command::PauseAll => return pause_all(env, out),
         Command::Stop => return stop_closing(invocation.json, env, out, err),
         Command::Goal(params) => return set_goal(params, invocation, env, out),
@@ -676,7 +688,7 @@ fn select_hire(
     let cwd = if let Some(id) = selected {
         if check.removed.contains(&id) || check.changed.iter().any(|changed| changed.id == id) {
             return Err(local(
-                "Project settings have changed. Run `dudes workspace reload` before hiring, or pass --cwd <project folder>.",
+                "Project settings have changed. Run `dudes project reload` before hiring, or pass --cwd <project folder>.",
             ));
         }
         workspace::directory(config, &id).map_err(local)?
@@ -804,6 +816,73 @@ fn warn_if_sharing(env: &Environment, agent: dudes_types::AgentId, err: &mut dyn
              with this agent's; hire with --worktree for a tree of its own",
         );
     }
+}
+
+/// `dudes devices`, `dudes devices remove` and `dudes devices keep`.
+///
+/// A prefix is resolved here against the daemon's list, and the removal names the whole id, so the
+/// browser signed out is the one that was shown.
+fn devices_command(
+    command: &crate::args::DevicesCommand,
+    env: &Environment,
+    machine: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<u8, Failure> {
+    use dudes_proto::rpc::floor::{
+        DeviceKeepParams, DeviceKeepResult, DeviceRemoveParams, DeviceRemoveResult,
+        DevicesListResult,
+    };
+    let listed: DevicesListResult = typed(operator_call(env, Method::FloorDevicesList, None)?)?;
+    match command {
+        crate::args::DevicesCommand::List => {
+            render::devices(out, machine, &listed.devices, &chrono::Local).map_err(local)?;
+            Ok(exit::SUCCESS)
+        }
+        crate::args::DevicesCommand::Remove { id } => {
+            let matches = devices_starting(&listed.devices, id);
+            let [entry] = matches.as_slice() else {
+                render::devices_unmatched(err, id, &matches, &chrono::Local).map_err(local)?;
+                return Ok(exit::REFUSED);
+            };
+            let result: DeviceRemoveResult = typed(operator_call(
+                env,
+                Method::FloorDevicesRemove,
+                Some(encode(&DeviceRemoveParams {
+                    device: entry.device,
+                })?),
+            )?)?;
+            render::device_removed(out, machine, entry, result.removed).map_err(local)?;
+            Ok(exit::SUCCESS)
+        }
+        crate::args::DevicesCommand::Keep { id } => {
+            let matches = devices_starting(&listed.devices, id);
+            let [entry] = matches.as_slice() else {
+                render::devices_unmatched(err, id, &matches, &chrono::Local).map_err(local)?;
+                return Ok(exit::REFUSED);
+            };
+            let result: DeviceKeepResult = typed(operator_call(
+                env,
+                Method::FloorDevicesKeep,
+                Some(encode(&DeviceKeepParams {
+                    device: entry.device,
+                })?),
+            )?)?;
+            render::device_kept(out, machine, entry, result.kept).map_err(local)?;
+            Ok(exit::SUCCESS)
+        }
+    }
+}
+
+/// The devices whose id starts with `id`. Ids use both letters' cases, so the match is exact.
+fn devices_starting<'a>(
+    devices: &'a [dudes_proto::rpc::floor::DeviceEntry],
+    id: &str,
+) -> Vec<&'a dudes_proto::rpc::floor::DeviceEntry> {
+    devices
+        .iter()
+        .filter(|entry| entry.device.to_string().starts_with(id))
+        .collect()
 }
 
 /// `dudes worktree list` and `remove`.
@@ -1095,7 +1174,7 @@ fn detached_closing_transport(
         .name("closing time".to_owned())
         .spawn(move || {
             let result = (|| {
-                let mut client = connect_at(&socket)?;
+                let mut client = connect_at(&socket, Some(&runtime))?;
                 let credential = read_operator_credential(&runtime).map_err(local)?;
                 let params = Some(encode(&ClosingParams::Announce)?);
                 let response =
@@ -1229,21 +1308,20 @@ fn local(error: impl std::fmt::Display) -> Failure {
     Failure::Other(Message::Local(error.to_string()))
 }
 
-/// `dudes quickstart`. Without a plan and without a terminal to ask one, it starts the daemon and
-/// prints the ping, as it always has. Otherwise it settles the plan, writes the operator file once,
-/// starts the daemon ([`write_and_start`]), reports the engines, and makes the hire. Only the
-/// guided run, with no options, prints the Floor link and asks about a login; a run with options asks
-/// nothing and prints the commands instead.
+/// `dudes quickstart`. Without options and without a terminal it starts the daemon and prints the
+/// ping, as it always has. Otherwise it asks nothing: it settles the plan ([`settle`]), writes the
+/// operator file once, starts the daemon or applies the change to the one that runs
+/// ([`write_and_start`]), reports the engines, makes the hire the options ask for, and opens the
+/// Floor.
 fn quickstart(
     machine: bool,
     plan: Option<&Plan>,
-    terminal: Option<&mut dyn BufRead>,
+    on_terminal: bool,
     env: &Environment,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<u8, Failure> {
-    let terminal = terminal.filter(|_| !machine);
-    if plan.is_none() && terminal.is_none() {
+    if plan.is_none() && (!on_terminal || machine) {
         let answer = start(env, err)?;
         render::ping(out, machine, &answer).map_err(local)?;
         project_hint(env, machine, out)?;
@@ -1253,33 +1331,16 @@ fn quickstart(
     let config = operator_config(env)?;
     let cwd = env.current_dir().and_then(|dir| dir.canonicalize().ok());
     let mut draft = Draft::open(config).map_err(local)?;
-    let settled = match (plan, terminal) {
-        (Some(plan), _) => scripted(plan.clone(), &mut draft)?,
-        (None, Some(input)) => {
-            let running = ping_once(env).is_ok();
-            let mut term = Terminal::new(input, out);
-            match guided(
-                &mut term,
-                &mut draft,
-                config,
-                cwd.as_deref(),
-                &setup::Host::of(env),
-                running,
-            ) {
-                Ok(plan) => plan,
-                Err(stopped @ (Stopped::Ended | Stopped::Declined)) => {
-                    render::local_error(err, &stopped.to_string()).map_err(local)?;
-                    return Ok(exit::USAGE);
-                }
-                Err(other) => return Err(local(other)),
-            }
-        }
-        (None, None) => return Err(local("internal: quickstart has no plan to set up")),
-    };
+    let settled = settle(
+        plan.cloned().unwrap_or_default(),
+        &mut draft,
+        &setup::Host::of(env),
+        out,
+    )?;
     // A check is named on the first goal only when this run enrolls it, so the name is the one
     // the daemon records for the workspace's own check.
     let mut enrolled = None;
-    let project = settled.project.as_deref().or(cwd.as_deref());
+    let project = cwd.as_deref();
     if let Some(new) = enrollment(&settled, project)? {
         if let Some(id) = draft.settings().enrolled_at(&new.path) {
             writeln!(
@@ -1294,7 +1355,8 @@ fn quickstart(
             enrolled = Some((new.id, check));
         }
     }
-    let answer = write_and_start(env, config, draft, settled.restart, out, err)?;
+    let summary = setup::Summary::of(&settled, draft.settings(), project);
+    let answer = write_and_start(env, config, draft, &settled, &summary, out, err)?;
     render::ping(out, false, &answer).map_err(local)?;
     let extended = typed::<dudes_proto::rpc::system::DoctorMailboxResult>(operator_call(
         env,
@@ -1327,11 +1389,7 @@ fn quickstart(
     }
     project_hint(env, machine, out)?;
     login_guidance(&doctor.providers, out)?;
-    if plan.is_none() {
-        floor_link(env, out, err)?;
-    } else {
-        writeln!(out, "Open the Floor with: dudes floor open").map_err(local)?;
-    }
+    floor_link(env, out, err)?;
     Ok(exit::SUCCESS)
 }
 
@@ -1362,7 +1420,13 @@ fn login(
 ) -> Result<u8, Failure> {
     let doctor = operator_call(env, Method::SystemDoctor, None)
         .map_err(|failure| match failure {
-            Failure::Unreachable(_) => failure.noted("start it with dudes start"),
+            Failure::Unreachable(_)
+                if env.socket().is_ok_and(|socket| {
+                    crate::quickstart::check_socket_path(socket, false).is_ok()
+                }) =>
+            {
+                failure.noted("start it with dudes start")
+            }
             other => other,
         })
         .and_then(typed::<DoctorResult>)?;
@@ -1442,15 +1506,18 @@ fn run_login(login: &Login, env: &Environment, out: &mut dyn Write) -> Result<u8
     }
 }
 
-/// Write `draft`, then start the daemon on it. A running daemon that reads other settings is
-/// stopped first only when `restart` is the operator's consent, and only after it has read the
-/// new file without refusing it. Until a daemon answers on the new file, a failure puts the old
-/// file back.
+/// Write `draft`, then bring the daemon to it. With none running, one is started on the new file.
+/// A running one adopts the file's Floor switches and project changes at once. When it also reads
+/// start-time settings that differ, it is stopped and started again only when `plan.restart` is the
+/// operator's consent, or when no agent is running a turn, waiting on an answer or attached to a
+/// person, and only after it has read the new file without refusing it. Until a daemon answers on
+/// the new file, a failure puts the old file back.
 fn write_and_start(
     env: &Environment,
     config: &Path,
     draft: Draft,
-    restart: bool,
+    plan: &Plan,
+    summary: &setup::Summary,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<PingResult, Failure> {
@@ -1459,6 +1526,7 @@ fn write_and_start(
     for warning in written.warnings() {
         render::warning(err, &warning).map_err(local)?;
     }
+    summary.print(out, config, written.wrote).map_err(local)?;
     let put_back = |failure: Failure| {
         if !written.wrote {
             return failure;
@@ -1476,21 +1544,42 @@ fn write_and_start(
         let differences = match running_differences(env, config).map_err(put_back)? {
             Comparison::Unknown(reason) => vec![reason],
             Comparison::Known {
+                apply,
                 settings,
                 workspaces,
-                ..
-            } => workspaces.into_iter().chain(settings).collect(),
+                switches,
+            } => {
+                let live: Vec<String> = switches.into_iter().chain(workspaces).collect();
+                let mut differences = settings;
+                if !live.is_empty() {
+                    match reload(&mut connect(env)?, env, Some(apply)) {
+                        Ok(result) if result.applied => writeln!(
+                            out,
+                            "The running daemon now runs {}, with no restart.",
+                            render::Escaped(&live.join(", "))
+                        )
+                        .map_err(local)?,
+                        _ => differences.extend(live),
+                    }
+                }
+                differences
+            }
         };
         if !differences.is_empty() {
-            if !restart {
-                let file = if written.wrote { "wrote" } else { "kept" };
-                return Err(local(format!(
-                    "{file} {}, but the running daemon reads other settings ({}) and reads the \
-                     file only when it starts. Nothing was stopped. To apply them, restart it, \
-                     which ends any turn it is running: dudes quickstart --restart",
-                    config.display(),
-                    differences.join(", ")
-                )));
+            if !plan.restart {
+                let busy = crate::lifecycle::agents_busy(&agents(env).map_err(put_back)?);
+                if !busy.is_empty() {
+                    let file = if written.wrote { "wrote" } else { "kept" };
+                    return Err(local(format!(
+                        "{file} {}, but the running daemon reads other settings ({}) only when it \
+                         starts, and it was not restarted because {}. When they are done, restart \
+                         it with {RESTART_COMMANDS}. To restart it now and end their turns: dudes \
+                         quickstart --restart",
+                        config.display(),
+                        differences.join(", "),
+                        busy.join("; ")
+                    )));
+                }
             }
             writeln!(
                 out,
@@ -1509,6 +1598,11 @@ fn write_and_start(
         }
         failure
     })
+}
+
+/// The agents the daemon lists.
+fn agents(env: &Environment) -> Result<Vec<dudes_proto::AgentView>, Failure> {
+    typed(operator_call(env, Method::AgentList, None)?)
 }
 
 /// `dudes start`: the start `quickstart` makes without a plan or a terminal, and the ping it
@@ -1566,11 +1660,19 @@ fn start(env: &Environment, err: &mut dyn Write) -> Result<PingResult, Failure> 
     crate::quickstart::run(env, || ping_once(env).ok(), err).map_err(local)
 }
 
-/// A scripted plan, its settings applied to `draft`. A start rule the result breaks is refused
-/// when the draft is written, before anything is.
-fn scripted(plan: Plan, draft: &mut Draft) -> Result<Plan, Failure> {
-    for change in &plan.changes {
-        draft.apply(change).map_err(local)?;
+/// The plan with the defaults and then the options' settings applied to `draft`. A start rule the
+/// result breaks is refused when the draft is written, before anything is.
+fn settle(
+    mut plan: Plan,
+    draft: &mut Draft,
+    host: &setup::Host,
+    out: &mut dyn Write,
+) -> Result<Plan, Failure> {
+    let explicit = std::mem::take(&mut plan.changes);
+    setup::defaults(out, draft, &mut plan, host).map_err(local)?;
+    for change in explicit {
+        draft.apply(&change).map_err(local)?;
+        plan.changes.push(change);
     }
     if let Some(hire) = &plan.hire
         && !setup::engine_on(draft.settings(), hire.provider)
@@ -1583,31 +1685,6 @@ fn scripted(plan: Plan, draft: &mut Draft) -> Result<Plan, Failure> {
     Ok(plan)
 }
 
-/// The guided plan: every question, then the summary the operator confirms.
-fn guided(
-    term: &mut Terminal<'_>,
-    draft: &mut Draft,
-    config: &Path,
-    cwd: Option<&Path>,
-    host: &setup::Host,
-    running: bool,
-) -> Result<Plan, Stopped> {
-    let existing_setup = running || draft.settings().exists();
-    let mut plan = setup::guided(term, draft, config, cwd, host, existing_setup)?;
-    setup::summary(term, &plan, cwd)?;
-    if running {
-        term.say(
-            "A daemon is running. When its settings differ from the file, quickstart restarts \
-             it, which ends any turn it is running.",
-        )?;
-    }
-    if !term.yes(&format!("Write {} and go ahead?", config.display()), true)? {
-        return Err(Stopped::Declined);
-    }
-    plan.restart = true;
-    Ok(plan)
-}
-
 /// The workspace entry `plan` enrolls at `cwd`, if it enrolls one.
 fn enrollment(plan: &Plan, cwd: Option<&Path>) -> Result<Option<NewWorkspace>, Failure> {
     let (Some(enroll), Some(check)) = (&plan.enroll, &plan.check) else {
@@ -1615,7 +1692,7 @@ fn enrollment(plan: &Plan, cwd: Option<&Path>) -> Result<Option<NewWorkspace>, F
     };
     let cwd = cwd.ok_or_else(|| local("the current directory cannot be read"))?;
     let name = cwd.file_name().map_or_else(
-        || "workspace".to_owned(),
+        || "project".to_owned(),
         |name| name.to_string_lossy().into_owned(),
     );
     let id: String = name
@@ -1630,7 +1707,7 @@ fn enrollment(plan: &Plan, cwd: Option<&Path>) -> Result<Option<NewWorkspace>, F
         .take(128)
         .collect();
     let id = if id.is_empty() {
-        "workspace".to_owned()
+        "project".to_owned()
     } else {
         id
     };
@@ -1651,6 +1728,7 @@ fn enrollment(plan: &Plan, cwd: Option<&Path>) -> Result<Option<NewWorkspace>, F
         predicate_timeout_s: check.timeout_s,
         tokens_per_day: None,
         goal_tokens: None,
+        may_already_pass: true,
     }))
 }
 
@@ -1661,14 +1739,17 @@ enum Comparison {
     Unknown(String),
     /// What it runs differently from this file, by `floor.enrollment.reload` and `system.doctor`.
     Known {
-        /// The SHA-256 of the bytes it read, which `dudes workspace reload --apply` takes.
-        sha256: String,
+        /// What `dudes project reload --apply` sends to have the daemon adopt the file's workspace
+        /// and switch changes while it runs.
+        apply: EnrollmentApply,
         /// Start-time settings it runs differently: each section the reload reports and each
         /// engine table `system.doctor` disagrees with. Each takes a restart.
         settings: Vec<String>,
         /// Workspace entries the file adds, removes or changes, which a reload adopts while it
         /// runs.
         workspaces: Vec<String>,
+        /// `[floor.*]` switches the file changes, which a reload runs at once.
+        switches: Vec<String>,
     },
 }
 
@@ -1749,12 +1830,12 @@ fn running_differences(env: &Environment, config: &Path) -> Result<Comparison, F
     };
     let workspaces = [(&check.added, "added"), (&check.removed, "removed")]
         .into_iter()
-        .flat_map(|(ids, how)| ids.iter().map(move |id| format!("workspace {id} {how}")))
+        .flat_map(|(ids, how)| ids.iter().map(move |id| format!("project {id} {how}")))
         .chain(
             check
                 .changed
                 .iter()
-                .map(|entry| format!("workspace {} changed", entry.id)),
+                .map(|entry| format!("project {} changed", entry.id)),
         )
         .collect();
     let mut settings = check.not_applied;
@@ -1764,10 +1845,31 @@ fn running_differences(env: &Environment, config: &Path) -> Result<Comparison, F
         }
     }
     Ok(Comparison::Known {
-        sha256: check.sha256,
+        apply: EnrollmentApply {
+            sha256: check.sha256,
+            added: check.added,
+            removed: check.removed,
+            changed: check.changed.into_iter().map(|entry| entry.id).collect(),
+        },
         settings,
         workspaces,
+        switches: check.switches,
     })
+}
+
+/// Ask the running daemon to adopt the `[floor.*]` switches in the file it read with this hash.
+/// The call names no project change, so the daemon declines it if one has appeared since.
+fn adopt_switches(env: &Environment, sha256: &str) -> Result<EnrollmentReloadResult, Failure> {
+    reload(
+        &mut connect(env)?,
+        env,
+        Some(EnrollmentApply {
+            sha256: sha256.to_owned(),
+            added: Vec::new(),
+            removed: Vec::new(),
+            changed: Vec::new(),
+        }),
+    )
 }
 
 /// Whether `read` and `config` name one file, as given or once canonicalized.
@@ -1826,14 +1928,54 @@ fn hard_stop_daemon(env: &Environment, err: &mut dyn Write) -> Result<(), Failur
     Ok(())
 }
 
-/// The Floor's one-time link, printed as `dudes floor open` prints it. A daemon that serves no
-/// Floor is a warning, because the daemon itself is running.
+/// `dudes open`: start the daemon when it is down, then open a one-time Floor link in the browser.
+/// With `--json` nothing is opened and the contract's own answer is printed, as for `floor open`.
+fn open_command(
+    machine: bool,
+    env: &Environment,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<u8, Failure> {
+    let answer = start(env, err)?;
+    let issued = typed::<SessionIssueResult>(operator_call(env, Method::FloorSessionIssue, None)?)?;
+    let urls = crate::floor::urls(&issued).map_err(local)?;
+    if machine {
+        render::floor_url(out, true, &issued, &urls).map_err(local)?;
+        return Ok(exit::SUCCESS);
+    }
+    write_restart_nudge(err, &answer.version).map_err(local)?;
+    open_link(env, &issued, &urls, out, err)?;
+    Ok(exit::SUCCESS)
+}
+
+/// Hand the link to the browser. When that cannot be done the link is printed instead, once, with
+/// the reason, so the person can paste it.
+fn open_link(
+    env: &Environment,
+    issued: &SessionIssueResult,
+    urls: &crate::floor::FloorUrl,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<(), Failure> {
+    let reason = match crate::opener::launch(env, &urls.printed_once) {
+        crate::opener::Launch::Opened => {
+            return writeln!(out, "Opened Dudes in your browser.").map_err(local);
+        }
+        crate::opener::Launch::Skipped(reason) => reason.to_owned(),
+        crate::opener::Launch::Failed(reason) => reason,
+    };
+    render::warning(err, &format!("not opened: {reason}")).map_err(local)?;
+    render::floor_url(out, false, issued, urls).map_err(local)
+}
+
+/// The Floor, opened at the end of quickstart. A daemon that serves no Floor is a warning, because
+/// the daemon itself is running.
 fn floor_link(env: &Environment, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), Failure> {
     match operator_call(env, Method::FloorSessionIssue, None) {
         Ok(issued) => {
             let issued = typed::<SessionIssueResult>(issued)?;
             let urls = crate::floor::urls(&issued).map_err(local)?;
-            render::floor_url(out, false, &issued, &urls).map_err(local)
+            open_link(env, &issued, &urls, out, err)
         }
         Err(failure) => {
             render::warning(err, &format!("no Floor link: {}", failure.message())).map_err(local)
@@ -1952,8 +2094,8 @@ fn no_goal_note(
         return match enrolled {
             None => hired,
             Some((id, _)) => format!(
-                "{hired}; the Floor offers workspace {id}'s check, which already passes, so add \
-                 one for the next goal there with dudes workspace check add {id} --id <id> \
+                "{hired}; the Floor offers project {id}'s check, which already passes, so add \
+                 one for the next goal there with dudes project check add {id} --id <id> \
                  --label <text> -- <program> [args...]"
             ),
         };
@@ -1965,9 +2107,9 @@ fn no_goal_note(
     match enrolled {
         None => hired,
         Some((id, config)) => format!(
-            "{hired}; workspace {id} is enrolled with the same check, so the Floor offers no hire \
-             there until you change its predicate_argv in {} and run dudes workspace reload, then \
-             dudes workspace reload --apply <sha256>",
+            "{hired}; project {id} is enrolled with the same check, so the Floor offers no hire \
+             there until you change its predicate_argv in {} and run dudes project reload, then \
+             dudes project reload --apply <sha256>",
             config.display()
         ),
     }
@@ -1985,7 +2127,7 @@ fn ping_once(env: &Environment) -> Result<PingResult, Failure> {
 fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
     Ok(match command {
         Command::Ping => (Method::SystemPing, None),
-        Command::Doctor | Command::Status => (Method::SystemDoctor, None),
+        Command::Status => (Method::SystemDoctor, None),
         Command::StopHard => (Method::SystemShutdown, None),
         Command::Agents => (Method::AgentList, None),
         Command::Hire(params) => (Method::AgentHire, Some(encode(&**params)?)),
@@ -2014,7 +2156,12 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         // operator door as every row above: the credential is read once in [`dispatch`] and
         // presented once in [`call_presenting`]. The method's `Requirement` is the daemon's registration to
         // enforce, not this enum's to restate.
-        Command::FloorOpen => (Method::FloorSessionIssue, None),
+        Command::FloorOpen => (
+            Method::FloorSessionIssue,
+            Some(encode(&dudes_proto::rpc::floor::SessionIssueParams {
+                purpose: dudes_proto::rpc::floor::LinkPurpose::Print,
+            })?),
+        ),
         Command::Board(BoardCommand::Create(params)) => {
             (Method::BoardCreate, Some(encode(params)?))
         }
@@ -2050,9 +2197,11 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         Command::Quickstart(_)
         | Command::SelectHire(_)
         | Command::Start
+        | Command::Open
         | Command::Login(_)
         | Command::PauseAll
         | Command::GoalReplace(_)
+        | Command::Recovery(_)
         | Command::Ask { .. }
         | Command::Stop
         | Command::ClosingAck { .. }
@@ -2061,6 +2210,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         | Command::Tail { .. }
         | Command::Workspace(_)
         | Command::Worktree(_)
+        | Command::Devices(_)
         | Command::Config(_)
         | Command::Uninstall(_)
         | Command::Upgrade(_)
@@ -2073,7 +2223,26 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
     })
 }
 
-/// `dudes workspace`: edit the operator file, then have a running daemon adopt exactly that edit.
+/// What `project add` prints, with the files-changed note first when no check was named or found.
+fn write_enrolled(out: &mut dyn Write, new: &workspace::NewWorkspace) -> std::io::Result<()> {
+    if new.predicate_argv == setup::changed_check() {
+        writeln!(out, "{}", setup::NO_TEST_CHECK)?;
+    }
+    writeln!(
+        out,
+        "Enrolled project {} at {} with check {}. To change it, run `dudes project remove {}` and add it again with your options.",
+        render::Escaped(&new.id),
+        render::Escaped(&new.path.display().to_string()),
+        render::Escaped(&new.completion_check_label),
+        render::Escaped(&new.id)
+    )
+}
+
+/// `dudes project`: edit the operator file, then have a running daemon adopt exactly that edit.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per project subcommand, and each new subcommand adds its arm"
+)]
 fn workspace_command(
     command: &WorkspaceCommand,
     env: &Environment,
@@ -2105,7 +2274,7 @@ fn workspace_command(
                 (out, err),
             )?;
             if status == exit::SUCCESS && !machine {
-                writeln!(out, "Enrolled project {} at {} with check {}. To change it, run `dudes workspace remove {}` and add it again with your options.", render::Escaped(&new.id), render::Escaped(&new.path.display().to_string()), render::Escaped(&new.completion_check_label), render::Escaped(&new.id))
+                write_enrolled(out, &new)
                     .map_err(|error| Failure::Other(Message::Local(error.to_string())))?;
             }
             Ok(status)
@@ -2147,6 +2316,8 @@ fn workspace_command(
             };
             finish_reload(env, config, machine, out, &result)
         }
+        WorkspaceCommand::Trust { id } => trust_command(env, id, true, machine, out),
+        WorkspaceCommand::Untrust { id } => trust_command(env, id, false, machine, out),
         WorkspaceCommand::CheckAdd(new) => {
             let edit = workspace::add_check(config, new).map_err(local)?;
             adopt(
@@ -2180,6 +2351,24 @@ fn workspace_command(
             Ok(exit::SUCCESS)
         }
     }
+}
+
+/// `dudes project trust` and `untrust`: the operator's grant, journaled by the daemon.
+fn trust_command(
+    env: &Environment,
+    id: &str,
+    trusted: bool,
+    machine: bool,
+    out: &mut dyn Write,
+) -> Result<u8, Failure> {
+    let result = typed::<dudes_proto::rpc::workspace::TrustResult>(operator_call(
+        env,
+        Method::WorkspaceTrust,
+        Some(serde_json::json!({ "workspace_id": id, "trusted": trusted })),
+    )?)?;
+    render::trust_set(out, machine, id, &result)
+        .map_err(|error| Failure::Other(Message::Local(error.to_string())))?;
+    Ok(exit::SUCCESS)
 }
 
 /// The operator file both `workspace` and `config` edit.
@@ -2236,12 +2425,13 @@ fn restart_advice(env: &Environment, config: &Path, out: &mut dyn Write) -> std:
     use render::Escaped;
     let written = config.display();
     let restart = RESTART_COMMANDS;
-    let (sha256, settings, workspaces) = match running_differences(env, config) {
+    let (sha256, settings, workspaces, switches) = match running_differences(env, config) {
         Ok(Comparison::Known {
-            sha256,
+            apply,
             settings,
             workspaces,
-        }) => (sha256, settings, workspaces),
+            switches,
+        }) => (apply.sha256, settings, workspaces, switches),
         Ok(Comparison::Unknown(reason)) => {
             return writeln!(
                 out,
@@ -2266,11 +2456,40 @@ fn restart_advice(env: &Environment, config: &Path, out: &mut dyn Write) -> std:
             );
         }
     };
-    if settings.is_empty() {
+    let applied = if switches.is_empty() || !workspaces.is_empty() {
+        Vec::new()
+    } else {
+        match adopt_switches(env, &sha256) {
+            Ok(result) if result.applied => result.switches,
+            _ => Vec::new(),
+        }
+    };
+    if !applied.is_empty() {
+        writeln!(
+            out,
+            "wrote {written}; the running daemon now runs {}, with no restart",
+            Escaped(&applied.join(", "))
+        )?;
+        if !settings.is_empty() {
+            writeln!(
+                out,
+                "it reads other settings ({}) only when it starts, so restart it to apply them: \
+                 {restart}",
+                Escaped(&settings.join(", "))
+            )?;
+        }
+    } else if settings.is_empty() && switches.is_empty() {
         writeln!(
             out,
             "wrote {written}; the running daemon already runs these settings, so no restart is \
              needed"
+        )?;
+    } else if settings.is_empty() {
+        writeln!(
+            out,
+            "wrote {written}; the running daemon runs the switches ({}) once it adopts the \
+             project changes below",
+            Escaped(&switches.join(", "))
         )?;
     } else {
         writeln!(
@@ -2283,8 +2502,8 @@ fn restart_advice(env: &Environment, config: &Path, out: &mut dyn Write) -> std:
     if !workspaces.is_empty() {
         writeln!(
             out,
-            "the running daemon has not adopted the file's workspace changes ({}); `dudes \
-             workspace reload --apply {}` adopts them without a restart",
+            "the running daemon has not adopted the file's project changes ({}); `dudes \
+             project reload --apply {}` adopts them without a restart",
             Escaped(&workspaces.join(", ")),
             Escaped(&sha256)
         )?;
@@ -2359,7 +2578,7 @@ fn adopt(
             let unknown = |message| {
                 format!(
                     "{message}; {} keeps this edit, and whether the daemon adopted it is \
-                     unknown: `dudes workspace reload` shows what differs",
+                     unknown: `dudes project reload` shows what differs",
                     config.display()
                 )
             };
@@ -2686,11 +2905,15 @@ fn connect(env: &Environment) -> Result<Socket, Failure> {
     let socket = env
         .socket()
         .map_err(|missing| Failure::Other(Message::Local(missing.to_string())))?;
-    connect_at(socket)
+    connect_at(socket, env.runtime_dir().ok())
 }
 
-fn connect_at(socket: &Path) -> Result<Socket, Failure> {
+fn connect_at(socket: &Path, runtime_dir: Option<&Path>) -> Result<Socket, Failure> {
     LocalClient::connect(socket).map_err(|error| {
+        let derived = crate::quickstart::is_derived_socket(socket, runtime_dir);
+        if let Err(too_long) = crate::quickstart::check_socket_path(socket, derived) {
+            return Failure::Unreachable(format!("cannot reach the daemon: {too_long}"));
+        }
         Failure::Unreachable(format!(
             "cannot reach the daemon at {}: {error}",
             socket.display()
@@ -3104,9 +3327,9 @@ mod no_goal_note_tests {
             ),
             "Kim is already hired, so running quickstart again would hire a second agent; give \
              Kim a goal with: dudes goal --agent 01ARZ3NDEKTSV4RRFFQ69G5FAV --text <text> \
-             --hop-cap 5 -- <program> [args...]; workspace repo is enrolled with the same check, \
+             --hop-cap 5 -- <program> [args...]; project repo is enrolled with the same check, \
              so the Floor offers no hire there until you change its predicate_argv in \
-             /home/operator/dudes.toml and run dudes workspace reload, then dudes workspace reload \
+             /home/operator/dudes.toml and run dudes project reload, then dudes project reload \
              --apply <sha256>"
         );
     }
@@ -3127,8 +3350,8 @@ mod no_goal_note_tests {
             "Kim is already hired, so running quickstart again would hire a second agent; give \
              Kim a goal whose check fails until the goal is met, with: dudes goal --agent \
              01ARZ3NDEKTSV4RRFFQ69G5FAV --text <text> --hop-cap 5 -- <program> [args...]; the \
-             Floor offers workspace repo's check, which already passes, so add one for the next \
-             goal there with dudes workspace check add repo --id <id> --label <text> -- <program> \
+             Floor offers project repo's check, which already passes, so add one for the next \
+             goal there with dudes project check add repo --id <id> --label <text> -- <program> \
              [args...]"
         );
     }
@@ -3158,5 +3381,45 @@ mod replacement_tests {
                 timeout_s: 600
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod devices_tests {
+    use dudes_proto::record::DeviceId;
+    use dudes_proto::rpc::floor::DeviceEntry;
+    use dudes_types::Timestamp;
+
+    use super::devices_starting;
+
+    /// A device whose id is `start` followed by As, so `start` alone says which device it is.
+    fn entry(start: &str) -> DeviceEntry {
+        let id = format!("{start}{}", "A".repeat(43 - start.len()));
+        DeviceEntry {
+            device: DeviceId::parse(&id).expect("a well-formed id"),
+            name: "Chrome".to_owned(),
+            signed_in: Timestamp::from_unix_millis(1),
+            first_used: None,
+            last_used: None,
+            new: true,
+        }
+    }
+
+    #[test]
+    fn a_unique_start_names_one_device_and_a_shared_start_names_several() {
+        let devices = [entry("abc1"), entry("abc2"), entry("Xy-_")];
+        assert_eq!(devices_starting(&devices, "Xy-_").len(), 1);
+        assert_eq!(devices_starting(&devices, "ab").len(), 2, "ambiguous");
+        assert_eq!(devices_starting(&devices, "abc1").len(), 1);
+        assert!(devices_starting(&devices, "ffff").is_empty());
+    }
+
+    #[test]
+    fn the_start_of_an_id_matches_with_its_case() {
+        let devices = [entry("aBcd"), entry("abcd")];
+        assert_eq!(devices_starting(&devices, "aBcd").len(), 1);
+        assert_eq!(devices_starting(&devices, "abcd").len(), 1);
+        assert!(devices_starting(&devices, "ABCD").is_empty());
+        assert_eq!(devices_starting(&devices, "a").len(), 2);
     }
 }

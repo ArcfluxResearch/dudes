@@ -68,11 +68,19 @@ use crate::host::{
     AdoptionKey, Clock, HostBoot, KillOutcome, Liveness, ProbeAnswer, ProcessHost, SpawnResult,
     liveness,
 };
-use crate::input::{ClientId, Command, HookId, Input, PersistToken};
+use crate::input::{
+    ClientId, Command, Handled, HookId, Input, PersistToken, RecordedAppend, RecoveryCommand,
+};
 use crate::machine::{Config, Supervisor};
 
 mod rng;
 pub use rng::{FakeRng, FakeTokens};
+
+/// Check one explicitly supplied fixture frame at its test-selected position.
+#[must_use]
+pub fn recorded_append(lsn: Lsn, entry: Entry) -> RecordedAppend {
+    RecordedAppend::try_new(lsn, (lsn, entry), None).unwrap()
+}
 
 /// A clock that moves only when the test says so.
 #[derive(Clone, Debug)]
@@ -791,23 +799,36 @@ impl Harness {
         self.rebuild(Some(missing));
     }
 
-    fn rebuild(&mut self, missing: Option<Vec<AgentId>>) {
+    /// Install a complete contiguous journal on a default harness, without starting or consenting.
+    #[must_use]
+    pub fn from_prefix(entries: Vec<Entry>) -> Self {
+        let mut harness = Self::new();
+        harness.journal = entries;
+        harness.replay_journal(FakeClock::ticking(1_787_394_600_000, 1));
+        harness
+    }
+
+    fn replay_journal(&mut self, clock: FakeClock) {
         let mut rng = FakeRng::after_draws(self.supervisor.test_rng_drawn());
         rng.reserve_entries(&self.journal)
             .expect("harness entries serialize");
         self.next_lsn = u64::try_from(self.journal.len()).expect("the harness prefix fits an LSN");
-        self.supervisor = Self::machine(
-            self.config.clone(),
-            FakeClock::ticking(1_787_394_700_000, 1),
-            (self.adapter)(),
-            rng,
-        );
+        self.supervisor = Self::machine(self.config.clone(), clock, (self.adapter)(), rng);
         for (entry, position) in self.journal.iter().cloned().zip(1u64..) {
-            let _ = self.supervisor.handle(Input::Replayed {
-                lsn: Lsn(position),
-                entry,
-            });
+            self.supervisor
+                .handle(
+                    Input::Replayed {
+                        lsn: Lsn(position),
+                        entry,
+                    },
+                    &crate::RecoveryOperation::empty(),
+                )
+                .expect("the durable harness prefix folds");
         }
+    }
+
+    fn rebuild(&mut self, missing: Option<Vec<AgentId>>) {
+        self.replay_journal(FakeClock::ticking(1_787_394_700_000, 1));
         if let Some(missing) = missing {
             self.drive(Input::MissingWorktrees(missing));
         }
@@ -816,7 +837,14 @@ impl Harness {
 
     /// One `handle()` call. The effects go into [`Harness::trace`] and nothing is answered.
     pub fn step(&mut self, input: Input) -> Vec<Seen> {
-        let seen: Vec<Seen> = self.supervisor.handle(input).iter().map(Seen::of).collect();
+        self.supervisor
+            .handle(input, &crate::RecoveryOperation::empty())
+            .expect("the harness input folds");
+        self.capture_effects()
+    }
+
+    fn capture_effects(&mut self) -> Vec<Seen> {
+        let seen: Vec<Seen> = self.supervisor.effects().iter().map(Seen::of).collect();
         for record in seen.iter().filter_map(Seen::record) {
             assert_refusal(record);
         }
@@ -824,9 +852,84 @@ impl Harness {
         seen
     }
 
+    /// Deliver the actual emitted entry with a test-selected acknowledgment position.
+    #[must_use]
+    pub fn persisted(&self, token: PersistToken, lsn: Lsn) -> Input {
+        Input::Persisted {
+            token,
+            append: self.persisted_append(token, lsn),
+        }
+    }
+
+    /// Acknowledge the actual entry emitted for this token at a test-selected position.
+    #[must_use]
+    pub(crate) fn persisted_append(&self, token: PersistToken, lsn: Lsn) -> RecordedAppend {
+        recorded_append(lsn, self.emitted_entry(token))
+    }
+
+    fn emitted_entry(&self, token: PersistToken) -> Entry {
+        self.trace
+            .iter()
+            .rev()
+            .find_map(|seen| match seen {
+                Seen::Persist {
+                    token: emitted,
+                    entry,
+                } if *emitted == token => Some(entry.clone()),
+                _ => None,
+            })
+            .expect("the fixture emitted this persist token")
+    }
+
+    fn append_entry(&mut self, entry: Entry) -> Lsn {
+        self.supervisor
+            .test_reserve_entries(std::slice::from_ref(&entry))
+            .expect("harness entries serialize");
+        self.journal.push(entry);
+        self.next_lsn += 1;
+        Lsn(self.next_lsn)
+    }
+
+    /// Append and replay one explicit fixture record after the current contiguous prefix.
+    pub fn append_replayed(&mut self, entry: Entry) -> Lsn {
+        let lsn = self.append_entry(entry.clone());
+        self.drive(Input::Replayed { lsn, entry });
+        lsn
+    }
+
+    /// Manually append and acknowledge the exact entry emitted for this persist token.
+    pub fn acknowledge(&mut self, token: PersistToken) -> Lsn {
+        let entry = self.emitted_entry(token);
+        let lsn = self.append_entry(entry.clone());
+        self.drive(Input::Persisted {
+            token,
+            append: recorded_append(lsn, entry),
+        });
+        lsn
+    }
+
     /// Run an input to quiescence, executing every effect the flags allow.
     pub fn drive(&mut self, input: Input) {
-        let mut queue = VecDeque::from([input]);
+        self.drive_queue(VecDeque::from([input]));
+    }
+
+    /// Drive the caller's exact recovery intent through the ordinary effect queue.
+    /// Returns the immediate command report. Durable outcomes remain in the journal and trace.
+    pub fn recover(&mut self, command: RecoveryCommand) -> Handled {
+        let handled = self
+            .supervisor
+            .recover(command, &crate::RecoveryOperation::empty());
+        let mut queue = VecDeque::new();
+        for seen in self.capture_effects() {
+            if let Some(next) = self.follow_up(seen) {
+                queue.push_back(next);
+            }
+        }
+        self.drive_queue(queue);
+        handled
+    }
+
+    fn drive_queue(&mut self, mut queue: VecDeque<Input>) {
         while let Some(input) = queue.pop_front() {
             for seen in self.step(input) {
                 if let Some(next) = self.follow_up(seen) {
@@ -854,7 +957,12 @@ impl Harness {
                 owner: _,
                 goal,
                 baseline,
-            } => Some(self.mock_instruction_sample(request, goal, baseline)),
+            } => Some(Self::mock_instruction_sample(
+                self.supervisor.world(),
+                request,
+                goal,
+                baseline,
+            )),
             Seen::PrepareBrowserLaunch {
                 turn,
                 generation,
@@ -872,11 +980,10 @@ impl Harness {
             Seen::Persist { token, entry }
                 if self.fsync && !self.unfsynced.contains(&entry.record.kind()) =>
             {
-                self.journal.push(entry);
-                self.next_lsn += 1;
+                let lsn = self.append_entry(entry.clone());
                 Some(Input::Persisted {
                     token,
-                    lsn: Lsn(self.next_lsn),
+                    append: recorded_append(lsn, entry),
                 })
             }
             Seen::Spawn {
@@ -899,6 +1006,7 @@ impl Harness {
                             None
                         }
                     }),
+                    &crate::RecoveryOperation::empty(),
                 ) =>
             {
                 match self.host.spawn(&spec, &install) {
@@ -945,8 +1053,8 @@ impl Harness {
         }
     }
 
-    fn mock_instruction_sample(
-        &self,
+    pub(crate) fn mock_instruction_sample(
+        world: &crate::World,
         request: crate::input::InstructionRequest,
         goal: Option<GoalId>,
         baseline: Option<Box<dudes_proto::InstructionSnapshot>>,
@@ -974,11 +1082,11 @@ impl Harness {
                 gap.clone(),
             ],
             usage: dudes_proto::InstructionSampleUsage::default(),
+            pid_namespace: None,
             boot: None,
         };
         let ticket = goal.and_then(|goal| {
-            self.supervisor
-                .world()
+            world
                 .instructions
                 .association_for_goal(goal, dudes_types::Seq::ZERO)
         });
@@ -1361,10 +1469,10 @@ mod tests {
             .cloned()
             .expect("recovery requests an exact missing-boundary append");
         harness.fsync = true;
-        let Some(Input::Persisted { lsn, .. }) = harness.follow_up(first) else {
+        let Some(Input::Persisted { append, .. }) = harness.follow_up(first) else {
             panic!("the mock writer acknowledges its first appended frame");
         };
-        (tail, lsn)
+        (tail, append.lsn())
     }
 
     #[test]
@@ -1396,6 +1504,166 @@ mod tests {
         assert_eq!(harness.hire(), AgentId::from_parts(0, 901));
         harness.restart();
         assert_eq!(harness.hire(), AgentId::from_parts(0, 902));
+    }
+
+    #[test]
+    fn an_installed_prefix_keeps_its_journal_cursor_and_reserved_identities_without_starting() {
+        let mut source = Harness::new();
+        source.hire();
+        let mut entries = source.journal;
+        let Record::AgentHired { id, .. } = &mut entries[0].record else {
+            unreachable!()
+        };
+        *id = AgentId::from_parts(0, 900);
+        let mut harness = Harness::from_prefix(entries.clone());
+        assert_eq!(harness.journal, entries);
+        assert_eq!(harness.supervisor.world().last_applied_lsn, Some(Lsn(1)));
+        assert!(harness.trace.is_empty());
+        assert!(harness.supervisor.effects().is_empty());
+        assert_eq!(harness.hire(), AgentId::from_parts(0, 901));
+        assert_eq!(harness.supervisor.world().last_applied_lsn, Some(Lsn(2)));
+        assert_eq!(harness.journal.len(), 2);
+    }
+
+    #[test]
+    fn appended_history_reserves_identity_without_losing_a_parked_token_continuation() {
+        let mut harness = Harness::new();
+        harness.launch = false;
+        harness.unfsynced.insert(RecordKind::HookTokenMinted);
+        let (agent, _) = harness.hire_with_goal(&["true"]);
+        let turn = harness.open_turn(agent).unwrap();
+        let token = harness
+            .trace
+            .iter()
+            .find_map(|seen| match seen {
+                Seen::Persist { token, entry }
+                    if entry.record.kind() == RecordKind::HookTokenMinted =>
+                {
+                    Some(*token)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let mut imported = harness.journal[0].clone();
+        let Record::AgentHired { id, .. } = &mut imported.record else {
+            unreachable!()
+        };
+        *id = AgentId::from_parts(0, 900);
+        let tail = u64::try_from(harness.journal.len()).unwrap();
+        assert_eq!(harness.append_replayed(imported), Lsn(tail + 1));
+        assert_eq!(harness.hire(), AgentId::from_parts(0, 901));
+        let tail = u64::try_from(harness.journal.len()).unwrap();
+        assert_eq!(harness.acknowledge(token), Lsn(tail + 1));
+        assert_eq!(
+            harness.supervisor.world().last_applied_lsn,
+            Some(Lsn(tail + 1))
+        );
+        assert!(
+            harness
+                .spawns_of(turn)
+                .iter()
+                .any(|seen| matches!(seen, Seen::Spawn { .. }))
+        );
+        assert!(harness.host.spawned.is_empty());
+        assert!(!harness.launch);
+        assert!(harness.unfsynced.contains(&RecordKind::HookTokenMinted));
+    }
+
+    #[test]
+    fn supplied_recovery_intent_uses_the_existing_fsync_and_launch_queue_controls() {
+        let mut original = Harness::new();
+        original.launch = false;
+        let (agent, _) = original.hire_with_goal(&["true"]);
+        let mut harness = Harness::from_prefix(original.journal);
+        harness.launch = false;
+        harness.drive(Input::Started);
+        let command = RecoveryCommand {
+            request_id: dudes_proto::record::Hex32::new([71; 32]),
+            digest: dudes_proto::record::Hex32::new([72; 32]),
+            expected: harness
+                .supervisor
+                .recovery_opportunity(agent)
+                .unwrap()
+                .expected,
+            choice: crate::input::RecoveryChoice::RepeatIssuedFresh,
+            attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+                pid: 17,
+                uid: None,
+            },
+        };
+        let before = harness.journal.clone();
+        let trace = harness.trace.len();
+        harness.fsync = false;
+        let immediate = harness.recover(command.clone());
+        assert_eq!(immediate.recovery().unwrap().request_id, command.request_id);
+        assert_eq!(harness.journal, before);
+        let token = harness.trace[trace..]
+            .iter()
+            .find_map(|seen| match seen {
+                Seen::Persist { token, entry }
+                    if entry.record.kind() == RecordKind::RecoveryAuthorized =>
+                {
+                    Some(*token)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(!harness.fsync);
+        harness.fsync = true;
+        harness.acknowledge(token);
+        let authorizations: Vec<_> = harness
+            .journal
+            .iter()
+            .filter_map(|entry| match &entry.record {
+                Record::RecoveryAuthorized(value) => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(authorizations.len(), 1);
+        assert_eq!(authorizations[0].request_id, command.request_id);
+        assert_eq!(authorizations[0].request_digest, command.digest);
+        assert_eq!(authorizations[0].attribution, command.attribution);
+        assert!(harness.host.spawned.is_empty());
+        assert!(!harness.launch);
+
+        let mut enabled = Harness::from_prefix(before);
+        enabled.launch = false;
+        enabled.drive(Input::Started);
+        assert_eq!(
+            enabled
+                .supervisor
+                .recovery_opportunity(agent)
+                .unwrap()
+                .expected,
+            command.expected
+        );
+        let prefix_len = enabled.journal.len();
+        let required = enabled
+            .journal
+            .iter()
+            .position(|entry| matches!(&entry.record, Record::RecoveryRequired(required) if required.binding.work == command.expected.work))
+            .unwrap();
+        assert!(required < prefix_len);
+        let immediate = enabled.recover(command.clone());
+        assert_eq!(immediate.recovery().unwrap().request_id, command.request_id);
+        assert_eq!(immediate.recovery().unwrap().refusal, None);
+        let appended = &enabled.journal[prefix_len..];
+        let kinds: Vec<_> = appended.iter().map(|entry| entry.record.kind()).collect();
+        assert!(kinds.starts_with(&[RecordKind::RecoveryAuthorized]));
+        assert!(kinds.contains(&RecordKind::InstructionObservationStarted));
+        let Record::RecoveryAuthorized(authorization) = &appended[0].record else {
+            unreachable!()
+        };
+        assert_eq!(authorization.request_id, command.request_id);
+        assert_eq!(authorization.request_digest, command.digest);
+        assert_eq!(authorization.attribution, command.attribution);
+        assert_eq!(
+            enabled.supervisor.world().last_applied_lsn,
+            Some(Lsn(u64::try_from(enabled.journal.len()).unwrap()))
+        );
+        assert!(enabled.fsync);
+        assert!(enabled.host.spawned.is_empty());
+        assert!(!enabled.launch);
     }
 
     /// The clock is the only source of time, so a frozen one stamps every entry alike and a

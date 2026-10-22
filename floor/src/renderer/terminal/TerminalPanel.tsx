@@ -30,12 +30,13 @@ import {
   getTerminalState, leavesTerminal, subscribeToTerminal, terminalOffer, writeTerminal,
 } from './terminal.ts';
 import type { TerminalChannel, TerminalEnding, TerminalOffer, TerminalPorts } from './terminal.ts';
+import { floorSigner, socketOffer } from '../../signer.ts';
 import { lazyChunk } from '../../transport.ts';
 
 type OpenChannel = Exclude<TerminalChannel, { readonly phase: 'idle' }>;
 
 function browserTerminalPorts(): TerminalPorts {
-  return { location: window.location, socket: browserSocket, csrf: () => currentFloorSession()?.csrf ?? null };
+  return { location: window.location, socket: browserSocket, signedIn: () => currentFloorSession() !== null, offer: socketOffer(floorSigner()) };
 }
 
 function nameOf(floor: FloorState, agent: string): string {
@@ -52,7 +53,7 @@ const UNAVAILABLE: Readonly<Record<Extract<TerminalOffer, { kind: 'unavailable' 
   'no-session': 'Attach waits for this agent’s first confirmed session.',
 });
 
-const TRUST_WARNING = 'Claude Code may ask you to trust this workspace. Check the folder before accepting in the terminal. '
+const TRUST_WARNING = 'Claude Code may ask you to trust this folder. Check the folder before accepting in the terminal. '
   + 'No, exit may be selected when the prompt opens.';
 
 /** Claude Code's workspace trust prompt comes up inside the terminal, so it is read here first. */

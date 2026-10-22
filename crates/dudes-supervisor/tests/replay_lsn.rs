@@ -150,7 +150,7 @@ fn an_acknowledged_entry_is_folded_at_the_lsn_of_its_acknowledgement() {
         "control: an emitted persist is not a fold — the entry is folded on its acknowledgement"
     );
 
-    harness.step(Input::Persisted { token, lsn: Lsn(7) });
+    harness.step(harness.persisted(token, Lsn(7)));
     assert_eq!(
         harness.supervisor.world().last_applied_lsn,
         Some(Lsn(7)),

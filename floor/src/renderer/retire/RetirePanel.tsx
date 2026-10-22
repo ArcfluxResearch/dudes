@@ -222,13 +222,13 @@ function OutcomeBody({ attempt, retire, floor, session }: {
           {now === 'checking'
             ? 'The daemon refused this request before any effect. Checking whether this Floor session is still live…'
             : now === 'ended'
-              ? 'Your Floor session has ended or was revoked. Paste a new link from dudes floor open '
-                + `into this tab’s address bar to act again. ${next}`
+              ? 'Your Floor session has ended or was revoked. Open Dudes to sign in again '
+                + `in this browser to act again. ${next}`
               : now === 'renewed'
                 ? 'The daemon refused an earlier request before any effect, under a Floor session this page no '
                   + `longer uses. This page has signed in again. ${next}`
                 : 'The daemon refused this request before any effect, and this page can no longer retire with its '
-                  + `session. Paste a new Floor link into this tab’s address bar to act again. ${next}`}
+                  + `session. Open Dudes to sign in again, then act again. ${next}`}
         </p>
       );
     }

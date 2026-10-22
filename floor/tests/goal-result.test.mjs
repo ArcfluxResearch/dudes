@@ -48,11 +48,11 @@ test('the selected detail exposes a failing observed check beside the authoritat
   const html = renderDetail(rowOf(goalOf(observedFailure)));
   assert.match(html, /<dt>Goal status<\/dt><dd>active<\/dd>/);
   assert.match(html, /Latest check failed/);
-  assert.match(html, /Observed/);
+  assert.match(html, /Dudes ran it/);
   assert.match(html, /segment 1 · byte 3/);
   assert.match(html, /<section aria-label="Latest completion check"><h3>Latest completion check<\/h3>/);
   assert.match(html, /<dt>Journal position<\/dt><dd class="data">segment 1 · byte 3<\/dd>/);
-  assert.doesNotMatch(html, /Inferred|Does not establish completion/);
+  assert.doesNotMatch(html, /Dudes did not run it/);
 });
 
 test('no current goal has no result section, while missing and null results have a named empty state', () => {
@@ -71,10 +71,10 @@ test('no current goal has no result section, while missing and null results have
 
 test('synthetic observed and inferred outcomes remain separate from status, pause, halt and Done notices', () => {
   for (const [provenance, pass, outcome, label] of [
-    ['observed', true, 'passed', 'Observed'],
-    ['observed', false, 'failed', 'Observed'],
-    ['inferred', true, 'passed', 'Inferred. Does not establish completion'],
-    ['inferred', false, 'failed', 'Inferred. Does not establish completion'],
+    ['observed', true, 'passed', 'Dudes ran it'],
+    ['observed', false, 'failed', 'Dudes ran it'],
+    ['inferred', true, 'passed', 'The agent reported this. Dudes did not run it, so treat it as unproven'],
+    ['inferred', false, 'failed', 'The agent reported this. Dudes did not run it, so treat it as unproven'],
   ]) {
     const result = { pass, provenance, lsn: 7 };
     assert.deepEqual(goalResultOf(goalOf(result)), { kind: provenance, outcome, position: 7 });
@@ -83,7 +83,7 @@ test('synthetic observed and inferred outcomes remain separate from status, paus
     delta(11, [row]);
     const html = selectedDetail();
     assert.match(html, new RegExp(`Latest check ${outcome}`));
-    assert.ok(html.includes(`<dt>Provenance</dt><dd>${label}</dd>`));
+    assert.ok(html.includes(`<dt>Who ran it</dt><dd>${label}</dd>`));
     assert.match(html, /<dt>Goal status<\/dt><dd>active<\/dd>/);
     assert.match(html, /<dt>Paused<\/dt><dd>yes<\/dd>/);
     assert.match(html, /<dt>Halted<\/dt><dd>yes<\/dd>/);
@@ -133,10 +133,10 @@ test('a result whose check could not run says so, shows its position and no prov
   assert.equal(html, '<section aria-label="Latest completion check"><h3>Latest completion check</h3>'
     + '<p>Latest check could not run. Its program did not start, so this result says nothing about the goal. '
     + 'The journal shows why (dudes tail).</p>'
-    + '<dl><div><dt>Journal position</dt><dd class="data">segment 1 · byte 3</dd></div></dl></section>');
+    + '<dl></dl><details><summary>Details</summary><dl><div><dt>Journal position</dt><dd class="data">segment 1 · byte 3</dd></div></dl></details></section>');
   const detail = renderDetail(rowOf(goalOf(notRun)));
   assert.match(detail, /Latest check could not run/);
-  assert.doesNotMatch(detail, /Provenance|Latest check failed/);
+  assert.doesNotMatch(detail, /Who ran it|Latest check failed/);
   assert.deepEqual(goalResultOf(goalOf({ ...observedFailure, not_run: false })),
     { kind: 'observed', outcome: 'failed', position: 1099511627779 });
   for (const [label, result] of [

@@ -102,12 +102,13 @@ pub(crate) fn board(card: Option<&CardView>, predicate: &Predicate) -> Baseline 
 }
 
 /// Who started a run, for the counts the routes read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Mark {
     /// The agent whose goal the run decides; `None` for a hire, which has no agent yet.
     agent: Option<AgentId>,
     /// The Floor session that started it; `None` for a local route.
     session: Option<Hex32>,
+    folder: Option<PathBuf>,
 }
 
 /// Why a browser route may not start a run now.
@@ -170,6 +171,7 @@ impl Baselines {
         self.insert(Mark {
             agent: Some(agent),
             session: None,
+            folder: None,
         })
     }
 
@@ -196,7 +198,31 @@ impl Baselines {
         Ok(self.insert(Mark {
             agent,
             session: Some(session),
+            folder: None,
         }))
+    }
+
+    /// Bind the exact resolved execution folder before the worker starts.
+    pub(crate) fn bind_folder(&mut self, id: u64, folder: PathBuf) -> bool {
+        let Some(mark) = self.running.get_mut(&id) else {
+            return false;
+        };
+        if mark.folder.is_some() {
+            return false;
+        }
+        mark.folder = Some(folder);
+        true
+    }
+
+    /// At most `limit` active folders; an unbound mark remains explicit uncertainty.
+    pub(crate) fn active_folders(
+        &self,
+        limit: usize,
+    ) -> impl Iterator<Item = Option<&std::path::Path>> {
+        self.running
+            .values()
+            .take(limit)
+            .map(|mark| mark.folder.as_deref())
     }
 
     /// Stop counting a run. Idempotent: the run's thread and its recheck both end it.
@@ -254,6 +280,26 @@ impl std::fmt::Debug for Ticket {
 }
 
 impl Ticket {
+    /// A known preparation refusal with no worker or active run remaining.
+    pub(crate) fn refused(
+        id: u64,
+        argv: Vec<String>,
+        timeout_s: u64,
+        cwd: PathBuf,
+        refusal: Refusal,
+    ) -> Self {
+        let (send, outcome) = mpsc::channel();
+        let _ = send.send(Baseline::Refused(refusal));
+        Self {
+            id,
+            argv,
+            cwd,
+            timeout_s,
+            outcome,
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Wait for the run. A daemon that is stopping answers [`Baseline::Unavailable`] at once, so a
     /// waiting connection never holds the exit path's join; the run's child is swept with every
     /// other predicate child. A caller that `hang_up` reports gone ends the run's child and gets

@@ -1,6 +1,6 @@
 [package]
 name = "dudes-supervisor"
-description = "The sans-io machine of the Dudes supervisor: handle(Input) -> &[Effect], the agent state machines and the persist-before-spawn ledger. No I/O; time and randomness enter through seams."
+description = "The sans-io machine of the Dudes supervisor: checked input handling, fold outcomes and effects accessors, the agent state machines and the persist-before-spawn ledger. No I/O; time and randomness enter through seams."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -637,6 +637,7 @@ mod tests {
             let snapshot = InstructionSnapshot {
                 sampled_at: Timestamp::from_unix_millis(10),
                 source: InstructionSnapshotSource::Fresh,
+                pid_namespace: None,
                 boot: None,
                 execution_folder: Some(NativeInstructionPath::Utf8 {
                     value: "/gate/work".into(),
@@ -871,12 +872,12 @@ mod tests {
             .values_mut()
             .find(|value| value["kind"] == "native_receipt")
             .unwrap();
-        assert!(cell["started"].is_u64());
+        assert!(cell["value"]["started"].is_u64());
         let replacement = starts
             .iter()
-            .find(|lsn| serde_json::to_value(lsn.0).unwrap() != cell["started"])
+            .find(|lsn| serde_json::to_value(lsn.0).unwrap() != cell["value"]["started"])
             .unwrap();
-        cell["started"] = json!(replacement.0);
+        cell["value"]["started"] = json!(replacement.0);
         parsed.rows.0 = values
             .into_iter()
             .map(|(key, value)| (key, serde_json::to_vec(&value).unwrap()))
@@ -897,12 +898,12 @@ mod tests {
         let [first, second] = keys.as_slice() else {
             panic!("two exact native receipts")
         };
-        let first_start = values[first]["started"].clone();
-        let second_start = values[second]["started"].clone();
+        let first_start = values[first]["value"]["started"].clone();
+        let second_start = values[second]["value"]["started"].clone();
         assert!(first_start.is_u64() && second_start.is_u64());
         assert_ne!(first_start, second_start);
-        values.get_mut(first).unwrap()["started"] = second_start;
-        values.get_mut(second).unwrap()["started"] = first_start;
+        values.get_mut(first).unwrap()["value"]["started"] = second_start;
+        values.get_mut(second).unwrap()["value"]["started"] = first_start;
         let rows = Rows(
             values
                 .into_iter()

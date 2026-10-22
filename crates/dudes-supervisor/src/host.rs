@@ -105,6 +105,19 @@ pub enum ProbeAnswer {
     CouldNotAnswer,
 }
 
+/// Result of a signal-zero query to one recorded process group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeGroupPresence {
+    /// The kernel found at least one member the daemon may signal.
+    Present,
+    /// The kernel reported no such process group.
+    Absent,
+    /// The kernel found the group but permission or zombie state prevents signalling it.
+    Unsignallable,
+    /// The query failed or this platform cannot inspect the group.
+    Unknown,
+}
+
 /// The only place an adoption key is compared **against a probe**. Returns [`Liveness`], never
 /// `bool`. Key-to-key comparison is a different question and is not this: see [`AdoptionKey`].
 ///
@@ -353,11 +366,13 @@ pub struct OwnedTargets {
 /// running, which is the state it is least likely to be in.
 ///
 /// **This trait is not the whole of invariant 10.** Declaring `shutdown` makes the daemon-exit
-/// half *reachable* and *assertable*; what makes it *hold* is three things together — the
+/// half *reachable* and *assertable*; what makes it *hold* is these together — the
 /// platform hold taken at `spawn` (a process group on Unix, a job with `KILL_ON_JOB_CLOSE` on
 /// Windows), the daemon calling `shutdown` on every exit path, and the real host's own tests. On
-/// Unix the platform hold **selects** and does not kill, so a daemon killed with `SIGKILL`
-/// orphans its children on that platform and no implementation of this trait can prevent it.
+/// Unix a process group **selects** and does not kill, so the real host adds a keeper process
+/// beside each agent: it reads a pipe that the kernel closes when the daemon dies, however it
+/// dies, and ends the agent's group when that happens. A host built without that keeper still
+/// orphans its children when the daemon is killed with `SIGKILL`.
 ///
 /// `spawn` takes the [`ManagedInstall`] alongside the spec because the adapter's files are a
 /// projection: the host writes any that differ *before* exec, so a
@@ -401,6 +416,29 @@ pub trait ProcessHost {
 
     /// Read the process table and apply [`liveness()`] against the host's own boot identity.
     fn alive(&self, key: &AdoptionKey) -> Liveness;
+
+    /// Observe the recorded leader without adopting it or delivering a signal.
+    /// [`ProbeAnswer::NoSuchPid`] means confirmed direct pid absence, never only a missing
+    /// process-table entry. Tables may hide live processes, so an independent signal-zero
+    /// query must confirm absence. It delivers no signal. Permission refusals and query errors
+    /// remain uncertainty. [`ProbeAnswer::StartValue`] is raw observed native start evidence.
+    /// On Linux, the numeric process-table view must first be confirmed aligned with this
+    /// daemon's active pid namespace.
+    fn probe_native_leader(&self, _key: &AdoptionKey) -> ProbeAnswer {
+        ProbeAnswer::CouldNotAnswer
+    }
+
+    /// Query the process group whose recorded leader pid is `pid`, without delivering a signal.
+    /// Only an explicit no-such-group answer establishes absence.
+    fn native_group_presence(&self, _pid: u32) -> NativeGroupPresence {
+        NativeGroupPresence::Unknown
+    }
+
+    /// The cached Linux pid namespace only when its initial and current numeric process-table
+    /// views are confirmed aligned with the daemon's active pid namespace. Otherwise absent.
+    fn pid_namespace(&self) -> Option<String> {
+        None
+    }
 
     /// Inspect at most `limit` current native target entries, capped at
     /// [`MAX_OWNED_TARGET_QUERY_ROWS`], without signalling, waiting, or releasing ownership.

@@ -105,7 +105,7 @@ fn adding_a_ticket_without_a_project_names_the_one_step_setup() {
     assert_eq!(refused.code(), dudes::exit::REFUSED, "{refused:?}");
     assert_eq!(
         refused.stderr,
-        "dudes: No project yet. In your project's folder run `dudes workspace add`. (-32004)\n"
+        "dudes: No project yet. In your project's folder run `dudes project add`. (-32004)\n"
     );
     let json = cli
         .args(["--json", "ticket", "add", "--title", "Fix sign-in"])
@@ -698,7 +698,7 @@ fn the_loop_gives_by_name_reviews_accepts_asks_for_changes_stops_and_removes() {
     for line in [
         "The agent says:",
         "  I fixed the blank password case.",
-        "Check: passed, exit status 0, ",
+        "Last recorded check: passed, exit status 0, ",
         "Open the Floor to see the changed files.",
     ] {
         assert!(shown.contains(line), "{line}: {shown}");

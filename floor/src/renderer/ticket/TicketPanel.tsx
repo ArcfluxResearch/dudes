@@ -16,16 +16,18 @@ import { getGitState, loadGit, refusalText, subscribeToGit } from '../git/git.ts
 import type { GitChangeKind } from '../git/git.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
-import { editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
+import { checkDisplayCurrent, editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
+import { RecoveredReview } from './RecoveredReview.tsx';
 import type { TicketDetail, TruncatedTicketField } from './detail.ts';
 import { ACTION_LABEL, actionsOf, agentChoiceSentence, agentRow, cardWords, noProjects, projectOf, requiresInstructionReview } from './model.ts';
 import type { TicketAction } from './model.ts';
 import { agentsFor, ticketActionsOpen, TicketNotice } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
-import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, reasonSentence, stateName } from './words.ts';
+import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, engineStopped, reasonSentence, stateName } from './words.ts';
+import { StuckActions } from './StuckActions.tsx';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
-import { coverageText, groupGaps, instructionContextText } from './instructions.ts';
+import { COVERAGE_SUMMARY, coverageText, groupGaps, instructionContextText } from './instructions.ts';
 import type { InstructionReview } from './instructions.ts';
 
 const TRUNCATED_LABEL: Readonly<Record<TruncatedTicketField, string>> = Object.freeze({
@@ -40,7 +42,7 @@ const KIND_LABEL: Readonly<Record<GitChangeKind, string>> = Object.freeze({
 
 type Mode = 'none' | 'give' | 'changes' | 'edit' | 'remove' | 'stop';
 
-function focusHeading(node: HTMLHeadingElement | null): (() => void) | void {
+function focusSheet(node: HTMLElement | null): (() => void) | void {
   if (node === null) return undefined;
   node.focus();
   return handFocusOnLeave(node);
@@ -73,7 +75,7 @@ function ChangedFiles({ floor, card }: { readonly floor: FloorState; readonly ca
   }, [floor.git, agent, card.id, card.seq]);
   if (!floor.git) {
     return <section aria-label="Changed files"><h4>Changed files</h4>
-      <p className="ticket-hint">The Git tab is off, so changed files are not shown. Turn it on with <code>dudes config set floor.git on</code> and restart the daemon.</p>
+      <p className="ticket-hint">Changed files are turned off, so this list is empty. To see them, turn on Show changed files in Settings.</p>
     </section>;
   }
   const mine = agent !== null && git.agent === agent;
@@ -97,12 +99,17 @@ function ChangedFiles({ floor, card }: { readonly floor: FloorState; readonly ca
   </section>;
 }
 
-function InstructionEvidence({ floor, review }: {
+function InstructionEvidence({ floor, review, reviewing }: {
   readonly floor: FloorState;
   readonly review: InstructionReview;
+  /** False while the agent is still working: nothing is offered to accept yet. */
+  readonly reviewing: boolean;
 }) {
   const holding = groupGaps(review);
   return <section aria-label="Instruction review"><h4>Instruction review</h4>
+    <p>{!reviewing ? 'Dudes is watching the instruction files while the agent works. You can review the work when it is ready.'
+      : holding.length === 0 ? 'Nothing unusual was recorded about the instruction files.'
+        : 'Dudes could not see everything the agent relied on, so look over the work yourself.'}</p>
     <h5>Known changed paths</h5>
     {review.changed_paths.length === 0 ? <p>No known changed paths were retained.</p>
       : <ul className="ticket-files">{review.changed_paths.map((row, at) => <li key={at}>
@@ -117,12 +124,12 @@ function InstructionEvidence({ floor, review }: {
           return typeof name === 'string' && name !== '' ? name : 'a recorded agent';
         }).join(', ')}.</>}
       </li>)}</ul>}
-    <p>Look at the changed files above{holding.length === 0 ? '' : ' or the paths named here'}, then Accept if the work is fine.
+    {!reviewing ? null : <p>Look at the changed files above{holding.length === 0 ? '' : ' or the paths named here'}, then Accept if the work is fine.
       {holding.length === 0 ? ' Accept records that you reviewed the change.'
-        : ' Accept records that you reviewed it despite these gaps.'} If it is not fine, choose Ask for changes.</p>
-    <p>These observations compare sampled endpoints. They do not identify an exclusive writer or prove that instructions were unchanged between samples.</p>
-    {review.pending_comparison ? <p role="status">The instruction comparison is still pending. Review actions are unavailable.</p> : null}
+        : ' Accept records that you reviewed it despite these gaps.'} If it is not fine, choose Ask for changes.</p>}
+    {review.pending_comparison ? <p role="status">Dudes is still comparing the instruction files. Review actions are unavailable until it finishes.</p> : null}
     <details><summary>Observation details</summary>
+      <p>These observations compare sampled endpoints. They do not identify an exclusive writer or prove that instructions were unchanged between samples.</p>
       <p>Review through record {review.watermark.through_lsn}.</p>
       <p>Review digest <code>{review.watermark.set_digest}</code>.</p>
       {review.gaps.length === 0 ? null : <>
@@ -159,6 +166,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
   const ticket = card.ticket;
   const words = cardWords(floor, card);
   const loaded = mine?.detail ?? null;
+  const failure = engineStopped(ticket?.last_turn_end);
   return <>
     <dl>
       <div><dt>State</dt><dd>{stateName(card.status)}</dd></div>
@@ -167,6 +175,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
       {ticket === null ? null : <div><dt>Round</dt><dd>{loaded?.round ?? ticket.round}</dd></div>}
       {words.place === null ? null : <div><dt>Place</dt><dd>{words.place}</dd></div>}
     </dl>
+    {failure === null ? null : <p className="ticket-needs" role="note">{failure}</p>}
     {card.status === 'blocked' ? <p className="ticket-needs" role="note">{reasonSentence(ticket?.reason ?? null)}</p>
       : (loaded?.waiting ?? null) !== null ? <p className="ticket-wait">{loaded?.waiting?.note}</p>
         : words.note === null ? null : <p className="ticket-wait">{words.note}</p>}
@@ -209,7 +218,7 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
   const evidence = useSyncExternalStore(subscribeToDetail, getDetailState, getDetailState);
   const reviewReady = !requiresInstructionReview(card) || reviewedWatermark(evidence, card) !== null;
   const chosen = usable.find((row) => row.id === agent)?.id ?? usable[0]?.id ?? null;
-  if (noProjects(floor)) return <NoTicketProjectHint />;
+  if (noProjects(floor)) return <NoTicketProjectHint floor={floor} />;
   if (project === null) return <p className="ticket-hint" role="status">{pending ?? 'Reading the ticket…'}</p>;
   if (usable.length === 0) return <div className="ticket-field" data-no-agent="true">
     <p className="ticket-hint">{agentChoiceSentence(floor, project)}</p>
@@ -292,10 +301,12 @@ function EditForm({ floor, card, detail, onDone }: {
   </form>;
 }
 
-export function TicketPanel({ floor, card, onHire }: {
+export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   readonly floor: FloorState;
   readonly card: CardRow;
   readonly onHire?: (opener: HTMLElement | null) => void;
+  /** Open the recovery view in this agent's drawer. */
+  readonly onReviewRecovery?: (agent: string) => void;
 }) {
   const [mode, setMode] = useState<Mode>('none');
   const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
@@ -303,19 +314,22 @@ export function TicketPanel({ floor, card, onHire }: {
   const open = ticketActionsOpen(floor);
   useEffect(() => {
     if (floor.ticket && needsDetail(getDetailState(), card)) void loadDetail(card);
-  }, [floor.ticket, card.id, card.seq]);
+  }, [floor.ticket, card.id, card.seq, floor.epoch, floor.messagesLsn]);
   // The ticket moved, so the form that was open for its old state no longer fits it.
   useEffect(() => { setMode('none'); }, [card.id, card.status, card.seq]);
   const actions = open ? actionsOf(card) : [];
   const changesView = floor.diff && (card.status === 'review' || card.status === 'blocked');
   const loaded = detail.card === card.id ? detail.detail : null;
+  const fresh = checkDisplayCurrent(detail, card, floor);
   const editable = editableDetail(detail, card);
   const ordinary = actions.filter((action) => action !== 'remove' && action !== 'stop');
   const destructive = actions.filter((action) => action === 'remove' || action === 'stop');
   const modeAllowed = mode === 'none' || (mode === 'give'
     ? actions.includes('give') || actions.includes('try_again') : actions.includes(mode));
 
-  const reviewReady = !requiresInstructionReview(card) || reviewedWatermark(detail, card) !== null;
+  const reviewing = card.status === 'review' || card.status === 'blocked';
+  const needsReview = requiresInstructionReview(card) && reviewing;
+  const reviewReady = !needsReview || reviewedWatermark(detail, card) !== null;
 
   const actionButton = (action: TicketAction) => <button key={action} type="button" className="ticket-action" data-action={action}
     disabled={sending || (action === 'edit' && editable === null)
@@ -340,29 +354,37 @@ export function TicketPanel({ floor, card, onHire }: {
   }
 
   return <section className="card-detail ticket-panel" aria-labelledby="card-detail-title" data-selected-card-id={card.id}
-    data-ticket-status={card.status}>
-    <h3 id="card-detail-title" ref={focusHeading} tabIndex={-1}
-      data-focus-on-leave="view-board">{card.title}</h3>
-    <TicketNotice card={card.id} />
+    data-ticket-status={card.status} data-mode={mode} ref={focusSheet} tabIndex={-1} data-focus-on-leave="view-board">
+    <h3 id="card-detail-title">{card.title}</h3>
+    <TicketNotice card={card.id} floor={floor} />
     <Facts floor={floor} card={card} />
-    {loaded?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={loaded.instruction_review} />}
-    {(requiresInstructionReview(card) && !reviewReady) || (detail.card === card.id && detail.phase === 'failed')
+    <StuckActions floor={floor} card={card} onReviewRecovery={onReviewRecovery} />
+    {loaded?.context == null ? null : <RecoveredReview context={loaded.context} fresh={fresh} />}
+    {loaded?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={loaded.instruction_review}
+      reviewing={reviewing} />}
+    {(needsReview && !reviewReady) || (detail.card === card.id && detail.phase === 'failed')
       || (actions.includes('edit') && detail.phase === 'ready' && editable === null) ? <div>
-      <p className="ticket-hint" role="status">{requiresInstructionReview(card)
+      <p className="ticket-hint" role="status">{needsReview
         ? 'Read the current instruction evidence before reviewing this ticket.'
         : 'Read the complete current note before editing this ticket.'}</p>
       <button type="button" className="ticket-look" disabled={detail.phase === 'loading'}
         onClick={() => { void loadDetail(card); }}>Read again</button>
     </div> : null}
     {loaded?.coverage != null && loaded.coverage.limits.length > 0
-      ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4><p>{coverageText(loaded.coverage)}</p></section> : null}
+      ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4>
+        <p>{COVERAGE_SUMMARY}</p>
+        <details><summary>Details</summary><p>{coverageText(loaded.coverage)}</p></details></section> : null}
     {card.status === 'review' && !changesView ? <ChangedFiles floor={floor} card={card} /> : null}
     {changesView
       ? <DiffPanel card={card.id} expectedSeq={card.seq} transport={browserDiffTransport} /> : null}
-    {loaded?.result == null ? null : <section aria-label="Check result"><h4>Check result</h4>
+    {loaded?.result == null ? null : <section aria-label="Check result"><h4>Last recorded check</h4>
       <p>{loaded.result.pass ? 'The check passed' : 'The check failed'}
         {loaded.result.exit === null ? '' : `, exit status ${loaded.result.exit}`}
         {' '}at {recordedTime(loaded.result.at)}.</p>
+      <p>{!fresh ? 'This retained result is history. Its applicability to the current work is unconfirmed.'
+        : loaded.context?.check.state === 'current' ? 'This result applies to the current recorded work.'
+          : loaded.context?.check.state === 'historical' ? 'Later work was admitted. This result is history and does not check that work.'
+            : 'Dudes could not establish whether this result applies to the current work.'}</p>
     </section>}
     {!floor.ticket ? <TicketOffHint floor={floor} /> : null}
     {actions.length === 0 ? null : <div className="ticket-actions" role="group" aria-label="Ticket actions" aria-busy={sending}>

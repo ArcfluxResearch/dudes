@@ -1,18 +1,22 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::Result;
 use dudes_proto::{
     Entry, InstructionBootIdentity, InstructionBoundaryAbsenceProof,
-    InstructionNativeBoundaryReceipt, InstructionObservationOwner, Record,
+    InstructionNativeBoundaryReceipt, InstructionObservationOwner, PriorRunLeader, Record,
 };
 use dudes_supervisor::host::{
-    AdoptionKey, MAX_OWNED_TARGET_QUERY_ROWS, NativeBoundaryReceipt, OwnedTargetState,
+    AdoptionKey, MAX_OWNED_TARGET_QUERY_ROWS, NativeBoundaryReceipt, NativeGroupPresence,
+    OwnedTargetState, ProbeAnswer,
 };
 use dudes_supervisor::{Clock, Input, ProcessHost, Rng, Supervisor};
 use dudes_types::{AgentId, HostBoot, Lsn, TurnId};
 
 use super::{Ctx, Shared};
 use crate::predicate::PredicateRunner;
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+mod prior_run_tests;
 
 pub(super) fn same_key(left: &AdoptionKey, right: &AdoptionKey) -> bool {
     left.pid == right.pid && left.start_time == right.start_time && left.boot == right.boot
@@ -116,6 +120,123 @@ fn prior_boot<H: ProcessHost>(host: &H, world: &dudes_supervisor::World) -> Opti
     None
 }
 
+#[derive(Default)]
+pub(crate) enum InheritedNativeBoundaries {
+    #[default]
+    Uninitialized,
+    Disabled,
+    Captured(BTreeMap<Lsn, dudes_supervisor::world::ManagedNativeSpawnReceipt>),
+}
+
+impl InheritedNativeBoundaries {
+    pub(super) fn capture(&mut self, world: &dudes_supervisor::World) {
+        if !matches!(self, Self::Uninitialized) {
+            return;
+        }
+        *self = if world.managed_native_spawn_receipts().len() >= MAX_OWNED_TARGET_QUERY_ROWS {
+            Self::Disabled
+        } else {
+            Self::Captured(
+                world
+                    .managed_native_spawn_receipts()
+                    .map(|(started, spawn)| (*started, spawn.clone()))
+                    .collect(),
+            )
+        };
+    }
+
+    fn settled(&mut self, started: Lsn) {
+        if let Self::Captured(candidates) = self {
+            candidates.remove(&started);
+        }
+    }
+
+    fn settlement<H: ProcessHost>(
+        &self,
+        host: &H,
+        world: &dudes_supervisor::World,
+    ) -> Option<Settlement> {
+        let Self::Captured(candidates) = self else {
+            return None;
+        };
+        for (&started, captured) in candidates {
+            let Some(current) = world.managed_native_spawn_receipt(started) else {
+                continue;
+            };
+            let Some(attempt) = world.instructions.attempt(started) else {
+                continue;
+            };
+            if current.owner != captured.owner
+                || current.spawn_lsn != captured.spawn_lsn
+                || !same_key(&current.key, &captured.key)
+                || attempt.owner != captured.owner
+                || attempt.spawn_lsn != Some(captured.spawn_lsn)
+                || attempt.boundary_settled.is_some()
+                || !same_prior_run_scope(host, &captured.key, attempt.snapshot.as_ref())
+            {
+                continue;
+            }
+            let leader = match host.probe_native_leader(&captured.key) {
+                ProbeAnswer::NoSuchPid => PriorRunLeader::NoSuchProcess,
+                ProbeAnswer::StartValue(value) if value != captured.key.start_time => {
+                    PriorRunLeader::StartTimeDiffers
+                }
+                ProbeAnswer::StartValue(_) | ProbeAnswer::CouldNotAnswer => continue,
+            };
+            if host.native_group_presence(captured.key.pid) != NativeGroupPresence::Absent {
+                continue;
+            }
+            return Some(Settlement {
+                started,
+                owner: captured.owner,
+                proof: InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                    receipt: InstructionNativeBoundaryReceipt::Spawned {
+                        lsn: captured.spawn_lsn,
+                    },
+                    pid: captured.key.pid,
+                    start_time: captured.key.start_time,
+                    boot: captured.key.boot.clone(),
+                    leader,
+                },
+                acknowledgement: None,
+                launch_failure: false,
+            });
+        }
+        None
+    }
+}
+
+fn same_prior_run_scope<H: ProcessHost>(
+    host: &H,
+    key: &AdoptionKey,
+    snapshot: Option<&dudes_proto::InstructionSnapshot>,
+) -> bool {
+    if !(2..=i32::MAX as u32).contains(&key.pid) || key.start_time == 0 {
+        return false;
+    }
+    let Some(snapshot) = snapshot else {
+        return false;
+    };
+    if cfg!(target_os = "linux") {
+        let HostBoot::Read(current) = host.boot_identity() else {
+            return false;
+        };
+        key.boot.as_deref() == Some(current.as_str())
+            && snapshot.boot.as_ref()
+                == Some(&InstructionBootIdentity::LinuxKernelBootId { value: current })
+            && snapshot
+                .pid_namespace
+                .as_ref()
+                .is_some_and(|recorded| host.pid_namespace().as_ref() == Some(recorded))
+    } else if cfg!(target_os = "macos") {
+        matches!(host.boot_identity(), HostBoot::NotApplicable)
+            && key.boot.is_none()
+            && snapshot.boot.is_none()
+    } else {
+        false
+    }
+}
+
 fn owner_agent(owner: InstructionObservationOwner) -> dudes_types::AgentId {
     match owner {
         InstructionObservationOwner::Managed { agent, .. }
@@ -124,7 +245,7 @@ fn owner_agent(owner: InstructionObservationOwner) -> dudes_types::AgentId {
     }
 }
 
-fn owed_retry_observation(
+pub(super) fn owed_retry_observation(
     world: &dudes_supervisor::World,
     agent: AgentId,
     turn: Option<TurnId>,
@@ -152,20 +273,17 @@ fn owed_retry_observation(
     .then_some((started, owner))
 }
 
-fn historical_owed_observation(
+fn finished_owed_observation(
     world: &dudes_supervisor::World,
-    retry: Option<(Lsn, InstructionObservationOwner)>,
+    owner: InstructionObservationOwner,
     started: Lsn,
     attempt: &dudes_proto::instruction_state::InstructionAttempt,
 ) -> bool {
-    let Some((
-        fresh_started,
-        InstructionObservationOwner::Managed {
-            agent,
-            turn,
-            issue: dudes_proto::InstructionIssueAssociation::Issued { issue_lsn },
-        },
-    )) = retry
+    let InstructionObservationOwner::Managed {
+        agent,
+        turn,
+        issue: dudes_proto::InstructionIssueAssociation::Issued { issue_lsn },
+    } = owner
     else {
         return false;
     };
@@ -189,10 +307,57 @@ fn historical_owed_observation(
         },
         _ => false,
     };
-    started < fresh_started
-        && same_issue
-        && attempt.finished.is_some()
-        && attempt.spawn_lsn.is_none()
+    same_issue && attempt.finished.is_some() && attempt.spawn_lsn.is_none()
+}
+
+pub(super) fn historical_owed_observation(
+    world: &dudes_supervisor::World,
+    retry: Option<(Lsn, InstructionObservationOwner)>,
+    started: Lsn,
+    attempt: &dudes_proto::instruction_state::InstructionAttempt,
+) -> bool {
+    retry.is_some_and(|(fresh_started, owner)| {
+        started < fresh_started && finished_owed_observation(world, owner, started, attempt)
+    })
+}
+
+pub(super) fn original_owed_observation(
+    world: &dudes_supervisor::World,
+    binding: &dudes_proto::recovery::RecoveryBinding,
+    started: Lsn,
+    attempt: &dudes_proto::instruction_state::InstructionAttempt,
+) -> bool {
+    world.turns.get(&binding.work.turn).is_some_and(|row| {
+        row.agent == binding.work.agent
+            && row.goal == Some(binding.work.goal)
+            && row.issue_lsn == binding.issue_lsn
+            && row.is_issued_not_spawned()
+    }) && finished_owed_observation(
+        world,
+        InstructionObservationOwner::Managed {
+            agent: binding.work.agent,
+            turn: binding.work.turn,
+            issue: dudes_proto::InstructionIssueAssociation::Issued {
+                issue_lsn: binding.issue_lsn,
+            },
+        },
+        started,
+        attempt,
+    )
+}
+
+pub(super) fn missing_spawn_binding<C: Clock, R: Rng>(
+    sup: &Supervisor<C, R>,
+    agent: AgentId,
+    issued_turn: Option<TurnId>,
+) -> Option<dudes_proto::recovery::RecoveryBinding> {
+    sup.recovery_opportunity(agent)
+        .ok()
+        .filter(|view| {
+            view.required.reason == dudes_proto::recovery::RecoveryReason::MissingSpawn
+                && Some(view.required.binding.work.turn) == issued_turn
+        })
+        .map(|view| view.required.binding)
 }
 
 fn completed_owed_observation(
@@ -258,11 +423,31 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             || self.cleanup_ptys.len() > MAX_OWNED_TARGET_QUERY_ROWS
     }
 
+    pub(super) fn admit_recovery_prior_attempt<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+        issued_turn: Option<TurnId>,
+    ) -> Result<(), dudes_supervisor::SharedFolderRefusal> {
+        let owed = missing_spawn_binding(sup, agent, issued_turn);
+        self.admit_prior_attempt_for(sup, agent, issued_turn, owed.as_ref())
+    }
+
     pub(super) fn admit_prior_attempt<R: Rng>(
         &self,
         sup: &Supervisor<Shared<C>, R>,
         agent: dudes_types::AgentId,
         issued_turn: Option<TurnId>,
+    ) -> Result<(), dudes_supervisor::SharedFolderRefusal> {
+        self.admit_prior_attempt_for(sup, agent, issued_turn, None)
+    }
+
+    fn admit_prior_attempt_for<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+        issued_turn: Option<TurnId>,
+        consent: Option<&dudes_proto::recovery::RecoveryBinding>,
     ) -> Result<(), dudes_supervisor::SharedFolderRefusal> {
         let refused = || dudes_supervisor::SharedFolderRefusal::PriorAttemptUnresolved { agent };
         let world = sup.world();
@@ -323,7 +508,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .unresolved_launch_attempts(agent)
             .enumerate()
         {
-            let historical_owed = historical_owed_observation(world, owed_retry, *started, attempt);
+            let historical_owed = historical_owed_observation(world, owed_retry, *started, attempt)
+                || consent.is_some_and(|binding| {
+                    original_owed_observation(world, binding, *started, attempt)
+                });
             let completed_owed = completed_owed_observation(world, *started, attempt);
             if count == MAX_OWNED_TARGET_QUERY_ROWS
                 || (!historical_owed
@@ -460,6 +648,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .launch_failure_absence(world)
             .or_else(|| spawned_absence(&self.host, world))
             .or_else(|| prior_boot(&self.host, world))
+            .or_else(|| {
+                self.inherited_native_boundaries
+                    .settlement(&self.host, world)
+            })
             .filter(|settlement| {
                 !self
                     .native_acknowledgements
@@ -481,7 +673,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 proof: settlement.proof,
             },
         };
-        let lsn = self.append(world, &entry)?;
+        let append = self.append(world, &entry)?;
+        let lsn = append.lsn();
+        self.inherited_native_boundaries.settled(settlement.started);
         if let Some((key, receipt)) = settlement.acknowledgement {
             self.native_acknowledgements.insert(
                 settlement.started,
@@ -496,7 +690,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         if settlement.launch_failure {
             self.confirmed_launch_failures.remove(&settlement.started);
         }
-        queue.push_back(Input::InstructionJournaled { lsn, entry });
+        queue.push_back(Input::InstructionJournaled { append });
         Ok(true)
     }
 }
@@ -505,6 +699,65 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
 mod owed_retry_tests {
     use super::*;
     use dudes_supervisor::testing::Harness;
+
+    fn restart_owed_with_consent(harness: &mut Harness, agent: AgentId, turn: TurnId) {
+        let before_restart = harness.trace.len();
+        harness.restart();
+        assert!(
+            harness
+                .supervisor
+                .world()
+                .instructions
+                .current_for_turn(turn)
+                .is_none()
+        );
+        harness.drive(Input::Command(dudes_supervisor::Command::Resume {
+            agent,
+            browser: None,
+        }));
+        assert!(
+            harness
+                .supervisor
+                .world()
+                .instructions
+                .current_for_turn(turn)
+                .is_none()
+        );
+        assert!(
+            !harness.trace[before_restart..]
+                .iter()
+                .any(|seen| matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. }))
+        );
+        let opportunity = harness.supervisor.recovery_opportunity(agent).unwrap();
+        assert_eq!(
+            opportunity.required.reason,
+            dudes_proto::recovery::RecoveryReason::MissingSpawn
+        );
+        assert_eq!(opportunity.expected.work.turn, turn);
+        let request_id = dudes_proto::record::Hex32::new([194; 32]);
+        let intent = dudes_supervisor::input::RecoveryCommand {
+            request_id,
+            digest: dudes_proto::record::Hex32::new([195; 32]),
+            expected: opportunity.expected,
+            choice: dudes_supervisor::input::RecoveryChoice::RepeatIssuedFresh,
+            attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+                pid: 17,
+                uid: None,
+            },
+        };
+        let report = harness.recover(intent);
+        assert_eq!(report.recovery().unwrap().refusal, None);
+        assert_eq!(
+            harness
+                .journal
+                .iter()
+                .filter(|entry| matches!(&entry.record,
+            Record::RecoveryAuthorized(authorized) if authorized.request_id == request_id
+                && authorized.binding.work.turn == turn))
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn an_owed_retry_requires_its_distinct_fresh_unspawned_owner() {
@@ -531,7 +784,7 @@ mod owed_retry_tests {
         assert!(historical.boundary_settled.is_none());
         assert!(owed_retry_observation(harness.supervisor.world(), agent, Some(turn)).is_none());
 
-        harness.restart();
+        restart_owed_with_consent(&mut harness, agent, turn);
         let world = harness.supervisor.world();
         let (fresh, current) = world.instructions.current_for_turn(turn).unwrap();
         let issue_lsn = world.instructions.issue_lsn(turn).unwrap();
@@ -633,6 +886,7 @@ mod owed_retry_tests {
         InstructionSnapshot {
             sampled_at: dudes_types::Timestamp::UNIX_EPOCH,
             source: InstructionSnapshotSource::Fresh,
+            pid_namespace: None,
             boot: None,
             execution_folder: Some(NativeInstructionPath::Utf8 {
                 value: "/work/repo".into(),

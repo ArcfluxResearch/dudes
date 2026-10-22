@@ -49,9 +49,9 @@ function drawer({ off = [], fields = {} } = {}) {
   for (const key of ['control', 'retire', 'terminal']) if (!off.includes(key)) frame[key] = ON;
   store.applyServerFrame(JSON.stringify(frame), epoch);
   const settings = {
-    switches: { answer: false, control: true, goal: false, retire: true, terminal: !off.includes('terminal'), hire: false },
+    folder_picker: false, switches: { answer: false, control: true, goal: false, retire: true, terminal: !off.includes('terminal'), hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
-    providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 3 },
+    providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 5 },
   };
   return stage({ floor: { ...store.getFloorState(), settings } });
 }
@@ -66,7 +66,7 @@ test('Pause, Retire and Attach share one row with no paragraph between them', ()
   assert.deepEqual(labels.slice(0, 3), ['Pause', 'Retire', 'Attach']);
   const between = block.slice(block.indexOf('class="control-pause"'), block.indexOf('>Attach<'));
   assert.doesNotMatch(between, /<p\b/);
-  assert.doesNotMatch(block, /trust this workspace/);
+  assert.doesNotMatch(block, /trust this folder/);
 });
 
 test('the Attach explanation is the button’s description and tooltip, and a waiting Attach says why', () => {
@@ -110,6 +110,6 @@ test('Claude Attach opens a confirmation that carries the trust warning', () => 
     name: 'Ada', onConfirm() {}, onCancel() {},
   }));
   assert.match(view, /<dialog[^>]*data-attach-dialog/);
-  assert.match(view, /Claude Code may ask you to trust this workspace\. Check the folder before accepting in the terminal\./);
+  assert.match(view, /Claude Code may ask you to trust this folder\. Check the folder before accepting in the terminal\./);
   assert.match(view, /No, exit may be selected when the prompt opens\./);
 });

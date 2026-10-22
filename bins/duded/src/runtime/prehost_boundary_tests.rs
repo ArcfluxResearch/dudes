@@ -160,7 +160,10 @@ fn prepared(daemon: &mut TestDaemon, fixture: &common::Fixture, provider: Provid
     })]);
     for _ in 0..64 {
         let input = next_input(daemon, &mut queue);
-        daemon.sup.handle(input);
+        daemon
+            .sup
+            .handle(input, &dudes_supervisor::RecoveryOperation::empty())
+            .unwrap();
         for effect in daemon.sup.take_effects() {
             let Effect::Spawn { turn, .. } = &effect else {
                 execute(daemon, &effect, &mut queue);
@@ -226,7 +229,10 @@ fn ordinary_failure_folded(daemon: &TestDaemon, attempt: &Prepared) -> bool {
 fn failed_end(daemon: &mut TestDaemon, attempt: &Prepared, queue: &mut VecDeque<Input>) -> Effect {
     for _ in 0..64 {
         let input = next_input(daemon, queue);
-        daemon.sup.handle(input);
+        daemon
+            .sup
+            .handle(input, &dudes_supervisor::RecoveryOperation::empty())
+            .unwrap();
         let mut end = None;
         for effect in daemon.sup.take_effects() {
             if matches!(&effect,
@@ -316,7 +322,7 @@ fn persist_failed_end(
         .iter()
         .position(|input| {
             matches!(input,
-            Input::Persisted { token, lsn } if *token == end_token && *lsn == end_lsn)
+            Input::Persisted { token, append } if *token == end_token && append.lsn() == end_lsn)
         })
         .and_then(|position| queue.remove(position))
         .expect("real post-fsync acknowledgement of this exact end");
@@ -329,7 +335,10 @@ fn fold_failure(daemon: &mut TestDaemon, attempt: &Prepared, queue: &mut VecDequ
             break;
         }
         let input = next_input(daemon, queue);
-        daemon.sup.handle(input);
+        daemon
+            .sup
+            .handle(input, &dudes_supervisor::RecoveryOperation::empty())
+            .unwrap();
         for effect in daemon.sup.take_effects() {
             execute(daemon, &effect, queue);
         }
@@ -351,7 +360,10 @@ fn assert_prehost_failure(
     execute(daemon, &attempt.spawn, &mut queue);
     assert_eq!(host.spawn_calls(), 0, "preparation never calls the host");
     let (end_lsn, ack) = persist_failed_end(daemon, fixture, attempt, &mut queue);
-    daemon.sup.handle(ack);
+    daemon
+        .sup
+        .handle(ack, &dudes_supervisor::RecoveryOperation::empty())
+        .unwrap();
     let effects = daemon.sup.take_effects();
     assert!(
         effects.iter().any(|effect| matches!(effect,
@@ -515,7 +527,10 @@ fn an_actual_host_not_launched_end_does_not_become_a_no_host_call_assertion() {
         "the host itself answered NotLaunched"
     );
     let (end_lsn, ack) = persist_failed_end(&mut daemon, &fixture, &attempt, &mut queue);
-    daemon.sup.handle(ack);
+    daemon
+        .sup
+        .handle(ack, &dudes_supervisor::RecoveryOperation::empty())
+        .unwrap();
     let effects = daemon.sup.take_effects();
     assert!(
         !effects.iter().any(|effect| matches!(effect,
@@ -560,8 +575,8 @@ fn an_actual_host_not_launched_end_does_not_become_a_no_host_call_assertion() {
         .pop_front()
         .expect("actual journaled native boundary input");
     assert!(matches!(&native,
-        Input::InstructionJournaled { entry, .. }
-            if matches!(entry.record,
+        Input::InstructionJournaled { append }
+            if matches!(append.entry().record,
                 Record::InstructionAttemptBoundarySettled {
                     owner,
                     started_lsn,
@@ -569,7 +584,10 @@ fn an_actual_host_not_launched_end_does_not_become_a_no_host_call_assertion() {
                         receipt: InstructionNativeBoundaryReceipt::LaunchFailureEnded { lsn },
                     },
                 } if owner == attempt.owner && started_lsn == attempt.started && lsn == end_lsn)));
-    daemon.sup.handle(native);
+    daemon
+        .sup
+        .handle(native, &dudes_supervisor::RecoveryOperation::empty())
+        .unwrap();
     assert!(daemon.sup.take_effects().is_empty());
     assert!(queue.is_empty());
     assert_eq!(host.spawn_calls(), 1);
@@ -600,7 +618,8 @@ fn reboot_after_only_a_durable_hold_retains_uncertainty_instead_of_reconstructin
     let hold_lsn = daemon
         .ctx
         .append(daemon.sup.world(), &hold)
-        .expect("real full-fsync hold append before crash");
+        .expect("real full-fsync hold append before crash")
+        .lsn();
     assert!(hold_lsn > attempt.issue);
     assert!(
         fixture

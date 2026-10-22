@@ -3,6 +3,10 @@ use core::str::FromStr;
 use schemars::JsonSchema;
 
 use super::floor::{SessionExport, SessionImportParams, SessionImportResult};
+use super::recovery::{
+    RecoveryInspectParams, RecoveryInspectResult, RecoveryReceiptParams, RecoveryReceiptResult,
+    RecoverySubmitParams, RecoverySubmitResult,
+};
 use super::ticket::{TicketCheckoutParams, TicketCheckoutResult};
 use super::{Empty, Method, MethodShape, Methods, UnknownName};
 
@@ -18,6 +22,12 @@ pub enum CurrentMethod {
     FloorSessionExport,
     /// Admit the sign-ins an earlier run exported.
     FloorSessionImport,
+    /// Inspect one current recovery opportunity.
+    RecoveryInspect,
+    /// Submit one deliberately reviewed recovery choice.
+    RecoverySubmit,
+    /// Read the certified receipt for a retained request identity.
+    RecoveryReceipt,
 }
 
 impl CurrentMethod {
@@ -29,6 +39,9 @@ impl CurrentMethod {
             Self::TicketCheckout => "ticket.checkout",
             Self::FloorSessionExport => "floor.session.export",
             Self::FloorSessionImport => "floor.session.import",
+            Self::RecoveryInspect => "recovery.inspect",
+            Self::RecoverySubmit => "recovery.submit",
+            Self::RecoveryReceipt => "recovery.receipt",
         }
     }
 
@@ -37,7 +50,12 @@ impl CurrentMethod {
     pub const fn legacy(self) -> Option<Method> {
         match self {
             Self::Legacy(method) => Some(method),
-            Self::TicketCheckout | Self::FloorSessionExport | Self::FloorSessionImport => None,
+            Self::TicketCheckout
+            | Self::FloorSessionExport
+            | Self::FloorSessionImport
+            | Self::RecoveryInspect
+            | Self::RecoverySubmit
+            | Self::RecoveryReceipt => None,
         }
     }
 }
@@ -56,6 +74,9 @@ impl FromStr for CurrentMethod {
             Self::TicketCheckout,
             Self::FloorSessionExport,
             Self::FloorSessionImport,
+            Self::RecoveryInspect,
+            Self::RecoverySubmit,
+            Self::RecoveryReceipt,
         ]
         .into_iter()
         .find(|method| method.name() == text)
@@ -85,6 +106,15 @@ pub struct CurrentMethods {
     /// The operator's admission of sign-ins an earlier run exported.
     #[serde(rename = "floor.session.import")]
     pub floor_session_import: MethodShape<SessionImportParams, SessionImportResult>,
+    /// The operator's inert recovery inspection.
+    #[serde(rename = "recovery.inspect")]
+    pub recovery_inspect: MethodShape<RecoveryInspectParams, RecoveryInspectResult>,
+    /// The operator's deliberate recovery submission.
+    #[serde(rename = "recovery.submit")]
+    pub recovery_submit: MethodShape<RecoverySubmitParams, RecoverySubmitResult>,
+    /// The operator's inert historical receipt read.
+    #[serde(rename = "recovery.receipt")]
+    pub recovery_receipt: MethodShape<RecoveryReceiptParams, RecoveryReceiptResult>,
 }
 
 #[cfg(test)]
@@ -97,6 +127,9 @@ mod tests {
             CurrentMethod::TicketCheckout,
             CurrentMethod::FloorSessionExport,
             CurrentMethod::FloorSessionImport,
+            CurrentMethod::RecoveryInspect,
+            CurrentMethod::RecoverySubmit,
+            CurrentMethod::RecoveryReceipt,
         ] {
             assert_eq!(method.name().parse::<CurrentMethod>(), Ok(method));
             assert_eq!(method.legacy(), None);
@@ -106,5 +139,10 @@ mod tests {
             Ok(CurrentMethod::Legacy(Method::FloorSessionIssue))
         );
         assert!("floor.session.exports".parse::<CurrentMethod>().is_err());
+        for name in ["recovery.inspect", "recovery.submit", "recovery.receipt"] {
+            assert!(name.parse::<Method>().is_err());
+            assert!(!Method::ALL.iter().any(|method| method.name() == name));
+        }
+        assert!("recovery.submit.extra".parse::<CurrentMethod>().is_err());
     }
 }

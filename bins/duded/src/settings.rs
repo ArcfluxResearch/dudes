@@ -39,9 +39,27 @@ pub struct RunOptions {
     chat_key_ignored: bool,
     providers: crate::config::ProviderTables,
     mcp_servers: dudes_providers::mcp::DeclaredServers,
+    daemon_pid: Option<u32>,
+    #[cfg(feature = "fault-injection")]
+    recovery_stop: Option<crate::fault::RecoveryStop>,
 }
 
 impl RunOptions {
+    /// Retain a native recovery stop in an explicitly instrumented build.
+    #[cfg(feature = "fault-injection")]
+    #[must_use]
+    pub fn with_recovery_stop(mut self, stop: Option<crate::fault::RecoveryStop>) -> Self {
+        self.recovery_stop = stop;
+        self
+    }
+
+    /// Native recovery stop selected before boot, absent in ordinary builds.
+    #[cfg(feature = "fault-injection")]
+    #[must_use]
+    pub const fn recovery_stop(&self) -> Option<&crate::fault::RecoveryStop> {
+        self.recovery_stop.as_ref()
+    }
+
     /// Record that the operator file still carries a `[floor.chat]` table, which the daemon
     /// ignores because Chat is always on.
     #[must_use]
@@ -70,6 +88,18 @@ impl RunOptions {
 
     pub(crate) fn mcp_servers(&self) -> &dudes_providers::mcp::DeclaredServers {
         &self.mcp_servers
+    }
+
+    /// Name the daemon's own process, so the Floor refuses a connection held by anything that
+    /// descends from it. Left unset by a test that runs the daemon and its client in one process.
+    #[must_use]
+    pub const fn with_daemon_pid(mut self, pid: Option<u32>) -> Self {
+        self.daemon_pid = pid;
+        self
+    }
+
+    pub(crate) const fn daemon_pid(&self) -> Option<u32> {
+        self.daemon_pid
     }
 
     /// Whether the operator file carried a `[floor.chat]` table this run ignores.
@@ -225,6 +255,19 @@ pub struct FloorSettings {
     pub port: Option<u16>,
 }
 
+/// How long an engine sign-in may run before the daemon ends it.
+pub const ENGINE_LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// What the Floor's engine sign-in is built from. Sign-ins have no agent, so they do not share the
+/// agents' terminal host: each daemon run makes one of its own, through the same port.
+#[derive(Clone, Copy, Debug)]
+pub struct EngineLogin {
+    /// Makes the terminal host the sign-ins own.
+    pub host: fn() -> Box<dyn crate::ports::PtyHostPort>,
+    /// How long one sign-in may run.
+    pub timeout: Duration,
+}
+
 /// Everything a daemon run needs that is not a seam.
 #[derive(Clone, Debug)]
 #[expect(
@@ -259,6 +302,8 @@ pub struct Settings {
     /// `[floor.control]`, `[floor.goal]`, `[floor.retire]` and `[floor.renew]`: which of the
     /// Floor's loop-control routes and snapshot siblings exist.
     pub floor_control: FloorControl,
+    /// [`crate::config::OperatorConfig::recovery_enabled`].
+    pub floor_recovery_enabled: bool,
     /// [`crate::config::OperatorConfig::board_enabled`].
     pub floor_board_enabled: bool,
     /// [`crate::config::OperatorConfig::terminal_enabled`].
@@ -267,6 +312,11 @@ pub struct Settings {
     pub floor_git_enabled: bool,
     /// [`crate::config::OperatorConfig::diff_enabled`].
     pub floor_diff_enabled: bool,
+    /// [`crate::config::OperatorConfig::project_enabled`].
+    pub floor_project_enabled: bool,
+    /// Where the Floor's engine sign-in gets its terminal. `None` leaves every sign-in refused as
+    /// unavailable.
+    pub engine_login: Option<EngineLogin>,
     /// [`crate::config::OperatorConfig::condense_model_enabled`].
     pub condense_model_enabled: bool,
     /// [`crate::config::OperatorConfig::condense_model`].
@@ -287,6 +337,8 @@ pub struct Settings {
     pub git_checkout_deadline: Duration,
     /// The accept loop's cap.
     pub max_connections: NonZeroUsize,
+    /// How long a hook waits for the loop's answer before a control event is denied.
+    pub hook_reply_timeout: Duration,
     /// The beat.
     pub beat: Duration,
     /// The optional static Floor shell. Absence means no TCP listener.
@@ -423,7 +475,7 @@ pub struct Seams<H: ProcessHost, P: PredicateRunner, C: Clock, R: Rng> {
     pub witness: Witness,
 }
 
-/// Which of the Floor's control actions the operator enabled, fixed for the run. `[floor.control]`
+/// Which of the Floor's control actions the operator enabled, as of the last applied reload. `[floor.control]`
 /// enables pause and resume, and also the display rename, which is not a
 /// loop-control action and needs nothing from pause. Goal change and retirement exist only beside
 /// pause and resume: Pause opens the window a change needs on a busy agent, and it

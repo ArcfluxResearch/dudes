@@ -5,8 +5,8 @@
 // it finds that provider's program on its own PATH, and where its state lives.
 //
 // The sibling is display metadata. It grants nothing, and the page offers no
-// install, sign-in or edit control: an install command is text the operator
-// copies and runs. So this reader fails closed. Anything absent or malformed
+// install or edit control: an install command is text the operator copies and
+// runs. So this reader fails closed. Anything absent or malformed
 // reads as "not reported", and it never closes the stream.
 
 /** The provider wire names, in the daemon's order. */
@@ -16,13 +16,18 @@ export const PROVIDERS = Object.freeze([
 
 export type ProviderName = (typeof PROVIDERS)[number];
 
-/** One provider's row: the program the daemon looks for, and the file it found, if any. */
+/** What the engine's own status command said: signed in, signed out, or nothing the daemon can use. */
+export type SignInState = 'signed_in' | 'signed_out' | 'unknown';
+
+/** One provider's row: the program the daemon looks for, the file it found, if any, and whether it is signed in. */
 export interface ProviderRow {
   readonly provider: ProviderName;
   readonly program: string | null;
   readonly found: boolean;
   readonly path: string | null;
   readonly detail: string | null;
+  /** `null` when the daemon did not say, which is not the same as `unknown`. */
+  readonly signIn: SignInState | null;
 }
 
 export interface DaemonReport {
@@ -45,7 +50,8 @@ const MAX_DETAIL_BYTES = 2_048;
 const CONTROL = /\p{Cc}/u;
 const UTF8 = new TextEncoder();
 const REPORT_KEYS = Object.freeze(['state_dir', 'providers']);
-const ROW_KEYS = Object.freeze(['provider', 'program', 'found', 'path', 'detail']);
+const ROW_KEYS = Object.freeze(['provider', 'program', 'found', 'path', 'detail', 'sign_in']);
+const SIGN_IN_STATES: readonly SignInState[] = Object.freeze(['signed_in', 'signed_out', 'unknown']);
 
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -69,11 +75,13 @@ function row(value: unknown): ProviderRow | null {
   const program = text(value.program, MAX_PROGRAM_BYTES);
   const path = text(value.path, MAX_PATH_BYTES);
   const detail = text(value.detail, MAX_DETAIL_BYTES);
+  const signIn = value.sign_in === undefined ? null : SIGN_IN_STATES.find((state) => state === value.sign_in);
+  if (signIn === undefined || (!value.found && signIn !== null)) return null;
   if (provider === undefined || typeof value.found !== 'boolean' || program === undefined || path === undefined
     || detail === undefined || (!value.found && path !== null) || (value.found && detail !== null)) {
     return null;
   }
-  return Object.freeze({ provider, program, found: value.found, path, detail });
+  return Object.freeze({ provider, program, found: value.found, path, detail, signIn });
 }
 
 /**

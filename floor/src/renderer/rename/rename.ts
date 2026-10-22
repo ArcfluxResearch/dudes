@@ -27,14 +27,14 @@ export interface RenameState {
 }
 export interface RenameDeps {
   fetch(url: string, init: RequestInit): Promise<{ readonly status: number; text(): Promise<string> }>;
-  csrf(): string | null;
+  signedIn(): boolean;
   random(bytes: Uint8Array<ArrayBuffer>): void;
   session(): number;
   refresh(): void;
 }
 export const browserRenameDeps: RenameDeps = {
   fetch: floorFetch,
-  csrf: () => currentFloorSession()?.csrf ?? null,
+  signedIn: () => currentFloorSession() !== null,
   random: (bytes) => { crypto.getRandomValues(bytes); },
   session: floorSessionGeneration,
   refresh: refreshFloorSnapshot,
@@ -82,28 +82,26 @@ export function cancelRename(): void { commit({ ...state, editor: null, draft: '
 export async function submitRename(row: AgentRow, deps: RenameDeps): Promise<void> {
   if (!renameAvailable(getFloorState(), row) || renameBlocked(state, deps.session())
     || nameProblem(state.draft) !== null) return;
-  const csrf = deps.csrf();
-  if (csrf === null) return;
+  if (!deps.signedIn()) return;
   const payload = Object.freeze({ request_id: mintAttemptId(deps.random), agent: row.id,
     name: trimAsciiSpace(state.draft) });
   const attempt = Object.freeze({ payload, body: JSON.stringify(payload) });
   commit({ ...state, attempt, sending: true, outcome: null, uncertain: false, refusedUnder: null });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
 export async function checkRename(deps: RenameDeps): Promise<void> {
   const { attempt, outcome, sending } = state;
   if (attempt === null || sending || outcome === 'changed' || outcome === 'conflict' || outcome === 'refused') return;
-  const csrf = deps.csrf();
-  if (csrf === null) return;
+  if (!deps.signedIn()) return;
   commit({ ...state, sending: true });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
-async function send(attempt: RenameAttempt, csrf: string, deps: RenameDeps): Promise<void> {
+async function send(attempt: RenameAttempt, deps: RenameDeps): Promise<void> {
   let outcome: RenameOutcome;
   try {
     const response = await deps.fetch('/floor/rename', {
       method: 'POST', credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf }, body: attempt.body,
+      headers: { 'Content-Type': 'application/json' }, body: attempt.body,
     });
     outcome = decodeRenameResponse(response.status, await response.text(), attempt.payload);
   } catch { outcome = 'unknown'; }

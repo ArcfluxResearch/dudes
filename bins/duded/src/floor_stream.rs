@@ -1,6 +1,6 @@
 //! Run-local publication state for the authenticated browser Floor stream.
 //!
-//! Browser-wire-v3 carries the projection stream and one read-only selected Managed output view.
+//! Browser-wire-v4 carries the projection stream and one read-only selected Managed output view.
 //! The projection payloads remain the shared [`FloorProjection`] and [`FloorDelta`] value shapes.
 
 use std::borrow::Cow;
@@ -28,6 +28,7 @@ use crate::floor_terminal::TerminalView;
 use crate::floor_websocket::{MAX_MESSAGE_BYTES, text_frame, text_payload};
 use crate::output::{Loss, OutputRegistry, OutputSnapshot, OutputState, ReplyLoss, Unavailable};
 use crate::provider_check::ProviderCheck;
+use crate::sign_in::SignInCheck;
 
 /// Accepted maximum queued messages on one Floor stream.
 pub const MAX_QUEUE_MESSAGES: usize = 256;
@@ -38,13 +39,14 @@ const LIVE: u8 = 0;
 const OVERFLOWED: u8 = 1;
 const ENDED: u8 = 2;
 
-const CLIENT_TYPES: [&str; 4] = [
+const CLIENT_TYPES: [&str; 5] = [
     "floor.subscribe",
+    "floor.visibility",
     "floor.unsubscribe",
     "floor.output.select",
     "floor.output.clear",
 ];
-const SERVER_TYPES: [&str; 11] = [
+const SERVER_TYPES: [&str; 14] = [
     "floor.snapshot",
     "floor.delta",
     "floor.resync",
@@ -56,6 +58,9 @@ const SERVER_TYPES: [&str; 11] = [
     "floor.output.unavailable",
     "floor.output.ended",
     "floor.output.reply",
+    "floor.device.enrolled",
+    "floor.device.acknowledged",
+    "floor.device.removed",
 ];
 
 #[derive(Serialize)]
@@ -144,6 +149,9 @@ pub(crate) enum ClientMessage {
     /// Begin one stream and receive its snapshot.
     #[serde(rename = "floor.subscribe")]
     Subscribe {},
+    /// Say whether the page is on screen, so a tab the person is watching counts as in use.
+    #[serde(rename = "floor.visibility")]
+    Visibility { visible: bool },
     /// End the stream.
     #[serde(rename = "floor.unsubscribe")]
     Unsubscribe {},
@@ -189,13 +197,13 @@ pub(crate) fn decode_object<T: DeserializeOwned>(text: &str) -> Result<T> {
     serde_json::from_str::<T>(text).context("decoding a finite Floor client message")
 }
 
-/// Whether a server discriminator belongs to browser-wire-v3's accepted set.
+/// Whether a server discriminator belongs to browser-wire-v5's accepted set.
 #[must_use]
 pub fn server_type_is_listed(value: &str) -> bool {
     SERVER_TYPES.contains(&value)
 }
 
-/// Whether a client discriminator belongs to browser-wire-v3's accepted set.
+/// Whether a client discriminator belongs to browser-wire-v5's accepted set.
 #[must_use]
 pub fn client_type_is_listed(value: &str) -> bool {
     CLIENT_TYPES.contains(&value)
@@ -232,6 +240,8 @@ pub(crate) struct Siblings<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) control: Option<&'a ControlView>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) recovery: Option<dudes_proto::rpc::floor::RecoveryView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) goal: Option<&'a GoalView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) retire: Option<&'a RetireView>,
@@ -257,6 +267,7 @@ impl Siblings<'_> {
             && self.answer.is_none()
             && self.chat.is_none()
             && self.control.is_none()
+            && self.recovery.is_none()
             && self.goal.is_none()
             && self.retire.is_none()
             && self.terminal.is_none()
@@ -311,6 +322,8 @@ struct Inner {
     fault: FloorStreamFault,
     /// The `daemon` sibling's source, joined on the connection thread.
     daemon: Option<ProviderCheck>,
+    /// Whether each engine in the `daemon` sibling is signed in.
+    sign_in: Option<SignInCheck>,
     /// Woken by [`end_locked`], so a heartbeat thread parked between beats leaves at once rather
     /// than at its next tick. The `Weak` it also holds covers the other way a registry stops —
     /// being dropped with nobody calling `end` — but that one cannot be signalled, only noticed.
@@ -448,16 +461,18 @@ impl FloorStreams {
         fault: FloorStreamFault,
         output: Arc<OutputRegistry>,
         daemon: ProviderCheck,
+        sign_in: SignInCheck,
     ) -> Result<Self> {
-        Self::build(initial, fault, output, Some(daemon))
+        Self::build(initial, fault, output, Some((daemon, sign_in)))
     }
 
     fn build(
         initial: AgentSnapshot,
         fault: FloorStreamFault,
         output: Arc<OutputRegistry>,
-        daemon: Option<ProviderCheck>,
+        daemon: Option<(ProviderCheck, SignInCheck)>,
     ) -> Result<Self> {
+        let (daemon, sign_in) = daemon.unzip();
         let snapshot = serialize_snapshot(&initial)?;
         Ok(Self(Arc::new(Inner {
             state: Mutex::new(State {
@@ -473,6 +488,7 @@ impl FloorStreams {
             output,
             fault,
             daemon,
+            sign_in,
             ended: Condvar::new(),
         })))
     }
@@ -736,6 +752,7 @@ impl FloorStreams {
                 checks: siblings.checks,
                 answer: siblings.answer,
                 control: siblings.control,
+                recovery: siblings.recovery,
                 goal: siblings.goal,
                 retire: siblings.retire,
                 terminal: siblings.terminal,
@@ -830,16 +847,35 @@ impl FloorStreams {
         {
             opened.snapshot = joined;
         }
+        let busy = self.busy_providers();
         if let Some(joined) = self
             .0
             .daemon
             .as_ref()
-            .and_then(ProviderCheck::sibling)
+            .and_then(|daemon| daemon.sibling(self.0.sign_in.as_ref(), &busy))
             .and_then(|daemon| with_sibling(&opened.snapshot, "daemon", &daemon))
         {
             opened.snapshot = joined;
         }
         Ok(opened)
+    }
+
+    /// The engines with an agent whose turn is running or whose keyboard a person holds, so a
+    /// status command stays away from their credentials.
+    fn busy_providers(&self) -> std::collections::BTreeSet<dudes_types::Provider> {
+        let state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state
+            .current
+            .agents
+            .iter()
+            .filter(|agent| {
+                matches!(
+                    agent.status,
+                    dudes_types::AgentStatus::Running | dudes_types::AgentStatus::Attached
+                )
+            })
+            .map(|agent| agent.provider)
+            .collect()
     }
 
     fn join_settings(
@@ -1199,6 +1235,32 @@ impl FloorStreams {
             handle: Some(handle),
             alive,
             inner,
+        }
+    }
+
+    /// Tell every open stream that a device signed in, was kept, or ended. The change is already
+    /// durable; a page that is not subscribed learns it from the device list.
+    pub(crate) fn publish_device_event(&self, event: &crate::floor_session::DeviceEvent) {
+        use crate::floor_session::DeviceEvent;
+        let frame = match event {
+            DeviceEvent::Enrolled { device, name, at } => serde_json::json!({
+                "type": "floor.device.enrolled",
+                "device": device,
+                "name": name,
+                "at": at,
+            }),
+            DeviceEvent::Acknowledged { device } => serde_json::json!({
+                "type": "floor.device.acknowledged",
+                "device": device,
+            }),
+            DeviceEvent::Removed { device, reason } => serde_json::json!({
+                "type": "floor.device.removed",
+                "device": device,
+                "reason": reason,
+            }),
+        };
+        if let Ok(bytes) = serialize_frame(&frame) {
+            broadcast_frame(&self.0, &Arc::from(bytes));
         }
     }
 
@@ -1645,11 +1707,23 @@ fn broadcast(inner: &Inner, kind: &'static str) -> usize {
         end_locked(&mut state, &inner.ended);
         return 0;
     };
-    let frame = Arc::<[u8]>::from(frame);
+    deliver(&mut state, &Arc::<[u8]>::from(frame))
+}
+
+/// Enqueue one prebuilt frame to every live subscriber, and count who got it.
+fn broadcast_frame(inner: &Inner, frame: &Arc<[u8]>) -> usize {
+    let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+    if state.ended {
+        return 0;
+    }
+    deliver(&mut state, frame)
+}
+
+fn deliver(state: &mut State, frame: &Arc<[u8]>) -> usize {
     let mut reached = 0;
     state.subscriptions.retain(|subscriber| {
         subscriber.upgrade().is_some_and(|queue| {
-            let sent = queue.enqueue(Arc::clone(&frame));
+            let sent = queue.enqueue(Arc::clone(frame));
             reached += usize::from(sent);
             sent
         })
@@ -3992,6 +4066,194 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_ticket_turn_reaches_the_floor_and_a_later_success_replaces_it() {
+        use dudes_proto::record::samples;
+        use dudes_proto::{ExitStatus, Record, RecordKind, TicketTurnEnd};
+
+        let mut projected = dudes_journal::Projections::in_memory().unwrap();
+        let mut lsn = 0_u64;
+        let mut apply = |projected: &mut dudes_journal::Projections, record| {
+            lsn += 1;
+            let at = Timestamp::from_unix_millis(i64::try_from(lsn).unwrap() * 1_000);
+            projected
+                .apply(Lsn(lsn), 0, &dudes_proto::Entry { at, record })
+                .unwrap();
+            at
+        };
+        for kind in [
+            RecordKind::AgentHired,
+            RecordKind::TicketCreated,
+            RecordKind::TicketAssigned,
+            RecordKind::TicketStarted,
+            RecordKind::TurnIssued,
+        ] {
+            apply(&mut projected, samples::record(kind));
+        }
+        let mut ended = samples::record(RecordKind::TurnEnded);
+        let failed = ExitStatus {
+            code: Some(1),
+            signal: None,
+        };
+        if let Record::TurnEnded { exit, .. } = &mut ended {
+            *exit = failed;
+        }
+        let at = apply(&mut projected, ended);
+        let before = crate::floor::snapshot(&mut projected, at).unwrap();
+        let expected = Some(TicketTurnEnd { exit: failed, at });
+        assert_eq!(
+            before.cards[0].ticket.as_ref().unwrap().last_turn_end,
+            expected
+        );
+        let frame = serialize_snapshot(&before).unwrap();
+        let wire: Value = serde_json::from_slice(text_payload(&frame).unwrap()).unwrap();
+        assert_eq!(
+            wire["projection"]["cards"][0]["ticket"]["last_turn_end"],
+            serde_json::json!({"exit": {"code": 1}, "at": 6_000})
+        );
+
+        let next = TurnId::from_parts(9, 2);
+        let mut issue = samples::record(RecordKind::TurnIssued);
+        if let Record::TurnIssued { turn, .. } = &mut issue {
+            *turn = next;
+        }
+        apply(&mut projected, issue);
+        assert_eq!(
+            crate::floor::cards(&projected).unwrap()[0]
+                .ticket
+                .as_ref()
+                .unwrap()
+                .last_turn_end,
+            expected
+        );
+        let mut ended = samples::record(RecordKind::TurnEnded);
+        if let Record::TurnEnded { turn, exit, .. } = &mut ended {
+            *turn = next;
+            *exit = ExitStatus {
+                code: Some(0),
+                signal: None,
+            };
+        }
+        let at = apply(&mut projected, ended);
+        let after = crate::floor::snapshot(&mut projected, at).unwrap();
+        let success = after.cards[0]
+            .ticket
+            .as_ref()
+            .unwrap()
+            .last_turn_end
+            .unwrap();
+        assert_eq!(success.exit.code, Some(0));
+        assert_eq!(success.at, at);
+        assert_eq!(delta(&before, &after).cards.len(), 1);
+
+        let unrelated = TurnId::from_parts(9, 3);
+        let mut issue = samples::record(RecordKind::TurnIssued);
+        if let Record::TurnIssued { turn, goal, .. } = &mut issue {
+            *turn = unrelated;
+            *goal = dudes_types::GoalId::from_parts(8, 99);
+        }
+        apply(&mut projected, issue);
+        let mut ended = samples::record(RecordKind::TurnEnded);
+        if let Record::TurnEnded { turn, exit, .. } = &mut ended {
+            *turn = unrelated;
+            *exit = failed;
+        }
+        apply(&mut projected, ended);
+        assert_eq!(
+            crate::floor::cards(&projected).unwrap()[0]
+                .ticket
+                .as_ref()
+                .unwrap()
+                .last_turn_end,
+            Some(success)
+        );
+    }
+
+    #[test]
+    fn a_ticket_snapshot_keeps_its_bound_goal_after_the_agent_starts_a_replacement() {
+        use dudes_proto::record::samples;
+        use dudes_proto::{Actor, Record, RecordKind, TicketReason};
+        use dudes_types::{CardStatus, GoalId};
+
+        let mut projected = dudes_journal::Projections::in_memory().unwrap();
+        let mut lsn = 0_u64;
+        let mut apply = |projected: &mut dudes_journal::Projections, record| {
+            lsn += 1;
+            projected
+                .apply(
+                    Lsn(lsn),
+                    0,
+                    &dudes_proto::Entry {
+                        at: Timestamp::UNIX_EPOCH,
+                        record,
+                    },
+                )
+                .unwrap();
+        };
+        for kind in [
+            RecordKind::AgentHired,
+            RecordKind::TicketCreated,
+            RecordKind::TicketAssigned,
+            RecordKind::TicketStarted,
+            RecordKind::TurnIssued,
+        ] {
+            apply(&mut projected, samples::record(kind));
+        }
+        let card = projected.cards().unwrap().remove(0);
+        apply(
+            &mut projected,
+            Record::CardTransition {
+                card: card.id,
+                from: card.status,
+                to: CardStatus::Blocked,
+                by: Actor::System,
+                expected_seq: card.seq,
+                reason: Some(TicketReason::RecoveryRequired),
+            },
+        );
+        let before = crate::floor::snapshot(&mut projected, Timestamp::UNIX_EPOCH).unwrap();
+        let original = before.agents[0].goal.as_ref().unwrap().id;
+        assert_eq!(
+            before.cards[0].ticket.as_ref().unwrap().goal,
+            Some(original)
+        );
+        assert_eq!(
+            projected.cards().unwrap()[0].ticket.as_ref().unwrap().goal,
+            Some(original)
+        );
+
+        let replacement = GoalId::from_parts(8, 99);
+        let mut changed = samples::record(RecordKind::GoalSet);
+        if let Record::GoalSet { goal, .. } = &mut changed {
+            goal.id = replacement;
+        }
+        apply(&mut projected, changed);
+        let mut issued = samples::record(RecordKind::TurnIssued);
+        if let Record::TurnIssued { goal, turn, .. } = &mut issued {
+            *goal = replacement;
+            *turn = TurnId::from_parts(9, 99);
+        }
+        apply(&mut projected, issued);
+        let after = crate::floor::snapshot(&mut projected, Timestamp::UNIX_EPOCH).unwrap();
+        assert_eq!(after.agents[0].goal.as_ref().unwrap().id, replacement);
+        assert_eq!(after.cards[0].claimed_by, Some(after.agents[0].id));
+        assert_eq!(after.cards[0].ticket.as_ref().unwrap().goal, Some(original));
+        assert_eq!(
+            after.cards[0].ticket.as_ref().unwrap().reason,
+            Some(TicketReason::RecoveryRequired)
+        );
+        let frame = serialize_snapshot(&after).unwrap();
+        let wire: Value = serde_json::from_slice(text_payload(&frame).unwrap()).unwrap();
+        assert_eq!(
+            wire["projection"]["cards"][0]["ticket"]["goal"],
+            original.to_string()
+        );
+        assert_eq!(
+            wire["projection"]["agents"][0]["goal"]["id"],
+            replacement.to_string()
+        );
+    }
+
+    #[test]
     fn card_records_reach_the_snapshot_and_changed_card_delta() {
         let mut projected = dudes_journal::Projections::in_memory().unwrap();
         let card = dudes_types::CardId::from_parts(1, 9);
@@ -4401,6 +4663,17 @@ mod tests {
             decode_client(r#"{"type":"floor.unsubscribe"}"#).unwrap(),
             ClientMessage::Unsubscribe {}
         );
+        assert_eq!(
+            decode_client(r#"{"type":"floor.visibility","visible":false}"#).unwrap(),
+            ClientMessage::Visibility { visible: false }
+        );
+        for invalid in [
+            r#"{"type":"floor.visibility"}"#,
+            r#"{"type":"floor.visibility","visible":"yes"}"#,
+            r#"{"type":"floor.visibility","visible":true,"extra":1}"#,
+        ] {
+            assert!(decode_client(invalid).is_err(), "admitted {invalid}");
+        }
         assert!(decode_client(r#"{"type":"floor.write"}"#).is_err());
         assert!(decode_client(r#"{"type":"floor.subscribe","extra":true}"#).is_err());
         assert!(decode_client(&format!("{}{}", "[".repeat(17), "]".repeat(17))).is_err());

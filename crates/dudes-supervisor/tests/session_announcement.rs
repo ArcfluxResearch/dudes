@@ -15,8 +15,11 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use dudes_proto::goal::Evidence;
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{ExitStatus, Record, TurnOutcome};
 use dudes_providers::launch::LaunchSpec;
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand, RecoveryRefusal};
 use dudes_supervisor::testing::{Harness, Seen};
 use dudes_supervisor::{AdoptionKey, Command, Input, Liveness};
 use dudes_types::{AgentId, GoalId, SessionId, TurnId};
@@ -162,8 +165,46 @@ fn assert_spawn_then_confirmation(harness: &Harness, turn: TurnId, session: &Ses
     ));
 }
 
-/// End the open turn with a failing predicate, so the loop decides again and issues the next one.
-fn next_turn(harness: &mut Harness, agent: AgentId, goal: GoalId, open: TurnId) -> TurnId {
+fn consent(
+    harness: &mut Harness,
+    agent: AgentId,
+    source: TurnId,
+    choice: RecoveryChoice,
+    request: u8,
+) {
+    let launches = announced_so_far(harness);
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert_eq!(
+        announced_so_far(harness),
+        launches,
+        "ordinary Resume waits for consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .expect("the interrupted boundary offers recovery")
+        .expected;
+    assert_eq!(expected.work.turn, source);
+    let request_id = Hex32::new([request; 32]);
+    let handled = harness.recover(RecoveryCommand {
+        request_id,
+        digest: Hex32::new([request + 1; 32]),
+        expected,
+        choice,
+        attribution: RecoveryAttribution::LocalOperator {
+            pid: 7,
+            uid: Some(42),
+        },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.records().any(|record| matches!(record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == request_id)));
+}
+
+fn end_and_check(harness: &mut Harness, goal: GoalId, open: TurnId) {
     harness.drive(Input::ChildExited {
         final_reply: None,
         elapsed_ms: None,
@@ -187,6 +228,10 @@ fn next_turn(harness: &mut Harness, agent: AgentId, goal: GoalId, open: TurnId) 
             output_tail: String::new(),
         },
     });
+}
+
+fn next_turn(harness: &mut Harness, agent: AgentId, goal: GoalId, open: TurnId) -> TurnId {
+    end_and_check(harness, goal, open);
     let next = harness
         .open_turn(agent)
         .expect("the loop issued another turn");
@@ -194,17 +239,26 @@ fn next_turn(harness: &mut Harness, agent: AgentId, goal: GoalId, open: TurnId) 
     next
 }
 
-/// **Re-issue announces a fresh id.** A turn whose `TurnIssued` is fsynced but whose process never
-/// started is re-issued by replay — and the re-issue announces a **freshly minted** id, not the
-/// one `TurnIssued` recorded. Minting an id and announcing it is not the vendor confirming it, so
-/// there is nothing to resume; resuming the recorded id is what interleaved a live orphan's
-/// transcript in one branch and failed every turn until the hop cap in the other.
-///
-/// `TurnSpawned` then records the id the turn was **launched** on, not the one the projection
-/// held — otherwise the journal names a session the child never ran in.
-///
-/// Invariant 2 is untouched and asserted alongside: the rule changes what a re-issue announces,
-/// never how many spawns it produces.
+fn fresh_after_unconfirmed(
+    harness: &mut Harness,
+    agent: AgentId,
+    goal: GoalId,
+    open: TurnId,
+) -> TurnId {
+    end_and_check(harness, goal, open);
+    assert_eq!(
+        harness.open_turn(agent),
+        None,
+        "the ended attempt waits for consent"
+    );
+    consent(harness, agent, open, RecoveryChoice::FreshWithRecap, 53);
+    let next = harness
+        .open_turn(agent)
+        .expect("fresh consent admits the next turn");
+    assert_ne!(next, open);
+    next
+}
+
 #[test]
 fn a_reissued_first_turn_mints_a_fresh_id() {
     let mut harness = Harness::new();
@@ -224,11 +278,22 @@ fn a_reissued_first_turn_mints_a_fresh_id() {
     harness.trace.clear();
     harness.launch = true;
     harness.restart();
+    assert!(
+        harness.spawns_of(turn).is_empty(),
+        "restart waits for consent"
+    );
+    consent(
+        &mut harness,
+        agent,
+        turn,
+        RecoveryChoice::RepeatIssuedFresh,
+        51,
+    );
 
     assert_eq!(
         harness.spawns_of(turn).len(),
         1,
-        "invariant 2 is unchanged: replay re-issues exactly once"
+        "one exact consent repeats the owed issue once"
     );
     let Announced::Mint(fresh) = announcement(&harness, turn) else {
         panic!("a session the vendor never named is never resumed")
@@ -361,6 +426,17 @@ fn a_reissued_turn_on_a_confirmed_session_mints_and_invalidates() {
     harness.trace.clear();
     harness.launch = true;
     harness.restart();
+    assert!(
+        harness.spawns_of(second).is_empty(),
+        "restart waits for consent"
+    );
+    consent(
+        &mut harness,
+        agent,
+        second,
+        RecoveryChoice::RepeatIssuedFresh,
+        51,
+    );
 
     let Announced::Mint(fresh) = announcement(&harness, second) else {
         panic!("a re-issue always starts a fresh session")
@@ -396,6 +472,17 @@ fn a_turn_after_an_unconfirmed_reissue_does_not_resume_the_old_session() {
     harness.trace.clear();
     harness.launch = true;
     harness.restart();
+    assert!(
+        harness.spawns_of(reissued).is_empty(),
+        "restart waits for consent"
+    );
+    consent(
+        &mut harness,
+        agent,
+        reissued,
+        RecoveryChoice::RepeatIssuedFresh,
+        51,
+    );
 
     let next = next_turn(&mut harness, agent, goal, reissued);
     let Announced::Mint(_) = announcement(&harness, next) else {
@@ -419,7 +506,7 @@ fn an_invalidated_session_announces_first() {
         announcement(&harness, resumed),
         Announced::Resume(confirmed.as_str().to_owned())
     );
-    let next = next_turn(&mut harness, agent, goal, resumed);
+    let next = fresh_after_unconfirmed(&mut harness, agent, goal, resumed);
     assert!(matches!(announcement(&harness, next), Announced::Mint(_)));
 }
 
@@ -489,6 +576,26 @@ fn a_vanished_or_killed_turn_does_not_invalidate() {
     }
 }
 
+fn assert_first_turn_accepts_assigned_session() {
+    let mut first_turn = Harness::new();
+    let (first_agent, _) = first_turn.hire_with_goal(&["npm", "test"]);
+    let first = first_turn
+        .open_turn(first_agent)
+        .expect("a turn was issued");
+    let assigned = SessionId::new("vendor-assigned-first-id");
+    first_turn.drive(Input::SessionLearned {
+        turn: first,
+        session: assigned.clone(),
+    });
+    assert_eq!(
+        first_turn.supervisor.world().agents[&first_agent]
+            .session
+            .as_ref(),
+        Some(&assigned),
+        "a first turn may bind the id the vendor assigned"
+    );
+}
+
 #[test]
 fn a_resume_confirmed_as_another_id_invalidates_and_does_not_rebind() {
     let mut mismatch = Harness::new();
@@ -510,26 +617,10 @@ fn a_resume_confirmed_as_another_id_invalidates_and_does_not_rebind() {
         record,
         Record::SessionLearned { session, .. } if session == &other
     )));
-    let next = next_turn(&mut mismatch, agent, goal, resumed);
+    let next = fresh_after_unconfirmed(&mut mismatch, agent, goal, resumed);
     assert!(matches!(announcement(&mismatch, next), Announced::Mint(_)));
 
-    let mut first_turn = Harness::new();
-    let (first_agent, _) = first_turn.hire_with_goal(&["npm", "test"]);
-    let first = first_turn
-        .open_turn(first_agent)
-        .expect("a turn was issued");
-    let assigned = SessionId::new("vendor-assigned-first-id");
-    first_turn.drive(Input::SessionLearned {
-        turn: first,
-        session: assigned.clone(),
-    });
-    assert_eq!(
-        first_turn.supervisor.world().agents[&first_agent]
-            .session
-            .as_ref(),
-        Some(&assigned),
-        "a first turn may bind the id the vendor assigned"
-    );
+    assert_first_turn_accepts_assigned_session();
 
     let mut before_spawn = Harness::new();
     let (reissue_agent, reissue_goal) = before_spawn.hire_with_goal(&["npm", "test"]);
@@ -545,6 +636,17 @@ fn a_resume_confirmed_as_another_id_invalidates_and_does_not_rebind() {
     let reissued = next_turn(&mut before_spawn, reissue_agent, reissue_goal, first);
     before_spawn.trace.clear();
     before_spawn.restart();
+    assert!(
+        before_spawn.spawns_of(reissued).is_empty(),
+        "restart waits for consent"
+    );
+    consent(
+        &mut before_spawn,
+        reissue_agent,
+        reissued,
+        RecoveryChoice::RepeatIssuedFresh,
+        51,
+    );
     let Announced::Mint(fresh) = announcement(&before_spawn, reissued) else {
         panic!("the re-issue announces first")
     };
@@ -734,6 +836,7 @@ fn a_confirmation_from_an_earlier_attempt_cannot_license_a_later_reissue() {
         record,
         Record::TurnSpawned { turn, .. } if *turn == stranded
     )));
+    let issued_prefix = harness.journal.clone();
     harness.drive(Input::SessionLearned {
         turn: stranded,
         session: confirmed.clone(),
@@ -743,6 +846,30 @@ fn a_confirmation_from_an_earlier_attempt_cannot_license_a_later_reissue() {
     harness.trace.clear();
     harness.launch = true;
     harness.restart();
+    assert_eq!(
+        harness.supervisor.recovery_opportunity(agent),
+        Err(RecoveryRefusal::NotRecoverable),
+        "a confirmation without a durable spawn cannot license a repeat"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(harness.spawns_of(stranded).is_empty());
+
+    let mut harness = Harness::from_prefix(issued_prefix);
+    harness.drive(Input::Started);
+    assert!(
+        harness.spawns_of(stranded).is_empty(),
+        "restart waits for consent"
+    );
+    consent(
+        &mut harness,
+        agent,
+        stranded,
+        RecoveryChoice::RepeatIssuedFresh,
+        51,
+    );
 
     let Announced::Mint(fresh) = announcement(&harness, stranded) else {
         panic!("replay re-issues on a fresh session")
@@ -778,6 +905,17 @@ fn an_early_assigning_confirmation_is_buffered_once_and_resumed() {
     let reissued = next_turn(&mut harness, agent, goal, first);
     harness.trace.clear();
     harness.restart();
+    assert!(
+        harness.spawns_of(reissued).is_empty(),
+        "restart waits for consent"
+    );
+    consent(
+        &mut harness,
+        agent,
+        reissued,
+        RecoveryChoice::RepeatIssuedFresh,
+        51,
+    );
     let Announced::Mint(announced) = announcement(&harness, reissued) else {
         panic!("the re-issue announces first")
     };

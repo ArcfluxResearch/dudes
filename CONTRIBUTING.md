@@ -82,6 +82,10 @@ Chromium and fails if neither is installed. For a local install check, omit
 `DUDES_SMOKE_REQUIRE_CHROME=1` to permit `SKIP browser (Chrome absent)`. The command uses no paid
 engine turn and contacts only loopback addresses. Chrome DevTools uses inherited pipes.
 
+To select a browser executable, set `DUDES_SMOKE_CHROME` to its absolute path. The path must name
+an executable file. An invalid explicit value fails the check without falling back to discovery.
+The build preserves `CARGO_BUILD_JOBS` and `CARGO_INCREMENTAL` when you set them.
+
 macOS builds default `MACOSX_DEPLOYMENT_TARGET` to `12.0` through `.cargo/config.toml`. An explicit
 lower value is refused by `dudes-host`'s build script; `12.0` and higher are accepted.
 
@@ -152,8 +156,15 @@ request that changes one says so in its description.
    Everything else, such as the state database, the board, memory, the roster and the Floor, is a
    projection that can be rebuilt from the journal.
 2. **Persist before spawn.** A turn is journaled (`TurnIssued`) and fsynced before its process is
-   launched. Replay after a crash re-issues a turn that never spawned exactly once, unless the daemon
-   durably abandoned or cancelled it first.
+   launched. Replay after a crash re-issues a turn with no recorded spawn once, under the same
+   `TurnId` and task, except a browser-note issue the daemon durably abandoned, an owed reissue
+   durably cancelled first, a turn whose agent is retired, halted, or otherwise held by a standing
+   cause, or a ticket turn whose instruction review or comparison is still outstanding. Outside
+   active closing time, a Managed goal turn found issued without a recorded spawn waits for explicit
+   consent to repeat its exact task in fresh context. Its `TurnId`, task, answer list, and reservation
+   remain unchanged. Another crash before spawn is recorded requires new consent. Reissue may launch
+   a second process for one `TurnIssued`. It does not guarantee exactly-once process execution or
+   external effects.
 3. **Done is Observed.** `Done` requires a predicate result with `Provenance::Observed`: a command
    the daemon ran, a hash, a board state or a verifier verdict. An agent's report about its own work
    is evidence, never a verdict. An `Inferred` event may raise a breaker rung, but it is never the

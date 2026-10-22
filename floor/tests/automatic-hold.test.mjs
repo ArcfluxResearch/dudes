@@ -29,3 +29,15 @@ test('unreadable automatic hold metadata never invents an actionable hold', () =
     assert.equal(automaticHoldOf({ id: first, automatic_hold }), null);
   }
 });
+
+test('a launch that could not find its engine names the usual cause and the fix', () => {
+  const hold = { kind: 'launch_failed', reason: 'managed process could not launch (NotFound)' };
+  assert.equal(automaticHoldText(hold, 'claude'),
+    'Launch failed. managed process could not launch (NotFound). Dudes could not start Claude Code, usually because claude is not installed. '
+    + 'Install it and sign in, then resume this agent, or hire an agent with an engine you have.');
+  assert.match(automaticHoldText(hold, 'codex'), /could not start Codex, usually because codex is not installed/);
+  assert.match(automaticHoldText(hold, 'pi'), /could not start Pi, usually because pi is not installed/);
+  assert.equal(automaticHoldText(hold, 'copilot'), 'Launch failed. managed process could not launch (NotFound)');
+  assert.equal(automaticHoldText({ kind: 'launch_failed', reason: 'managed process could not launch (PermissionDenied)' }, 'claude'),
+    'Launch failed. managed process could not launch (PermissionDenied)');
+});

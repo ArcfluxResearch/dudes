@@ -1,4 +1,4 @@
-//! `dudes workspace add|remove|reload|list`: the operator's file is edited in place,
+//! `dudes project add|remove|reload|list`: the operator's file is edited in place,
 //! byte for byte outside the one entry, and a running daemon adopts exactly the edit the command
 //! made, never one it did not.
 #![cfg(unix)]
@@ -61,7 +61,7 @@ fn config_for(home: &Path) -> PathBuf {
 
 fn add_args(path: &Path, id: &str) -> Vec<OsString> {
     [
-        "workspace",
+        "project",
         "add",
         path.to_str().expect("UTF-8 path"),
         "--id",
@@ -103,16 +103,16 @@ fn add_from_a_cargo_repository_enrolls_it_with_defaults() {
     let cli = Cli::new(&settings.socket(), &settings.runtime_dir)
         .env("DUDES_CONFIG", &config)
         .current_dir(&here);
-    let added = cli.clone().args(["workspace", "add"]).run();
+    let added = cli.clone().args(["project", "add"]).run();
     assert_eq!(added.code(), exit::SUCCESS, "{}", added.output());
     assert_eq!(
         added.stdout,
         format!(
-            "Enrolled project my-service at {} with check cargo test. To change it, run `dudes workspace remove my-service` and add it again with your options.\n",
+            "Enrolled project my-service at {} with check cargo test. To change it, run `dudes project remove my-service` and add it again with your options.\n",
             here.display()
         )
     );
-    let listed = cli.args(["--json", "workspace", "list"]).run();
+    let listed = cli.args(["--json", "project", "list"]).run();
     assert_eq!(listed.code(), exit::SUCCESS, "{}", listed.output());
     let listed: serde_json::Value = listed.json();
     assert_eq!(listed["running"], serde_json::json!(["my-service"]));
@@ -133,30 +133,44 @@ fn add_from_a_cargo_repository_enrolls_it_with_defaults() {
 }
 
 #[test]
-fn default_enrollment_refuses_a_non_repo_and_an_unknown_check() {
+fn default_enrollment_refuses_a_non_repo_and_falls_back_to_files_changed() {
     let root = tempfile::tempdir().unwrap();
     let config = root.path().join("operator.toml");
     let cli = Cli::new(&root.path().join("absent.sock"), root.path())
         .env("DUDES_CONFIG", &config)
         .current_dir(root.path());
-    let outside = cli.clone().args(["workspace", "add"]).run();
+    let outside = cli.clone().args(["project", "add"]).run();
     assert_eq!(outside.code(), exit::OTHER);
     assert!(
         outside.stderr.contains(
-            "is not a git repository. Run `dudes workspace add` in a folder that holds .git."
+            "is not a git repository. Run `dudes project add` in a folder that holds .git."
         ),
         "{}",
         outside.output()
     );
     std::fs::write(root.path().join(".git"), "gitdir: elsewhere\n").unwrap();
-    let unknown = cli.clone().args(["workspace", "add"]).run();
-    assert_eq!(unknown.code(), exit::OTHER);
-    assert_eq!(
-        unknown.stderr,
-        "dudes: No completion check was found. Pass one with `dudes workspace add -- <program> [args...]`.\n"
+    let unknown = cli.clone().args(["project", "add", "--id", "alpha"]).run();
+    assert_eq!(unknown.code(), exit::SUCCESS, "{}", unknown.output());
+    assert!(
+        unknown.stdout.contains(
+            "No test command was found here. The default check passes once the agent has edited"
+        ),
+        "{}",
+        unknown.output()
     );
-    assert!(!config.exists());
-    let explicit = cli.args(["workspace", "add", "--", "/usr/bin/true"]).run();
+    assert!(
+        unknown.stdout.contains("with check files changed."),
+        "{}",
+        unknown.output()
+    );
+    let loaded = duded::config::load_operator(&config).unwrap();
+    assert_eq!(
+        loaded.enrollment.profiles[0].checks[0].label,
+        "files changed"
+    );
+    let removed = cli.clone().args(["project", "remove", "alpha"]).run();
+    assert_eq!(removed.code(), exit::SUCCESS, "{}", removed.output());
+    let explicit = cli.args(["project", "add", "--", "/usr/bin/true"]).run();
     assert_eq!(explicit.code(), exit::SUCCESS, "{}", explicit.output());
 }
 
@@ -177,7 +191,7 @@ fn default_project_ids_are_unique_and_cwd_is_canonical() {
         let added = cli
             .clone()
             .current_dir(&alias)
-            .args(["workspace", "add"])
+            .args(["project", "add"])
             .run();
         assert_eq!(added.code(), exit::SUCCESS, "{}", added.output());
         let loaded = duded::config::load_operator(&config).unwrap();
@@ -272,7 +286,7 @@ fn add_then_remove_round_trips_every_other_byte() {
     let loaded = duded::config::load_operator(&config).expect("the daemon admits the edited file");
     assert_eq!(loaded.enrollment.profiles.len(), 2);
 
-    let removed = cli.args(["workspace", "remove", "repo_2"]).run();
+    let removed = cli.args(["project", "remove", "repo_2"]).run();
     assert_eq!(removed.code(), exit::SUCCESS, "{}", removed.output());
     assert_eq!(
         std::fs::read_to_string(&config).expect("the restored file"),
@@ -335,7 +349,7 @@ fn workspace_list_json_has_file_and_running_arrays() {
     let listed = Cli::new(&settings.socket(), &settings.runtime_dir)
         .env("HOME", &home)
         .arg("--json")
-        .args(["workspace", "list"])
+        .args(["project", "list"])
         .run();
     assert_eq!(listed.code(), exit::SUCCESS, "{}", listed.output());
     assert_eq!(
@@ -353,13 +367,13 @@ fn an_empty_workspace_list_names_the_file() {
 
     let listed = Cli::new(&runtime.path().join("duded.sock"), runtime.path())
         .env("HOME", home.path())
-        .args(["workspace", "list"])
+        .args(["project", "list"])
         .run();
     assert_eq!(listed.code(), exit::SUCCESS, "{}", listed.output());
     assert_eq!(
         listed.stdout,
         format!(
-            "no workspace is enrolled in {}; add one with `dudes workspace add`\n",
+            "no project is enrolled in {}; add one with `dudes project add`\n",
             config.display()
         )
     );
@@ -392,6 +406,7 @@ fn add_refuses_each_bad_path_and_id_before_writing() {
         predicate_timeout_s: 10,
         tokens_per_day: None,
         goal_tokens: None,
+        may_already_pass: false,
     };
     let canonical_link = home.path().join("link").canonicalize().expect("target");
     for (arm, attempt) in [
@@ -497,7 +512,7 @@ fn a_running_daemon_adopts_only_the_edit_the_command_made() {
         "the file goes back to its bytes before this add"
     );
 
-    let listed = cli.clone().args(["workspace", "list"]).run();
+    let listed = cli.clone().args(["project", "list"]).run();
     assert_eq!(listed.code(), exit::SUCCESS, "{}", listed.output());
     assert!(
         listed
@@ -508,16 +523,12 @@ fn a_running_daemon_adopts_only_the_edit_the_command_made() {
     );
     assert!(listed.stdout.contains("repo_2  in the file and running"));
 
-    let checked = cli
-        .clone()
-        .arg("--json")
-        .args(["workspace", "reload"])
-        .run();
+    let checked = cli.clone().arg("--json").args(["project", "reload"]).run();
     let check: EnrollmentReloadResult = checked.json();
     assert_eq!(check.added, ["stray"]);
     let applied = cli
         .arg("--json")
-        .args(["workspace", "reload", "--apply", &check.sha256])
+        .args(["project", "reload", "--apply", &check.sha256])
         .run();
     assert_eq!(applied.code(), exit::SUCCESS, "{}", applied.output());
     let result: EnrollmentReloadResult = applied.json();
@@ -616,7 +627,7 @@ fn reload_refuses_to_compare_a_daemon_of_another_version() {
     for (apply, machine) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut cli = Cli::new(&socket, home.path())
             .env("HOME", home.path())
-            .args(["workspace", "reload"]);
+            .args(["project", "reload"]);
         if machine {
             cli = cli.arg("--json");
         }
@@ -655,7 +666,7 @@ fn reload_refuses_to_compare_or_apply_another_file() {
     for (apply, machine) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut cli = Cli::new(&settings.socket(), &settings.runtime_dir)
             .env("HOME", fixture.state.path().join("other-home"))
-            .args(["workspace", "reload"]);
+            .args(["project", "reload"]);
         if machine {
             cli = cli.arg("--json");
         }
@@ -734,7 +745,7 @@ fn reload_names_the_adapter_tables_that_need_a_restart() {
             let _running = common::start_with(&settings, seams);
             let cli = Cli::new(&settings.socket(), &settings.runtime_dir).env("HOME", &home);
 
-            let checked = cli.clone().args(["workspace", "reload"]).run();
+            let checked = cli.clone().args(["project", "reload"]).run();
             assert_eq!(checked.code(), exit::SUCCESS, "{}", checked.output());
             let expected = needs_restart.map(|text| text.replace("codex", provider));
             let lines: Vec<_> = checked
@@ -763,7 +774,7 @@ fn reload_names_the_adapter_tables_that_need_a_restart() {
                 checked.stdout
             );
             let machine: EnrollmentReloadResult =
-                cli.arg("--json").args(["workspace", "reload"]).run().json();
+                cli.arg("--json").args(["project", "reload"]).run().json();
             assert_eq!(
                 machine.not_applied,
                 if provider_configured {
@@ -814,7 +825,7 @@ fn an_applied_reload_is_printed_when_the_restart_comparison_fails() {
     });
     let run = Cli::new(&socket, home.path())
         .env("HOME", home.path())
-        .args(["workspace", "reload"])
+        .args(["project", "reload"])
         .run();
     assert_eq!(run.code(), exit::OTHER, "{}", run.output());
     assert!(run.stdout.ends_with("applied\n"), "{}", run.output());
@@ -872,7 +883,7 @@ fn add_writes_a_workspace_with_no_ceiling() {
 
 fn check_add_args(workspace: &str, id: &str, label: &str) -> Vec<OsString> {
     [
-        "workspace",
+        "project",
         "check",
         "add",
         workspace,
@@ -891,7 +902,7 @@ fn check_add_args(workspace: &str, id: &str, label: &str) -> Vec<OsString> {
     .to_vec()
 }
 
-/// `dudes workspace check add` writes one row to the workspace's checks, a running daemon adopts
+/// `dudes project check add` writes one row to the workspace's checks, a running daemon adopts
 /// it as a change to that workspace without a restart, and `check remove` gives back every byte.
 #[test]
 fn check_add_then_remove_round_trips_and_a_running_daemon_adopts_each() {
@@ -951,7 +962,7 @@ fn check_add_then_remove_round_trips_and_a_running_daemon_adopts_each() {
     let removed = cli
         .clone()
         .arg("--json")
-        .args(["workspace", "check", "remove", "repo_1", "contributing"])
+        .args(["project", "check", "remove", "repo_1", "contributing"])
         .run();
     assert_eq!(removed.code(), exit::SUCCESS, "{}", removed.output());
     let result: EnrollmentReloadResult = removed.json();
@@ -977,7 +988,7 @@ fn check_add_refuses_before_writing() {
     for (args, why) in [
         (
             check_add_args("repo_2", "contributing", "Exists"),
-            "not enroll `repo_2`",
+            "no project is named `repo_2`",
         ),
         (
             check_add_args("repo_1", "Contributing", "Exists"),
@@ -1051,6 +1062,7 @@ fn new_workspace(path: &Path, argv: &[&str]) -> NewWorkspace {
         predicate_timeout_s: 10,
         tokens_per_day: None,
         goal_tokens: None,
+        may_already_pass: false,
     }
 }
 
@@ -1105,8 +1117,25 @@ fn the_refusal_names_the_rule_and_a_way_out() {
         "{text}"
     );
     assert!(text.contains("could change it"), "{text}");
-    assert!(text.contains("outside the repository"), "{text}");
+    assert!(text.contains("installed outside the repository"), "{text}");
+    assert!(text.contains("`sh ./test.sh` for a shell script"), "{text}");
+    assert!(text.contains("review its changes"), "{text}");
     workspace::add(&config, &new_workspace(&here, &["sh", "test.sh"])).expect("sh test.sh is fine");
+}
+
+#[test]
+fn the_example_command_quotes_a_program_with_whitespace() {
+    let root = tempfile::tempdir().expect("a root");
+    let here = repo(root.path(), "app");
+    std::fs::write(here.join("my check.sh"), "").unwrap();
+    let config = root.path().join("operator.toml");
+    let error = workspace::add(&config, &new_workspace(&here, &["./my check.sh"]))
+        .expect_err("a program inside the repository");
+    let text = error.to_string();
+    assert!(
+        text.contains("`sh './my check.sh'` for a shell script"),
+        "{text}"
+    );
 }
 
 #[test]

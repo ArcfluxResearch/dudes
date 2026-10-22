@@ -309,6 +309,24 @@ where
     )
 }
 
+/// The folders the Floor's project add refuses: home itself and the daemon's own folders.
+fn project_folders(settings: &Settings) -> crate::floor_project::Folders {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let config = settings
+        .operator_config
+        .as_deref()
+        .and_then(std::path::Path::parent);
+    let own: Vec<&std::path::Path> = [
+        Some(settings.state_dir.as_path()),
+        Some(settings.runtime_dir.as_path()),
+        config,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    crate::floor_project::Folders::new(home.as_deref(), &own)
+}
+
 fn memory_from_settings(settings: &Settings) -> Result<dudes_journal::MemoryCondenseConfig> {
     settings
         .operator_config
@@ -343,6 +361,9 @@ where
     C: Clock + Send + Sync + 'static,
     R: Rng,
 {
+    #[cfg(feature = "fault-injection")]
+    let recovery_stop = options.recovery_stop().cloned();
+    let daemon_pid = options.daemon_pid();
     let Seams {
         host,
         pty_host,
@@ -381,7 +402,7 @@ where
     let shutdown_run = rng.ulid().to_string();
 
     let (jobs_tx, jobs_rx) = mpsc::channel();
-    let handle = Handle::new(jobs_tx);
+    let handle = Handle::new(jobs_tx).with_hook_reply_timeout(settings.hook_reply_timeout);
     // As soon as there is a loop to reach, and before step 7 can spawn anything: a managed child's
     // watcher runs on its own thread and may report an end at any moment after the exec.
     children.arm(handle.clone());
@@ -441,6 +462,19 @@ where
             })
         }),
         crate::sign_in::Timing::DAEMON,
+    );
+    let engine_logins = crate::engine_login::EngineLogins::for_daemon(
+        provider_check.clone(),
+        Provider::ALL
+            .into_iter()
+            .filter_map(|provider| {
+                adapters
+                    .get(provider)
+                    .map(|adapter| (provider, adapter.child_env(&settings.daemon_env)))
+            })
+            .collect(),
+        sign_in.clone(),
+        settings.engine_login,
     );
 
     let Replayed {
@@ -503,6 +537,9 @@ where
     // would pair replay-derived supervisor health with an empty-journal ping until the next append.
     let last_lsn = Arc::new(AtomicU64::new(projections.last_applied_lsn().0));
 
+    let switches = crate::floor_switches::SharedSwitches::new(
+        crate::floor_switches::Switches::from_settings(settings),
+    );
     let prepared_floor = settings
         .floor
         .as_ref()
@@ -510,10 +547,8 @@ where
         .transpose()?
         .map(|prepared| {
             prepared
-                .with_answer(settings.floor_answer_enabled)
-                .with_control(settings.floor_control)
-                .with_terminal(settings.floor_terminal_enabled)
-                .with_board(settings.floor_board_enabled)
+                .with_switches(switches.clone())
+                .with_agent_roots(resolver.agent_roots(), daemon_pid)
                 .with_remembered_port(crate::floor_port::remembered(&settings.state_dir))
         });
     if prepared_floor.is_some() {
@@ -534,6 +569,12 @@ where
     let socket = transport.path().to_path_buf();
     let stop = Arc::new(StopFlag::new());
     let subscribers = Arc::new(Subscribers::new());
+    // A crash between a retirement and the delete of its files leaves them behind; finish it.
+    for (agent, row) in &sup.world().agents {
+        if row.retired {
+            crate::floor_chat_file::remove_for(&settings.state_dir.join("agents"), *agent);
+        }
+    }
     // Replay is the authority on whether this run ever had a pre-agent epoch. A retired agent is
     // still a recorded agent: acquisition never reopens after the first hire in the directory's
     // history.
@@ -589,24 +630,36 @@ where
             onboarding_index,
             answer_index,
             chat_index,
+            agents_root: settings.state_dir.join("agents"),
             running_mcp: options.mcp_servers().clone(),
             running_providers: options.into_providers(),
             browser_launches,
             resolved_browser_turn: None,
-            answer_enabled: settings.floor_answer_enabled,
-            hire_enabled: settings.floor_hire_enabled,
+            switches,
+            operator_config: settings.operator_config.clone(),
+            project_folders: project_folders(settings),
             control_index,
-            control: settings.floor_control,
+            recovery_authority: None,
+            #[cfg(test)]
+            before_recovery_dispatch: None,
+            #[cfg(test)]
+            before_recovery_append: None,
+            #[cfg(test)]
+            after_recovery_fsync: None,
+            #[cfg(test)]
+            before_recovery_input: None,
             goal_index,
             rename_index,
             look_index,
             retire_index,
-            git_enabled: settings.floor_git_enabled,
-            diff_enabled: settings.floor_diff_enabled,
-            board_enabled: settings.floor_board_enabled,
             browser_grants: settings.floor_terminal_enabled.then(BTreeMap::new),
             #[cfg(feature = "testing")]
             terminal_skew: crate::floor_terminal::TerminalSkew::default(),
+            folder_picker: Arc::new(crate::folder_picker::FolderPicker::new(
+                Arc::clone(&predicates) as Arc<dyn PredicateRunner>,
+                &settings.daemon_env,
+                settings.predicate_path.clone(),
+            )),
             closing_failed_after: None,
             ticket_reacted: None,
             floor_closing,
@@ -615,6 +668,8 @@ where
             browser_session: None,
             onboarding_pause: crate::runtime::OnboardingPause::default(),
             onboarding_failure: crate::runtime::OnboardingFailure::default(),
+            #[cfg(feature = "fault-injection")]
+            recovery_stop,
             memory,
             memory_config,
             memory_condenses,
@@ -640,6 +695,7 @@ where
             #[cfg(all(feature = "testing", any(target_os = "macos", target_os = "linux")))]
             mailbox_passes: Arc::default(),
             predicate_runs: BTreeMap::new(),
+            predicate_folders: BTreeMap::new(),
             baselines: crate::baseline::Baselines::default(),
             predicate_spawn_failure: crate::runtime::PredicateSpawnFailure::default(),
             accept_panic: AcceptPanic::default(),
@@ -652,6 +708,7 @@ where
             confirmed_launch_failures: BTreeMap::new(),
             pending_attached_calls: BTreeMap::new(),
             attached_instruction_boundaries: BTreeMap::new(),
+            inherited_native_boundaries: crate::runtime::InheritedNativeBoundaries::default(),
             pending_native_launches: BTreeMap::new(),
             native_acknowledgements: BTreeMap::new(),
             instruction_sampler: {
@@ -690,19 +747,15 @@ where
     witness.startup.record(StartupStep::FirstDecide);
 
     if let Some(prepared) = prepared_floor {
-        let prepared = if settings.floor_git_enabled {
-            prepared.with_git(Arc::new(git_reads(settings, &daemon)))
-        } else {
-            prepared
-        };
-        let prepared = if settings.floor_git_enabled && settings.floor_diff_enabled {
-            prepared.with_diff(Arc::new(diff_reads(&daemon)))
-        } else {
-            if settings.floor_diff_enabled {
-                tracing::warn!("[floor.diff] needs [floor.git]; the diff route is not served");
-            }
-            prepared
-        };
+        if settings.floor_diff_enabled && !settings.floor_git_enabled {
+            tracing::warn!("[floor.diff] needs [floor.git]; the diff route is not served");
+        }
+        // Built whether or not the switch is on, so a reload can turn the route on.
+        let prepared = prepared
+            .with_devices(daemon.sup.world().floor_devices.clone())
+            .with_git(Arc::new(git_reads(settings, &daemon)))
+            .with_diff(Arc::new(diff_reads(&daemon)))
+            .with_engine_logins(engine_logins);
         daemon.sup.enable_activity_sampling();
         daemon.activity_flusher = Some(start_activity_flusher(
             handle.clone(),
@@ -723,6 +776,7 @@ where
             stream_fault,
             daemon.ctx.children.output(),
             provider_check.clone(),
+            sign_in.clone(),
         )
         .context("serializing the post-started Floor projection")?;
         daemon.ctx.floor_streams = Some(streams.clone());
@@ -743,6 +797,7 @@ where
                 streams,
             )?,
         };
+        daemon.ctx.recovery_authority = Some(floor.recovery_authority());
         if let Err(error) = crate::floor_port::remember(&settings.state_dir, floor.addr().port()) {
             tracing::warn!(%error, "the Floor port is not kept for the next run");
         }
@@ -1045,6 +1100,10 @@ where
         daemon.handle(),
         git,
     ));
+    daemon.handle().wire_worktrees(&worktrees);
+    daemon
+        .handle()
+        .wire_folder_picker(&daemon.ctx.folder_picker);
     let cleanup = Arc::clone(&worktrees);
     let _ = std::thread::Builder::new()
         .name("worktree-cleanup".to_owned())
@@ -1202,16 +1261,38 @@ where
             }
             Ok(_) => {}
         }
-        let effects = sup.handle(Input::Replayed { lsn, entry });
-        debug_assert!(effects.is_empty(), "replay emits no effects");
+        let replayed = || {
+            #[cfg(any(test, feature = "testing"))]
+            if let Some(reason) = witness.take_replay_fold_refusal(lsn) {
+                return Err(dudes_supervisor::input::DurableInputError::Recovery { lsn, reason });
+            }
+            sup.handle(
+                Input::Replayed { lsn, entry },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+        };
+        let handled = replayed()?;
+        anyhow::ensure!(
+            handled.folded_through() == Some(lsn),
+            "replay did not report its actual frame"
+        );
+        anyhow::ensure!(
+            sup.world().last_applied_lsn == Some(lsn),
+            "replay did not reach its exact cut"
+        );
+        debug_assert!(sup.effects().is_empty(), "replay emits no effects");
         folded += 1;
     }
     let applied = replay(&reader, &mut projections).context("replaying into the projections")?;
     for (agent, view) in crate::work::compose(&projections, &memory, |agent| sup.work_input(agent))?
     {
-        let effects = sup.handle(Input::Work { agent, view });
+        let handled = sup.handle(
+            Input::Work { agent, view },
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )?;
+        debug_assert!(handled.folded_through().is_none());
         debug_assert!(
-            effects.is_empty(),
+            sup.effects().is_empty(),
             "work projection refresh emits no effects"
         );
     }
@@ -1606,6 +1687,7 @@ where
     });
     let journal = Arc::new(JournalReader::new(journal_dir.to_path_buf()));
     register_all(&mut dispatcher, &control, &journal, subscribers);
+    dudes_rpc::methods::register_recovery(&mut dispatcher, &Arc::new(handle.clone()));
     crate::board::register(&mut dispatcher, &handle);
     crate::ticket::register(&mut dispatcher, &handle);
     register_agent_effects(&mut dispatcher, &control);
@@ -1623,35 +1705,7 @@ where
         .map(|receipt| receipt.run.clone());
     let issue_carry = floor_carry.clone();
     register_floor_carry(&mut dispatcher, floor_carry, run);
-    dispatcher.register(
-        Method::FloorSessionIssue,
-        // The local operator mints only a read-only web bootstrap.
-        Requirement::Operator,
-        move |call| {
-            let _: dudes_proto::rpc::Empty = dudes_rpc::methods::params(&call)?;
-            let sessions = issue_carry
-                .as_ref()
-                .map(crate::floor_session::FloorCarry::sessions)
-                .ok_or_else(|| dudes_proto::rpc::RpcError {
-                    code: dudes_proto::rpc::ErrorCode::InternalError.code(),
-                    message: "the Floor is not configured: install the built Floor as a \
-                              `floor` directory beside duded (`cargo xtask dist` lays one out) \
-                              or as `share/dudes/floor` beside duded's `bin` directory \
-                              (install.sh puts one there) and restart the daemon; \
-                              DUDES_FLOOR_ASSETS names another directory, \
-                              but only for a duded started directly, because `dudes quickstart` \
-                              does not pass it on"
-                        .to_owned(),
-                    data: None,
-                })?;
-            let result = sessions.issue().map_err(|_| dudes_proto::rpc::RpcError {
-                code: dudes_proto::rpc::ErrorCode::InternalError.code(),
-                message: "the Floor session is unavailable".to_owned(),
-                data: None,
-            })?;
-            dudes_rpc::methods::encode(Method::FloorSessionIssue, &result)
-        },
-    );
+    register_floor_sessions(&mut dispatcher, issue_carry);
     let reloader = crate::enrollment_reload::Reloader::new(
         settings.operator_config.clone(),
         handle.clone(),
@@ -1701,6 +1755,136 @@ where
         },
     );
     dispatcher
+}
+
+fn floor_sessions(
+    held: Option<crate::floor_session::FloorSessions>,
+) -> Result<crate::floor_session::FloorSessions, dudes_proto::rpc::RpcError> {
+    held.ok_or_else(|| dudes_proto::rpc::RpcError {
+        code: dudes_proto::rpc::ErrorCode::InternalError.code(),
+        message: "the Floor is not configured: install the built Floor as a \
+                      `floor` directory beside duded (`cargo xtask dist` lays one out) \
+                      or as `share/dudes/floor` beside duded's `bin` directory \
+                      (install.sh puts one there) and restart the daemon; \
+                      DUDES_FLOOR_ASSETS names another directory, \
+                      but only for a duded started directly, because `dudes quickstart` \
+                      does not pass it on"
+            .to_owned(),
+        data: None,
+    })
+}
+
+fn unrecorded(message: &str) -> dudes_proto::rpc::RpcError {
+    dudes_proto::rpc::RpcError {
+        code: dudes_proto::rpc::ErrorCode::InternalError.code(),
+        message: message.to_owned(),
+        data: None,
+    }
+}
+
+/// `floor.session.issue` and the three `floor.devices.*` methods: the operator's doors to
+/// the Floor's sign-in links and signed-in browsers. A daemon that serves no Floor says how to
+/// get one.
+fn register_floor_sessions(
+    dispatcher: &mut Dispatcher,
+    carry: Option<crate::floor_session::FloorCarry>,
+) {
+    let held = carry.map(|carry| carry.sessions().clone());
+    let issuing = held.clone();
+    dispatcher.register(
+        Method::FloorSessionIssue,
+        // The local operator mints only a read-only web bootstrap.
+        Requirement::Operator,
+        move |call| {
+            let params: dudes_proto::rpc::floor::SessionIssueParams =
+                dudes_rpc::methods::params(&call)?;
+            let sessions = floor_sessions(issuing.clone())?;
+            let result =
+                sessions
+                    .issue_for(params.purpose)
+                    .map_err(|_| dudes_proto::rpc::RpcError {
+                        code: dudes_proto::rpc::ErrorCode::InternalError.code(),
+                        message: "the Floor session is unavailable".to_owned(),
+                        data: None,
+                    })?;
+            dudes_rpc::methods::encode(Method::FloorSessionIssue, &result)
+        },
+    );
+    let listing = held.clone();
+    dispatcher.register(
+        Method::FloorDevicesList,
+        // Who is signed in is the operator's to see; an agent never learns it.
+        Requirement::Operator,
+        move |call| {
+            let _: dudes_proto::rpc::Empty = dudes_rpc::methods::params(&call)?;
+            let sessions = floor_sessions(listing.clone())?;
+            let devices = sessions
+                .devices(None)
+                .into_iter()
+                .map(|device| dudes_proto::rpc::floor::DeviceEntry {
+                    device: device.device,
+                    name: device.name,
+                    signed_in: device.signed_in,
+                    first_used: device.first_used,
+                    last_used: device.last_used,
+                    new: device.new,
+                })
+                .collect();
+            dudes_rpc::methods::encode(
+                Method::FloorDevicesList,
+                &dudes_proto::rpc::floor::DevicesListResult { devices },
+            )
+        },
+    );
+    let keeping = held.clone();
+    dispatcher.register(
+        Method::FloorDevicesKeep,
+        Requirement::Operator,
+        move |call| {
+            let params: dudes_proto::rpc::floor::DeviceKeepParams =
+                dudes_rpc::methods::params(&call)?;
+            let sessions = floor_sessions(keeping.clone())?;
+            let kept = match sessions.keep_device_as_operator(params.device) {
+                crate::floor_session::Keep::Kept => true,
+                crate::floor_session::Keep::Unknown | crate::floor_session::Keep::Own => false,
+                crate::floor_session::Keep::Unavailable => {
+                    return Err(unrecorded(
+                        "the daemon could not record that; the browser is still marked new",
+                    ));
+                }
+            };
+            dudes_rpc::methods::encode(
+                Method::FloorDevicesKeep,
+                &dudes_proto::rpc::floor::DeviceKeepResult { kept },
+            )
+        },
+    );
+    let removing = held;
+    dispatcher.register(
+        Method::FloorDevicesRemove,
+        Requirement::Operator,
+        move |call| {
+            let params: dudes_proto::rpc::floor::DeviceRemoveParams =
+                dudes_rpc::methods::params(&call)?;
+            let sessions = floor_sessions(removing.clone())?;
+            let removed = match sessions.remove_device(
+                params.device,
+                dudes_proto::record::FloorDeviceRemoval::Removed,
+            ) {
+                crate::floor_session::Removal::Removed => true,
+                crate::floor_session::Removal::Unknown => false,
+                crate::floor_session::Removal::Unavailable => {
+                    return Err(unrecorded(
+                        "the daemon could not record that; the browser is still signed in",
+                    ));
+                }
+            };
+            dudes_rpc::methods::encode(
+                Method::FloorDevicesRemove,
+                &dudes_proto::rpc::floor::DeviceRemoveResult { removed },
+            )
+        },
+    );
 }
 
 fn register_closing(dispatcher: &mut Dispatcher, handle: Handle) {

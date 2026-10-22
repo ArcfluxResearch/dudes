@@ -33,7 +33,7 @@ test('only confirmed ticket arrivals and durable questions produce notices', () 
   const arrivals = notificationArrivals(seen, event(next));
   assert.deepEqual(arrivals.notices.map(({ title, body }) => ({ title, body })), [
     { title: 'Ticket 1', body: 'Ada finished. Ready for you.' },
-    { title: 'Ticket 2', body: "Needs you. The check cannot run: its program is missing, or it is a file inside the project that an agent could change. Install the program, or use one outside the project's repository, then Give to agent. If the check itself is wrong, Remove this ticket and create it again." },
+    { title: 'Ticket 2', body: "Needs you. The check cannot run: its program is missing, or it is a file inside the project that an agent could change. Install the program, or use one outside the project's repository. To use a script from the repository, run it through its interpreter, for example `sh test.sh` for a shell script; an agent can still edit that script, so review its changes before you accept the work. Then Give to agent. If the check itself is wrong, Remove this ticket and create it again." },
     { title: 'Ticket 3', body: 'Grace is asking a question.' },
   ]);
   assert.deepEqual(arrivals.notices.map((notice) => notificationDestination(notice, next)), [

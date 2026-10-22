@@ -35,7 +35,10 @@ pub mod journal;
 pub mod loop_control;
 pub mod memory;
 pub mod pty;
+pub mod recovery;
+pub use recovery::{RecoveryControl, register_recovery};
 pub mod team;
+pub mod workspace;
 pub mod worktree;
 
 use std::sync::Arc;
@@ -157,6 +160,22 @@ pub trait Control: Send + Sync + 'static {
         Err(error(
             ErrorCode::InternalError,
             "worktree.removed is not implemented by this control",
+        ))
+    }
+
+    /// Trust or stop trusting an enrolled project.
+    ///
+    /// # Errors
+    ///
+    /// Refuses safely until a control supplies the implementation.
+    fn workspace_trust(
+        &self,
+        params: dudes_proto::rpc::workspace::TrustParams,
+    ) -> Result<dudes_proto::rpc::workspace::TrustResult, RpcError> {
+        let _ = params;
+        Err(error(
+            ErrorCode::InternalError,
+            "workspace.trust is not implemented by this control",
         ))
     }
 
@@ -448,6 +467,11 @@ pub fn register_all<C: Control, J: JournalRead>(
         Method::WorktreeRemoved,
         Requirement::Operator,
         worktree::removed(Arc::clone(control)),
+    );
+    dispatcher.register(
+        Method::WorkspaceTrust,
+        Requirement::Operator,
+        workspace::trust(Arc::clone(control)),
     );
     dispatcher.register(
         Method::AgentWhy,

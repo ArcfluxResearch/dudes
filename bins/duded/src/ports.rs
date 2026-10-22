@@ -80,6 +80,15 @@ pub trait PtyHostPort: Send {
     /// request and journals its confirmed outcome, and a retry hidden here would make "once" a
     /// property of nobody's code.
     fn write(&mut self, pty: PtyId, bytes: &[u8]) -> io::Result<usize>;
+    /// Write a few bytes of `bytes` if the terminal has room right now, and answer with the count,
+    /// `0` when it has none. It never waits for room.
+    ///
+    /// # Errors
+    /// The port does not own the handle, or cannot write without waiting.
+    fn write_ready(&mut self, pty: PtyId, bytes: &[u8]) -> io::Result<usize> {
+        let _ = (pty, bytes);
+        Err(io::ErrorKind::Unsupported.into())
+    }
     /// Change one live handle's character-cell size.
     fn resize(&mut self, pty: PtyId, cols: u16, rows: u16) -> io::Result<()>;
     /// Take the one subscription to a live handle's output.
@@ -119,6 +128,15 @@ pub trait PtyHostPort: Send {
     ) -> bool {
         let _ = (pty, identity);
         false
+    }
+    /// Whether one live handle's direct child has ended, and if so whether it exited 0. `None`
+    /// while it runs.
+    ///
+    /// # Errors
+    /// The port does not own the handle, or cannot ask.
+    fn exit_success(&mut self, pty: PtyId) -> io::Result<Option<bool>> {
+        let _ = pty;
+        Err(io::ErrorKind::Unsupported.into())
     }
     /// Attempt every session still retained by the host.
     fn shutdown(&mut self) -> io::Result<()>;
@@ -333,6 +351,27 @@ pub enum TicketAsk {
 )]
 #[derive(Debug)]
 pub enum Ask {
+    /// Inert recovery inspection for an admitted operator.
+    RecoveryInspect {
+        /// Managed agent whose current recovery boundary is inspected.
+        agent: AgentId,
+        /// Transport-verified Operator admission for this read.
+        admission: dudes_rpc::dispatch::OperatorAdmission,
+    },
+    /// One explicit recovery command, with separate live admission.
+    Recover {
+        /// Original intent translated into the supervisor's pure command.
+        command: Box<dudes_supervisor::input::RecoveryCommand>,
+        /// Transport-verified Operator admission for the command-owned appends.
+        admission: dudes_rpc::dispatch::OperatorAdmission,
+    },
+    /// Inert request-ID-only historical lookup.
+    RecoveryReceipt {
+        /// Original command request identity; the lookup never resubmits it.
+        request: dudes_proto::record::Hex32,
+        /// Transport-verified Operator admission for this read.
+        admission: dudes_rpc::dispatch::OperatorAdmission,
+    },
     /// Read or replace the next managed launch's desired server names.
     Mcp(McpParams),
     /// `agent.hire`.
@@ -557,6 +596,8 @@ pub enum Ask {
         base: dudes_types::GitCommit,
         /// The lease it is based on.
         from: Option<dudes_types::WorktreeId>,
+        /// The trust grant a copy for the Floor rests on, checked again here.
+        trust: Option<Box<crate::worktree::hire::TrustTicket>>,
     },
     /// Step 5: admit again, then hire into the tree that was just created.
     WorktreeHire {
@@ -583,11 +624,31 @@ pub enum Ask {
     WorktreeEntries,
     /// `worktree.removed`.
     WorktreeRemoved(dudes_types::WorktreeId),
+    /// The directory an enrolled project is, for a trust grant to read.
+    TrustTarget(String),
+    /// `workspace.trust`: journal the grant, or its revocation when `vouch` is absent, once the
+    /// project is still enrolled at `directory`.
+    TrustSet {
+        /// The enrolled project.
+        workspace_id: String,
+        /// The directory the vouch was read from. Absent for a revocation.
+        directory: Option<PathBuf>,
+        /// What the operator vouched for.
+        vouch: Option<Box<crate::worktree::trust::Vouch>>,
+    },
+    /// One change to the Floor's device table, answered once its record is durable.
+    FloorDevice(dudes_supervisor::FloorDeviceChange),
 }
 
 /// What the loop answered.
 #[derive(Debug)]
 pub enum Answered {
+    /// Current bounded opportunity.
+    RecoveryInspected(dudes_proto::rpc::recovery::RecoveryInspectResult),
+    /// Durable authorization or a truthful refusal/uncertainty.
+    RecoverySubmitted(dudes_proto::rpc::recovery::RecoverySubmitResult),
+    /// Certified historical receipt read.
+    RecoveryReceipt(dudes_proto::rpc::recovery::RecoveryReceiptResult),
     /// The acknowledged desired set, with whether this call appended a change.
     Mcp(McpResult),
     /// The new agent.
@@ -640,6 +701,10 @@ pub enum Answered {
     WorktreeList(Vec<crate::worktree::hire::LeaseView>),
     /// Every lease that is not removed, with its path.
     WorktreeEntries(Vec<dudes_proto::rpc::worktree::WorktreeEntry>),
+    /// The directory an enrolled project is.
+    TrustTarget(PathBuf),
+    /// Whether a trust call appended a record: a revocation with no grant to revoke appends none.
+    TrustSet(bool),
     /// Nothing to report; any record the command appended is durable.
     Done,
 }
@@ -690,9 +755,49 @@ impl From<HookReply> for HookAnswer {
     }
 }
 
+/// A Floor recovery read could not reach its authenticated checked reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloorRecoveryReadError {
+    /// The confirmed session is no longer valid in this listener's registry.
+    Forbidden,
+    /// The writer stopped or its reply was lost.
+    Unavailable,
+}
+
 /// One unit of work for the loop thread.
 #[derive(Debug)]
 pub enum Job {
+    /// Inspect recovery under one authenticated browser session.
+    InspectRecoveryFromFloor {
+        /// Registry-derived reader.
+        session: crate::floor_session::SessionIdentity,
+        /// Managed agent to inspect.
+        agent: dudes_types::AgentId,
+        /// Checked bounded view or a transport refusal.
+        reply: Sender<
+            Result<dudes_proto::rpc::recovery::RecoveryInspectResult, FloorRecoveryReadError>,
+        >,
+    },
+    /// Read one historical recovery receipt without advancing session activity.
+    RecoveryReceiptFromFloor {
+        /// Confirmed reader, independent of the claim's original authority.
+        reader: crate::floor_session::ReceiptSession,
+        /// Retained request identity.
+        request: dudes_proto::record::Hex32,
+        /// Checked historical view or a transport refusal.
+        reply: Sender<
+            Result<dudes_proto::rpc::recovery::RecoveryReceiptResult, FloorRecoveryReadError>,
+        >,
+    },
+    /// One authenticated Floor recovery intent, without caller-supplied attribution.
+    RecoverFromFloor {
+        /// Registry-derived original session.
+        session: crate::floor_session::SessionIdentity,
+        /// Exact already-decoded intent.
+        intent: dudes_proto::rpc::recovery::RecoverySubmitParams,
+        /// Receipt or truthful refusal/uncertainty.
+        reply: Sender<dudes_proto::rpc::recovery::RecoverySubmitResult>,
+    },
     /// Stop one exact owned child whose bounded protocol failed.
     ProtocolFailed(dudes_supervisor::host::AdoptionKey),
     /// A private typed closing operation, after transport authentication.
@@ -703,29 +808,19 @@ pub enum Job {
         session: crate::floor_session::SessionIdentity,
         /// Strictly parsed browser fields.
         request: crate::floor_actions::OnboardRequest,
-        /// The truthful, bounded result, or the hire's check running.
+        /// The truthful, bounded result, or the copy to make.
         reply: Sender<crate::floor_actions::OnboardStep>,
     },
-    /// The browser hire once its check ran and did not pass: the hire's admission again, then
-    /// its append, or for a retried partial attempt, the goal's append.
-    OnboardChecked {
-        /// Registry-derived admitting session.
-        session: crate::floor_session::SessionIdentity,
-        /// Strictly parsed browser fields.
-        request: crate::floor_actions::OnboardRequest,
-        /// What the run saw.
-        baseline: dudes_proto::CheckBaseline,
-        /// The run's count, which this job ends.
-        run: u64,
-        /// The original HTTP request's response channel.
-        reply: Sender<crate::floor_actions::OnboardStep>,
-    },
-    /// Resume one durable partial hire in a later writer turn.
-    OnboardContinue {
-        /// The same admitted session, checked again at the goal append.
+    /// A browser hire into its own copy, once the copy exists: the admission again, then the hire.
+    OnboardCopied {
+        /// The same admitted session.
         session: crate::floor_session::SessionIdentity,
         /// The exact original request fields.
         request: crate::floor_actions::OnboardRequest,
+        /// The pending lease whose tree the agent is hired into.
+        worktree: dudes_types::WorktreeId,
+        /// The grant the copy was made under, checked again at the hire.
+        trust: Box<crate::worktree::hire::TrustTicket>,
         /// The original HTTP request's response channel.
         reply: Sender<crate::floor_actions::OnboardStep>,
     },
@@ -794,6 +889,29 @@ pub enum Job {
         /// What the projection holds. Dropped unanswered at shutdown.
         reply: Sender<crate::floor_memory::MemoryAnswer>,
     },
+    /// One authenticated Floor edit of the operator file's closed list of settings.
+    SettingsEdit {
+        /// Registry-derived admitting session.
+        session: crate::floor_session::SessionIdentity,
+        /// The key and value, already checked against the closed list.
+        request: crate::floor_settings_edit::SettingsRequest,
+        /// What the daemon now runs, or the refusal.
+        reply: Sender<
+            Result<
+                crate::floor_settings_edit::SettingsSaved,
+                crate::floor_settings_edit::SettingsRefusal,
+            >,
+        >,
+    },
+    /// One authenticated Floor look at a folder, or add of it as a project.
+    Project {
+        /// Registry-derived admitting session.
+        session: crate::floor_session::SessionIdentity,
+        /// What to do with the folder.
+        request: crate::floor_project::ProjectRequest,
+        /// The answer, or why not.
+        reply: Sender<Result<crate::floor_project::ProjectAnswer, crate::floor_project::Refusal>>,
+    },
     /// One authenticated Floor retirement of the agent it names.
     Retire {
         /// Registry-derived admitting session.
@@ -831,6 +949,8 @@ pub enum Job {
     PredicateEnded {
         /// The goal the run judged.
         goal: GoalId,
+        /// The immutable resolved execution folder of this run.
+        folder: PathBuf,
         /// Whether it held, and what it rested on; `None` for a run that observed no verdict.
         verdict: Option<(bool, Evidence)>,
     },
@@ -839,6 +959,16 @@ pub enum Job {
     BaselineEnded {
         /// The run's count among the loop's runs.
         id: u64,
+    },
+    /// The Floor refused a request because of the process on the other end of its connection.
+    /// Fire and forget: the loop only writes the audit record, and the refusal does not wait.
+    FloorPeerRefused {
+        /// The Floor route the request asked for.
+        route: &'static str,
+        /// The agent whose process tree held the connection, when known.
+        agent: Option<AgentId>,
+        /// Why it was refused.
+        reason: dudes_proto::FloorPeerRefusal,
     },
     /// One memory-condense model-summary call ended, with the plan it was admitted for and
     /// whatever its one-shot child reported. Sent exactly once per call by its own thread, never
@@ -931,6 +1061,13 @@ pub enum Job {
         /// The fixed reply.
         reply: Sender<crate::floor_ticket::TicketReply>,
     },
+    /// Which folder an agent keeps files in, or why it keeps none.
+    ChatFile {
+        /// The agent a file is for.
+        agent: dudes_types::AgentId,
+        /// The agent's directory, or a fixed reason.
+        reply: Sender<Result<std::path::PathBuf, &'static str>>,
+    },
     /// One typed browser-note operation.
     Chat {
         /// The admitting registry session.
@@ -957,6 +1094,9 @@ pub struct ClosingJob {
 pub struct Handle {
     jobs: Sender<Job>,
     floor_admission: Arc<Mutex<()>>,
+    /// The sequence number of the latest read of the operator file, held across a read for a
+    /// reload and across a whole project add, so the two never interleave.
+    reload_lock: Arc<Mutex<u64>>,
     #[cfg(test)]
     floor_submission_pause: Arc<Mutex<Option<FloorSubmissionPause>>>,
     next_hook: Arc<AtomicU64>,
@@ -966,10 +1106,33 @@ pub struct Handle {
     #[cfg(feature = "testing")]
     predicate_completions: Arc<AtomicU64>,
     journal_stopped: Arc<Mutex<Option<Lsn>>>,
+    /// How long [`Self::hook`] waits for the loop's answer before it denies a control event or
+    /// allows any other.
+    hook_reply_timeout: Duration,
     /// Set once the exit path starts. A thread waiting on a goal's check run, or on the append
     /// after it, stops waiting, so it never holds the exit path's join on connections.
     stopping: Arc<AtomicBool>,
+    /// The worktree path a browser hire into its own copy uses. Weak, because it holds a handle.
+    worktrees: Arc<std::sync::OnceLock<std::sync::Weak<crate::worktree::hire::WorktreeHires>>>,
+    /// Armed only by a test, to hold a copy between its making and its hire.
+    #[allow(
+        clippy::type_complexity,
+        reason = "one channel pair, read in one place"
+    )]
+    copy_hold: Arc<Mutex<Option<(Sender<()>, Receiver<()>)>>>,
+    /// Armed only by a test, to hold a chat file between its write and the retirement recheck.
+    #[cfg(feature = "testing")]
+    #[allow(
+        clippy::type_complexity,
+        reason = "one channel pair, read in one place"
+    )]
+    chat_file_hold: Arc<Mutex<Option<(Sender<()>, Receiver<()>)>>>,
+    /// The folder dialog the Floor's project routes open, wired once the daemon has built it.
+    folder_picker: Arc<std::sync::OnceLock<Arc<crate::folder_picker::FolderPicker>>>,
 }
+
+/// How long a hook waits for the loop's answer in production.
+pub const DEFAULT_HOOK_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Unavailable;
@@ -1006,6 +1169,70 @@ impl Handle {
         self.jobs.send(job).map_err(|_| Unavailable)
     }
 
+    /// Whether the exit path has started, so work that waits on the loop should stop waiting.
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
+    }
+
+    /// The directory a file for `agent` is kept under, or the fixed reason it cannot be: the agent
+    /// is unknown or retired, or Dudes does not launch its engine.
+    pub(crate) fn chat_file_dir(
+        &self,
+        agent: dudes_types::AgentId,
+    ) -> Result<std::path::PathBuf, &'static str> {
+        let (reply, answer) = std::sync::mpsc::channel();
+        self.send_floor(Job::ChatFile { agent, reply })
+            .map_err(|_| "unavailable")?;
+        answer.recv().map_err(|_| "unavailable")?
+    }
+
+    /// Ask the writer again after a chat file was written: an agent retired in between has had its
+    /// folder deleted before the write, so the copy is deleted here and the upload is refused.
+    pub(crate) fn chat_file_kept(
+        &self,
+        agent: dudes_types::AgentId,
+        dir: &std::path::Path,
+    ) -> Result<(), &'static str> {
+        #[cfg(feature = "testing")]
+        self.hold_chat_file();
+        match self.chat_file_dir(agent) {
+            Err(reason @ ("agent_retired" | "agent_absent")) => {
+                if let Some(root) = dir.parent() {
+                    crate::floor_chat_file::remove_for(root, agent);
+                }
+                Err(reason)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Stop a chat file after it is written and before the retirement recheck: tell the test it is
+    /// there, then wait to be released.
+    #[doc(hidden)]
+    #[cfg(feature = "testing")]
+    pub fn hold_after_chat_file_write(&self) -> (Receiver<()>, Sender<()>) {
+        let (reached, wait_for_it) = mpsc::channel();
+        let (release, held) = mpsc::channel();
+        *self
+            .chat_file_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((reached, held));
+        (wait_for_it, release)
+    }
+
+    #[cfg(feature = "testing")]
+    fn hold_chat_file(&self) {
+        let armed = self
+            .chat_file_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some((reached, held)) = armed {
+            let _ = reached.send(());
+            let _ = held.recv_timeout(Duration::from_secs(20));
+        }
+    }
+
     /// Queue one strictly typed Chat operation on the daemon writer.
     ///
     /// # Errors
@@ -1027,57 +1254,119 @@ impl Handle {
             .recv()
             .map_err(|_| crate::floor_chat::ChatRefusal::Unavailable)?
     }
-    pub(crate) fn onboard_continue(
-        &self,
-        session: crate::floor_session::SessionIdentity,
-        request: crate::floor_actions::OnboardRequest,
-        reply: Sender<crate::floor_actions::OnboardStep>,
-    ) {
-        let _ = self.send_floor(Job::OnboardContinue {
-            session,
-            request,
-            reply,
-        });
-    }
-    /// A browser hire end to end: its admission, its check's run once before anything is
-    /// appended, then the admission again and the hire. The owner of the request waits for the
-    /// run; a same-key follower is answered pending by the session's reservation meanwhile.
+    /// A browser hire end to end: its admission and the hire. One that asks for its own copy first
+    /// makes the copy here, off the loop. A same-key follower is answered pending by the session's
+    /// reservation meanwhile.
     pub(crate) fn onboard(
         &self,
         session: crate::floor_session::SessionIdentity,
         request: crate::floor_actions::OnboardRequest,
     ) -> Result<crate::floor_actions::OnboardOutcome, crate::floor_actions::OnboardRefusal> {
-        use crate::floor_actions::{OnboardRefusal, OnboardStep};
+        use crate::floor_actions::OnboardStep;
         let step = self.onboard_step(|reply| Job::Onboard {
             session: session.clone(),
             request: request.clone(),
             reply,
         })?;
-        let (ticket, on_refusal) = match step {
-            OnboardStep::Answer(answer) => return answer,
-            OnboardStep::Check { ticket, on_refusal } => (ticket, on_refusal),
-        };
-        let no_effect = if on_refusal.is_some() {
-            OnboardRefusal::Unavailable
-        } else {
-            OnboardRefusal::UnavailableNoEffect
-        };
-        let never = dudes_rpc::HangUp::never();
-        match crate::baseline::admit_after_baseline(&ticket, &self.stopping, &never, |baseline| {
-            self.onboard_step(|reply| Job::OnboardChecked {
-                session,
-                request,
-                baseline,
-                run: ticket.id,
-                reply,
-            })
-        }) {
-            Ok(Ok(OnboardStep::Answer(answer))) => answer,
-            Err(crate::baseline::Baseline::Refused(refusal)) => {
-                on_refusal.ok_or(OnboardRefusal::Check(refusal.reason()))
+        match step {
+            OnboardStep::Answer(answer) => answer,
+            OnboardStep::Copy { params, trust } => {
+                self.onboard_copy(session, request, &params, *trust)
             }
-            Ok(Ok(OnboardStep::Check { .. }) | Err(_)) | Err(_) => Err(no_effect),
         }
+    }
+
+    /// A browser hire into its own copy: make the copy here, off the loop, then ask the loop to
+    /// hire into it. A copy made for a hire that does not happen is removed.
+    fn onboard_copy(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        request: crate::floor_actions::OnboardRequest,
+        params: &HireParams,
+        trust: crate::worktree::hire::TrustTicket,
+    ) -> Result<crate::floor_actions::OnboardOutcome, crate::floor_actions::OnboardRefusal> {
+        use crate::floor_actions::{CopyRefusal, OnboardRefusal, OnboardStep};
+        use crate::worktree::hire::Why;
+        let Some(worktrees) = self.worktrees() else {
+            return Err(OnboardRefusal::OwnCopy(CopyRefusal::Failed));
+        };
+        let lease = worktrees.prepare(params, Some(&trust)).map_err(|failure| {
+            OnboardRefusal::OwnCopy(match failure.why {
+                Why::NotARepository => CopyRefusal::NotARepository,
+                Why::TrustChanged => CopyRefusal::TrustChanged(trust.workspace_id.clone()),
+                Why::Other => CopyRefusal::Failed,
+            })
+        })?;
+        self.hold_for_a_test();
+        let step = self.onboard_step(|reply| Job::OnboardCopied {
+            session,
+            request,
+            worktree: lease.worktree,
+            trust: Box::new(trust),
+            reply,
+        });
+        let answer = match step {
+            // The loop never answered because it is stopping. The job it may still run hires into
+            // this copy, so this thread must not remove the tree under it. A copy left pending is
+            // cleaned up when the daemon next starts.
+            Err(refusal) => return Err(refusal),
+            Ok(OnboardStep::Answer(answer)) => answer,
+            Ok(_) => Err(OnboardRefusal::Unavailable),
+        };
+        if answer.is_err() {
+            worktrees.discard(lease.worktree);
+        }
+        answer
+    }
+
+    /// Stop a browser hire in its own copy once the copy exists and before the loop is asked to
+    /// hire into it: tell the test it is there, then wait to be released. Does nothing unless a
+    /// test armed it.
+    #[doc(hidden)]
+    pub fn hold_after_copy(&self) -> (Receiver<()>, Sender<()>) {
+        let (reached, wait_for_it) = mpsc::channel();
+        let (release, held) = mpsc::channel();
+        *self
+            .copy_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((reached, held));
+        (wait_for_it, release)
+    }
+
+    fn hold_for_a_test(&self) {
+        let armed = self
+            .copy_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some((reached, held)) = armed {
+            let _ = reached.send(());
+            let _ = held.recv_timeout(Duration::from_secs(20));
+        }
+    }
+
+    /// The worktree path the daemon wired in, once it has.
+    fn worktrees(&self) -> Option<Arc<crate::worktree::hire::WorktreeHires>> {
+        self.worktrees.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// Wire in the folder dialog, so the Floor's project routes can open it.
+    pub fn wire_folder_picker(&self, picker: &Arc<crate::folder_picker::FolderPicker>) {
+        let _ = self.folder_picker.set(Arc::clone(picker));
+    }
+
+    /// Open the folder dialog and wait for the person's choice.
+    pub(crate) fn choose_folder(&self) -> crate::folder_picker::Choice {
+        self.folder_picker
+            .get()
+            .map_or(crate::folder_picker::Choice::Unavailable, |picker| {
+                picker.choose()
+            })
+    }
+
+    /// Wire in the worktree path, so a browser hire into its own copy can make one.
+    pub fn wire_worktrees(&self, worktrees: &Arc<crate::worktree::hire::WorktreeHires>) {
+        let _ = self.worktrees.set(Arc::downgrade(worktrees));
     }
 
     /// Send one onboarding job and wait for its step, answering unavailable once the daemon is
@@ -1108,6 +1397,70 @@ impl Handle {
         answers
             .recv()
             .map_err(|_| crate::floor_answer::AnswerRefusal::Unavailable)?
+    }
+
+    pub(crate) fn inspect_floor_recovery(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        agent: dudes_types::AgentId,
+    ) -> Result<dudes_proto::rpc::recovery::RecoveryInspectResult, FloorRecoveryReadError> {
+        let (reply, answers) = mpsc::channel();
+        self.send_floor(Job::InspectRecoveryFromFloor {
+            session,
+            agent,
+            reply,
+        })
+        .map_err(|_| FloorRecoveryReadError::Unavailable)?;
+        crate::baseline::recv_until_stopping(&self.stopping, &answers)
+            .unwrap_or(Err(FloorRecoveryReadError::Unavailable))
+    }
+
+    pub(crate) fn floor_recovery_receipt(
+        &self,
+        reader: crate::floor_session::ReceiptSession,
+        request: dudes_proto::record::Hex32,
+    ) -> Result<dudes_proto::rpc::recovery::RecoveryReceiptResult, FloorRecoveryReadError> {
+        let (reply, answers) = mpsc::channel();
+        self.send_floor(Job::RecoveryReceiptFromFloor {
+            reader,
+            request,
+            reply,
+        })
+        .map_err(|_| FloorRecoveryReadError::Unavailable)?;
+        crate::baseline::recv_until_stopping(&self.stopping, &answers)
+            .unwrap_or(Err(FloorRecoveryReadError::Unavailable))
+    }
+
+    /// Submit one explicit Floor recovery intent under its actual authenticated identity.
+    /// A lost or stopping reply is unknown and never causes resubmission.
+    pub fn submit_floor_recovery(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        intent: &dudes_proto::rpc::recovery::RecoverySubmitParams,
+    ) -> dudes_proto::rpc::recovery::RecoverySubmitResult {
+        use dudes_proto::rpc::recovery::{
+            RecoveryKnownPrefix, RecoverySubmitRefusal, RecoverySubmitResult,
+        };
+        let request_id = intent.request_id;
+        let (reply, answers) = mpsc::channel();
+        if self
+            .send_floor(Job::RecoverFromFloor {
+                session,
+                intent: *intent,
+                reply,
+            })
+            .is_err()
+        {
+            return RecoverySubmitResult::Refused {
+                reason: RecoverySubmitRefusal::Unavailable,
+                prefix: RecoveryKnownPrefix {
+                    required: None,
+                    resume: None,
+                },
+            };
+        }
+        crate::baseline::recv_until_stopping(&self.stopping, &answers)
+            .unwrap_or(RecoverySubmitResult::Unknown { request_id })
     }
     pub(crate) fn control(
         &self,
@@ -1251,6 +1604,39 @@ impl Handle {
         self.send_floor(Job::FloorMemory { request, reply }).ok()?;
         answers.recv().ok()
     }
+    pub(crate) fn settings_edit(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        request: crate::floor_settings_edit::SettingsRequest,
+    ) -> Result<
+        crate::floor_settings_edit::SettingsSaved,
+        crate::floor_settings_edit::SettingsRefusal,
+    > {
+        use crate::floor_settings_edit::SettingsRefusal;
+        let (reply, answers) = mpsc::channel();
+        self.send_floor(Job::SettingsEdit {
+            session,
+            request,
+            reply,
+        })
+        .map_err(|_| SettingsRefusal::Unavailable)?;
+        answers.recv().map_err(|_| SettingsRefusal::Unavailable)?
+    }
+    pub(crate) fn project(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        request: crate::floor_project::ProjectRequest,
+    ) -> Result<crate::floor_project::ProjectAnswer, crate::floor_project::Refusal> {
+        use crate::floor_project::Refusal;
+        let (reply, answers) = mpsc::channel();
+        self.send_floor(Job::Project {
+            session,
+            request,
+            reply,
+        })
+        .map_err(|_| Refusal::Unavailable)?;
+        answers.recv().map_err(|_| Refusal::Unavailable)?
+    }
     pub(crate) fn retire(
         &self,
         session: crate::floor_session::SessionIdentity,
@@ -1302,6 +1688,7 @@ impl Handle {
         Self {
             jobs,
             floor_admission: Arc::new(Mutex::new(())),
+            reload_lock: Arc::new(Mutex::new(0)),
             #[cfg(test)]
             floor_submission_pause: Arc::new(Mutex::new(None)),
             next_hook: Arc::new(AtomicU64::new(1)),
@@ -1311,8 +1698,28 @@ impl Handle {
             #[cfg(feature = "testing")]
             predicate_completions: Arc::new(AtomicU64::new(0)),
             journal_stopped: Arc::new(Mutex::new(None)),
+            hook_reply_timeout: DEFAULT_HOOK_REPLY_TIMEOUT,
             stopping: Arc::new(AtomicBool::new(false)),
+            worktrees: Arc::new(std::sync::OnceLock::new()),
+            copy_hold: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "testing")]
+            chat_file_hold: Arc::new(Mutex::new(None)),
+            folder_picker: Arc::default(),
         }
+    }
+
+    /// Wait this long for a hook's answer instead of [`DEFAULT_HOOK_REPLY_TIMEOUT`].
+    #[must_use]
+    pub fn with_hook_reply_timeout(mut self, timeout: Duration) -> Self {
+        self.hook_reply_timeout = timeout;
+        self
+    }
+
+    /// The reload sequence lock, shared by every clone of this handle. The tests hold it to show
+    /// that a project add yields to a reload in progress.
+    #[doc(hidden)]
+    pub fn reload_lock(&self) -> Arc<Mutex<u64>> {
+        Arc::clone(&self.reload_lock)
     }
 
     /// The flag [`Self::stop_waiting`] sets, for work that must stop when the daemon does.
@@ -1327,6 +1734,20 @@ impl Handle {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         self.stopping.store(true, Ordering::Release);
+    }
+
+    /// A Floor request was refused for its connection's owner; see [`Job::FloorPeerRefused`].
+    pub(crate) fn floor_peer_refused(
+        &self,
+        route: &'static str,
+        agent: Option<AgentId>,
+        reason: dudes_proto::FloorPeerRefusal,
+    ) {
+        let _ = self.jobs.send(Job::FloorPeerRefused {
+            route,
+            agent,
+            reason,
+        });
     }
 
     /// One goal's check run before the first turn ended, however it ended.
@@ -1488,8 +1909,17 @@ impl Handle {
 
     /// Report that one predicate run ended. Silently dropped once the loop has stopped, as
     /// [`Self::input`] is.
-    pub(crate) fn predicate_ended(&self, goal: GoalId, verdict: Option<(bool, Evidence)>) {
-        let sent = self.jobs.send(Job::PredicateEnded { goal, verdict });
+    pub(crate) fn predicate_ended(
+        &self,
+        goal: GoalId,
+        folder: PathBuf,
+        verdict: Option<(bool, Evidence)>,
+    ) {
+        let sent = self.jobs.send(Job::PredicateEnded {
+            goal,
+            folder,
+            verdict,
+        });
         #[cfg(feature = "testing")]
         if sent.is_ok() {
             self.predicate_completions.fetch_add(1, Ordering::Release);
@@ -1660,8 +2090,6 @@ impl Handle {
         event: Event,
         permit: crate::hooks::HookPermit,
     ) -> Result<HookReply, RpcError> {
-        const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
-
         let agent = event.agent;
         let control = matches!(
             &event.kind,
@@ -1670,7 +2098,8 @@ impl Handle {
         let (reply, answer) = mpsc::channel();
         let lease = permit.reply_lease();
         self.queue_hook(event, Some(reply), permit)?;
-        let (answered, preserve_delivery_error) = match answer.recv_timeout(REPLY_TIMEOUT) {
+        let (answered, preserve_delivery_error) = match answer.recv_timeout(self.hook_reply_timeout)
+        {
             Ok(reply) => (reply, false),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 lease.expire();
@@ -1883,6 +2312,18 @@ impl Control for LoopControl {
                 "the loop answered {other:?} for worktree.list"
             ))),
         }
+    }
+
+    fn workspace_trust(
+        &self,
+        params: dudes_proto::rpc::workspace::TrustParams,
+    ) -> Result<dudes_proto::rpc::workspace::TrustResult, RpcError> {
+        let Some(worktrees) = &self.worktrees else {
+            return Err(crate::worktree::unavailable(
+                "this daemon was started without worktree support",
+            ));
+        };
+        worktrees.trust(&params)
     }
 
     fn worktree_removed(
@@ -2545,6 +2986,295 @@ mod tests {
         assert!(
             source.is_sealed(),
             "a validation, provider, persistence, or spawn failure cannot reopen acquisition"
+        );
+    }
+}
+
+impl dudes_rpc::methods::recovery::RecoveryControl for Handle {
+    fn inspect_recovery(
+        &self,
+        params: dudes_proto::rpc::recovery::RecoveryInspectParams,
+        admission: dudes_rpc::dispatch::OperatorAdmission,
+    ) -> Result<dudes_proto::rpc::recovery::RecoveryInspectResult, RpcError> {
+        match self.ask(Ask::RecoveryInspect {
+            agent: params.agent,
+            admission,
+        })? {
+            Answered::RecoveryInspected(result) => Ok(result),
+            _ => Err(unavailable()),
+        }
+    }
+
+    fn submit_recovery(
+        &self,
+        params: &dudes_proto::rpc::recovery::RecoverySubmitParams,
+        admission: dudes_rpc::dispatch::OperatorAdmission,
+    ) -> Result<dudes_proto::rpc::recovery::RecoverySubmitResult, RpcError> {
+        let command = recovery_command(
+            params,
+            dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+                pid: admission.pid(),
+                uid: admission.uid(),
+            },
+        )?;
+        let request_id = command.request_id;
+        match self.ask(Ask::Recover {
+            command: Box::new(command),
+            admission,
+        }) {
+            Ok(Answered::RecoverySubmitted(result)) => Ok(result),
+            _ => Ok(dudes_proto::rpc::recovery::RecoverySubmitResult::Unknown { request_id }),
+        }
+    }
+
+    fn recovery_receipt(
+        &self,
+        params: dudes_proto::rpc::recovery::RecoveryReceiptParams,
+        admission: dudes_rpc::dispatch::OperatorAdmission,
+    ) -> Result<dudes_proto::rpc::recovery::RecoveryReceiptResult, RpcError> {
+        match self.ask(Ask::RecoveryReceipt {
+            request: params.request_id,
+            admission,
+        })? {
+            Answered::RecoveryReceipt(result) => Ok(result),
+            _ => Err(unavailable()),
+        }
+    }
+}
+
+pub(crate) fn recovery_command(
+    params: &dudes_proto::rpc::recovery::RecoverySubmitParams,
+    attribution: dudes_proto::recovery::RecoveryAttribution,
+) -> Result<dudes_supervisor::input::RecoveryCommand, RpcError> {
+    use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand, RecoveryExpected};
+    let digest = recovery_digest(params)?;
+    Ok(RecoveryCommand {
+        request_id: params.request_id,
+        digest,
+        expected: RecoveryExpected {
+            work: params.expected.work,
+            issue_lsn: params.expected.issue_lsn,
+            source_lsn: params.expected.source_lsn,
+            episode: params.expected.episode,
+            predecessor: params.expected.expected_predecessor,
+            control_lsn: params.expected.control_lsn,
+            ticket: params
+                .expected
+                .ticket
+                .map(|ticket| (ticket.card, ticket.round)),
+        },
+        choice: match params.choice {
+            dudes_proto::rpc::recovery::RecoveryChoice::TryRecorded => RecoveryChoice::TryRecorded,
+            dudes_proto::rpc::recovery::RecoveryChoice::FreshWithRecap => {
+                RecoveryChoice::FreshWithRecap
+            }
+            dudes_proto::rpc::recovery::RecoveryChoice::RepeatIssuedFresh => {
+                RecoveryChoice::RepeatIssuedFresh
+            }
+        },
+        attribution,
+    })
+}
+
+fn recovery_digest(
+    params: &dudes_proto::rpc::recovery::RecoverySubmitParams,
+) -> Result<dudes_proto::record::Hex32, RpcError> {
+    use sha2::{Digest as _, Sha256};
+    let bytes = serde_json::to_vec(params).map_err(|_| unavailable())?;
+    let mut digest = Sha256::new();
+    digest.update(b"dudes.recovery.intent.v1\0");
+    digest.update(&bytes);
+    Ok(dudes_proto::record::Hex32::new(digest.finalize().into()))
+}
+
+#[cfg(test)]
+mod recovery_intent_tests {
+    use super::recovery_digest;
+    use dudes_proto::rpc::recovery::{RecoveryChoice, RecoverySubmitParams};
+
+    const INTENT: &str = concat!(
+        "{\"request_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",",
+        "\"expected\":{\"work\":{\"agent\":\"00000000010000000000000001\",\"goal\":\"00000000010000000000000002\",\"turn\":\"00000000010000000000000003\"},",
+        "\"issue_lsn\":5,\"source_lsn\":9,\"episode\":null,\"expected_predecessor\":null,\"control_lsn\":null,\"ticket\":null},\"choice\":\"fresh_with_recap\"}"
+    );
+
+    fn fully_selected_intent() -> RecoverySubmitParams {
+        let original: RecoverySubmitParams = serde_json::from_str(INTENT).unwrap();
+        let mut full = original;
+        let episode = dudes_proto::recovery::RecoveryEpisodeId {
+            work: original.expected.work,
+            origin: dudes_types::Lsn(7),
+        };
+        full.expected.episode = Some(episode);
+        full.expected.expected_predecessor = Some(dudes_proto::recovery::RecoveryClaimRef {
+            episode,
+            authorization_lsn: dudes_types::Lsn(11),
+        });
+        full.expected.control_lsn = Some(dudes_types::Lsn(8));
+        full.expected.ticket = Some(dudes_proto::rpc::recovery::ReviewedTicketRound {
+            card: dudes_types::CardId::from_parts(1, 4),
+            round: 1,
+        });
+        full
+    }
+
+    #[test]
+    fn original_typed_intent_has_a_fixed_canonical_encoding_including_explicit_nulls() {
+        let original: RecoverySubmitParams = serde_json::from_str(INTENT).unwrap();
+        assert_eq!(serde_json::to_string(&original).unwrap(), INTENT);
+        let digest = recovery_digest(&original).unwrap();
+        assert_eq!(
+            digest,
+            dudes_proto::record::Hex32::new([
+                141, 78, 75, 201, 121, 169, 184, 232, 115, 87, 134, 160, 145, 51, 114, 43, 95, 141,
+                112, 143, 169, 97, 133, 2, 145, 206, 239, 95, 31, 164, 173, 168
+            ])
+        );
+        let mut edits = Vec::new();
+        let mut changed = original;
+        changed.choice = RecoveryChoice::TryRecorded;
+        edits.push(changed);
+        changed = original;
+        changed.request_id = dudes_proto::record::Hex32::new([2; 32]);
+        edits.push(changed);
+        changed = original;
+        changed.expected.issue_lsn = dudes_types::Lsn(6);
+        edits.push(changed);
+        changed = original;
+        changed.expected.source_lsn = dudes_types::Lsn(10);
+        edits.push(changed);
+        changed = original;
+        changed.expected.control_lsn = Some(dudes_types::Lsn(8));
+        edits.push(changed);
+        changed = original;
+        changed.expected.episode = Some(dudes_proto::recovery::RecoveryEpisodeId {
+            work: original.expected.work,
+            origin: dudes_types::Lsn(7),
+        });
+        edits.push(changed);
+        changed.expected.expected_predecessor = Some(dudes_proto::recovery::RecoveryClaimRef {
+            episode: changed.expected.episode.unwrap(),
+            authorization_lsn: dudes_types::Lsn(11),
+        });
+        edits.push(changed);
+        changed = original;
+        changed.expected.ticket = Some(dudes_proto::rpc::recovery::ReviewedTicketRound {
+            card: dudes_types::CardId::from_parts(1, 4),
+            round: 1,
+        });
+        edits.push(changed);
+        let full = fully_selected_intent();
+        assert_eq!(
+            recovery_digest(&full).unwrap(),
+            dudes_proto::record::Hex32::new([
+                150, 248, 228, 205, 168, 194, 133, 57, 184, 63, 32, 137, 92, 135, 51, 65, 202, 63,
+                201, 46, 228, 133, 221, 48, 97, 222, 189, 250, 41, 3, 188, 171
+            ])
+        );
+        for changed in edits {
+            assert_ne!(recovery_digest(&changed).unwrap(), digest, "{changed:?}");
+        }
+    }
+
+    #[test]
+    fn every_nested_selector_is_part_of_the_canonical_intent_digest() {
+        let original = fully_selected_intent();
+        let expected = recovery_digest(&original).unwrap();
+        let json = serde_json::to_value(original).unwrap();
+        for pointer in [
+            "/expected/work/agent",
+            "/expected/work/goal",
+            "/expected/work/turn",
+            "/expected/episode/work/agent",
+            "/expected/episode/work/goal",
+            "/expected/episode/work/turn",
+            "/expected/expected_predecessor/episode/work/agent",
+            "/expected/expected_predecessor/episode/work/goal",
+            "/expected/expected_predecessor/episode/work/turn",
+            "/expected/ticket/card",
+        ] {
+            let mut changed = json.clone();
+            *changed.pointer_mut(pointer).unwrap() =
+                serde_json::json!("00000000010000000000000009");
+            let changed: RecoverySubmitParams = serde_json::from_value(changed).unwrap();
+            assert_ne!(recovery_digest(&changed).unwrap(), expected, "{pointer}");
+        }
+        for pointer in [
+            "/expected/episode/origin",
+            "/expected/expected_predecessor/episode/origin",
+            "/expected/expected_predecessor/authorization_lsn",
+            "/expected/ticket/round",
+        ] {
+            let mut changed = json.clone();
+            *changed.pointer_mut(pointer).unwrap() = serde_json::json!(19);
+            let changed: RecoverySubmitParams = serde_json::from_value(changed).unwrap();
+            assert_ne!(recovery_digest(&changed).unwrap(), expected, "{pointer}");
+        }
+    }
+
+    #[test]
+    fn dropped_floor_recovery_reply_keeps_the_original_request_unknown_without_retry() {
+        use super::{Handle, Job};
+        use dudes_proto::rpc::recovery::RecoverySubmitResult;
+        use std::sync::{Arc, mpsc};
+        let sessions = crate::floor_session::FloorSessions::new(
+            "127.0.0.1:43123".parse().unwrap(),
+            Arc::new(dudes_supervisor::testing::FakeClock::frozen(0)),
+        );
+        let (identity, _) = sessions.admitted_for_test("127.0.0.1:43123", "http://127.0.0.1:43123");
+        let digest = identity.digest();
+        let intent: RecoverySubmitParams = serde_json::from_str(INTENT).unwrap();
+        let (sender, jobs) = mpsc::channel();
+        let handle = Handle::new(sender);
+        std::thread::scope(|scope| {
+            let call = scope.spawn(|| handle.submit_floor_recovery(identity, &intent));
+            let Job::RecoverFromFloor {
+                session,
+                intent: queued,
+                reply,
+            } = jobs
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+            else {
+                panic!("exact recovery job");
+            };
+            assert_eq!(session.digest(), digest);
+            assert_eq!(queued, intent);
+            drop(reply);
+            assert_eq!(
+                call.join().unwrap(),
+                RecoverySubmitResult::Unknown {
+                    request_id: intent.request_id
+                }
+            );
+            assert!(matches!(jobs.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        });
+    }
+
+    #[test]
+    fn unsent_floor_recovery_is_refused_with_no_acknowledged_prefix() {
+        use super::Handle;
+        use dudes_proto::rpc::recovery::{
+            RecoveryKnownPrefix, RecoverySubmitRefusal, RecoverySubmitResult,
+        };
+        use std::sync::{Arc, mpsc};
+        let sessions = crate::floor_session::FloorSessions::new(
+            "127.0.0.1:43123".parse().unwrap(),
+            Arc::new(dudes_supervisor::testing::FakeClock::frozen(0)),
+        );
+        let (identity, _) = sessions.admitted_for_test("127.0.0.1:43123", "http://127.0.0.1:43123");
+        let intent: RecoverySubmitParams = serde_json::from_str(INTENT).unwrap();
+        let (sender, jobs) = mpsc::channel();
+        drop(jobs);
+        assert_eq!(
+            Handle::new(sender).submit_floor_recovery(identity, &intent),
+            RecoverySubmitResult::Refused {
+                reason: RecoverySubmitRefusal::Unavailable,
+                prefix: RecoveryKnownPrefix {
+                    required: None,
+                    resume: None
+                }
+            }
         );
     }
 }

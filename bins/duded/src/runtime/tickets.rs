@@ -21,6 +21,8 @@ use dudes_types::{AgentId, CardId, CardStatus, Seq};
 
 use crate::floor_actions::Profile;
 
+mod context;
+
 /// The refusal for `kind`. `state` is the ticket's state when the sentence names it.
 pub(super) fn refusal(kind: TicketRefusal, state: CardStatus) -> RpcError {
     RpcError {
@@ -616,7 +618,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }))
     }
 
-    fn ticket_read(&self, request: TicketReadParams) -> Result<Answered, RpcError> {
+    fn ticket_read(&mut self, request: TicketReadParams) -> Result<Answered, RpcError> {
         let (card, mut ticket) = self.ticket_row(request.card)?;
         ticket.summary = ticket
             .summary
@@ -633,7 +635,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let (wait, tickets) =
             self.with_ticket_facts(|facts| (facts.wait_of(card.id), facts.tickets.to_vec()))?;
         let waiting = wait.map(|wait| self.waiting(wait, card.claimed_by, &tickets));
+        let context = self.ticket_context(&card, &ticket);
         Ok(Answered::TicketRead(Box::new(TicketReadResult {
+            context,
             card,
             ticket,
             position,

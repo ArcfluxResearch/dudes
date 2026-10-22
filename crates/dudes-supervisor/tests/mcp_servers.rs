@@ -4,6 +4,8 @@
 
 use std::path::PathBuf;
 
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{AgentBudget, AutomaticHold, Record, TurnOutcome};
 use dudes_providers::adapter::Adapter;
 use dudes_providers::claude::ClaudeAdapter;
@@ -11,6 +13,7 @@ use dudes_providers::codex::CodexAdapter;
 use dudes_providers::launch::EnvVar;
 use dudes_providers::mcp::{self, DeclaredServers, LoadedServers};
 use dudes_providers::stream::SessionObservation;
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
 use dudes_supervisor::testing::{FakeClock, FakeHost, Harness, Seen};
 use dudes_supervisor::{Command, Input};
 use dudes_types::{AgentId, BreakerSignal, McpServerName, Provider, Usd};
@@ -200,7 +203,40 @@ fn assert_reissued_refused(provider: Provider, adapter: fn() -> Box<dyn Adapter>
         adapter,
     );
     second.journal.clone_from(&first.journal);
+    let recovery_from = second.trace.len();
     second.restart();
+    assert!(
+        second.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    second.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        second.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = second
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    let handled = second.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(second.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
+
     let ended: Vec<&TurnOutcome> = second
         .records()
         .filter_map(|record| match record {
@@ -544,6 +580,23 @@ fn equal_replacement_does_not_activate_but_clear_gives_an_old_owed_turn_a_fresh_
         agent,
         browser: None,
     }));
+    assert_eq!(
+        spawned(&run),
+        count,
+        "Resume does not authorize the owed goal issue"
+    );
+    let expected = run.supervisor.recovery_opportunity(agent).unwrap().expected;
+    let handled = run.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(run.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
+
     assert_eq!(run.open_turn(agent), Some(turn));
     assert_eq!(grants(&run).len(), 1);
     assert!(grants(&run)[0].1.is_empty());
@@ -576,7 +629,36 @@ fn an_unacknowledged_grant_never_spawns_and_recovery_admits_a_fresh_attempt() {
     );
     run.unfsynced
         .remove(&dudes_proto::RecordKind::McpLaunchGranted);
+    let recovery_from = run.trace.len();
     run.restart();
+    assert!(
+        run.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    run.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        run.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = run.supervisor.recovery_opportunity(agent).unwrap().expected;
+    let handled = run.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(run.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
+
     assert_eq!(spawned(&run), 1);
     assert_eq!(grants(&run).len(), 1);
     assert_eq!(
@@ -680,10 +762,7 @@ fn a_launch_parked_before_its_grant_reselects_the_latest_desired_material() {
     assert!(grants(&run).is_empty());
     replace(&mut run, agent, &["b"]);
     let issued_lsn = dudes_types::Lsn(u64::try_from(run.journal.len()).unwrap() + 1);
-    let granted = run.step(Input::Persisted {
-        token: issued_token,
-        lsn: issued_lsn,
-    });
+    let granted = run.step(run.persisted(issued_token, issued_lsn));
     let grant_token = granted
         .iter()
         .find_map(|seen| match seen {
@@ -707,10 +786,7 @@ fn a_launch_parked_before_its_grant_reselects_the_latest_desired_material() {
         })
         .expect("the latest set is granted before dispatch");
     let grant_lsn = dudes_types::Lsn(issued_lsn.0 + 1);
-    let mut ready = run.step(Input::Persisted {
-        token: grant_token,
-        lsn: grant_lsn,
-    });
+    let mut ready = run.step(run.persisted(grant_token, grant_lsn));
     if let Some(token) = ready.iter().find_map(|seen| match seen {
         Seen::Persist { token, entry }
             if matches!(entry.record, Record::HookTokenMinted { .. }) =>
@@ -719,10 +795,7 @@ fn a_launch_parked_before_its_grant_reselects_the_latest_desired_material() {
         }
         _ => None,
     }) {
-        ready = run.step(Input::Persisted {
-            token,
-            lsn: dudes_types::Lsn(grant_lsn.0 + 1),
-        });
+        ready = run.step(run.persisted(token, dudes_types::Lsn(grant_lsn.0 + 1)));
     }
     let spec = ready
         .iter()

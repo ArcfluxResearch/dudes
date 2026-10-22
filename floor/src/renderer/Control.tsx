@@ -11,6 +11,8 @@ import { journalPosition } from './format.ts';
 import { closesPanel, handFocusOnLeave, restoreFocusAfterDialog } from './focus.ts';
 import { StreamReadStatus } from './ReadError.tsx';
 import type { FloorState } from './floor/store.ts';
+import { NotConnected } from './StreamNotice.tsx';
+import { JournalStoppedBanner } from './JournalStoppedBanner.tsx';
 import { waitingOnYou } from './questions.ts';
 import type { WaitingItem } from './questions.ts';
 import { fieldsOf } from './scene/label.ts';
@@ -18,12 +20,13 @@ import { SetupView } from './setup/SetupView.tsx';
 import { SettingsView } from './settings/SettingsView.tsx';
 import { CardDetail } from './BoardPanel.tsx';
 import { NewTicketForm, TicketBoard, TicketNotice } from './ticket/TicketBoard.tsx';
-import { viewConfirmed } from './ticket/model.ts';
+import { ticketWord, viewConfirmed } from './ticket/model.ts';
 import { TicketOffHint } from './ticket/TicketGuidance.tsx';
 import { TicketPanel } from './ticket/TicketPanel.tsx';
 import { workspaceGroups, workspaceLabel } from './workspace.ts';
 import { WorkersList } from './WorkersList.tsx';
 import { HireEntry } from './onboarding/HireEntry.tsx';
+import { isPageView } from '../navigation.ts';
 
 export type ControlView = 'overview' | 'board' | 'log' | 'setup' | 'settings';
 
@@ -40,7 +43,6 @@ export const CONTROL_TITLE_ID = 'control-title';
 
 type BoardOverlay = { readonly kind: 'new' } | { readonly kind: 'card'; readonly id: string } | null;
 
-/** A view button's target: no view when that view is already open beside the office, else the view itself. */
 export function toggledView(open: ControlView | null, pressed: ControlView, focused: boolean): ControlView | null {
   return open === pressed && !focused ? null : pressed;
 }
@@ -74,8 +76,10 @@ export function OverviewSummary({ floor, selectedId, onOpenQuestion, onOpenTicke
       <WaitingSection floor={floor} onOpen={onOpenQuestion} onOpenTicket={onOpenTicket} />
       <dl>
         <div><dt>Current agents</dt><dd>{floor.agents.length}</dd></div>
-        <div><dt>Journal position</dt><dd className="data">{journalPosition(floor.lsn)}</dd></div>
       </dl>
+      <details className="overview-details"><summary>Details</summary>
+        <dl><div><dt>Journal position</dt><dd className="data">{journalPosition(floor.lsn)}</dd></div></dl>
+      </details>
       <p>{selectedId === null
         ? 'Select an agent in the office or in Crew to open its details.'
         : 'The selected agent’s current projection and read-only Live work are open in its details.'}</p>
@@ -103,7 +107,7 @@ export function AgentsRoster({ floor, selectedId, onSelectAgent, onHireAgain, on
         groups.map((group, at) => <section key={group.id === null ? 'unrecorded' : `workspace-${group.id}`}
           className="workspace-roster-group" aria-labelledby={`workspace-roster-${at}`}>
           <h3 id={`workspace-roster-${at}`}>{group.label}</h3>
-          {group.labelsDiffer ? <p className="workspace-roster-note">This workspace has agents with different labels.</p> : null}
+          {group.labelsDiffer ? <p className="workspace-roster-note">This project has agents with different labels.</p> : null}
           <ul aria-label={`Agents in ${group.label}`}>
             {group.agents.map((row) => {
               const fields = fieldsOf(row);
@@ -119,7 +123,7 @@ export function AgentsRoster({ floor, selectedId, onSelectAgent, onHireAgain, on
                     <strong>{value(row.name)}</strong>
                     <span>{value(row.role)} · {value(row.provider)}</span>
                     <span className="agents-roster-workspace">{workspaceLabel(row)}</span>
-                    <span>{value(fields.status)}</span>
+                    <span>{value(ticketWord(floor.cards, row, fields.status) ?? fields.status)}</span>
                     <span>{fields.goal === '' ? 'No goal' : fields.goal}</span>
                     <span>{fields.cost}</span>
                   </button>
@@ -205,7 +209,7 @@ export function ControlNav({ floor, view, onToggle }: {
   );
 }
 
-export function Control({ floor, view, selectedId, onClose, onView, onOpenQuestion, onOpenTicket, onHire, onHireAgain, onGuide }: {
+export function Control({ floor, view, selectedId, onClose, onView, onOpenQuestion, onOpenTicket, onReviewRecovery, onHire, onHireAgain, onGuide }: {
   readonly floor: FloorState;
   readonly view: ControlView;
   readonly selectedId: string | null;
@@ -214,6 +218,8 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
   readonly onOpenQuestion: (agentId: string) => void;
   /** Open the Board on a ticket. */
   readonly onOpenTicket?: (card: string) => void;
+  /** Close the ticket and open the agent's drawer on its recovery view. */
+  readonly onReviewRecovery?: (agent: string) => void;
   /** Open the Hire form, from the new-ticket form when no agent is hired. */
   readonly onHire?: (opener: HTMLElement | null) => void;
   readonly onHireAgain?: (row: RetiredAgentRow, opener: HTMLButtonElement) => void;
@@ -258,7 +264,8 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
     if (!showing) return undefined;
     const node = dialog.current;
     node?.showModal();
-    node?.querySelector<HTMLElement>(overlay?.kind === 'new' ? 'input[name="title"]' : '#card-detail-title')?.focus();
+    (overlay?.kind === 'new' ? node?.querySelector<HTMLElement>('input[name="title"]')
+      : node?.querySelector<HTMLElement>('.ticket-panel') ?? node?.querySelector<HTMLElement>('#card-detail-title'))?.focus();
     return () => { node?.close(); };
   }, [showing]);
   const panels: Record<ControlView, ReactNode> = {
@@ -273,6 +280,7 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
   const label = labelOf(view);
   return (
     <section className="control-panel" id="control-panel" data-view={view} aria-labelledby={CONTROL_TITLE_ID}
+      data-page={isPageView(view) ? 'true' : undefined}
       ref={handFocusOnLeave} data-focus-on-leave={viewButtonId(view)}
       onKeyDown={(event) => { if (closesPanel(event)) { event.stopPropagation(); onClose(); } }}>
       <header className="control-panel-head">
@@ -280,8 +288,8 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
           <h2 id={CONTROL_TITLE_ID} tabIndex={-1} ref={focusOnArrival}>{label}</h2>
           {view === 'board' ? <p className="board-description">Give work a clear next step.</p> : null}
         </div>
-        <button type="button" className="panel-close" aria-label={`Close ${label}`} title="Close (Escape)"
-          onClick={onClose}>×</button>
+        {isPageView(view) ? null : <button type="button" className="panel-close" aria-label={`Close ${label}`} title="Close (Escape)"
+          onClick={onClose}>×</button>}
       </header>
       <div className="control-view">{panels[view]}</div>
       {view === 'board' ? <dialog className="ticket-dialog" id="selected-card-detail" ref={dialog}
@@ -292,13 +300,15 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
         {showing ? <><header className="ticket-dialog-head"><p>{overlay?.kind === 'new' ? 'New ticket' : 'Ticket review'}</p>
           <button type="button" className="ticket-dialog-close" aria-label="Close ticket dialog" onClick={closeOverlay}>×</button>
         </header>
-        {viewConfirmed(floor) ? null : <p className="stream-state" role="alert">View unconfirmed — waiting for the stream</p>}
+        {viewConfirmed(floor) ? null : <NotConnected />}
+        <JournalStoppedBanner stopped={floor.journalStopped} className="stream-state" />
         {overlay?.kind === 'new' ? <div className="ticket-composer"><h3>New ticket</h3>
-          <p>Tell an agent what you want to happen.</p><TicketNotice card={null} />
+          <p>Tell an agent what you want to happen.</p><TicketNotice card={null} floor={floor} />
           {floor.ticket ? null : <TicketOffHint floor={floor} />}
           <NewTicketForm floor={floor} onHire={onHire} onCancel={closeOverlay}
             onCreated={(id) => { opener.current = null; seenCard.current = null; setOverlay({ kind: 'card', id }); }} />
-        </div> : selectedCard?.ticket != null ? <TicketPanel key={selectedCard.id} floor={floor} card={selectedCard} onHire={onHire} />
+        </div> : selectedCard?.ticket != null ? <TicketPanel key={selectedCard.id} floor={floor} card={selectedCard} onHire={onHire}
+          onReviewRecovery={onReviewRecovery} />
           : selectedCard !== null ? <CardDetail key={selectedCard.id} floor={floor} card={selectedCard} />
             : <p role="status">Waiting for the board to confirm this ticket.</p>}
         </> : null}

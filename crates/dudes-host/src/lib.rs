@@ -85,11 +85,15 @@ use dudes_providers::adapter::{HookInstall, ManagedInstall};
 use dudes_providers::launch::LaunchSpec;
 use dudes_supervisor::host::{
     AdoptionKey, HostBoot, KillOutcome, Liveness, MAX_OWNED_TARGET_QUERY_ROWS,
-    NativeBoundaryAcknowledgement, NativeBoundaryReceipt, OwnedTargetEvidence, OwnedTargetState,
-    OwnedTargets, OwnedTargetsStatus, ProbeAnswer, ProcessHost, SpawnResult, liveness,
+    NativeBoundaryAcknowledgement, NativeBoundaryReceipt, NativeGroupPresence, OwnedTargetEvidence,
+    OwnedTargetState, OwnedTargets, OwnedTargetsStatus, ProbeAnswer, ProcessHost, SpawnResult,
+    liveness,
 };
 
 use crate::stream::ExitSlot;
+
+#[cfg(any(target_os = "linux", test))]
+mod procfs_view;
 
 mod kill;
 /// The platform-neutral half of the peer walk. Built under `test` on every platform so its own
@@ -100,6 +104,8 @@ mod peer;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unix_peer;
+
+pub mod tcp_peer;
 
 /// The test-only latch that holds one child's reap open across a `kill`, so the window in which a group sweep can answer `EPERM`
 /// is about can be entered on purpose instead of waited for. Its own documentation says why the
@@ -113,6 +119,8 @@ mod unix_peer;
 #[cfg(test)]
 mod reap_hold;
 
+#[cfg(unix)]
+mod keeper;
 #[cfg(unix)]
 mod sigmask;
 #[cfg(unix)]
@@ -273,6 +281,12 @@ struct Owned {
     reap_confirmed: Arc<AtomicBool>,
     native_receipt: NativeBoundaryReceipt,
     protocol: Option<ProtocolWriter>,
+    /// The write end of this agent's keeper pipe, held exactly as long as this host owns the agent.
+    /// Dropping it ends the agent's process group at once, so nothing that leaves the agent running
+    /// may drop it.
+    #[cfg(unix)]
+    #[expect(dead_code, reason = "held for its Drop, which is what ends the group")]
+    lifeline: Option<keeper::Lifeline>,
 }
 
 struct CurrentNativeTarget {
@@ -306,12 +320,17 @@ impl Drop for Owned {
 /// none.
 pub struct RealHost {
     boot: BootIdentity,
+    pid_namespace: Option<String>,
     children: BTreeMap<u32, Owned>,
     current_native_targets: Mutex<BTreeMap<u32, CurrentNativeTarget>>,
     /// The process relation this host maintains for its children, shared with the local door.
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     peers: PeerProcesses,
     grace: Duration,
+    /// The executable that is started as a keeper beside each agent, when this host keeps agents
+    /// alive only as long as the daemon. `None` starts no keeper.
+    #[cfg(unix)]
+    keeper_executable: Option<PathBuf>,
     /// Where every agent child's standard output goes, when this host was given somewhere to send
     /// it. `None` leaves stdout inherited and opens no pipe at all — which is what
     /// [`RealHost::new`] does and what every host did before there was a sink, so a host with no
@@ -607,13 +626,25 @@ impl RealHost {
         let peers = PeerProcesses::default();
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let peers = PeerProcesses::new(boot.as_host_boot());
+        #[cfg(target_os = "linux")]
+        let pid_namespace = procfs_view::read_current(|| {
+            fs::read_link("/proc/self/ns/pid")
+                .ok()
+                .and_then(|path| path.to_str().map(str::to_owned))
+        })
+        .flatten();
+        #[cfg(not(target_os = "linux"))]
+        let pid_namespace = None;
         Self {
             boot,
+            pid_namespace,
             children: BTreeMap::new(),
             current_native_targets: Mutex::new(BTreeMap::new()),
             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
             peers,
             grace,
+            #[cfg(unix)]
+            keeper_executable: None,
             streams: None,
             #[cfg(test)]
             setup_fault: None,
@@ -647,6 +678,17 @@ impl RealHost {
             streams: Some(streams),
             ..Self::with_grace(grace)
         }
+    }
+
+    /// Start a keeper beside every agent this host launches, from `executable`.
+    ///
+    /// `executable` is the daemon's own binary, which answers `keeper` as a hidden mode. A launch
+    /// whose keeper cannot start fails, and no task reaches that agent.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn with_keeper(mut self, executable: PathBuf) -> Self {
+        self.keeper_executable = Some(executable);
+        self
     }
 
     /// How many children this host owns and has not reaped. The count invariant 10 is about.
@@ -701,8 +743,12 @@ impl RealHost {
 
 #[cfg(test)]
 mod spawn_failure_tests {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use dudes_supervisor::host::{AdoptionKey, NativeGroupPresence, ProbeAnswer};
     use std::ffi::OsString;
     use std::fs;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use std::io;
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
     use std::thread::sleep;
@@ -847,6 +893,136 @@ mod spawn_failure_tests {
         fs::rename(&staged, beat).expect("publish heartbeat");
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn prior_run_queries_observe_an_owned_fixture_without_adopting_it() {
+        let root = tempfile::TempDir::new().unwrap();
+        let mark = root.path().join("leader");
+        let mut command = helper_command("park", &mark);
+        super::unix::prepare(&mut command);
+        let mut child = HelperChild(command.spawn().unwrap());
+        await_beating(&mark);
+        let host = RealHost::new();
+        let pid = child.0.id();
+        let key = host.read_key(pid, &super::plat::grip_adopted(pid)).unwrap();
+        assert_eq!(
+            host.probe_native_leader(&key),
+            ProbeAnswer::StartValue(key.start_time)
+        );
+        assert_eq!(
+            host.native_group_presence(pid),
+            NativeGroupPresence::Present
+        );
+        assert!(host.children.is_empty());
+        assert!(host.owned_targets(1).targets.is_empty());
+        child.kill_and_reap();
+        assert_eq!(host.probe_native_leader(&key), ProbeAnswer::NoSuchPid);
+        assert_eq!(host.native_group_presence(pid), NativeGroupPresence::Absent);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn prior_run_group_queries_keep_permission_and_errors_unresolved() {
+        assert_eq!(
+            super::native_group_presence(&Ok(super::unix::Presence::Absent)),
+            NativeGroupPresence::Absent
+        );
+        assert_eq!(
+            super::native_group_presence(&Ok(super::unix::Presence::Present)),
+            NativeGroupPresence::Present
+        );
+        assert_eq!(
+            super::native_group_presence(&Ok(super::unix::Presence::Unsignallable)),
+            NativeGroupPresence::Unsignallable
+        );
+        assert_eq!(
+            super::native_group_presence(&Err(io::Error::from(io::ErrorKind::PermissionDenied))),
+            NativeGroupPresence::Unknown
+        );
+        let host = RealHost::new();
+        for pid in [0, 1, i32::MAX as u32 + 1, u32::MAX] {
+            assert_eq!(
+                host.native_group_presence(pid),
+                NativeGroupPresence::Unknown
+            );
+            assert_eq!(
+                host.probe_native_leader(&AdoptionKey {
+                    pid,
+                    start_time: 1,
+                    boot: None
+                }),
+                ProbeAnswer::CouldNotAnswer
+            );
+        }
+        assert_eq!(
+            host.probe_native_leader(&AdoptionKey {
+                pid: 42,
+                start_time: 0,
+                boot: None
+            }),
+            ProbeAnswer::CouldNotAnswer
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn prior_run_missing_process_table_entry_requires_direct_pid_absence() {
+        for presence in [
+            super::unix::Presence::Present,
+            super::unix::Presence::Unsignallable,
+        ] {
+            assert_eq!(
+                super::native_leader_observation(ProbeAnswer::NoSuchPid, || Ok(presence)),
+                ProbeAnswer::CouldNotAnswer
+            );
+        }
+        assert_eq!(
+            super::native_leader_observation(ProbeAnswer::NoSuchPid, || Err(
+                io::ErrorKind::PermissionDenied.into()
+            )),
+            ProbeAnswer::CouldNotAnswer
+        );
+        assert_eq!(
+            super::native_leader_observation(ProbeAnswer::NoSuchPid, || Err(io::Error::other(
+                "query failed"
+            ))),
+            ProbeAnswer::CouldNotAnswer
+        );
+        assert_eq!(
+            super::native_leader_observation(ProbeAnswer::NoSuchPid, || Ok(
+                super::unix::Presence::Absent
+            )),
+            ProbeAnswer::NoSuchPid
+        );
+        for answer in [ProbeAnswer::StartValue(99), ProbeAnswer::CouldNotAnswer] {
+            assert_eq!(
+                super::native_leader_observation(answer, || panic!(
+                    "only missing table entries require corroboration"
+                )),
+                answer
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prior_run_namespace_and_start_values_use_this_process_aligned_view() {
+        let mut host = RealHost::new();
+        let namespace = fs::read_link("/proc/self/ns/pid").unwrap();
+        assert_eq!(host.pid_namespace().as_deref(), namespace.to_str());
+        assert!(host.pid_namespace().is_some());
+        let pid = std::process::id();
+        let key = host.read_key(pid, &super::plat::grip_adopted(pid)).unwrap();
+        let expected = if pid == 1 {
+            ProbeAnswer::CouldNotAnswer
+        } else {
+            ProbeAnswer::StartValue(key.start_time)
+        };
+        assert_eq!(host.probe_native_leader(&key), expected);
+        host.pid_namespace = None;
+        assert_eq!(host.pid_namespace(), None);
+    }
+
     struct HelperChild(Child);
 
     impl HelperChild {
@@ -946,34 +1122,6 @@ mod spawn_failure_tests {
             !beating(&mark),
             "the killed and reaped helper must be stopped"
         );
-    }
-
-    #[test]
-    fn missing_empty_or_malformed_initial_heartbeats_never_prove_death() {
-        let root = tempfile::tempdir().expect("invalid heartbeat controls");
-        std::thread::scope(|scope| {
-            for (name, content) in [
-                ("missing", None),
-                ("empty", Some("")),
-                ("malformed", Some("x")),
-            ] {
-                let mark = root.path().join(format!("{name}.pid"));
-                if let Some(content) = content {
-                    fs::write(mark.with_extension("beat"), content)
-                        .expect("plant invalid heartbeat");
-                }
-                scope.spawn(move || {
-                    let error = std::panic::catch_unwind(|| beating(&mark))
-                        .expect_err("an invalid initial heartbeat must not prove death");
-                    let message = error
-                        .downcast_ref::<String>()
-                        .map(String::as_str)
-                        .or_else(|| error.downcast_ref::<&str>().copied())
-                        .expect("heartbeat panic message");
-                    assert!(message.starts_with("no heartbeat at "), "{message}");
-                });
-            }
-        });
     }
 
     fn await_number(path: &Path) -> u32 {
@@ -1603,6 +1751,8 @@ mod spawn_failure_tests {
                 reap_confirmed: Arc::clone(&reap_confirmed),
                 native_receipt: NativeBoundaryReceipt::fresh(),
                 protocol: None,
+                #[cfg(unix)]
+                lifeline: None,
             },
         );
         host.index_native_target(pid);
@@ -2198,6 +2348,37 @@ mod spawn_failure_tests {
     }
 }
 
+/// Run `start` while no other child of this process is being created.
+///
+/// A descriptor is only close-on-exec once it has been marked, and on macOS the standard library
+/// creates a pipe and marks it in two steps. A child forked by another thread between them would
+/// inherit the pipe's write end, and a stray copy of a keeper's write end or an agent's stdin write
+/// end would keep that pipe open after its owner is gone. Every child this crate starts goes
+/// through here so that no fork can fall inside another spawn's two steps.
+///
+/// Code in this process that forks a child without this crate, such as the attached terminal host,
+/// takes the same lock around its fork. `start` must not start a child through this crate.
+pub fn serialize_spawn<T>(start: impl FnOnce() -> T) -> T {
+    static SPAWNING: Mutex<()> = Mutex::new(());
+    let _one_at_a_time = SPAWNING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    start()
+}
+
+pub(crate) fn spawn_serialized(command: &mut Command) -> io::Result<Child> {
+    serialize_spawn(|| command.spawn())
+}
+
+/// End an agent that has no keeper and was never reported as launched: its whole group, then the
+/// leader itself in case the group could not be signalled, and the reap.
+#[cfg(unix)]
+fn end_unkept_agent(mut child: Child) {
+    let _ = unix::signal_group(unix::as_pid(child.id()), kill::Sig::Kill);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// `spec` as a [`Command`]: `argv[0]` is the program and every other element is one argument.
 ///
 /// Invariant 7 in one function — there is no string anywhere on this path, no shell, and no
@@ -2344,7 +2525,7 @@ impl ProcessHost for RealHost {
         #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         let peer_slot = self.peers.activate();
         let launched_at = std::time::Instant::now();
-        let mut child = match command.spawn() {
+        let mut child = match spawn_serialized(&mut command) {
             Ok(child) => child,
             Err(reason) => {
                 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -2386,6 +2567,25 @@ impl ProcessHost for RealHost {
         self.peers.register(pid, grip.job(), peer_slot);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.peers.register(pid, peer_slot);
+
+        // After the peer registration and before the stdin writer, so a task written to stdin only
+        // ever reaches an agent that already has a keeper. Before the child moves to its watcher, so
+        // the agent is not yet reaped and its group still exists to join.
+        #[cfg(unix)]
+        let lifeline = match self
+            .keeper_executable
+            .as_deref()
+            .map(|exe| keeper::start(exe, pid))
+        {
+            None => None,
+            Some(Ok(lifeline)) => Some(lifeline),
+            Some(Err(reason)) => {
+                end_unkept_agent(child);
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                self.peers.exited(pid, peer_slot);
+                return SpawnResult::NotLaunched { reason };
+            }
+        };
 
         // The scoped writer borrows the launch bytes instead of copying a potentially large task,
         // and it cannot outlive this call. The child moves to its stdout watcher before the join,
@@ -2568,6 +2768,8 @@ impl ProcessHost for RealHost {
                     reap_confirmed,
                     native_receipt: NativeBoundaryReceipt::fresh(),
                     protocol: protocol.clone(),
+                    #[cfg(unix)]
+                    lifeline,
                 },
             );
             self.index_native_target(pid);
@@ -2698,6 +2900,57 @@ impl ProcessHost for RealHost {
 
     fn alive(&self, key: &AdoptionKey) -> Liveness {
         liveness(key, self.boot.as_host_boot(), self.probe(key.pid))
+    }
+
+    fn probe_native_leader(&self, key: &AdoptionKey) -> ProbeAnswer {
+        if !(2..=i32::MAX as u32).contains(&key.pid) || key.start_time == 0 {
+            return ProbeAnswer::CouldNotAnswer;
+        }
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let observe = || {
+            native_leader_observation(self.probe(key.pid), || {
+                unix::presence_checked(None, key.pid)
+            })
+        };
+        #[cfg(target_os = "linux")]
+        {
+            procfs_view::read_current(observe).unwrap_or(ProbeAnswer::CouldNotAnswer)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            observe()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            ProbeAnswer::CouldNotAnswer
+        }
+    }
+
+    fn native_group_presence(&self, pid: u32) -> NativeGroupPresence {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            let Some(group) = unix::as_pid(pid).filter(|_| (2..=i32::MAX as u32).contains(&pid))
+            else {
+                return NativeGroupPresence::Unknown;
+            };
+            native_group_presence(&unix::presence_checked(Some(group), pid))
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let _ = pid;
+            NativeGroupPresence::Unknown
+        }
+    }
+
+    fn pid_namespace(&self) -> Option<String> {
+        #[cfg(target_os = "linux")]
+        {
+            procfs_view::read_current(|| self.pid_namespace.clone()).flatten()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.pid_namespace.clone()
+        }
     }
 
     fn owned_targets(&self, limit: usize) -> OwnedTargets {
@@ -2866,6 +3119,32 @@ fn owned_target_state(
             OwnedTargetState::Present
         }
         Ok(kill::TargetState::Present) => OwnedTargetState::UnknownIdentity,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn native_leader_observation(
+    answer: ProbeAnswer,
+    direct: impl FnOnce() -> io::Result<unix::Presence>,
+) -> ProbeAnswer {
+    match answer {
+        ProbeAnswer::NoSuchPid => match direct() {
+            Ok(unix::Presence::Absent) => ProbeAnswer::NoSuchPid,
+            Ok(unix::Presence::Present | unix::Presence::Unsignallable) | Err(_) => {
+                ProbeAnswer::CouldNotAnswer
+            }
+        },
+        ProbeAnswer::StartValue(_) | ProbeAnswer::CouldNotAnswer => answer,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn native_group_presence(answer: &io::Result<unix::Presence>) -> NativeGroupPresence {
+    match answer {
+        Ok(unix::Presence::Present) => NativeGroupPresence::Present,
+        Ok(unix::Presence::Absent) => NativeGroupPresence::Absent,
+        Ok(unix::Presence::Unsignallable) => NativeGroupPresence::Unsignallable,
+        Err(_) => NativeGroupPresence::Unknown,
     }
 }
 

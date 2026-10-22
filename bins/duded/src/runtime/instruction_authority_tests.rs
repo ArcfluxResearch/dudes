@@ -17,9 +17,20 @@ fn append(daemon: &mut TestDaemon, record: Record) -> Lsn {
         at: daemon.ctx.clock.now(),
         record,
     };
-    let lsn = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
-    daemon.sup.handle(Input::Replayed { lsn, entry });
-    assert_eq!(daemon.sup.world().last_applied_lsn, Some(lsn));
+    let append = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let lsn = append.lsn();
+    let through = append.through();
+    let (main, checkpoint) = append.into_parts();
+    for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
+        daemon
+            .sup
+            .handle(
+                Input::Replayed { lsn, entry },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .unwrap();
+    }
+    assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
     assert!(daemon.sup.take_effects().is_empty());
     lsn
 }
@@ -31,10 +42,16 @@ fn observed_hook_end(daemon: &mut TestDaemon, agent: AgentId) -> AttachedTurnEnd
         &serde_json::json!({"hook_event_name":"Stop"}),
     )
     .unwrap();
-    daemon.sup.handle(Input::Hook {
-        hook: HookId(71),
-        event,
-    });
+    daemon
+        .sup
+        .handle(
+            Input::Hook {
+                hook: HookId(71),
+                event,
+            },
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )
+        .unwrap();
     let persist = daemon.sup.take_effects().into_iter().find(|effect| {
         matches!(effect, Effect::Persist { entry, .. } if matches!(entry.record,
             Record::TurnEnded { mode: Mode::Attached, provenance: dudes_types::Provenance::Observed, .. }))
@@ -51,7 +68,10 @@ fn observed_hook_end(daemon: &mut TestDaemon, agent: AgentId) -> AttachedTurnEnd
         )
         .unwrap();
     while let Some(input) = queue.pop_front() {
-        daemon.sup.handle(input);
+        daemon
+            .sup
+            .handle(input, &dudes_supervisor::RecoveryOperation::empty())
+            .unwrap();
     }
     let _ = daemon.sup.take_effects();
     let (mut ends, status) = daemon.sup.world().unmatched_attached_turn_ends(1);
@@ -307,8 +327,18 @@ fn a_later_ticket_cannot_rebind_an_actual_attached_hook_end_before_append() {
     );
     assert_eq!(format!("{:?}", daemon.sup.world()), live_world);
     let valid = finishing(&captured, None, daemon.ctx.clock.now());
-    let lsn = daemon.ctx.append(daemon.sup.world(), &valid).unwrap();
-    daemon.sup.handle(Input::Replayed { lsn, entry: valid });
+    let append = daemon.ctx.append(daemon.sup.world(), &valid).unwrap();
+    let lsn = append.lsn();
+    let (main, checkpoint) = append.into_parts();
+    for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
+        daemon
+            .sup
+            .handle(
+                Input::Replayed { lsn, entry },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .unwrap();
+    }
     assert_eq!(fixture.entries().len(), journal.len() + 1);
     assert_eq!(fixture.entries().last().unwrap().0, lsn);
     assert_eq!(daemon.ctx.projections.last_applied_lsn(), lsn);

@@ -49,7 +49,7 @@ test('Workers lists each agent in its own worktree with branch, state and base, 
   assert.ok(html.includes('<dt>State</dt><dd>in use</dd>'));
   assert.ok(html.includes(`<dt>Started from</dt><dd>Another agent&#x27;s worktree <span class="data">${LEASE}</span></dd>`));
   assert.ok(html.includes('<dd>released, not yet removed</dd>'));
-  assert.ok(html.includes('<dd>The workspace&#x27;s current commit when the agent was hired</dd>'));
+  assert.ok(html.includes('<dd>The project&#x27;s current commit when the agent was hired</dd>'));
   assert.ok(html.includes(`<strong><bdi>${UNNAMED}</bdi></strong>`));
   assert.ok(!html.includes('Linus'));
   assert.ok(!html.includes('Gone'));

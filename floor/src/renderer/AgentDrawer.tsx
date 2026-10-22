@@ -20,6 +20,9 @@ import { LookStatus } from './look/LookEditor.tsx';
 import { MessagesPanel } from './MessagesPanel.tsx';
 import { RenameStatus } from './rename/NameEditor.tsx';
 import { RetireStatus, RetireStrip } from './retire/RetirePanel.tsx';
+import { automaticHoldOf } from './automaticHold.ts';
+import { RESUME_SWITCH } from './ticket/stuck.ts';
+import { RecoveryPanel, RecoveryReceipts } from './recovery/RecoveryPanel.tsx';
 import { switchedOffControls, UnavailableControls } from './settings/SettingsView.tsx';
 import type { AgentRow } from './scene/cast.ts';
 import { TerminalAttach } from './terminal/TerminalPanel.tsx';
@@ -40,20 +43,34 @@ export function Receipts({ floor, leaveFocusTo }: { readonly floor: FloorState; 
       <ControlStatus floor={floor} leaveFocusTo={leaveFocusTo} />
       <RetireStatus floor={floor} leaveFocusTo={leaveFocusTo} />
       <GoalStatus floor={floor} leaveFocusTo={leaveFocusTo} />
+      <RecoveryReceipts floor={floor} />
     </div>
   );
 }
 
-export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
+export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, recoveryRequested, onRecoveryShown, onReadRecoveryReceipt }: {
   readonly floor: FloorState;
   readonly row: AgentRow | null;
   readonly selectedId: string | null;
   readonly onClose: () => void;
   readonly leaveFocusTo: string;
+  readonly recoveryRequested?: { readonly id: string } | null;
+  readonly onRecoveryShown?: () => void;
+  readonly onReadRecoveryReceipt?: (request: string) => void;
 }) {
   const chatAvailable = chatGate(floor, row).open;
   const [detailTab, setDetailTab] = useState<DetailTab>(chatAvailable ? 'chat' : 'overview');
   useEffect(() => { setDetailTab(readDetailTab(undefined, chatAvailable ? 'chat' : 'overview')); }, [chatAvailable]);
+  useEffect(() => {
+    if (recoveryRequested?.id === row?.id && row !== null) setDetailTab('overview');
+  }, [recoveryRequested, row?.id]);
+  useEffect(() => {
+    if (recoveryRequested?.id !== row?.id || row === null || detailTab !== 'overview') return;
+    const heading = document.getElementById('recovery-title');
+    heading?.focus();
+    heading?.scrollIntoView({ block: 'start' });
+    onRecoveryShown?.();
+  }, [recoveryRequested, row?.id, detailTab, onRecoveryShown]);
   const [fullOutput, setFullOutput] = useState(false);
   useEffect(() => { setFullOutput(false); }, [selectedId]);
   useEffect(() => {
@@ -80,7 +97,7 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
           {selection}
         </header>
       ) : (
-        <AgentDetail row={row} selection={selection} streamState={streamStatus(floor)} tab={detailTab} onTabChange={chooseDetailTab}
+        <AgentDetail row={row} cards={floor.cards} selection={selection} streamState={streamStatus(floor)} tab={detailTab} onTabChange={chooseDetailTab}
           chat={chatGate(floor, row).open
             ? <ChatPanel floor={floor} row={row} fullOutput={fullOutput} onFullOutput={setFullOutput} /> : null}
           liveOutput={floor.output.targetId === row.id && (floor.output.chunks.length > 0
@@ -93,7 +110,10 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
               agents={floor.agents} retiredAgents={floor.retiredAgents} /> : null}
           git={floor.git ? <GitPanel row={row} active={detailTab === 'git'} /> : null}
           memory={<MemoryPanel agent={row.id} active={detailTab === 'memory'} crew={floor} />}
-          control={<ControlStrip floor={floor} row={row} />}
+          control={floor.settings && !floor.control && automaticHoldOf(row) !== null
+            ? <p className="settings-guidance">Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</p>
+            : <ControlStrip floor={floor} row={row} />}
+          recovery={<RecoveryPanel floor={floor} row={row} onReadReceipt={onReadRecoveryReceipt} />}
           retire={switchedOff.includes('retire') ? null : <RetireStrip floor={floor} row={row} />}
           terminal={switchedOff.includes('terminal') ? null : <TerminalAttach floor={floor} row={row} />}
           enable={switchedOff.length === 0 ? null : <details className="enable-controls">

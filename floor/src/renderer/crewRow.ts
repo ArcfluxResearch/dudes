@@ -59,7 +59,7 @@ function activityOf(question: string, goal: string): Activity {
 export function crewRowOf(row: AgentRow, cards: readonly CardRow[] = [], context?: LiveActivityContext): CrewRow {
   const fields = fieldsOf(row, context);
   const automaticHold = automaticHoldOf(row);
-  const reason = automaticHold === null ? null : automaticHoldText(automaticHold);
+  const reason = automaticHold === null ? null : automaticHoldText(automaticHold, row.provider);
   const activity: Activity = reason === null ? activityOf(fields.question, fields.goal)
     : { kind: 'hold', line: reason, text: reason, spoken: reason };
   const hold = row.halted === true ? 'halted' : row.paused === true ? 'paused'
@@ -67,9 +67,10 @@ export function crewRowOf(row: AgentRow, cards: readonly CardRow[] = [], context
   const task = activeCard(cards, row.id);
   const engine = shown(row.provider);
   const workspace = workspaceLabel(row);
+  const status = ticketWord(cards, row, fields.status) ?? fields.status;
   const liveActivity = fields.liveActivity;
   const checkout = checkoutOf(row);
-  const facts = [fields.role, engine === '—' ? '' : engine, fields.status, `${fields.usd} spent today`, hold ?? '']
+  const facts = [fields.role, engine === '—' ? '' : engine, status, `${fields.usd} spent today`, hold ?? '']
     .filter((fact) => fact !== '');
   return {
     name: shown(row.name),
@@ -77,12 +78,12 @@ export function crewRowOf(row: AgentRow, cards: readonly CardRow[] = [], context
     role: shown(fields.role),
     engine,
     workspace,
-    status: shown(ticketWord(cards, row.id, fields.status) ?? fields.status),
+    status: shown(status),
     activity,
     liveActivity,
     activeCard: task,
     hold,
     checkout,
-    description: `${facts.join(', ')}. ${activity.spoken}${liveActivity === null ? '' : `. ${liveActivity}`}${task === null ? '' : `. Active card: ${task.title}`}. Workspace: ${workspace}${checkout.worktree === null ? '' : `. ${checkout.worktree}`}${checkout.shared ? `. ${SHARED_DIRECTORY_TEXT}` : ''}`,
+    description: `${facts.join(', ')}. ${activity.spoken}${liveActivity === null ? '' : `. ${liveActivity}`}${task === null ? '' : `. Active card: ${task.title}`}. Project: ${workspace}${checkout.worktree === null ? '' : `. ${checkout.worktree}`}${checkout.shared ? `. ${SHARED_DIRECTORY_TEXT}` : ''}`,
   };
 }

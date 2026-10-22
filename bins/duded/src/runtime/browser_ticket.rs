@@ -19,7 +19,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         session: &crate::floor_session::SessionIdentity,
         request: TicketRequest,
     ) -> TicketReply {
-        if !self.ctx.board_enabled || !session.is_valid() {
+        if !self.ctx.switches.load().board || !session.is_valid() {
             return TicketReply::Forbidden;
         }
         if self.ctx.journal_writes_stopped() && !matches!(request, TicketRequest::Read(_)) {

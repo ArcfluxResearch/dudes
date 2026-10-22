@@ -1,41 +1,18 @@
-//! Invariant 2 for the case the current machine cannot reach: a `TurnIssued` that announced **no**
-//! session is still re-issued by replay, exactly once.
-//!
-//! # The mutant this file exists to catch
-//!
-//! `TurnRow::is_issued_not_spawned` is `matches!(self.status, TurnStatus::Issued)`, and it is the
-//! sole selector for **both** re-issue paths — crash rule (2) on `Input::Started`, and
-//! `loop.resume`. Adding `&& self.session.is_some()` to it drops exactly the rows where the vendor
-//! assigns the id, turning *"replay re-issues an un-spawned turn exactly once"* into *"never
-//! re-issues it"* for that case.
-//!
-//! **The whole suite accepts that mutant today**, because the conjunct is a tautology *under the
-//! current machine*: the only writer of `TurnIssued` hard-codes `session: Some(..)`, so no row with
-//! `None` is ever produced live. It is not a tautology in the **type**: `Record::TurnIssued.session`
-//! is `Option<SessionId>` and its own doc says `None` is what the vendor-assigns-the-id case
-//! writes — the majority of providers. A journal written by a later version, or by a provider
-//! whose adapter does not pin the id, replays into exactly that row.
-//!
-//! So this file does not drive the machine into the state; it **replays** the state, which is the
-//! only way to reach it and is also the way a real daemon would.
-//!
-//! # The control
-//!
-//! The same fixture with `session: Some(..)` re-issues exactly once too. Without it, a machine that
-//! re-issued *nothing* would satisfy the assertion above.
+//! Recovery consent preserves owed tasks, session isolation, and durable no-child refusals.
 
 use std::collections::BTreeMap;
 
-use dudes_proto::{
-    AutomaticHold, Entry, ExitStatus, HoldReason, InstructionBaselineRef, LoopDecision, Record,
-    TurnOutcome,
-};
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
+use dudes_proto::{AutomaticHold, Entry, ExitStatus, InstructionBaselineRef, Record, TurnOutcome};
 use dudes_providers::claude::ClaudeAdapter;
 use dudes_providers::claude::config::ClaudeConfig;
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
 use dudes_supervisor::testing::{FakeClock, FakeHost, Harness, Seen, journal_with_issued_turn};
 use dudes_supervisor::{Command, Input};
 use dudes_types::{
-    AgentId, GoalId, IsolationMode, Lsn, Mode, Provenance, SessionId, Timestamp, TurnId,
+    AgentId, GoalId, IsolationMode, Lsn, Mode, ModelSelection, Provenance, SessionId, Timestamp,
+    TurnId,
 };
 
 /// Distinct, ordered stamps, so the replayed entries look like a real log rather than one moment.
@@ -58,6 +35,13 @@ fn journal_with_confirmed_session_and_issued_resume(
     // Keep the goal clean so only the durable turn task exercises adapter refusal.
     "make the tests pass".clone_into(&mut set.text);
     entries[2].at = at(6);
+    let Record::TurnIssued {
+        model_selection, ..
+    } = &mut entries[2].record
+    else {
+        unreachable!()
+    };
+    *model_selection = Some(ModelSelection::provider_default());
     entries.splice(
         2..2,
         [
@@ -142,6 +126,53 @@ fn spawns(harness: &Harness, turn: TurnId) -> usize {
         .count()
 }
 
+fn consent(
+    harness: &mut Harness,
+    agent: AgentId,
+    source: TurnId,
+    choice: RecoveryChoice,
+    request: u8,
+) {
+    let launches = harness
+        .trace
+        .iter()
+        .filter(|seen| matches!(seen, Seen::Spawn { .. }))
+        .count();
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert_eq!(
+        harness
+            .trace
+            .iter()
+            .filter(|seen| matches!(seen, Seen::Spawn { .. }))
+            .count(),
+        launches,
+        "ordinary Resume cannot admit interrupted work"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .expect("the interrupted boundary offers explicit recovery")
+        .expected;
+    assert_eq!(expected.work.turn, source);
+    let request_id = Hex32::new([request; 32]);
+    let handled = harness.recover(RecoveryCommand {
+        request_id,
+        digest: Hex32::new([request + 1; 32]),
+        expected,
+        choice,
+        attribution: RecoveryAttribution::LocalOperator {
+            pid: 7,
+            uid: Some(42),
+        },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.records().any(|record| matches!(record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == request_id)));
+}
+
 fn assert_fresh_first_launch(harness: &Harness, turn_id: TurnId, old_session: &SessionId) {
     let announced = harness
         .records()
@@ -172,19 +203,22 @@ fn assert_fresh_first_launch(harness: &Harness, turn_id: TurnId, old_session: &S
     );
 }
 
-/// **The mutant's target.** A `TurnIssued` that announced no session is re-issued exactly once.
-///
-/// Adding `&& self.session.is_some()` to `TurnRow::is_issued_not_spawned` makes this zero.
 #[test]
 fn replay_reissues_a_turn_that_announced_no_session_exactly_once() {
-    let (entries, _agent, turn) = journal_with_issued_turn(None, "make the tests pass");
-    let harness = replay(entries);
+    let (entries, agent, turn) = journal_with_issued_turn(None, "make the tests pass");
+    let mut harness = replay(entries);
+    consent(
+        &mut harness,
+        agent,
+        turn,
+        RecoveryChoice::RepeatIssuedFresh,
+        41,
+    );
 
     assert_eq!(
         spawns(&harness, turn),
         1,
-        "invariant 2: an un-spawned turn is re-issued exactly once, whether or not it announced a \
-         session — the selector is the turn's *status*, and a session is not part of it"
+        "exact consent repeats the owed issue once without requiring an announced session"
     );
     assert_eq!(
         harness
@@ -214,15 +248,18 @@ fn a_manually_loaded_prefix_records_its_missing_issue_boundary_once() {
     );
 }
 
-/// The control: the same fixture *with* a session re-issues exactly once too.
-///
-/// Without this arm, a machine that re-issued nothing at all would pass the test above — and that
-/// is precisely the failure the mutant produces, so the pair is what makes the mutant visible.
 #[test]
 fn replay_reissues_a_turn_that_announced_a_session_exactly_once() {
     let session = SessionId::new("11111111-1111-4111-8111-111111111111");
-    let (entries, _agent, turn) = journal_with_issued_turn(Some(session), "make the tests pass");
-    let harness = replay(entries);
+    let (entries, agent, turn) = journal_with_issued_turn(Some(session), "make the tests pass");
+    let mut harness = replay(entries);
+    consent(
+        &mut harness,
+        agent,
+        turn,
+        RecoveryChoice::RepeatIssuedFresh,
+        41,
+    );
 
     assert_eq!(
         spawns(&harness, turn),
@@ -244,10 +281,14 @@ fn a_replayed_turn_without_a_session_is_selected_as_issued_not_spawned() {
     for (entry, position) in entries.into_iter().zip(1u64..) {
         let _ = harness
             .supervisor
-            .handle(dudes_supervisor::Input::Replayed {
-                lsn: dudes_types::Lsn(position),
-                entry,
-            });
+            .handle(
+                dudes_supervisor::Input::Replayed {
+                    lsn: dudes_types::Lsn(position),
+                    entry,
+                },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .unwrap();
     }
     let selected: Vec<TurnId> = harness
         .supervisor
@@ -266,13 +307,18 @@ fn a_replayed_turn_without_a_session_is_selected_as_issued_not_spawned() {
     );
 }
 
-/// Replay refusal ends once without a child and invalidates the confirmed session.
-/// The hold survives restart. Resume announces a fresh First session.
 #[test]
 fn replay_refusal_ends_without_child_clears_session_and_next_turn_is_first() {
     let (entries, agent, _goal, refused_turn, session_a) =
         journal_with_confirmed_session_and_issued_resume("ship\0it");
     let mut harness = replay(entries);
+    consent(
+        &mut harness,
+        agent,
+        refused_turn,
+        RecoveryChoice::RepeatIssuedFresh,
+        41,
+    );
 
     assert_eq!(
         spawns(&harness, refused_turn),
@@ -323,20 +369,22 @@ fn replay_refusal_ends_without_child_clears_session_and_next_turn_is_first() {
     );
     assert!(harness.records().any(|record| matches!(
         record,
-        Record::LoopDecided {
-            decision: LoopDecision::Hold {
-                reason: HoldReason::LaunchRefused
-            },
-            ..
-        }
+        Record::AgentHeld {
+            agent: held,
+            provenance: Provenance::Observed,
+            cause: AutomaticHold::LaunchRefused { reason },
+        } if *held == agent && reason == "task contains a NUL byte at byte offset 4"
     )));
-    harness.drive(Input::Command(Command::Resume {
+    consent(
+        &mut harness,
         agent,
-        browser: None,
-    }));
+        refused_turn,
+        RecoveryChoice::FreshWithRecap,
+        43,
+    );
     let next = harness.open_turn(agent).unwrap_or_else(|| {
         panic!(
-            "explicit Resume admits later clean work; hold: {:?}; records: {:?}",
+            "explicit fresh consent admits later clean work; hold: {:?}; records: {:?}",
             harness.supervisor.world().agents[&agent].automatic_hold,
             harness.records().map(Record::kind).collect::<Vec<_>>()
         )
@@ -383,13 +431,18 @@ fn assert_refused_end(harness: &Harness, agent: dudes_types::AgentId, refused_tu
     assert!(!reason.contains("ship"), "the reason copies no task bytes");
 }
 
-/// The otherwise-identical clean replay remains a spawn, proving that the
-/// new end is selected by typed refusal rather than by replay itself.
 #[test]
 fn replay_still_spawns_a_clean_task_after_refusal_end_is_added() {
-    let (clean_entries, _agent, _goal, clean_turn, _session) =
+    let (clean_entries, agent, _goal, clean_turn, _session) =
         journal_with_confirmed_session_and_issued_resume("ship it");
-    let clean = replay(clean_entries);
+    let mut clean = replay(clean_entries);
+    consent(
+        &mut clean,
+        agent,
+        clean_turn,
+        RecoveryChoice::RepeatIssuedFresh,
+        41,
+    );
     assert_eq!(
         spawns(&clean, clean_turn),
         1,
@@ -409,7 +462,7 @@ fn replay_still_spawns_a_clean_task_after_refusal_end_is_added() {
 /// settings. The refusal ends without a child and carries only the fixed safe display.
 #[test]
 fn replayed_untrusted_settings_refusal_ends_without_a_child() {
-    let (entries, _agent, _goal, turn, session) =
+    let (entries, agent, _goal, turn, session) =
         journal_with_confirmed_session_and_issued_resume("ship it");
     let mut harness = Harness::with_adapter(
         FakeClock::ticking(1_787_394_600_000, 1),
@@ -423,6 +476,13 @@ fn replayed_untrusted_settings_refusal_ends_without_a_child() {
     );
     harness.journal = entries;
     harness.restart();
+    consent(
+        &mut harness,
+        agent,
+        turn,
+        RecoveryChoice::RepeatIssuedFresh,
+        41,
+    );
 
     assert_eq!(spawns(&harness, turn), 0, "the refusal creates no child");
     let ends: Vec<&Record> = harness

@@ -57,7 +57,7 @@ const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 const GRACE = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const G1 = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
 const G2 = '01JBQ8XK2M3N4P5Q6R7S8T9VWZ';
-const CSRF = 'A'.repeat(43);
+const REQUEST_ID = 'A'.repeat(43);
 const FRESH = `${'B'.repeat(42)}E`;
 const LIMITS = Object.freeze({ max_text_bytes: 2048 });
 const TURN_LINE = 'You can change the goal when the current turn ends';
@@ -123,7 +123,7 @@ function daemon(...replies) {
   const calls = [];
   let refreshes = 0;
   let minted = 0;
-  let csrf = CSRF;
+  let held = REQUEST_ID;
   let generation = 1;
   return {
     calls,
@@ -131,11 +131,11 @@ function daemon(...replies) {
     get generation() { return generation; },
     /** A fresh link pasted into the tab: a newer session, whose nonce the next request carries. */
     paste(value) {
-      csrf = value;
+      held = value;
       generation += 1;
     },
     signOut() {
-      csrf = null;
+      held = null;
     },
     async fetch(url, init) {
       calls.push({ url, init });
@@ -145,7 +145,7 @@ function daemon(...replies) {
       if (response instanceof Error) throw response;
       return { status: response.status, text: async () => response.body ?? '' };
     },
-    csrf: () => csrf,
+    signedIn: () => held !== null,
     random(bytes) {
       minted += 1;
       bytes.fill(minted);
@@ -427,7 +427,7 @@ test('a turn_open refusal shows the same line, records nothing, and lets the for
 
 // --- one request ------------------------------------------------------------------------
 
-test('one press posts exactly four fields to /floor/goal with the CSRF header; the text is trimmed', async () => {
+test('one press posts exactly four fields to /floor/goal with the REQUEST_ID header; the text is trimmed', async () => {
   subscribe();
   const net = daemon(CHANGED);
   await change(net, ' \t ship the lexer\r\n');
@@ -438,7 +438,7 @@ test('one press posts exactly four fields to /floor/goal with the CSRF header; t
   assert.equal(init.credentials, 'same-origin');
   assert.equal(init.cache, 'no-store');
   assert.equal(init.referrerPolicy, 'no-referrer');
-  assert.deepEqual(init.headers, { 'Content-Type': 'application/json', 'X-Dudes-CSRF': CSRF });
+  assert.deepEqual(init.headers, { 'Content-Type': 'application/json' });
   const sent = JSON.parse(init.body);
   assert.match(sent.request_id, ATTEMPT_ID);
   assert.equal(init.body,
@@ -584,7 +584,7 @@ test('the check choice offers Keep and then the agent’s workspace checks, with
   assert.deepEqual(goalChecks(html), [
     ['keep', true, 'Keep “Parser tests pass”'],
     ['default', false, 'Parser tests pass'],
-    ['contributing', false, 'CONTRIBUTING.md exists (may already pass)'],
+    ['contributing', false, 'CONTRIBUTING.md exists (may already be true)'],
   ]);
   assert.ok(html.includes('</fieldset><p class="hire-note">Changing the goal runs the check once first. If it already '
     + 'passes, nothing changes.</p>'), 'the choice does not say the check runs once first');
@@ -651,14 +651,14 @@ test('an achieved goal starts with nothing chosen, and Send waits for a choice',
 
 /** What each check refusal of a goal change says, for a check named as `check`. */
 const GOAL_REFUSALS = (check) => ({
-  check_already_passes: `${check} already passes in this workspace, so it cannot show when this goal is done. `
-    + 'Nothing changed. Choose another check, or ask the operator to add one for this goal with dudes workspace '
+  check_already_passes: `${check} already passes in this project, so it cannot show when this goal is done. `
+    + 'Nothing changed. Choose another check, or ask the operator to add one for this goal with dudes project '
     + 'check add.',
   check_did_not_finish: `${check} did not finish, so it cannot show whether it already passes. Nothing changed. `
     + 'Try again, or ask the operator to raise its timeout.',
   check_cannot_run: `${check} could not run, so nothing changed. The daemon log says why.`,
   check_running: 'A check is still running for this Floor session. Try again when it ends.',
-  check_limit: 'This Floor session has run its 32 checks. Open a new Floor session from a terminal (dudes floor open).',
+  check_limit: 'This Floor session has run its 32 checks. Open Dudes to start a new Floor session.',
 });
 
 test('each check refusal reads as the Hire’s with Nothing changed, names the chosen or kept check, and keeps the choice', async () => {
@@ -685,8 +685,8 @@ test('each check refusal reads as the Hire’s with Nothing changed, names the c
   }
 });
 
-test('an agent no enrolled workspace offers checks to can only keep its check, and an already-passing one says why', async () => {
-  const NOT_ENROLLED = 'This agent’s check already passes, and no enrolled workspace offers this agent another check. '
+test('an agent no enrolled project offers checks to can only keep its check, and an already-passing one says why', async () => {
+  const NOT_ENROLLED = 'This agent’s check already passes, and no enrolled project offers this agent another check. '
     + 'Nothing changed. Set a new goal from a terminal (dudes goal) with a check that fails until the goal is met.';
   subscribe({ agents: [enrolled({ workspace: { id: 'repo_9', label: 'Elsewhere' } })], checks: CHECKS });
   await change(daemon(REFUSED('check_already_passes')));
@@ -703,7 +703,7 @@ test('an agent no enrolled workspace offers checks to can only keep its check, a
 
 test('workspace_unavailable and profile_changed say nothing changed, and a changed check refreshes the floor', async () => {
   for (const [reason, text, refreshes] of [
-    ['workspace_unavailable', 'This agent’s workspace is no longer enrolled at its directory, so that check cannot be '
+    ['workspace_unavailable', 'This agent’s project is no longer set up at its folder, so that check cannot be '
       + 'chosen. Nothing changed.', 0],
     ['profile_changed', 'The operator changed that check after this page read it. Nothing changed. Choose again.', 1],
   ]) {
@@ -720,8 +720,8 @@ test('workspace_unavailable and profile_changed say nothing changed, and a chang
 });
 
 test('the response map: every row, and anything off its row proves nothing', () => {
-  const payload = Object.freeze({ request_id: CSRF, agent: ADA, goal: G1, text: 'ship' });
-  const ok = (fields = {}) => JSON.stringify({ request_id: CSRF, state: 'changed', agent: ADA, goal: G2, ...fields });
+  const payload = Object.freeze({ request_id: REQUEST_ID, agent: ADA, goal: G1, text: 'ship' });
+  const ok = (fields = {}) => JSON.stringify({ request_id: REQUEST_ID, state: 'changed', agent: ADA, goal: G2, ...fields });
   const other = 'B'.repeat(43);
   const rows = [
     [200, ok(), { kind: 'changed' }],
@@ -731,18 +731,18 @@ test('the response map: every row, and anything off its row proves nothing', () 
     [200, ok({ agent: GRACE }), { kind: 'unknown' }],
     [200, ok({ state: 'paused' }), { kind: 'unknown' }],
     [200, ok({ text: 'ship' }), { kind: 'unknown' }],
-    [200, JSON.stringify({ request_id: CSRF, state: 'changed', agent: ADA }), { kind: 'unknown' }],
+    [200, JSON.stringify({ request_id: REQUEST_ID, state: 'changed', agent: ADA }), { kind: 'unknown' }],
     [200, 'changed', { kind: 'unknown' }],
-    [202, JSON.stringify({ request_id: CSRF, state: 'pending' }), { kind: 'pending' }],
+    [202, JSON.stringify({ request_id: REQUEST_ID, state: 'pending' }), { kind: 'pending' }],
     [202, JSON.stringify({ request_id: other, state: 'pending' }), { kind: 'unknown' }],
-    [202, JSON.stringify({ request_id: CSRF, state: 'pending', goal: G2 }), { kind: 'unknown' }],
+    [202, JSON.stringify({ request_id: REQUEST_ID, state: 'pending', goal: G2 }), { kind: 'unknown' }],
     [409, '', { kind: 'conflict' }],
     ...['agent_absent', 'agent_halted', 'stale_goal', 'turn_open', 'predicate_claimed', 'predicate_todo',
       'workspace_unavailable', 'profile_changed', 'goal_exhausted', 'check_running', 'check_limit', 'check_cannot_run',
       'check_already_passes', 'check_did_not_finish']
-      .map((reason) => [409, JSON.stringify({ request_id: CSRF, state: 'refused', reason }), { kind: 'refused', reason }]),
-    [409, JSON.stringify({ request_id: CSRF, state: 'refused', reason: 'check_passed' }), { kind: 'unknown' }],
-    [409, JSON.stringify({ request_id: CSRF, state: 'refused', reason: 'stale_control' }), { kind: 'unknown' }],
+      .map((reason) => [409, JSON.stringify({ request_id: REQUEST_ID, state: 'refused', reason }), { kind: 'refused', reason }]),
+    [409, JSON.stringify({ request_id: REQUEST_ID, state: 'refused', reason: 'check_passed' }), { kind: 'unknown' }],
+    [409, JSON.stringify({ request_id: REQUEST_ID, state: 'refused', reason: 'stale_control' }), { kind: 'unknown' }],
     [409, JSON.stringify({ request_id: other, state: 'refused', reason: 'stale_goal' }), { kind: 'unknown' }],
     [403, '', { kind: 'forbidden' }],
     [503, '', { kind: 'unavailable' }],
@@ -891,7 +891,6 @@ test('a 403 on a live session holds every goal form until a fresh session, and a
   assert.match(status(net.generation), /data-goal-session="renewed"/);
   await goal.submitGoal(gate(), net);
   assert.equal(net.calls.length, 2);
-  assert.equal(net.calls[1].init.headers['X-Dudes-CSRF'], FRESH);
 
   // After an unresolved reply, a 403 keeps the request for Check status from a fresh session.
   resetFloorStore();
@@ -909,7 +908,6 @@ test('a 403 on a live session holds every goal form until a fresh session, and a
   subscribe();
   await goal.checkGoalStatus(unresolved);
   assert.equal(unresolved.calls[2].init.body, unresolved.calls[0].init.body);
-  assert.equal(unresolved.calls[2].init.headers['X-Dudes-CSRF'], FRESH);
   assert.deepEqual(goal.getGoalState().outcome, { kind: 'changed' });
 });
 

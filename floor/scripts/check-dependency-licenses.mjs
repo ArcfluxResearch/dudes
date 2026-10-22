@@ -6,10 +6,10 @@ const floorRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const allowed = new Set(['MIT', 'Apache-2.0', 'ISC', 'BSD-3-Clause', 'MPL-2.0']);
 const direct = new Map([
   ['node_modules/@xterm/xterm', '6.0.0'],
-  ['node_modules/react', '19.3.0'],
-  ['node_modules/react-dom', '19.3.0'],
+  ['node_modules/react', '19.3.1'],
+  ['node_modules/react-dom', '19.3.1'],
   ['node_modules/three', '0.186.1'],
-  ['node_modules/vite', '8.3.3'],
+  ['node_modules/vite', '8.3.4'],
   ['node_modules/@vitejs/plugin-react', '6.1.2'],
   ['node_modules/typescript', '6.0.2'],
   ['node_modules/@types/react', '19.3.0'],

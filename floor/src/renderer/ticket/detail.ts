@@ -16,6 +16,10 @@ import type { Wait } from './words.ts';
 
 import { decodeCoverageNote, decodeInstructionReview, sameInstructionWatermark } from './instructions.ts';
 import type { CoverageNote, InstructionReview, InstructionWatermark } from './instructions.ts';
+import { decodeTicketContext } from './context.ts';
+import type { TicketContext } from './context.ts';
+import { getFloorState } from '../floor/store.ts';
+import type { FloorState } from '../floor/store.ts';
 
 const UTF8 = new TextEncoder();
 const MAX_NOTE_BYTES = 8_192;
@@ -32,6 +36,7 @@ const TRUNCATED_FIELDS = Object.freeze(['note', 'title', 'check_label', 'waiting
 export type TruncatedTicketField = (typeof TRUNCATED_FIELDS)[number];
 
 export interface TicketDetail {
+  readonly context: TicketContext | null;
   readonly instruction_review: InstructionReview | null;
   readonly coverage: CoverageNote | null;
   readonly truncated: readonly TruncatedTicketField[];
@@ -93,7 +98,12 @@ export function decodeDetail(body: Record<string, unknown>, card: string): Ticke
   if (ticket.instruction_review != null && review === null) return null;
   const coverage = ticket.coverage == null ? null : decodeCoverageNote(ticket.coverage);
   if (ticket.coverage != null && coverage === null) return null;
+  const context = ticket.context == null ? null : decodeTicketContext(ticket.context);
+  if (ticket.context != null && (context === null || (context.binding !== null
+    && (context.binding.card !== card || context.binding.round !== round
+      || (shown.claimed_by !== undefined && context.binding.claimant !== shown.claimed_by))))) return null;
   return Object.freeze({
+    context,
     instruction_review: review, coverage, truncated: Object.freeze([...truncated]) as readonly TruncatedTicketField[], note: readable(note), project, check: Object.freeze({ id: check.id, label: check.label }), round, reason: why as TicketReason | null,
     summary: words === null ? null : readable(words), result: outcome, position: place, waiting: wait,
   });
@@ -102,6 +112,7 @@ export function decodeDetail(body: Record<string, unknown>, card: string): Ticke
 export type DetailPhase = 'idle' | 'loading' | 'ready' | 'failed';
 
 export interface DetailState {
+  readonly freshness: DetailReadKey | null;
   readonly card: string | null;
   /** The card sequence this reading was taken for. */
   readonly seq: number | null;
@@ -110,9 +121,12 @@ export interface DetailState {
   readonly problem: string | null;
 }
 
-const INITIAL: DetailState = Object.freeze({ card: null, seq: null, phase: 'idle', detail: null, problem: null });
+interface DetailReadKey { readonly card: string; readonly seq: number; readonly epoch: number; readonly cursor: string | null }
+const INITIAL: DetailState = Object.freeze({ card: null, seq: null, phase: 'idle', detail: null, problem: null, freshness: null });
 let state: DetailState = INITIAL;
 let latest = 0;
+let pending: { readonly key: DetailReadKey; readonly promise: Promise<void> } | null = null;
+let desired: { readonly card: CardRow; readonly deps: ControlDeps; readonly key: DetailReadKey } | null = null;
 const listeners = new Set<() => void>();
 
 export function getDetailState(): DetailState {
@@ -129,7 +143,9 @@ export function subscribeToDetail(listener: () => void): () => void {
 /** What a reload does: forget everything. For tests; the page gets a fresh module per load. */
 export function resetDetail(): void {
   state = INITIAL;
-  latest = 0;
+  latest += 1;
+  pending = null;
+  desired = null;
   listeners.clear();
 }
 
@@ -140,7 +156,18 @@ function commit(next: DetailState): void {
 
 /** Whether the panel for `card` must read: the first time, and whenever the ticket moves. */
 export function needsDetail(current: DetailState, card: CardRow): boolean {
-  return current.card !== card.id || current.seq !== card.seq;
+  return !sameKey(current.freshness, readKey(card, getFloorState()));
+}
+
+function readKey(card: CardRow, floor: FloorState): DetailReadKey {
+  return { card: card.id, seq: card.seq, epoch: floor.epoch, cursor: floor.messagesLsn };
+}
+function sameKey(a: DetailReadKey | null, b: DetailReadKey): boolean {
+  return a !== null && a.card === b.card && a.seq === b.seq && a.epoch === b.epoch && a.cursor === b.cursor;
+}
+export function checkDisplayCurrent(current: DetailState, card: CardRow, floor: FloorState): boolean {
+  return current.phase === 'ready' && floor.ticket && floor.journalStopped === null && floor.phase === 'live' && !floor.stale && floor.snapshotEpoch === floor.epoch
+    && floor.messagesLsn !== null && sameKey(current.freshness, readKey(card, floor));
 }
 
 export function editableDetail(current: DetailState, card: CardRow): TicketDetail | null {
@@ -157,24 +184,40 @@ export function reviewedWatermark(current: DetailState, card: CardRow): Instruct
 }
 
 /** Read `card`'s detail. The last reading of the same ticket stays on screen while the next is read. */
-export async function loadDetail(card: CardRow, deps: ControlDeps = browserControlDeps): Promise<void> {
+export function loadDetail(card: CardRow, deps: ControlDeps = browserControlDeps): Promise<void> {
+  const key = readKey(card, getFloorState());
+  desired = { card, deps, key };
+  if (pending !== null && pending.key.card === card.id) return pending.promise;
+  const promise = performRead(card, deps, key);
+  pending = { key, promise };
+  return promise;
+}
+
+async function performRead(card: CardRow, deps: ControlDeps, key: DetailReadKey): Promise<void> {
   const same = state.card === card.id;
   const ticket = ++latest;
-  commit({ card: card.id, seq: card.seq, phase: 'loading', detail: same ? state.detail : null, problem: null });
+  commit({ card: card.id, seq: card.seq, phase: 'loading', detail: same ? state.detail : null, problem: null, freshness: key });
   const outcome = await readTicket(card.id, deps);
   if (ticket !== latest) return;
+  pending = null;
+  if (!sameKey(key, readKey(card, getFloorState()))) {
+    commit({ ...state, phase: 'failed', problem: 'The view changed while the ticket was read. The retained check is history.' });
+    const next = desired;
+    if (next !== null && !sameKey(key, next.key) && sameKey(next.key, readKey(next.card, getFloorState()))) await loadDetail(next.card, next.deps);
+    return;
+  }
   if (outcome.kind === 'done') {
     const detail = decodeDetail(outcome.body, card.id);
     if (detail !== null && typeof outcome.body.card === 'object' && outcome.body.card !== null
       && (outcome.body.card as Record<string, unknown>).seq === card.seq) {
-      commit({ card: card.id, seq: card.seq, phase: 'ready', detail, problem: null });
+      commit({ card: card.id, seq: card.seq, phase: 'ready', detail, problem: null, freshness: key });
       return;
     }
     commit({ card: card.id, seq: card.seq, phase: 'failed', detail: same ? state.detail : null,
-      problem: 'The daemon sent a reply this page could not read.' });
+      problem: 'The daemon sent a reply this page could not read.', freshness: key });
     return;
   }
   commit({ card: card.id, seq: card.seq, phase: 'failed', detail: same ? state.detail : null,
-    problem: problemText(outcome, card.status) });
+    problem: problemText(outcome, card.status), freshness: key });
 }
 

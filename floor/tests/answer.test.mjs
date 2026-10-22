@@ -63,7 +63,7 @@ const GRACE_LSN = '1099511628300';
 const BIG = '18446744073709551615';
 const UNSAFE = '9007199254740993';
 const QUESTION = 'Ship 7f3a9c1e or wait for review?';
-const CSRF = 'A'.repeat(43);
+const REQUEST_ID = 'A'.repeat(43);
 const FRESH = `${'B'.repeat(42)}E`;
 const SIBLING = Object.freeze({ max_text_bytes: 4096 });
 
@@ -97,7 +97,7 @@ function daemon(...replies) {
   const calls = [];
   let refreshes = 0;
   let minted = 0;
-  let csrf = CSRF;
+  let held = REQUEST_ID;
   let generation = 1;
   return {
     calls,
@@ -106,7 +106,7 @@ function daemon(...replies) {
     get generation() { return generation; },
     /** A fresh link pasted into the tab: a newer session, whose nonce the next request carries. */
     paste(value) {
-      csrf = value;
+      held = value;
       generation += 1;
     },
     async fetch(url, init) {
@@ -117,7 +117,7 @@ function daemon(...replies) {
       if (response instanceof Error) throw response;
       return { status: response.status, text: async () => response.body ?? '' };
     },
-    csrf: () => csrf,
+    signedIn: () => held !== null,
     random(bytes) {
       minted += 1;
       bytes.fill(minted);
@@ -243,7 +243,7 @@ test('the answer sibling decodes exactly, and anything else means no form', () =
   }
 });
 
-test('one Send posts exactly four fields to one path with the CSRF header, and question_lsn is the row’s string', async () => {
+test('one Send posts exactly four fields to one path with the REQUEST_ID header, and question_lsn is the row’s string', async () => {
   for (const lsn of [LSN, BIG, UNSAFE]) {
     resetFloorStore();
     answer.resetAnswer();
@@ -257,7 +257,7 @@ test('one Send posts exactly four fields to one path with the CSRF header, and q
       { method: init.method, credentials: init.credentials, cache: init.cache, referrerPolicy: init.referrerPolicy },
       { method: 'POST', credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'no-referrer' },
     );
-    assert.deepEqual(init.headers, { 'Content-Type': 'application/json', 'X-Dudes-CSRF': CSRF });
+    assert.deepEqual(init.headers, { 'Content-Type': 'application/json' });
     const body = JSON.parse(init.body);
     assert.deepEqual(Object.keys(body), ['request_id', 'agent', 'question_lsn', 'text']);
     assert.match(body.request_id, ATTEMPT_ID);
@@ -426,7 +426,7 @@ test('403 with a live snapshot says this page can no longer answer; with a dead 
   html = status();
   assert.match(html, /data-answer-session="ended"/);
   assert.match(html,
-    /Your Floor session has ended or was revoked\. Paste a new link from dudes floor open into this tab’s address bar/);
+    /Your Floor session has ended or was revoked\. Open Dudes to sign in again in this browser/);
   assert.doesNotMatch(html, /answer-success/);
 });
 
@@ -446,28 +446,28 @@ test('503 offers a same-id retry and is never retried by itself', async () => {
 });
 
 test('the response map: every row, and anything off its row proves nothing', () => {
-  const payload = { request_id: CSRF, agent: ADA, question_lsn: BIG, text: 'x' };
-  const ok = { request_id: CSRF, state: 'answered', agent: ADA, question_lsn: BIG };
+  const payload = { request_id: REQUEST_ID, agent: ADA, question_lsn: BIG, text: 'x' };
+  const ok = { request_id: REQUEST_ID, state: 'answered', agent: ADA, question_lsn: BIG };
   const other = 'B'.repeat(43);
   const rows = [
     [200, JSON.stringify(ok), { kind: 'answered' }],
     [200, JSON.stringify({ ...ok, request_id: other }), { kind: 'unknown' }],
     [200, JSON.stringify({ ...ok, agent: GRACE }), { kind: 'unknown' }],
     [200, JSON.stringify({ ...ok, question_lsn: LSN }), { kind: 'unknown' }],
-    [200, `{"request_id":"${CSRF}","state":"answered","agent":"${ADA}","question_lsn":18446744073709551615}`,
+    [200, `{"request_id":"${REQUEST_ID}","state":"answered","agent":"${ADA}","question_lsn":18446744073709551615}`,
       { kind: 'unknown' }],
     [200, JSON.stringify({ ...ok, extra: 1 }), { kind: 'unknown' }],
     [200, JSON.stringify({ ...ok, state: 'pending' }), { kind: 'unknown' }],
     [200, 'answered', { kind: 'unknown' }],
-    [202, JSON.stringify({ request_id: CSRF, state: 'pending' }), { kind: 'pending' }],
-    [202, JSON.stringify({ request_id: CSRF, state: 'pending', agent: ADA }), { kind: 'unknown' }],
+    [202, JSON.stringify({ request_id: REQUEST_ID, state: 'pending' }), { kind: 'pending' }],
+    [202, JSON.stringify({ request_id: REQUEST_ID, state: 'pending', agent: ADA }), { kind: 'unknown' }],
     [202, JSON.stringify({ request_id: other, state: 'pending' }), { kind: 'unknown' }],
     [409, '', { kind: 'conflict' }],
     ...['question_closed', 'agent_attached', 'agent_retired', 'queue_full'].map((reason) => [
-      409, JSON.stringify({ request_id: CSRF, state: 'refused', reason }), { kind: 'refused', reason }]),
-    [409, JSON.stringify({ request_id: CSRF, state: 'refused', reason: 'because' }), { kind: 'unknown' }],
+      409, JSON.stringify({ request_id: REQUEST_ID, state: 'refused', reason }), { kind: 'refused', reason }]),
+    [409, JSON.stringify({ request_id: REQUEST_ID, state: 'refused', reason: 'because' }), { kind: 'unknown' }],
     [409, JSON.stringify({ request_id: other, state: 'refused', reason: 'question_closed' }), { kind: 'unknown' }],
-    [409, JSON.stringify({ request_id: CSRF, state: 'answered', reason: 'question_closed' }), { kind: 'unknown' }],
+    [409, JSON.stringify({ request_id: REQUEST_ID, state: 'answered', reason: 'question_closed' }), { kind: 'unknown' }],
     [403, '', { kind: 'forbidden' }],
     [503, '', { kind: 'unavailable' }],
     [400, '', { kind: 'rejected', status: 400 }],
@@ -555,7 +555,7 @@ test('after a reload the page shows what the journal says is open, and sends not
 
 test('the release gate lets an attempt go only on a confirmed no-effect outcome', async () => {
   const attempt = Object.freeze({
-    payload: { request_id: CSRF, agent: ADA, question_lsn: LSN, text: 'x' }, body: '{}', turnsAtSend: 0,
+    payload: { request_id: REQUEST_ID, agent: ADA, question_lsn: LSN, text: 'x' }, body: '{}', turnsAtSend: 0,
   });
   const outcomes = [
     { kind: 'answered' }, { kind: 'pending' }, { kind: 'unavailable' }, { kind: 'unknown' },
@@ -628,7 +628,7 @@ test('after 202 or 503 and a session end, a same-request_id Check from a new ses
     assert.notEqual(answer.getAnswerState().attempt, null);
     const html = status();
     assert.match(html, /data-answer-session="ended"/);
-    assert.match(html, /into this tab’s address bar: this page keeps the answer\. Check status then asks again with the same request/);
+    assert.match(html, /Open Dudes to sign in again in this browser: this page keeps the answer\. Check status then asks again with the same request/);
     assert.doesNotMatch(html, />Edit and send again</);
     assert.match(html, /<button type="button" aria-disabled="true" aria-busy="false"[^>]*>Check status<\/button>/,
       'Check status is offered with no session to send it on');
@@ -640,14 +640,13 @@ test('after 202 or 503 and a session end, a same-request_id Check from a new ses
     await answer.checkAnswerStatus(net);
     assert.equal(net.calls.length, 3);
     assert.equal(net.calls[2].init.body, net.calls[0].init.body, 'the new session sent a different request');
-    assert.equal(net.calls[2].init.headers['X-Dudes-CSRF'], FRESH);
     assert.deepEqual(answer.getAnswerState().outcome, { kind: 'answered' });
   }
 });
 
 test('after signing in again, a 403’s message speaks for the new session, not the one it was received under', async () => {
   const saysCanAnswer = /under a Floor session this page no longer uses\. This page has signed in again and can answer now/;
-  const saysPasteAgain = /this page can no longer answer with its session\. Paste a new Floor link/;
+  const saysPasteAgain = /this page can no longer answer with its session\. Open Dudes to sign in again/;
   for (const [first, next] of [
     [PENDING, /Check status asks again with the same request, which never answers twice\./],
     [null, /Edit and send again sends it under the new session\./],
@@ -688,7 +687,7 @@ test('after signing in again, a 403’s message speaks for the new session, not 
 
 test('Check status may ask only for an attempt not settled, not let go and not in flight', () => {
   const attempt = Object.freeze({
-    payload: { request_id: CSRF, agent: ADA, question_lsn: LSN, text: 'x' }, body: '{}', turnsAtSend: 0,
+    payload: { request_id: REQUEST_ID, agent: ADA, question_lsn: LSN, text: 'x' }, body: '{}', turnsAtSend: 0,
   });
   const outcomes = [
     null, { kind: 'answered' }, { kind: 'pending' }, { kind: 'unavailable' }, { kind: 'unknown' },

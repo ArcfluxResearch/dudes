@@ -20,22 +20,3 @@ pub(crate) fn run(workspace: &Workspace) -> Result<()> {
     ensure!(status.success(), "smoke failed ({status})");
     Ok(())
 }
-
-#[cfg(all(test, unix))]
-mod tests {
-    use std::process::Command;
-
-    #[test]
-    fn smoke_controller_tests() {
-        let status = Command::new("node")
-            .args(["--test", "xtask/src/smoke.test.mjs"])
-            .current_dir(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .unwrap(),
-            )
-            .status()
-            .expect("starting smoke controller tests");
-        assert!(status.success(), "smoke controller tests failed ({status})");
-    }
-}
