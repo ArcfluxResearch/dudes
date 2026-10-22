@@ -186,9 +186,32 @@ test('a busy answer is retried and the daemon refusals read plainly', async () =
   assert.equal(chat.chatFiles(chat.getChatState(), A)[1].error,
     `This agent's files folder is full (200 MiB). Delete files in ${AGENT_DIR} to make room.`);
 
-  chat.attachChatFiles(gate, [png('c.txt')], deps(async () => reply(200, { busy: true })));
+  const pauses = [];
+  chat.attachChatFiles(gate, [png('c.txt')],
+    deps(async () => reply(200, { busy: true }), { wait: async ms => { pauses.push(ms); } }));
   await chat.chatUploadsSettled();
   assert.equal(chat.chatFiles(chat.getChatState(), A)[2].error, 'The Floor is busy with another upload. Try again.');
+  const total = pauses.reduce((sum, ms) => sum + ms, 0);
+  assert.ok(total >= 30_000 && total <= 33_000, `waited ${total} ms`);
+  assert.ok(pauses[1] > pauses[0], 'the pause grows');
+});
+
+test('a failed chip blocks Send until it is removed', async () => {
+  const gate = live();
+  const log = [];
+  chat.attachChatFiles(gate, [png('ok.txt')], daemon(log));
+  chat.attachChatFiles(gate, [png('bad.txt')], deps(async () => reply(409, { state: 'refused', reason: 'agent_retired' })));
+  await chat.chatUploadsSettled();
+  chat.editChatDraft(A, 'look');
+  const before = log.length;
+  assert.match(chat.chatSendProblem(chat.getChatState(), A), /did not upload/);
+  await chat.submitChat(gate, daemon(log));
+  assert.equal(log.length, before, 'nothing was posted');
+  assert.equal(chat.chatFiles(chat.getChatState(), A).length, 2, 'the chips are kept');
+  assert.match(renderToStaticMarkup(createElement(panel.ChatPanelView, { floor: store.getFloorState(), row: store.getFloorState().agents[0], action: chat.getChatState() })),
+    /class="chat-send" disabled=""[\s\S]*did not upload/);
+  chat.removeChatFile(A, chat.chatFiles(chat.getChatState(), A)[1].id);
+  assert.equal(chat.chatSendProblem(chat.getChatState(), A), null);
 });
 
 test('an Attached agent gets no plus button, ignores pasted and dropped files, and is told why', async () => {

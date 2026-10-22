@@ -177,7 +177,9 @@ export function chatNoteText(chat: ChatState, agent: string): string {
 
 /** Why the next message to `agent` cannot be sent, or `null`. */
 export function chatSendProblem(chat: ChatState, agent: string): string | null {
-  const ready = chatFiles(chat, agent).filter(file => file.status === 'ready');
+  const all = chatFiles(chat, agent);
+  if (all.some(file => file.status === 'failed')) return 'A file did not upload. Remove it, or attach it again, before sending.';
+  const ready = all.filter(file => file.status === 'ready');
   return filesProblem(chatDraft(chat, agent), ready) ?? noteProblem(chatNoteText(chat, agent));
 }
 
@@ -306,8 +308,10 @@ export function decodeChatResponse(status: number, text: string, attempt: ChatAt
 
 let fileSeq = 0;
 let uploads: Promise<void> = Promise.resolve();
-const BUSY_TRIES = 6;
-const BUSY_PAUSE_MS = 400;
+/** Another tab may be sending 10 MiB, so a busy answer is retried for about this long. */
+const BUSY_PATIENCE_MS = 30_000;
+const BUSY_FIRST_PAUSE_MS = 400;
+const BUSY_LONGEST_PAUSE_MS = 3_000;
 
 function setFiles(agent: string, next: readonly ChatFile[]): void {
   const files = new Map(state.files);
@@ -358,7 +362,9 @@ async function uploadOne(agent: string, id: number, file: File, deps: ChatDeps):
   let bytes: Uint8Array<ArrayBuffer>;
   try { bytes = new Uint8Array(await file.arrayBuffer()); } catch { failed('This file could not be read.'); return; }
   const url = `/floor/chat/file?agent=${agent}&name=${encodeURIComponent(file.name)}`;
-  for (let attempt = 0; attempt < BUSY_TRIES; attempt += 1) {
+  let waited = 0;
+  let pause = BUSY_FIRST_PAUSE_MS;
+  while (waited <= BUSY_PATIENCE_MS) {
     if (!chatFiles(state, agent).some(chip => chip.id === id)) return;
     if (!deps.signedIn()) { failed('This page has no Floor session, so nothing was uploaded.'); return; }
     let result;
@@ -368,7 +374,12 @@ async function uploadOne(agent: string, id: number, file: File, deps: ChatDeps):
       result = decodeUpload(response.status, await response.text());
     } catch { failed('The upload did not reach the Floor. Try again.'); return; }
     if (deps.session() !== session) { removeChatFile(agent, id); return; }
-    if (result.kind === 'busy') { await wait(BUSY_PAUSE_MS); continue; }
+    if (result.kind === 'busy') {
+      await wait(pause);
+      waited += pause;
+      pause = Math.min(pause * 2, BUSY_LONGEST_PAUSE_MS);
+      continue;
+    }
     if (result.kind === 'failed') { failed(result.message); return; }
     changeFile(agent, id, { status: 'ready', path: result.path, kept: result.name, error: null });
     return;

@@ -164,6 +164,8 @@ fn names_are_cleaned_to_ascii_with_no_path_in_them() {
         ("../../etc/passwd", "etcpasswd"),
         ("my résumé (final).pdf", "myrsumfinal.pdf"),
         (".bashrc", "bashrc"),
+        ("notes.txt.", "notes.txt"),
+        ("...", "file"),
         ("", "file"),
         (&"a".repeat(200), &"a".repeat(80)),
     ] {
@@ -422,5 +424,122 @@ fn a_second_upload_while_one_is_being_read_is_told_it_is_busy() {
             .count(),
         1
     );
+    finish(floor);
+}
+
+fn send_signed_for(page: &Page, signed_for: &str, sent_to: &str, body: &[u8]) -> common::Reply {
+    let signed = page.signed("POST", signed_for, body);
+    let mut request = head(
+        page,
+        sent_to,
+        body.len(),
+        &signed.header_lines(),
+        "application/octet-stream",
+    );
+    request.extend_from_slice(body);
+    common::send(page.addr, &request)
+}
+
+#[test]
+fn a_request_signed_for_another_target_or_body_is_refused_and_writes_nothing() {
+    let fixture = Fixture::new();
+    let floor = floor(&fixture);
+    let agent = common::hire(&floor.running.handle, fixture.state.path());
+    let other = common::hire(&floor.running.handle, fixture.state.path());
+    let before = fixture.records().len();
+    let signed_for = target(agent, "a.png");
+
+    let wrong_name = send_signed_for(&floor.page, &signed_for, &target(agent, "b.png"), b"same");
+    let wrong_agent = send_signed_for(&floor.page, &signed_for, &target(other, "a.png"), b"same");
+    // The signature covers the body, so sign one and send another of the same length.
+    let signed = floor.page.signed("POST", &signed_for, b"same");
+    let mut request = head(
+        &floor.page,
+        &signed_for,
+        4,
+        &signed.header_lines(),
+        "application/octet-stream",
+    );
+    request.extend_from_slice(b"samf");
+    let altered = common::send(floor.addr, &request);
+
+    for (label, reply) in [
+        ("name", &wrong_name),
+        ("agent", &wrong_agent),
+        ("body", &altered),
+    ] {
+        assert_eq!(reply.status(), 401, "{label}: {}", reply.head);
+    }
+    assert!(!files_dir(&fixture, agent).exists());
+    assert!(!files_dir(&fixture, other).exists());
+    assert_eq!(fixture.records().len(), before);
+    finish(floor);
+}
+
+#[test]
+fn a_refused_upload_frees_the_slot_for_the_next_one() {
+    let fixture = Fixture::new();
+    let floor = floor(&fixture);
+    let agent = common::hire(&floor.running.handle, fixture.state.path());
+    let big = target(agent, "big.bin");
+    let signed = floor.page.signed("POST", &big, b"");
+    let too_big = common::send(
+        floor.addr,
+        &head(
+            &floor.page,
+            &big,
+            TEN_MIB + 1,
+            &signed.header_lines(),
+            "application/octet-stream",
+        ),
+    );
+    assert_eq!(too_big.status(), 413, "{}", too_big.head);
+    let missing = upload(&floor.page, &target(AgentId::NIL, "a.txt"), b"x");
+    assert_eq!(missing.status(), 409, "{}", missing.head);
+
+    let next = upload(&floor.page, &target(agent, "a.txt"), b"x");
+
+    assert_eq!(next.status(), 200, "{}", next.head);
+    assert!(next.json().get("path").is_some());
+    finish(floor);
+}
+
+#[test]
+fn an_agent_retired_after_the_write_loses_the_copy_and_the_upload_is_refused() {
+    let fixture = Fixture::new();
+    let floor = floor(&fixture);
+    let agent = common::hire(&floor.running.handle, fixture.state.path());
+    let folder = files_dir(&fixture, agent);
+    let (reached, release) = floor.running.handle.hold_after_chat_file_write();
+
+    let reply = std::thread::scope(|scope| {
+        let sending = scope.spawn(|| upload(&floor.page, &target(agent, "late.txt"), b"x"));
+        reached
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the write finished");
+        floor
+            .running
+            .handle
+            .ask(Ask::Retire(Box::new(
+                dudes_proto::rpc::agent::RetireParams {
+                    agent,
+                    reason: "retire fixture".into(),
+                },
+            )))
+            .unwrap();
+        // The retirement's delete ran before the upload's write landed in the real order, so put
+        // the copy back the way that write would have left it.
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("0123456789abcdef-late.txt"), b"x").unwrap();
+        release.send(()).unwrap();
+        sending.join().unwrap()
+    });
+
+    assert_eq!(reply.status(), 409, "{}", reply.head);
+    assert_eq!(
+        reply.json(),
+        json!({"state": "refused", "reason": "agent_retired"})
+    );
+    assert!(!folder.exists());
     finish(floor);
 }

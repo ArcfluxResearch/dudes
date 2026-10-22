@@ -2824,13 +2824,16 @@ fn chat_file_response<'a>(handle: &Handle, target: &str, body: &[u8]) -> Respons
         Err(reason) => return refused(reason),
     };
     match store(&dir, &name, body) {
-        Ok(stored) => action_json(
-            200,
-            "OK",
-            &serde_json::json!({
-                "path": stored.path.to_string_lossy(), "name": stored.name, "bytes": stored.bytes
-            }),
-        ),
+        Ok(stored) => match handle.chat_file_kept(agent, &dir) {
+            Err(reason) => refused(reason),
+            Ok(()) => action_json(
+                200,
+                "OK",
+                &serde_json::json!({
+                    "path": stored.path.to_string_lossy(), "name": stored.name, "bytes": stored.bytes
+                }),
+            ),
+        },
         Err(Refusal::Full(folder)) => action_json(
             409,
             "Conflict",

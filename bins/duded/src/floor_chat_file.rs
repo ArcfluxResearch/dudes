@@ -42,8 +42,8 @@ impl Drop for UploadSlot {
     }
 }
 
-/// A name safe to put in a path: ASCII letters, digits, `.`, `_` and `-` only, no leading dot, at
-/// most 80 bytes, and `file` when nothing is left.
+/// A name safe to put in a path: ASCII letters, digits, `.`, `_` and `-` only, no leading or
+/// trailing dot, at most 80 bytes, and `file` when nothing is left.
 pub(crate) fn clean_name(raw: &[u8]) -> String {
     let kept: String = raw
         .iter()
@@ -51,7 +51,7 @@ pub(crate) fn clean_name(raw: &[u8]) -> String {
         .filter(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
         .map(char::from)
         .collect();
-    let trimmed = kept.trim_start_matches('.');
+    let trimmed = kept.trim_matches('.');
     let cut = &trimmed[..trimmed.len().min(MAX_NAME_BYTES)];
     if cut.is_empty() {
         "file".to_owned()
@@ -208,6 +208,7 @@ mod tests {
             "myrsumfinal.pdf"
         );
         assert_eq!(clean_name(b".bashrc"), "bashrc");
+        assert_eq!(clean_name(b"notes.txt."), "notes.txt");
         assert_eq!(clean_name(b""), "file");
         assert_eq!(clean_name(b"..."), "file");
         assert_eq!(clean_name(&[b'a'; 200]), "a".repeat(80));
