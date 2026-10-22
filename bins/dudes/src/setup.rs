@@ -428,12 +428,12 @@ impl Summary {
         if wrote {
             writeln!(
                 out,
-                "\nWrote {}:\n{}",
+                "Wrote {}:\n{}",
                 config.display(),
                 self.changes.trim_end()
             )?;
         } else {
-            writeln!(out, "\n{} already holds these settings.", config.display())?;
+            writeln!(out, "{} already holds these settings.", config.display())?;
         }
         if let Some(views) = &self.views {
             writeln!(out, "{views}")?;
