@@ -132,10 +132,12 @@ test('the Chat sheet follows the visible viewport while a phone keyboard opens a
     const root = createRoot(page.host);
     await act(() => root.render(createElement(ChatPanelView, { floor: floor(), row, action })));
     assert.equal(page.host.style['--chat-viewport-height'], '844px');
+    assert.equal(page.host.getAttribute('data-chat-short'), 'false');
     Object.assign(viewport, { height: 500, offsetTop: 75 });
     viewport.dispatchEvent(new Event('resize'));
     assert.equal(page.host.style['--chat-viewport-height'], '500px');
     assert.equal(page.host.style['--chat-viewport-top'], '75px');
+    assert.equal(page.host.getAttribute('data-chat-short'), 'true');
     viewport.offsetTop = 20;
     viewport.dispatchEvent(new Event('scroll'));
     assert.equal(page.host.style['--chat-viewport-top'], '20px');
@@ -143,10 +145,23 @@ test('the Chat sheet follows the visible viewport while a phone keyboard opens a
     viewport.dispatchEvent(new Event('resize'));
     assert.equal(page.host.style['--chat-viewport-height'], undefined);
     assert.equal(page.host.style['--chat-viewport-top'], undefined);
+    assert.equal(page.host.getAttribute('data-chat-short'), null);
   } finally {
     prototype.closest = closest;
     page.restore();
   }
+});
+
+test('a short Chat sheet reserves its composer and lets the header and tabs scroll under notices', async () => {
+  const html = renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(), row, selectedId: A,
+    onClose() {}, leaveFocusTo: 'crew-toggle' }));
+  assert.match(html, /class="agent-detail-context">[\s\S]*<header class="agent-detail-head">[\s\S]*class="agent-detail-tabs"/);
+  const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
+  assert.match(css, /\.agent-detail-context \{ display: contents; \}/);
+  assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] \{[^}]*grid-template-rows: minmax\(0, auto\) minmax\(0, 1fr\) auto auto/);
+  assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] > \.agent-detail-context \{[^}]*overflow-y: auto/);
+  assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] \.chat-panel \{ display: contents/);
+  assert.match(css, /\[data-chat-short='true'\] \.chat-compose \{ grid-row: 4/);
 });
 
 test('resizing the thread follows the newest reply unless the reader has scrolled away', async () => {

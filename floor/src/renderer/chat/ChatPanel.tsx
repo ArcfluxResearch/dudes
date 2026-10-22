@@ -143,6 +143,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
     const fit = () => {
       drawer.style.setProperty('--chat-viewport-height', `${viewport.height}px`);
       drawer.style.setProperty('--chat-viewport-top', `${viewport.offsetTop}px`);
+      drawer.setAttribute('data-chat-short', String(viewport.height < 600));
     };
     fit();
     viewport.addEventListener('resize', fit);
@@ -152,6 +153,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
       viewport.removeEventListener('scroll', fit);
       drawer.style.removeProperty('--chat-viewport-height');
       drawer.style.removeProperty('--chat-viewport-top');
+      drawer.removeAttribute('data-chat-short');
     };
   }, []);
   useLayoutEffect(() => {
