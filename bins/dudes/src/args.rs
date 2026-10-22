@@ -616,7 +616,8 @@ COMMANDS
         Open Dudes: start the daemon if it is not running, mint a one-time Floor sign-in
         link and open it in your default browser. The link works once, for 60 seconds.
         It stays signed in for up to 30 days, or until a day passes without use. Over
-        SSH, or where no opener is found, it prints the link instead.
+        SSH, or where no opener is found, it prints the link instead. The Dudes launcher
+        that install.sh adds runs this command.
 
     ping
         Ask the daemon for its version, socket and journal position.
