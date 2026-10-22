@@ -284,8 +284,10 @@ pub struct BrowserOnboardingHire {
     /// Digest of the Floor session that admitted the hire.
     #[schemars(with = "String")]
     pub session_digest: Hex32,
-    /// Complete goal minted before the hire append.
-    pub intended_goal: Goal,
+    /// Complete goal minted before the hire append. A hire written since the first task became a
+    /// ticket carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intended_goal: Option<Goal>,
     /// The operator's project trust grant this hire used, when it worked in its own copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_lsn: Option<dudes_types::Lsn>,
@@ -5275,7 +5277,7 @@ mod tests {
                 request_digest: Hex32::new([0xef; 32]),
                 profile_id: "repo_1".into(),
                 session_digest,
-                intended_goal: intended,
+                intended_goal: Some(intended),
                 trust_lsn: None,
             }));
         }

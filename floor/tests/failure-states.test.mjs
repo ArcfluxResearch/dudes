@@ -67,7 +67,7 @@ test('the office reports loading before its renderer is ready', () => {
 test('About explains a page and daemon build mismatch in plain text', () => {
   const settings = { switches: { answer: false, control: false, goal: false, retire: false, terminal: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '0', per_turn_tokens: '0' },
-    providers: [], workspaces: [], about: { daemon_version: '99.0.0', browser_wire_version: 4 } };
+    providers: [], workspaces: [], about: { daemon_version: '99.0.0', browser_wire_version: 5 } };
   const rendered = html(SettingsView, floor({ phase: 'live', epoch: 1, snapshotEpoch: 1, settings }));
   assert.match(rendered, /page and daemon.*different builds/i);
   assert.match(rendered, /99\.0\.0/);

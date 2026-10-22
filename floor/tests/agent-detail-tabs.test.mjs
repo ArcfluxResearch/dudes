@@ -329,7 +329,7 @@ test('with the terminal switch off, the header says how to turn it on', async ()
   const settings = {
     switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
-    providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 4 },
+    providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 5 },
   };
   const hint = /<p class="settings-guidance">Terminal is off\. Turn on Attach terminals under Floor switches in Settings\.<\/p>/;
   assert.match(header(center({ settings, terminal: false })), hint);
@@ -343,7 +343,7 @@ test('the switches that are off fold into one Enable more controls disclosure, w
   const settings = {
     switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
-    providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 4 },
+    providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 5 },
   };
   const DISCLOSURE = /<details class="enable-controls"><summary>Enable more controls <span class="enable-controls-count">(\d)<\/span><\/summary>([\s\S]*?)<\/details>/;
   const hints = (html) => [...html.matchAll(/<p class="settings-guidance">([\s\S]*?)<\/p>/g)]

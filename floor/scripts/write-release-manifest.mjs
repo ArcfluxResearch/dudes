@@ -101,7 +101,7 @@ export function validateRuntimeNotices(notices) {
 }
 
 export function validateBuildContract(contract) {
-  if (contract.schema_version !== 1 || contract.base_path !== '/floor/' || contract.browser_wire_version !== 4) {
+  if (contract.schema_version !== 1 || contract.base_path !== '/floor/' || contract.browser_wire_version !== 5) {
     throw new Error('unsupported Floor build contract');
   }
 }

@@ -247,7 +247,7 @@ const HIRE_OFFERED = /class="hire-submit"/;
 test('the Hire wizard holds on Engine when the enrolled engine is not found, and never on an absent report', () => {
   const missing = { providers: [{ provider: 'claude', program: 'claude', found: false }] };
   subscribe({ onboarding: CATALOG, daemon: missing });
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', goalText: 'Make the tests pass' });
+  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', taskText: 'Make the tests pass' });
   hire.showSection('engine');
   let html = wizard();
   assert.match(html, /data-engine-found="false">Claude is not installed on this computer\./);
@@ -279,7 +279,7 @@ test('the Hire wizard holds on Engine when the enrolled engine is not found, and
 test('the engine block follows the chosen engine', () => {
   const both = { ...CATALOG, workspaces: [{ ...CATALOG.workspaces[0], engines: ['claude', 'codex'] }] };
   subscribe({ onboarding: both, daemon: REPORT });
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'codex', goalText: 'Make the tests pass' });
+  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'codex', taskText: 'Make the tests pass' });
   hire.showSection('engine');
   assert.match(wizard(), /role="alert"><p>Codex is not installed on this computer, so this agent could not start\./);
   assert.match(wizard(), NEXT_DISABLED);

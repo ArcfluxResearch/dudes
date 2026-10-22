@@ -35,7 +35,7 @@ use serde_json::{Value, json};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v4"
+    "/tests/fixtures/floor-release-v5"
 );
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -293,7 +293,7 @@ fn post_copy_at(page: &Page, attempt: char, revision: Option<&str>) -> (u16, Val
         "/floor/onboard",
         &json!({
             "attempt_id": format!("{attempt}{}", "A".repeat(42)),
-            "workspace_id": "repo_1", "name": "Kim", "role": "engineer", "goal_text": "ship",
+            "workspace_id": "repo_1", "name": "Kim", "role": "engineer",
             "check_id": "default",
             "check_revision": common::check_revision_as(
                 "default", "Checks pass", &[common::true_program()], 10, true),

@@ -367,7 +367,7 @@ const HIRE_OFFERED = /class="hire-submit"/;
 test('the Hire wizard holds on Engine while the chosen engine is signed out, offers Sign in, and shows no command', () => {
   const found = { provider: 'claude', program: 'claude', found: true, path: '~/bin/claude' };
   subscribe([{ ...found, sign_in: 'signed_out' }]);
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'claude', goalText: 'Make the tests pass' });
+  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'claude', taskText: 'Make the tests pass' });
   hire.showSection('engine');
   const html = wizard();
   assert.match(html, /role="alert"><p>Claude is installed but not signed in, so this agent could not start\./);
@@ -392,7 +392,7 @@ test('the Hire wizard holds on Engine while the chosen engine is signed out, off
 
 test('a missing engine keeps its install command and Check again, and offers no Sign in', () => {
   subscribe([{ provider: 'claude', program: 'claude', found: false }]);
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'claude', goalText: 'Make the tests pass' });
+  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'claude', taskText: 'Make the tests pass' });
   hire.showSection('engine');
   const html = wizard();
   assert.match(html, /is not installed on this computer/);
@@ -404,7 +404,7 @@ test('a missing engine keeps its install command and Check again, and offers no 
 test('Pi is offered its own terminal only with the Floor terminal on, and never blocks the Hire', () => {
   const pi = [{ provider: 'pi', program: 'pi', found: true, path: '~/bin/pi', sign_in: 'unknown' }];
   const draft = () => {
-    hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'pi', goalText: 'Make the tests pass' });
+    hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'pi', taskText: 'Make the tests pass' });
     hire.showSection('engine');
   };
   subscribe(pi);

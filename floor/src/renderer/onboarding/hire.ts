@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// One Hire: four sections of choices, one request, one truthful answer.
+// One Hire: four sections of choices, one request, one truthful answer, then the first task.
 //
 // The page names an agent, gives it a role, picks one workspace the operator
 // enrolled, one engine the daemon offers for it and one completion check the
-// operator enrolled for it, and writes its first goal. Everything else that
+// operator enrolled for it, and writes its first task. Everything else that
 // decides how the agent runs — folder, command, the check's command, ceilings,
 // isolation, trust — is the daemon's configuration and never a field here. The
-// daemon runs the chosen check once before it hires, writes the agent and its
-// goal to its own journal; the page only asks, and then says what the answer
-// proves.
+// daemon validates the chosen check, hires, and writes the agent to its
+// own journal; the page only asks, and then says what the answer proves.
+//
+// The hire carries no task. Once the daemon answers `complete`, the page makes
+// the first task a ticket in that project with the check the hire named, and
+// gives it to the new agent, exactly as the board's own form does. A ticket that
+// could not be made leaves the typed text where it is and offers to try again; a
+// ticket that could not be given stays in To do with its Give action.
 //
 // What the answer proves is narrow on purpose. Only `complete` is a success.
 // `pending`, a 503 and a lost response prove nothing either way, so the page
-// keeps the attempt and offers to ask again with it; a durable agent without
-// its goal is shown as exactly that. A refusal the daemon made before any
-// effect lets the operator edit and try again.
+// keeps the attempt and offers to ask again with it. A refusal the daemon made
+// before any effect lets the operator edit and try again.
 //
 // The attempt lives here, in this module's memory, and nowhere else: not in
 // the URL, not in browser storage, not in a log. It is minted once, by the
@@ -37,9 +41,10 @@ import type { FloorState } from '../floor/store.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { HIRE_ENGINES, isHireEngine } from './catalog.ts';
 import type { EnrolledWorkspace, HireEngine, OnboardingCatalog } from './catalog.ts';
-import { checkRefusalText, checksFor, isCheckRefusal } from './checks.ts';
-import type { CheckCatalog, CheckRefusal, EnrolledCheck } from './checks.ts';
+import { checksFor } from './checks.ts';
+import type { CheckCatalog, EnrolledCheck } from './checks.ts';
 import { floorFetch } from '../../transport.ts';
+import type { ControlDeps } from '../control/control.ts';
 
 export type SectionKey = 'identity' | 'workspace' | 'engine' | 'briefing';
 
@@ -56,7 +61,7 @@ export const SECTIONS: readonly { readonly key: SectionKey; readonly label: stri
 export const DEFAULT_ROLE = 'engineer';
 
 /** Field limits in UTF-8 bytes, measured after trimming ASCII whitespace. */
-export const LIMITS = Object.freeze({ name: 128, role: 512, goal_text: 2048 });
+export const LIMITS = Object.freeze({ name: 128, role: 512, task: 2048 });
 
 /** What to tell the person about a field's length: nothing until it is near the limit. */
 export function lengthNote(value: string, limit: number): string | null {
@@ -65,10 +70,10 @@ export function lengthNote(value: string, limit: number): string | null {
   return used >= limit * 0.9 ? 'This is almost too long.' : null;
 }
 
-export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine' | 'check_id' | 'goal_text';
+export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine' | 'check_id' | 'first_task';
 
 /** What the page offers a Hire from: the enrolled workspaces, and the checks each offers. */
-export type HireOffer = Pick<FloorState, 'onboarding' | 'checks' | 'agents'>;
+export type HireOffer = Pick<FloorState, 'onboarding' | 'checks' | 'agents' | 'ticket'>;
 
 export const NO_CHECK = 'No completion check is offered for this project, so Hire is unavailable.';
 export const NO_PROJECT_LIST = 'Hire cannot list your projects right now. Reload the page, and check Settings if this stays.';
@@ -81,7 +86,7 @@ export interface HireDraft {
   readonly engine?: HireEngine;
   /** The check chosen, which counts only while the chosen workspace offers it. */
   readonly checkId?: string;
-  readonly goalText: string;
+  readonly taskText: string;
   /**
    * Whether the agent works in its own copy of the project. Absent until the person decides, so a
    * project another agent already works in can start with the box ticked and say why.
@@ -96,8 +101,6 @@ export interface FieldProblem {
   readonly field: FieldName | null;
   readonly section: SectionKey;
   readonly message: string;
-  /** The check refusal this problem reports, when it reports one. */
-  readonly refusal?: CheckRefusal;
 }
 
 /**
@@ -113,7 +116,6 @@ export interface HirePayload {
   readonly check_revision: string;
   readonly name: string;
   readonly role: string;
-  readonly goal_text: string;
   readonly provider?: Exclude<HireEngine, 'claude'>;
   /** Sent only when the agent should work in its own copy of the project. */
   readonly own_copy?: true;
@@ -121,33 +123,15 @@ export interface HirePayload {
   readonly accent?: AccentColour;
 }
 
-/** One attempt: its frozen payload, the serialized body every send reuses, and its check's label. */
+/** One attempt: its frozen payload and the serialized body every send reuses. */
 export interface HireAttempt {
   readonly payload: HirePayload;
   readonly body: string;
-  readonly checkLabel: string;
 }
-
-export type PartialReason =
-  | 'agent_retired' | 'goal_conflict' | 'session_revoked'
-  | 'session_expired' | 'profile_changed' | 'goal_refused';
-
-export const PARTIAL_REASONS: Readonly<Record<PartialReason, string>> = Object.freeze({
-  agent_retired: 'The agent was retired before its goal was set.',
-  goal_conflict: 'Another goal was set on this agent first, and the Hire did not overwrite it.',
-  session_revoked: 'This Floor session was revoked after the agent was hired and before its goal was set.',
-  session_expired: 'This Floor session expired after the agent was hired and before its goal was set.',
-  profile_changed: 'The project changed after the agent was hired, so its goal was not set.',
-  goal_refused: 'The daemon refused the initial goal, for example on a budget or reserve check.',
-});
 
 /** What one answer proves. Only `complete` is a success. */
 export type HireOutcome =
-  | { readonly kind: 'complete'; readonly agent: string; readonly goal: string }
-  | {
-    readonly kind: 'partial'; readonly agent: string; readonly reason: PartialReason;
-    readonly currentGoal: string | null; readonly retired: boolean;
-  }
+  | { readonly kind: 'complete'; readonly agent: string }
   /** 202: in flight or unresolved. No agent. */
   | { readonly kind: 'pending' }
   /** 503: durability could not be established. No agent. */
@@ -163,13 +147,19 @@ export type HireOutcome =
    * page was offered it. Refused before any effect.
    */
   | { readonly kind: 'stale' }
-  /**
-   * 409 refused by the chosen check's run, or by this session's limits on
-   * running checks. Refused before any effect.
-   */
-  | { readonly kind: 'check'; readonly reason: CheckRefusal }
   /** 400 or 413: the request itself was refused before any effect. */
   | { readonly kind: 'rejected'; readonly status: number };
+
+/** What became of the first task once the hire was complete. */
+export type FirstTask =
+  | { readonly phase: 'none' }
+  | { readonly phase: 'making' }
+  /** The ticket was not saved; the typed text is still in the draft. `text` says why. */
+  | { readonly phase: 'not_made'; readonly text: string }
+  /** The ticket is saved. `text` says whether the agent has it; `given` is false when it stays in To do. */
+  | { readonly phase: 'made'; readonly card: string; readonly given: boolean; readonly text: string };
+
+export const TICKETS_OFF = 'Tickets are off, so the first task cannot be started. Turn on tickets, then hire.';
 
 export interface HireState {
   readonly draft: HireDraft;
@@ -186,7 +176,8 @@ export interface HireState {
   readonly askedAtEpoch: number;
   /** The AgentId already revealed on the floor for this outcome. */
   readonly revealed: string | null;
-  readonly revealedKind: 'partial' | 'complete' | null;
+  /** The first task, once the hire is complete. */
+  readonly task: FirstTask;
   readonly prefill: { readonly notes: Readonly<Partial<Record<SectionKey, string>>> } | null;
   /**
    * Whether any reply to this attempt left its effect unknown: `pending`, a 503
@@ -194,12 +185,6 @@ export interface HireState {
    * request did nothing — the earlier one may already have hired.
    */
   readonly uncertain: boolean;
-  /**
-   * The AgentId the daemon recorded for this attempt — from `hired_without_goal`
-   * or `complete` — kept whatever later replies say. An attempt that has hired
-   * an agent is never let go: only its own Check may finish it.
-   */
-  readonly recordedAgent: string | null;
 }
 
 export interface HireResponse {
@@ -217,6 +202,8 @@ export interface HireDeps {
   refresh(): void;
   /** The floor's current subscription epoch. */
   epoch(): number;
+  /** The requests that make and give the first task's ticket; the page's own when absent. */
+  readonly tickets?: ControlDeps;
 }
 
 export const browserHireDeps: HireDeps = {
@@ -231,17 +218,15 @@ export const browserHireDeps: HireDeps = {
   epoch: () => getFloorState().epoch,
 };
 
-const EMPTY_DRAFT: HireDraft = Object.freeze({ name: '', role: '', workspaceId: '', goalText: '' });
+const EMPTY_DRAFT: HireDraft = Object.freeze({ name: '', role: '', workspaceId: '', taskText: '' });
 const INITIAL: HireState = Object.freeze({
   draft: EMPTY_DRAFT, section: 'identity', problem: null, attempt: null,
-  sending: false, outcome: null, askedAtEpoch: 0, revealed: null, uncertain: false, recordedAgent: null,
-  revealedKind: null, prefill: null,
+  sending: false, outcome: null, askedAtEpoch: 0, revealed: null, uncertain: false,
+  prefill: null, task: Object.freeze({ phase: 'none' }),
 });
 
 /** The canonical attempt form: 32 bytes, unpadded base64url, no stray bits. */
 export const ATTEMPT_ID = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
-const PARTIAL_KEYS = Object.freeze(['attempt_id', 'state', 'agent', 'goal', 'reason', 'current_goal', 'retired']);
-const REFUSED_KEYS = Object.freeze(['attempt_id', 'state', 'reason']);
 const UTF8 = new TextEncoder();
 
 let state: HireState = INITIAL;
@@ -267,6 +252,11 @@ export function resetHire(): void {
 function commit(next: HireState): void {
   state = Object.freeze(next);
   for (const listener of [...listeners]) listener();
+}
+
+/** Record what became of the first task. Only the first-task step calls this. */
+export function setFirstTask(task: FirstTask): void {
+  commit({ ...state, task: Object.freeze(task) });
 }
 
 /** Trim only ASCII space, tab, CR and LF, as the daemon does; interior bytes stay. */
@@ -360,8 +350,8 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
   if (workspace !== null && chosenCheck(draft, offer.checks) === null) {
     problems.push({ field: 'check_id', section: 'briefing', message: NO_CHECK });
   }
-  const goal = bounded('The first task', draft.goalText, LIMITS.goal_text, 'Say what the agent should do first.');
-  if (goal !== null) problems.push({ field: 'goal_text', section: 'briefing', message: goal });
+  const task = bounded('The first task', draft.taskText, LIMITS.task, 'Say what the agent should do first.');
+  if (task !== null) problems.push({ field: 'first_task', section: 'briefing', message: task });
   return problems;
 }
 
@@ -393,7 +383,7 @@ export function editDraft(patch: Partial<HireDraft>): void {
 
 export function prepareArchiveHire(row: RetiredAgentRow, floor: FloorState): boolean {
   if (floor.phase !== 'live' || floor.stale || floor.snapshotEpoch !== floor.epoch) return false;
-  const settled = state.outcome?.kind === 'complete' || state.outcome?.kind === 'partial';
+  const settled = state.outcome?.kind === 'complete';
   if (state.sending || (state.attempt !== null
     && !(settled && freshSince(floor, state.askedAtEpoch) && floor.onboarding !== null))) return false;
   const matches = floor.onboarding?.workspaces.filter((space) => space.label === row.workspace_label) ?? [];
@@ -426,13 +416,13 @@ export function prepareArchiveHire(row: RetiredAgentRow, floor: FloorState): boo
           ? `The archived engine was ${HIRE_ENGINES[archived]}. No engine was preselected; choose a project, then an engine it offers.`
           : `This project does not offer the archived ${HIRE_ENGINES[archived]} engine. No engine was preselected.`;
   commit({ ...INITIAL, draft: Object.freeze({ name: row.name, role: row.role, workspaceId,
-    ...(engine === null ? {} : { engine }), goalText: '',
+    ...(engine === null ? {} : { engine }), taskText: '',
     ...(row.character === undefined ? {} : { character: row.character }),
     ...(row.accent === undefined ? {} : { accent: row.accent }) }),
     prefill: Object.freeze({ notes: Object.freeze({
       identity: 'Recorded appearance choices were copied from the archive. Unrecorded choices stay Automatic.',
       workspace, engine: engineNote,
-      briefing: 'The archive does not record the previous goal. Enter a new initial goal.',
+      briefing: 'The archive does not record the previous task. Enter a new first task.',
     }) }) });
   return true;
 }
@@ -482,6 +472,10 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
     commit({ ...state, section: problem.section, problem });
     return;
   }
+  if (!offer.ticket) {
+    commit({ ...state, section: 'briefing', problem: { field: null, section: 'briefing', message: TICKETS_OFF } });
+    return;
+  }
   if (!deps.signedIn()) {
     commit({ ...state, problem: { field: null, section: state.section,
       message: 'This page has no Floor session, so nothing was sent.' } });
@@ -500,15 +494,13 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
     check_revision: check.revision,
     name: trimAsciiSpace(state.draft.name),
     role: trimAsciiSpace(state.draft.role) || DEFAULT_ROLE,
-    goal_text: trimAsciiSpace(state.draft.goalText),
     ...(engine === 'codex' || engine === 'pi' ? { provider: engine } : {}),
     ...(copy.state === 'available' && copy.checked ? { own_copy: true as const } : {}),
     ...(state.draft.character ? { character: state.draft.character } : {}),
     ...(state.draft.accent ? { accent: state.draft.accent } : {}),
   });
-  const attempt: HireAttempt = Object.freeze({ payload, body: JSON.stringify(payload), checkLabel: check.label });
-  commit({ ...state, attempt, sending: true, outcome: null, problem: null, revealed: null, revealedKind: null, uncertain: false,
-    recordedAgent: null });
+  const attempt: HireAttempt = Object.freeze({ payload, body: JSON.stringify(payload) });
+  commit({ ...state, attempt, sending: true, outcome: null, problem: null, revealed: null, uncertain: false });
   await send(attempt, deps);
 }
 
@@ -531,22 +523,12 @@ async function send(attempt: HireAttempt, deps: HireDeps): Promise<void> {
   // session has ended, and a stale workspace means the catalog on screen is
   // old: in each case the answer is in a fresh snapshot, and the refresh drops
   // the catalog until it arrives.
-  const ask = outcome.kind === 'complete' || outcome.kind === 'partial' || outcome.kind === 'refused'
+  const ask = outcome.kind === 'complete' || outcome.kind === 'refused'
     || outcome.kind === 'stale';
   const uncertain = state.uncertain
     || outcome.kind === 'pending' || outcome.kind === 'unavailable' || outcome.kind === 'unknown';
-  const recordedAgent = outcome.kind === 'complete' || outcome.kind === 'partial' ? outcome.agent : state.recordedAgent;
-  const next: HireState = { ...state, sending: false, outcome, uncertain, recordedAgent,
+  const next: HireState = { ...state, sending: false, outcome, uncertain,
     askedAtEpoch: ask ? deps.epoch() : state.askedAtEpoch };
-  if (outcome.kind === 'check' && releasable(next)) {
-    // The offer on screen is still current, unlike after a stale workspace, so
-    // the form comes back at its check choice without waiting for a snapshot.
-    const sessionLimit = outcome.reason === 'check_running' || outcome.reason === 'check_limit';
-    commit({ ...next, attempt: null, outcome: null, revealed: null, revealedKind: null, section: 'briefing',
-      problem: Object.freeze({ field: sessionLimit ? null : 'check_id', section: 'briefing', refusal: outcome.reason,
-        message: checkRefusalText(outcome.reason, attempt.checkLabel, 'hire') }) });
-    return;
-  }
   commit(next);
   if (ask) deps.refresh();
 }
@@ -561,10 +543,9 @@ async function send(attempt: HireAttempt, deps: HireDeps): Promise<void> {
  */
 export function releasable(hire: HireState): boolean {
   const kind = hire.outcome?.kind;
-  // An attempt the journal holds an agent for is never let go, whatever came after.
-  if (hire.sending || hire.recordedAgent !== null) return false;
+  if (hire.sending) return false;
   if (kind === 'conflict') return true;
-  return (kind === 'refused' || kind === 'rejected' || kind === 'stale' || kind === 'check') && !hire.uncertain;
+  return (kind === 'refused' || kind === 'rejected' || kind === 'stale') && !hire.uncertain;
 }
 
 /**
@@ -573,8 +554,7 @@ export function releasable(hire: HireState): boolean {
  */
 export function releaseAttempt(): void {
   if (!releasable(state)) return;
-  commit({ ...state, attempt: null, outcome: null, problem: null, revealed: null, revealedKind: null, uncertain: false,
-    recordedAgent: null });
+  commit({ ...state, attempt: null, outcome: null, problem: null, revealed: null, uncertain: false });
 }
 
 /**
@@ -584,22 +564,24 @@ export function releaseAttempt(): void {
  */
 export function leaveHire(): void {
   const kind = state.outcome?.kind;
-  if (state.sending || (state.attempt !== null && kind !== 'complete') || state === INITIAL) return;
+  const phase = state.task.phase;
+  if (state.sending || phase === 'making' || phase === 'not_made'
+    || (state.attempt !== null && kind !== 'complete') || state === INITIAL) return;
   commit({ ...INITIAL });
 }
 
 /** Start over after a hire the journal holds, with an empty form. */
 export function startAnotherHire(): void {
   const kind = state.outcome?.kind;
-  if (state.sending || (kind !== 'complete' && kind !== 'partial')) return;
+  if (state.sending || kind !== 'complete' || state.task.phase === 'making') return;
   commit({ ...INITIAL });
 }
 
 /** Note that the agent from this outcome has been revealed on the floor. */
 export function markRevealed(agent: string): void {
   const kind = state.outcome?.kind;
-  if (kind !== 'complete' && kind !== 'partial') return;
-  if (state.revealed !== agent || state.revealedKind !== kind) commit({ ...state, revealed: agent, revealedKind: kind });
+  if (kind !== 'complete') return;
+  if (state.revealed !== agent) commit({ ...state, revealed: agent });
 }
 
 /** Send one attempt's body and read what the answer proves. */
@@ -649,9 +631,9 @@ export function decodeHireResponse(status: number, text: string, attemptId: stri
   switch (status) {
     case 200: {
       const body = json(text);
-      return exactly(body, ['attempt_id', 'state', 'agent', 'goal']) && body.attempt_id === attemptId
-        && body.state === 'complete' && isId(body.agent) && isId(body.goal)
-        ? Object.freeze({ kind: 'complete', agent: body.agent, goal: body.goal }) : unknown;
+      return exactly(body, ['attempt_id', 'state', 'agent']) && body.attempt_id === attemptId
+        && body.state === 'complete' && isId(body.agent)
+        ? Object.freeze({ kind: 'complete', agent: body.agent }) : unknown;
     }
     case 202: {
       const body = json(text);
@@ -670,19 +652,9 @@ export function decodeHireResponse(status: number, text: string, attemptId: stri
         && !/[\u0000-\u001f\u007f]/u.test(body.note)) {
         return Object.freeze({ kind: 'refused', note: body.note });
       }
-      if (exactly(body, REFUSED_KEYS)) {
-        if (body.attempt_id !== attemptId || body.state !== 'refused') return unknown;
-        if (body.reason === 'profile_changed') return Object.freeze({ kind: 'stale' });
-        return isCheckRefusal(body.reason) ? Object.freeze({ kind: 'check', reason: body.reason }) : unknown;
-      }
-      if (!exactly(body, PARTIAL_KEYS) || body.attempt_id !== attemptId || body.state !== 'hired_without_goal'
-        || !isId(body.agent) || body.goal !== null || typeof body.retired !== 'boolean'
-        || typeof body.reason !== 'string' || !Object.hasOwn(PARTIAL_REASONS, body.reason)
-        || (body.current_goal !== null && !isId(body.current_goal))) {
-        return unknown;
-      }
-      return Object.freeze({ kind: 'partial', agent: body.agent, reason: body.reason as PartialReason,
-        currentGoal: body.current_goal as string | null, retired: body.retired });
+      return exactly(body, ['attempt_id', 'state', 'reason']) && body.attempt_id === attemptId
+        && body.state === 'refused' && body.reason === 'profile_changed'
+        ? Object.freeze({ kind: 'stale' }) : unknown;
     }
     case 503:
       return Object.freeze({ kind: 'unavailable' });
@@ -692,15 +664,6 @@ export function decodeHireResponse(status: number, text: string, attemptId: stri
     default:
       return unknown;
   }
-}
-
-/**
- * Whether an attempt that hired an agent may Check now: only on a snapshot
- * taken after the daemon last answered, from a live session that offers
- * hiring. A session that has ended would only refuse it again.
- */
-export function mayCheckRecorded(hire: HireState, floor: FloorState): boolean {
-  return freshSince(floor, hire.askedAtEpoch) && floor.onboarding !== null;
 }
 
 /** Whether a snapshot taken after `sinceEpoch` is the view on screen now. */
@@ -731,8 +694,8 @@ export function presenceOf(agent: string, floor: FloorState, sinceEpoch: number)
 /** The agent this outcome should select on the floor now, if any. */
 export function agentToReveal(hire: HireState, floor: FloorState): string | null {
   const outcome = hire.outcome;
-  if (outcome === null || (outcome.kind !== 'complete' && outcome.kind !== 'partial')) return null;
-  if ((hire.revealed === outcome.agent && hire.revealedKind === outcome.kind)
+  if (outcome === null || outcome.kind !== 'complete') return null;
+  if ((hire.revealed === outcome.agent)
     || floor.phase !== 'live' || floor.stale || floor.snapshotEpoch !== floor.epoch) return null;
   return floor.agents.some((row) => row.id === outcome.agent) ? outcome.agent : null;
 }

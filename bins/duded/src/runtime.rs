@@ -70,8 +70,8 @@ use dudes_rpc::{StopFlag, Subscribers};
 #[cfg(feature = "fault-injection")]
 use dudes_supervisor::input::RecoveryStage;
 use dudes_supervisor::input::{
-    BrowserAnswerCommand, BrowserOnboardGoal, BrowserOnboardHire, DurableInputError, Handled,
-    MailWakeRefreshFailure, RecordedAppend, SpendView,
+    BrowserAnswerCommand, BrowserOnboardHire, DurableInputError, Handled, MailWakeRefreshFailure,
+    RecordedAppend, SpendView,
 };
 use dudes_supervisor::{
     Clock, Command, Effect, HookId, Input, KillOutcome, ProcessHost, Rng, SpawnResult, Supervisor,
@@ -340,6 +340,8 @@ enum PumpFailure {
 pub enum OnboardingPausePoint {
     /// After request admission and reservation, before the first append permit.
     BeforeHireAppend,
+    /// The hire's append permit is held; revocation must wait for its fsync.
+    AfterHirePermit,
     /// After the hire frame fsync, before its fold.
     AfterHireFsync,
     /// After the hire fold and before the goal continuation is queued.
@@ -678,7 +680,7 @@ impl OnboardingPause {
                 ..
             } => (
                 Some(Point::BeforeHireAppend),
-                None,
+                Some(Point::AfterHirePermit),
                 Some(Point::AfterHireFsync),
             ),
             Record::GoalSet {
@@ -1459,37 +1461,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     request,
                     reply,
                 } => {
-                    let next = self.onboard(&session, &request);
-                    self.onboard_next(next, session, request, reply);
-                }
-                Job::OnboardChecked {
-                    session,
-                    request,
-                    baseline,
-                    run,
-                    reply,
-                } => {
-                    let next = self.onboard_checked(&session, &request, baseline, run);
-                    self.onboard_next(next, session, request, reply);
+                    let _ = reply.send(self.onboard(&session, &request));
                 }
                 Job::OnboardCopied {
                     session,
                     request,
-                    baseline,
                     worktree,
                     trust,
                     reply,
                 } => {
-                    let next = self.onboard_copied(&session, &request, baseline, worktree, &trust);
-                    self.onboard_next(next, session, request, reply);
-                }
-                Job::OnboardContinue {
-                    session,
-                    request,
-                    reply,
-                } => {
-                    let answer = self.onboard_goal(&session, &request);
-                    let _ = reply.send(OnboardStep::Answer(answer));
+                    let _ = reply.send(self.onboard_copied(&session, &request, worktree, &trust));
                 }
                 Job::InspectRecoveryFromFloor {
                     session,
@@ -2429,36 +2410,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .collect()
     }
 
-    /// Answer a browser hire's job, or hand its reply to the job that appends its goal.
-    fn onboard_next(
-        &mut self,
-        next: OnboardNext,
-        session: crate::floor_session::SessionIdentity,
-        request: OnboardRequest,
-        reply: std::sync::mpsc::Sender<OnboardStep>,
-    ) {
-        match next {
-            OnboardNext::Reply(step) => {
-                let _ = reply.send(step);
-            }
-            OnboardNext::Goal => {
-                self.ctx
-                    .onboarding_pause
-                    .hit(OnboardingPausePoint::BetweenEffects);
-                self.handle.onboard_continue(session, request, reply);
-            }
-        }
-    }
-
     /// A browser hire's first job: the index's answer for an attempt it holds, else the new
-    /// attempt's admission and then its check's run, or the hire itself for a check that may
-    /// already pass. A partial attempt's retry runs its check again before its goal's append.
+    /// attempt's admission and the hire itself.
     fn onboard(
         &mut self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
-    ) -> OnboardNext {
-        let answer = |answer| OnboardNext::Reply(OnboardStep::Answer(answer));
+    ) -> OnboardStep {
+        let answer = OnboardStep::Answer;
         let existing = self
             .ctx
             .onboarding_index
@@ -2469,153 +2428,32 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             if attempt.metadata.request_digest != request.request_digest {
                 return answer(Err(OnboardRefusal::Conflict));
             }
-            if attempt.goal_set {
-                return answer(Ok(OnboardOutcome::Complete {
-                    attempt_id: request.attempt_wire.clone(),
-                    agent: attempt.agent,
-                    goal: attempt.metadata.intended_goal.id,
-                }));
-            }
-        }
-        if self.ctx.journal_writes_stopped() {
-            // An indexed hire may already be durable; keep its reservation pending until replay.
-            // An unindexed request is refused before any effect in this invocation, so its
-            // newly acquired reservation can be released.
-            return answer(Err(if existing.is_some() {
-                OnboardRefusal::Unavailable
-            } else {
-                OnboardRefusal::UnavailableNoEffect
+            return answer(Ok(OnboardOutcome::Complete {
+                attempt_id: request.attempt_wire.clone(),
+                agent: attempt.agent,
             }));
         }
-        let Some(attempt) = existing else {
-            return self.onboard_new(session, request);
-        };
-        if let Some(partial) = self.onboarding_goal_refusal(session, request, &attempt) {
-            return answer(Ok(partial));
-        }
-        let intended = &attempt.metadata.intended_goal;
-        let Predicate::Command { argv, timeout_s } = intended.predicate.clone() else {
-            return OnboardNext::Goal;
-        };
-        if crate::goal_replacement::may_already_pass(intended) {
-            return OnboardNext::Goal;
-        }
-        // The hire is durable, so a check that cannot run now, beside the agent's own work or past
-        // a session limit, is not a refusal of the hire. Nothing happened here, so the answer
-        // releases the request's guard and the page's Check status asks again; the onboarding
-        // index, not the guard, holds the attempt.
-        if self.work_beside(attempt.agent) {
+        if self.ctx.journal_writes_stopped() {
+            // Nothing is indexed, so this request has appended nothing: its newly acquired
+            // reservation can be released.
             return answer(Err(OnboardRefusal::UnavailableNoEffect));
         }
-        let Ok(run) = self
-            .ctx
-            .baselines
-            .start_browser(Some(attempt.agent), session.digest())
-        else {
-            return answer(Err(OnboardRefusal::UnavailableNoEffect));
-        };
-        let Some(cwd) = self
-            .sup
-            .world()
-            .agents
-            .get(&attempt.agent)
-            .map(|row| row.cwd.clone())
-        else {
-            self.ctx.baselines.end(run);
-            return answer(Err(OnboardRefusal::Unavailable));
-        };
-        match self.start_baseline(run, argv, timeout_s, cwd) {
-            Ok(Answered::CheckRunning(ticket)) => OnboardNext::Reply(OnboardStep::Check {
-                ticket: *ticket,
-                on_refusal: Some(OnboardOutcome::Partial {
-                    attempt_id: request.attempt_wire.clone(),
-                    agent: attempt.agent,
-                    reason: "goal_refused",
-                    current_goal: None,
-                    retired: false,
-                }),
-            }),
-            _ => answer(Err(OnboardRefusal::Unavailable)),
-        }
+        self.onboard_new(session, request)
     }
 
-    /// A new browser hire: the new-attempt validation, the admission, then its check's run or, for a check
-    /// that may already pass, the hire.
+    /// A new browser hire: the new-attempt validation, the admission, then the hire. The check the
+    /// hire names is validated here and run when the first ticket starts, not before the hire.
     fn onboard_new(
         &mut self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
-    ) -> OnboardNext {
-        let answer = |answer| OnboardNext::Reply(OnboardStep::Answer(answer));
-        // The goal text becomes the agent's goal, which no launch can carry with
-        // U+0000 in it. This validates a new attempt only: an attempt the index
-        // already holds never reaches it, whatever its recorded goal holds.
-        if request.goal_text.contains('\0') || request.check.is_none() {
-            return answer(Err(OnboardRefusal::InvalidInput));
-        }
-        let (profile, check) = match self.onboarding_admission(session, request) {
-            Ok(admitted) => admitted,
-            Err(refusal) => return answer(Err(refusal)),
-        };
-        if check.may_already_pass {
-            return self.hire_onboarded(
-                session,
-                request,
-                &profile,
-                &check,
-                CheckBaseline::MayAlreadyPass,
-                None,
-            );
-        }
-        let Predicate::Command { argv, timeout_s } = check.predicate.clone() else {
-            return answer(Err(OnboardRefusal::Forbidden));
-        };
-        let run = match self.ctx.baselines.start_browser(None, session.digest()) {
-            Ok(run) => run,
-            Err(limit) => return answer(Err(OnboardRefusal::Check(limit.reason()))),
-        };
-        match self.start_baseline(run, argv, timeout_s, profile.cwd.clone()) {
-            Ok(Answered::CheckRunning(ticket)) => OnboardNext::Reply(OnboardStep::Check {
-                ticket: *ticket,
-                on_refusal: None,
-            }),
-            _ => answer(Err(OnboardRefusal::UnavailableNoEffect)),
-        }
-    }
-
-    /// A browser hire once its check ran and did not pass: the new attempt's admission again,
-    /// then the hire, or for a retried partial attempt, its goal's append.
-    fn onboard_checked(
-        &mut self,
-        session: &crate::floor_session::SessionIdentity,
-        request: &OnboardRequest,
-        baseline: CheckBaseline,
-        run: u64,
-    ) -> OnboardNext {
-        self.ctx.baselines.end(run);
-        if !self.ctx.switches.load().hire {
-            return OnboardNext::Reply(OnboardStep::Answer(Err(OnboardRefusal::Check(ACTION_OFF))));
-        }
-        let indexed = self
-            .ctx
-            .onboarding_index
-            .attempt(request.attempt_id)
-            .is_some();
-        if self.exited || self.ctx.journal_writes_stopped() {
-            return OnboardNext::Reply(OnboardStep::Answer(Err(if indexed {
-                OnboardRefusal::Unavailable
-            } else {
-                OnboardRefusal::UnavailableNoEffect
-            })));
-        }
-        if indexed {
-            return OnboardNext::Goal;
+    ) -> OnboardStep {
+        if request.check.is_none() {
+            return OnboardStep::Answer(Err(OnboardRefusal::InvalidInput));
         }
         match self.onboarding_admission(session, request) {
-            Ok((profile, check)) => {
-                self.hire_onboarded(session, request, &profile, &check, baseline, None)
-            }
-            Err(refusal) => OnboardNext::Reply(OnboardStep::Answer(Err(refusal))),
+            Ok((profile, _)) => self.hire_onboarded(session, request, &profile, None),
+            Err(refusal) => OnboardStep::Answer(Err(refusal)),
         }
     }
 
@@ -2644,15 +2482,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     /// The copy a new hire asks for, as the params the shared worktree path takes, with the
     /// grant it rests on. The browser sends no trust: the operator's grant is read from the journal.
-    fn copy_step(
-        &self,
-        request: &OnboardRequest,
-        profile: &Profile,
-        baseline: dudes_proto::CheckBaseline,
-    ) -> OnboardNext {
+    fn copy_step(&self, request: &OnboardRequest, profile: &Profile) -> OnboardStep {
         use crate::floor_actions::CopyRefusal;
-        let refuse =
-            |why| OnboardNext::Reply(OnboardStep::Answer(Err(OnboardRefusal::OwnCopy(why))));
+        let refuse = |why| OnboardStep::Answer(Err(OnboardRefusal::OwnCopy(why)));
         let Some(grant) = self.sup.world().workspace_trust.get(&profile.id) else {
             return refuse(CopyRefusal::NotTrusted(profile.id.clone()));
         };
@@ -2682,11 +2514,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             from: None,
             mcp_servers: Vec::new(),
         };
-        OnboardNext::Reply(OnboardStep::Copy {
+        OnboardStep::Copy {
             params: Box::new(params),
-            baseline,
             trust: Box::new(ticket),
-        })
+        }
     }
 
     /// The validation of a new hire, with the check it names: enrolled for the
@@ -2754,12 +2585,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
         profile: &Profile,
-        check: &crate::floor_actions::EnrolledCheck,
-        baseline: CheckBaseline,
         copy: Option<(crate::worktree::hire::LeaseView, dudes_types::Lsn)>,
-    ) -> OnboardNext {
+    ) -> OnboardStep {
         if request.own_copy && copy.is_none() {
-            return self.copy_step(request, profile, baseline);
+            return self.copy_step(request, profile);
         }
         // Seal before the hire command can reach the supervisor, as `LoopControl::hire` does. A
         // browser first hire ends the pre-agent epoch exactly as a local one: a connection that
@@ -2783,12 +2612,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 cwd,
                 budget: profile.agent_budget,
                 isolation: browser_isolation(request.provider, profile),
-                goal_text: request.goal_text.clone(),
-                completion_check: check.reference(),
-                baseline: Some(baseline),
-                predicate: check.predicate.clone(),
-                goal_budget: profile.goal_budget,
-                hop_cap: profile.hop_cap,
                 attempt_id: request.attempt_id,
                 request_digest: request.request_digest,
                 profile_id: profile.id.clone(),
@@ -2798,8 +2621,22 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 trust_lsn,
             })),
         ) {
-            Ok(()) => OnboardNext::Goal,
-            Err(refusal) => OnboardNext::Reply(OnboardStep::Answer(Err(refusal))),
+            Ok(()) => {
+                self.ctx
+                    .onboarding_pause
+                    .hit(OnboardingPausePoint::BetweenEffects);
+                OnboardStep::Answer(
+                    self.ctx
+                        .onboarding_index
+                        .attempt(request.attempt_id)
+                        .map(|attempt| OnboardOutcome::Complete {
+                            attempt_id: request.attempt_wire.clone(),
+                            agent: attempt.agent,
+                        })
+                        .ok_or(OnboardRefusal::Unavailable),
+                )
+            }
+            Err(refusal) => OnboardStep::Answer(Err(refusal)),
         }
     }
 
@@ -2809,12 +2646,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         &mut self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
-        baseline: CheckBaseline,
         worktree: dudes_types::WorktreeId,
         trust: &crate::worktree::hire::TrustTicket,
-    ) -> OnboardNext {
+    ) -> OnboardStep {
         use crate::floor_actions::CopyRefusal;
-        let answer = |answer| OnboardNext::Reply(OnboardStep::Answer(answer));
+        let answer = OnboardStep::Answer;
         if !self.ctx.switches.load().hire {
             return answer(Err(OnboardRefusal::Check(ACTION_OFF)));
         }
@@ -2829,7 +2665,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         {
             return answer(Err(OnboardRefusal::Unavailable));
         }
-        let (profile, check) = match self.onboarding_admission(session, request) {
+        let (profile, _) = match self.onboarding_admission(session, request) {
             Ok(admitted) => admitted,
             Err(refusal) => return answer(Err(refusal)),
         };
@@ -2857,201 +2693,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         ) {
             return answer(Err(OnboardRefusal::SharedFolder(refusal)));
         }
-        self.hire_onboarded(
-            session,
-            request,
-            &profile,
-            &check,
-            baseline,
-            Some((lease, trust.lsn)),
-        )
-    }
-
-    /// The initial goal's append for a hire the index holds.
-    fn onboard_goal(
-        &mut self,
-        session: &crate::floor_session::SessionIdentity,
-        request: &OnboardRequest,
-    ) -> Result<OnboardOutcome, OnboardRefusal> {
-        let attempt = self
-            .ctx
-            .onboarding_index
-            .attempt(request.attempt_id)
-            .cloned()
-            .ok_or(OnboardRefusal::Unavailable)?;
-        if attempt.metadata.request_digest != request.request_digest {
-            return Err(OnboardRefusal::Conflict);
-        }
-        if attempt.goal_set {
-            return Ok(OnboardOutcome::Complete {
-                attempt_id: request.attempt_wire.clone(),
-                agent: attempt.agent,
-                goal: attempt.metadata.intended_goal.id,
-            });
-        }
-        if self.ctx.journal_writes_stopped() {
-            return Err(OnboardRefusal::Unavailable);
-        }
-        self.finish_onboarding_goal(session, request, &attempt)
-    }
-
-    /// Why a durable hire's initial goal cannot be appended now, as the partial answer the page
-    /// reads; `None` when it can. An agent the world has not folded yet is not partial.
-    fn onboarding_goal_refusal(
-        &self,
-        session: &crate::floor_session::SessionIdentity,
-        request: &OnboardRequest,
-        attempt: &crate::floor_actions::Attempt,
-    ) -> Option<OnboardOutcome> {
-        let row = self.sup.world().agents.get(&attempt.agent)?;
-        let partial = |reason| {
-            Some(OnboardOutcome::Partial {
-                attempt_id: request.attempt_wire.clone(),
-                agent: attempt.agent,
-                reason,
-                current_goal: row.goal,
-                retired: row.retired,
-            })
-        };
-        if row.retired {
-            return partial("agent_retired");
-        }
-        if attempt.goal_conflict || row.goal.is_some() {
-            return partial("goal_conflict");
-        }
-        if let Err(reason) = session.permit() {
-            return partial(match reason {
-                crate::floor_session::PermitFailure::Expired => "session_expired",
-                crate::floor_session::PermitFailure::Revoked => "session_revoked",
-            });
-        }
-        let Some(profile) = self.ctx.enrollment.profile(&request.workspace_id) else {
-            return partial("profile_changed");
-        };
-        if !self.recorded_profile_matches(attempt, profile, request.provider) {
-            return partial("profile_changed");
-        }
-        if !self.ctx.switches.load().hire
-            || !self.onboarding_profile_eligible(profile)
-            || !self.offered_engines(profile).contains(&request.provider)
-        {
-            return partial("goal_refused");
-        }
-        None
-    }
-
-    fn finish_onboarding_goal(
-        &mut self,
-        session: &crate::floor_session::SessionIdentity,
-        request: &OnboardRequest,
-        attempt: &crate::floor_actions::Attempt,
-    ) -> Result<OnboardOutcome, OnboardRefusal> {
-        let row = self
-            .sup
-            .world()
-            .agents
-            .get(&attempt.agent)
-            .ok_or(OnboardRefusal::Unavailable)?;
-        let (current_goal, retired) = (row.goal, row.retired);
-        let partial = |reason| OnboardOutcome::Partial {
-            attempt_id: request.attempt_wire.clone(),
-            agent: attempt.agent,
-            reason,
-            current_goal,
-            retired,
-        };
-        if let Some(refused) = self.onboarding_goal_refusal(session, request, attempt) {
-            return Ok(refused);
-        }
-        let intended = attempt.metadata.intended_goal.clone();
-        match self.pump_onboarding(
-            session,
-            Command::BrowserOnboardGoal(Box::new(BrowserOnboardGoal {
-                agent: attempt.agent,
-                goal: intended.clone(),
-                attempt_id: request.attempt_id,
-                session_digest: session.digest(),
-            })),
-        ) {
-            Ok(()) => {
-                if self
-                    .ctx
-                    .onboarding_index
-                    .attempt(request.attempt_id)
-                    .is_some_and(|indexed| indexed.goal_set)
-                {
-                    Ok(OnboardOutcome::Complete {
-                        attempt_id: request.attempt_wire.clone(),
-                        agent: attempt.agent,
-                        goal: intended.id,
-                    })
-                } else {
-                    Err(OnboardRefusal::Unavailable)
-                }
-            }
-            Err(OnboardRefusal::Forbidden) => {
-                let reason =
-                    session
-                        .permit()
-                        .err()
-                        .map_or("goal_refused", |failure| match failure {
-                            crate::floor_session::PermitFailure::Expired => "session_expired",
-                            crate::floor_session::PermitFailure::Revoked => "session_revoked",
-                        });
-                Ok(partial(reason))
-            }
-            Err(other) => Err(other),
-        }
-    }
-
-    /// Whether `profile` still holds every effective value the durable hire recorded, the chosen
-    /// `engine` included.
-    fn recorded_profile_matches(
-        &self,
-        attempt: &crate::floor_actions::Attempt,
-        profile: &Profile,
-        engine: Provider,
-    ) -> bool {
-        let Record::AgentHired {
-            department,
-            provider,
-            cwd,
-            budget,
-            isolation,
-            worktree,
-            ..
-        } = &attempt.hire
-        else {
-            return false;
-        };
-        // A hire into its own copy works in the tree, which must still be a copy of this project.
-        let folder = match worktree {
-            None => *cwd == profile.cwd,
-            Some(lease) => self.sup.world().worktrees.get(lease).is_some_and(|row| {
-                row.path == *cwd && crate::worktree::contains(&row.origin, &profile.cwd)
-            }),
-        };
-        *provider == engine
-            && attempt.metadata.profile_id == profile.id
-            && *department == profile.department
-            && folder
-            && *budget == profile.agent_budget
-            && *isolation == browser_isolation(engine, profile)
-            && Self::recorded_check_enrolled(&attempt.metadata.intended_goal, profile)
-            && attempt.metadata.intended_goal.budget == profile.goal_budget
-            && attempt.metadata.intended_goal.hop_cap == profile.hop_cap
-    }
-
-    /// Whether a hire's intended goal still names a check the workspace enrolls: the named check
-    /// with the same command and revision, or, for a hire that recorded no name, the workspace's
-    /// own check with the same command.
-    fn recorded_check_enrolled(intended: &dudes_proto::Goal, profile: &Profile) -> bool {
-        match &intended.completion_check {
-            Some(named) => profile.check(&named.id).is_some_and(|check| {
-                check.predicate == intended.predicate && check.reference().as_ref() == Some(named)
-            }),
-            None => profile.first_check().predicate == intended.predicate,
-        }
+        self.hire_onboarded(session, request, &profile, Some((lease, trust.lsn)))
     }
 
     fn pump_onboarding(
@@ -7056,10 +6698,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Job::Chat { reply, .. } => {
                     let _ = reply.send(Err(crate::floor_chat::ChatRefusal::UnavailableNoEffect));
                 }
-                Job::Onboard { reply, .. }
-                | Job::OnboardChecked { reply, .. }
-                | Job::OnboardCopied { reply, .. }
-                | Job::OnboardContinue { reply, .. } => {
+                Job::Onboard { reply, .. } | Job::OnboardCopied { reply, .. } => {
                     let _ = reply.send(OnboardStep::Answer(Err(OnboardRefusal::Unavailable)));
                 }
                 Job::Answer { reply, .. } => {
@@ -7721,13 +7360,6 @@ fn question_closed_refusal() -> RpcError {
         })
         .ok(),
     }
-}
-
-/// What a browser hire's job does next: answer its request, or hand the reply to the job that
-/// appends the hire's goal.
-enum OnboardNext {
-    Reply(OnboardStep),
-    Goal,
 }
 
 /// The answer for a browser goal request whose `GoalSet` the index holds.

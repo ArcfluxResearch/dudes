@@ -23,10 +23,10 @@ const checks = decodeCheckCatalog({ workspaces: [{ workspace_id: 'parser', check
 const working = [{ id: '01ARZ3NDEKTSV4RRFFQ69G5FAV', name: 'Ada',
   workspace: { id: 'parser', label: 'Parser' } }];
 const floor = (extra = {}) => ({ ...getFloorState(), phase: 'live', stale: false, epoch: 1, snapshotEpoch: 1,
-  onboarding: catalog({ trusted: true }), checks, agents: [], ...extra });
+  onboarding: catalog({ trusted: true }), checks, agents: [], ticket: true, ...extra });
 const deps = (sent) => ({ signedIn: () => true, random: (bytes) => bytes.fill(0), epoch: () => 1, refresh() {},
   fetch: async (_url, request) => { sent.push(JSON.parse(request.body)); return { status: 503, text: async () => '' }; } });
-const choose = (engine = 'claude') => hire.editDraft({ name: 'Kim', workspaceId: 'parser', engine, goalText: 'ship' });
+const choose = (engine = 'claude') => hire.editDraft({ name: 'Kim', workspaceId: 'parser', engine, taskText: 'ship' });
 const offer = (state, engine = 'claude') => {
   const space = state.onboarding.workspaces[0];
   return hire.ownCopyOffer(hire.getHireState().draft, space, engine, hire.agentsIn(state.agents, 'parser').length);
@@ -96,7 +96,7 @@ test('the App step explains the copy, or says what trusting the project allows, 
       choose();
       hire.showSection('engine');
       const view = await server.ssrLoadModule('/src/renderer/onboarding/hire.ts');
-      view.editDraft({ name: 'Kim', workspaceId: 'parser', engine: 'claude', goalText: 'ship' });
+      view.editDraft({ name: 'Kim', workspaceId: 'parser', engine: 'claude', taskText: 'ship' });
       view.showSection('engine');
       return renderToStaticMarkup(createElement(HireWizardView, { hire: view.getHireState(), floor: state, onClose() {} }));
     };

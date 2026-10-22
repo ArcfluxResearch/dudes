@@ -223,6 +223,6 @@ test('Hire says nothing about length until a field is near its limit, then says 
 });
 
 test('Hire asks for the first task in plain words', () => {
-  const problems = hire.problemsIn({ name: 'Kim', role: '', workspaceId: '', goalText: '' }, { onboarding: null, checks: null });
+  const problems = hire.problemsIn({ name: 'Kim', role: '', workspaceId: '', taskText: '' }, { onboarding: null, checks: null });
   assert.ok(problems.some((entry) => entry.message === 'Say what the agent should do first.'), JSON.stringify(problems));
 });

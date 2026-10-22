@@ -107,12 +107,13 @@ function goalView(id, text, status = 'set') {
  * `onboarding: null` and `checks: null` leave each sibling out of the frame
  * altogether, and so does an absent `settings`.
  */
-function subscribe({ agents = [], onboarding = CATALOG, checks = CHECKS, lsn = 3, settings } = {}) {
+function subscribe({ agents = [], onboarding = CATALOG, checks = CHECKS, lsn = 3, settings, ticket = {} } = {}) {
   const epoch = beginFloorEpoch();
   noteTransport('open');
   const frame = { type: 'floor.snapshot', projection: { lsn, agents } };
   if (onboarding !== null) frame.onboarding = onboarding;
   if (checks !== null) frame.checks = checks;
+  if (ticket !== null) frame.ticket = ticket;
   if (settings !== undefined) frame.settings = settings;
   applyServerFrame(JSON.stringify(frame), epoch);
   return epoch;
@@ -155,16 +156,13 @@ function daemon(...answers) {
 }
 
 const COMPLETE = (request) => ({ status: 200,
-  body: JSON.stringify({ attempt_id: request.attempt_id, state: 'complete', agent: AGENT, goal: GOAL }) });
+  body: JSON.stringify({ attempt_id: request.attempt_id, state: 'complete', agent: AGENT }) });
 const PENDING = (request) => ({ status: 202, body: JSON.stringify({ attempt_id: request.attempt_id, state: 'pending' }) });
-const PARTIAL = (fields = {}) => (request) => ({ status: 409, body: JSON.stringify({
-  attempt_id: request.attempt_id, state: 'hired_without_goal', agent: AGENT, goal: null,
-  reason: 'goal_conflict', current_goal: LOCAL_GOAL, retired: false, ...fields }) });
 const EMPTY = (status) => () => ({ status, body: '' });
 const LOST = () => new TypeError('Failed to fetch');
 
 function fillDraft() {
-  hire.editDraft({ name: '  Kim ', role: 'reviewer', workspaceId: 'repo_1', goalText: 'Make the parser tests pass' });
+  hire.editDraft({ name: '  Kim ', role: 'reviewer', workspaceId: 'repo_1', taskText: 'Make the parser tests pass' });
 }
 
 async function hireOnce(net) {
@@ -366,7 +364,7 @@ test('a u64::MAX ceiling renders exactly, never through Number', () => {
 
 test('field limits count UTF-8 bytes after trimming ASCII whitespace only', () => {
   subscribe();
-  const problems = (draft) => hire.problemsIn({ name: 'n', role: 'r', workspaceId: 'repo_1', goalText: 'g', ...draft },
+  const problems = (draft) => hire.problemsIn({ name: 'n', role: 'r', workspaceId: 'repo_1', taskText: 'g', ...draft },
     getFloorState()).map((problem) => problem.field);
   assert.deepEqual(problems({}), []);
   assert.deepEqual(problems({ name: 'é'.repeat(64) }), [], '128 bytes is inside the limit');
@@ -377,34 +375,34 @@ test('field limits count UTF-8 bytes after trimming ASCII whitespace only', () =
   assert.deepEqual(problems({ name: ' \t\n' }), ['name'], 'whitespace alone is empty');
   assert.deepEqual(problems({ role: 'r'.repeat(512) }), []);
   assert.deepEqual(problems({ role: 'r'.repeat(513) }), ['role']);
-  assert.deepEqual(problems({ goalText: '😀'.repeat(512) }), [], '2048 bytes of four-byte characters');
-  assert.deepEqual(problems({ goalText: `${'😀'.repeat(512)}a` }), ['goal_text']);
+  assert.deepEqual(problems({ taskText: '😀'.repeat(512) }), [], '2048 bytes of four-byte characters');
+  assert.deepEqual(problems({ taskText: `${'😀'.repeat(512)}a` }), ['first_task']);
   assert.equal(hire.trimAsciiSpace(' \t Kim  \r\n'), 'Kim  ');
 });
 
 test('a required field that fails moves to its own section and keeps what was typed', async () => {
   subscribe();
   const net = daemon();
-  hire.editDraft({ role: 'reviewer', workspaceId: 'repo_1', goalText: 'Make the parser tests pass' });
+  hire.editDraft({ role: 'reviewer', workspaceId: 'repo_1', taskText: 'Make the parser tests pass' });
   hire.showSection('briefing');
   await hire.submitHire(getFloorState(), net);
   let state = hire.getHireState();
   assert.equal(state.section, 'identity');
   assert.equal(state.problem?.field, 'name');
-  assert.deepEqual(state.draft, { name: '', role: 'reviewer', workspaceId: 'repo_1', goalText: 'Make the parser tests pass' });
+  assert.deepEqual(state.draft, { name: '', role: 'reviewer', workspaceId: 'repo_1', taskText: 'Make the parser tests pass' });
   assert.match(render(), /<input id="hire-name"[^>]*aria-invalid="true"[^>]*name="name"/);
   assert.match(render(), /role="alert">Name is required\./);
 
-  hire.editDraft({ name: 'Kim', workspaceId: '', goalText: 'x' });
+  hire.editDraft({ name: 'Kim', workspaceId: '', taskText: 'x' });
   await hire.submitHire(getFloorState(), net);
   assert.equal(hire.getHireState().section, 'workspace');
 
-  hire.editDraft({ workspaceId: 'repo_1', goalText: '   ' });
+  hire.editDraft({ workspaceId: 'repo_1', taskText: '   ' });
   hire.showSection('identity');
   await hire.submitHire(getFloorState(), net);
   state = hire.getHireState();
   assert.equal(state.section, 'briefing');
-  assert.equal(state.problem?.field, 'goal_text');
+  assert.equal(state.problem?.field, 'first_task');
   assert.equal(state.draft.name, 'Kim');
 
   // Next checks only the section it leaves.
@@ -432,7 +430,7 @@ test('the four sections show only enrolled choices and the configured limits', (
   assert.deepEqual(names(sections.identity), ['name', ...Array(7).fill('accent'), 'role']);
   assert.deepEqual(names(sections.workspace), ['workspace_id', 'workspace_id']);
   assert.deepEqual(names(sections.engine), ['engine']);
-  assert.deepEqual(names(sections.briefing), ['goal_text', 'check_id']);
+  assert.deepEqual(names(sections.briefing), ['first_task', 'check_id']);
   const radios = [...sections.workspace.matchAll(/<input type="radio"[^>]*>/g)].map(([tag]) => tag);
   assert.ok(radios.every((tag) => tag.includes('name="workspace_id"')));
   const values = radios.map((tag) => /value="([^"]+)"/.exec(tag)?.[1]);
@@ -453,7 +451,7 @@ test('the four sections show only enrolled choices and the configured limits', (
   assert.doesNotMatch(all, /<input[^>]*type="hidden"/);
 });
 
-test('one Hire sends exactly seven fields to one path with the REQUEST_ID header', async () => {
+test('one Hire sends exactly six fields to one path with the REQUEST_ID header', async () => {
   subscribe();
   const net = daemon(COMPLETE);
   await hireOnce(net);
@@ -465,18 +463,18 @@ test('one Hire sends exactly seven fields to one path with the REQUEST_ID header
     headers: { 'Content-Type': 'application/json' }, body: undefined,
   });
   assert.deepEqual(Object.keys(request),
-    ['attempt_id', 'workspace_id', 'check_id', 'check_revision', 'name', 'role', 'goal_text']);
+    ['attempt_id', 'workspace_id', 'check_id', 'check_revision', 'name', 'role']);
   assert.match(request.attempt_id, hire.ATTEMPT_ID);
   assert.equal(request.attempt_id.length, 43);
   assert.deepEqual({ ...request, attempt_id: undefined }, { attempt_id: undefined, workspace_id: 'repo_1',
-    check_id: 'default', check_revision: REV_A, name: 'Kim', role: 'reviewer', goal_text: 'Make the parser tests pass' });
+    check_id: 'default', check_revision: REV_A, name: 'Kim', role: 'reviewer' });
 });
 
 const FIRST_ATTEMPT = `AQ${'A'.repeat(41)}`;
 
 test('an uncapped Codex hire sends provider, and a Claude hire leaves it out', async () => {
   subscribe({ onboarding: UNCAPPED });
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_3', goalText: 'Ship it' });
+  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_3', taskText: 'Ship it' });
   const unsent = daemon();
   await hire.submitHire(getFloorState(), unsent);
   assert.equal(unsent.calls.length, 0, 'a Hire with no engine chosen was sent');
@@ -490,15 +488,15 @@ test('an uncapped Codex hire sends provider, and a Claude hire leaves it out', a
   const codex = daemon(COMPLETE);
   await hire.submitHire(getFloorState(), codex);
   assert.equal(codex.calls[0].init.body, `{"attempt_id":"${FIRST_ATTEMPT}","workspace_id":"repo_3",`
-    + `"check_id":"service","check_revision":"${REV_D}","name":"Kim","role":"reviewer","goal_text":"Ship it",`
+    + `"check_id":"service","check_revision":"${REV_D}","name":"Kim","role":"reviewer",`
     + '"provider":"codex"}');
 
   hire.resetHire();
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_3', engine: 'claude', goalText: 'Ship it' });
+  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_3', engine: 'claude', taskText: 'Ship it' });
   const claude = daemon(COMPLETE);
   await hire.submitHire(getFloorState(), claude);
   assert.equal(claude.calls[0].init.body, `{"attempt_id":"${FIRST_ATTEMPT}","workspace_id":"repo_3",`
-    + `"check_id":"service","check_revision":"${REV_D}","name":"Kim","role":"reviewer","goal_text":"Ship it"}`);
+    + `"check_id":"service","check_revision":"${REV_D}","name":"Kim","role":"reviewer"}`);
 });
 
 /** The Briefing step's check choice, as [data-check-id, checked, label] per radio named check_id. */
@@ -511,7 +509,7 @@ function checkOptions(html) {
       label]);
 }
 
-test('Briefing offers the workspace’s checks by label, the first chosen, and says Hire runs it once first', () => {
+test('Briefing offers the workspace’s checks by label, the first chosen, and says nothing about running it first', () => {
   subscribe();
   hire.editDraft({ workspaceId: 'repo_1' });
   hire.showSection('briefing');
@@ -521,7 +519,7 @@ test('Briefing offers the workspace’s checks by label, the first chosen, and s
     ['default', true, 'Parser tests pass'],
     ['contributing', false, 'CONTRIBUTING.md exists (may already be true)'],
   ]);
-  assert.match(html, /<\/fieldset><p class="hire-note">Dudes tries this check once before hiring\. If it already passes, there is nothing for the agent to do, so no one is hired\.<\/p>/);
+  assert.doesNotMatch(html, /once before hiring|no one is hired/, 'the hire runs no check');
   assert.doesNotMatch(html, /<dt>Completion check<\/dt>/, 'the old configured-limits row is still drawn');
 
   hire.editDraft({ checkId: 'contributing' });
@@ -529,8 +527,7 @@ test('Briefing offers the workspace’s checks by label, the first chosen, and s
     ['default', false, 'Parser tests pass'],
     ['contributing', true, 'CONTRIBUTING.md exists (may already be true)'],
   ]);
-  assert.match(render(), /<p class="hire-note">This check might already be true before the agent starts, so Dudes does not try it first\./);
-  assert.doesNotMatch(render(), /no one is hired/, 'a check that may already pass still says a pass hires nobody');
+  assert.match(render(), /<p class="hire-note">This check might already be true before the agent starts\./);
   // Another workspace has its own checks; a choice it does not offer falls back to its first.
   hire.editDraft({ workspaceId: 'repo_2' });
   html = render();
@@ -545,8 +542,7 @@ test('the Hire body names the chosen check by its id and the revision the snapsh
   const net = daemon(COMPLETE);
   await hire.submitHire(getFloorState(), net);
   assert.equal(net.calls[0].init.body, `{"attempt_id":"${FIRST_ATTEMPT}","workspace_id":"repo_1",`
-    + `"check_id":"contributing","check_revision":"${REV_B}","name":"Kim","role":"reviewer",`
-    + '"goal_text":"Make the parser tests pass"}');
+    + `"check_id":"contributing","check_revision":"${REV_B}","name":"Kim","role":"reviewer"}`);
 });
 
 test('a workspace the checks sibling does not list cannot be hired, and says why', async () => {
@@ -569,112 +565,6 @@ test('a workspace the checks sibling does not list cannot be hired, and says why
     assert.deepEqual(hire.getHireState().problem, { field: 'check_id', section: 'briefing', message: NO_CHECK });
     assert.ok(render().includes(`<p class="hire-problem" id="hire-problem" role="alert">${NO_CHECK}</p>`));
   }
-});
-
-test('while the Hire waits, the page says it is running the chosen check once', async () => {
-  subscribe();
-  let release;
-  const held = new Promise((resolve) => { release = resolve; });
-  const net = daemon(COMPLETE);
-  const slow = { ...net, fetch: async (url, init) => { await held; return net.fetch(url, init); } };
-  fillDraft();
-  hire.editDraft({ checkId: 'contributing' });
-  const sent = hire.submitHire(getFloorState(), slow);
-  assert.ok(render().includes('<p class="hire-note" role="status">Running “CONTRIBUTING.md exists” once before '
-    + 'hiring.</p>'), 'the wait does not name the check it runs');
-  release();
-  await sent;
-  assert.doesNotMatch(render(), /once before hiring/);
-});
-
-const CHECK_REFUSED = (reason) => (request) => ({ status: 409,
-  body: JSON.stringify({ attempt_id: request.attempt_id, state: 'refused', reason }) });
-
-/** What each check refusal says when the chosen check is "CONTRIBUTING.md exists". */
-const HIRE_REFUSALS = Object.freeze({
-  check_already_passes: '“CONTRIBUTING.md exists” already passes in this project, so it cannot show when this goal '
-    + 'is done. Nothing was hired. Choose another check, or ask the operator to add one for this goal with dudes '
-    + 'project check add.',
-  check_did_not_finish: '“CONTRIBUTING.md exists” did not finish, so it cannot show whether it already passes. '
-    + 'Nothing was hired. Try again, or ask the operator to raise its timeout.',
-  check_cannot_run: '“CONTRIBUTING.md exists” could not run, so nothing was hired. The daemon log says why.',
-  check_running: 'A check is still running for this Floor session. Try again when it ends.',
-  check_limit: 'This Floor session has run its 32 checks. Open Dudes to start a new Floor session.',
-});
-
-test('each check refusal keeps the wizard open on its check choice, in its own words, and keeps the catalog', async () => {
-  for (const [reason, text] of Object.entries(HIRE_REFUSALS)) {
-    resetFloorStore();
-    hire.resetHire();
-    subscribe();
-    fillDraft();
-    hire.editDraft({ checkId: 'contributing' });
-    hire.showSection('identity');
-    const net = daemon(CHECK_REFUSED(reason), COMPLETE);
-    await hire.submitHire(getFloorState(), net);
-    const state = hire.getHireState();
-    assert.equal(state.outcome, null, `${reason} left the form for an answer screen`);
-    assert.equal(state.attempt, null, `${reason} kept an attempt that had no effect`);
-    assert.equal(state.section, 'briefing', `${reason} did not return to the check choice`);
-    assert.equal(state.draft.checkId, 'contributing', `${reason} dropped the chosen check`);
-    assert.equal(state.draft.name, '  Kim ', `${reason} dropped what was typed`);
-    assert.equal(net.refreshes, 0, `${reason} asked for a fresh snapshot, which drops the catalog`);
-    assert.notEqual(getFloorState().onboarding, null);
-    const html = render();
-    assert.ok(html.includes(`<p class="hire-problem" id="hire-problem" role="alert" data-check-refusal="${reason}">`
-      + `${text}</p>`), `${reason} is not shown as itself`);
-    assert.deepEqual(checkOptions(html), [
-      ['default', false, 'Parser tests pass'],
-      ['contributing', true, 'CONTRIBUTING.md exists (may already be true)'],
-    ], `${reason} lost the check choice`);
-    const sessionLimit = reason === 'check_running' || reason === 'check_limit';
-    assert.match(html, new RegExp(`data-check-choice="hire" aria-invalid="${!sessionLimit}"`),
-      `${reason} marks the wrong field`);
-    assert.match(html, /class="hire-submit" aria-disabled="false"/, `${reason} holds the Hire button`);
-    assert.doesNotMatch(html, SUCCESS);
-  }
-  // Choosing another check clears the refusal, and the next Hire is a new attempt naming it.
-  hire.editDraft({ checkId: 'default' });
-  assert.doesNotMatch(render(), /data-check-refusal/);
-  const net = daemon(CHECK_REFUSED('check_already_passes'), COMPLETE);
-  fillDraft();
-  hire.editDraft({ checkId: 'contributing' });
-  await hire.submitHire(getFloorState(), net);
-  hire.editDraft({ checkId: 'default' });
-  await hire.submitHire(getFloorState(), net);
-  assert.equal(net.calls.length, 2);
-  assert.notEqual(net.calls[1].request.attempt_id, net.calls[0].request.attempt_id);
-  assert.deepEqual([net.calls[0].request.check_id, net.calls[1].request.check_id], ['contributing', 'default']);
-  assert.deepEqual(hire.getHireState().outcome, { kind: 'complete', agent: AGENT, goal: GOAL });
-});
-
-test('a check refusal after an unresolved reply keeps the attempt, and one after a recorded hire keeps its agent', async () => {
-  subscribe();
-  const net = daemon(PENDING, CHECK_REFUSED('check_running'));
-  await hireOnce(net);
-  await hire.checkHireStatus(net);
-  assert.deepEqual(hire.getHireState().outcome, { kind: 'check', reason: 'check_running' });
-  assert.equal(hire.releasable(hire.getHireState()), false, 'a refusal after an unresolved reply let the Hire go');
-  hire.releaseAttempt();
-  assert.notEqual(hire.getHireState().attempt, null);
-  let html = render();
-  assert.ok(html.includes('<p class="hire-error" role="alert" data-check-refusal="check_running">'
-    + `${HIRE_REFUSALS.check_running}</p>`));
-  assert.match(html, />Check status</);
-  assert.doesNotMatch(html, />Edit the form</);
-
-  resetFloorStore();
-  hire.resetHire();
-  subscribe();
-  const recorded = daemon(PARTIAL({ reason: 'session_expired', current_goal: null }), CHECK_REFUSED('check_limit'));
-  await hireOnce(recorded);
-  resubscribe({ agents: [agentRow(AGENT, 'Kim')] });
-  await hire.checkHireStatus(recorded);
-  assert.deepEqual(hire.getHireState().outcome, { kind: 'check', reason: 'check_limit' });
-  html = render();
-  assert.match(html, new RegExp(`data-hire-agent-id="${AGENT}"`), 'the hired agent left the screen');
-  assert.match(html, /data-check-refusal="check_limit">The daemon refused this check before any effect\. The agent below is in the journal from this Hire\./);
-  assert.doesNotMatch(html, /Nothing was hired|No agent was hired/);
 });
 
 test('the Engine step states what each offered engine can touch', () => {
@@ -707,7 +597,7 @@ test('an unset ceiling reads No limit, and the hop cap and the engine bound the 
 const SETTINGS = Object.freeze({
   switches: { answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false, hire: true, git: false, renew: false, board: false, diff: false, project: false },
   budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
-  providers: ['claude', 'pi'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 4 },
+  providers: ['claude', 'pi'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 5 },
 });
 
 test('with no project the Workspace step gives one setup command and no jargon', () => {
@@ -785,7 +675,7 @@ test('closing the dialog forgets a form nobody sent and a hire that completed, a
   hire.leaveHire();
   assert.equal(hire.getHireState().section, 'identity');
   assert.equal(hire.getHireState().draft.name, '');
-  assert.equal(hire.getHireState().draft.goalText, '');
+  assert.equal(hire.getHireState().draft.taskText, '');
 
   await hireOnce(daemon(COMPLETE));
   assert.equal(hire.getHireState().outcome?.kind, 'complete');
@@ -820,12 +710,12 @@ test('a second Hire is refused while the first is in flight', async () => {
   assert.equal(net.calls.length, 1, 'a Hire after an answer, without Hire another, sent again');
 });
 
-test('only complete shows success, with the real AgentId and GoalId, and the shell shows it without opening it', async () => {
+test('only complete shows success, with the real AgentId, and the shell shows it without opening it', async () => {
   subscribe();
   const net = daemon(COMPLETE);
   const askedAt = getFloorState().epoch;
   await hireOnce(net);
-  assert.deepEqual(hire.getHireState().outcome, { kind: 'complete', agent: AGENT, goal: GOAL });
+  assert.deepEqual(hire.getHireState().outcome, { kind: 'complete', agent: AGENT });
   assert.equal(net.refreshes, 1, 'a durable hire asks for a fresh snapshot');
   assert.equal(hire.getHireState().askedAtEpoch, askedAt);
 
@@ -833,7 +723,7 @@ test('only complete shows success, with the real AgentId and GoalId, and the she
   const html = render();
   assert.match(html, SUCCESS);
   assert.match(html, new RegExp(`data-hire-agent-id="${AGENT}">${AGENT}<`));
-  assert.match(html, new RegExp(`data-hire-goal-id="${GOAL}">${GOAL}<`));
+  assert.doesNotMatch(html, /data-hire-goal-id/);
   assert.match(html, /Yes, on the Floor/);
   assert.equal(hire.agentToReveal(hire.getHireState(), getFloorState()), AGENT);
   hire.markRevealed(AGENT);
@@ -851,28 +741,25 @@ test('only complete shows success, with the real AgentId and GoalId, and the she
 test('the response map: every row, and anything off the row proves nothing', () => {
   const id = 'B'.repeat(42) + 'A';
   const decode = (status, body) => hire.decodeHireResponse(status, typeof body === 'string' ? body : JSON.stringify(body), id);
-  assert.equal(decode(200, { attempt_id: id, state: 'complete', agent: AGENT, goal: GOAL }).kind, 'complete');
+  assert.equal(decode(200, { attempt_id: id, state: 'complete', agent: AGENT }).kind, 'complete');
   assert.equal(decode(202, { attempt_id: id, state: 'pending' }).kind, 'pending');
   assert.equal(decode(403, '').kind, 'refused');
   assert.equal(decode(409, '').kind, 'conflict');
-  assert.equal(decode(409, { attempt_id: id, state: 'hired_without_goal', agent: AGENT, goal: null,
-    reason: 'agent_retired', current_goal: null, retired: true }).kind, 'partial');
   assert.equal(decode(503, '').kind, 'unavailable');
   assert.equal(decode(400, '').kind, 'rejected');
   assert.equal(decode(413, '').kind, 'rejected');
   for (const reason of ['check_cannot_run', 'check_already_passes', 'check_did_not_finish', 'check_running', 'check_limit']) {
-    assert.deepEqual(decode(409, { attempt_id: id, state: 'refused', reason }), { kind: 'check', reason });
+    assert.equal(decode(409, { attempt_id: id, state: 'refused', reason }).kind, 'unknown', `${reason}: a hire runs no check`);
   }
   for (const [status, body] of [
-    [200, { attempt_id: 'other', state: 'complete', agent: AGENT, goal: GOAL }],
-    [200, { attempt_id: id, state: 'pending', agent: AGENT, goal: GOAL }],
-    [200, { attempt_id: id, state: 'complete', agent: 'agent-1', goal: GOAL }],
-    [200, { attempt_id: id, state: 'complete', agent: AGENT, goal: GOAL, extra: 1 }],
+    [200, { attempt_id: 'other', state: 'complete', agent: AGENT }],
+    [200, { attempt_id: id, state: 'pending', agent: AGENT }],
+    [200, { attempt_id: id, state: 'complete', agent: 'agent-1' }],
+    [200, { attempt_id: id, state: 'complete', agent: AGENT, goal: GOAL }],
+    [200, { attempt_id: id, state: 'complete', agent: AGENT, extra: 1 }],
     [200, 'not json'],
     [202, { attempt_id: id, state: 'pending', agent: AGENT }],
-    [409, { attempt_id: id, state: 'hired_without_goal', agent: AGENT, goal: GOAL, reason: 'goal_conflict',
-      current_goal: null, retired: false }],
-    [409, { attempt_id: id, state: 'hired_without_goal', agent: AGENT, goal: null, reason: 'because',
+    [409, { attempt_id: id, state: 'hired_without_goal', agent: AGENT, goal: null, reason: 'goal_conflict',
       current_goal: null, retired: false }],
     [409, { attempt_id: id, state: 'refused', reason: 'check_passed' }],
     [409, { attempt_id: 'other', state: 'refused', reason: 'check_already_passes' }],
@@ -928,7 +815,7 @@ test('a same-attempt retry sends the frozen payload byte for byte, even after ed
   subscribe();
   const net = daemon(EMPTY(503), COMPLETE);
   await hireOnce(net);
-  hire.editDraft({ name: 'Someone else', goalText: 'A different goal' });
+  hire.editDraft({ name: 'Someone else', taskText: 'A different goal' });
   hire.releaseAttempt();
   assert.equal(hire.getHireState().draft.name, '  Kim ', 'an open attempt let the draft change');
   await hire.checkHireStatus(net);
@@ -986,35 +873,6 @@ test('403 with a dead stream takes the session-ended path', async () => {
   assert.doesNotMatch(html, SUCCESS);
 });
 
-test('typed 409 shows the durable agent, its reason and the projection’s goal, with no success banner', async () => {
-  subscribe();
-  const net = daemon(PARTIAL());
-  await hireOnce(net);
-  assert.deepEqual(hire.getHireState().outcome, { kind: 'partial', agent: AGENT, reason: 'goal_conflict',
-    currentGoal: LOCAL_GOAL, retired: false });
-  assert.equal(net.refreshes, 1);
-  resubscribe({ agents: [agentRow(AGENT, 'Kim', goalView(LOCAL_GOAL, 'A goal set locally', 'in_progress'))] });
-  let html = render();
-  assert.doesNotMatch(html, SUCCESS);
-  assert.match(html, /class="hire-warning"[^>]*>Hired [^<]*, but the first task was not set/);
-  assert.match(html, new RegExp(`data-hire-agent-id="${AGENT}"`));
-  assert.match(html, /data-hire-reason="goal_conflict">Another goal was set on this agent first/);
-  assert.match(html, /<dt>Goal when answered<\/dt><dd>Another goal is set<\/dd>/);
-  assert.match(html, new RegExp(`A goal set locally · in_progress`));
-  assert.doesNotMatch(html, new RegExp(GOAL), 'the intended goal is shown as if it were set');
-  assert.equal(hire.agentToReveal(hire.getHireState(), getFloorState()), AGENT);
-
-  hire.resetHire();
-  resetFloorStore();
-  subscribe({ agents: [] });
-  await hireOnce(daemon(PARTIAL({ reason: 'agent_retired', current_goal: null, retired: true })));
-  resubscribe({ agents: [] });
-  html = render();
-  assert.doesNotMatch(html, SUCCESS);
-  assert.match(html, /<dt>Retired when answered<\/dt><dd>Yes<\/dd>/);
-  assert.match(html, /<dt>On the floor<\/dt><dd>No, retired<\/dd>/);
-});
-
 const MARK = Object.freeze({ kind: 'changed', at: '2026-09-28T03:40:00Z', revision: '2' });
 const MARKED = Object.freeze({ ...CATALOG,
   workspaces: [{ ...CATALOG.workspaces[0], reload_mark: MARK }, CATALOG.workspaces[1]] });
@@ -1061,7 +919,7 @@ test('a Hire sends the offered workspace revision, and a stale-workspace 409 dro
   const net = daemon(STALE, COMPLETE);
   await hireOnce(net);
   assert.deepEqual(Object.keys(net.calls[0].request),
-    ['attempt_id', 'workspace_id', 'workspace_revision', 'check_id', 'check_revision', 'name', 'role', 'goal_text']);
+    ['attempt_id', 'workspace_id', 'workspace_revision', 'check_id', 'check_revision', 'name', 'role']);
   assert.equal(net.calls[0].request.workspace_revision, '2', 'the revision is copied from the offered mark');
   assert.deepEqual(hire.getHireState().outcome, { kind: 'stale' });
   assert.equal(net.refreshes, 1, 'a stale workspace asks for a fresh snapshot');
@@ -1145,8 +1003,8 @@ test('after a reload the page shows journal-backed roster and goals and never se
   // The only way to mint an attempt is the Hire button.
   const wizard = await readFile(resolve(root, 'src/renderer/onboarding/HireWizard.tsx'), 'utf8');
   const module = await readFile(resolve(root, 'src/renderer/onboarding/hire.ts'), 'utf8');
-  assert.deepEqual([...wizard.matchAll(/submitHire\(/g)].length, 1);
-  assert.match(wizard, /onClick=\{\(\) => \{ if \(blocked === null && !frozen && !hire\.sending\) void submitHire\(floor, browserHireDeps\); \}\}/);
+  assert.deepEqual([...wizard.matchAll(/hireWithFirstTask\(/g)].length, 1);
+  assert.match(wizard, /onClick=\{\(\) => \{ if \(blocked === null && !frozen && !hire\.sending\) void hireWithFirstTask\(floor, browserHireDeps\); \}\}/);
   assert.deepEqual([...module.matchAll(/mintAttemptId\(/g)].length, 2, 'minted somewhere besides the Hire');
   assert.doesNotMatch(wizard, /useEffect\([^)]*submitHire|useEffect\([^)]*checkHireStatus/);
 });
@@ -1209,7 +1067,7 @@ function network() {
 }
 
 function snapshotFrame(agents, onboarding = CATALOG) {
-  return { type: 'floor.snapshot', projection: { lsn: 5, agents },
+  return { type: 'floor.snapshot', projection: { lsn: 5, agents }, ticket: {},
     ...(onboarding === null ? {} : { onboarding, checks: CHECKS }) };
 }
 
@@ -1294,39 +1152,6 @@ test('Live work stays read-only and reselects its agent across the Hire refresh'
 
 // --- a fresh session, in place --------------------------
 
-test('after hired_without_goal for session_expired or session_revoked, a fresh link and the same-attempt Check complete it', async () => {
-  for (const reason of ['session_expired', 'session_revoked']) {
-    resetFloorStore();
-    hire.resetHire();
-    subscribe();
-    let held = REQUEST_ID;
-    const net = daemon(PARTIAL({ reason, current_goal: null }), COMPLETE);
-    net.signedIn = () => held !== null;
-    await hireOnce(net);
-    assert.deepEqual(hire.getHireState().outcome,
-      { kind: 'partial', agent: AGENT, reason, currentGoal: null, retired: false });
-    invalidateFloorEpoch();
-    noteTransport('close');
-    const html = render();
-    assert.match(html, /but the first task was not set/);
-    assert.match(html, />Check status</, 'a goal the session lost cannot be set from a fresh one');
-    assert.match(html, /Open Dudes to sign in again in this browser: this page keeps the Hire, and Check status then sets only the goal this Hire recorded\./);
-
-    held = FRESH; // a fresh link pasted into this tab
-    subscribe({ agents: [agentRow(AGENT, 'Kim')] });
-    await hire.checkHireStatus(net);
-    assert.equal(net.calls.length, 2);
-    assert.equal(net.calls[1].init.body, net.calls[0].init.body, 'the fresh session sent a different Hire');
-    assert.deepEqual(hire.getHireState().outcome, { kind: 'complete', agent: AGENT, goal: GOAL });
-  }
-  // A partial a fresh session cannot complete offers no Check.
-  resetFloorStore();
-  hire.resetHire();
-  subscribe();
-  await hireOnce(daemon(PARTIAL()));
-  assert.doesNotMatch(render(), />Check status</);
-});
-
 test('a 403 after pending, a 503 or a lost reply keeps the Hire, and a same-body Check from a fresh session completes it', async () => {
   for (const first of [PENDING, EMPTY(503), LOST]) {
     resetFloorStore();
@@ -1355,7 +1180,7 @@ test('a 403 after pending, a 503 or a lost reply keeps the Hire, and a same-body
     await hire.checkHireStatus(net);
     assert.equal(net.calls.length, 3);
     assert.equal(net.calls[2].init.body, net.calls[0].init.body, 'the fresh session sent a different Hire');
-    assert.deepEqual(hire.getHireState().outcome, { kind: 'complete', agent: AGENT, goal: GOAL });
+    assert.deepEqual(hire.getHireState().outcome, { kind: 'complete', agent: AGENT });
   }
   // The control: a 403 on an attempt's first and only send still lets it go.
   resetFloorStore();
@@ -1402,92 +1227,6 @@ test('a reply to an attempt the page no longer holds is ignored', async () => {
   assert.equal(state.sending, false);
 });
 
-test('a hired_without_goal attempt is never let go by a 403, keeps its AgentId on screen, and checks only on a fresh live session', async () => {
-  subscribe();
-  let held = REQUEST_ID;
-  const net = daemon(PARTIAL({ reason: 'session_expired', current_goal: null }), EMPTY(403), COMPLETE);
-  net.signedIn = () => held !== null;
-  await hireOnce(net);
-  assert.equal(hire.getHireState().recordedAgent, AGENT);
-  invalidateFloorEpoch();
-  noteTransport('close'); // the session has ended
-  let html = render();
-  assert.match(html, /<button type="button" aria-disabled="true" aria-busy="false"[^>]*>Check status<\/button>/,
-    'Check status is offered on a session that has ended');
-  assert.match(html, /Check status waits for a fresh Floor session that offers hiring\./);
-
-  // A Check that reaches the dead session anyway — pressed on a snapshot not yet known to be stale.
-  await hire.checkHireStatus(net);
-  assert.deepEqual(hire.getHireState().outcome, { kind: 'refused' });
-  assert.equal(hire.releasable(hire.getHireState()), false, 'a 403 let go of an attempt that hired an agent');
-  hire.releaseAttempt();
-  assert.notEqual(hire.getHireState().attempt, null);
-  invalidateFloorEpoch();
-  noteTransport('close');
-  html = render();
-  assert.doesNotMatch(html, /No agent was hired/, 'the page says no agent was hired while the journal holds one');
-  assert.doesNotMatch(html, />Edit the form</);
-  assert.match(html, new RegExp(`data-hire-agent-id="${AGENT}"`), 'the hired agent left the screen');
-  assert.match(html, /The agent below is in the journal from this Hire\./);
-  assert.match(html, /<button type="button" aria-disabled="true" aria-busy="false"[^>]*>Check status<\/button>/);
-
-  // A fresh link pasted into this tab, and a snapshot of that session offering hiring.
-  held = FRESH;
-  subscribe({ agents: [agentRow(AGENT, 'Kim')] });
-  assert.match(render(), /<button type="button" aria-disabled="false" aria-busy="false"[^>]*>Check status<\/button>/);
-  await hire.checkHireStatus(net);
-  assert.equal(net.calls.length, 3);
-  assert.equal(net.calls[2].init.body, net.calls[0].init.body, 'the fresh session sent a different Hire');
-  assert.deepEqual(hire.getHireState().outcome, { kind: 'complete', agent: AGENT, goal: GOAL });
-});
-
-test('a recorded hire keeps its AgentId through every later reply, and after a fresh link names Check status, not a paste', async () => {
-  subscribe();
-  let held = REQUEST_ID;
-  const net = daemon(PARTIAL({ reason: 'session_expired', current_goal: null }),
-    PENDING, EMPTY(503), LOST, EMPTY(400), EMPTY(403));
-  net.signedIn = () => held !== null;
-  await hireOnce(net);
-  assert.equal(hire.getHireState().recordedAgent, AGENT);
-  const shown = (step) => {
-    const html = render();
-    assert.match(html, new RegExp(`data-hire-agent-id="${AGENT}"`), `${step}: the hired agent left the screen`);
-    assert.match(html, /The agent below is in the journal|Hired [^<]*, but the first task was not set/, `${step}: the page no longer says the agent exists`);
-    assert.doesNotMatch(html, /No agent was hired/, `${step}: the page says no agent was hired while the journal holds one`);
-    assert.doesNotMatch(html, /cannot say whether an agent was hired/, `${step}: the page doubts a hire the journal holds`);
-    return html;
-  };
-  shown('hired_without_goal');
-
-  // Each Check is pressed from a fresh snapshot that offers hiring, as the page allows it.
-  for (const [kind, step] of [['pending', '202'], ['unavailable', '503'], ['unknown', 'a lost reply'],
-    ['rejected', '400'], ['refused', '403']]) {
-    held = FRESH;
-    resubscribe({ agents: [agentRow(AGENT, 'Kim')] });
-    assert.match(render(), /<button type="button" aria-disabled="false" aria-busy="false"[^>]*>Check status<\/button>/, `before the ${step}`);
-    await hire.checkHireStatus(net);
-    assert.equal(hire.getHireState().outcome.kind, kind, step);
-    assert.equal(hire.releasable(hire.getHireState()), false, `a ${step} let go of an attempt that hired an agent`);
-    shown(`after a ${step}`);
-  }
-  assert.equal(net.calls.length, 6);
-  for (const call of net.calls) assert.equal(call.init.body, net.calls[0].init.body, 'a Check sent a different Hire');
-
-  // The session ends: the page asks for a new link.
-  invalidateFloorEpoch();
-  noteTransport('close');
-  assert.match(shown('the session ended'), /Open Dudes to sign in again/);
-
-  // A fresh link, and a snapshot of that session offering hiring: the next step is Check status.
-  held = FRESH;
-  subscribe({ agents: [agentRow(AGENT, 'Kim')] });
-  const html = shown('a fresh snapshot');
-  assert.doesNotMatch(html, /Open Dudes to sign in again/, 'the page asks for another sign-in beside an enabled Check status');
-  assert.match(html, /Check status asks again with the same attempt, which never hires twice/);
-  assert.match(html, /<button type="button" aria-disabled="false" aria-busy="false"[^>]*>Check status<\/button>/);
-});
-
-
 test('Identity offers the authored characters and palette with a live portrait preview', () => {
   subscribe();
   fillDraft();
@@ -1504,11 +1243,11 @@ test('Identity offers the authored characters and palette with a live portrait p
   assert.doesNotMatch(preview, /Assigned on hire/);
 });
 
-test('explicit appearance freezes with a partial hire and its exact retry body', async () => {
+test('explicit appearance freezes with an unconfirmed hire and its exact retry body', async () => {
   subscribe();
   fillDraft();
   hire.editDraft({ character: 'h', accent: 'sky' });
-  const net = daemon(PARTIAL({ reason: 'session_expired', current_goal: null }), COMPLETE);
+  const net = daemon(PENDING, COMPLETE);
   await hire.submitHire(getFloorState(), net);
   assert.equal(net.calls[0].request.character, 'h');
   assert.equal(net.calls[0].request.accent, 'sky');

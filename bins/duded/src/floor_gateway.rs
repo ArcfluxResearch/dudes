@@ -74,7 +74,7 @@ use recovery::RecoveryRoute;
 /// The configured public root for the first static shell.
 pub const BASE_PATH: &str = "/floor/";
 /// The browser-wire generation required by the daemon and its matching Floor bundle.
-pub const BROWSER_WIRE_VERSION: u32 = 4;
+pub const BROWSER_WIRE_VERSION: u32 = 5;
 
 const MANIFEST_NAME: &str = "release-manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -1999,30 +1999,10 @@ fn onboard_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) 
     };
     let outcome = handle.onboard(session, request);
     match outcome {
-        Ok(OnboardOutcome::Complete {
-            attempt_id,
-            agent,
-            goal,
-        }) => action_json(
+        Ok(OnboardOutcome::Complete { attempt_id, agent }) => action_json(
             200,
             "OK",
-            &serde_json::json!({
-                "attempt_id":attempt_id,"state":"complete","agent":agent,"goal":goal
-            }),
-        ),
-        Ok(OnboardOutcome::Partial {
-            attempt_id,
-            agent,
-            reason,
-            current_goal,
-            retired,
-        }) => action_json(
-            409,
-            "Conflict",
-            &serde_json::json!({
-                "attempt_id":attempt_id,"state":"hired_without_goal","agent":agent,
-                "goal":null,"reason":reason,"current_goal":current_goal,"retired":retired
-            }),
+            &serde_json::json!({ "attempt_id": attempt_id, "state": "complete", "agent": agent }),
         ),
         Err(OnboardRefusal::Forbidden) => error_response(403, "Forbidden"),
         Err(OnboardRefusal::Conflict) => error_response(409, "Conflict"),

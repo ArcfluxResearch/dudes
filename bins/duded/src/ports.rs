@@ -808,21 +808,7 @@ pub enum Job {
         session: crate::floor_session::SessionIdentity,
         /// Strictly parsed browser fields.
         request: crate::floor_actions::OnboardRequest,
-        /// The truthful, bounded result, or the hire's check running.
-        reply: Sender<crate::floor_actions::OnboardStep>,
-    },
-    /// The browser hire once its check ran and did not pass: the hire's admission again, then
-    /// its append, or for a retried partial attempt, the goal's append.
-    OnboardChecked {
-        /// Registry-derived admitting session.
-        session: crate::floor_session::SessionIdentity,
-        /// Strictly parsed browser fields.
-        request: crate::floor_actions::OnboardRequest,
-        /// What the run saw.
-        baseline: dudes_proto::CheckBaseline,
-        /// The run's count, which this job ends.
-        run: u64,
-        /// The original HTTP request's response channel.
+        /// The truthful, bounded result, or the copy to make.
         reply: Sender<crate::floor_actions::OnboardStep>,
     },
     /// A browser hire into its own copy, once the copy exists: the admission again, then the hire.
@@ -831,21 +817,10 @@ pub enum Job {
         session: crate::floor_session::SessionIdentity,
         /// The exact original request fields.
         request: crate::floor_actions::OnboardRequest,
-        /// What the hire's check run saw.
-        baseline: dudes_proto::CheckBaseline,
         /// The pending lease whose tree the agent is hired into.
         worktree: dudes_types::WorktreeId,
         /// The grant the copy was made under, checked again at the hire.
         trust: Box<crate::worktree::hire::TrustTicket>,
-        /// The original HTTP request's response channel.
-        reply: Sender<crate::floor_actions::OnboardStep>,
-    },
-    /// Resume one durable partial hire in a later writer turn.
-    OnboardContinue {
-        /// The same admitted session, checked again at the goal append.
-        session: crate::floor_session::SessionIdentity,
-        /// The exact original request fields.
-        request: crate::floor_actions::OnboardRequest,
         /// The original HTTP request's response channel.
         reply: Sender<crate::floor_actions::OnboardStep>,
     },
@@ -1204,68 +1179,25 @@ impl Handle {
             .recv()
             .map_err(|_| crate::floor_chat::ChatRefusal::Unavailable)?
     }
-    pub(crate) fn onboard_continue(
-        &self,
-        session: crate::floor_session::SessionIdentity,
-        request: crate::floor_actions::OnboardRequest,
-        reply: Sender<crate::floor_actions::OnboardStep>,
-    ) {
-        let _ = self.send_floor(Job::OnboardContinue {
-            session,
-            request,
-            reply,
-        });
-    }
-    /// A browser hire end to end: its admission, its check's run once before anything is
-    /// appended, then the admission again and the hire. The owner of the request waits for the
-    /// run; a same-key follower is answered pending by the session's reservation meanwhile.
+    /// A browser hire end to end: its admission and the hire. One that asks for its own copy first
+    /// makes the copy here, off the loop. A same-key follower is answered pending by the session's
+    /// reservation meanwhile.
     pub(crate) fn onboard(
         &self,
         session: crate::floor_session::SessionIdentity,
         request: crate::floor_actions::OnboardRequest,
     ) -> Result<crate::floor_actions::OnboardOutcome, crate::floor_actions::OnboardRefusal> {
-        use crate::floor_actions::{OnboardRefusal, OnboardStep};
+        use crate::floor_actions::OnboardStep;
         let step = self.onboard_step(|reply| Job::Onboard {
             session: session.clone(),
             request: request.clone(),
             reply,
         })?;
-        let (ticket, on_refusal) = match step {
-            OnboardStep::Answer(answer) => return answer,
-            OnboardStep::Check { ticket, on_refusal } => (ticket, on_refusal),
-            OnboardStep::Copy {
-                params,
-                baseline,
-                trust,
-            } => return self.onboard_copy(session, request, &params, baseline, *trust),
-        };
-        let no_effect = if on_refusal.is_some() {
-            OnboardRefusal::Unavailable
-        } else {
-            OnboardRefusal::UnavailableNoEffect
-        };
-        let never = dudes_rpc::HangUp::never();
-        let checked =
-            crate::baseline::admit_after_baseline(&ticket, &self.stopping, &never, |baseline| {
-                self.onboard_step(|reply| Job::OnboardChecked {
-                    session: session.clone(),
-                    request: request.clone(),
-                    baseline,
-                    run: ticket.id,
-                    reply,
-                })
-            });
-        match checked {
-            Ok(Ok(OnboardStep::Answer(answer))) => answer,
-            Ok(Ok(OnboardStep::Copy {
-                params,
-                baseline,
-                trust,
-            })) => self.onboard_copy(session, request, &params, baseline, *trust),
-            Err(crate::baseline::Baseline::Refused(refusal)) => {
-                on_refusal.ok_or(OnboardRefusal::Check(refusal.reason()))
+        match step {
+            OnboardStep::Answer(answer) => answer,
+            OnboardStep::Copy { params, trust } => {
+                self.onboard_copy(session, request, &params, *trust)
             }
-            Ok(Ok(OnboardStep::Check { .. }) | Err(_)) | Err(_) => Err(no_effect),
         }
     }
 
@@ -1276,7 +1208,6 @@ impl Handle {
         session: crate::floor_session::SessionIdentity,
         request: crate::floor_actions::OnboardRequest,
         params: &HireParams,
-        baseline: dudes_proto::CheckBaseline,
         trust: crate::worktree::hire::TrustTicket,
     ) -> Result<crate::floor_actions::OnboardOutcome, crate::floor_actions::OnboardRefusal> {
         use crate::floor_actions::{CopyRefusal, OnboardRefusal, OnboardStep};
@@ -1295,7 +1226,6 @@ impl Handle {
         let step = self.onboard_step(|reply| Job::OnboardCopied {
             session,
             request,
-            baseline,
             worktree: lease.worktree,
             trust: Box::new(trust),
             reply,

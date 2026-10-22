@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use dudes_policy::WorkInput;
 use dudes_proto::Spend;
-use dudes_proto::goal::{Evidence, Goal, Predicate};
+use dudes_proto::goal::{Evidence, Predicate};
 use dudes_proto::record::{
     BrowserAnswer, BrowserControl, BrowserGoal, BrowserRename, BrowserRetire, Hex32,
 };
@@ -829,10 +829,8 @@ pub enum Input {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Command {
-    /// One finite browser hire with a pre-minted intended goal in its durable record.
+    /// One finite browser hire.
     BrowserOnboardHire(Box<BrowserOnboardHire>),
-    /// Append only the recorded initial goal for exactly its hired agent.
-    BrowserOnboardGoal(Box<BrowserOnboardGoal>),
     /// `agent.hire`.
     Hire {
         /// Display name.
@@ -1184,18 +1182,6 @@ pub struct BrowserOnboardHire {
     pub budget: AgentBudget,
     /// Operator-enrolled isolation selection, for an engine that takes one.
     pub isolation: Option<IsolationMode>,
-    /// Bounded initial goal text.
-    pub goal_text: String,
-    /// Operator-enrolled completion predicate.
-    pub predicate: Predicate,
-    /// The enrolled check's name and revision, recorded on the intended goal.
-    pub completion_check: Option<dudes_proto::CompletionCheckRef>,
-    /// What the hire's check run saw before the first turn, recorded on the intended goal.
-    pub baseline: Option<dudes_proto::CheckBaseline>,
-    /// Operator-enrolled goal ceiling.
-    pub goal_budget: GoalBudget,
-    /// Operator-enrolled positive turn limit.
-    pub hop_cap: u32,
     /// Decoded browser attempt identity.
     pub attempt_id: Hex32,
     /// Digest of the canonical request fields.
@@ -1215,25 +1201,6 @@ pub struct BrowserOnboardHire {
 impl std::fmt::Debug for BrowserOnboardHire {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("BrowserOnboardHire(<redacted>)")
-    }
-}
-
-/// The exact intended goal read from a durable browser hire.
-#[derive(Clone, PartialEq, Eq)]
-pub struct BrowserOnboardGoal {
-    /// Agent named by the durable hire.
-    pub agent: AgentId,
-    /// Exact goal pre-minted and recorded on the hire.
-    pub goal: Goal,
-    /// Decoded browser attempt identity.
-    pub attempt_id: Hex32,
-    /// Digest of the session admitting this later append.
-    pub session_digest: Hex32,
-}
-
-impl std::fmt::Debug for BrowserOnboardGoal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("BrowserOnboardGoal(<redacted>)")
     }
 }
 
