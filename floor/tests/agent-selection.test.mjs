@@ -53,7 +53,7 @@ test('selection resolves fresh rows and drops the retired or disconnected row', 
     'a wrong id cannot show another agent');
 });
 
-test('the detail region renders complete selected values and no answer control', async () => {
+test('the detail renders selected values and offers navigation to its waiting question', async () => {
   const server = await createServer({
     root: resolve(import.meta.dirname, '..'),
     cacheDir: resolve(import.meta.dirname, '../node_modules/.vite-agent-selection'),
@@ -65,7 +65,7 @@ test('the detail region renders complete selected values and no answer control',
     const html = renderToStaticMarkup(createElement(AgentDetail, { row: ada }));
     assert.match(html, /aria-label="Selected agent details"/);
     for (const exact of [
-      ADA, 'Ada', 'claude', 'backend engineer', 'waiting', 'managed',
+      ADA, 'Ada', 'Claude', 'backend engineer', 'waiting', 'managed',
       'Validate every parser boundary without shortening this goal', 'in_progress',
       '$0.03 · 30 tok', QUESTION,
     ]) {
@@ -73,11 +73,12 @@ test('the detail region renders complete selected values and no answer control',
     }
     const tabs = [...html.matchAll(/<button type="button" role="tab" class="agent-detail-tab"[^>]*>([^<]*)<\/button>/g)];
     assert.deepEqual(tabs.map((tab) => tab[1]), ['Overview']);
-    assert.doesNotMatch(html.replace(tabs[0][0], ''), /<button|<input|<form|<textarea|contenteditable/i,
-      'the detail drew a control of its own beside its one tab');
+    assert.match(html, /<button type="button">Answer<\/button>/);
+    assert.doesNotMatch(html, /<input|<form|<textarea|contenteditable/i,
+      'question navigation must not invent an answer form');
 
     const other = renderToStaticMarkup(createElement(AgentDetail, { row: grace }));
-    assert.ok(other.includes(GRACE) && other.includes('Grace') && other.includes('codex'));
+    assert.ok(other.includes(GRACE) && other.includes('Grace') && other.includes('Codex'));
     assert.ok(other.includes('frontend engineer') && other.includes('exhausted'));
     assert.ok(other.includes('attached') && other.includes('$0.11 · 111 tok'));
     assert.ok(!other.includes('A stale question must not be shown'));

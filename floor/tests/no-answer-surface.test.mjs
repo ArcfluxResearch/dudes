@@ -1091,7 +1091,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
   assert.match(form, /const choose = \(choice: CheckChoice\) => \{\s*if \(!blocked\) chooseGoalCheck\(gate\.agent, gate\.goal, choice\);\s*\};/);
 });
 
-test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Pause all, resume, goal change, look edit and dismiss buttons, '
+test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Pause all, resume, goal change, look edit and dismiss buttons, Overview Answer, Review work, Review ticket and Change navigation, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation and Hire opener, '
@@ -1106,6 +1106,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   }
   const expected = [
     'src/renderer/AgentDetail.tsx',
+    ...Array(4).fill('src/renderer/AgentOverview.tsx'),
     ...Array(2).fill('src/renderer/CrewList.tsx'),
     ...Array(3).fill('src/renderer/NeedsStrip.tsx'),
     ...Array(3).fill(ARCHIVED_AGENTS),
@@ -1199,6 +1200,14 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     recovered.replace('href="#earlier-acknowledged-reviews"', 'href={context.binding.card}'),
   ]) assert.throws(() => expectHistoryLinks(changed));
   assert.notDeepEqual(clicksIn(recovered.replace('section.open = true', "void fetch('/floor/recovery/submit')")), [historyClick]);
+  assert.deepEqual(clicksIn(await readFile(resolve(source, 'renderer/AgentOverview.tsx'), 'utf8')), [
+    `(event) => {
+        const question = event.currentTarget.closest('.agent-detail')?.querySelector<HTMLElement>('.agent-detail-question');
+        question?.focus();
+        question?.scrollIntoView({ block: 'nearest' });
+      }`,
+    '() => onOpenTicket(ticket.id)', '() => onOpenTicket(card.id)', '() => onOpenTicket(ticket.id)',
+  ]);
   assert.deepEqual(clicksIn(readError), ['onRetry']);
   assert.match(readError, /onRetry = refreshFloorSnapshot/);
   const archive = await readFile(resolve(floor, ARCHIVED_AGENTS), 'utf8');
@@ -2996,7 +3005,7 @@ test('with the same rows but no goal sibling, no goal form renders', () => {
   ]) {
     const html = center(floorWith(pursuing(), answer, control, undefined));
     // The goal is on screen, so the absence below is the gate's, not a missing panel's.
-    assert.match(html, /<dt>Goal<\/dt><dd>ship the parser<\/dd>/, `${label}: the goal is not drawn, so this proves nothing`);
+    assert.match(html, /<p class="agent-overview-work-text">ship the parser<\/p>/, `${label}: the goal is not drawn, so this proves nothing`);
     assert.doesNotMatch(html, none, `${label} drew the goal form`);
   }
 });

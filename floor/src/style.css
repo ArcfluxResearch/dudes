@@ -1012,8 +1012,8 @@ samp,
 }
 .agent-detail-head .portrait-figure { background-color: var(--card-background); }
 .agent-detail-identity p { margin: 0.3rem 0; overflow-wrap: anywhere; }
-.agent-detail-actions, .agent-detail-head > .agent-detail-hold, .agent-detail-head > .selection-bar,
-.agent-detail-head > .agent-detail-question { grid-column: 1 / -1; }
+.agent-detail-actions, .agent-detail-head > .selection-bar,
+.agent-detail-head > .agent-detail-question, .agent-detail-head > .agent-look-editor { grid-column: 1 / -1; }
 .selection-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .selection-bar .stream-state { margin: 0; overflow-wrap: anywhere; }
 /* Seven tabs pass the drawer's default width, so the row scrolls sideways rather than wrapping or showing a scrollbar. */
@@ -1070,6 +1070,39 @@ samp,
   margin: 0.2rem 0 0;
   overflow-wrap: anywhere;
 }
+
+.agent-overview { display: grid; gap: 1rem; }
+.agent-overview h3, .agent-overview p { margin: 0; }
+.agent-overview > section { min-width: 0; }
+.agent-overview h3 { margin-bottom: .4rem; font-size: 1rem; }
+.agent-overview-now-line { font-size: .95rem; overflow-wrap: anywhere; }
+.agent-overview-now > button, .agent-overview-now > .agent-detail-control { margin-top: .6rem; }
+.agent-overview-now .agent-detail-control { padding: 0; border: 0; }
+.agent-overview-now .agent-detail-pause { margin-bottom: .5rem; }
+.agent-overview-now .control-actions { margin: 0; }
+.agent-overview-needs { padding: .75rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--card-background); }
+.agent-overview-held { display: grid; gap: .5rem; margin-top: .6rem; }
+.agent-overview-held > button { justify-self: start; }
+.agent-overview .agent-overview-check-caveat { margin-top: .6rem; font-size: .85rem; }
+.agent-overview-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: .7rem; }
+.agent-overview-section-head > button { flex: 0 0 auto; }
+.agent-overview-work-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-detail .agent-overview-work-status { margin-top: .4rem; }
+.agent-detail .agent-overview-work-status > div { display: flex; align-items: baseline; gap: .6rem; border: 0; }
+.agent-overview-work-status dd { margin: 0; }
+.agent-overview-work > section { margin-top: .6rem; }
+.agent-overview-work > section h3 { color: var(--muted-ink); font: inherit; font-size: .8rem; }
+.agent-overview-work > section p { margin-bottom: .4rem; }
+.agent-overview summary { width: fit-content; cursor: pointer; font-size: .85rem; }
+.agent-overview summary:focus-visible, .agent-overview button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+.agent-overview-task { margin-top: .6rem; }
+.agent-overview-task > summary { padding: .35rem .65rem; border: 1px solid var(--line); border-radius: .3rem; }
+.agent-overview-check, .agent-overview-change { margin-top: .6rem; }
+.agent-overview-details { padding-top: .8rem; border-top: 1px solid var(--line); }
+.agent-overview-details[open] > summary, .agent-overview-check[open] > summary { margin-bottom: .6rem; }
+.agent-overview-shared { padding: .6rem .75rem; border-left: 3px solid var(--accent-ink); font-size: .85rem; }
+.agent-detail-head > .agent-look-editor { padding: 0; border: 0; }
+.agent-detail-head > .agent-look-editor > button { padding: .25rem 0; border: 0; background: none; color: var(--muted-ink); font: inherit; font-size: .8rem; cursor: pointer; }
 
 .messages-panel section { margin-top: 1rem; }
 .messages-panel h3 { overflow-wrap: anywhere; }
@@ -1964,6 +1997,7 @@ samp,
 .retire-offer button,
 .retire-actions button,
 .goal-actions button,
+.agent-overview button,
 .agent-detail-terminal button,
 .full-output-toggle,
 .terminal-actions button,

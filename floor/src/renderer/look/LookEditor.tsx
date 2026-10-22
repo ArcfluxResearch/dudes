@@ -20,7 +20,7 @@ export function LookEditor({ row }: { readonly row: AgentRow }) {
   const draft = state.editor === row.id && !blocked ? state.draft : null;
   return <section className="agent-look-editor" aria-label={`Appearance and role for ${name}`}>
     {draft === null ? <button type="button" disabled={blocked} onClick={() => beginLook(row)}>
-      Edit look and role
+      Edit look
     </button> : <form onSubmit={(event) => { event.preventDefault(); void submitLook(row, browserLookDeps); }}
       onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelLook(); } }}>
       <label htmlFor="agent-look-character">Character</label>
