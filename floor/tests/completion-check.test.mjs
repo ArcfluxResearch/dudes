@@ -46,12 +46,13 @@ const LINES = Object.freeze({
   absent: 'It did not run before the agent’s first turn.',
 });
 
-/** The Completion check and Goal status rows of the Overview, as rendered for one goal. */
+/** The Completion check and current work status of the Overview, as rendered for one goal. */
 function overview(goal) {
   const shown = renderToStaticMarkup(createElement(AgentDetail, { row: { ...row, goal: { ...row.goal, ...goal } } }));
   return {
     check: shown.match(/<dt>Completion check<\/dt><dd>([\s\S]*?)<\/dd>/)?.[1],
-    status: shown.match(/<dt>Goal status<\/dt><dd>([^<]*)<\/dd>/)?.[1],
+    status: shown.match(/<dt>Status<\/dt><dd>([^<]*)<\/dd>/)?.[1],
+    caveat: shown.match(/<p class="agent-overview-check-caveat">([^<]*)<\/p>/)?.[1],
   };
 }
 
@@ -74,14 +75,16 @@ test('the Completion check row ends with one line saying how the check ran befor
   }
   // No goal, no line about its check.
   const idle = renderToStaticMarkup(createElement(AgentDetail, { row: { ...row, goal: undefined } }));
-  assert.match(idle, /<dt>Completion check<\/dt><dd>No name was recorded for this check\.<\/dd>/);
+  assert.match(idle, /<p class="agent-overview-work-text">No task assigned<\/p>/);
+  assert.doesNotMatch(idle, /data-check-baseline|No name was recorded/);
 });
 
-test('an achieved goal whose check may already pass says so in its status, and no other goal does', () => {
-  assert.equal(overview({ status: 'achieved', baseline: 'may_already_pass' }).status,
-    'achieved (the check may have passed before work)');
+test('an achieved goal keeps the may-already-pass caveat visible beside its result', () => {
+  assert.equal(overview({ status: 'achieved', baseline: 'may_already_pass' }).status, 'achieved');
+  assert.equal(overview({ status: 'achieved', baseline: 'may_already_pass' }).caveat, LINES.may_already_pass);
   for (const [status, baseline] of [['achieved', 'failed'], ['achieved', undefined], ['achieved', 'maybe'],
     ['in_progress', 'may_already_pass'], ['set', 'may_already_pass']]) {
     assert.equal(overview({ status, baseline }).status, status, `${status} with ${baseline}`);
+    assert.equal(overview({ status, baseline }).caveat, undefined);
   }
 });

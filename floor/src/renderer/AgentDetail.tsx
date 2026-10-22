@@ -5,8 +5,7 @@ import type { CSSProperties, ReactNode } from 'react';
 
 import { accentOf, accessoryOf, lookOf } from './appearance.ts';
 import { Portrait } from './Portrait.tsx';
-import { baselineOf, completionCheckOf } from './goal/completionCheck.ts';
-import type { Baseline } from './goal/completionCheck.ts';
+import { AgentOverview } from './AgentOverview.tsx';
 import { detailTabSelection, detailTabTarget, revealedTabScroll } from './detailTabs.ts';
 import type { DetailTab } from './detailTabs.ts';
 import type { CardRow } from './board.ts';
@@ -15,15 +14,11 @@ import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
 import { HIRE_ENGINES } from './onboarding/catalog.ts';
 import { NameEditor } from './rename/NameEditor.tsx';
 import { LookEditor } from './look/LookEditor.tsx';
-import { GoalResult } from './goal/GoalResult.tsx';
-import { goalResultOf } from './goal/result.ts';
 import { beginRename } from './rename/rename.ts';
-import { automaticHoldOf, automaticHoldText } from './automaticHold.ts';
+import { automaticHoldOf } from './automaticHold.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from './focus.ts';
 import type { AgentRow } from './scene/cast.ts';
 import { fieldsOf } from './scene/label.ts';
-import { workspaceLabel } from './workspace.ts';
-import { decodeWorktree, sharesCheckout, worktreeText } from './worktree.ts';
 
 function providerLabel(provider: string): string {
   return (HIRE_ENGINES as Readonly<Record<string, string>>)[provider] ?? provider;
@@ -33,15 +28,8 @@ function value(value: unknown): string {
   return typeof value === 'string' && value !== '' ? value : '—';
 }
 
-const BASELINE_LINES: Readonly<Record<Baseline | 'absent', string>> = Object.freeze({
-  failed: 'It failed before the agent’s first turn, so a pass shows a change.',
-  may_already_pass: 'The operator marked this check as one that may already pass. Done shows only that it passes '
-    + 'after the agent’s work.',
-  absent: 'It did not run before the agent’s first turn.',
-});
-
 export function AgentDetail({
-  row, cards = [], selection = null, streamState = null, control = null, recovery = null, retire = null, terminal = null, enable = null, answer = null, goal: goalForm = null,
+  row, cards = [], selection = null, streamState = null, control = null, recovery = null, retire = null, terminal = null, enable = null, answer = null, goal: goalForm = null, task: taskForm = null, onOpenTicket,
   messages = null, chat = null, liveOutput = null, git = null, memory = null, tab = 'overview', onTabChange = () => {}, live = false,
 }: {
   readonly row: AgentRow;
@@ -57,6 +45,8 @@ export function AgentDetail({
   readonly enable?: ReactNode;
   readonly answer?: ReactNode;
   readonly goal?: ReactNode;
+  readonly task?: ReactNode;
+  readonly onOpenTicket?: (id: string) => void;
   readonly messages?: ReactNode;
   readonly chat?: ReactNode;
   /** Overview's collapsed live output, for an agent that has some. */
@@ -75,43 +65,11 @@ export function AgentDetail({
   const fields = fieldsOf(row, { live, now: performance.now(), wallNow: Date.now() });
   const status = ticketWord(cards, row, fields.status) ?? fields.status;
   const automaticHold = automaticHoldOf(row);
-  const worktree = decodeWorktree(row.worktree);
-  const pursuing = typeof row.goal === 'object' && row.goal !== null;
-  const goal = pursuing ? row.goal as Record<string, unknown> : {};
-  const completionCheck = completionCheckOf(goal);
-  const baseline = baselineOf(goal);
+  const resumeInOverview = automaticHold !== null || (row.paused === true && row.halted !== true);
   const panels: readonly { readonly id: DetailTab; readonly label: string; readonly content: ReactNode }[] = [
-    { id: 'overview', label: 'Overview', content: <>
-      {goalForm}
-      {recovery}
-      <LookEditor row={row} />
-      <dl>
-        <div><dt>AgentId</dt><dd className="data">{row.id}</dd></div>
-        <div><dt>Provider</dt><dd>{value(row.provider)}</dd></div>
-        <div><dt>Project</dt><dd>{workspaceLabel(row)}</dd></div>
-        {worktree === null ? null : <div><dt>Works in</dt><dd>{worktreeText(worktree)}</dd></div>}
-        {!sharesCheckout(row) ? null : <div><dt>Shared directory</dt><dd>Another live agent works in this agent's directory, so their edits and checkouts can collide.</dd></div>}
-        <div><dt>Role</dt><dd>{value(row.role)}</dd></div>
-        <div><dt>Status</dt><dd>{value(status)}</dd></div>
-        <div><dt>Mode</dt><dd>{value(row.mode)}</dd></div>
-        <div><dt>Paused</dt><dd>{row.paused === true ? 'yes' : 'no'}</dd></div>
-        <div><dt>Halted</dt><dd>{row.halted === true ? 'yes' : 'no'}</dd></div>
-        <div><dt>Breaker</dt><dd>{value(row.breaker)}</dd></div>
-        <div><dt>Goal</dt><dd>{value(goal.text)}</dd></div>
-        <div><dt>Goal status</dt><dd>{goal.status === 'achieved' && baseline === 'may_already_pass'
-          ? 'achieved (the check may have passed before work)' : value(goal.status)}</dd></div>
-        <div><dt>Completion check</dt><dd>{completionCheck === null ? 'No name was recorded for this check.' : <>
-          <span>{completionCheck.label}</span>
-          <span className="completion-check-identity">{completionCheck.id}</span>
-          <span className="completion-check-identity">Revision {completionCheck.revision}</span>
-          <p>This is the configured check summary. The command is not shown here.</p>
-        </>}{pursuing ? <p data-check-baseline={baseline ?? 'absent'}>{BASELINE_LINES[baseline ?? 'absent']}</p> : null}</dd></div>
-        <div><dt>Turns</dt><dd>{typeof row.turns === 'number' ? row.turns : 0}</dd></div>
-        <div><dt>Cost today</dt><dd>{fields.cost}</dd></div>
-      </dl>
-      <GoalResult result={goalResultOf(row.goal)} />
-      {liveOutput}
-    </> },
+    { id: 'overview', label: 'Overview', content: <AgentOverview row={row} cards={cards} fields={fields}
+      control={resumeInOverview ? control : null} recovery={recovery} goalForm={goalForm} taskForm={taskForm}
+      liveOutput={liveOutput} onOpenTicket={onOpenTicket} /> },
     { id: 'chat', label: 'Chat', content: chat },
     { id: 'git', label: 'Git', content: git },
     { id: 'memory', label: 'Memory', content: memory },
@@ -172,10 +130,8 @@ export function AgentDetail({
           </p>
         </div>
         {selection}
-        {automaticHold === null ? null : <p className="agent-detail-hold" role="status">
-          {automaticHoldText(automaticHold, row.provider)}
-        </p>}
-        <div className="agent-detail-actions">{control}{retire}{terminal}{enable}</div>
+        <div className="agent-detail-actions">{resumeInOverview ? null : control}{retire}{terminal}{enable}</div>
+        <LookEditor row={row} />
         {fields.question === '' ? null : (
           <section className="agent-detail-question" aria-label="Waiting question" tabIndex={-1}>
             <h3>Waiting question</h3>

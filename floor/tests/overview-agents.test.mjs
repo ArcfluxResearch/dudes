@@ -64,13 +64,12 @@ test('Overview and the drawer report only published stream and selected-agent fa
     const center = (floor, row, id) => overview(floor, id) + drawer(floor, row, id);
     const html = center(live, ada, ADA);
     for (const text of [
-      'Live — confirmed', 'Journal position', 'segment 0 · byte 42', ADA, 'Ada', 'claude', 'backend engineer',
-      'waiting', 'managed', 'Paused', 'Halted', 'Breaker', 'warn', 'Turns', '7',
+      'Live — confirmed', 'Journal position', 'segment 0 · byte 42', ADA, 'Ada', 'Claude', 'backend engineer',
+      'waiting', 'managed', 'Paused', 'Breaker', 'warn', 'Turns', '7',
       'Review the full release candidate', 'in_progress', '$0.03 · 30 tok',
       'Ship now, or wait for a review?',
     ]) assert.ok(html.includes(text), `Overview or the drawer omitted ${text}`);
-    assert.match(html, /<dt>Paused<\/dt><dd>yes<\/dd>/);
-    assert.match(html, /<dt>Halted<\/dt><dd>no<\/dd>/);
+    assert.match(html, /<p class="agent-overview-now-line">Paused<\/p>/);
     assert.match(html, /<h2 id="control-title" tabindex="-1">Overview<\/h2>/);
     assert.match(html, /<summary>Archived \(0\)<\/summary>/);
     assert.doesNotMatch(html, /<input|<form|<textarea|contenteditable|Terminal|Workers/);
@@ -196,7 +195,7 @@ test('a recovery-required ticket gives the selected agent and focus roster the s
   await withViews(({ focus }) => {
     const html = focus({ ...live, agents: [row], cards: [card] }, row, ADA);
     assert.match(html, /<span data-status="needs you">needs you<\/span>/);
-    assert.match(html, /<dt>Status<\/dt><dd>needs you<\/dd>/);
+    assert.match(html, /<dt>Status<\/dt><dd>Needs you<\/dd>/);
     assert.match(html, /<span>needs you<\/span>/);
     assert.doesNotMatch(html, /<span>running<\/span>|data-status="running"/);
   });

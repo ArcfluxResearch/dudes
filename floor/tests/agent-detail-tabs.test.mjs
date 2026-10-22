@@ -18,7 +18,7 @@ import { act, createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
-import { fakePage } from './helpers/fake-page.mjs';
+import { fakePage, press } from './helpers/fake-page.mjs';
 
 let server;
 let AgentDetail;
@@ -91,6 +91,65 @@ test('the header retains identity and actions outside every panel', () => {
   assert.ok(header);
   for (const exact of ['Ada', 'Builder', 'idle', 'Pause', 'Retire', 'Attach', 'agent-detail-portrait']) {
     assert.ok(header.includes(exact), `header omitted ${exact}`);
+  }
+});
+
+test('Overview follows the current ticket from work to a hold and keeps its draft when changing tabs', async () => {
+  const idle = render({ task: createElement('form', null, 'Task form') });
+  assert.match(idle, /<p class="agent-overview-now-line">Idle, ready for a task<\/p>/);
+  assert.match(idle, /<details class="agent-overview-task"><summary>Give a task<\/summary>/);
+  assert.match(idle, /<details class="agent-overview-details"><summary>Details<\/summary>/);
+  assert.doesNotMatch(idle, /aria-label="Needs you"/);
+  assert.match(render({ row: { ...row, status: 'unavailable' } }),
+    /<p class="agent-overview-now-line">Status: unavailable<\/p>/);
+  const page = fakePage();
+  const text = node => node.nodeType === 3 ? node.nodeValue : node.childNodes.map(text).join('');
+  const buttons = node => node.childNodes.flatMap(child => child.nodeType === 1
+    ? [...(child.tagName === 'BUTTON' ? [child] : []), ...buttons(child)] : []);
+  const goal = { id: '01ARZ3NDEKTSV4RRFFQ69G5FAW', text: 'Fix the parser', status: 'in_progress' };
+  const ticket = { id: '01ARZ3NDEKTSV4RRFFQ69G5FAX', title: 'Fix the parser ticket', status: 'doing',
+    claimed_by: row.id, ticket: { goal: goal.id, reason: null, round: 1, stopping: false, position: null } };
+  const stale = { ...ticket, id: '01ARZ3NDEKTSV4RRFFQ69G5FAY', title: 'Old ticket',
+    ticket: { ...ticket.ticket, goal: '01ARZ3NDEKTSV4RRFFQ69G5FAZ' } };
+  const opened = [];
+  const { createRoot } = await import('react-dom/client');
+  const root = createRoot(page.host);
+  const show = (card, tab = 'overview', currentGoal = goal) => act(() => root.render(createElement(AgentDetail, {
+    row: { ...row, status: 'running', goal: currentGoal, shares_checkout: true }, cards: [stale, card], tab,
+    chat: createElement('p', null, 'Chat'), onOpenTicket: id => opened.push(id),
+    recovery: createElement('textarea', { 'aria-label': 'Recovery draft', defaultValue: 'Keep this recovery choice' }),
+  })));
+  try {
+    await show(ticket);
+    assert.equal(text(page.host.querySelector('[class="agent-overview-now-line"]')), 'Working on Fix the parser ticket');
+    assert.equal(text(page.host.querySelector('[class="agent-overview-work-text"]')), 'Fix the parser ticket');
+    assert.ok(!text(page.host).includes('Old ticket'));
+    await act(() => press(buttons(page.host).find(button => text(button) === 'Change')));
+    assert.deepEqual(opened, [ticket.id]);
+    const held = { ...ticket, status: 'blocked', ticket: { ...ticket.ticket, reason: 'recovery_required' } };
+    await show(held);
+    assert.equal(text(page.host.querySelector('[class="agent-overview-now-line"]')), 'Needs you: current work is held');
+    assert.ok(text(page.host.querySelector('[aria-label="Needs you"]')).includes('This work was interrupted.'));
+    assert.ok(text(page.host.querySelector('[class="agent-overview-shared"]')).includes('Shared directory'));
+    const draft = page.host.querySelector('[aria-label="Recovery draft"]');
+    await act(() => press(buttons(page.host).find(button => text(button) === 'Review held work')));
+    assert.deepEqual(opened, [ticket.id, ticket.id]);
+    await show(held, 'chat');
+    assert.equal(page.host.querySelector('[aria-label="Recovery draft"]'), draft);
+    assert.equal(page.host.querySelector('[id="agent-detail-panel-overview"]').getAttribute('hidden'), '');
+    await show(held, 'overview', { ...goal, id: '01ARZ3NDEKTSV4RRFFQ69G5FB0', text: 'Start another task' });
+    assert.equal(text(page.host.querySelector('[class="agent-overview-now-line"]')), 'Needs you: held work needs review');
+    assert.equal(text(page.host.querySelector('[class="agent-overview-work-text"]')), 'Start another task');
+    assert.ok(text(page.host.querySelector('[aria-label="Needs you"]')).includes('Fix the parser ticket'));
+    await act(() => press(buttons(page.host).find(button => text(button) === 'Review ticket')));
+    assert.deepEqual(opened, [ticket.id, ticket.id, ticket.id]);
+    await show({ ...ticket, status: 'review' }, 'overview', { ...goal, status: 'achieved', baseline: 'may_already_pass' });
+    const caveat = page.host.querySelector('[class="agent-overview-check-caveat"]');
+    assert.equal(text(caveat), 'The operator marked this check as one that may already pass. Done shows only that it passes after the agent’s work.');
+    assert.equal(caveat.parentNode.getAttribute('aria-label'), 'Current work');
+  } finally {
+    await act(() => root.unmount());
+    page.restore();
   }
 });
 

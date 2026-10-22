@@ -13,6 +13,9 @@ import { selectOutputAgent } from './floor/store.ts';
 import type { FloorState } from './floor/store.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from './focus.ts';
 import { GitPanel } from './git/GitPanel.tsx';
+import { goalGate } from './goal/goal.ts';
+import { FirstTaskForm, ticketActionsOpen } from './ticket/TicketBoard.tsx';
+import { freeTaskAgents } from './setup/nextStep.ts';
 import { GoalForm, GoalStatus } from './goal/GoalPanel.tsx';
 import { OverviewOutput, SelectionBar, streamStatus } from './LiveWork.tsx';
 import { MemoryPanel } from './memory/MemoryPanel.tsx';
@@ -48,7 +51,7 @@ export function Receipts({ floor, leaveFocusTo }: { readonly floor: FloorState; 
   );
 }
 
-export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, recoveryRequested, onRecoveryShown, onReadRecoveryReceipt }: {
+export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, recoveryRequested, onRecoveryShown, onReadRecoveryReceipt, onOpenTicket }: {
   readonly floor: FloorState;
   readonly row: AgentRow | null;
   readonly selectedId: string | null;
@@ -57,6 +60,7 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, rec
   readonly recoveryRequested?: { readonly id: string } | null;
   readonly onRecoveryShown?: () => void;
   readonly onReadRecoveryReceipt?: (request: string) => void;
+  readonly onOpenTicket?: (id: string) => void;
 }) {
   const chatAvailable = chatGate(floor, row).open;
   const [detailTab, setDetailTab] = useState<DetailTab>(chatAvailable ? 'chat' : 'overview');
@@ -67,6 +71,11 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, rec
   useEffect(() => {
     if (recoveryRequested?.id !== row?.id || row === null || detailTab !== 'overview') return;
     const heading = document.getElementById('recovery-title');
+    let parent = heading?.parentElement;
+    while (parent) {
+      if (parent.tagName === 'DETAILS') (parent as HTMLDetailsElement).open = true;
+      parent = parent.parentElement;
+    }
     heading?.focus();
     heading?.scrollIntoView({ block: 'start' });
     onRecoveryShown?.();
@@ -85,6 +94,9 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, rec
   }
   const selection = <SelectionBar floor={floor} onClear={onClose} leaveFocusTo={leaveFocusTo} showStatus={row === null} />;
   const switchedOff = switchedOffControls(floor);
+  const taskAgents = ticketActionsOpen(floor) && row !== null
+    ? freeTaskAgents(floor).filter((agent) => agent.id === row.id) : [];
+  const changeGoal = row !== null && goalGate(floor, row).open;
   return (
     <div className="agent-drawer" id="selected-agent-detail" key={selectedId ?? 'none'}
       ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}>
@@ -122,7 +134,9 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, rec
           </details>}
           answer={detailTab === 'chat' && chatGate(floor, row).open ? null
             : <AnswerForm floor={floor} row={row} leaveFocusTo={AGENT_DETAIL_HEADING_ID} />}
-          goal={<GoalForm floor={floor} row={row} />} />
+          onOpenTicket={onOpenTicket}
+          task={taskAgents.length === 0 ? null : <FirstTaskForm floor={floor} agents={taskAgents} />}
+          goal={changeGoal ? <GoalForm floor={floor} row={row} /> : null} />
       )}
     </div>
   );
