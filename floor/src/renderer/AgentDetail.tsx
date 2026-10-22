@@ -151,7 +151,7 @@ export function AgentDetail({
   }, []);
 
   return (
-    <aside ref={detail} className="agent-detail" aria-label="Selected agent details" data-selected-agent-id={row.id}
+    <aside ref={detail} className="agent-detail" aria-label="Selected agent details" data-selected-agent-id={row.id} data-detail-tab={selected}
       style={{ '--agent': accentOf(row) } as CSSProperties}>
       <header className="agent-detail-head">
         <Portrait className="agent-portrait agent-detail-portrait" look={lookOf(row)} accessory={accessoryOf(row.role)}

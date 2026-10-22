@@ -130,6 +130,37 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
 }) {
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
+  const size = useRef({ width: 0, height: 0 });
+  useLayoutEffect(() => {
+    const node = scroll.current;
+    if (!node) return;
+    size.current = { width: node.clientWidth, height: node.clientHeight };
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      size.current = { width: node.clientWidth, height: node.clientHeight };
+      if (follow.current) node.scrollTop = node.scrollHeight;
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  useLayoutEffect(() => {
+    const drawer = scroll.current?.closest<HTMLElement>('.agent-drawer');
+    const viewport = window.visualViewport;
+    if (!drawer || !viewport) return;
+    const fit = () => {
+      drawer.style.setProperty('--chat-viewport-height', `${viewport.height}px`);
+      drawer.style.setProperty('--chat-viewport-top', `${viewport.offsetTop}px`);
+    };
+    fit();
+    viewport.addEventListener('resize', fit);
+    viewport.addEventListener('scroll', fit);
+    return () => {
+      viewport.removeEventListener('resize', fit);
+      viewport.removeEventListener('scroll', fit);
+      drawer.style.removeProperty('--chat-viewport-height');
+      drawer.style.removeProperty('--chat-viewport-top');
+    };
+  }, []);
   useLayoutEffect(() => {
     if (follow.current && scroll.current !== null) scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [entries, floor.output, action.attempt, action.outcome]);
@@ -143,6 +174,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
     <div className="chat-scroll" ref={scroll} role="log" aria-label={`Conversation with ${name}`} aria-relevant="additions"
       onScroll={event => {
         const node = event.currentTarget;
+        if (node.clientWidth !== size.current.width || node.clientHeight !== size.current.height) return;
         follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
       }}>
       {entries.length === 0 && attempt === null ? <div className="chat-empty">

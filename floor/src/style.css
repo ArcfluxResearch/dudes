@@ -3003,17 +3003,22 @@ samp,
 .agent-reorder-handle:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
 .reorder-position { font-size: 0.75rem; }
 
-.chat-panel { display: grid; gap: .75rem; }
+.agent-drawer:has(.agent-detail[data-detail-tab='chat']) { display: flex; flex-direction: column; overflow: clip; }
+.agent-detail[data-detail-tab='chat'] { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
+.agent-detail[data-detail-tab='chat'] > :not([role='tabpanel']) { flex: 0 0 auto; }
+#agent-detail-panel-chat { flex: 1 1 auto; min-height: 0; }
+.chat-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: .75rem; }
 .chat-panel section { min-width: 0; }
+.chat-thread { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
 .chat-panel h3 { margin: 0 0 .5rem; }
 .chat-panel p { margin: .5rem 0; }
 .chat-guidance, .chat-compose > p, .chat-reply-details { font-size: .8rem; line-height: 1.5; }
 .chat-guidance summary, .chat-reply-details summary { cursor: pointer; color: var(--muted-ink); }
-.chat-scroll { height: clamp(12rem, 42vh, 28rem); overflow-y: auto; overflow-anchor: none; padding: .5rem .35rem; }
-.chat-empty { display: grid; align-content: center; min-height: 10rem; text-align: center; }
+.chat-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-anchor: none; padding: .5rem .35rem; }
+.chat-empty { display: grid; align-content: center; min-height: 100%; text-align: center; }
 .chat-empty p:first-child { font-weight: 600; }
 .chat-empty p:last-child { font-size: .85rem; }
-.chat-panel ol { display: grid; gap: 1.25rem; list-style: none; padding: 0; margin: 0; }
+.chat-panel ol { display: grid; align-content: end; min-height: 100%; gap: 1.25rem; list-style: none; padding: 0; margin: 0; }
 .chat-exchange { display: grid; gap: .3rem; min-width: 0; }
 .chat-message { padding: .7rem .9rem; border: 1px solid var(--line); border-radius: 14px; min-width: 0; }
 .chat-user { margin-inline-start: 1.5rem; border-color: transparent; background: var(--selected); border-end-end-radius: 4px; }
@@ -3026,7 +3031,7 @@ samp,
 .chat-exchange[data-chat-turn-state='failed'] > .chat-message-state,
 .chat-exchange[data-chat-pending-state='delivery_uncertain'] > .chat-message-state { font-weight: 600; }
 .chat-preview { border-inline-start: 3px solid var(--accent-ink); }
-.chat-compose { border-top: 1px solid var(--line); padding-top: .75rem; }
+.chat-compose { flex: 0 0 auto; border-top: 1px solid var(--line); padding-top: .75rem; }
 .chat-composer-label { display: block; margin-bottom: .35rem; font-size: .85rem; }
 .chat-compose textarea {
   box-sizing: border-box;
@@ -3947,6 +3952,13 @@ samp,
     border-width: 0;
     border-radius: 0;
     overflow-y: auto;
+  }
+
+  .agent-drawer:has(.agent-detail[data-detail-tab='chat']) {
+    top: var(--chat-viewport-top, 0px);
+    bottom: auto;
+    height: var(--chat-viewport-height, 100dvh);
+    padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
   }
 
   .ticket-dialog:not([data-composer='true']) {
