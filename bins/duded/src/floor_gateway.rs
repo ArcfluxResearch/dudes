@@ -140,6 +140,10 @@ const DEVICES_REMOVE_PATH: &str = "/floor/devices/remove";
 const DEVICES_KEEP_PATH: &str = "/floor/devices/keep";
 const CHAT_SEND_PATH: &str = "/floor/chat/send";
 const CHAT_CANCEL_PATH: &str = "/floor/chat/cancel";
+/// Raw bytes of one file, the agent and name in the query. The only route whose body is not text.
+const CHAT_FILE_PATH: &str = "/floor/chat/file";
+/// How long a file upload may take to arrive. Other bodies share the head's short deadline.
+const UPLOAD_DEADLINE: Duration = Duration::from_secs(120);
 /// The onboarding body cap.
 const MAX_ONBOARD_BODY: usize = 4096;
 const FLOOR_PROTOCOL: &str = "dudes-floor-v4";
@@ -1201,6 +1205,7 @@ enum ActionRoute {
     Diff,
     Memory(MemoryRoute),
     Chat(ChatVerb),
+    ChatFile,
     Ticket(TicketRoute),
     Recovery(RecoveryRoute),
     Devices(DeviceVerb),
@@ -1218,6 +1223,7 @@ impl ActionRoute {
             DEVICES_KEEP_PATH => Some(Self::Devices(DeviceVerb::Keep)),
             CHAT_SEND_PATH => Some(Self::Chat(ChatVerb::Send)),
             CHAT_CANCEL_PATH => Some(Self::Chat(ChatVerb::Cancel)),
+            CHAT_FILE_PATH => Some(Self::ChatFile),
             ONBOARD_PATH => Some(Self::Onboard),
             INSPECT_RECOVERY_PATH if live.serves_recovery() => {
                 Some(Self::Recovery(RecoveryRoute::Inspect))
@@ -1264,6 +1270,7 @@ impl ActionRoute {
             Self::Diff => MAX_DIFF_BODY_BYTES,
             Self::Memory(_) => MAX_MEMORY_BODY_BYTES,
             Self::Chat(_) => MAX_CHAT_BODY_BYTES,
+            Self::ChatFile => crate::floor_chat_file::MAX_FILE_BYTES,
             Self::Ticket(_) => MAX_TICKET_BODY_BYTES,
             Self::Devices(_) => MAX_DEVICES_BODY_BYTES,
         }
@@ -1396,6 +1403,8 @@ fn read_request<'a>(
                 } => {
                     let buffered = &head[end..];
                     let endpoints = stream.endpoints();
+                    let uploading = route.action() == Some(ActionRoute::ChatFile);
+                    let mut slot = None;
                     let read = || {
                         if !route.has_body() {
                             return Ok(Vec::new());
@@ -1403,6 +1412,19 @@ fn read_request<'a>(
                         if buffered.len() > parsed.content_length {
                             return Err(Denied::Response(error_response(400, "Bad Request")));
                         }
+                        let deadline = if uploading {
+                            let Some(taken) = crate::floor_chat_file::UploadSlot::take() else {
+                                return Err(Denied::Response(action_json(
+                                    200,
+                                    "OK",
+                                    &serde_json::json!({ "busy": true }),
+                                )));
+                            };
+                            slot = Some(taken);
+                            Instant::now() + UPLOAD_DEADLINE
+                        } else {
+                            deadline
+                        };
                         match read_body(stream, buffered, parsed.content_length, deadline, phase) {
                             Ok(Some(body)) => Ok(body),
                             Ok(None) => Err(Denied::Closed),
@@ -1558,6 +1580,9 @@ fn dispatch<'a>(
                 (ActionRoute::Chat(verb), Admitted::Session(session)) => {
                     chat_response(verb, session, handle, body)
                 }
+                (ActionRoute::ChatFile, Admitted::Session(_)) => {
+                    chat_file_response(handle, &head.target, body)
+                }
                 (ActionRoute::Ticket(route), Admitted::Session(session)) => {
                     ticket_response(route, session, handle, catalog, body)
                 }
@@ -1619,7 +1644,7 @@ fn read_body(
             return Ok(None);
         }
         stream.set_request_timeout(Some(deadline.saturating_duration_since(now)))?;
-        let mut chunk = [0_u8; 1024];
+        let mut chunk = [0_u8; 16 * 1024];
         let room = (content_length - body.len()).min(chunk.len());
         match stream.read(&mut chunk[..room]) {
             Ok(0) => return Ok(None),
@@ -1663,7 +1688,13 @@ fn parse_request<'a>(head: &[u8], catalog: Catalog<'a>, sessions: &FloorSessions
     let Some(path) = request.path else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
-    if let Some(route) = Route::of(method, path, catalog) {
+    // Only the file route has a query; for every other route a `?` is part of an unknown path.
+    let route_path = path
+        .split_once('?')
+        .map(|(base, _)| base)
+        .filter(|base| *base == CHAT_FILE_PATH)
+        .unwrap_or(path);
+    if let Some(route) = Route::of(method, route_path, catalog) {
         let parsed = if let Some(socket) = route.socket() {
             upgrade_request(route, socket, request.version, request.headers, sessions)
         } else if route.is_sign_in() {
@@ -1871,7 +1902,12 @@ fn action_request(
     let Some(action) = route.action() else {
         return Parsed::Response(error_response(403, "Forbidden"));
     };
-    browser_head(route, version, headers, action.max_body(), true)
+    let content_type: &[u8] = if action == ActionRoute::ChatFile {
+        b"application/octet-stream"
+    } else {
+        b"application/json"
+    };
+    browser_head(route, version, headers, action.max_body(), true, content_type)
 }
 
 /// The head of a check or a sign-out. Unlike an action it may carry no cookie, or a malformed
@@ -1882,7 +1918,14 @@ fn standing_request(
     version: Option<u8>,
     headers: &[httparse::Header<'_>],
 ) -> Parsed<'static> {
-    browser_head(route, version, headers, MAX_STANDING_BODY, false)
+    browser_head(
+        route,
+        version,
+        headers,
+        MAX_STANDING_BODY,
+        false,
+        b"application/json",
+    )
 }
 
 /// The headers a page signs a request with, in the order [`Signed`] reads them: the origin it
@@ -1917,6 +1960,7 @@ fn browser_head(
     headers: &[httparse::Header<'_>],
     max_body: usize,
     cookie_required: bool,
+    content_type_wanted: &[u8],
 ) -> Parsed<'static> {
     if version != Some(1) || forbidden_framing(headers) {
         return Parsed::Response(error_response(400, "Bad Request"));
@@ -1952,7 +1996,7 @@ fn browser_head(
     let Some(content_type) = one_header(headers, "content-type") else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
-    if !content_type.eq_ignore_ascii_case(b"application/json") {
+    if !content_type.eq_ignore_ascii_case(content_type_wanted) {
         return Parsed::Response(error_response(400, "Bad Request"));
     }
     let Some(content_length) = one_header(headers, "content-length")
@@ -2729,6 +2773,50 @@ fn chat_response<'a>(
             error_response(503, "Service Unavailable")
         }
         Err(ChatRefusal::UnavailableNoEffect) => error_response(503, "Service Unavailable"),
+    }
+}
+
+/// One file from Chat: ask the writer which folder the agent keeps, then copy the bytes there.
+/// The writer is not held for the copy.
+fn chat_file_response<'a>(handle: &Handle, target: &str, body: &[u8]) -> Response<'a> {
+    use crate::floor_chat_file::{Refusal, store};
+    let agent = crate::floor_chat_file::query_value(target, "agent")
+        .and_then(|raw| String::from_utf8(raw).ok())
+        .and_then(|raw| dudes_types::AgentId::parse(&raw).ok().filter(|id| id.to_string() == raw));
+    let Some(agent) = agent else {
+        return error_response(400, "Bad Request");
+    };
+    let name = crate::floor_chat_file::query_value(target, "name").unwrap_or_default();
+    let refused = |reason: &str| {
+        action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({ "state": "refused", "reason": reason }),
+        )
+    };
+    let dir = match handle.chat_file_dir(agent) {
+        Ok(dir) => dir,
+        Err("unavailable") => return error_response(503, "Service Unavailable"),
+        Err(reason) => return refused(reason),
+    };
+    match store(&dir, &name, body) {
+        Ok(stored) => action_json(
+            200,
+            "OK",
+            &serde_json::json!({
+                "path": stored.path.to_string_lossy(), "name": stored.name, "bytes": stored.bytes
+            }),
+        ),
+        Err(Refusal::Full(folder)) => action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({
+                "state": "refused", "reason": "folder_full",
+                "folder": folder.to_string_lossy()
+            }),
+        ),
+        Err(Refusal::NotAFolder) => refused("not_a_folder"),
+        Err(Refusal::Io) => error_response(503, "Service Unavailable"),
     }
 }
 

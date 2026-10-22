@@ -908,6 +908,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// Only attributed durable answers populate this replayable request index.
     pub(crate) answer_index: crate::floor_answer::AnswerIndex,
     pub(crate) chat_index: crate::floor_chat::ChatIndex,
+    /// `<state dir>/agents`: each agent's own folder is under it, named by its id.
+    pub(crate) agents_root: PathBuf,
     pub(crate) running_providers: crate::config::ProviderTables,
     /// The `[mcp.servers]` table this run loaded, for a reload to compare.
     pub(crate) running_mcp: dudes_providers::mcp::DeclaredServers,
@@ -1458,6 +1460,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     reply,
                 } => {
                     let _ = reply.send(self.browser_chat(&session, &request));
+                }
+                Job::ChatFile { agent, reply } => {
+                    let _ = reply.send(self.chat_file_dir(agent));
                 }
                 Job::Closing(job) => {
                     let answer = self.closing_request(job.request);
@@ -6708,6 +6713,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Job::Chat { reply, .. } => {
                     let _ = reply.send(Err(crate::floor_chat::ChatRefusal::UnavailableNoEffect));
                 }
+                Job::ChatFile { reply, .. } => {
+                    let _ = reply.send(Err("unavailable"));
+                }
                 Job::Onboard { reply, .. } | Job::OnboardCopied { reply, .. } => {
                     let _ = reply.send(OnboardStep::Answer(Err(OnboardRefusal::Unavailable)));
                 }
@@ -8241,6 +8249,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             return Err(error.context("invalid live goal replacement"));
         }
         let committed = self.append_checked(entry, recovery)?;
+        if let Record::AgentRetired { id, .. } = &entry.record {
+            crate::floor_chat_file::remove_for(&self.agents_root, *id);
+        }
         let lsn = committed.lsn();
         let through = committed.through();
         let output = self.children.output();

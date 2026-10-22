@@ -572,6 +572,12 @@ where
     // Replay is the authority on whether this run ever had a pre-agent epoch. A retired agent is
     // still a recorded agent: acquisition never reopens after the first hire in the directory's
     // history.
+    // A crash between a retirement and the delete of its files leaves them behind; finish it.
+    for (agent, row) in &sup.world().agents {
+        if row.retired {
+            crate::floor_chat_file::remove_for(&settings.state_dir.join("agents"), *agent);
+        }
+    }
     let operator_authority = authority_after_replay(!sup.world().agents.is_empty());
     // The third published value, beside the two above. Empty here and republished at the end of
     // every `pump` — including step 7's, which runs before the door opens, so the accept thread
@@ -624,6 +630,7 @@ where
             onboarding_index,
             answer_index,
             chat_index,
+            agents_root: settings.state_dir.join("agents"),
             running_mcp: options.mcp_servers().clone(),
             running_providers: options.into_providers(),
             browser_launches,

@@ -30,6 +30,17 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         result
     }
 
+    /// The folder a chat file for `agent` goes under. An Attached agent's engine is not launched by
+    /// Dudes, so it could not be given the folder.
+    pub(super) fn chat_file_dir(&self, agent: dudes_types::AgentId) -> Result<std::path::PathBuf, &'static str> {
+        match self.sup.world().agents.get(&agent) {
+            None => Err("agent_absent"),
+            Some(row) if row.retired => Err("agent_retired"),
+            Some(row) if row.attached => Err("attached"),
+            Some(_) => Ok(self.ctx.agents_root.join(agent.to_string())),
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the writer checks switch, durable retry, fence, world, and append permit in one visible order"

@@ -72,6 +72,7 @@ pub mod floor_answer;
 #[cfg(any(test, feature = "testing"))]
 pub mod floor_browser;
 pub mod floor_chat;
+mod floor_chat_file;
 pub mod floor_control;
 pub mod floor_diff;
 pub mod floor_gateway;

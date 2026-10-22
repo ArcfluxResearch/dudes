@@ -283,6 +283,16 @@ fn post(
     bytes
 }
 
+fn body_post(
+    kind: &str,
+    path: &str,
+    cookie: Option<&str>,
+    signed: Option<&SignedValues>,
+    body: &[u8],
+) -> Vec<u8> {
+    post(path, cookie, signed, kind, body.len(), body)
+}
+
 fn json_post(
     path: &str,
     cookie: Option<&str>,
@@ -493,34 +503,41 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
         .collect();
     assert!(routes.len() >= 22);
     for path in routes {
+        // The file route is the one whose body is raw bytes, so it has no clean-text rule.
+        let binary = path == CHAT_FILE_PATH;
+        let kind = if binary {
+            "application/octet-stream"
+        } else {
+            "application/json"
+        };
         let max = max_body_of(path);
         let sign = |body: &[u8]| page.sign("POST", path, body);
         let too_big = post(
             path,
             Some(cookie),
             Some(&sign(&[])),
-            "application/json",
+            kind,
             max + 1,
             &[],
         );
         let elsewhere = page
             .browser
             .sign("POST", path, "http://127.0.0.1:1", body, 0);
-        let wrong_origin_header = json_post(path, Some(cookie), Some(&elsewhere), body);
-        let cases: Vec<(&str, Vec<u8>, u16)> = vec![
+        let wrong_origin_header = body_post(kind, path, Some(cookie), Some(&elsewhere), body);
+        let mut cases: Vec<(&str, Vec<u8>, u16)> = vec![
             (
                 "no cookie",
-                json_post(path, None, Some(&sign(body)), body),
+                body_post(kind, path, None, Some(&sign(body)), body),
                 403,
             ),
             (
                 "no signature",
-                json_post(path, Some(cookie), None, body),
+                body_post(kind, path, Some(cookie), None, body),
                 401,
             ),
             (
                 "another browser's signature",
-                json_post(
+                body_post(kind, 
                     path,
                     Some(cookie),
                     Some(&other.sign("POST", path, body)),
@@ -535,7 +552,7 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
             ),
             (
                 "a signature made for another path",
-                json_post(
+                body_post(kind, 
                     path,
                     Some(cookie),
                     Some(&page.sign("POST", "/floor/elsewhere", body)),
@@ -545,12 +562,12 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
             ),
             (
                 "a signature over another body",
-                json_post(path, Some(cookie), Some(&sign(b"{}")), body),
+                body_post(kind, path, Some(cookie), Some(&sign(b"{}")), body),
                 401,
             ),
             (
                 "a time over a minute ahead",
-                json_post(
+                body_post(kind, 
                     path,
                     Some(cookie),
                     Some(
@@ -577,7 +594,7 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
             ("a body over the cap", too_big, 413),
             (
                 "a NUL byte",
-                json_post(
+                body_post(kind, 
                     path,
                     Some(cookie),
                     Some(&sign(b"{\"a\":\"\0\"}")),
@@ -587,7 +604,7 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
             ),
             (
                 "invalid UTF-8",
-                json_post(
+                body_post(kind, 
                     path,
                     Some(cookie),
                     Some(&sign(b"{\"a\":\"\xff\"}")),
@@ -596,6 +613,9 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
                 400,
             ),
         ];
+        if binary {
+            cases.truncate(cases.len() - 2);
+        }
         for (what, request, status) in cases {
             let driven = drive(&request, &page.sessions, &outside());
             assert_eq!(
@@ -611,7 +631,7 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
             );
         }
         let unsigned = drive(
-            &json_post(path, Some(cookie), None, body),
+            &body_post(kind, path, Some(cookie), None, body),
             &page.sessions,
             &outside(),
         );
@@ -620,7 +640,7 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
             "{path}: a refused signature says so, so the page can retry once"
         );
 
-        let request = page.json(path, body);
+        let request = body_post(kind, path, Some(cookie), Some(&sign(body)), body);
         let from_an_agent = drive(&request, &page.sessions, &inside_an_agent());
         assert_eq!(from_an_agent.outcome, Outcome::Status(403), "{path}");
         assert_eq!(from_an_agent.reached_a_handler, 0, "{path}");

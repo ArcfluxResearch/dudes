@@ -1061,6 +1061,13 @@ pub enum Job {
         /// The fixed reply.
         reply: Sender<crate::floor_ticket::TicketReply>,
     },
+    /// Which folder an agent keeps files in, or why it keeps none.
+    ChatFile {
+        /// The agent a file is for.
+        agent: dudes_types::AgentId,
+        /// The agent's directory, or a fixed reason.
+        reply: Sender<Result<std::path::PathBuf, &'static str>>,
+    },
     /// One typed browser-note operation.
     Chat {
         /// The admitting registry session.
@@ -1158,6 +1165,18 @@ impl Handle {
     /// Whether the exit path has started, so work that waits on the loop should stop waiting.
     pub(crate) fn is_stopping(&self) -> bool {
         self.stopping.load(Ordering::Acquire)
+    }
+
+    /// The directory a file for `agent` is kept under, or the fixed reason it cannot be: the agent
+    /// is unknown or retired, or Dudes does not launch its engine.
+    pub(crate) fn chat_file_dir(
+        &self,
+        agent: dudes_types::AgentId,
+    ) -> Result<std::path::PathBuf, &'static str> {
+        let (reply, answer) = std::sync::mpsc::channel();
+        self.send_floor(Job::ChatFile { agent, reply })
+            .map_err(|_| "unavailable")?;
+        answer.recv().map_err(|_| "unavailable")?
     }
 
     /// Queue one strictly typed Chat operation on the daemon writer.

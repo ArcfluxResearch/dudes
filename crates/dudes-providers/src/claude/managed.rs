@@ -259,6 +259,13 @@ impl ClaudeAdapter {
             }
         }
         argv.extend(session);
+        // Files sent in Chat live outside the project, and Claude reads outside its working
+        // directories only for a folder it is given. `--add-dir` takes every following element
+        // that is not an option, and an option or the end of the argv always follows.
+        let files = ctx.agent_dir.join("files");
+        if files.is_dir() {
+            argv.extend([OsString::from("--add-dir"), files.into_os_string()]);
+        }
         // `--mcp-config` takes every following element that is not an option, so what follows the
         // value is always an option, the `--` before an argv task, or the end of the argv.
         if !ctx.mcp_servers.is_empty() {
@@ -890,6 +897,34 @@ mod tests {
             "echo hello",
         ]));
         assert_eq!(resumed.argv, want);
+    }
+
+    #[test]
+    fn a_files_folder_is_added_only_when_it_exists() {
+        let dir = tempfile::tempdir().expect("a scratch folder");
+        let launch = |dir: &Path| {
+            ClaudeAdapter::default()
+                .managed(
+                    &AgentCtx {
+                        agent_dir: dir,
+                        ..ctx(&[])
+                    },
+                    "t",
+                    &first(),
+                    &none(),
+                )
+                .expect("a launch")
+                .argv
+        };
+        assert!(!launch(dir.path()).contains(&OsString::from("--add-dir")));
+        std::fs::create_dir(dir.path().join("files")).expect("the folder");
+        let argv = launch(dir.path());
+        let at = argv
+            .iter()
+            .position(|part| part == "--add-dir")
+            .expect("the flag");
+        assert_eq!(argv[at + 1], dir.path().join("files").into_os_string());
+        assert!(argv[at + 2].to_string_lossy().starts_with("--"));
     }
 
     #[test]
