@@ -46,7 +46,7 @@ const selectedDetail = (id = ADA) => {
 
 test('the selected detail exposes a failing observed check beside the authoritative goal status', () => {
   const html = renderDetail(rowOf(goalOf(observedFailure)));
-  assert.match(html, /<dt>Goal status<\/dt><dd>active<\/dd>/);
+  assert.match(html, /<dt>Status<\/dt><dd>active<\/dd>/);
   assert.match(html, /Latest check failed/);
   assert.match(html, /Dudes ran it/);
   assert.match(html, /segment 1 · byte 3/);
@@ -84,9 +84,8 @@ test('synthetic observed and inferred outcomes remain separate from status, paus
     const html = selectedDetail();
     assert.match(html, new RegExp(`Latest check ${outcome}`));
     assert.ok(html.includes(`<dt>Who ran it</dt><dd>${label}</dd>`));
-    assert.match(html, /<dt>Goal status<\/dt><dd>active<\/dd>/);
-    assert.match(html, /<dt>Paused<\/dt><dd>yes<\/dd>/);
-    assert.match(html, /<dt>Halted<\/dt><dd>yes<\/dd>/);
+    assert.match(html, /<dt>Status<\/dt><dd>active<\/dd>/);
+    assert.match(html, /<p class="agent-overview-now-line">Halted<\/p>/);
     assert.equal(getFloorState().agents[0].goal.status, 'active');
     assert.equal(getFloorState().agents[0].paused, true);
     assert.equal(getFloorState().agents[0].halted, true);
@@ -96,7 +95,7 @@ test('synthetic observed and inferred outcomes remain separate from status, paus
     assert.doesNotMatch(resultHtml, /\bDone\b|goal (?:is )?(?:met|achieved|complete)|met (?:its|the) goal/i);
   }
   const achieved = renderDetail(rowOf(goalOf(observedFailure, { status: 'achieved' })));
-  assert.match(achieved, /<dt>Goal status<\/dt><dd>achieved<\/dd>/);
+  assert.match(achieved, /<dt>Status<\/dt><dd>achieved<\/dd>/);
   assert.match(achieved, /Latest check failed/);
 });
 
@@ -313,6 +312,6 @@ test('malformed check identity and malformed result remain independently unavail
     assert.match(html, identity);
     assert.match(html, outcome);
     assert.doesNotMatch(html, absent);
-    assert.match(html, /<dt>Goal status<\/dt><dd>active<\/dd>/);
+    assert.match(html, /<dt>Status<\/dt><dd>active<\/dd>/);
   }
 });

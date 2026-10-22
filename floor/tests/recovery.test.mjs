@@ -716,6 +716,9 @@ test('a recovery request reveals Overview from Chat and focuses its visible head
   const page = fakePage();
   const root = createRoot(page.host);
   const scrolled = [];
+  Object.defineProperty(page.host.constructor.prototype, 'parentElement', {
+    get() { return this.parentNode?.nodeType === 1 ? this.parentNode : null; },
+  });
   page.host.constructor.prototype.scrollIntoView = function (options) { scrolled.push({ id: this.id, ...options }); };
   const draw = request => createElement(AgentDrawer, { floor: current, row: ROW, selectedId: AGENT,
     onClose() {}, leaveFocusTo: 'crew-toggle', recoveryRequested: request });
@@ -725,6 +728,7 @@ test('a recovery request reveals Overview from Chat and focuses its visible head
     await act(async () => root.render(draw({ id: AGENT })));
     assert.equal(page.host.querySelector('[id="agent-detail-tab-overview"]').getAttribute('aria-selected'), 'true');
     assert.equal(page.host.querySelector('[id="agent-detail-panel-overview"]').getAttribute('hidden'), null);
+    assert.equal(page.host.querySelector('[class="agent-overview-details"]').open, true);
     assert.equal(page.document.activeElement.id, 'recovery-title');
     assert.deepEqual(scrolled, [{ id: 'recovery-title', block: 'start' }]);
     assert.equal(model.getRecoveryState().requests.size, 0);

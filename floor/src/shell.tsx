@@ -453,7 +453,7 @@ function SignedInShell() {
     onPointerCancel={endResize} onKeyDown={keyResize} onDoubleClick={resetSidebar} />;
   const drawer = <AgentDrawer floor={floor} row={displayRow} selectedId={currentSelectedId} onClose={clearSelection}
     leaveFocusTo={leaveDrawerTo} recoveryRequested={recoveryAsked} onRecoveryShown={() => setRecoveryAsked(null)}
-    onReadRecoveryReceipt={readRecoveryReceipt} />;
+    onReadRecoveryReceipt={readRecoveryReceipt} onOpenTicket={openCard} />;
 
   const notices = (
     <div className="notice-area">
