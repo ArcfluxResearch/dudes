@@ -907,6 +907,12 @@ pub(crate) fn goal_args(agent: &str, text: &str) -> Vec<OsString> {
 /// other method with an error, for as long as the test process runs.
 #[cfg(unix)]
 pub(crate) fn ping_as(socket: &Path, version: &str) {
+    answer_as(socket, version, None);
+}
+
+/// [`ping_as`] that also answers `agent.list` with `agents`, a JSON array.
+#[cfg(unix)]
+pub(crate) fn answer_as(socket: &Path, version: &str, agents: Option<serde_json::Value>) {
     use std::io::{BufRead as _, Write as _};
     let listener = std::os::unix::net::UnixListener::bind(socket).expect("a stand-in daemon");
     let ping = serde_json::json!({"version": version, "socket": socket, "lsn": 0});
@@ -925,6 +931,8 @@ pub(crate) fn ping_as(socket: &Path, version: &str) {
             };
             let reply = if request["method"] == "system.ping" {
                 serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": ping})
+            } else if request["method"] == "agent.list" && agents.is_some() {
+                serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": agents})
             } else {
                 serde_json::json!({"jsonrpc": "2.0", "id": request["id"],
                     "error": {"code": -32601, "message": "this stand-in answers only system.ping"}})

@@ -21,8 +21,8 @@ without a goal authorizes one turn; messages to an agent with a goal join its ne
 ![Animation in the Workshop office. A new hire appears at the door, walks across the floor and sits down at a free desk, while the rest of the crew types at desks and checks at the goal board.](../.github/readme/hire-walks-in.webp)
 
 The office is a view of the daemon's state, never a source of truth. The daemon's journal, an append-only log of everything it records, is the
-only record, and the Floor changes that state only through the Floor actions you turn on. `dudes quickstart` asks once whether to turn on hire,
-pause, answer, change goals, retire, recover, add projects and read changes together. The terminal
+only record, and the Floor changes that state only through the Floor actions you turn on. `dudes quickstart` turns on hire, pause, answer, change
+goals, retire, recover, tickets and add projects without asking. The changed-file views stay off until you turn them on in **Settings**. The terminal
 stays off until you turn it on with `dudes config set floor.terminal on` and restart.
 
 The Floor draws the smallest office that seats the whole crew. The Studio has 8 desks, the Workshop
@@ -148,8 +148,7 @@ and neither can any agent on Windows. Agents already in a copy keep working afte
 ## Recover an interrupted goal
 
 **Recover interrupted goal** appears in an eligible agent's drawer when both `floor.recovery` and
-`floor.control` are on. Recovery is a separate opt-in that `quickstart` does not enable with its
-bundled Floor actions. Press **Inspect recovery**, read the warning, choose one offered context,
+`floor.control` are on. Press **Inspect recovery**, read the warning, choose one offered context,
 and press **Authorize one recovery**. Ordinary Resume does not release a recovery barrier.
 Authorization does not guarantee a launch or restored conversation history, and earlier effects may repeat.
 
@@ -170,7 +169,7 @@ an earlier check is history. Unknown applicability is not a pass.
 With `floor.board` on, the Board view makes tickets and moves them. It needs `floor.control` and
 `floor.goal` on too, and the daemon refuses to start without them. Turn it on with
 `dudes config set floor.board on`, which applies at once. `dudes quickstart` turns it on with the
-other Floor actions when you say yes to its one question.
+other Floor actions in a new file.
 
 **Giving a ticket to an agent starts that agent, which then runs and spends under your account.**
 Anyone holding your Floor session can do that until the session ends, so keep the link to yourself.

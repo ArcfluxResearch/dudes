@@ -578,34 +578,28 @@ COMMANDS
                [--hire <name> [--provider <provider>] [--role <role>] [--goal <text>]
                 [--usd-per-day <n>] [--tokens-per-day <n>]]
                [--hop-cap <n>] [--timeout-s <n>] [-- <program> [args...]]
-        Set up and start the daemon. On a terminal with no options it turns on the
-        engines it finds on your PATH, then asks, one step at a time, whether the Floor
-        may act on your agents, for a daily spending cap only when an API key is set,
-        for the current repository's completion check (suggested from its files, or, when
-        it has no test command, one that passes once files changed), or
-        for a project folder when outside a repository. Enter skips that folder.
-        It asks at most five questions, including confirmation. A first hire is named
-        Kim and starts idle. Choose an installed engine or skip hiring. Use explicit
-        --hire, --goal and budget options for other choices.
-        It then writes the operator file once, starts
-        the daemon (or restarts one that runs other settings), shows where the daemon
-        found each engine and whether it is signed in, makes the hire, and prints the
-        dudes login command for each engine that is signed out. It reads no engine's
-        files. Last, so it stays on screen, it prints the Floor's one-time link to
-        paste into any browser.
-        With options it asks nothing and prints no Floor link: it prints, last, dudes
-        floor open, after dudes login <engine> for each engine that is signed out. --yes
-        takes every default, including turning on the Floor's hire, goal, control, answer
-        and board actions when the file turns none on (terminal, renew, retire and the
-        git and diff views stay off), --set is `config set`, --enroll enrolls the
-        current repository, --hire hires a first
-        agent there, and everything after `--` is
-        the completion check that the project and the goal share (default: at
-        most 5 turns a goal, 600 seconds a check). A running daemon with other
-        settings is restarted only with --restart, because a restart ends
-        every running turn; without it quickstart writes the file, names what differs,
-        stops nothing and exits 4. Before any restart the running daemon reads the new
-        file, and a file it would refuse is put back as it was. Ceilings are
+        Set up and start the daemon, and open the Floor. It asks no questions. It turns on
+        the engines it finds on your PATH and, when the file turns no Floor action on yet,
+        the Floor's answer, hire, control, goal, retire, board, renew, recovery and project
+        actions (the git and diff views of changed files and the terminal stay off; turn the
+        views on in the Floor's Settings). A file that already turns any Floor action on
+        keeps every Floor setting as it is. It sets no spending cap, enrolls no project and
+        hires no agent unless an option below asks. It writes the operator file once and
+        lists what it changed, starts the daemon, shows where the daemon found each engine
+        and whether it is signed in, makes the hire an option asks for, prints the dudes
+        login command for each engine that is signed out, and last opens the Floor in your
+        browser, or prints its one-time link when no browser can be opened. It reads no
+        engine's files.
+        A running daemon takes the Floor switches and project changes at once. Settings it
+        reads only at start need a restart: quickstart restarts the daemon when no agent is
+        running a turn, waiting on an answer or attached to a person, and otherwise stops
+        nothing, says which agents are busy, and exits 4. --restart restarts it anyway,
+        which ends every running turn. Before any restart the running daemon reads the new
+        file, and a file it would refuse is put back as it was.
+        --yes is accepted and changes nothing. --set is `config set`, applied after the
+        defaults. --enroll enrolls the current repository, --hire hires a first agent
+        there, and everything after `--` is the completion check that the project and the
+        goal share (default: at most 5 turns a goal, 600 seconds a check). Ceilings are
         optional.
         Without a terminal and without options it only starts the daemon when absent
         and prints its version, socket and journal position. Without a project it
@@ -2169,7 +2163,7 @@ fn quickstart(
     let mut given = QuickstartFlags::default();
     while let Some(arg) = flags.next() {
         match arg.to_string_lossy().as_ref() {
-            "--yes" => given.yes = true,
+            "--yes" => {}
             "--restart" => given.restart = true,
             "--set" => {
                 let word = flags.value("--set")?;
@@ -2252,7 +2246,6 @@ fn above_zero<T: std::str::FromStr + Default + PartialEq>(
 /// Every option `quickstart` was given, before they are checked against each other.
 #[derive(Default)]
 struct QuickstartFlags {
-    yes: bool,
     restart: bool,
     changes: Vec<Change>,
     enroll: bool,
@@ -2274,7 +2267,6 @@ impl QuickstartFlags {
     /// The plan these options and the check's `argv` make, or the first option that needs another.
     fn into_plan(self, argv: Vec<String>) -> Result<Plan, ArgError> {
         let Self {
-            yes,
             restart,
             changes,
             enroll,
@@ -2350,13 +2342,11 @@ impl QuickstartFlags {
             tokens_per_day,
         });
         Ok(Plan {
-            project: None,
             changes,
             check,
             enroll,
             hire,
             restart,
-            floor_default: yes,
         })
     }
 }
@@ -3555,7 +3545,7 @@ mod tests {
         assert!(!parse(&args(&["ping"])).expect("parses").json);
     }
 
-    /// `quickstart` with no option carries no plan, so the terminal decides whether it asks; any
+    /// `quickstart` with no option carries no plan, so the terminal decides whether it sets up; any
     /// option makes the plan, and an unknown flag is refused here rather than ignored by startup.
     #[test]
     fn quickstart_options_make_a_plan() {
@@ -3563,10 +3553,7 @@ mod tests {
         assert_eq!(command(&["quickstart"]), Ok(Command::Quickstart(None)));
         assert_eq!(
             command(&["quickstart", "--yes"]),
-            Ok(Command::Quickstart(Some(Box::new(Plan {
-                floor_default: true,
-                ..Plan::default()
-            }))))
+            Ok(Command::Quickstart(Some(Box::default())))
         );
         assert_eq!(
             command(&["quickstart", "--loud"]),
@@ -3592,7 +3579,6 @@ mod tests {
                 "beans.txt",
             ]),
             Ok(Command::Quickstart(Some(Box::new(Plan {
-                project: None,
                 changes: vec![Change::set(Key::Pi, "on").expect("on")],
                 check: Some(Check {
                     argv: vec![
@@ -3613,7 +3599,6 @@ mod tests {
                     tokens_per_day: None,
                 }),
                 restart: false,
-                floor_default: false,
             }))))
         );
         assert_eq!(
