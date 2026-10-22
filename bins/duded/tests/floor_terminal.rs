@@ -37,7 +37,7 @@ use sha2::{Digest as _, Sha256};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v4"
+    "/tests/fixtures/floor-release-v5"
 );
 const WAIT: Duration = Duration::from_secs(10);
 const QUIET: Duration = Duration::from_millis(300);

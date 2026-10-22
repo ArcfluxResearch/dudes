@@ -340,6 +340,8 @@ enum PumpFailure {
 pub enum OnboardingPausePoint {
     /// After request admission and reservation, before the first append permit.
     BeforeHireAppend,
+    /// The hire's append permit is held; revocation must wait for its fsync.
+    AfterHirePermit,
     /// After the hire frame fsync, before its fold.
     AfterHireFsync,
     /// After the hire fold and before the goal continuation is queued.
@@ -678,7 +680,7 @@ impl OnboardingPause {
                 ..
             } => (
                 Some(Point::BeforeHireAppend),
-                None,
+                Some(Point::AfterHirePermit),
                 Some(Point::AfterHireFsync),
             ),
             Record::GoalSet {
@@ -1465,22 +1467,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Job::OnboardChecked {
                     session,
                     request,
-                    baseline,
                     run,
                     reply,
                 } => {
-                    let next = self.onboard_checked(&session, &request, baseline, run);
+                    let next = self.onboard_checked(&session, &request, run);
                     self.onboard_next(next, session, request, reply);
                 }
                 Job::OnboardCopied {
                     session,
                     request,
-                    baseline,
                     worktree,
                     trust,
                     reply,
                 } => {
-                    let next = self.onboard_copied(&session, &request, baseline, worktree, &trust);
+                    let next = self.onboard_copied(&session, &request, worktree, &trust);
                     self.onboard_next(next, session, request, reply);
                 }
                 Job::OnboardContinue {
@@ -2469,11 +2469,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             if attempt.metadata.request_digest != request.request_digest {
                 return answer(Err(OnboardRefusal::Conflict));
             }
-            if attempt.goal_set {
+            if let Some(goal) = attempt.finished() {
                 return answer(Ok(OnboardOutcome::Complete {
                     attempt_id: request.attempt_wire.clone(),
                     agent: attempt.agent,
-                    goal: attempt.metadata.intended_goal.id,
+                    goal,
                 }));
             }
         }
@@ -2493,7 +2493,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if let Some(partial) = self.onboarding_goal_refusal(session, request, &attempt) {
             return answer(Ok(partial));
         }
-        let intended = &attempt.metadata.intended_goal;
+        let Some(intended) = &attempt.metadata.intended_goal else {
+            return OnboardNext::Goal;
+        };
         let Predicate::Command { argv, timeout_s } = intended.predicate.clone() else {
             return OnboardNext::Goal;
         };
@@ -2547,10 +2549,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         request: &OnboardRequest,
     ) -> OnboardNext {
         let answer = |answer| OnboardNext::Reply(OnboardStep::Answer(answer));
-        // The goal text becomes the agent's goal, which no launch can carry with
-        // U+0000 in it. This validates a new attempt only: an attempt the index
-        // already holds never reaches it, whatever its recorded goal holds.
-        if request.goal_text.contains('\0') || request.check.is_none() {
+        // A request that carries a goal belongs to a hire written before the first task became a
+        // ticket. Only the attempt the index already holds may be retried with it.
+        if request.legacy_goal_text.is_some() || request.check.is_none() {
             return answer(Err(OnboardRefusal::InvalidInput));
         }
         let (profile, check) = match self.onboarding_admission(session, request) {
@@ -2558,14 +2559,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             Err(refusal) => return answer(Err(refusal)),
         };
         if check.may_already_pass {
-            return self.hire_onboarded(
-                session,
-                request,
-                &profile,
-                &check,
-                CheckBaseline::MayAlreadyPass,
-                None,
-            );
+            return self.hire_onboarded(session, request, &profile, None);
         }
         let Predicate::Command { argv, timeout_s } = check.predicate.clone() else {
             return answer(Err(OnboardRefusal::Forbidden));
@@ -2589,7 +2583,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         &mut self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
-        baseline: CheckBaseline,
         run: u64,
     ) -> OnboardNext {
         self.ctx.baselines.end(run);
@@ -2612,9 +2605,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             return OnboardNext::Goal;
         }
         match self.onboarding_admission(session, request) {
-            Ok((profile, check)) => {
-                self.hire_onboarded(session, request, &profile, &check, baseline, None)
-            }
+            Ok((profile, _)) => self.hire_onboarded(session, request, &profile, None),
             Err(refusal) => OnboardNext::Reply(OnboardStep::Answer(Err(refusal))),
         }
     }
@@ -2648,7 +2639,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         &self,
         request: &OnboardRequest,
         profile: &Profile,
-        baseline: dudes_proto::CheckBaseline,
     ) -> OnboardNext {
         use crate::floor_actions::CopyRefusal;
         let refuse =
@@ -2684,7 +2674,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         };
         OnboardNext::Reply(OnboardStep::Copy {
             params: Box::new(params),
-            baseline,
             trust: Box::new(ticket),
         })
     }
@@ -2754,12 +2743,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
         profile: &Profile,
-        check: &crate::floor_actions::EnrolledCheck,
-        baseline: CheckBaseline,
         copy: Option<(crate::worktree::hire::LeaseView, dudes_types::Lsn)>,
     ) -> OnboardNext {
         if request.own_copy && copy.is_none() {
-            return self.copy_step(request, profile, baseline);
+            return self.copy_step(request, profile);
         }
         // Seal before the hire command can reach the supervisor, as `LoopControl::hire` does. A
         // browser first hire ends the pre-agent epoch exactly as a local one: a connection that
@@ -2783,12 +2770,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 cwd,
                 budget: profile.agent_budget,
                 isolation: browser_isolation(request.provider, profile),
-                goal_text: request.goal_text.clone(),
-                completion_check: check.reference(),
-                baseline: Some(baseline),
-                predicate: check.predicate.clone(),
-                goal_budget: profile.goal_budget,
-                hop_cap: profile.hop_cap,
                 attempt_id: request.attempt_id,
                 request_digest: request.request_digest,
                 profile_id: profile.id.clone(),
@@ -2809,7 +2790,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         &mut self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
-        baseline: CheckBaseline,
         worktree: dudes_types::WorktreeId,
         trust: &crate::worktree::hire::TrustTicket,
     ) -> OnboardNext {
@@ -2829,7 +2809,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         {
             return answer(Err(OnboardRefusal::Unavailable));
         }
-        let (profile, check) = match self.onboarding_admission(session, request) {
+        let (profile, _) = match self.onboarding_admission(session, request) {
             Ok(admitted) => admitted,
             Err(refusal) => return answer(Err(refusal)),
         };
@@ -2861,8 +2841,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             session,
             request,
             &profile,
-            &check,
-            baseline,
             Some((lease, trust.lsn)),
         )
     }
@@ -2882,11 +2860,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if attempt.metadata.request_digest != request.request_digest {
             return Err(OnboardRefusal::Conflict);
         }
-        if attempt.goal_set {
+        if let Some(goal) = attempt.finished() {
             return Ok(OnboardOutcome::Complete {
                 attempt_id: request.attempt_wire.clone(),
                 agent: attempt.agent,
-                goal: attempt.metadata.intended_goal.id,
+                goal,
             });
         }
         if self.ctx.journal_writes_stopped() {
@@ -2963,7 +2941,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if let Some(refused) = self.onboarding_goal_refusal(session, request, attempt) {
             return Ok(refused);
         }
-        let intended = attempt.metadata.intended_goal.clone();
+        let intended = attempt
+            .metadata
+            .intended_goal
+            .clone()
+            .ok_or(OnboardRefusal::Unavailable)?;
         match self.pump_onboarding(
             session,
             Command::BrowserOnboardGoal(Box::new(BrowserOnboardGoal {
@@ -2983,7 +2965,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     Ok(OnboardOutcome::Complete {
                         attempt_id: request.attempt_wire.clone(),
                         agent: attempt.agent,
-                        goal: intended.id,
+                        goal: Some(intended.id),
                     })
                 } else {
                     Err(OnboardRefusal::Unavailable)
@@ -3037,9 +3019,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             && folder
             && *budget == profile.agent_budget
             && *isolation == browser_isolation(engine, profile)
-            && Self::recorded_check_enrolled(&attempt.metadata.intended_goal, profile)
-            && attempt.metadata.intended_goal.budget == profile.goal_budget
-            && attempt.metadata.intended_goal.hop_cap == profile.hop_cap
+            && attempt.metadata.intended_goal.as_ref().is_none_or(|goal| {
+                Self::recorded_check_enrolled(goal, profile)
+                    && goal.budget == profile.goal_budget
+                    && goal.hop_cap == profile.hop_cap
+            })
     }
 
     /// Whether a hire's intended goal still names a check the workspace enrolls: the named check

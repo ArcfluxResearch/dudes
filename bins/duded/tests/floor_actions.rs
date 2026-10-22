@@ -29,7 +29,7 @@ use dudes_proto::rpc::agent::RetireParams;
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_proto::rpc::goal::GoalSetParams;
-use dudes_proto::rpc::{CurrentMethod, Method};
+use dudes_proto::rpc::Method;
 use dudes_proto::{
     AgentBudget, BudgetScope, Goal, GoalBudget, LoopDecision, Predicate, Record, Spend, TurnOutcome,
 };
@@ -269,7 +269,7 @@ fn real_stub_seams_with(
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v4"
+    "/tests/fixtures/floor-release-v5"
 );
 
 fn enrolled_settings(fixture: &Fixture) -> duded::Settings {
@@ -917,7 +917,7 @@ fn catalog_sentinels_stay_out_of_frame_asset_response_url_and_debug_log_values()
     fault.arm(OnboardingFailurePoint::Hire);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship",
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer",
         "check_id": "default",
         "check_revision": common::check_revision_as(
             "default", "Checks pass", &[true_program(), "private-argv-sentinel"], 10, true
@@ -1059,7 +1059,7 @@ fn fresh_snapshot_omits_disabled_or_drifted_enrollment() {
     );
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     let (head, body) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
@@ -1123,7 +1123,7 @@ fn every_engine_floor(settings: &duded::Settings) -> (common::Running, SocketAdd
 fn hire_request(attempt: char, provider: Option<&str>) -> Value {
     let mut request = json!({
         "attempt_id": format!("{attempt}{}", "A".repeat(42)),
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     if let Some(provider) = provider {
         request["provider"] = json!(provider);
@@ -1342,101 +1342,74 @@ fn browser_hire_is_refused_while_the_hire_switch_is_off() {
     }
 }
 
-/// Invariant 4 for a browser hire: a ceiling the workspace sets still binds at admission. A goal
-/// token ceiling of 0 admits the hire and its goal, and the budget gate refuses the first turn with a
-/// journaled `BudgetDecision` in the goal scope. With no ceiling, the turn is issued.
-#[test]
-fn a_set_ceiling_still_refuses_a_browser_hire_at_admission() {
-    for ceiling in [Some(Tokens::ZERO), None] {
-        let fixture = Fixture::new();
-        let mut settings = uncapped_settings(&fixture);
-        settings.enrollment.profiles[0].goal_budget.tokens = ceiling;
-        let (_, mut running, _, page) = default_floor(&settings);
-        let (head, response) = post_onboard(&page, &hire_request('A', None));
-        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-        assert_eq!(response["state"], "complete");
-        if ceiling.is_some() {
-            let binding = await_refused_ceiling(&fixture);
-            assert_eq!(
-                (binding.scope, binding.tokens),
-                (BudgetScope::Goal, Some(Tokens::ZERO))
-            );
-            assert!(!any_turn_issued(&fixture), "no turn at a reached ceiling");
-        } else {
-            fixture.await_turn();
-        }
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
+/// Plant what a daemon wrote before a hire started with a ticket: a Claude browser hire with its
+/// goal and the workspace's ceilings recorded, and no goal appended. Returns the request that
+/// retries it and the recorded goal.
+fn plant_old_hire(fixture: &Fixture, settings: &duded::Settings) -> (Value, dudes_proto::Goal) {
+    let profile = settings.enrollment.profiles[0].clone();
+    let agent = AgentId::from_parts(7, 1);
+    let goal = dudes_proto::Goal {
+        completion_check: None,
+        id: dudes_types::GoalId::from_parts(7, 2),
+        text: "ship".to_owned(),
+        predicate: profile.checks[0].predicate.clone(),
+        budget: profile.goal_budget,
+        hop_cap: profile.hop_cap,
+        baseline: Some(dudes_proto::CheckBaseline::MayAlreadyPass),
+    };
+    let request = json!({
+        "attempt_id": "Q".repeat(43), "workspace_id": "repo_1", "name": "Kim",
+        "role": "engineer", "goal_text": "ship", "check_id": null
+    });
+    seed(
+        fixture,
+        [Record::AgentHired {
+            character: None,
+            accent: None,
+            id: agent,
+            name: "Kim".to_owned(),
+            role: "engineer".to_owned(),
+            department: profile.department.clone(),
+            provider: Provider::Claude,
+            cwd: profile.cwd.clone(),
+            budget: profile.agent_budget,
+            sandbox: None,
+            isolation: Some(IsolationMode::Default),
+            max_turns: None,
+            max_budget: None,
+            trusted: false,
+            workspace: None,
+            worktree: None,
+            mcp_servers: Vec::new(),
+            browser_onboarding: Some(Box::new(BrowserOnboardingHire {
+                attempt_id: Hex32::new(std::array::from_fn(|k| [0x41, 0x04, 0x10][k % 3])),
+                request_digest: Hex32::new(onboard_digest("repo_1", "Kim", "engineer", "ship")),
+                profile_id: profile.id.clone(),
+                session_digest: Hex32::new([7; 32]),
+                intended_goal: Some(goal.clone()),
+                trust_lsn: None,
+            })),
+        }],
+    );
+    (request, goal)
 }
 
-/// A journal written before budgets were optional replays: a partial Claude browser hire recorded
-/// with the workspace's dollar ceilings and isolation completes its goal after the upgrade, and the
-/// ceilings it recorded still bind that goal's first turn.
+/// A journal written before a hire started with a ticket replays: a Claude browser hire recorded
+/// with its goal and the workspace's ceilings, whose goal was never appended, completes that goal
+/// after the upgrade when the same request is retried, and the ceilings it recorded still bind
+/// that goal's first turn.
 #[test]
 fn an_old_journal_with_ceilings_replays_and_its_ceilings_still_bind() {
     let fixture = Fixture::new();
     let mut settings = enrolled_settings(&fixture);
     settings.enrollment.profiles[0].goal_budget.tokens = Some(Tokens::ZERO);
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
-    let daemon = boot(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::clone(&clock),
-            Witness::default(),
-        ),
-    )
-    .expect("first boot");
-    let pause = daemon.onboarding_pause();
-    pause.arm(OnboardingPausePoint::BeforeGoalPermit);
-    let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
-    let page = exchange(addr, &issue(&settings).bootstrap);
-    let request = hire_request('A', None);
-    let owner_request = request.clone();
-    let owner = std::thread::spawn(move || post_onboard(&page, &owner_request));
-    assert!(
-        pause.wait_reached(Duration::from_secs(3)),
-        "the hire is durable before the goal"
-    );
-    clock.advance(30 * 24 * 60 * 60 * 1000);
-    pause.release();
-    let (_, partial) = owner.join().expect("partial response");
-    assert_eq!(partial["reason"], "session_expired");
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    let recorded = fixture
-        .records()
-        .into_iter()
-        .find_map(|record| match record {
-            Record::AgentHired {
-                provider,
-                isolation,
-                budget,
-                browser_onboarding: Some(_),
-                ..
-            } => Some((provider, isolation, budget)),
-            _ => None,
-        })
-        .expect("the partial hire");
-    assert_eq!(
-        recorded,
-        (
-            Provider::Claude,
-            Some(IsolationMode::Default),
-            AgentBudget {
-                usd_per_day: Some(Usd::from_dollars(10)),
-                tokens_per_day: None,
-            }
-        ),
-        "the record a Claude hire has always written"
-    );
+    let (request, goal) = plant_old_hire(&fixture, &settings);
 
     let (_, mut running, _, page) = default_floor(&settings);
     let (head, complete) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(complete["state"], "complete");
+    assert_eq!(complete["goal"], goal.id.to_string());
     let binding = await_refused_ceiling(&fixture);
     assert_eq!(
         (binding.scope, binding.usd, binding.tokens),
@@ -1450,12 +1423,77 @@ fn an_old_journal_with_ceilings_replays_and_its_ceilings_still_bind() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
+/// A hire written before a hire started with a ticket is retried against a changed project: every
+/// change to a value the hire recorded refuses the goal's append and leaves the journal as it was.
+#[test]
+fn an_old_hire_refuses_every_effective_profile_change() {
+    let fixture = Fixture::new();
+    let settings = enrolled_settings(&fixture);
+    let (request, _) = plant_old_hire(&fixture, &settings);
+    let new_repo = fixture.state.path().join("different-repo");
+    std::fs::create_dir_all(new_repo.join(".git")).expect("new repository marker");
+
+    for change in [
+        "removed",
+        "cwd",
+        "department",
+        "isolation",
+        "agent_budget",
+        "goal_budget",
+        "predicate_argv",
+        "predicate_timeout",
+        "hop_cap",
+    ] {
+        let mut changed = settings.clone();
+        if change == "removed" {
+            changed.enrollment.profiles.clear();
+        } else {
+            let profile = &mut changed.enrollment.profiles[0];
+            match change {
+                "cwd" => profile.cwd = new_repo.canonicalize().expect("canonical alternate"),
+                "department" => profile.department = "infra".into(),
+                "isolation" => profile.isolation = IsolationMode::Inherit,
+                "agent_budget" => profile.agent_budget.usd_per_day = Some(Usd::from_dollars(11)),
+                "goal_budget" => profile.goal_budget.usd = Some(Usd::from_dollars(6)),
+                "predicate_argv" => {
+                    profile.checks[0].predicate = Predicate::Command {
+                        argv: vec!["/usr/bin/false".into()],
+                        timeout_s: 10,
+                    }
+                }
+                "predicate_timeout" => {
+                    profile.checks[0].predicate = Predicate::Command {
+                        argv: vec![true_program().into()],
+                        timeout_s: 11,
+                    }
+                }
+                "hop_cap" => profile.hop_cap = 4,
+                _ => unreachable!(),
+            }
+        }
+        let (_, mut running, _, page) = default_floor(&changed);
+        let before = fixture.records();
+        let (head, outcome) = post_onboard(&page, &request);
+        assert!(
+            head.starts_with("HTTP/1.1 409 Conflict"),
+            "{change}: {head}"
+        );
+        assert_eq!(outcome["reason"], "profile_changed", "{change}");
+        assert_eq!(
+            fixture.records(),
+            before,
+            "{change}: retry cannot replace the goal"
+        );
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one end-to-end stub scenario asserts the complete durable effect chain"
 )]
-fn browser_hire_briefing_is_finite_and_attributed() {
+fn a_browser_hire_is_complete_with_the_hire_alone() {
     let fixture = Fixture::new();
     let repo = fixture.state.path().join("enrolled-repo");
     std::fs::create_dir_all(repo.join(".git")).expect("repository marker");
@@ -1492,16 +1530,15 @@ fn browser_hire_briefing_is_finite_and_attributed() {
     let page = exchange(addr, &issue(&settings).bootstrap);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer",
-        "goal_text":"ship one feature"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     let (head, response) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert!(head.contains("Cache-Control: no-store"));
     assert!(!head.to_ascii_lowercase().contains("access-control-allow"));
     assert_eq!(response["state"], "complete");
+    assert!(response.get("goal").is_none(), "{response}");
     let agent = response["agent"].as_str().expect("real AgentId");
-    let goal = response["goal"].as_str().expect("real GoalId");
     let records = fixture.records();
     let encoded = serde_json::to_string(&fixture.entries()).expect("journal entries encode");
     assert!(
@@ -1522,45 +1559,14 @@ fn browser_hire_briefing_is_finite_and_attributed() {
                 ..
             } => {
                 assert!(!trusted);
-                assert_eq!(meta.intended_goal.id.to_string(), goal);
+                assert!(meta.intended_goal.is_none(), "a hire carries no goal");
                 Some(id)
             }
             _ => None,
         })
         .collect();
-    let goals: Vec<_> = records
-        .iter()
-        .filter_map(|record| match record {
-            Record::GoalSet {
-                agent: owner,
-                goal: set,
-                browser_onboarding: Some(meta),
-                browser_goal: None,
-                goal_replacement: None,
-            } => {
-                assert_eq!(meta.attempt_id.bytes(), [0; 32]);
-                assert_eq!(owner.to_string(), agent);
-                assert_eq!(set.id.to_string(), goal);
-                Some(set)
-            }
-            _ => None,
-        })
-        .collect();
     assert_eq!(hires.len(), 1);
-    assert_eq!(goals.len(), 1);
-    let check = goals[0]
-        .completion_check
-        .as_ref()
-        .expect("the hire records the enrolled check's name");
-    let revision = common::check_revision_as("default", "Checks pass", &[true_program()], 10, true);
-    assert_eq!(
-        (
-            check.id.as_str(),
-            check.label.as_str(),
-            serde_json::to_value(check.revision).unwrap()
-        ),
-        ("default", "Checks pass", json!(revision))
-    );
+    assert_eq!(hires[0].to_string(), agent);
     let (frame, _) = snapshot(&page);
     let row = frame["projection"]["agents"]
         .as_array()
@@ -1568,71 +1574,29 @@ fn browser_hire_briefing_is_finite_and_attributed() {
         .iter()
         .find(|row| row["id"] == agent)
         .unwrap();
-    assert_eq!(
-        row["goal"]["completion_check"],
-        json!({"id": "default", "revision": revision, "label": "Checks pass"}),
-        "the Floor reads the name from the snapshot"
-    );
-    fixture.await_record(
-        "TurnSpawned by the daemon-owned stub",
-        |record| match record {
-            Record::TurnSpawned { .. } => Some(()),
-            _ => None,
-        },
-    );
-    fixture.await_record(
-        "TurnEnded by the daemon-owned stub",
-        |record| match record {
-            Record::TurnEnded { .. } => Some(()),
-            _ => None,
-        },
-    );
-    let effect_counts = |records: &[Record]| -> (usize, usize, usize, usize) {
+    assert!(row["goal"].is_null(), "the new agent has no goal: {row}");
+    let counts = |records: &[Record]| -> (usize, usize, usize) {
         (
             records
                 .iter()
-                .filter(|record| {
-                    matches!(
-                        record,
-                        Record::AgentHired {
-                            browser_onboarding: Some(_),
-                            ..
-                        }
-                    )
-                })
+                .filter(|record| matches!(record, Record::AgentHired { .. }))
                 .count(),
             records
                 .iter()
-                .filter(|record| {
-                    matches!(
-                        record,
-                        Record::GoalSet {
-                            browser_onboarding: Some(_),
-                            ..
-                        }
-                    )
-                })
+                .filter(|record| matches!(record, Record::GoalSet { .. }))
                 .count(),
             records
                 .iter()
                 .filter(|record| matches!(record, Record::TurnIssued { .. }))
                 .count(),
-            records
-                .iter()
-                .filter(|record| matches!(record, Record::TurnSpawned { .. }))
-                .count(),
         )
     };
-    let before = effect_counts(&fixture.records());
+    let before = counts(&fixture.records());
     let (_, retry) = post_onboard(&page, &request);
     assert_eq!(retry["agent"], agent);
-    assert_eq!(retry["goal"], goal);
-    assert_eq!(
-        effect_counts(&fixture.records()),
-        before,
-        "retry is read-only"
-    );
-    assert_eq!(before, (1, 1, 1, 1));
+    assert_eq!(retry["state"], "complete");
+    assert_eq!(counts(&fixture.records()), before, "the retry is read-only");
+    assert_eq!(before, (1, 0, 0), "one hire, no goal, no turn");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
@@ -1687,7 +1651,7 @@ fn browser_admission_and_four_hire_limit_are_journal_derived() {
     let page = exchange(addr, &issue(&settings).bootstrap);
     let mut request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     let initial = fixture.records().len();
     let bytes = serde_json::to_vec(&naming_the_check(&request)).expect("onboarding request JSON");
@@ -1833,7 +1797,7 @@ fn browser_post_rejection(selected: Option<&str>) {
     let mut running = common::start(daemon);
     let page = exchange(addr, &issue(&settings).bootstrap);
     let host = addr.to_string();
-    let body = r#"{"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","workspace_id":"repo_1","name":"Kim","role":"engineer","goal_text":"ship"}"#;
+    let body = r#"{"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","workspace_id":"repo_1","name":"Kim","role":"engineer"}"#;
     // An identity no other row uses, so the array row's attempt is free unless it is admitted.
     let fresh = format!("B{}", "A".repeat(42));
     let normal_headers = format!(
@@ -1937,7 +1901,6 @@ fn browser_post_rejection(selected: Option<&str>) {
         &page,
         &json!({
             "attempt_id": fresh, "workspace_id": "repo_1", "name": "Other", "role": "engineer",
-            "goal_text": "ship"
         }),
     );
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
@@ -1997,7 +1960,7 @@ fn refused_body_drain_discards_a_pipelined_action_without_effects() {
         1,
         "the refused body is still draining"
     );
-    let body = json!({"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"});
+    let body = json!({"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "workspace_id":"repo_1", "name":"Kim", "role":"engineer"});
     let encoded = serde_json::to_vec(&body).expect("valid action body");
     let tail = format!(
         "POST /floor/onboard HTTP/1.1\r\n{headers}Content-Length: {}\r\n\r\n",
@@ -2049,25 +2012,21 @@ fn onboard_digest(workspace_id: &str, name: &str, role: &str, goal_text: &str) -
     hasher.finalize().into()
 }
 
-/// A new onboarding attempt whose `goal_text` holds U+0000 is
-/// refused in the new-attempt validation with the route's existing empty `400`, before
-/// any effect: no `AgentHired` and no `GoalSet`. That text would become the agent's goal, and no
-/// launch can carry U+0000.
+/// A new onboarding attempt that carries `goal_text` is refused in the new-attempt validation with
+/// the route's existing empty `400`, before any effect: no `AgentHired` and no `GoalSet`.
 ///
-/// Control, first: the same request with U+0001 in its place completes.
+/// Control, first: the same request without it completes, with a hire and no goal.
 ///
-/// Durable retry: an attempt made durable before the refusal existed, planted with [`seed`] as a
-/// complete hire and goal whose recorded goal holds U+0000, still answers a same-key, same-payload
-/// retry from the journal-derived index with its original `200`.
+/// Durable retry: a hire written before a hire started with a ticket, planted with [`seed`] as a
+/// complete hire and goal, still answers a same-key, same-payload retry from the
+/// journal-derived index with its original `200`.
 ///
-/// Mutants: deleting the check hires the U+0000 attempt; refusing every `Cc` refuses the control;
-/// moving the check into `OnboardRequest::parse` refuses the durable retry.
 #[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one planted journal serves the control, the refusal and the durable retry"
 )]
-fn browser_onboarding_goal_text_holding_nul_is_refused_before_effect() {
+fn browser_onboarding_with_a_goal_is_refused_before_effect() {
     let fixture = Fixture::new();
     let settings = enrolled_settings(&fixture);
     let profile = settings.enrollment.profiles[0].clone();
@@ -2116,7 +2075,7 @@ fn browser_onboarding_goal_text_holding_nul_is_refused_before_effect() {
                     )),
                     profile_id: profile.id.clone(),
                     session_digest: admitting,
-                    intended_goal: planted_goal.clone(),
+                    intended_goal: Some(planted_goal.clone()),
                     trust_lsn: None,
                 })),
             },
@@ -2146,11 +2105,14 @@ fn browser_onboarding_goal_text_holding_nul_is_refused_before_effect() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let page = exchange(addr, &issue(&settings).bootstrap);
-    let request = |attempt: &str, goal_text: &str| {
-        json!({
-            "attempt_id": attempt, "workspace_id": "repo_1", "name": "Kim", "role": "engineer",
-            "goal_text": goal_text
-        })
+    let request = |attempt: &str, goal_text: Option<&str>| {
+        let mut body = json!({
+            "attempt_id": attempt, "workspace_id": "repo_1", "name": "Kim", "role": "engineer"
+        });
+        if let Some(goal_text) = goal_text {
+            body["goal_text"] = goal_text.into();
+        }
+        body
     };
     let effects = |records: &[Record]| {
         records
@@ -2159,20 +2121,20 @@ fn browser_onboarding_goal_text_holding_nul_is_refused_before_effect() {
             .count()
     };
 
-    let (head, complete) = post_onboard(&page, &request(&"A".repeat(43), "ship\u{1}it"));
+    let (head, complete) = post_onboard(&page, &request(&"A".repeat(43), None));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "control: {head}");
     assert_eq!(complete["state"], "complete", "{complete}");
     assert!(
         fixture.records().iter().any(|record| matches!(
             record,
-            Record::GoalSet { goal, browser_onboarding: Some(_), .. } if goal.text == "ship\u{1}it"
+            Record::AgentHired { browser_onboarding: Some(meta), .. } if meta.intended_goal.is_none()
         )),
-        "control: the initial goal is recorded with the bytes sent"
+        "control: the hire records no goal"
     );
 
     let before = effects(&fixture.records());
     let refused_attempt = format!("AQ{}", "A".repeat(41));
-    let (head, refused) = post_onboard(&page, &request(&refused_attempt, "ship\u{0}it"));
+    let (head, refused) = post_onboard(&page, &request(&refused_attempt, Some("ship")));
     assert!(head.starts_with("HTTP/1.1 400 Bad Request"), "{head}");
     assert!(refused.is_null(), "the refusal has no onboarding envelope");
     assert_eq!(
@@ -2181,7 +2143,7 @@ fn browser_onboarding_goal_text_holding_nul_is_refused_before_effect() {
         "no AgentHired and no GoalSet"
     );
 
-    let mut older = request(&durable, "ship\u{0}it");
+    let mut older = request(&durable, Some("ship\u{0}it"));
     older["check_id"] = Value::Null;
     let (head, retried) = post_onboard(&page, &older);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "durable retry: {head}");
@@ -2223,7 +2185,7 @@ fn concurrent_same_key_is_pending_and_changed_payload_refuses() {
     let page = exchange(addr, &issue(&settings).bootstrap);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     let owner_page = Arc::clone(&page);
     let owner_request = request.clone();
@@ -2275,263 +2237,6 @@ fn concurrent_same_key_is_pending_and_changed_payload_refuses() {
 }
 
 #[test]
-fn local_goal_and_retirement_win_before_browser_initial_goal() {
-    let fixture = Fixture::new();
-    let settings = enrolled_settings(&fixture);
-    let daemon = boot(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot Floor");
-    let pause = daemon.onboarding_pause();
-    let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
-    let page = exchange(addr, &issue(&settings).bootstrap);
-
-    for (last, retire) in [("A", false), ("E", true)] {
-        pause.arm(OnboardingPausePoint::BetweenEffects);
-        let request = json!({
-            "attempt_id":format!("{}{}", "A".repeat(42), last),
-            "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
-        });
-        let owner_page = Arc::clone(&page);
-        let owner_request = request.clone();
-        let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
-        assert!(
-            pause.wait_reached(Duration::from_secs(3)),
-            "hire folded before goal continuation"
-        );
-        let agent = fixture
-            .records()
-            .iter()
-            .rev()
-            .find_map(|record| match record {
-                Record::AgentHired {
-                    id,
-                    browser_onboarding: Some(_),
-                    ..
-                } => Some(*id),
-                _ => None,
-            })
-            .expect("durable hire");
-        let local = if retire {
-            running
-                .handle
-                .ask_queued(Ask::Retire(Box::new(RetireParams {
-                    agent,
-                    reason: "operator retired".into(),
-                })))
-                .expect("retire queued")
-        } else {
-            running
-                .handle
-                .ask_queued(Ask::SetGoal(Box::new(common::goal_params(
-                    agent,
-                    &[true_program()],
-                ))))
-                .expect("local goal queued")
-        };
-        pause.release();
-        let answer = local
-            .recv_timeout(Duration::from_secs(3))
-            .expect("local writer answer")
-            .expect("local action admitted");
-        let (head, partial) = owner.join().expect("browser response");
-        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
-        assert_eq!(partial["state"], "hired_without_goal");
-        assert_eq!(partial["agent"], agent.to_string());
-        assert!(partial["goal"].is_null());
-        if retire {
-            assert_eq!(partial["reason"], "agent_retired");
-            assert_eq!(partial["retired"], true);
-            assert!(partial["current_goal"].is_null());
-        } else {
-            let Answered::GoalSet(set) = answer else {
-                panic!("local goal answer")
-            };
-            assert_eq!(partial["reason"], "goal_conflict");
-            assert_eq!(partial["current_goal"], set.goal.to_string());
-            assert_eq!(partial["retired"], false);
-        }
-        assert!(!fixture.records().iter().any(|record| matches!(record,
-            Record::GoalSet { agent: owner, browser_onboarding: Some(_), .. } if *owner == agent
-        )));
-    }
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
-
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "both durable local winners require the same live and replay controls"
-)]
-fn uncertain_local_goal_and_retirement_fence_browser_continuation() {
-    for (cut, retire) in [
-        (OnboardingFailurePoint::LocalGoal, false),
-        (OnboardingFailurePoint::LocalRetire, true),
-    ] {
-        let fixture = Fixture::new();
-        let settings = enrolled_settings(&fixture);
-        let daemon = boot(
-            &settings,
-            seams(
-                &settings,
-                SharedHost::new(),
-                Arc::new(ScriptedRunner::default()),
-                Arc::new(TestClock::new()),
-                Witness::default(),
-            ),
-        )
-        .expect("boot Floor");
-        let pause = daemon.onboarding_pause();
-        let fault = daemon.onboarding_failure();
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let page = exchange(addr, &issue(&settings).bootstrap);
-        let request = json!({
-            "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
-        });
-        pause.arm(OnboardingPausePoint::BetweenEffects);
-        let owner_page = Arc::clone(&page);
-        let owner_request = request.clone();
-        let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
-        assert!(pause.wait_reached(Duration::from_secs(3)), "durable hire");
-        let agent = fixture
-            .records()
-            .iter()
-            .find_map(|record| match record {
-                Record::AgentHired {
-                    id,
-                    browser_onboarding: Some(_),
-                    ..
-                } => Some(*id),
-                _ => None,
-            })
-            .expect("attributed hire");
-        fault.arm(cut);
-        let local = if retire {
-            running
-                .handle
-                .ask_queued(Ask::Retire(Box::new(RetireParams {
-                    agent,
-                    reason: "operator retired".into(),
-                })))
-                .expect("retire queued")
-        } else {
-            running
-                .handle
-                .ask_queued(Ask::SetGoal(Box::new(common::goal_params(
-                    agent,
-                    &[true_program()],
-                ))))
-                .expect("local goal queued")
-        };
-        pause.release();
-        assert!(
-            local
-                .recv_timeout(Duration::from_secs(3))
-                .expect("local writer answer")
-                .is_err(),
-            "{cut:?}: injected failure fired after fsync"
-        );
-        let (head, body) = owner.join().expect("browser response");
-        assert!(
-            head.starts_with("HTTP/1.1 503 Service Unavailable"),
-            "{cut:?}: {head}"
-        );
-        assert!(
-            body.is_null(),
-            "{cut:?}: uncertain truth has no response IDs"
-        );
-        let records = fixture.records();
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| matches!(record,
-                    Record::GoalSet { agent: owner, browser_onboarding: Some(_), .. }
-                        if *owner == agent
-                ))
-                .count(),
-            0,
-            "{cut:?}: browser must not overwrite durable local winner"
-        );
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| if retire {
-                    matches!(record, Record::AgentRetired { id, .. } if *id == agent)
-                } else {
-                    matches!(record, Record::GoalSet { agent: owner, browser_onboarding: None, .. }
-                        if *owner == agent)
-                })
-                .count(),
-            1,
-            "{cut:?}: local winner is durable"
-        );
-        let (pending_head, pending) = post_onboard(&page, &request);
-        assert!(
-            pending_head.starts_with("HTTP/1.1 202 Accepted"),
-            "{cut:?}: {pending_head}"
-        );
-        assert_eq!(pending["state"], "pending");
-        assert!(
-            snapshot_optional(&page).is_none(),
-            "{cut:?}: unresolved fold closes normal snapshot publication"
-        );
-        let mut fresh_request = request.clone();
-        fresh_request["attempt_id"] = json!(format!("{}E", "A".repeat(42)));
-        let (fresh_head, fresh_body) = post_onboard(&page, &fresh_request);
-        assert!(
-            fresh_head.starts_with("HTTP/1.1 503 Service Unavailable"),
-            "{cut:?}: {fresh_head}"
-        );
-        assert!(fresh_body.is_null());
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-
-        let daemon = boot(
-            &settings,
-            seams(
-                &settings,
-                SharedHost::new(),
-                Arc::new(ScriptedRunner::default()),
-                Arc::new(TestClock::new()),
-                Witness::default(),
-            ),
-        )
-        .expect("replay local winner");
-        let addr = daemon.floor_addr().expect("replayed Floor address");
-        let mut running = common::start(daemon);
-        let page = exchange(addr, &issue(&settings).bootstrap);
-        let (head, partial) = post_onboard(&page, &request);
-        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{cut:?}: {head}");
-        assert_eq!(partial["state"], "hired_without_goal");
-        assert_eq!(partial["agent"], agent.to_string());
-        assert_eq!(partial["retired"], retire);
-        assert_eq!(
-            partial["reason"],
-            if retire {
-                "agent_retired"
-            } else {
-                "goal_conflict"
-            }
-        );
-        assert_eq!(partial["current_goal"].is_null(), retire);
-        assert!(!fixture.records().iter().any(|record| matches!(record,
-            Record::GoalSet { agent: owner, browser_onboarding: Some(_), .. }
-                if *owner == agent
-        )));
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
-}
-
-#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one fenced run asserts complete, conflicting, partial and fresh attempts"
@@ -2558,7 +2263,7 @@ fn fenced_complete_retry_returns_original_ids_without_effects() {
     let page = exchange(addr, &issue(&settings).bootstrap);
     let complete_request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     let (head, complete) = post_onboard(&page, &complete_request);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
@@ -2600,12 +2305,12 @@ fn fenced_complete_retry_returns_original_ids_without_effects() {
             .is_err(),
         "control: injected failure fired after fsync"
     );
-    let (head, body) = owner.join().expect("partial owner response");
+    let (head, second) = owner.join().expect("second owner response");
     assert!(
-        head.starts_with("HTTP/1.1 503 Service Unavailable"),
-        "control: fence is up: {head}"
+        head.starts_with("HTTP/1.1 200 OK"),
+        "a durable hire is complete even though the fence is up: {head}"
     );
-    assert!(body.is_null());
+    assert_eq!(second["state"], "complete");
     let before = fixture.records();
     let spawned = host.spawned().len();
 
@@ -2625,13 +2330,12 @@ fn fenced_complete_retry_returns_original_ids_without_effects() {
         );
         assert!(conflict.is_null());
     }
-    let (head, pending) = post_onboard(&page, &partial_request);
+    let (head, again) = post_onboard(&page, &partial_request);
     assert!(
-        head.starts_with("HTTP/1.1 202 Accepted"),
-        "known partial stays pending while fenced: {head}"
+        head.starts_with("HTTP/1.1 200 OK"),
+        "the second hire's retry while fenced: {head}"
     );
-    assert_eq!(pending["state"], "pending");
-    assert!(pending.get("agent").is_none() && pending.get("goal").is_none());
+    assert_eq!(again, second, "it keeps the original IDs");
     let mut fresh_request = complete_request.clone();
     fresh_request["attempt_id"] = json!(format!("{}I", "A".repeat(42)));
     let (head, fresh) = post_onboard(&page, &fresh_request);
@@ -2675,7 +2379,7 @@ fn session_expiry_before_each_append_has_distinct_truthful_outcomes() {
     let page = exchange(addr, &issue(&settings).bootstrap);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     pause.arm(OnboardingPausePoint::BeforeHireAppend);
     let owner_request = request.clone();
@@ -2698,13 +2402,13 @@ fn session_expiry_before_each_append_has_distinct_truthful_outcomes() {
     )));
 
     let page = exchange(addr, &issue(&settings).bootstrap);
-    pause.arm(OnboardingPausePoint::BeforeGoalPermit);
+    pause.arm(OnboardingPausePoint::AfterHireFsync);
     let owner_request = request.clone();
     let owner_page = Arc::clone(&page);
     let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
-        "second permit cut"
+        "the hire is on disk"
     );
     let durable_hire = fixture
         .records()
@@ -2722,19 +2426,10 @@ fn session_expiry_before_each_append_has_distinct_truthful_outcomes() {
     assert_eq!(durable_hire, 1);
     clock.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
-    let (head, body) = owner.join().expect("partial response");
-    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
-    assert_eq!(body["state"], "hired_without_goal");
-    assert_eq!(body["reason"], "session_expired");
+    let (head, body) = owner.join().expect("complete response");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(body["state"], "complete", "a durable hire is not undone by expiry");
     assert!(body["agent"].is_string());
-    assert!(body["goal"].is_null());
-    assert!(!fixture.records().iter().any(|record| matches!(
-        record,
-        Record::GoalSet {
-            browser_onboarding: Some(_),
-            ..
-        }
-    )));
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
@@ -2755,20 +2450,20 @@ fn expired_follower_after_registry_lock_wait_gets_empty_forbidden() {
     )
     .expect("boot Floor");
     let pause = daemon.onboarding_pause();
-    pause.arm(OnboardingPausePoint::AfterGoalPermit);
+    pause.arm(OnboardingPausePoint::AfterHirePermit);
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let page = exchange(addr, &issue(&settings).bootstrap);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     let owner_page = Arc::clone(&page);
     let owner_request = request.clone();
     let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
-        "owner holds the goal append permit"
+        "owner holds the hire append permit"
     );
     let (sent_tx, sent_rx) = std::sync::mpsc::channel();
     let follower_page = Arc::clone(&page);
@@ -2804,20 +2499,6 @@ fn expired_follower_after_registry_lock_wait_gets_empty_forbidden() {
             .filter(|record| matches!(
                 record,
                 Record::AgentHired {
-                    browser_onboarding: Some(_),
-                    ..
-                }
-            ))
-            .count(),
-        1
-    );
-    assert_eq!(
-        fixture
-            .records()
-            .iter()
-            .filter(|record| matches!(
-                record,
-                Record::GoalSet {
                     browser_onboarding: Some(_),
                     ..
                 }
@@ -2870,7 +2551,7 @@ fn expired_same_key_follower_blocked_in_reservation_gets_empty_forbidden() {
     clock.advance((3 * 24 * 60 - 1) * 60 * 1000);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     pause.arm(OnboardingPausePoint::BeforeHireAppend);
     let owner_page = Arc::clone(&page);
@@ -2925,110 +2606,6 @@ fn expired_same_key_follower_blocked_in_reservation_gets_empty_forbidden() {
 }
 
 #[test]
-fn replayed_partial_refuses_every_effective_profile_change() {
-    let fixture = Fixture::new();
-    let settings = enrolled_settings(&fixture);
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
-    let fixture_parts = seams(
-        &settings,
-        SharedHost::new(),
-        Arc::new(ScriptedRunner::default()),
-        Arc::clone(&clock),
-        Witness::default(),
-    );
-    let daemon = boot(&settings, fixture_parts).expect("first boot");
-    let pause = daemon.onboarding_pause();
-    pause.arm(OnboardingPausePoint::BeforeGoalPermit);
-    let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
-    let page = exchange(addr, &issue(&settings).bootstrap);
-    let request = json!({
-        "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
-    });
-    let owner_request = request.clone();
-    let owner = std::thread::spawn(move || post_onboard(&page, &owner_request));
-    assert!(
-        pause.wait_reached(Duration::from_secs(3)),
-        "durable partial hire"
-    );
-    clock.advance(30 * 24 * 60 * 60 * 1000);
-    pause.release();
-    let (_, partial) = owner.join().expect("partial result");
-    assert_eq!(partial["reason"], "session_expired");
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    let new_repo = fixture.state.path().join("different-repo");
-    std::fs::create_dir_all(new_repo.join(".git")).expect("new repository marker");
-
-    for change in [
-        "removed",
-        "cwd",
-        "department",
-        "isolation",
-        "agent_budget",
-        "goal_budget",
-        "predicate_argv",
-        "predicate_timeout",
-        "hop_cap",
-    ] {
-        let mut changed = settings.clone();
-        if change == "removed" {
-            changed.enrollment.profiles.clear();
-        } else {
-            let profile = &mut changed.enrollment.profiles[0];
-            match change {
-                "cwd" => profile.cwd = new_repo.canonicalize().expect("canonical alternate"),
-                "department" => profile.department = "infra".into(),
-                "isolation" => profile.isolation = IsolationMode::Inherit,
-                "agent_budget" => profile.agent_budget.usd_per_day = Some(Usd::from_dollars(11)),
-                "goal_budget" => profile.goal_budget.usd = Some(Usd::from_dollars(6)),
-                "predicate_argv" => {
-                    profile.checks[0].predicate = Predicate::Command {
-                        argv: vec!["/usr/bin/false".into()],
-                        timeout_s: 10,
-                    }
-                }
-                "predicate_timeout" => {
-                    profile.checks[0].predicate = Predicate::Command {
-                        argv: vec![true_program().into()],
-                        timeout_s: 11,
-                    }
-                }
-                "hop_cap" => profile.hop_cap = 4,
-                _ => unreachable!(),
-            }
-        }
-        let daemon = boot(
-            &changed,
-            seams(
-                &changed,
-                SharedHost::new(),
-                Arc::new(ScriptedRunner::default()),
-                Arc::new(TestClock::new()),
-                Witness::default(),
-            ),
-        )
-        .expect("replay with changed profile");
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let page = exchange(addr, &issue(&changed).bootstrap);
-        let before = fixture.records();
-        let (head, outcome) = post_onboard(&page, &request);
-        assert!(
-            head.starts_with("HTTP/1.1 409 Conflict"),
-            "{change}: {head}"
-        );
-        assert_eq!(outcome["reason"], "profile_changed", "{change}");
-        assert_eq!(
-            fixture.records(),
-            before,
-            "{change}: retry cannot replace the goal"
-        );
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
-}
-
-#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one session registry proves both losing and winning permit orders"
@@ -3053,7 +2630,7 @@ fn session_revocation_linearizes_with_both_append_permits() {
     let mut running = common::start(daemon);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
 
     let page = exchange(addr, &issue(&settings).bootstrap);
@@ -3079,31 +2656,30 @@ fn session_revocation_linearizes_with_both_append_permits() {
     )));
 
     let page = exchange(addr, &issue(&settings).bootstrap);
-    pause.arm(OnboardingPausePoint::BeforeGoalPermit);
+    pause.arm(OnboardingPausePoint::AfterHireFsync);
     let owner_request = request.clone();
     let owner_page = Arc::clone(&page);
     let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
-        "second permit cut"
+        "the hire is on disk"
     );
     assert!(authorizer.revoke_for_test(&page.cookie));
     pause.release();
-    let (head, body) = owner.join().expect("partial response");
-    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
-    assert_eq!(body["reason"], "session_revoked");
-    assert!(body["agent"].is_string() && body["goal"].is_null());
+    let (head, body) = owner.join().expect("complete response");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(body["state"], "complete", "a durable hire is not undone by revocation");
 
     let page = exchange(addr, &issue(&settings).bootstrap);
     let mut next = request.clone();
     next["attempt_id"] = json!(format!("{}E", "A".repeat(42)));
-    pause.arm(OnboardingPausePoint::AfterGoalPermit);
+    pause.arm(OnboardingPausePoint::AfterHirePermit);
     let owner_request = next;
     let owner_page = Arc::clone(&page);
     let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
-        "goal append holds permit"
+        "the hire append holds its permit"
     );
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -3145,20 +2721,6 @@ fn session_revocation_linearizes_with_both_append_permits() {
             .count(),
         2
     );
-    assert_eq!(
-        fixture
-            .records()
-            .iter()
-            .filter(|record| matches!(
-                record,
-                Record::GoalSet {
-                    browser_onboarding: Some(_),
-                    ..
-                }
-            ))
-            .count(),
-        1
-    );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
@@ -3185,7 +2747,7 @@ fn pre_append_failure_leaves_no_hire_and_same_key_retries_after_restart() {
     let page = exchange(addr, &issue(&settings).bootstrap);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     let (head, body) = post_onboard(&page, &request);
     assert!(
@@ -3331,7 +2893,7 @@ fn snapshot_omits_invalid_profile_predicate_and_token_reserve() {
         );
         let request = json!({
             "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+            "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
         });
         let (head, body) = post_onboard(&page, &request);
         assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{case}: {head}");
@@ -3408,7 +2970,7 @@ fn fresh_snapshot_omits_predicate_that_disappeared_after_enrollment() {
     );
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     let (head, body) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
@@ -3437,7 +2999,7 @@ fn fourth_durable_hire_precedes_queued_session_catalog_snapshot() {
     let page = exchange(addr, &issue(&settings).bootstrap);
     let mut request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     for last in ["A", "E", "I"] {
         request["attempt_id"] = json!(format!("{}{}", "A".repeat(42), last));
@@ -3552,7 +3114,7 @@ fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
     let hire = |page: &Page, last: &str| {
         let request = json!({
             "attempt_id": format!("{}{last}", "A".repeat(42)),
-            "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+            "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
         });
         post_onboard(page, &request).0
     };
@@ -3685,7 +3247,7 @@ fn browser_onboarding_hire_seals_the_pre_agent_epoch() {
             &page,
             &json!({
                 "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+                "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
             }),
         )
     });
@@ -8604,7 +8166,7 @@ fn browser_goal_index_refuses_a_goal_set_with_both_attributions() {
                         request_digest: Hex32::new([8; 32]),
                         profile_id: "repo_1".to_owned(),
                         session_digest,
-                        intended_goal: intended.clone(),
+                        intended_goal: Some(intended.clone()),
                         trust_lsn: None,
                     })),
                 },
@@ -8963,7 +8525,7 @@ fn browser_enrollment_view_follows_an_operator_reload() {
         &json!({
             "attempt_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "workspace_id": "repo_2", "workspace_revision": "1",
-            "name": "Kim", "role": "engineer", "goal_text": "ship"
+            "name": "Kim", "role": "engineer"
         }),
     );
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
@@ -8973,8 +8535,6 @@ fn browser_enrollment_view_follows_an_operator_reload() {
             if *cwd == repo_2 && meta.profile_id == "repo_2"
     )));
 
-    let goal = GoalId::parse(body["goal"].as_str().expect("goal id")).expect("goal id");
-    issued_goal_turn(&fixture, goal);
     running.handle.doctor().unwrap();
     let journal = fixture.records().len();
     let sha = rewrite(&settings, &reload_config(&[("repo_2", &repo_2)]));
@@ -9001,7 +8561,7 @@ fn browser_workspace_label_survives_enrollment_change_removal_and_replay() {
         &page,
         &json!({
             "attempt_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "workspace_id": "repo_1", "name": "Kim", "role": "engineer", "goal_text": "ship"
+            "workspace_id": "repo_1", "name": "Kim", "role": "engineer"
         }),
     );
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
@@ -9256,7 +8816,7 @@ fn browser_hire_is_bound_to_the_workspace_revision_it_saw() {
     let journal = fixture.records().len();
     let request = json!({
         "attempt_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id": "repo_1", "name": "Kim", "role": "engineer", "goal_text": "ship"
+        "workspace_id": "repo_1", "name": "Kim", "role": "engineer"
     });
     let (head, body) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
@@ -11016,7 +10576,7 @@ fn browser_hire_unknown_appearance_is_refused_before_append() {
     let mut running = common::start(daemon);
     let page = exchange(addr, &issue(&settings).bootstrap);
     let request = json!({"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Ada", "role":"engineer", "goal_text":"ship"});
+        "workspace_id":"repo_1", "name":"Ada", "role":"engineer"});
     let before = fixture.records();
     for (field, value) in [
         ("character", "a"),
@@ -12015,7 +11575,7 @@ fn browser_settings_view_is_an_exact_read_only_allowlist() {
             "workspaces": [{ "workspace_id": "repo_1", "label": "Service workspace",
                 "agent_usd_per_day_micros": "10000000", "agent_tokens_per_day": "123",
                 "goal_usd_micros": "5000000", "goal_tokens": "456" }],
-            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 4 }
+            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 5 }
         })
     );
     let bytes = frame["settings"].to_string();
@@ -14355,7 +13915,7 @@ fn enrolled_revision(id: &str) -> String {
 fn hire_naming(attempt: &str, check: &str) -> Value {
     json!({
         "attempt_id": attempt, "workspace_id": "repo_1", "name": "Wanda", "role": "writer",
-        "goal_text": "Write CONTRIBUTING.md", "check_id": check,
+        "check_id": check,
         "check_revision": enrolled_revision(check)
     })
 }
@@ -14463,13 +14023,13 @@ fn browser_onboard_refuses_a_passing_check_before_hire() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// A hire records the check it names, with that check's own revision and what its run saw, and
-/// the request digest binds the check. A revision the page did not read is `profile_changed`,
-/// and a new attempt that names no check is malformed; neither runs anything.
+/// A hire binds the check it names in its request digest. A revision the page did not read is
+/// `profile_changed`, and a new attempt that names no check is malformed; neither runs anything.
+/// The hire records no goal, so the check is the page's to give the first ticket.
 ///
-/// Mutation: recording the workspace's first check records the wrong name.
+/// Mutation: leaving the check out of the digest lets a retry that names another check complete.
 #[test]
-fn browser_onboard_records_the_chosen_check() {
+fn browser_onboard_binds_the_chosen_check() {
     let fixture = Fixture::new();
     let settings = checks_settings(&fixture);
     let runner = BaselineRunner::new();
@@ -14500,45 +14060,20 @@ fn browser_onboard_records_the_chosen_check() {
     let (head, complete) = post_onboard(&page, &hire_naming(&attempt(2), "contributing"));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {complete}");
     let [hire] = <[_; 1]>::try_from(hires(&fixture)).expect("one hire");
-    let intended = &hire.intended_goal;
-    let check = intended.completion_check.as_ref().expect("a check name");
-    assert_eq!(
-        (check.id.as_str(), check.label.as_str()),
-        ("contributing", "CONTRIBUTING.md exists")
+    assert!(hire.intended_goal.is_none(), "the hire records no goal");
+    assert!(
+        !fixture
+            .records()
+            .iter()
+            .any(|record| matches!(record, Record::GoalSet { .. })),
+        "no goal is appended"
     );
-    assert_eq!(
-        serde_json::to_value(check.revision).unwrap(),
-        json!(enrolled_revision("contributing"))
-    );
-    let program = std::fs::canonicalize(true_program())
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
-    assert_eq!(
-        intended.baseline,
-        Some(dudes_proto::CheckBaseline::CommandFailed { program, exit: 1 })
-    );
-    let goal = fixture
-        .records()
-        .into_iter()
-        .find_map(|record| match record {
-            Record::GoalSet {
-                goal,
-                browser_onboarding: Some(_),
-                ..
-            } => Some(goal),
-            _ => None,
-        })
-        .expect("the hire's goal");
-    assert_eq!(&goal, intended, "the goal is the intended one");
     let digest = framed(
-        b"dudes.onboard.v4\0",
+        b"dudes.onboard.nogoal.v4\0",
         &[
             ("workspace_id", "repo_1"),
             ("name", "Wanda"),
             ("role", "writer"),
-            ("goal_text", "Write CONTRIBUTING.md"),
             ("provider", "claude"),
             ("character", ""),
             ("accent", ""),
@@ -14548,150 +14083,6 @@ fn browser_onboard_records_the_chosen_check() {
     );
     assert_eq!(hire.request_digest, digest, "the digest binds the check");
     assert_eq!(runner.ran(), ["contributing"]);
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
-
-/// While a local goal set's check runs for a durable hire's agent, the hire's retry runs no
-/// check beside it and stays pending, because the hire is durable. The local check passes, so it
-/// sets no goal.
-fn retry_beside_a_local_check(
-    running: &common::Running,
-    runner: &BaselineRunner,
-    fixture: &Fixture,
-    page: &Page,
-    body: &Value,
-) {
-    let [hire] = <[_; 1]>::try_from(hires(fixture)).expect("one hire");
-    let agent = fixture
-        .records()
-        .into_iter()
-        .find_map(|record| match record {
-            Record::AgentHired {
-                id,
-                browser_onboarding: Some(meta),
-                ..
-            } if meta.attempt_id == hire.attempt_id => Some(id),
-            _ => None,
-        })
-        .expect("the hired agent");
-    runner.answer("local", common::passes());
-    runner.hold_next();
-    let local = {
-        let handle = running.handle.clone();
-        std::thread::spawn(move || {
-            handle.set_goal(
-                GoalSetParams {
-                    may_already_pass: false,
-                    ..common::goal_params(agent, &[true_program(), "local"])
-                },
-                &dudes_rpc::HangUp::never(),
-            )
-        })
-    };
-    runner.wait_runs(1);
-    let (head, _) = post_onboard(page, body);
-    assert!(head.starts_with("HTTP/1.1 503"), "{head}");
-    runner.release();
-    local
-        .join()
-        .unwrap()
-        .expect_err("the local check already passes, so it sets no goal");
-}
-
-/// A partial attempt's retry runs its check again before the hire's goal is appended: a check
-/// that now passes leaves the agent hired without a goal, and one that fails again completes it.
-/// While a local goal set's check runs for the agent, the retry stays pending and runs nothing.
-///
-/// Mutations: skipping the rerun appends the goal on the first retry; starting the retry's check
-/// beside the local one answers it refused instead of pending.
-#[test]
-fn browser_onboard_partial_retry_reruns_the_baseline() {
-    let fixture = Fixture::new();
-    let settings = checks_settings(&fixture);
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
-    let daemon = boot(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            BaselineRunner::new(),
-            Arc::clone(&clock),
-            Witness::default(),
-        ),
-    )
-    .expect("first boot");
-    let pause = daemon.onboarding_pause();
-    pause.arm(OnboardingPausePoint::BeforeGoalPermit);
-    let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
-    let page = exchange(addr, &issue(&settings).bootstrap);
-    let body = hire_naming(&attempt(0), "contributing");
-    let owner = {
-        let body = body.clone();
-        std::thread::spawn(move || post_onboard(&page, &body))
-    };
-    assert!(
-        pause.wait_reached(Duration::from_secs(5)),
-        "the hire is durable"
-    );
-    clock.advance(30 * 24 * 60 * 60 * 1000);
-    pause.release();
-    let (_, partial) = owner.join().expect("the partial answer");
-    assert_eq!(partial["reason"], "session_expired");
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-
-    let runner = BaselineRunner::new();
-    runner.answer("contributing", common::passes());
-    let daemon = boot(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::clone(&runner),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("second boot");
-    let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
-    let page = exchange(addr, &issue(&settings).bootstrap);
-
-    retry_beside_a_local_check(&running, &runner, &fixture, &page, &body);
-
-    let (head, partial) = post_onboard(&page, &body);
-    assert!(
-        head.starts_with("HTTP/1.1 409 Conflict"),
-        "{head} {partial}"
-    );
-    assert_eq!(partial["state"], "hired_without_goal");
-    assert_eq!(partial["reason"], "goal_refused");
-    assert_eq!(
-        runner.ran(),
-        ["local", "contributing"],
-        "the retry ran the check again once the local one ended"
-    );
-    let onboarding_goals = |fixture: &Fixture| {
-        fixture
-            .records()
-            .iter()
-            .filter(|record| {
-                matches!(
-                    record,
-                    Record::GoalSet {
-                        browser_onboarding: Some(_),
-                        ..
-                    }
-                )
-            })
-            .count()
-    };
-    assert_eq!(onboarding_goals(&fixture), 0, "no goal was appended");
-
-    runner.answer("contributing", common::fails());
-    let (head, complete) = post_onboard(&page, &body);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {complete}");
-    assert_eq!(onboarding_goals(&fixture), 1);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
@@ -14722,13 +14113,7 @@ fn browser_goal_change_keeps_or_names_a_check() {
     let (head, hired) = post_onboard(&page, &hire_naming(&attempt(0), "regression"));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {hired}");
     let agent = AgentId::parse(hired["agent"].as_str().unwrap()).unwrap();
-    await_entry(
-        &fixture,
-        "the first turn",
-        |_, record| matches!(record, Record::TurnIssued { agent: who, .. } if *who == agent),
-    );
     running.handle.ask(Ask::Pause(agent)).expect("local pause");
-    end_turn(&running.handle, newest_turn(&fixture, agent), None);
     let goal = set_goal_once_idle(&running.handle, agent, "local");
 
     runner.answer("local", common::passes());
@@ -14994,12 +14379,13 @@ fn pending_instruction_check_blocks(route: PendingCheckRoute) {
     let (head, hired) = post_onboard(&page, &hire_naming(&attempt(0), "regression"));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {hired}");
     let agent = AgentId::parse(hired["agent"].as_str().unwrap()).unwrap();
-    let goal = fixture.await_record("the initial goal", |record| {
-        record
-            .goal_install()
-            .filter(|(owner, _)| *owner == agent)
-            .map(|(_, goal)| goal.id)
-    });
+    let goal = common::set_goal(
+        &running.handle,
+        GoalSetParams {
+            hop_cap: settings.enrollment.profiles[0].hop_cap,
+            ..common::goal_params(agent, &[true_program(), "regression"])
+        },
+    );
     let turn = issued_goal_turn(&fixture, goal);
     running.handle.ask(Ask::Pause(agent)).expect("local pause");
     let release = clock.hold();
@@ -15089,12 +14475,10 @@ fn legacy_goal_set_keeps_its_bypass_and_browser_current_goal_check_rules() {
     let (head, hired) = post_onboard(&page, &hire_naming(&attempt(0), "regression"));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {hired}");
     let agent = AgentId::parse(hired["agent"].as_str().unwrap()).unwrap();
-    let old_goal = fixture.await_record("the initial goal", |record| {
-        record
-            .goal_install()
-            .filter(|(owner, _)| *owner == agent)
-            .map(|(_, goal)| goal.id)
-    });
+    let old_goal = common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &[true_program(), "regression"]),
+    );
     let turn = issued_goal_turn(&fixture, old_goal);
     running.handle.ask(Ask::Pause(agent)).expect("local pause");
     let release = clock.hold();
@@ -15527,7 +14911,6 @@ fn browser_onboarded_hires_allow_mcp_read_and_noop_but_refuse_changed_sets() {
             _ => None,
         })
         .expect("the recorded browser origin");
-    await_continuation_outcome(&fixture, &running.handle, agent);
     let before = fixture.records();
     for names in [None, Some(Vec::new())] {
         let Answered::Mcp(result) = running
@@ -16071,139 +15454,6 @@ mod project_add {
     }
 }
 
-fn issued_onboarding_fence(
-    fixture: &Fixture,
-    handle: &duded::Handle,
-    agent: AgentId,
-    goal: GoalId,
-) {
-    nth_turn(fixture, goal, 0);
-    let before = fixture.records();
-    let stopped = handle.ask(Ask::Pause(agent)).unwrap_err();
-    assert_eq!(stopped.code, dudes_proto::rpc::ErrorCode::Refused.code());
-    assert_eq!(
-        stopped.message,
-        "journal state unresolved; restart to replay before new work or writes"
-    );
-    assert_eq!(
-        fixture.records(),
-        before,
-        "the fenced probe appends nothing"
-    );
-    let counts = (
-        before.iter().filter(|record| matches!(record, Record::AgentHired { id, .. } if *id == agent)).count(),
-        before.iter().filter(|record| matches!(record, Record::GoalSet { agent: owner, goal: issued, .. } if *owner == agent && issued.id == goal)).count(),
-        before.iter().filter(|record| matches!(record, Record::TurnIssued { agent: owner, goal: issued, .. } if *owner == agent && *issued == goal)).count(),
-        before.iter().filter(|record| matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent)).count(),
-    );
-    assert_eq!(counts, (1, 1, 1, 0));
-}
-
-fn recover_owed_browser_turn(
-    settings: &duded::Settings,
-    fixture: &Fixture,
-    running: &common::Running,
-    agent: AgentId,
-    goal: GoalId,
-) {
-    use dudes_proto::rpc::recovery::{
-        RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectResult, RecoverySubmitParams,
-        RecoverySubmitResult,
-    };
-
-    let turn = nth_turn(fixture, goal, 0);
-    fixture.await_record("the owed goal's recovery barrier", |record| {
-        matches!(record, Record::RecoveryRequired(required)
-            if required.binding.work.agent == agent && required.binding.work.goal == goal
-                && required.binding.work.turn == turn)
-        .then_some(())
-    });
-    let owed: Vec<_> = fixture
-        .records()
-        .into_iter()
-        .filter(
-            |record| matches!(record, Record::TurnIssued { goal: issued, .. } if *issued == goal),
-        )
-        .collect();
-    assert_eq!(owed.len(), 1);
-    let no_spawn = || {
-        assert!(!fixture.records().iter().any(|record| {
-            matches!(record, Record::TurnSpawned { turn: seen, .. } if *seen == turn)
-        }));
-    };
-    no_spawn();
-    let call = |method, params| {
-        let credential = std::fs::read_to_string(
-            settings
-                .runtime_dir
-                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
-        )
-        .expect("operator credential");
-        let response = Client::connect(settings.socket())
-            .expect("operator socket")
-            .call_current_as_operator(
-                method,
-                Some(params),
-                OperatorCredential::new(credential).expect("credential"),
-            )
-            .expect("operator response");
-        assert!(response.error.is_none(), "{response:?}");
-        response.result.expect("operator result")
-    };
-    call(
-        CurrentMethod::Legacy(Method::LoopResume),
-        json!({"agent":agent}),
-    );
-    running.handle.doctor().expect("Resume reached the writer");
-    no_spawn();
-    let inspection: RecoveryInspectResult =
-        serde_json::from_value(call(CurrentMethod::RecoveryInspect, json!({"agent":agent})))
-            .expect("typed recovery inspection");
-    let RecoveryInspectResult::Available {
-        expected,
-        choices,
-        reason,
-        ..
-    } = inspection
-    else {
-        panic!("the owed issue must offer exact recovery");
-    };
-    assert_eq!(choices, RecoveryAllowedChoices::RepeatIssuedFresh);
-    assert_eq!(reason, dudes_proto::recovery::RecoveryReason::MissingSpawn);
-    assert_eq!(expected.work.agent, agent);
-    assert_eq!(expected.work.goal, goal);
-    assert_eq!(expected.work.turn, turn);
-    let request_id = Hex32::new([231; 32]);
-    let request = RecoverySubmitParams {
-        request_id,
-        expected: *expected,
-        choice: RecoveryChoice::RepeatIssuedFresh,
-    };
-    let submitted: RecoverySubmitResult = serde_json::from_value(call(
-        CurrentMethod::RecoverySubmit,
-        serde_json::to_value(request).expect("strict recovery request"),
-    ))
-    .expect("typed recovery submission");
-    let RecoverySubmitResult::Accepted { receipt } = submitted else {
-        panic!("one explicit submission must authorize the exact repeat");
-    };
-    assert_eq!(receipt.request_id, request_id);
-    assert_eq!(receipt.claim.episode.work, expected.work);
-    let records = fixture.records();
-    assert_eq!(records.iter().filter(|record| {
-        matches!(record, Record::RecoveryAuthorized(authorized) if authorized.request_id == request_id)
-    }).count(), 1);
-    assert_eq!(
-        records
-            .into_iter()
-            .filter(|record| {
-                matches!(record, Record::TurnIssued { goal: issued, .. } if *issued == goal)
-            })
-            .collect::<Vec<_>>(),
-        owed
-    );
-}
-
 #[test]
 fn an_answer_restarts_after_its_fsync_before_its_fold() {
     let fixture = Fixture::new();
@@ -16411,75 +15661,3 @@ fn a_goal_change_restarts_after_its_fsync_before_its_fold() {
     running.stop(ExitCause::ShutdownRpc);
 }
 
-#[test]
-fn an_onboarding_turn_restarts_after_its_fsync_before_spawn() {
-    let fixture = Fixture::new();
-    let settings = enrolled_settings(&fixture);
-    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
-    daemon
-        .onboarding_failure()
-        .arm(OnboardingFailurePoint::TurnIssued);
-    let addr = daemon.floor_addr().unwrap();
-    let mut running = common::start(daemon);
-    let page = exchange(addr, &issue(&settings).bootstrap);
-    let request = json!({"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"});
-    let (head, response) = post_onboard(&page, &request);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    let agent: AgentId = serde_json::from_value(response["agent"].clone()).unwrap();
-    let goal: GoalId = serde_json::from_value(response["goal"].clone()).unwrap();
-    issued_onboarding_fence(&fixture, &running.handle, agent, goal);
-    let original: Vec<_> = fixture
-        .records()
-        .into_iter()
-        .filter(|record| matches!(record, Record::TurnIssued { goal: who, .. } if *who == goal))
-        .collect();
-    assert_eq!(original.len(), 1);
-    running.stop(ExitCause::ShutdownRpc);
-
-    let (parts, host) = native_fixture_seams(&fixture, fake_seams(&settings));
-    let daemon = boot(&settings, parts).unwrap();
-    let addr = daemon.floor_addr().unwrap();
-    let mut running = common::start(daemon);
-    let page = exchange(addr, &issue(&settings).bootstrap);
-    recover_owed_browser_turn(&settings, &fixture, &running, agent, goal);
-    fixture.await_record("the exact recovered onboarding turn spawned", |record| {
-        matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent).then_some(())
-    });
-    let (head, retried) = post_onboard(&page, &request);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    assert_eq!(retried, response);
-    let records = fixture.records();
-    assert_eq!(
-        records
-            .iter()
-            .filter(|record| matches!(record, Record::AgentHired { id, .. } if *id == agent))
-            .count(),
-        1
-    );
-    assert_eq!(
-        records
-            .iter()
-            .filter(|record| matches!(record, Record::GoalSet { goal: who, .. } if who.id == goal))
-            .count(),
-        1
-    );
-    assert_eq!(
-        records
-            .iter()
-            .filter(|record| matches!(record, Record::TurnIssued { goal: who, .. } if *who == goal))
-            .cloned()
-            .collect::<Vec<_>>(),
-        original
-    );
-    assert_eq!(
-        records
-            .iter()
-            .filter(
-                |record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
-            )
-            .count(),
-        1
-    );
-    assert_eq!(host.spawned().len(), 1);
-    running.stop(ExitCause::ShutdownRpc);
-}

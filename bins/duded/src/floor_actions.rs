@@ -362,6 +362,18 @@ pub(crate) struct Attempt {
     pub(crate) goal_conflict: bool,
 }
 
+impl Attempt {
+    /// What a finished hire reports: `Some(None)` for a hire that carries no goal, `Some(Some(id))`
+    /// once its recorded goal is appended, and `None` while that goal is still to be appended.
+    pub(crate) fn finished(&self) -> Option<Option<GoalId>> {
+        match &self.metadata.intended_goal {
+            None => Some(None),
+            Some(goal) if self.goal_set => Some(Some(goal.id)),
+            Some(_) => None,
+        }
+    }
+}
+
 /// A replayable in-memory index; only journal records may change it.
 #[derive(Debug, Default)]
 pub(crate) struct OnboardingIndex {
@@ -421,7 +433,7 @@ impl OnboardingIndex {
                     .get_mut(&metadata.attempt_id)
                     .context("browser goal without matching hire")?;
                 if attempt.agent != *agent
-                    || attempt.metadata.intended_goal != *goal
+                    || attempt.metadata.intended_goal.as_ref() != Some(goal)
                     || attempt.goal_set
                 {
                     bail!("browser goal does not match its durable hire");
@@ -435,7 +447,10 @@ impl OnboardingIndex {
             }
             | Record::TicketStarted { agent, .. } => {
                 for attempt in self.attempts.values_mut() {
-                    if attempt.agent == *agent && !attempt.goal_set {
+                    if attempt.agent == *agent
+                        && attempt.metadata.intended_goal.is_some()
+                        && !attempt.goal_set
+                    {
                         attempt.goal_conflict = true;
                     }
                 }
@@ -503,7 +518,9 @@ pub struct OnboardRequest {
     pub(crate) provider: Provider,
     pub(crate) name: String,
     pub(crate) role: String,
-    pub(crate) goal_text: String,
+    /// The initial goal a request written before a hire started with a ticket carries. Such a
+    /// request is answered only for an attempt the onboarding index already holds.
+    pub(crate) legacy_goal_text: Option<String>,
     /// The enrolled check the hire names, by id and revision. Absent only on a retry of an
     /// attempt the onboarding index already holds.
     pub(crate) check: Option<(String, Hex32)>,
@@ -520,14 +537,14 @@ impl fmt::Debug for OnboardRequest {
 /// What the authenticated POST may truthfully report after the daemon job.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OnboardOutcome {
-    /// Both matching domain records are durable.
+    /// The hire is durable and, for a hire written with an initial goal, so is that goal.
     Complete {
         /// Canonical attempt id to return to the page.
         attempt_id: String,
         /// Durable hired agent.
         agent: AgentId,
-        /// Durable initial goal.
-        goal: GoalId,
+        /// Durable initial goal; absent for a hire that starts with a ticket.
+        goal: Option<GoalId>,
     },
     /// Only the matching hire is durable.
     Partial {
@@ -563,8 +580,6 @@ pub enum OnboardStep {
     Copy {
         /// The hire the copy is made for. Only the copy's admission reads it.
         params: Box<dudes_proto::rpc::agent::HireParams>,
-        /// What the hire's check run saw, for the hire that follows.
-        baseline: dudes_proto::CheckBaseline,
         /// The operator's grant the copy rests on.
         trust: Box<crate::worktree::hire::TrustTicket>,
     },
@@ -665,7 +680,8 @@ struct OnboardJson {
     provider: Option<Provider>,
     name: String,
     role: String,
-    goal_text: String,
+    #[serde(default)]
+    goal_text: Option<String>,
     #[serde(default)]
     check_id: Option<String>,
     #[serde(default)]
@@ -674,7 +690,10 @@ struct OnboardJson {
     own_copy: Option<bool>,
 }
 
-/// The request digest's domain and the fields it frames after the four text fields. v1 frames
+/// The request digest's domain version and the fields it frames after the text fields. A request
+/// carries no goal, so its domain is `dudes.onboard.nogoal.<version>`; one written before a hire
+/// started with a ticket frames its goal text and keeps the plain `dudes.onboard.<version>` bytes.
+/// v1 frames
 /// none, v2 adds the appearance, v3, for a request that names an engine, always frames all seven,
 /// v4, for a request that names a check, frames v3's seven and then the check, and v5, for a request
 /// that asks for its own copy, frames v4's fields and then the choice. A request valid under an
@@ -684,11 +703,11 @@ fn request_framing<'a>(
     names_engine: bool,
     own_copy: bool,
     seven: [(&'static str, &'a str); 3],
-) -> (&'static [u8], Vec<(&'static str, &'a str)>) {
+) -> (&'static str, Vec<(&'static str, &'a str)>) {
     let [_, character, accent] = seven;
     match (check, names_engine, character.1, accent.1) {
         (Some((id, revision)), ..) if own_copy => (
-            b"dudes.onboard.v5\0",
+            "v5",
             seven
                 .into_iter()
                 .chain([
@@ -699,15 +718,15 @@ fn request_framing<'a>(
                 .collect(),
         ),
         (Some((id, revision)), ..) => (
-            b"dudes.onboard.v4\0",
+            "v4",
             seven
                 .into_iter()
                 .chain([("check_id", id), ("check_revision", revision)])
                 .collect(),
         ),
-        (None, true, ..) => (b"dudes.onboard.v3\0", seven.to_vec()),
-        (None, false, "", "") => (b"dudes.onboard.v1\0", Vec::new()),
-        (None, false, ..) => (b"dudes.onboard.v2\0", vec![character, accent]),
+        (None, true, ..) => ("v3", seven.to_vec()),
+        (None, false, "", "") => ("v1", Vec::new()),
+        (None, false, ..) => ("v2", vec![character, accent]),
     }
 }
 
@@ -740,13 +759,16 @@ impl OnboardRequest {
         let role = dudes_types::DisplayRole::parse(&raw.role)
             .context("invalid browser hire role")?
             .into_string();
-        let goal_text = raw
-            .goal_text
-            .trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))
-            .to_owned();
-        if !(1..=2048).contains(&goal_text.len()) {
-            bail!("browser onboarding text is outside its byte limit");
-        }
+        let legacy_goal_text = match raw.goal_text.as_deref() {
+            None => None,
+            Some(text) => {
+                let text = text.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'));
+                if !(1..=2048).contains(&text.len()) {
+                    bail!("browser onboarding text is outside its byte limit");
+                }
+                Some(text.to_owned())
+            }
+        };
         // A Claude request names no engine; naming one explicitly would give one hire two digests.
         let provider = match raw.provider {
             None => Provider::Claude,
@@ -781,15 +803,19 @@ impl OnboardRequest {
                 ("accent", accent),
             ],
         );
+        let domain = format!(
+            "dudes.onboard.{}{domain}\0",
+            if legacy_goal_text.is_some() { "" } else { "nogoal." }
+        );
         let request_digest = crate::goal_replacement::digest(
-            domain,
+            domain.as_bytes(),
             [
                 ("workspace_id", raw.workspace_id.as_str()),
                 ("name", name.as_str()),
                 ("role", role.as_str()),
-                ("goal_text", goal_text.as_str()),
             ]
             .into_iter()
+            .chain(legacy_goal_text.as_deref().map(|text| ("goal_text", text)))
             .chain(extra)
             .map(|(field, value)| (field.to_owned(), value.to_owned())),
         );
@@ -804,7 +830,7 @@ impl OnboardRequest {
             workspace_revision,
             name,
             role,
-            goal_text,
+            legacy_goal_text,
             check,
             own_copy,
         })
@@ -1063,51 +1089,75 @@ mod tests {
     }
 
     /// A goal that takes over from a browser hire's intended goal before the onboarding goal
-    /// lands makes that attempt conflicted. A ticket's start installs a goal the same way.
+    /// lands makes that attempt conflicted. A ticket's start installs a goal the same way. A hire
+    /// that carries no goal has nothing to conflict with.
     #[test]
-    fn ticket_start_conflicts_an_unfinished_hire_attempt() {
+    fn ticket_start_conflicts_only_a_hire_with_an_unappended_goal() {
         use dudes_proto::RecordKind;
         use dudes_proto::record::samples;
 
         let attempt_id = Hex32::new([3; 32]);
-        for carrier in [RecordKind::GoalSet, RecordKind::TicketStarted] {
-            let mut hire = samples::record(RecordKind::AgentHired);
-            let Record::AgentHired {
-                id,
-                browser_onboarding,
-                ..
-            } = &mut hire
-            else {
-                unreachable!("the sample is a hire");
-            };
-            let Record::GoalSet { goal, .. } = samples::record(RecordKind::GoalSet) else {
-                unreachable!("the sample is a goal set");
-            };
-            let agent = *id;
-            *browser_onboarding = Some(Box::new(BrowserOnboardingHire {
-                attempt_id,
-                request_digest: Hex32::new([4; 32]),
-                profile_id: "repo_1".into(),
-                session_digest: Hex32::new([5; 32]),
-                intended_goal: goal,
-                trust_lsn: None,
-            }));
-            let mut index = OnboardingIndex::default();
-            index.apply(&hire).unwrap();
-            assert!(!index.attempt(attempt_id).unwrap().goal_conflict);
-            let mut other = samples::record(carrier);
-            match &mut other {
-                Record::GoalSet { agent: owner, .. }
-                | Record::TicketStarted { agent: owner, .. } => {
-                    *owner = agent;
+        for carries_goal in [true, false] {
+            for carrier in [RecordKind::GoalSet, RecordKind::TicketStarted] {
+                let mut hire = samples::record(RecordKind::AgentHired);
+                let Record::AgentHired {
+                    id,
+                    browser_onboarding,
+                    ..
+                } = &mut hire
+                else {
+                    unreachable!("the sample is a hire");
+                };
+                let Record::GoalSet { goal, .. } = samples::record(RecordKind::GoalSet) else {
+                    unreachable!("the sample is a goal set");
+                };
+                let agent = *id;
+                *browser_onboarding = Some(Box::new(BrowserOnboardingHire {
+                    attempt_id,
+                    request_digest: Hex32::new([4; 32]),
+                    profile_id: "repo_1".into(),
+                    session_digest: Hex32::new([5; 32]),
+                    intended_goal: carries_goal.then_some(goal),
+                    trust_lsn: None,
+                }));
+                let mut index = OnboardingIndex::default();
+                index.apply(&hire).unwrap();
+                assert!(!index.attempt(attempt_id).unwrap().goal_conflict);
+                let mut other = samples::record(carrier);
+                match &mut other {
+                    Record::GoalSet { agent: owner, .. }
+                    | Record::TicketStarted { agent: owner, .. } => {
+                        *owner = agent;
+                    }
+                    _ => unreachable!("a goal carrier"),
                 }
-                _ => unreachable!("a goal carrier"),
+                index.apply(&other).unwrap();
+                assert_eq!(
+                    index.attempt(attempt_id).unwrap().goal_conflict,
+                    carries_goal,
+                    "{carrier:?} with a recorded goal: {carries_goal}"
+                );
             }
-            index.apply(&other).unwrap();
-            assert!(
-                index.attempt(attempt_id).unwrap().goal_conflict,
-                "{carrier:?} conflicts the unfinished attempt"
-            );
         }
+    }
+
+    /// A request without a goal frames its digest under its own domain, so it never equals the
+    /// digest of the same fields written with a goal.
+    #[test]
+    fn a_request_without_a_goal_has_its_own_digest_domain() {
+        let body = |goal: Option<&str>| {
+            let mut value = serde_json::json!({
+                "attempt_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "workspace_id": "repo_1", "name": "Kim", "role": "engineer"
+            });
+            if let Some(goal) = goal {
+                value["goal_text"] = goal.into();
+            }
+            OnboardRequest::parse(&serde_json::to_vec(&value).unwrap()).unwrap()
+        };
+        let (plain, legacy) = (body(None), body(Some("ship")));
+        assert!(plain.legacy_goal_text.is_none());
+        assert_eq!(legacy.legacy_goal_text.as_deref(), Some("ship"));
+        assert_ne!(plain.request_digest, legacy.request_digest);
     }
 }

@@ -27,7 +27,7 @@ const START_MS: i64 = 1_800_000_000_000;
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v4"
+    "/tests/fixtures/floor-release-v5"
 );
 
 fn free_port() -> u16 {

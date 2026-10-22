@@ -1402,8 +1402,15 @@
           "type": "string"
         },
         "intended_goal": {
-          "$ref": "#/$defs/Goal",
-          "description": "Complete goal minted before the hire append."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Goal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Complete goal minted before the hire append. A hire written since the first task became a\nticket carries none."
         },
         "profile_id": {
           "description": "Operator enrollment selected by the request.",
@@ -1433,8 +1440,7 @@
         "attempt_id",
         "request_digest",
         "profile_id",
-        "session_digest",
-        "intended_goal"
+        "session_digest"
       ],
       "type": "object"
     },

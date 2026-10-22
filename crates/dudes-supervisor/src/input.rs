@@ -1184,18 +1184,6 @@ pub struct BrowserOnboardHire {
     pub budget: AgentBudget,
     /// Operator-enrolled isolation selection, for an engine that takes one.
     pub isolation: Option<IsolationMode>,
-    /// Bounded initial goal text.
-    pub goal_text: String,
-    /// Operator-enrolled completion predicate.
-    pub predicate: Predicate,
-    /// The enrolled check's name and revision, recorded on the intended goal.
-    pub completion_check: Option<dudes_proto::CompletionCheckRef>,
-    /// What the hire's check run saw before the first turn, recorded on the intended goal.
-    pub baseline: Option<dudes_proto::CheckBaseline>,
-    /// Operator-enrolled goal ceiling.
-    pub goal_budget: GoalBudget,
-    /// Operator-enrolled positive turn limit.
-    pub hop_cap: u32,
     /// Decoded browser attempt identity.
     pub attempt_id: Hex32,
     /// Digest of the canonical request fields.
