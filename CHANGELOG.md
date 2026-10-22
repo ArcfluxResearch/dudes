@@ -11,6 +11,29 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.94.0] - 2026-10-23
+
+### Highlights
+
+- **`dudes quickstart` asks nothing.** It detects your engines, turns on what the Floor needs, writes the config, starts the daemon and opens the Floor. On a config with no Floor action on yet it turns on answering, hiring, pausing and resuming, goals, retiring, the board, renewal, recovery and projects. The git and diff views and the terminal stay off, and the summary says where to turn them on. It sets no spending cap, adds no project and hires nobody unless an option asks; you add a project and hire on the Floor. (#159)
+- **Chat sends files.** Paste a screenshot, drop a file or press **+** in Chat. Dudes keeps a copy in the agent's own folder and adds its path to the message, so the agent opens it with its own tools. A file is at most 10 MiB and an agent's folder at most 200 MiB, and the folder is deleted when the agent retires. Claude agents are given read access to that folder. Files work with agents Dudes launches, not with attached ones. (#164)
+- **A hire's first task is a ticket.** The task you give in the Hire dialog now appears on the board and moves through To do, Working, Ready for you and Done like any other card. A project whose check already passes can be hired into. (#162)
+- **Choose a project folder with your system's folder window.** Add project and Hire show **Choose folder…** where the daemon can open one: on macOS, and on Linux with a display and `zenity` or `kdialog`. Typing a path still works everywhere, and nothing is offered over SSH or on Windows. (#163)
+- **Log, Setup and Settings are pages.** Each has its own address (`#/log`, `#/setup`, `#/settings`), works with Back, reload, Office and Escape, and keeps live updates. (#161)
+
+### Changes
+
+- An agent's Overview opens on one line that says what it is doing now, with the one action that fits, then anything that needs you, then its current work with the latest check. Output and the details (engine, mode, project, turns, cost and id) are folded away, and Edit look moves to the sheet's header. (#166)
+- The "Give a task" prompt starts as one line for all free agents, does not take focus, and closes with its close button or Escape until the set of free agents changes. (#160)
+- Chat keeps its message box at the bottom of the sheet, with the conversation scrolling above it, on desktop and phones. (#160)
+- Re-running `dudes quickstart` keeps every Floor setting of a config that already turns one on, applies Floor switch and project changes to a running daemon at once, and restarts the daemon only when no agent is busy. When one is, it names the agents, prints the restart commands and exits 4. (#159)
+- A ticket waiting for review with the git view off points to **Show changed files** in Settings instead of a terminal command. (#159)
+
+### Breaking
+
+- **Reload open Floor tabs after the upgrade.** The page and the daemon speak a new browser wire version, so a tab left open from 0.93.0 asks for a reload. (#162)
+- **Going back to 0.93.0 or earlier after hiring from the Floor is not supported.** A Floor hire made by 0.94.0 is recorded without a goal, and earlier daemons stop with a "journal corrupt" error at that record. Nothing is lost: starting 0.94.0 again reads the journal as before. (#162)
+
 ## [0.93.0] - 2026-10-22
 
 ### Highlights
@@ -321,7 +344,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.93.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.94.0...HEAD
+[0.94.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.93.0...v0.94.0
 [0.93.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.92.0...v0.93.0
 [0.92.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.91.0...v0.92.0
 [0.91.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.90.0...v0.91.0
