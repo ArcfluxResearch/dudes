@@ -94,7 +94,7 @@ test('the reconnecting notice names the attempts actually spent rather than a st
   store.resetFloorStore();
   const sockets = [];
   let scheduled;
-  const dispose = stream.openFloorStream({ csrf: 'test-nonce' }, { protocol: 'http:', host: '127.0.0.1:7777' }, () => {
+  const dispose = stream.openFloorStream({ device: 'fixture' }, { protocol: 'http:', host: '127.0.0.1:7777' }, () => {
     const events = new Map();
     const socket = { addEventListener: (name, fn) => events.set(name, fn), send() {}, close() {},
       emit: (name) => events.get(name)?.() };

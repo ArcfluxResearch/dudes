@@ -870,14 +870,14 @@ fn devices_command(
     }
 }
 
-/// The devices whose id starts with `id`.
+/// The devices whose id starts with `id`. Ids use both letters' cases, so the match is exact.
 fn devices_starting<'a>(
     devices: &'a [dudes_proto::rpc::floor::DeviceEntry],
     id: &str,
 ) -> Vec<&'a dudes_proto::rpc::floor::DeviceEntry> {
     devices
         .iter()
-        .filter(|entry| entry.device.to_hex().starts_with(id))
+        .filter(|entry| entry.device.to_string().starts_with(id))
         .collect()
 }
 
@@ -3395,18 +3395,17 @@ mod replacement_tests {
 
 #[cfg(test)]
 mod devices_tests {
-    use dudes_proto::record::Hex32;
+    use dudes_proto::record::DeviceId;
     use dudes_proto::rpc::floor::DeviceEntry;
     use dudes_types::Timestamp;
 
     use super::devices_starting;
 
-    fn entry(first: u8, second: u8) -> DeviceEntry {
-        let mut id = [0_u8; 32];
-        id[0] = first;
-        id[1] = second;
+    /// A device whose id is `start` followed by As, so `start` alone says which device it is.
+    fn entry(start: &str) -> DeviceEntry {
+        let id = format!("{start}{}", "A".repeat(43 - start.len()));
         DeviceEntry {
-            device: Hex32::new(id),
+            device: DeviceId::parse(&id).expect("a well-formed id"),
             name: "Chrome".to_owned(),
             signed_in: Timestamp::from_unix_millis(1),
             first_used: None,
@@ -3417,10 +3416,19 @@ mod devices_tests {
 
     #[test]
     fn a_unique_start_names_one_device_and_a_shared_start_names_several() {
-        let devices = [entry(0xab, 0x01), entry(0xab, 0x02), entry(0xcd, 0x03)];
-        assert_eq!(devices_starting(&devices, "cd03").len(), 1);
+        let devices = [entry("abc1"), entry("abc2"), entry("Xy-_")];
+        assert_eq!(devices_starting(&devices, "Xy-_").len(), 1);
         assert_eq!(devices_starting(&devices, "ab").len(), 2, "ambiguous");
-        assert_eq!(devices_starting(&devices, "ab01").len(), 1);
+        assert_eq!(devices_starting(&devices, "abc1").len(), 1);
         assert!(devices_starting(&devices, "ffff").is_empty());
+    }
+
+    #[test]
+    fn the_start_of_an_id_matches_with_its_case() {
+        let devices = [entry("aBcd"), entry("abcd")];
+        assert_eq!(devices_starting(&devices, "aBcd").len(), 1);
+        assert_eq!(devices_starting(&devices, "abcd").len(), 1);
+        assert!(devices_starting(&devices, "ABCD").is_empty());
+        assert_eq!(devices_starting(&devices, "a").len(), 2);
     }
 }

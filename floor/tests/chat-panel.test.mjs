@@ -185,7 +185,7 @@ test('Enter queues through the existing action once, while Shift+Enter and compo
     store.resetFloorStore(); chatModule.resetChat();
     const epoch = store.beginFloorEpoch();
     store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 9, agents: [row] }, chat: view() }), epoch);
-    Object.assign(chatModule.browserChatDeps, { csrf: () => 'csrf', random: bytes => bytes.fill(0),
+    Object.assign(chatModule.browserChatDeps, { signedIn: () => true, random: bytes => bytes.fill(0),
       fetch: async (url, init) => {
         calls.push({ url, body: JSON.parse(init.body) });
         return { status: 202, text: async () => JSON.stringify({ request_id: 'A'.repeat(43), state: 'pending' }) };

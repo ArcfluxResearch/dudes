@@ -81,6 +81,9 @@ getrandom.workspace = true
 httparse.workspace = true
 chrono.workspace = true
 sha2.workspace = true
+# The Floor's signed requests: base64url fields and the browser's P-256 public key.
+base64.workspace = true
+p256.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # The daemon is the runtime directory's other creator and verifies the inherited credential DACL.

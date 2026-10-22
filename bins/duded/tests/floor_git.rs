@@ -3,6 +3,7 @@
 #![cfg(unix)]
 
 mod common;
+use common::PageHttp as _;
 
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
@@ -12,22 +13,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{Fixture, SharedHost, TestClock};
-use duded::floor_session::CSRF_HEADER_NAME;
+use duded::floor_browser::{Browser, Page};
 use duded::predicate::{PredicateCaptured, PredicateOutcome, PredicateRunner};
 use duded::settings::FloorSettings;
 use duded::startup::Witness;
 use dudes_host::{CapturedOutcome, OneShot, OneShotOutcome};
-use dudes_proto::rpc::Method;
-use dudes_proto::rpc::cred::OperatorCredential;
-use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_providers::launch::{EnvVar, LaunchInput, LaunchSpec};
-use dudes_rpc::Client;
+use dudes_supervisor::Clock as _;
 use dudes_types::AgentId;
 use serde_json::{Value, json};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v3"
+    "/tests/fixtures/floor-release-v4"
 );
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -82,6 +80,7 @@ struct Floor {
     running: common::Running,
     settings: duded::Settings,
     addr: SocketAddr,
+    clock: Arc<TestClock>,
 }
 
 fn floor(fixture: &Fixture, enabled: bool, git_path: Option<OsString>) -> Floor {
@@ -92,11 +91,12 @@ fn floor(fixture: &Fixture, enabled: bool, git_path: Option<OsString>) -> Floor 
     });
     settings.floor_git_enabled = enabled;
     settings.predicate_path = git_path.or_else(|| std::env::var_os("PATH"));
+    let clock = Arc::new(TestClock::new());
     let seams = common::seams(
         &settings,
         SharedHost::new(),
         Arc::new(Real(OneShot::new())),
-        Arc::new(TestClock::new()),
+        clock.clone(),
         Witness::default(),
     );
     let daemon = duded::boot(&settings, seams).expect("boot");
@@ -105,70 +105,18 @@ fn floor(fixture: &Fixture, enabled: bool, git_path: Option<OsString>) -> Floor 
         running: common::start(daemon),
         settings,
         addr,
+        clock,
     }
 }
 
-fn credential(settings: &duded::Settings) -> String {
-    std::fs::read_to_string(
-        settings
-            .runtime_dir
-            .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+/// A signed-in page, signing with the clock the daemon runs on.
+fn session(floor: &Floor) -> Page {
+    let clock = Arc::clone(&floor.clock);
+    Page::enrol_new_on(
+        floor.addr,
+        &common::floor_link(&floor.settings),
+        move || clock.now().unix_millis(),
     )
-    .expect("operator credential")
-}
-
-fn read_head(stream: &mut TcpStream) -> String {
-    let mut head = Vec::new();
-    let mut byte = [0];
-    while !head.ends_with(b"\r\n\r\n") {
-        stream.read_exact(&mut byte).expect("response head");
-        head.push(byte[0]);
-    }
-    String::from_utf8(head).expect("ASCII head")
-}
-
-/// The cookie and the CSRF nonce of a signed-in page.
-fn session(floor: &Floor) -> (String, String) {
-    let mut client = Client::connect(floor.settings.socket()).expect("daemon socket");
-    let reply = client
-        .call_as_operator(
-            Method::FloorSessionIssue,
-            None,
-            OperatorCredential::new(credential(&floor.settings)).expect("credential"),
-        )
-        .expect("issue response");
-    let issued: SessionIssueResult =
-        serde_json::from_value(reply.result.expect("issue succeeded")).expect("typed issue");
-    let host = floor.addr.to_string();
-    let mut stream = TcpStream::connect(floor.addr).expect("Floor listener");
-    stream.set_read_timeout(Some(WAIT)).expect("timeout");
-    let request = format!(
-        "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: {}\r\n\r\n{}",
-        issued.bootstrap.len(),
-        issued.bootstrap
-    );
-    stream.write_all(request.as_bytes()).expect("exchange");
-    let head = read_head(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    let cookie = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
-        .and_then(|value| value.split(';').next())
-        .expect("cookie")
-        .to_owned();
-    let length: usize = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Content-Length: "))
-        .expect("length")
-        .parse()
-        .expect("decimal length");
-    let mut body = vec![0; length];
-    stream.read_exact(&mut body).expect("exchange body");
-    let csrf = serde_json::from_slice::<Value>(&body).expect("JSON")["csrf"]
-        .as_str()
-        .expect("csrf")
-        .to_owned();
-    (cookie, csrf)
 }
 
 struct Reply {
@@ -217,24 +165,33 @@ fn post_raw(floor: &Floor, headers: &[(&str, String)], body: &str) -> Reply {
     }
 }
 
-fn post(floor: &Floor, cookie: &str, csrf: &str, agent: AgentId) -> Reply {
+fn post(floor: &Floor, page: &Page, agent: AgentId) -> Reply {
     post_body(
         floor,
-        cookie,
-        csrf,
+        page,
         &json!({ "agent_id": agent.to_string() }).to_string(),
     )
 }
 
-fn post_body(floor: &Floor, cookie: &str, csrf: &str, body: &str) -> Reply {
-    post_raw(
-        floor,
-        &[
-            ("Cookie", format!("dudes_floor_session={cookie}")),
-            (CSRF_HEADER_NAME, csrf.to_owned()),
-        ],
-        body,
-    )
+fn post_body(floor: &Floor, page: &Page, body: &str) -> Reply {
+    let signed = page.signed("POST", "/floor/git", body.as_bytes());
+    post_raw(floor, &page_headers(page, Some(&signed)), body)
+}
+
+fn page_headers(
+    page: &Page,
+    signed: Option<&duded::floor_browser::Signed>,
+) -> Vec<(&'static str, String)> {
+    let mut headers = vec![("Cookie", format!("dudes_floor_session={}", page.cookie))];
+    if let Some(signed) = signed {
+        headers.extend([
+            ("X-Dudes-Origin", signed.origin.clone()),
+            ("X-Dudes-Time", signed.time.clone()),
+            ("X-Dudes-Request", signed.request.clone()),
+            ("X-Dudes-Signature", signed.signature.clone()),
+        ]);
+    }
+    headers
 }
 
 /// Plain git for setup, through the same real runner.
@@ -295,10 +252,10 @@ fn a_signed_in_page_reads_an_agents_checkout_and_nothing_is_journaled() {
     let checkout = repo(fixture.runtime.path());
     let mut floor = floor(&fixture, true, None);
     let agent = common::hire(&floor.running.handle, &checkout);
-    let (cookie, csrf) = session(&floor);
+    let page = session(&floor);
     let before = records(&fixture);
 
-    let reply = post(&floor, &cookie, &csrf, agent);
+    let reply = post(&floor, &page, agent);
     assert_eq!(reply.status, 200, "{}", reply.head);
     assert!(
         reply.head.contains("Content-Type: application/json"),
@@ -339,8 +296,8 @@ fn the_route_is_absent_unless_the_operator_enabled_it() {
     let checkout = repo(fixture.runtime.path());
     let mut floor = floor(&fixture, false, None);
     let agent = common::hire(&floor.running.handle, &checkout);
-    let (cookie, csrf) = session(&floor);
-    let reply = post(&floor, &cookie, &csrf, agent);
+    let page = session(&floor);
+    let reply = post(&floor, &page, agent);
     assert_eq!(
         reply.status, 400,
         "an unrouted POST with a body, as any other: {}",
@@ -359,26 +316,26 @@ fn the_session_checks_come_before_any_read() {
     let checkout = repo(fixture.runtime.path());
     let mut floor = floor(&fixture, true, None);
     let agent = common::hire(&floor.running.handle, &checkout);
-    let (cookie, csrf) = session(&floor);
+    let page = session(&floor);
     let body = json!({ "agent_id": agent.to_string() }).to_string();
-    let cookie_header = ("Cookie", format!("dudes_floor_session={cookie}"));
+    let signed = page.signed("POST", "/floor/git", body.as_bytes());
 
     assert_eq!(post_raw(&floor, &[], &body).status, 403, "no cookie");
-    assert_eq!(
-        post_raw(&floor, std::slice::from_ref(&cookie_header), &body).status,
-        403,
-        "no CSRF"
+    let unsigned = post_raw(&floor, &page_headers(&page, None), &body);
+    assert_eq!(unsigned.status, 401, "no signature");
+    assert_eq!(unsigned.json(), json!({ "signature": "refused" }));
+    let other = Browser::new().sign(
+        "POST",
+        "/floor/git",
+        &page.origin(),
+        body.as_bytes(),
+        page.now_ms(),
     );
-    let wrong = [cookie_header.clone(), (CSRF_HEADER_NAME, "A".repeat(43))];
-    assert_eq!(
-        post_raw(&floor, &wrong, &body).status,
-        403,
-        "the wrong CSRF"
-    );
-    let foreign = [
-        ("Cookie", "dudes_floor_session=forged".to_owned()),
-        (CSRF_HEADER_NAME, csrf.clone()),
-    ];
+    let wrong = post_raw(&floor, &page_headers(&page, Some(&other)), &body);
+    assert_eq!(wrong.status, 401, "another browser's signature");
+    assert_eq!(wrong.json(), json!({ "signature": "refused" }));
+    let mut foreign = page_headers(&page, Some(&signed));
+    foreign[0] = ("Cookie", "dudes_floor_session=forged".to_owned());
     assert_eq!(
         post_raw(&floor, &foreign, &body).status,
         403,
@@ -392,7 +349,7 @@ fn the_session_checks_come_before_any_read() {
         json!({ "agent_id": "nope" }).to_string(),
         " ".repeat(129),
     ] {
-        let reply = post_body(&floor, &cookie, &csrf, &bad);
+        let reply = post_body(&floor, &page, &bad);
         assert_eq!(
             reply.status,
             if bad.len() > 128 { 413 } else { 400 },
@@ -401,7 +358,7 @@ fn the_session_checks_come_before_any_read() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-    let ok = post(&floor, &cookie, &csrf, agent);
+    let ok = post(&floor, &page, agent);
     assert_eq!(
         ok.status, 200,
         "none of the refusals took the session's turn: {}",
@@ -419,9 +376,9 @@ fn a_retired_agent_is_unknown_to_the_route() {
     let checkout = repo(fixture.runtime.path());
     let mut floor = floor(&fixture, true, None);
     let agent = common::hire(&floor.running.handle, &checkout);
-    let (cookie, csrf) = session(&floor);
+    let page = session(&floor);
     assert_eq!(
-        post(&floor, &cookie, &csrf, agent).json()["state"],
+        post(&floor, &page, agent).json()["state"],
         "ok",
         "control: a live agent reads"
     );
@@ -436,10 +393,7 @@ fn a_retired_agent_is_unknown_to_the_route() {
         )))
         .expect("retire");
     std::thread::sleep(Duration::from_millis(2100));
-    assert_eq!(
-        post(&floor, &cookie, &csrf, agent).json()["state"],
-        "agent_unknown"
-    );
+    assert_eq!(post(&floor, &page, agent).json()["state"], "agent_unknown");
     assert_eq!(
         floor.running.stop(duded::ExitCause::Ended),
         duded::ExitCause::Ended
@@ -454,9 +408,9 @@ fn a_session_may_read_once_per_interval() {
     let checkout = repo(fixture.runtime.path());
     let mut floor = floor(&fixture, true, None);
     let agent = common::hire(&floor.running.handle, &checkout);
-    let (cookie, csrf) = session(&floor);
-    let first = post(&floor, &cookie, &csrf, agent).json();
-    let second = post(&floor, &cookie, &csrf, agent).json();
+    let page = session(&floor);
+    let first = post(&floor, &page, agent).json();
+    let second = post(&floor, &page, agent).json();
     assert_eq!(
         (first["state"].as_str(), second["state"].as_str()),
         (Some("ok"), Some("busy"))
@@ -468,7 +422,7 @@ fn a_session_may_read_once_per_interval() {
                 .is_some_and(Vec::is_empty)
     );
     std::thread::sleep(Duration::from_millis(2100));
-    assert_eq!(post(&floor, &cookie, &csrf, agent).json()["state"], "ok");
+    assert_eq!(post(&floor, &page, agent).json()["state"], "ok");
     assert_eq!(
         floor.running.stop(duded::ExitCause::Ended),
         duded::ExitCause::Ended

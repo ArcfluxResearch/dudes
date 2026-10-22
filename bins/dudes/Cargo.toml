@@ -79,7 +79,8 @@ interprocess.workspace = true
 # the real `PeerClassifier` over the two ports that have no live implementation.
 [dev-dependencies]
 ulid.workspace = true
-duded.workspace = true
+# `testing` for `floor_browser`, the browser that signs Floor requests the way the page does.
+duded = { workspace = true, features = ["testing"] }
 dudes-journal.workspace = true
 # `BreakerConfig`, one field of the daemon's `Settings`. The CLI links the loop nowhere.
 dudes-policy.workspace = true

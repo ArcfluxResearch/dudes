@@ -103,7 +103,7 @@ test('a zoom refit sends the changed dimensions once through the existing channe
     }) }) }, resize: (cols, rows) => { grid.cols = cols; grid.rows = rows; } };
   attachTerminal('01JBQ8XK2M3N4P5Q6R7S8T9VWX', {
     location: { protocol: 'http:', host: '127.0.0.1:7717' }, socket: () => socket,
-    csrf: () => 'p8Zt3Qd1Kx9Lm2Nv5Rb7Yc0Ae4Gh6Jk8Sw1Uz3Xq0',
+    signedIn: () => true,
   });
   bindTerminalScreen({ size: () => ({ cols: grid.cols, rows: grid.rows }), write() {} });
   listeners.get('open')();

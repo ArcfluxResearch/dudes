@@ -4,6 +4,7 @@
 #![cfg(unix)]
 
 mod common;
+use common::PageHttp as _;
 
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -12,6 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::{Fixture, ScriptedRunner, SharedHost, SharedPtyHost, TestClock};
+use duded::floor_browser::{Browser, Page};
 use duded::floor_gateway::FloorGatewayProbe;
 use duded::floor_session::FloorSessionAuthorizer;
 use duded::floor_terminal::{SkewField, TERMINAL_QUEUE_BYTES, TerminalSkew};
@@ -24,19 +26,18 @@ use duded::startup::Witness;
 use dudes_proto::rpc::Method;
 use dudes_proto::rpc::agent::RetireParams;
 use dudes_proto::rpc::cred::OperatorCredential;
-use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_proto::rpc::pty::PtyId;
 use dudes_proto::{Actor, Entry, ExitStatus, PeerProvenance, Record, TurnOutcome};
 use dudes_rpc::Client;
 use dudes_rpc::methods::pty::decode_terminal_input;
-use dudes_supervisor::Input;
+use dudes_supervisor::{Clock as _, Input};
 use dudes_types::AgentId;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v3"
+    "/tests/fixtures/floor-release-v4"
 );
 const WAIT: Duration = Duration::from_secs(10);
 const QUIET: Duration = Duration::from_millis(300);
@@ -163,48 +164,16 @@ fn credential(settings: &duded::Settings) -> String {
     .expect("operator credential")
 }
 
-/// Issue and exchange a Floor bootstrap: the cookie and the CSRF nonce a signed-in page holds.
-fn session(floor: &Floor) -> (String, String) {
-    let mut client = Client::connect(floor.settings.socket()).expect("daemon socket");
-    let reply = client
-        .call_as_operator(
-            Method::FloorSessionIssue,
-            None,
-            OperatorCredential::new(credential(&floor.settings)).expect("credential"),
-        )
-        .expect("issue response");
-    let issued: SessionIssueResult =
-        serde_json::from_value(reply.result.expect("issue succeeded")).expect("typed issue");
-    let host = floor.addr.to_string();
-    let mut stream = TcpStream::connect(floor.addr).expect("Floor listener");
-    stream.set_read_timeout(Some(WAIT)).expect("timeout");
-    let request = format!(
-        "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: {}\r\n\r\n{}",
-        issued.bootstrap.len(),
-        issued.bootstrap
+/// A signed-in page: a browser with a key of its own, enrolled with a fresh link. It signs with
+/// the daemon's fake clock, so the time it signs follows the tests that advance it.
+fn session(floor: &Floor) -> Arc<Page> {
+    let clock = Arc::clone(&floor.clock);
+    let page = Page::enrol_new_on(
+        floor.addr,
+        &common::floor_link(&floor.settings),
+        move || clock.now().unix_millis(),
     );
-    stream.write_all(request.as_bytes()).expect("exchange");
-    let head = read_head(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    let cookie = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
-        .and_then(|value| value.split(';').next())
-        .expect("cookie")
-        .to_owned();
-    let length: usize = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Content-Length: "))
-        .expect("length")
-        .parse()
-        .expect("decimal length");
-    let mut body = vec![0; length];
-    stream.read_exact(&mut body).expect("exchange body");
-    let csrf = serde_json::from_slice::<Value>(&body).expect("JSON")["csrf"]
-        .as_str()
-        .expect("csrf")
-        .to_owned();
-    (cookie, csrf)
+    Arc::new(page)
 }
 
 /// Hire an agent and confirm its vendor session, which attach requires.
@@ -307,11 +276,8 @@ fn read_head(stream: &mut TcpStream) -> String {
     String::from_utf8(head).expect("ASCII head")
 }
 
-fn upgrade(addr: SocketAddr, path: &str, protocol: &str, cookie: &str, csrf: &str) -> String {
-    let host = addr.to_string();
-    format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: {protocol}, dudes-csrf.{csrf}\r\nCookie: dudes_floor_session={cookie}\r\n\r\n"
-    )
+fn upgrade(page: &Page, path: &str, protocol: &str) -> String {
+    page.upgrade_head(path, protocol)
 }
 
 fn raw_response(addr: SocketAddr, request: &str) -> Vec<u8> {
@@ -337,17 +303,11 @@ struct Socket {
 }
 
 impl Socket {
-    fn open(
-        addr: SocketAddr,
-        path: &str,
-        protocol: &str,
-        cookie: &str,
-        csrf: &str,
-    ) -> Result<Self, String> {
-        let mut stream = TcpStream::connect(addr).expect("Floor listener");
+    fn open(page: &Page, path: &str, protocol: &str) -> Result<Self, String> {
+        let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
         stream.set_read_timeout(Some(WAIT)).expect("timeout");
         stream
-            .write_all(upgrade(addr, path, protocol, cookie, csrf).as_bytes())
+            .write_all(upgrade(page, path, protocol).as_bytes())
             .expect("upgrade");
         let head = read_head(&mut stream);
         if !head.starts_with("HTTP/1.1 101 Switching Protocols") {
@@ -364,10 +324,10 @@ impl Socket {
     }
 
     /// Retries a 403 briefly: a channel that just closed may still hold its slot.
-    fn open_retrying(floor: &Floor, path: &str, protocol: &str, cookie: &str, csrf: &str) -> Self {
+    fn open_retrying(page: &Page, path: &str, protocol: &str) -> Self {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            match Self::open(floor.addr, path, protocol, cookie, csrf) {
+            match Self::open(page, path, protocol) {
                 Ok(socket) => return socket,
                 Err(head) if head.starts_with("HTTP/1.1 403") && Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(20));
@@ -377,13 +337,12 @@ impl Socket {
         }
     }
 
-    fn terminal(floor: &Floor, cookie: &str, csrf: &str) -> Self {
-        Self::open_retrying(floor, "/floor/terminal", "dudes-terminal-v1", cookie, csrf)
+    fn terminal(page: &Page) -> Self {
+        Self::open_retrying(page, "/floor/terminal", "dudes-terminal-v1")
     }
 
-    fn projection(floor: &Floor, cookie: &str, csrf: &str) -> Self {
-        let mut socket =
-            Self::open_retrying(floor, "/floor/stream", "dudes-floor-v3", cookie, csrf);
+    fn projection(page: &Page) -> Self {
+        let mut socket = Self::open_retrying(page, "/floor/stream", "dudes-floor-v4");
         socket.send(&json!({"type": "floor.subscribe"}));
         socket.expect("floor.snapshot");
         socket
@@ -667,8 +626,8 @@ fn a_stale_terminal_grant_cannot_write_and_the_next_grant_can() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let page = session(&floor);
+    let mut terminal = Socket::terminal(&page);
     let handle = terminal.attach(agent);
     let pty = newest_pty(&floor.ptys);
     let before = host_bytes(&floor.ptys);
@@ -679,7 +638,7 @@ fn a_stale_terminal_grant_cannot_write_and_the_next_grant_can() {
     floor.ptys.await_native_acknowledged(pty);
     assert_eq!(host_bytes(&floor.ptys), before);
 
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let mut terminal = Socket::terminal(&page);
     let handle = terminal.attach(agent);
     let pty = newest_pty(&floor.ptys);
     terminal.write(&handle, b"current grant");
@@ -695,12 +654,12 @@ fn grant_wrong_and_cross_connection_handles_write_nothing() {
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
     let other = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
-    let (other_cookie, other_csrf) = session(&floor);
+    let page = session(&floor);
+    let other_page = session(&floor);
 
-    let mut first = Socket::terminal(&floor, &cookie, &csrf);
+    let mut first = Socket::terminal(&page);
     let handle = first.attach(agent);
-    let mut second = Socket::terminal(&floor, &other_cookie, &other_csrf);
+    let mut second = Socket::terminal(&other_page);
     let second_handle = second.attach(other);
     let before = host_bytes(&floor.ptys);
 
@@ -713,10 +672,10 @@ fn grant_wrong_and_cross_connection_handles_write_nothing() {
     first.expect_policy_close();
     await_system_detach(&fixture, agent, 1);
 
-    let mut later = Socket::terminal(&floor, &cookie, &csrf);
+    let mut later = Socket::terminal(&page);
     later.write(&handle, b"a closed channel's handle");
     later.expect_policy_close();
-    let mut later = Socket::terminal(&floor, &other_cookie, &other_csrf);
+    let mut later = Socket::terminal(&other_page);
     later.write(&second_handle, b"a closed channel's handle");
     later.expect_policy_close();
     assert_eq!(host_bytes(&floor.ptys), before);
@@ -728,8 +687,8 @@ fn grant_idle_expiry_writes_nothing() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let page = session(&floor);
+    let mut terminal = Socket::terminal(&page);
     let handle = terminal.attach(agent);
     for hour in [20, 40] {
         floor.clock.advance(20 * 24 * 60 * 60_000);
@@ -753,8 +712,8 @@ fn grant_output_after_absolute_expiry_sends_no_frame() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let page = session(&floor);
+    let mut terminal = Socket::terminal(&page);
     terminal.attach(agent);
     floor.clock.advance(30 * 24 * 60 * 60_000);
     floor
@@ -777,9 +736,9 @@ fn grant_a_silent_expired_channel_closes_within_two_seconds() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
+    let page = session(&floor);
     let opened = Instant::now();
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let mut terminal = Socket::terminal(&page);
     terminal.attach(agent);
     floor.clock.advance(30 * 24 * 60 * 60_000);
     terminal.expect_terminal_closed();
@@ -797,19 +756,19 @@ fn grant_browser_close_and_pty_exit_revoke_and_close() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
+    let page = session(&floor);
 
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let mut terminal = Socket::terminal(&page);
     let handle = terminal.attach(agent);
     let pty = newest_pty(&floor.ptys);
     terminal.close();
     await_system_detach(&fixture, agent, 1);
     floor.ptys.await_native_acknowledged(pty);
-    let mut after = Socket::terminal(&floor, &cookie, &csrf);
+    let mut after = Socket::terminal(&page);
     after.write(&handle, b"after the browser closed");
     after.expect_policy_close();
 
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let mut terminal = Socket::terminal(&page);
     terminal.attach(agent);
     floor.ptys.end_output(newest_pty(&floor.ptys));
     terminal.expect_terminal_closed();
@@ -824,8 +783,8 @@ fn grant_output_past_the_wire_bound_closes_the_channel() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let page = session(&floor);
+    let mut terminal = Socket::terminal(&page);
     terminal.attach(agent);
     let pty = newest_pty(&floor.ptys);
     floor
@@ -863,8 +822,8 @@ fn grant_restart_leaves_no_grant() {
     let fixture = Fixture::new();
     let mut first = floor(&fixture, true);
     let agent = attachable(&first, &fixture);
-    let (cookie, csrf) = session(&first);
-    let mut terminal = Socket::terminal(&first, &cookie, &csrf);
+    let page = session(&first);
+    let mut terminal = Socket::terminal(&page);
     let handle = terminal.attach(agent);
     terminal.write(&handle, b"before restart");
     await_write(&first.ptys, b"before restart");
@@ -873,17 +832,15 @@ fn grant_restart_leaves_no_grant() {
     let mut second = floor(&fixture, true);
     assert!(
         Socket::open(
-            second.addr,
+            &Page::new(second.addr, page.cookie.clone(), Browser::new()),
             "/floor/terminal",
             "dudes-terminal-v1",
-            &cookie,
-            &csrf
         )
         .expect_err("an old cookie")
         .starts_with("HTTP/1.1 403 Forbidden")
     );
-    let (cookie, csrf) = session(&second);
-    let mut terminal = Socket::terminal(&second, &cookie, &csrf);
+    let page = session(&second);
+    let mut terminal = Socket::terminal(&page);
     terminal.write(&handle, b"an old run's handle");
     terminal.expect_policy_close();
     assert!(second.ptys.writes().is_empty());
@@ -895,13 +852,13 @@ fn grant_resync_keeps_the_terminal_and_the_slots_hold() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
+    let page = session(&floor);
 
-    let projection = Socket::projection(&floor, &cookie, &csrf);
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let projection = Socket::projection(&page);
+    let mut terminal = Socket::terminal(&page);
     let handle = terminal.attach(agent);
     drop(projection);
-    let resynced = Socket::projection(&floor, &cookie, &csrf);
+    let resynced = Socket::projection(&page);
     terminal.write(&handle, b"after resync");
     await_write(&floor.ptys, b"after resync");
     floor
@@ -909,12 +866,11 @@ fn grant_resync_keeps_the_terminal_and_the_slots_hold() {
         .produce_output(newest_pty(&floor.ptys), b"still live");
     assert_eq!(terminal.data(), b"still live");
 
-    let overlap = Socket::projection(&floor, &cookie, &csrf);
+    let overlap = Socket::projection(&page);
     let refused = |path, protocol| {
-        Socket::open(floor.addr, path, protocol, &cookie, &csrf)
-            .expect_err("a slot past the session's three")
+        Socket::open(&page, path, protocol).expect_err("a slot past the session's three")
     };
-    assert!(refused("/floor/stream", "dudes-floor-v3").starts_with("HTTP/1.1 403"));
+    assert!(refused("/floor/stream", "dudes-floor-v4").starts_with("HTTP/1.1 403"));
     assert!(refused("/floor/terminal", "dudes-terminal-v1").starts_with("HTTP/1.1 403"));
 
     drop(resynced);
@@ -944,11 +900,11 @@ fn grant_retire_and_halt_revoke_and_refuse() {
     let mut floor = floor(&fixture, true);
     let halted = attachable(&floor, &fixture);
     let retired = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
+    let page = session(&floor);
     let handle = floor.running.handle.clone();
 
     for (agent, reason) in [(halted, "agent halted"), (retired, "agent retired")] {
-        let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+        let mut terminal = Socket::terminal(&page);
         terminal.attach(agent);
         let pty = newest_pty(&floor.ptys);
         let answer = handle.ask(stop_agent(agent, reason));
@@ -993,7 +949,7 @@ fn grant_retire_and_halt_revoke_and_refuse() {
 
         let opens = floor.ptys.opens().len();
         let attached = count(&fixture, |record| matches!(record, Record::Attached { .. }));
-        let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+        let mut terminal = Socket::terminal(&page);
         terminal.send(&json!({"type": "terminal.attach", "agent": agent, "cols": 80, "rows": 24}));
         terminal.expect_terminal_closed();
         assert_eq!(
@@ -1016,8 +972,8 @@ fn an_unresolved_append_fences_every_browser_terminal_effect() {
     let mut floor = floor(&fixture, true);
     let bound = attachable(&floor, &fixture);
     let other = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let page = session(&floor);
+    let mut terminal = Socket::terminal(&page);
     terminal.attach(bound);
     let owned = floor.ptys.live();
     assert_eq!(owned.len(), 1);
@@ -1040,7 +996,7 @@ fn an_unresolved_append_fences_every_browser_terminal_effect() {
 
     let opens = floor.ptys.opens().len();
     for agent in [other, bound] {
-        let mut late = Socket::terminal(&floor, &cookie, &csrf);
+        let mut late = Socket::terminal(&page);
         late.send(&json!({"type": "terminal.attach", "agent": agent, "cols": 80, "rows": 24}));
         late.expect_terminal_closed();
     }
@@ -1061,10 +1017,10 @@ fn an_unresolved_append_fences_every_browser_terminal_effect() {
 fn a_retire_or_halt_revokes_the_grant_before_its_append() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
-    let (cookie, csrf) = session(&floor);
+    let page = session(&floor);
     for (verb, reason) in [("retire", "agent retired"), ("halt", "agent halted")] {
         let agent = attachable(&floor, &fixture);
-        let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+        let mut terminal = Socket::terminal(&page);
         let handle = terminal.attach(agent);
         let pty = newest_pty(&floor.ptys);
 
@@ -1098,8 +1054,8 @@ fn a_shutdown_revokes_every_grant_before_its_ptys_close() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let page = session(&floor);
+    let mut terminal = Socket::terminal(&page);
     terminal.attach(agent);
     let pty = newest_pty(&floor.ptys);
     let sink = floor.ptys.output_sink(pty);
@@ -1129,13 +1085,13 @@ fn browser_terminal_never_uses_operator_rpc() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
-    let digest: [u8; 32] = Sha256::digest(cookie.as_bytes()).into();
+    let page = session(&floor);
+    let digest: [u8; 32] = Sha256::digest(page.cookie.as_bytes()).into();
     let browser = Actor::BrowserSession {
         session_digest: dudes_proto::record::Hex32::new(digest),
     };
 
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let mut terminal = Socket::terminal(&page);
     let handle = terminal.attach(agent);
     let loop_handle = floor.running.handle.clone();
     let _ = loop_handle.ask(Ask::Ask {
@@ -1197,7 +1153,7 @@ fn browser_terminal_never_uses_operator_rpc() {
             .all(|text| !text.contains(credential.trim())),
         "a frame carried the operator credential"
     );
-    assert_no_record_holds(&fixture, &cookie, &handle);
+    assert_no_record_holds(&fixture, &page.cookie, &handle);
     assert_decode_ties_provenance_to_actor(&fixture, &browser);
     floor.stop();
     let mut replayed = self::floor(&fixture, true);
@@ -1205,9 +1161,9 @@ fn browser_terminal_never_uses_operator_rpc() {
 }
 
 fn assert_finite_wire_admits_no_other_action(floor: &Floor, fixture: &Fixture, agent: AgentId) {
-    let (cookie, csrf) = session(floor);
+    let page = session(floor);
     for kind in ["hire", "goal", "answer", "pause", "resume"] {
-        let mut probe = Socket::terminal(floor, &cookie, &csrf);
+        let mut probe = Socket::terminal(&page);
         let before = fixture.records().len();
         probe.send(&json!({"type": format!("terminal.{kind}"), "agent": agent}));
         probe.expect_policy_close();
@@ -1262,9 +1218,9 @@ fn browser_resize_reaches_only_its_pty_and_a_bad_size_is_a_policy_close() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
+    let page = session(&floor);
 
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let mut terminal = Socket::terminal(&page);
     let handle = terminal.attach(agent);
     let pty = newest_pty(&floor.ptys);
     terminal.send(&json!({"type": "terminal.resize", "handle": handle, "cols": 132, "rows": 50}));
@@ -1282,7 +1238,7 @@ fn browser_resize_reaches_only_its_pty_and_a_bad_size_is_a_policy_close() {
     await_system_detach(&fixture, agent, 1);
     floor.ptys.await_native_acknowledged(pty);
 
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let mut terminal = Socket::terminal(&page);
     let handle = terminal.attach(agent);
     terminal.send(&json!({"type": "terminal.resize", "handle": handle, "cols": 0, "rows": 50}));
     terminal.expect_policy_close();
@@ -1295,8 +1251,8 @@ fn detach_purges_old_output_before_the_boundary_and_a_new_grant_sees_only_its_pt
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let page = session(&floor);
+    let mut terminal = Socket::terminal(&page);
 
     let first = terminal.attach(agent);
     let old = newest_pty(&floor.ptys);
@@ -1369,7 +1325,7 @@ fn terminal_csp_keeps_one_origin_and_exact_routes() {
 
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
-    let (cookie, csrf) = session(&floor);
+    let page = session(&floor);
     let csp = index_csp(&floor);
     assert_eq!(csp, TERMINAL_CSP);
     let default: Vec<&str> = CSP.split("; ").collect();
@@ -1398,7 +1354,7 @@ fn terminal_csp_keeps_one_origin_and_exact_routes() {
         "connect-src names only the page's own origin"
     );
 
-    drop(Socket::terminal(&floor, &cookie, &csrf));
+    drop(Socket::terminal(&page));
     floor.await_connections(0);
     for alias in [
         "/floor/terminal/",
@@ -1408,8 +1364,8 @@ fn terminal_csp_keeps_one_origin_and_exact_routes() {
         "/floor/terminal/../terminal",
         "/terminal",
     ] {
-        let head = Socket::open(floor.addr, alias, "dudes-terminal-v1", &cookie, &csrf)
-            .expect_err("an alias does not upgrade");
+        let head =
+            Socket::open(&page, alias, "dudes-terminal-v1").expect_err("an alias does not upgrade");
         assert!(
             head.starts_with("HTTP/1.1 400 Bad Request"),
             "{alias}: {head}"
@@ -1440,14 +1396,9 @@ fn index_csp(floor: &Floor) -> String {
 fn browser_terminal_is_absent_when_not_enabled() {
     let fixture = Fixture::new();
     let mut disabled = floor(&fixture, false);
-    let (cookie, csrf) = session(&disabled);
-    let snapshot = snapshot_of(&disabled, &cookie, &csrf);
-    let request = |path| {
-        raw_response(
-            disabled.addr,
-            &upgrade(disabled.addr, path, "dudes-terminal-v1", &cookie, &csrf),
-        )
-    };
+    let page = session(&disabled);
+    let snapshot = snapshot_of(&page);
+    let request = |path| raw_response(page.addr, &upgrade(&page, path, "dudes-terminal-v1"));
     let terminal = request("/floor/terminal");
     assert!(
         String::from_utf8_lossy(&terminal).starts_with("HTTP/1.1 400 Bad Request"),
@@ -1465,9 +1416,9 @@ fn browser_terminal_is_absent_when_not_enabled() {
 
     let fixture = Fixture::new();
     let mut enabled = floor(&fixture, true);
-    let (cookie, csrf) = session(&enabled);
-    assert_eq!(snapshot_of(&enabled, &cookie, &csrf)["terminal"], json!({}));
-    drop(Socket::terminal(&enabled, &cookie, &csrf));
+    let page = session(&enabled);
+    assert_eq!(snapshot_of(&page)["terminal"], json!({}));
+    drop(Socket::terminal(&page));
     enabled.stop();
 
     let root = tempfile::tempdir().expect("operator config root");
@@ -1485,8 +1436,8 @@ fn browser_terminal_is_absent_when_not_enabled() {
     );
 }
 
-fn snapshot_of(floor: &Floor, cookie: &str, csrf: &str) -> Value {
-    let mut socket = Socket::open_retrying(floor, "/floor/stream", "dudes-floor-v3", cookie, csrf);
+fn snapshot_of(page: &Page) -> Value {
+    let mut socket = Socket::open_retrying(page, "/floor/stream", "dudes-floor-v4");
     socket.send(&json!({"type": "floor.subscribe"}));
     socket.expect("floor.snapshot")
 }
@@ -1497,12 +1448,11 @@ const RETIRE_ON: FloorControl = FloorControl::On {
     renew: false,
 };
 
-fn retire(floor: &Floor, (cookie, csrf): (&str, &str), k: u8, agent: AgentId) -> (String, Value) {
+fn retire(page: &Page, k: u8, agent: AgentId) -> (String, Value) {
     let request_id = format!("{}{}", char::from(b'A' + k), "A".repeat(42));
     common::floor_post(
-        floor.addr,
+        page,
         "/floor/retire",
-        (cookie, csrf),
         &json!({ "request_id": request_id, "agent": agent }),
     )
 }
@@ -1520,9 +1470,9 @@ fn browser_retire_closes_an_attached_terminal() {
     let fixture = Fixture::new();
     let mut floor = floor_with(&fixture, true, RETIRE_ON);
     let agent = attachable(&floor, &fixture);
-    let (holder_cookie, holder_csrf) = session(&floor);
-    let (cookie, csrf) = session(&floor);
-    let mut terminal = Socket::terminal(&floor, &holder_cookie, &holder_csrf);
+    let holder_page = session(&floor);
+    let page = session(&floor);
+    let mut terminal = Socket::terminal(&holder_page);
     terminal.attach(agent);
     let pty = newest_pty(&floor.ptys);
     let sink = floor.ptys.output_sink(pty);
@@ -1530,7 +1480,7 @@ fn browser_retire_closes_an_attached_terminal() {
     assert_eq!(terminal.data(), b"before the retirement");
 
     let host_lock = floor.ptys.block_host_calls();
-    let (head, response) = retire(&floor, (&cookie, &csrf), 1, agent);
+    let (head, response) = retire(&page, 1, agent);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {response}");
     sink.push(b"after the retirement");
     let mut data = Vec::new();
@@ -1593,19 +1543,18 @@ fn browser_retire_lost_permit_closes_nothing() {
     let fixture = Fixture::new();
     let mut floor = floor_with(&fixture, true, RETIRE_ON);
     let agent = attachable(&floor, &fixture);
-    let (holder_cookie, holder_csrf) = session(&floor);
-    let mut terminal = Socket::terminal(&floor, &holder_cookie, &holder_csrf);
+    let holder_page = session(&floor);
+    let mut terminal = Socket::terminal(&holder_page);
     let handle = terminal.attach(agent);
 
-    let (cookie, csrf) = session(&floor);
+    let page = session(&floor);
     floor.pause.arm(OnboardingPausePoint::BeforeRetirePermit);
     let losing = {
-        let (addr, cookie, csrf) = (floor.addr, cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         std::thread::spawn(move || {
             common::floor_post(
-                addr,
+                &page,
                 "/floor/retire",
-                (&cookie, &csrf),
                 &json!({ "request_id": "B".to_owned() + &"A".repeat(42), "agent": agent }),
             )
         })
@@ -1615,7 +1564,7 @@ fn browser_retire_lost_permit_closes_nothing() {
         "admitted, world-checked, before the permit"
     );
     assert!(
-        floor.sessions.revoke_for_test(&cookie),
+        floor.sessions.revoke_for_test(&page.cookie),
         "the session is revoked"
     );
     floor.pause.release();
@@ -1643,15 +1592,14 @@ fn browser_retire_lost_permit_closes_nothing() {
     terminal.write(&handle, b"still attached");
     await_write(&floor.ptys, b"still attached");
 
-    let (cookie, csrf) = session(&floor);
+    let page = session(&floor);
     floor.pause.arm(OnboardingPausePoint::AfterRetirePermit);
     let owner = {
-        let (addr, cookie, csrf) = (floor.addr, cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         std::thread::spawn(move || {
             common::floor_post(
-                addr,
+                &page,
                 "/floor/retire",
-                (&cookie, &csrf),
                 &json!({ "request_id": "C".to_owned() + &"A".repeat(42), "agent": agent }),
             )
         })
@@ -1662,6 +1610,7 @@ fn browser_retire_lost_permit_closes_nothing() {
     );
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let revoke = floor.sessions.clone();
+    let cookie = page.cookie.clone();
     let revoker = std::thread::spawn(move || {
         done_tx
             .send(revoke.revoke_for_test(&cookie))
@@ -1676,7 +1625,6 @@ fn browser_retire_lost_permit_closes_nothing() {
     revoker.join().expect("revoker thread");
     let (head, response) = owner.join().expect("the winning request");
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {response}");
-    let _ = csrf;
     terminal.expect_terminal_closed();
     await_system_detach(&fixture, agent, 1);
     floor.stop();
@@ -1695,8 +1643,8 @@ fn turning_the_terminal_off_revokes_a_live_grant() {
     std::fs::write(&config, ON).expect("operator config");
     let mut floor = floor_reading(&fixture, true, FloorControl::Off, Some(config.clone()));
     let agent = attachable(&floor, &fixture);
-    let (cookie, csrf) = session(&floor);
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let page = session(&floor);
+    let mut terminal = Socket::terminal(&page);
     terminal.attach(agent);
     let pty = newest_pty(&floor.ptys);
 
@@ -1729,13 +1677,7 @@ fn turning_the_terminal_off_revokes_a_live_grant() {
     );
     let refused = raw_response(
         floor.addr,
-        &upgrade(
-            floor.addr,
-            "/floor/terminal",
-            "dudes-terminal-v1",
-            &cookie,
-            &csrf,
-        ),
+        &upgrade(&page, "/floor/terminal", "dudes-terminal-v1"),
     );
     assert!(
         String::from_utf8_lossy(&refused).starts_with("HTTP/1.1 400 Bad Request"),

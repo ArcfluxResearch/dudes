@@ -153,22 +153,9 @@ fn session_from_clock<C: dudes_supervisor::Clock + Send + Sync + 'static>(
     clock: Arc<C>,
 ) -> SessionIdentity {
     let sessions = FloorSessions::new("127.0.0.1:31337".parse().unwrap(), clock);
-    let issued = sessions.issue().expect("owned test bootstrap");
-    let exchange = sessions
-        .exchange(
-            "127.0.0.1:31337",
-            "http://127.0.0.1:31337",
-            issued.bootstrap.as_bytes(),
-        )
-        .expect("owned exchange");
     sessions
-        .authorize_onboard(
-            "127.0.0.1:31337",
-            "http://127.0.0.1:31337",
-            &exchange.cookie,
-            &exchange.csrf,
-        )
-        .expect("live session")
+        .admitted_for_test("127.0.0.1:31337", "http://127.0.0.1:31337")
+        .0
 }
 
 struct PermitClock {

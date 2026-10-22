@@ -43,7 +43,7 @@ release. `dudes upgrade --check` prints the current and latest versions and chan
 copy that `install.sh` installed. Running the install command again, then `dudes stop` and `dudes start`, does the
 same by hand. Browsers that are signed in to the Floor stay signed in: an open Floor tab
 needs one reload afterwards, and it shows the same agents.
-The first upgrade from a version that kept sign-ins only in memory still signs open tabs out once.
+The first upgrade from a version that gave the page a readable secret signs open tabs out once; run `dudes open` to sign in again.
 Dudes connects to GitHub only when you run `dudes upgrade`, and never checks for updates on its own.
 
 To build from source, or on Windows, see [Build Dudes from source](docs/building-from-source.md).

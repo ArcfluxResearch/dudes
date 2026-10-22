@@ -14,15 +14,8 @@ fn new_sessions(clock: &Arc<FakeClock>) -> FloorSessions {
     FloorSessions::new(HOST.parse().unwrap(), Arc::clone(clock))
 }
 
-fn sign_in(sessions: &FloorSessions) -> (SessionIdentity, super::super::Exchange) {
-    let bootstrap = sessions.issue().unwrap();
-    let exchange = sessions
-        .exchange(HOST, ORIGIN, bootstrap.bootstrap.as_bytes())
-        .unwrap();
-    let identity = sessions
-        .authorize_onboard(HOST, ORIGIN, &exchange.cookie, &exchange.csrf)
-        .unwrap();
-    (identity, exchange)
+fn sign_in(sessions: &FloorSessions) -> (SessionIdentity, super::super::test_support::Joined) {
+    sessions.admitted_for_test(HOST, ORIGIN)
 }
 
 fn attribution(identity: &SessionIdentity) -> RecoveryAttribution {
@@ -139,7 +132,7 @@ fn a_device_restored_from_the_journal_keeps_its_recovery_original_live_until_it_
                 origin: ORIGIN.to_owned(),
                 name: "Chrome".to_owned(),
                 cookie: Hex32::new(identity.cookie),
-                secret: Hex32::new(session.csrf.unwrap()),
+                key: Some(session.key.text()),
                 enrolled: session.created,
                 first_used: session.first_used,
                 last_used: Some(session.last_used),

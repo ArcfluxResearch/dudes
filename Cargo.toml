@@ -68,6 +68,10 @@ subtle = { version = "2.6.1", default-features = false }
 # 2026-09-16 — MIT OR Apache-2.0, both on `deny.toml`'s allow list; `rust-version` 1.71.0, under
 # this workspace's 1.96 MSRV.
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
+# The Floor daemon verifies each request's ECDSA P-256 signature with the browser's public key. The
+# `ecdsa` feature is the verifier; the signer comes with it and the tests use it to play a browser.
+# Pure Rust, Apache-2.0 OR MIT.
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
 # Journal: CRC-32/ISCSI (crc32c) frames and the redb projection store. Verified on crates.io 2026-08-23.
 crc = "3.4.0"
 redb = "4.2.0"

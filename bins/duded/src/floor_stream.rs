@@ -1,6 +1,6 @@
 //! Run-local publication state for the authenticated browser Floor stream.
 //!
-//! Browser-wire-v3 carries the projection stream and one read-only selected Managed output view.
+//! Browser-wire-v4 carries the projection stream and one read-only selected Managed output view.
 //! The projection payloads remain the shared [`FloorProjection`] and [`FloorDelta`] value shapes.
 
 use std::borrow::Cow;
@@ -197,13 +197,13 @@ pub(crate) fn decode_object<T: DeserializeOwned>(text: &str) -> Result<T> {
     serde_json::from_str::<T>(text).context("decoding a finite Floor client message")
 }
 
-/// Whether a server discriminator belongs to browser-wire-v3's accepted set.
+/// Whether a server discriminator belongs to browser-wire-v4's accepted set.
 #[must_use]
 pub fn server_type_is_listed(value: &str) -> bool {
     SERVER_TYPES.contains(&value)
 }
 
-/// Whether a client discriminator belongs to browser-wire-v3's accepted set.
+/// Whether a client discriminator belongs to browser-wire-v4's accepted set.
 #[must_use]
 pub fn client_type_is_listed(value: &str) -> bool {
     CLIENT_TYPES.contains(&value)

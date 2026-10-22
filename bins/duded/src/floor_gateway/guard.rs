@@ -9,12 +9,11 @@
 //! 1. the listener's exact Host and Origin;
 //! 2. the peer: no process on the other end of the connection is inside an agent, so a refused
 //!    peer holding stolen credentials neither authenticates nor keeps the session alive;
-//! 3. the session cookie and the session secret, which must both name one live session;
-//! 4. the body: no NUL byte and valid UTF-8.
-//!
-//! A proof of the daemon to the page needs no session and no secret, since it is asked for before
-//! the secret is sent: it checks the Host and Origin and the peer, and answers every cookie in the
-//! same shape.
+//! 3. the session cookie, which must name one live device. A cookie that does not is answered at
+//!    once, with the reason when the daemon remembers one, because a reason grants nothing;
+//! 4. the signature, which must be that device's, made for this request, this origin and this
+//!    minute, and not seen before. It covers the body, so the body is read first and must have no
+//!    NUL byte and be valid UTF-8.
 //!
 //! Sign-in reads its body first, then checks the peer, and only then does the exchange spend the
 //! one-time link, so a refused agent never spends it. A socket checks the peer before it takes a
@@ -34,12 +33,12 @@ use super::{
     GIT_PATH, GOAL_PATH, Handle, INSPECT_RECOVERY_PATH, LOOK_PATH, MEMORY_ENTRY_PATH,
     MEMORY_PAGE_PATH, ONBOARD_PATH, PAUSE_PATH, PROJECT_ADD_PATH, PROJECT_PREVIEW_PATH,
     PROJECT_REMOVE_PATH, RECEIPT_RECOVERY_PATH, RENAME_PATH, RENEW_PATH, RESUME_PATH, RETIRE_PATH,
-    ReceiptSession, RecoveryRoute, Response, SESSION_CHECK_PATH, SESSION_END_PATH,
-    SESSION_PROVE_PATH, SETTINGS_PATH, SIGN_IN_PATH, STREAM_PATH, SUBMIT_RECOVERY_PATH,
-    SessionIdentity, SocketAddr, SocketRoute, SocketSession, TERMINAL_PATH, TicketRoute,
-    action_json, error_response,
+    ReceiptSession, RecoveryRoute, Response, SESSION_CHECK_PATH, SESSION_END_PATH, SETTINGS_PATH,
+    SIGN_IN_PATH, STREAM_PATH, SUBMIT_RECOVERY_PATH, SessionIdentity, SocketAddr, SocketRoute,
+    SocketSession, TERMINAL_PATH, TicketRoute, action_json, error_response,
 };
 use crate::floor_peer::Verdict;
+use crate::floor_session::{Presentation, Refusal};
 
 /// Every dynamic path, whether or not its switch is on. A test holds this equal to the paths the
 /// gateway source names, so a route added without being listed fails the build.
@@ -47,7 +46,6 @@ pub(super) const DYNAMIC_PATHS: &[&str] = &[
     SIGN_IN_PATH,
     SESSION_CHECK_PATH,
     SESSION_END_PATH,
-    SESSION_PROVE_PATH,
     STREAM_PATH,
     TERMINAL_PATH,
     ENGINE_LOGIN_PATH,
@@ -88,7 +86,6 @@ pub(super) const DYNAMIC_PATHS: &[&str] = &[
 #[derive(Clone, Copy)]
 enum Kind {
     SignIn,
-    Proof,
     Standing(StandingRoute),
     Action(ActionRoute),
     Socket(SocketRoute),
@@ -116,8 +113,6 @@ impl Route {
         let path = DYNAMIC_PATHS.iter().copied().find(|known| *known == path)?;
         let kind = if method == "POST" && path == SIGN_IN_PATH {
             Kind::SignIn
-        } else if method == "POST" && path == SESSION_PROVE_PATH {
-            Kind::Proof
         } else if method == "POST" && path == SESSION_CHECK_PATH {
             Kind::Standing(StandingRoute::Check)
         } else if method == "POST" && path == SESSION_END_PATH {
@@ -133,14 +128,14 @@ impl Route {
     pub(super) const fn action(self) -> Option<ActionRoute> {
         match self.kind {
             Kind::Action(route) => Some(route),
-            Kind::SignIn | Kind::Proof | Kind::Standing(_) | Kind::Socket(_) => None,
+            Kind::SignIn | Kind::Standing(_) | Kind::Socket(_) => None,
         }
     }
 
     pub(super) const fn standing(self) -> Option<StandingRoute> {
         match self.kind {
             Kind::Standing(route) => Some(route),
-            Kind::SignIn | Kind::Proof | Kind::Action(_) | Kind::Socket(_) => None,
+            Kind::SignIn | Kind::Action(_) | Kind::Socket(_) => None,
         }
     }
 
@@ -148,14 +143,10 @@ impl Route {
         matches!(self.kind, Kind::SignIn)
     }
 
-    pub(super) const fn is_proof(self) -> bool {
-        matches!(self.kind, Kind::Proof)
-    }
-
     pub(super) const fn socket(self) -> Option<SocketRoute> {
         match self.kind {
             Kind::Socket(route) => Some(route),
-            Kind::SignIn | Kind::Proof | Kind::Standing(_) | Kind::Action(_) => None,
+            Kind::SignIn | Kind::Standing(_) | Kind::Action(_) => None,
         }
     }
 
@@ -170,7 +161,6 @@ impl Route {
     const fn acting(self) -> bool {
         match self.kind {
             Kind::SignIn
-            | Kind::Proof
             | Kind::Standing(StandingRoute::Check)
             | Kind::Socket(SocketRoute::Stream) => false,
             Kind::Standing(StandingRoute::End)
@@ -188,42 +178,64 @@ impl Route {
     }
 }
 
-/// The secret the page sent, beside the cookie the browser sent.
-pub(super) struct Credentials {
-    pub(super) cookie: String,
-    pub(super) secret: String,
+/// What a page presents to show a request is its own: the origin it signed for, the time, a
+/// one-time request id and the signature. Strings as sent; their form is checked at admission.
+#[derive(Clone)]
+pub(super) struct Signed {
+    pub(super) origin: String,
+    pub(super) time: String,
+    pub(super) request: String,
+    pub(super) signature: String,
 }
 
 /// A request head whose shape the parsers accepted.
+#[derive(Clone)]
 pub(super) struct Head {
     pub(super) host: String,
     pub(super) origin: String,
-    /// The session cookie, when the head carried a well-formed one. Only a proof reads it alone;
-    /// every other route that acts reads it with the secret, in `credentials`.
+    /// The method and target exactly as the request line carried them. The signature covers both.
+    pub(super) method: String,
+    pub(super) target: String,
+    /// The session cookie, when the head carried a well-formed one.
     pub(super) cookie: Option<String>,
-    pub(super) credentials: Option<Credentials>,
+    /// What the page presented, when it presented all four values.
+    pub(super) signed: Option<Signed>,
     pub(super) content_length: usize,
     /// The WebSocket accept value for a socket upgrade; empty for everything else.
     pub(super) accept: String,
 }
 
-/// The one-time link's request, admitted. The exchange itself follows.
-pub(super) struct SignIn {
-    pub(super) host: String,
-    pub(super) origin: String,
+impl Head {
+    /// The head as the registry checks it, over the body that came with it.
+    pub(super) fn presentation<'a>(&'a self, cookie: &'a str, body: &'a [u8]) -> Presentation<'a> {
+        let request = Presentation::new(
+            &self.host,
+            &self.origin,
+            cookie,
+            &self.method,
+            &self.target,
+            body,
+        );
+        match &self.signed {
+            Some(signed) => request.signed(
+                &signed.origin,
+                &signed.time,
+                &signed.request,
+                &signed.signature,
+            ),
+            None => request,
+        }
+    }
 }
 
-/// A request for the daemon's proof of itself, with the cookie it named. The cookie is only a
-/// name: it is never checked here, so a request without one is answered like one for a session the
-/// daemon does not know.
-pub(super) struct ProofAsk {
-    pub(super) cookie: Option<String>,
+/// The one-time link's request, admitted. The exchange itself follows.
+pub(super) struct SignIn {
+    pub(super) head: Head,
 }
 
 /// What a request has earned. Handlers take these and nothing less.
 pub(super) enum Admitted {
     SignIn(SignIn),
-    Proof(ProofAsk),
     /// The session a check or a sign-out named, or `None` when the daemon does not know it.
     Standing(Option<SessionIdentity>),
     Session(SessionIdentity),
@@ -290,21 +302,7 @@ impl Guard<'_> {
                 clean_body(&body)?;
                 self.peer(route, endpoints)?;
                 Ok(Admission {
-                    admitted: Admitted::SignIn(SignIn {
-                        host: head.host.clone(),
-                        origin: head.origin.clone(),
-                    }),
-                    body,
-                })
-            }
-            Kind::Proof => {
-                self.peer(route, endpoints)?;
-                let body = read_body()?;
-                clean_body(&body)?;
-                Ok(Admission {
-                    admitted: Admitted::Proof(ProofAsk {
-                        cookie: head.cookie.clone(),
-                    }),
+                    admitted: Admitted::SignIn(SignIn { head: head.clone() }),
                     body,
                 })
             }
@@ -312,14 +310,16 @@ impl Guard<'_> {
                 self.peer(route, endpoints)?;
                 let body = read_body()?;
                 clean_body(&body)?;
-                let identity = head.credentials.as_ref().and_then(|credentials| {
-                    sessions.authorize_standing(
-                        &head.host,
-                        &head.origin,
-                        &credentials.cookie,
-                        &credentials.secret,
-                    )
-                });
+                let identity = match head.cookie.as_deref() {
+                    None => None,
+                    Some(cookie) => {
+                        match sessions.authorize_standing(&head.presentation(cookie, &body)) {
+                            Ok(identity) => Some(identity),
+                            Err(Refusal::Signature) => return Err(signature_refused()),
+                            Err(Refusal::Gone | Refusal::Busy) => None,
+                        }
+                    }
+                };
                 Ok(Admission {
                     admitted: Admitted::Standing(identity),
                     body,
@@ -327,23 +327,22 @@ impl Guard<'_> {
             }
             Kind::Socket(socket) => {
                 self.peer(route, endpoints)?;
-                let credentials = head.credentials.as_ref().ok_or_else(forbidden)?;
+                let cookie = head.cookie.as_deref().ok_or_else(forbidden)?;
                 let authorizer = sessions.authorizer();
-                let (host, origin) = (&head.host, &head.origin);
-                let (cookie, secret) = (&credentials.cookie, &credentials.secret);
+                let request = head.presentation(cookie, &[]);
                 let admitted = match socket {
                     SocketRoute::Stream => authorizer
-                        .authorize_stream(host, origin, cookie, secret)
+                        .authorize_stream(&request)
                         .map(SocketSession::Stream),
                     SocketRoute::Terminal => authorizer
-                        .authorize_terminal(host, origin, cookie, secret)
+                        .authorize_terminal(&request)
                         .map(SocketSession::Terminal),
                     SocketRoute::EngineLogin => authorizer
-                        .authorize_login(host, origin, cookie, secret)
+                        .authorize_login(&request)
                         .map(SocketSession::Login),
                 }
                 .map(Admitted::Socket)
-                .ok_or_else(|| self.refused(head))?;
+                .map_err(|refusal| self.refused(head, refusal))?;
                 Ok(Admission {
                     admitted,
                     body: Vec::new(),
@@ -351,34 +350,40 @@ impl Guard<'_> {
             }
             Kind::Action(action) => {
                 self.peer(route, endpoints)?;
-                let credentials = head.credentials.as_ref().ok_or_else(forbidden)?;
-                let (host, origin) = (&head.host, &head.origin);
-                let (cookie, secret) = (&credentials.cookie, &credentials.secret);
-                let admitted = if action == ActionRoute::Recovery(RecoveryRoute::Receipt) {
-                    sessions
-                        .authorize_receipt(host, origin, cookie, secret)
-                        .map(Admitted::Receipt)
-                } else {
-                    sessions
-                        .authorize_onboard(host, origin, cookie, secret)
-                        .map(Admitted::Session)
+                let cookie = head.cookie.as_deref().ok_or_else(forbidden)?;
+                let reads_only = action == ActionRoute::Recovery(RecoveryRoute::Receipt);
+                if !sessions.knows(cookie, !reads_only) {
+                    return Err(self.refused(head, Refusal::Gone));
                 }
-                .ok_or_else(|| self.refused(head))?;
                 let body = read_body()?;
                 clean_body(&body)?;
+                let request = head.presentation(cookie, &body);
+                let admitted = if action == ActionRoute::Recovery(RecoveryRoute::Receipt) {
+                    sessions.authorize_receipt(&request).map(Admitted::Receipt)
+                } else {
+                    sessions.authorize_onboard(&request).map(Admitted::Session)
+                }
+                .map_err(|refusal| self.refused(head, refusal))?;
                 Ok(Admission { admitted, body })
             }
         }
     }
 
-    /// The refusal for credentials that name no live device. When they name one that was removed,
-    /// expired or replaced, the answer says which, so the page can tell the person. Only the
-    /// cookie and the secret together earn that, and nothing else about the device is said.
-    fn refused(self, head: &Head) -> Denied {
-        let gone = head.credentials.as_ref().and_then(|credentials| {
-            self.sessions
-                .gone_reason(&credentials.cookie, &credentials.secret)
-        });
+    /// The answer for a request that earned no device. A signature that did not verify is its own
+    /// answer. A cookie that names no live device is answered with the reason when it names one
+    /// that was removed, expired or replaced, so the page can tell the person. The cookie alone
+    /// earns that, and nothing else about the device is said.
+    fn refused(self, head: &Head, refusal: Refusal) -> Denied {
+        if refusal == Refusal::Signature {
+            return signature_refused();
+        }
+        let gone = (refusal == Refusal::Gone)
+            .then(|| {
+                head.cookie
+                    .as_deref()
+                    .and_then(|cookie| self.sessions.gone_reason(cookie))
+            })
+            .flatten();
         Denied::Response(match gone {
             Some(reason) => action_json(
                 403,
@@ -410,6 +415,16 @@ impl Guard<'_> {
         }
         Err(error_response(403, "Forbidden"))
     }
+}
+
+/// The answer for a request from a live device that did not prove it: the page retries once with a
+/// new time and id, and a second refusal is an error it shows, not a sign-out.
+fn signature_refused() -> Denied {
+    Denied::Response(action_json(
+        401,
+        "Unauthorized",
+        &serde_json::json!({ "signature": "refused" }),
+    ))
 }
 
 /// A body with a NUL byte or invalid UTF-8 is not something any route's parser should see.

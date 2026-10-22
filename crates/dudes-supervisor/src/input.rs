@@ -1342,16 +1342,16 @@ mod recorded_append_tests {
 pub enum FloorDeviceChange {
     /// A browser signed in.
     Enroll {
-        /// The new device's id.
+        /// The new device's id: the SHA-256 of its key.
         device: Hex32,
         /// The Floor origin it signed in on.
         origin: String,
         /// Its cleaned, capped name.
         name: String,
+        /// Its public key as SPKI DER in unpadded base64url.
+        key: String,
         /// SHA-256 of its cookie.
         cookie: Hex32,
-        /// SHA-256 of its secret.
-        secret: Hex32,
     },
     /// A device made its first request.
     FirstUse(Hex32),

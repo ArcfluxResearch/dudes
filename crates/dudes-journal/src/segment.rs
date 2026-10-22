@@ -534,6 +534,7 @@ mod tests {
             | Record::FloorPeerRefused { .. }
             | Record::WorkspaceTrustSet { .. }
             | Record::FloorDeviceEnrolled { .. }
+            | Record::FloorDeviceKeyEnrolled { .. }
             | Record::FloorDeviceFirstUsed { .. }
             | Record::FloorDeviceAcknowledged { .. }
             | Record::FloorDeviceRemoved { .. }

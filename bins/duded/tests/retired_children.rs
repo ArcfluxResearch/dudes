@@ -29,9 +29,9 @@ use dudes_proto::rpc::{ErrorCode, Method, RefusalGate, RefusedData, Response};
 use dudes_proto::{Actor, PeerProvenance, PtyCloseOutcome, Record};
 use dudes_rpc::conditioned::MAX_MEMORY_APPEND_TEXT_BYTES;
 use dudes_rpc::{Client, LocalClient};
-use dudes_supervisor::Input;
 use dudes_supervisor::host::{AdoptionKey, ProbeAnswer};
 use dudes_supervisor::testing::FakeRng;
+use dudes_supervisor::{Clock as _, Input};
 use dudes_types::{AgentId, Lsn, TurnId};
 use serde_json::{Value, json};
 
@@ -167,6 +167,7 @@ struct Daemon {
     ptys: SharedPtyHost,
     append_failure: AppendFailure,
     post_fsync_failure: OnboardingFailure,
+    clock: Arc<TestClock>,
     owner: Option<LocalClient>,
     floor: Option<std::net::SocketAddr>,
 }
@@ -200,7 +201,7 @@ impl Daemon {
         settings.floor = Some(duded::settings::FloorSettings {
             assets_dir: std::path::PathBuf::from(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/floor-release-v3"
+                "/tests/fixtures/floor-release-v4"
             )),
             port: Some(0),
         });
@@ -213,6 +214,7 @@ impl Daemon {
     }
 
     fn boot(fixture: Fixture, ptys: SharedPtyHost, settings: duded::Settings) -> Self {
+        let clock = Arc::new(TestClock::new());
         let relation = ScriptedRelation::new(ptys.clone());
         let resolver = Resolver::processes(Arc::clone(&relation) as Arc<dyn ProcessRelation>);
         let host = SharedHost::with_native_evidence(fixture.journal_dir());
@@ -220,7 +222,7 @@ impl Daemon {
             host: PeerBarrier::new(host.clone(), resolver.clone()),
             pty_host: Box::new(ptys.clone()),
             predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
-            clock: Arc::new(TestClock::new()),
+            clock: Arc::clone(&clock),
             rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
             resolver,
             adapters: dudes_providers::registry::Adapters::from_config(
@@ -251,6 +253,7 @@ impl Daemon {
             relation,
             host,
             ptys,
+            clock,
             append_failure,
             post_fsync_failure,
             owner: Some(owner),
@@ -263,11 +266,13 @@ impl Daemon {
     fn browser_retire(&self, agent: AgentId) -> (String, Value) {
         let addr = self.floor.expect("the Floor routes retirement");
         self.relation.walk(Walk::Unowned);
-        let (cookie, csrf) = common::floor_session(&self.settings, addr);
+        let page = common::floor_session_on(&self.settings, addr, {
+            let clock = Arc::clone(&self.clock);
+            move || clock.now().unix_millis()
+        });
         common::floor_post(
-            addr,
+            &page,
             "/floor/retire",
-            (&cookie, &csrf),
             &json!({ "request_id": "A".repeat(43), "agent": agent }),
         )
     }

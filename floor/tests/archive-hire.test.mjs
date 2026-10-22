@@ -31,7 +31,7 @@ const checks = decodeCheckCatalog({ workspaces: [{ workspace_id: 'parser', check
 const floor = (extra = {}) => ({ ...getFloorState(), phase: 'live', stale: false, epoch: 1, snapshotEpoch: 1,
   onboarding: catalog(), checks, ...extra });
 const live = () => ({ id: NEW, name: 'Ada', role: 'Parser engineer', provider: 'claude', mode: 'managed', status: 'idle', session: 'proof-session' });
-const dependencies = (kind = 'complete') => ({ csrf: () => 'A'.repeat(43), random: (bytes) => bytes.fill(0),
+const dependencies = (kind = 'complete') => ({ signedIn: () => true, random: (bytes) => bytes.fill(0),
   epoch: () => 1, refresh: () => {}, fetch: async (_url, request) => ({ status: kind === 'complete' ? 200 : 409,
     text: async () => JSON.stringify({ attempt_id: JSON.parse(request.body).attempt_id,
       state: kind === 'complete' ? 'complete' : 'hired_without_goal', agent: NEW,

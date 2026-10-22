@@ -22,7 +22,7 @@ export interface SettingsReport {
   };
   readonly providers: readonly ProviderName[];
   readonly workspaces: readonly SettingsWorkspace[];
-  readonly about: { readonly daemon_version: string; readonly browser_wire_version: 3 };
+  readonly about: { readonly daemon_version: string; readonly browser_wire_version: 4 };
 }
 
 const UTF8 = new TextEncoder();
@@ -66,7 +66,7 @@ export function decodeSettingsReport(value: unknown): SettingsReport | null {
     || value.providers.some((provider) => !PROVIDERS.some((name) => name === provider))
     || !Array.isArray(value.workspaces) || value.workspaces.length > 32
     || !exact(value.about, ['daemon_version', 'browser_wire_version'])
-    || !validReleaseVersion(value.about.daemon_version) || value.about.browser_wire_version !== 3
+    || !validReleaseVersion(value.about.daemon_version) || value.about.browser_wire_version !== 4
     || UTF8.encode(JSON.stringify(value)).length > 32_768) return null;
   const rows = value.workspaces.map(workspace);
   if (rows.some((row) => row === null)) return null;
@@ -80,6 +80,6 @@ export function decodeSettingsReport(value: unknown): SettingsReport | null {
     budget: Object.freeze({ floor_usd_per_day_micros: value.budget.floor_usd_per_day_micros,
       per_turn_usd_micros: value.budget.per_turn_usd_micros, per_turn_tokens: value.budget.per_turn_tokens }),
     providers: Object.freeze([...value.providers] as ProviderName[]), workspaces: Object.freeze(workspaces),
-    about: Object.freeze({ daemon_version: value.about.daemon_version, browser_wire_version: 3 }),
+    about: Object.freeze({ daemon_version: value.about.daemon_version, browser_wire_version: 4 }),
   });
 }

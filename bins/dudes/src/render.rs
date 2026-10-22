@@ -539,7 +539,7 @@ where
         "ID", "NAME", "SIGNED IN", "FIRST USED", "LAST USED"
     )?;
     for entry in entries {
-        let id = entry.device.to_hex();
+        let id = entry.device.to_string();
         writeln!(
             out,
             "{:<14}{:<24}{:<27}{:<27}{:<27}{}",
@@ -582,7 +582,7 @@ where
         writeln!(
             err,
             "  {}  {}  signed in {}",
-            entry.device.to_hex(),
+            entry.device,
             Escaped(&entry.name),
             zoned(entry.signed_in, zone)
         )?;
@@ -1563,7 +1563,7 @@ mod tests {
     #[test]
     fn an_ambiguous_start_lists_the_matches_and_a_missing_one_says_so() {
         let entry = |byte: u8, name: &str| dudes_proto::rpc::floor::DeviceEntry {
-            device: dudes_proto::record::Hex32::new([byte; 32]),
+            device: dudes_proto::record::DeviceId::new([byte; 32]),
             name: name.to_owned(),
             signed_in: dudes_types::Timestamp::from_unix_millis(0),
             first_used: None,
@@ -1576,7 +1576,8 @@ mod tests {
         );
         let shown = text(|err| devices_unmatched(err, "a", &[&one, &two], &chrono::Utc));
         assert!(shown.contains("starts more than one"), "{shown}");
-        assert!(shown.contains(&"ab".repeat(32)) && shown.contains(&"ac".repeat(32)));
+        let id = |byte: u8| dudes_proto::record::DeviceId::new([byte; 32]).to_string();
+        assert!(shown.contains(&id(0xab)) && shown.contains(&id(0xac)));
         assert!(shown.contains("Chrome on macOS") && shown.contains("Firefox on Linux"));
         let none = text(|err| devices_unmatched(err, "ffff", &[], &chrono::Utc));
         assert!(none.contains("no signed-in browser"), "{none}");

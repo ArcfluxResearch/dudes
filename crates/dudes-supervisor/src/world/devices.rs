@@ -19,8 +19,9 @@ pub struct DeviceRow {
     pub name: String,
     /// SHA-256 of its cookie.
     pub cookie: Hex32,
-    /// SHA-256 of the secret its page sends.
-    pub secret: Hex32,
+    /// Its public key as SPKI DER in unpadded base64url. Absent for a browser that signed in
+    /// before requests were signed, which can no longer act.
+    pub key: Option<String>,
     /// When it signed in.
     pub enrolled: Timestamp,
     /// When it first made a request.
@@ -41,21 +42,18 @@ impl World {
                 origin,
                 name,
                 cookie,
-                secret,
+                secret: _,
             } => {
-                self.floor_devices
-                    .entry(*device)
-                    .or_insert_with(|| DeviceRow {
-                        origin: origin.clone(),
-                        name: name.clone(),
-                        cookie: *cookie,
-                        secret: *secret,
-                        enrolled: at,
-                        first_used: None,
-                        last_used: None,
-                        acknowledged: None,
-                        removed: None,
-                    });
+                self.enrol(*device, None, origin, name, *cookie, at);
+            }
+            Record::FloorDeviceKeyEnrolled {
+                device,
+                key,
+                origin,
+                name,
+                cookie,
+            } => {
+                self.enrol(*device, Some(key.clone()), origin, name, *cookie, at);
             }
             Record::FloorDeviceFirstUsed { device } => {
                 if let Some(row) = self.live_device(device) {
@@ -81,6 +79,35 @@ impl World {
             }
             _ => {}
         }
+    }
+
+    /// A key signs in once more after its device was removed: the later enrolment is a new row.
+    fn enrol(
+        &mut self,
+        device: Hex32,
+        key: Option<String>,
+        origin: &str,
+        name: &str,
+        cookie: Hex32,
+        at: Timestamp,
+    ) {
+        if self.live_device(&device).is_some() {
+            return;
+        }
+        self.floor_devices.insert(
+            device,
+            DeviceRow {
+                origin: origin.to_owned(),
+                name: name.to_owned(),
+                cookie,
+                key,
+                enrolled: at,
+                first_used: None,
+                last_used: None,
+                acknowledged: None,
+                removed: None,
+            },
+        );
     }
 
     fn live_device(&mut self, device: &Hex32) -> Option<&mut DeviceRow> {

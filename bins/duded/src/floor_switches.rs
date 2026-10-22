@@ -166,13 +166,7 @@ mod tests {
             HOST.parse().expect("loopback"),
             Arc::new(FakeClock::frozen(0)),
         );
-        let issued = sessions.issue().expect("bootstrap");
-        let exchange = sessions
-            .exchange(HOST, ORIGIN, issued.bootstrap.as_bytes())
-            .expect("live session");
-        let session = sessions
-            .authorize_onboard(HOST, ORIGIN, &exchange.cookie, &exchange.csrf)
-            .expect("admitted");
+        let (session, _) = sessions.admitted_for_test(HOST, ORIGIN);
         let body = serde_json::to_vec(&serde_json::json!({
             "request_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "agent": "01ARZ3NDEKTSV4RRFFQ69G5FAV",

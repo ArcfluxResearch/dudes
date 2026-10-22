@@ -25,7 +25,7 @@ import { createServer } from 'vite';
 
 const root = resolve(import.meta.dirname, '..');
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
-const CSRF = 'A'.repeat(43);
+const REQUEST_ID = 'A'.repeat(43);
 const PLANTED = '/home/operator/planted-cwd-DO-NOT-SHOW/checkout';
 const section = (items = [], extra = {}) => ({ items, truncated: false, dropped: 0, ...extra });
 const view = (fields = {}) => ({
@@ -82,7 +82,7 @@ function daemon(reply) {
       const { status, text } = await reply(url, init);
       return { status, text: async () => text };
     },
-    csrf: () => CSRF,
+    signedIn: () => true,
     random: () => {},
     refresh: () => { deps.refreshed += 1; },
     epoch: () => 1,
@@ -164,21 +164,21 @@ test('Copy path is explicitly relative, so no option or editor command can claim
   }
 });
 
-test('the one request is the agent and nothing else, with the session\'s CSRF', async () => {
+test('the one request is the agent and nothing else, with nothing else', async () => {
   const { deps, seen } = daemon(ok(view()));
-  const outcome = await postGit(ADA, CSRF, deps.fetch);
+  const outcome = await postGit(ADA, deps.fetch);
   assert.equal(outcome.kind, 'view');
   assert.equal(seen.length, 1);
   assert.equal(seen[0].url, '/floor/git');
   assert.equal(seen[0].init.method, 'POST');
   assert.equal(seen[0].init.body, `{"agent_id":"${ADA}"}`);
-  assert.deepEqual(seen[0].init.headers, { 'Content-Type': 'application/json', 'X-Dudes-CSRF': CSRF });
+  assert.deepEqual(seen[0].init.headers, { 'Content-Type': 'application/json' });
   assert.equal(seen[0].init.credentials, 'same-origin');
   assert.equal(seen[0].init.cache, 'no-store');
 });
 
 test('every reply the route can give is one finite outcome', async () => {
-  const outcome = async (status, text) => (await postGit(ADA, CSRF, daemon(async () => ({ status, text })).deps.fetch)).kind;
+  const outcome = async (status, text) => (await postGit(ADA, daemon(async () => ({ status, text })).deps.fetch)).kind;
   assert.equal(await outcome(200, body(view())), 'view');
   assert.equal(await outcome(200, body({ ...view(), extra: 1 })), 'unknown');
   assert.equal(await outcome(200, ''), 'unknown');
@@ -187,7 +187,7 @@ test('every reply the route can give is one finite outcome', async () => {
   assert.equal(await outcome(413, ''), 'rejected');
   assert.equal(await outcome(503, ''), 'unavailable');
   assert.equal(await outcome(500, ''), 'unknown');
-  const broken = await postGit(ADA, CSRF, async () => { throw new Error('offline'); });
+  const broken = await postGit(ADA, async () => { throw new Error('offline'); });
   assert.equal(broken.kind, 'unavailable');
 });
 
@@ -235,7 +235,7 @@ test('a 403 asks for a fresh snapshot and a missing session sends nothing', asyn
   assert.equal(getGitState().failure.kind, 'forbidden');
   assert.equal(deps.refreshed, 1);
   const none = daemon(ok(view()));
-  none.deps.csrf = () => null;
+  none.deps.signedIn = () => false;
   await loadGit(ADA, none.deps);
   assert.equal(none.seen.length, 0);
   assert.match(refusalText(null, getGitState().failure), /no Floor session/);

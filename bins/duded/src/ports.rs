@@ -3199,21 +3199,7 @@ mod recovery_intent_tests {
             "127.0.0.1:43123".parse().unwrap(),
             Arc::new(dudes_supervisor::testing::FakeClock::frozen(0)),
         );
-        let exchange = sessions
-            .exchange(
-                "127.0.0.1:43123",
-                "http://127.0.0.1:43123",
-                sessions.issue().unwrap().bootstrap.as_bytes(),
-            )
-            .unwrap();
-        let identity = sessions
-            .authorize_onboard(
-                "127.0.0.1:43123",
-                "http://127.0.0.1:43123",
-                &exchange.cookie,
-                &exchange.csrf,
-            )
-            .unwrap();
+        let (identity, _) = sessions.admitted_for_test("127.0.0.1:43123", "http://127.0.0.1:43123");
         let digest = identity.digest();
         let intent: RecoverySubmitParams = serde_json::from_str(INTENT).unwrap();
         let (sender, jobs) = mpsc::channel();
@@ -3254,21 +3240,7 @@ mod recovery_intent_tests {
             "127.0.0.1:43123".parse().unwrap(),
             Arc::new(dudes_supervisor::testing::FakeClock::frozen(0)),
         );
-        let exchange = sessions
-            .exchange(
-                "127.0.0.1:43123",
-                "http://127.0.0.1:43123",
-                sessions.issue().unwrap().bootstrap.as_bytes(),
-            )
-            .unwrap();
-        let identity = sessions
-            .authorize_onboard(
-                "127.0.0.1:43123",
-                "http://127.0.0.1:43123",
-                &exchange.cookie,
-                &exchange.csrf,
-            )
-            .unwrap();
+        let (identity, _) = sessions.admitted_for_test("127.0.0.1:43123", "http://127.0.0.1:43123");
         let intent: RecoverySubmitParams = serde_json::from_str(INTENT).unwrap();
         let (sender, jobs) = mpsc::channel();
         drop(jobs);

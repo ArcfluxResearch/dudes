@@ -10535,6 +10535,44 @@
       "type": "object"
     },
     {
+      "description": "A browser signed in with a key its page cannot read and became a device. Only a digest of\nits cookie is kept, with the public key that checks its requests. The entry's own time is\nthe sign-in time. Later first-use, acknowledgement, removal and use records name the\ndevice as they do for [`Record::FloorDeviceEnrolled`].\n\nAn older reader skips this record, and with it the device: it holds no row for the\ndevice, so the records that follow find nothing to change.",
+      "properties": {
+        "cookie": {
+          "description": "SHA-256 of the device's cookie.",
+          "type": "string"
+        },
+        "device": {
+          "description": "The device's id: the SHA-256 of `key`'s decoded bytes.",
+          "type": "string"
+        },
+        "key": {
+          "description": "The device's public key as SPKI DER, in unpadded base64url.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The label the browser chose, cleaned and capped by the daemon.",
+          "type": "string"
+        },
+        "origin": {
+          "description": "The Floor origin the browser signed in on.",
+          "type": "string"
+        },
+        "t": {
+          "const": "floor_device_key_enrolled",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "device",
+        "key",
+        "origin",
+        "name",
+        "cookie"
+      ],
+      "type": "object"
+    },
+    {
       "description": "The Floor refused one request because the process on the other end of its connection\ncould not be shown to be outside every agent. Audit only: it changes no projection.\n\nThe daemon writes at most one per agent per minute, and one more for refusals that name no\nagent, so a looping agent cannot fill the journal.",
       "properties": {
         "agent": {

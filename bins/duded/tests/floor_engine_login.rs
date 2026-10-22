@@ -4,6 +4,7 @@
 #![cfg(unix)]
 
 mod common;
+use common::PageHttp as _;
 
 use std::collections::BTreeMap;
 use std::io::{self, Read as _, Write as _};
@@ -14,20 +15,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::{Fixture, SharedHost, TestClock};
+use duded::floor_browser::Page;
 use duded::ports::{OpenedPty, PtyChild, PtyCloseOutcome, PtyHostPort, PtyOpenFailure};
 use duded::pty_output::OutputSubscription;
 use duded::settings::{EngineLogin, FloorSettings};
 use duded::startup::Witness;
-use dudes_proto::rpc::Method;
-use dudes_proto::rpc::cred::OperatorCredential;
-use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_proto::rpc::pty::PtyId;
 use dudes_providers::adapter::Adapter;
 use dudes_providers::claude::ClaudeAdapter;
 use dudes_providers::claude::config::ClaudeConfig;
 use dudes_providers::launch::{EnvVar, LaunchSpec};
-use dudes_rpc::Client;
 use dudes_rpc::methods::pty::decode_terminal_input;
+use dudes_supervisor::Clock as _;
 use nix::errno::Errno;
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
@@ -35,7 +34,7 @@ use serde_json::{Value, json};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v3"
+    "/tests/fixtures/floor-release-v4"
 );
 const WAIT: Duration = Duration::from_secs(10);
 const PROTOCOL: &str = "dudes-engine-login-v1";
@@ -201,6 +200,7 @@ impl PtyHostPort for RealPty {
 
 struct Floor {
     running: common::Running,
+    clock: Arc<TestClock>,
     settings: duded::Settings,
     addr: SocketAddr,
 }
@@ -224,6 +224,7 @@ fn floor(fixture: &Fixture, bin: &Path, timeout: Duration) -> Floor {
         assets_dir: PathBuf::from(FLOOR_FIXTURE),
         port: Some(0),
     });
+    let clock = Arc::new(TestClock::new());
     let seams = duded::Seams {
         adapters: dudes_providers::registry::Adapters::new([Box::new(ClaudeAdapter::new(
             ClaudeConfig {
@@ -235,7 +236,7 @@ fn floor(fixture: &Fixture, bin: &Path, timeout: Duration) -> Floor {
             &settings,
             SharedHost::new(),
             Arc::new(RealRunner(dudes_host::OneShot::new())),
-            Arc::new(TestClock::new()),
+            clock.clone(),
             Witness::default(),
         )
     };
@@ -243,6 +244,7 @@ fn floor(fixture: &Fixture, bin: &Path, timeout: Duration) -> Floor {
     let addr = daemon.floor_addr().expect("the Floor listener");
     Floor {
         running: common::start(daemon),
+        clock,
         settings,
         addr,
     }
@@ -258,55 +260,14 @@ fn read_head(stream: &mut TcpStream) -> String {
     String::from_utf8(head).expect("ASCII head")
 }
 
-/// The cookie and the secret of a signed-in page.
-fn session(floor: &Floor) -> (String, String) {
-    let credential = std::fs::read_to_string(
-        floor
-            .settings
-            .runtime_dir
-            .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+/// A signed-in page: a browser with a key of its own, signing with the daemon's fake clock.
+fn session(floor: &Floor) -> Page {
+    let clock = Arc::clone(&floor.clock);
+    Page::enrol_new_on(
+        floor.addr,
+        &common::floor_link(&floor.settings),
+        move || clock.now().unix_millis(),
     )
-    .expect("operator credential");
-    let mut client = Client::connect(floor.settings.socket()).expect("daemon socket");
-    let reply = client
-        .call_as_operator(
-            Method::FloorSessionIssue,
-            None,
-            OperatorCredential::new(credential).expect("credential"),
-        )
-        .expect("issue response");
-    let issued: SessionIssueResult =
-        serde_json::from_value(reply.result.expect("issue succeeded")).expect("typed issue");
-    let host = floor.addr.to_string();
-    let mut stream = TcpStream::connect(floor.addr).expect("Floor listener");
-    stream.set_read_timeout(Some(WAIT)).expect("timeout");
-    let request = format!(
-        "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: {}\r\n\r\n{}",
-        issued.bootstrap.len(),
-        issued.bootstrap
-    );
-    stream.write_all(request.as_bytes()).expect("exchange");
-    let head = read_head(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    let cookie = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
-        .and_then(|value| value.split(';').next())
-        .expect("cookie")
-        .to_owned();
-    let length: usize = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Content-Length: "))
-        .expect("length")
-        .parse()
-        .expect("decimal length");
-    let mut body = vec![0; length];
-    stream.read_exact(&mut body).expect("exchange body");
-    let csrf = serde_json::from_slice::<Value>(&body).expect("JSON")["csrf"]
-        .as_str()
-        .expect("csrf")
-        .to_owned();
-    (cookie, csrf)
 }
 
 struct Socket {
@@ -316,17 +277,11 @@ struct Socket {
 }
 
 impl Socket {
-    fn open(addr: SocketAddr, path: &str, protocol: &str, cookie: &str, csrf: &str) -> Self {
-        let host = addr.to_string();
-        let mut stream = TcpStream::connect(addr).expect("Floor listener");
+    fn open(page: &Page, path: &str, protocol: &str) -> Self {
+        let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
         stream.set_read_timeout(Some(WAIT)).expect("timeout");
         stream
-            .write_all(
-                format!(
-                    "GET {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: {protocol}, dudes-csrf.{csrf}\r\nCookie: dudes_floor_session={cookie}\r\n\r\n"
-                )
-                .as_bytes(),
-            )
+            .write_all(page.upgrade_head(path, protocol).as_bytes())
             .expect("upgrade");
         let head = read_head(&mut stream);
         assert!(head.starts_with("HTTP/1.1 101"), "{head}");
@@ -414,10 +369,10 @@ impl Socket {
 
 /// What the Floor's snapshot says about the one engine. A status command that has not answered
 /// yet reads `unknown`, so a slow machine is asked again.
-fn engine_sign_in(floor: &Floor, cookie: &str, csrf: &str) -> Value {
+fn engine_sign_in(page: &Page) -> Value {
     let mut word = Value::Null;
     for _ in 0..4 {
-        let mut stream = Socket::open(floor.addr, "/floor/stream", "dudes-floor-v3", cookie, csrf);
+        let mut stream = Socket::open(page, "/floor/stream", "dudes-floor-v4");
         stream.send(&json!({"type": "floor.subscribe"}));
         let snapshot = stream.until("floor.snapshot");
         word = snapshot["daemon"]["providers"][0]["sign_in"].clone();
@@ -429,8 +384,8 @@ fn engine_sign_in(floor: &Floor, cookie: &str, csrf: &str) -> Value {
 }
 
 /// Start `claude`'s sign-in on a new socket and wait for the terminal to show `shown`.
-fn start(floor: &Floor, (cookie, csrf): &(String, String), shown: &str) -> Socket {
-    let mut login = Socket::open(floor.addr, "/floor/engine-login", PROTOCOL, cookie, csrf);
+fn start(page: &Page, shown: &str) -> Socket {
+    let mut login = Socket::open(page, "/floor/engine-login", PROTOCOL);
     login.send(&json!({"type": "login.start", "engine": "claude", "cols": 80, "rows": 24}));
     login.until("login.started");
     login.show(shown);
@@ -479,9 +434,9 @@ fn the_page_signs_in_to_an_engine_and_the_engine_reads_as_signed_in() {
     install_engine(&bin.join("prog"), &signed, &pasted_code(&signed));
     let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
     let page = session(&floor);
-    assert_eq!(engine_sign_in(&floor, &page.0, &page.1), "signed_out");
+    assert_eq!(engine_sign_in(&page), "signed_out");
 
-    let mut login = start(&floor, &page, "Paste code here");
+    let mut login = start(&page, "Paste code here");
     assert!(login.shown.contains(LINK), "{:?}", login.shown);
     login.send(&json!({
         "type": "login.write",
@@ -491,7 +446,7 @@ fn the_page_signs_in_to_an_engine_and_the_engine_reads_as_signed_in() {
     assert_eq!(ended["outcome"], "succeeded");
     assert!(login.next().is_none(), "the socket closes after the end");
 
-    assert_eq!(engine_sign_in(&floor, &page.0, &page.1), "signed_in");
+    assert_eq!(engine_sign_in(&page), "signed_in");
 
     let journal: Vec<u8> = std::fs::read_dir(fixture.journal_dir())
         .expect("journal directory")
@@ -521,7 +476,7 @@ fn closing_the_page_ends_the_logins_whole_process_group() {
     );
     let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
     let page = session(&floor);
-    let login = start(&floor, &page, "child=");
+    let login = start(&page, "child=");
     let child = child_of(&login);
     assert!(
         !gone(child),
@@ -543,9 +498,9 @@ fn a_second_sign_in_for_the_engine_ends_the_first() {
     );
     let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
     let (first_page, second_page) = (session(&floor), session(&floor));
-    let mut first = start(&floor, &first_page, "child=");
+    let mut first = start(&first_page, "child=");
     let child = child_of(&first);
-    let second = start(&floor, &second_page, "child=");
+    let second = start(&second_page, "child=");
     assert_eq!(first.until("login.ended")["outcome"], "replaced");
     await_gone(child);
     let kept = child_of(&second);
@@ -569,13 +524,7 @@ fn the_time_limit_ends_the_login_and_the_daemon_typed_nothing() {
     // On a machine too busy to start the stand-in inside the limit there is no child to follow, so
     // the sign-in is asked for again.
     for _ in 0..3 {
-        let mut login = Socket::open(
-            floor.addr,
-            "/floor/engine-login",
-            PROTOCOL,
-            &page.0,
-            &page.1,
-        );
+        let mut login = Socket::open(&page, "/floor/engine-login", PROTOCOL);
         login.send(&json!({"type": "login.start", "engine": "claude", "cols": 80, "rows": 24}));
         assert_eq!(login.until("login.ended")["outcome"], "timed_out");
         if !login.shown.contains("child=") {
@@ -602,7 +551,7 @@ fn stopping_the_daemon_ends_the_login() {
     );
     let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
     let page = session(&floor);
-    let login = start(&floor, &page, "child=");
+    let login = start(&page, "child=");
     let child = child_of(&login);
     stop(&mut floor);
     await_gone(child);
@@ -640,7 +589,7 @@ fn a_flood_of_typing_cannot_hold_back_closing_the_page() {
     );
     let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
     let page = session(&floor);
-    let mut login = start(&floor, &page, "child=");
+    let mut login = start(&page, "child=");
     let child = child_of(&login);
     paste(&mut login, 6);
     drop(login);
@@ -659,7 +608,7 @@ fn a_flood_of_typing_cannot_hold_back_the_time_limit() {
     );
     let mut floor = floor(&fixture, &bin, Duration::from_millis(1_500));
     let page = session(&floor);
-    let mut login = start(&floor, &page, "child=");
+    let mut login = start(&page, "child=");
     let child = child_of(&login);
     paste(&mut login, 6);
     assert_eq!(login.until("login.ended")["outcome"], "timed_out");
@@ -678,7 +627,7 @@ fn a_flood_of_typing_cannot_hold_back_stopping_the_daemon() {
     );
     let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
     let page = session(&floor);
-    let mut login = start(&floor, &page, "child=");
+    let mut login = start(&page, "child=");
     let child = child_of(&login);
     paste(&mut login, 6);
     stop(&mut floor);
@@ -697,7 +646,7 @@ fn typing_over_the_limits_ends_the_sign_in() {
     );
     let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
     let page = session(&floor);
-    let mut login = start(&floor, &page, "child=");
+    let mut login = start(&page, "child=");
     let child = child_of(&login);
     login.send(&json!({
         "type": "login.write",
@@ -723,13 +672,7 @@ fn a_sign_in_starts_in_an_empty_directory_with_a_minimal_environment() {
     );
     let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
     let page = session(&floor);
-    let mut login = Socket::open(
-        floor.addr,
-        "/floor/engine-login",
-        PROTOCOL,
-        &page.0,
-        &page.1,
-    );
+    let mut login = Socket::open(&page, "/floor/engine-login", PROTOCOL);
     login.send(&json!({"type": "login.start", "engine": "claude", "cols": 80, "rows": 24}));
     login.until("login.ended");
     let line = login
@@ -784,13 +727,7 @@ fn signing_in_to_pi_needs_the_terminal_switch() {
     );
     let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
     let page = session(&floor);
-    let mut login = Socket::open(
-        floor.addr,
-        "/floor/engine-login",
-        PROTOCOL,
-        &page.0,
-        &page.1,
-    );
+    let mut login = Socket::open(&page, "/floor/engine-login", PROTOCOL);
     login.send(&json!({"type": "login.start", "engine": "pi", "cols": 80, "rows": 24}));
     assert_eq!(login.until("login.refused")["reason"], "needs_terminal");
     assert!(login.next().is_none());
@@ -806,7 +743,7 @@ fn the_floor_asks_the_status_command_once_in_the_reuse_window() {
     let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
     let page = session(&floor);
     for _ in 0..3 {
-        assert_eq!(engine_sign_in(&floor, &page.0, &page.1), "signed_out");
+        assert_eq!(engine_sign_in(&page), "signed_out");
     }
     let runs = std::fs::read_to_string(fixture.state.path().join("signed-in.runs")).expect("runs");
     assert_eq!(

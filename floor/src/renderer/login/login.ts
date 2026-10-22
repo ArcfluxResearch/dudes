@@ -12,7 +12,7 @@
 // it. Closing the channel is closing its socket, and the daemon ends the login
 // and everything it started.
 
-import { CSRF_PROTOCOL_PREFIX, refreshFloorSnapshot } from '../floor/stream.ts';
+import { refreshFloorSnapshot } from '../floor/stream.ts';
 import type { LocationLike, MessageLike, SocketFactory, SocketLike } from '../floor/stream.ts';
 import { floorRequestsPaused } from '../../transport.ts';
 
@@ -79,10 +79,13 @@ type ServerMessage =
 export interface LoginPorts {
   readonly location: LocationLike;
   readonly socket: SocketFactory;
-  /** The session's CSRF nonce, or `null` when the page has no session. */
-  csrf(): string | null;
-  /** Whether the daemon has proved it holds the session; the socket opens only once it has. Left out, it opens at once. */
-  prove?(secret: string): Promise<boolean>;
+  /** Whether the page holds a sign-in. */
+  signedIn(): boolean;
+  /**
+   * The signed handshake entries for a socket opened now, or `null` when the browser holds no key.
+   * The socket opens only once they are made. Left out, it opens at once.
+   */
+  offer?(url: string): Promise<readonly string[] | null>;
 }
 
 /** The live channel's private half: its socket and the view it draws into. */
@@ -133,39 +136,38 @@ export function loginUrl(location: LocationLike): string {
   return `${scheme}//${location.host}/floor/engine-login`;
 }
 
-/** Exactly two offers, in this order, as the gateway admits. */
-function loginProtocols(csrf: string): readonly string[] {
-  return Object.freeze([LOGIN_PROTOCOL, `${CSRF_PROTOCOL_PREFIX}${csrf}`]);
+/** Exactly four offers, in this order, as the gateway admits. */
+function protocols(signed: readonly string[]): readonly string[] {
+  return Object.freeze([LOGIN_PROTOCOL, ...signed]);
 }
 
 /** Open the one channel for `engine`. A channel that is already open is left alone; an ended one is replaced. */
 export function startLogin(engine: LoginEngine, ports: LoginPorts): void {
   if (state.phase !== 'idle' && state.phase !== 'ended') return;
   const id = nextId++;
-  const csrf = floorRequestsPaused() ? null : ports.csrf();
-  if (csrf === null) {
+  if (floorRequestsPaused() || !ports.signedIn()) {
     commit({ phase: 'ended', id, engine, ending: 'unopened' });
     return;
   }
-  if (ports.prove === undefined) {
-    openChannel(id, engine, csrf, ports);
+  if (ports.offer === undefined) {
+    openChannel(id, engine, [], ports);
     return;
   }
   commit({ phase: 'opening', id, engine });
   const unopened = () => {
     if (state.phase === 'opening' && state.id === id) commit({ phase: 'ended', id, engine, ending: 'unopened' });
   };
-  ports.prove(csrf).then((proved) => {
+  ports.offer(loginUrl(ports.location)).then((signed) => {
     if (state.phase !== 'opening' || state.id !== id) return;
-    if (proved) openChannel(id, engine, csrf, ports);
+    if (signed !== null) openChannel(id, engine, signed, ports);
     else unopened();
   }, unopened);
 }
 
-function openChannel(id: number, engine: LoginEngine, csrf: string, ports: LoginPorts): void {
+function openChannel(id: number, engine: LoginEngine, signed: readonly string[], ports: LoginPorts): void {
   let socket: SocketLike;
   try {
-    socket = ports.socket(loginUrl(ports.location), loginProtocols(csrf));
+    socket = ports.socket(loginUrl(ports.location), protocols(signed));
   } catch {
     commit({ phase: 'ended', id, engine, ending: 'unopened' });
     return;
@@ -192,7 +194,7 @@ function openChannel(id: number, engine: LoginEngine, csrf: string, ports: Login
 export function bindLoginScreen(screen: LoginScreen): () => void {
   const channel = live;
   if (channel === null) {
-    // The terminal's code is cached after the first sign-in, so a view can be ready before the daemon is proved.
+    // The terminal's code is cached after the first sign-in, so a view can be ready before the handshake is signed.
     waiting = screen;
     return () => {
       if (waiting === screen) waiting = null;

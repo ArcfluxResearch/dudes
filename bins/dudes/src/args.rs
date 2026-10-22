@@ -30,7 +30,7 @@ use std::path::PathBuf;
 
 use dudes_proto::budget::{AgentBudget, GoalBudget};
 use dudes_proto::goal::Predicate;
-use dudes_proto::record::Hex32;
+use dudes_proto::record::{DeviceId, Hex32};
 use dudes_proto::rpc::agent::{HireParams, LookParams, McpParams, RenameParams};
 use dudes_proto::rpc::board::{CardCreateParams, CardListParams};
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, GoalSetParams};
@@ -427,12 +427,12 @@ pub enum DevicesCommand {
     List,
     /// Sign one browser out: `floor.devices.remove` with the one device the prefix names.
     Remove {
-        /// The whole id or the start of it, in lowercase hexadecimal.
+        /// The whole id or the start of it, as the list shows it.
         id: String,
     },
     /// Keep a browser nobody has kept yet: `floor.devices.keep` with the one device the prefix names.
     Keep {
-        /// The whole id or the start of it, in lowercase hexadecimal.
+        /// The whole id or the start of it, as the list shows it.
         id: String,
     },
 }
@@ -766,7 +766,9 @@ COMMANDS
 
     devices remove <id>
         Sign one browser out. The id is the whole id or the start of it, as long as it
-        names one browser. A start that names more than one is refused with the matches.
+        names one browser. Ids use both upper and lower case letters, digits, - and _, and
+        the start must match exactly. A start that names more than one is refused with the
+        matches. An id that starts with - needs -- before it.
 
     devices keep <id>
         Mark a new browser as kept, which clears its new mark and puts it behind the browsers
@@ -1150,7 +1152,7 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "login" => login(tail)?,
         "project" => Command::Workspace(workspace(tail, payload)?),
         "worktree" => Command::Worktree(worktree(tail)?),
-        "devices" => Command::Devices(devices(tail)?),
+        "devices" => Command::Devices(devices(tail, payload)?),
         "board" => Command::Board(board(tail)?),
         "ticket" => Command::Ticket(ticket(tail, json)?),
         "config" if json => return Err(ArgError::TextOnly("config")),
@@ -2540,7 +2542,7 @@ fn look(tail: &[OsString]) -> Result<LookParams, ArgError> {
 }
 
 /// `devices`, `devices list`, `devices remove <id>` and `devices keep <id>`.
-fn devices(tail: &[OsString]) -> Result<DevicesCommand, ArgError> {
+fn devices(tail: &[OsString], payload: Option<&[OsString]>) -> Result<DevicesCommand, ArgError> {
     let Some((subcommand, rest)) = tail.split_first() else {
         return Ok(DevicesCommand::List);
     };
@@ -2554,28 +2556,35 @@ fn devices(tail: &[OsString]) -> Result<DevicesCommand, ArgError> {
         }
         verb @ ("remove" | "keep") => {
             let mut id = None;
+            let mut name = |text: &str| {
+                let valid = (4..=DeviceId::LEN).contains(&text.len())
+                    && text
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+                if !valid {
+                    return Err(ArgError::BadValue {
+                        flag: "<id>",
+                        value: text.to_owned(),
+                        what: "a device id or its first 4 to 43 characters: letters, digits, - and _",
+                    });
+                }
+                if id.replace(text.to_owned()).is_some() {
+                    return Err(ArgError::UnknownFlag(text.to_owned()));
+                }
+                Ok(())
+            };
             for arg in rest {
                 match arg.to_string_lossy().as_ref() {
                     "--help" | "-h" => return Err(ArgError::HelpRequested),
                     flag if flag.starts_with('-') => {
                         return Err(ArgError::UnknownFlag(flag.to_owned()));
                     }
-                    text if id.is_none() => {
-                        let valid = (4..=64).contains(&text.len())
-                            && text
-                                .bytes()
-                                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-                        if !valid {
-                            return Err(ArgError::BadValue {
-                                flag: "<id>",
-                                value: text.to_owned(),
-                                what: "a device id or its first 4 to 64 lowercase hexadecimal characters",
-                            });
-                        }
-                        id = Some(text.to_owned());
-                    }
-                    other => return Err(ArgError::UnknownFlag(other.to_owned())),
+                    text => name(text)?,
                 }
+            }
+            // An id that starts with a dash follows `--`, where the global parser splits.
+            for arg in payload.unwrap_or_default() {
+                name(arg.to_str().ok_or(ArgError::NotUtf8("<id>"))?)?;
             }
             let id = id.ok_or(ArgError::Missing("<id>"))?;
             Ok(if verb == "keep" {
@@ -4458,7 +4467,7 @@ mod devices_tests {
     }
 
     #[test]
-    fn devices_lists_and_remove_takes_one_lowercase_hexadecimal_start() {
+    fn devices_lists_and_remove_takes_one_start_of_an_id_and_keeps_its_case() {
         assert_eq!(
             command(&["devices"]).unwrap(),
             Command::Devices(DevicesCommand::List)
@@ -4468,24 +4477,35 @@ mod devices_tests {
             Command::Devices(DevicesCommand::List)
         );
         assert_eq!(
-            command(&["devices", "remove", "ab12cd"]).unwrap(),
+            command(&["devices", "remove", "aB12-d"]).unwrap(),
             Command::Devices(DevicesCommand::Remove {
-                id: "ab12cd".to_owned()
+                id: "aB12-d".to_owned()
+            }),
+            "the case and the dash are kept"
+        );
+        assert_eq!(
+            command(&["devices", "keep", "L60mRRPQ"]).unwrap(),
+            Command::Devices(DevicesCommand::Keep {
+                id: "L60mRRPQ".to_owned()
             })
         );
         assert_eq!(
-            command(&["devices", "keep", "ab12cd"]).unwrap(),
-            Command::Devices(DevicesCommand::Keep {
-                id: "ab12cd".to_owned()
-            })
+            command(&["devices", "remove", "--", "-abc_"]).unwrap(),
+            Command::Devices(DevicesCommand::Remove {
+                id: "-abc_".to_owned()
+            }),
+            "an id that starts with a dash follows a double dash"
         );
+        let whole = "L".repeat(43);
+        assert!(command(&["devices", "remove", &whole]).is_ok());
         for bad in [
             &["devices", "keep"][..],
-            &["devices", "keep", "AB12CD"],
             &["devices", "remove"][..],
             &["devices", "remove", "ab1"],
-            &["devices", "remove", "AB12CD"],
-            &["devices", "remove", "zz12zz"],
+            &["devices", "remove", "ab12cd+"],
+            &["devices", "remove", "ab 12cd"],
+            &["devices", "remove", &"L".repeat(44)],
+            &["devices", "remove", "-abcd"],
             &["devices", "remove", "ab12cd", "ab12cd"],
             &["devices", "prune"],
         ] {

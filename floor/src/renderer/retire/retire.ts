@@ -175,33 +175,31 @@ export function cancelRetire(): void {
 
 export async function submitRetire(offer: RetireOffer, deps: ControlDeps): Promise<void> {
   if (offer.kind !== 'retire' || state.confirming !== offer.agent || blocksRetire(state, offer, deps.session())) return;
-  const csrf = deps.csrf();
-  if (csrf === null) {
+  if (!deps.signedIn()) {
     commit({ ...state, confirming: null, problem: 'This page has no Floor session, so nothing was sent.' });
     return;
   }
   const payload: RetirePayload = Object.freeze({ request_id: mintAttemptId(deps.random), agent: offer.agent });
   const attempt: RetireAttempt = Object.freeze({ payload, body: JSON.stringify(payload), name: offer.name });
   commit({ ...INITIAL, attempt, sending: true });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
 
 export async function checkRetireStatus(deps: ControlDeps): Promise<void> {
   const attempt = state.attempt;
   if (attempt === null || !checkable(state)) return;
-  const csrf = deps.csrf();
-  if (csrf === null) {
+  if (!deps.signedIn()) {
     commit({ ...state, problem: 'This page has no Floor session, so nothing was sent.' });
     return;
   }
   commit({ ...state, sending: true, problem: null });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
 
 const UNSETTLED: ReadonlySet<RetireOutcome['kind']> = new Set(['pending', 'unavailable', 'unknown']);
 
-async function send(attempt: RetireAttempt, csrf: string, deps: ControlDeps): Promise<void> {
-  const outcome = await postRetire(attempt, csrf, deps.fetch);
+async function send(attempt: RetireAttempt, deps: ControlDeps): Promise<void> {
+  const outcome = await postRetire(attempt, deps.fetch);
   if (state.attempt !== attempt) return;
   const uncertain = state.uncertain || UNSETTLED.has(outcome.kind);
   // An empty 403 may mean the session ended or that this page can no longer
@@ -213,7 +211,7 @@ async function send(attempt: RetireAttempt, csrf: string, deps: ControlDeps): Pr
 }
 
 export async function postRetire(
-  attempt: RetireAttempt, csrf: string, fetch: ControlDeps['fetch'],
+  attempt: RetireAttempt, fetch: ControlDeps['fetch'],
 ): Promise<RetireOutcome> {
   let status: number;
   let text: string;
@@ -223,7 +221,7 @@ export async function postRetire(
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: attempt.body,
     });
     status = response.status;

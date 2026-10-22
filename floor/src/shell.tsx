@@ -87,6 +87,22 @@ export function PastedLinkNotice() {
     );
   }
   if (first === 'expired') return <SignInExpired />;
+  if (first === 'no_key') return <SignInExpired why="This browser no longer has its sign-in key." />;
+  if (first === 'reload') {
+    return (
+      <p className="link-refused" role="alert">
+        Reload this page to finish signing in.
+      </p>
+    );
+  }
+  if (first === 'unsupported') {
+    return (
+      <p className="link-refused" role="alert">
+        This browser cannot keep a sign-in key, so it was not signed in. Some private windows block the storage
+        it needs. Try a normal window.
+      </p>
+    );
+  }
   if (!refused) return null;
   if (buildMismatch) {
     return (

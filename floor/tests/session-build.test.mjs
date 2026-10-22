@@ -16,9 +16,10 @@ import {
   resetFloorSession,
   servedAssetRefs,
 } from '../src/session.ts';
+import { fakeDaemon } from './helpers/fake-daemon.mjs';
+import { testSigner } from './helpers/signer.mjs';
 
 const BOOTSTRAP = `A${'b'.repeat(41)}E`;
-const CSRF = `C${'d'.repeat(41)}I`;
 const OWN = ['/floor/assets/index-aaaa1111.js', '/floor/assets/index-bbbb2222.css'];
 
 function pasted() {
@@ -34,17 +35,20 @@ function indexNaming(refs) {
 }
 
 /** A daemon serving `index` and answering the exchange, recording what it was sent. */
-function daemon(index, posts) {
-  return async (url, init) => {
+function ports(index, posts) {
+  const daemon = fakeDaemon({ links: [BOOTSTRAP] });
+  const { signer } = testSigner();
+  const plain = async (url, init) => {
     if (init.method === 'GET') return typeof index === 'function' ? index(url) : index;
     posts.push(url);
-    return { ok: true, status: 200, async json() { return { csrf: CSRF }; } };
+    return daemon.plain(url, init);
   };
+  return { signer, plain, signed: async () => { throw new Error('no signed request expected'); }, asked: [] };
 }
 
 function paste(index, posts) {
   const { location, history } = pasted();
-  return reauthenticateFloorSessionWith(location, history, daemon(index, posts), OWN);
+  return reauthenticateFloorSessionWith(location, history, OWN, ports(index, posts));
 }
 
 test('a link pasted into a page from another build is refused before it is spent', async () => {
@@ -56,7 +60,7 @@ test('a link pasted into a page from another build is refused before it is spent
   assert.equal(currentFloorSession(), null, 'a refused link signed the page in');
 
   const session = await paste(indexNaming([...OWN].reverse()), posts);
-  assert.deepEqual(session, { csrf: CSRF }, 'the control: the same build takes the link');
+  assert.equal(typeof session.device, 'string', 'the control: the same build takes the link');
   assert.deepEqual(posts, ['/floor/session']);
 });
 
@@ -88,7 +92,7 @@ test('an element that is not a script or a stylesheet link is not part of the se
     <script type="module" crossorigin src="/floor/assets/index-aaaa1111.js"></script>
     <link rel="stylesheet" crossorigin href="/floor/assets/index-bbbb2222.css">`;
   const session = await paste({ ok: true, status: 200, async text() { return html; } }, posts);
-  assert.deepEqual(session, { csrf: CSRF }, 'markup the page does not read as a build file changed the build');
+  assert.equal(typeof session.device, 'string', 'markup the page does not read as a build file changed the build');
   assert.deepEqual(posts, ['/floor/session']);
 });
 
@@ -102,8 +106,9 @@ test('a page that loaded with no build files refuses the link without asking the
   const posts = [];
   const asked = [];
   const { location, history } = pasted();
-  const fetch = async (url, init) => { asked.push(`${init.method} ${url}`); return daemon(indexNaming(OWN), posts)(url, init); };
-  await assert.rejects(reauthenticateFloorSessionWith(location, history, fetch, []), LinkRefused);
+  const held = ports(indexNaming(OWN), posts);
+  const plain = async (url, init) => { asked.push(`${init.method} ${url}`); return held.plain(url, init); };
+  await assert.rejects(reauthenticateFloorSessionWith(location, history, [], { ...held, plain }), LinkRefused);
   assert.deepEqual(posts, [], 'a link was spent by a page that cannot tell which build it is');
   assert.deepEqual(asked, [], 'the daemon was asked about a build the page cannot name');
 });

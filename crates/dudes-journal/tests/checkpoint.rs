@@ -189,6 +189,7 @@ fn placement(kind: RecordKind) -> Placement {
             "inert in every journal projection; only the supervisor's world folds it, and its own tests replay it",
         ),
         RecordKind::FloorDeviceEnrolled
+        | RecordKind::FloorDeviceKeyEnrolled
         | RecordKind::FloorDeviceFirstUsed
         | RecordKind::FloorDeviceAcknowledged
         | RecordKind::FloorDeviceRemoved

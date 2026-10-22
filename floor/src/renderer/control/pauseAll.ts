@@ -144,8 +144,7 @@ async function drain(deps: ControlDeps): Promise<void> {
       }
     }
     const target = state.remaining[0];
-    const csrf = deps.csrf();
-    if (csrf === null) {
+    if (!deps.signedIn()) {
       if (state.current === null) {
         commit({ ...state, phase: 'complete', problem: 'This page has no Floor session. No further agents were sent.' });
         releasePauseAllSlot();
@@ -156,7 +155,7 @@ async function drain(deps: ControlDeps): Promise<void> {
     }
     const attempt = state.current ?? attemptFor(target, deps);
     commit({ ...state, phase: 'sending', current: attempt, outcome: null, problem: null });
-    const outcome = await postControl(attempt, csrf, deps.fetch);
+    const outcome = await postControl(attempt, deps.fetch);
     if (state.current !== attempt) return;
     if (outcome.kind === 'applied') {
       commit({ ...state, paused: state.paused + 1, remaining: state.remaining.slice(1),

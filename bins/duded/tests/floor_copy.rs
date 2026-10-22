@@ -6,18 +6,18 @@
 #![cfg(unix)]
 
 mod common;
+use common::PageHttp as _;
 
 use std::ffi::OsStr;
 use std::fmt::Write as _;
-use std::io::{Read as _, Write as _};
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use common::{Fixture, SharedHost, TestClock};
 use duded::config::load_operator;
-use duded::floor_session::CSRF_HEADER_NAME;
+use duded::floor_browser::Page;
 use duded::predicate::{PredicateCaptured, PredicateOutcome, PredicateRunner};
 use duded::settings::FloorSettings;
 use duded::startup::Witness;
@@ -27,15 +27,15 @@ use dudes_host::{CapturedOutcome, OneShot, OneShotOutcome};
 use dudes_proto::Record;
 use dudes_proto::rpc::agent::{Checkout, HireParams, HireResult};
 use dudes_proto::rpc::cred::OperatorCredential;
-use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_proto::rpc::{Method, RpcError};
 use dudes_providers::launch::LaunchSpec;
 use dudes_rpc::Client;
+use dudes_supervisor::Clock as _;
 use serde_json::{Value, json};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v3"
+    "/tests/fixtures/floor-release-v4"
 );
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -184,6 +184,7 @@ struct Floor {
     settings: duded::Settings,
     addr: SocketAddr,
     repo: PathBuf,
+    clock: Arc<TestClock>,
 }
 
 fn floor(fixture: &Fixture) -> Floor {
@@ -198,11 +199,12 @@ fn floor(fixture: &Fixture) -> Floor {
     settings.predicate_path = std::env::var_os("PATH");
     settings.enrollment = load_operator(&config).expect("valid file").enrollment;
     settings.operator_config = Some(config);
+    let clock = Arc::new(TestClock::new());
     let seams = common::seams(
         &settings,
         SharedHost::new(),
         Arc::new(Real(OneShot::new())),
-        Arc::new(TestClock::new()),
+        clock.clone(),
         Witness::default(),
     );
     let daemon = duded::boot(&settings, seams).expect("boot");
@@ -212,6 +214,7 @@ fn floor(fixture: &Fixture) -> Floor {
         settings,
         addr,
         repo,
+        clock,
     }
 }
 
@@ -266,110 +269,39 @@ fn set_trust(floor: &Floor, trusted: bool) -> Result<Value, RpcError> {
     )
 }
 
-fn read_head(stream: &mut TcpStream) -> String {
-    let mut head = Vec::new();
-    let mut byte = [0];
-    while !head.ends_with(b"\r\n\r\n") {
-        stream.read_exact(&mut byte).expect("response head");
-        head.push(byte[0]);
-    }
-    String::from_utf8(head).expect("ASCII head")
-}
-
-fn session(floor: &Floor) -> (String, String) {
-    let issued: SessionIssueResult = serde_json::from_value(
-        operator(floor, Method::FloorSessionIssue, Value::Null).expect("issue"),
+fn session(floor: &Floor) -> Page {
+    let clock = Arc::clone(&floor.clock);
+    Page::enrol_new_on(
+        floor.addr,
+        &common::floor_link(&floor.settings),
+        move || clock.now().unix_millis(),
     )
-    .expect("typed issue");
-    let host = floor.addr.to_string();
-    let mut stream = TcpStream::connect(floor.addr).expect("Floor listener");
-    stream.set_read_timeout(Some(WAIT)).expect("timeout");
-    let request = format!(
-        "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: {}\r\n\r\n{}",
-        issued.bootstrap.len(),
-        issued.bootstrap
-    );
-    stream.write_all(request.as_bytes()).expect("exchange");
-    let head = read_head(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    let cookie = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
-        .and_then(|value| value.split(';').next())
-        .expect("cookie")
-        .to_owned();
-    let length: usize = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Content-Length: "))
-        .expect("length")
-        .parse()
-        .expect("decimal length");
-    let mut body = vec![0; length];
-    stream.read_exact(&mut body).expect("exchange body");
-    let csrf = serde_json::from_slice::<Value>(&body).expect("JSON")["csrf"]
-        .as_str()
-        .expect("csrf")
-        .to_owned();
-    (cookie, csrf)
 }
 
 /// One browser hire of `repo_1` that asks for its own copy; the answer's status and body.
 fn hire_in_copy(floor: &Floor, attempt: char) -> (u16, Value) {
-    let (cookie, csrf) = session(floor);
-    post_copy(floor.addr, &cookie, &csrf, attempt)
+    post_copy(&session(floor), attempt)
 }
 
-fn post_copy(addr: SocketAddr, cookie: &str, csrf: &str, attempt: char) -> (u16, Value) {
-    post_copy_at(addr, cookie, csrf, attempt, None)
+fn post_copy(page: &Page, attempt: char) -> (u16, Value) {
+    post_copy_at(page, attempt, None)
 }
 
 /// A hire of a project a reload added must present that reload's revision.
-fn post_copy_at(
-    addr: SocketAddr,
-    cookie: &str,
-    csrf: &str,
-    attempt: char,
-    revision: Option<&str>,
-) -> (u16, Value) {
-    let body = serde_json::to_vec(&json!({
-        "attempt_id": format!("{attempt}{}", "A".repeat(42)),
-        "workspace_id": "repo_1", "name": "Kim", "role": "engineer", "goal_text": "ship",
-        "check_id": "default",
-        "check_revision": common::check_revision_as(
-            "default", "Checks pass", &[common::true_program()], 10, true),
-        "own_copy": true,
-        "workspace_revision": revision,
-    }))
-    .expect("request JSON");
-    let host = addr.to_string();
-    let head = format!(
-        "POST /floor/onboard HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\n{CSRF_HEADER_NAME}: {csrf}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        body.len()
+fn post_copy_at(page: &Page, attempt: char, revision: Option<&str>) -> (u16, Value) {
+    let reply = page.post(
+        "/floor/onboard",
+        &json!({
+            "attempt_id": format!("{attempt}{}", "A".repeat(42)),
+            "workspace_id": "repo_1", "name": "Kim", "role": "engineer", "goal_text": "ship",
+            "check_id": "default",
+            "check_revision": common::check_revision_as(
+                "default", "Checks pass", &[common::true_program()], 10, true),
+            "own_copy": true,
+            "workspace_revision": revision,
+        }),
     );
-    let mut stream = TcpStream::connect(addr).expect("Floor listener");
-    stream.set_read_timeout(Some(WAIT)).expect("timeout");
-    stream.write_all(head.as_bytes()).expect("head");
-    stream.write_all(&body).expect("body");
-    let head = read_head(&mut stream);
-    let status = head
-        .split_whitespace()
-        .nth(1)
-        .and_then(|code| code.parse().ok())
-        .expect("a status");
-    let length: usize = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Content-Length: "))
-        .expect("length")
-        .parse()
-        .expect("decimal length");
-    let mut text = vec![0; length];
-    stream.read_exact(&mut text).expect("body");
-    let value = if text.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&text).expect("JSON")
-    };
-    (status, value)
+    (reply.status(), reply.json())
 }
 
 fn hired_agents(fixture: &Fixture) -> usize {
@@ -717,12 +649,12 @@ fn removing_a_project_revokes_its_grant_and_adding_it_back_needs_trust_again() {
 
     adopt(&floor, &operator_file(Some(&floor.repo)), &["repo_1"], &[]);
     // The reload that added the project back marked it with revision 1, which a hire must present.
-    let (cookie, csrf) = session(&floor);
-    let back = post_copy_at(floor.addr, &cookie, &csrf, 'A', Some("1"));
+    let page = session(&floor);
+    let back = post_copy_at(&page, 'A', Some("1"));
     assert_refused_with(&back, "not trusted yet", &fixture, &floor);
 
     set_trust(&floor, true).expect("trusted again");
-    let again = post_copy_at(floor.addr, &cookie, &csrf, 'B', Some("1"));
+    let again = post_copy_at(&page, 'B', Some("1"));
     assert_eq!(again.0, 200, "and then the copy is made: {again:?}");
 }
 
@@ -733,9 +665,8 @@ fn a_revoke_between_the_copy_and_the_hire_removes_the_copy_and_hires_nobody() {
     set_trust(&floor, true).expect("the grant");
     let (reached, release) = floor.running.handle.hold_after_copy();
     let held = {
-        let (cookie, csrf) = session(&floor);
-        let addr = floor.addr;
-        std::thread::spawn(move || post_copy(addr, &cookie, &csrf, 'A'))
+        let page = session(&floor);
+        std::thread::spawn(move || post_copy(&page, 'A'))
     };
     reached
         .recv_timeout(WAIT)

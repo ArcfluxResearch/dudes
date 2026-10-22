@@ -54,7 +54,7 @@ const GOAL = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
 const LOCAL_GOAL = '01JBQ8XK2M3N4P5Q6R7S8T9VWZ';
 const OTHER = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const TURN = '01JBQ8XK2M3N4P5Q6R7S8T9VX0';
-const CSRF = 'A'.repeat(43);
+const REQUEST_ID = 'A'.repeat(43);
 const FRESH = `${'B'.repeat(42)}E`;
 const U64_MAX = '18446744073709551615';
 const HERE = { protocol: 'http:', host: '127.0.0.1:7717' };
@@ -143,7 +143,7 @@ function daemon(...answers) {
       if (response instanceof Error) throw response;
       return { status: response.status, text: async () => response.body ?? '' };
     },
-    csrf: () => CSRF,
+    signedIn: () => true,
     random(bytes) {
       minted += 1;
       bytes.fill(0);
@@ -453,7 +453,7 @@ test('the four sections show only enrolled choices and the configured limits', (
   assert.doesNotMatch(all, /<input[^>]*type="hidden"/);
 });
 
-test('one Hire sends exactly seven fields to one path with the CSRF header', async () => {
+test('one Hire sends exactly seven fields to one path with the REQUEST_ID header', async () => {
   subscribe();
   const net = daemon(COMPLETE);
   await hireOnce(net);
@@ -462,7 +462,7 @@ test('one Hire sends exactly seven fields to one path with the CSRF header', asy
   assert.equal(url, '/floor/onboard');
   assert.deepEqual({ ...init, body: undefined }, {
     method: 'POST', credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'no-referrer',
-    headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': CSRF }, body: undefined,
+    headers: { 'Content-Type': 'application/json' }, body: undefined,
   });
   assert.deepEqual(Object.keys(request),
     ['attempt_id', 'workspace_id', 'check_id', 'check_revision', 'name', 'role', 'goal_text']);
@@ -707,7 +707,7 @@ test('an unset ceiling reads No limit, and the hop cap and the engine bound the 
 const SETTINGS = Object.freeze({
   switches: { answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false, hire: true, git: false, renew: false, board: false, diff: false, project: false },
   budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
-  providers: ['claude', 'pi'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 3 },
+  providers: ['claude', 'pi'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 4 },
 });
 
 test('with no project the Workspace step gives one setup command and no jargon', () => {
@@ -1215,7 +1215,7 @@ function snapshotFrame(agents, onboarding = CATALOG) {
 
 test('a complete Hire clears the catalog and resubscribes through the resync path, sending nothing new', async () => {
   const net = network();
-  const stop = openFloorStream({ csrf: CSRF }, HERE, net.connect, net.timers);
+  const stop = openFloorStream({ device: REQUEST_ID }, HERE, net.connect, net.timers);
   try {
     net.sockets[0].emit('open');
     net.sockets[0].emit('message', snapshotFrame([]));
@@ -1240,7 +1240,7 @@ test('a complete Hire clears the catalog and resubscribes through the resync pat
 
 test('a refresh is a no-op while a retry is pending, and once the stream has given up', async () => {
   const net = network();
-  const stop = openFloorStream({ csrf: CSRF }, HERE, net.connect, net.timers,
+  const stop = openFloorStream({ device: REQUEST_ID }, HERE, net.connect, net.timers,
     { fetchIndex: async () => null, ownRefs: [] });
   try {
     net.sockets.at(-1).emit('close');
@@ -1264,7 +1264,7 @@ test('a refresh is a no-op while a retry is pending, and once the stream has giv
 
 test('Live work stays read-only and reselects its agent across the Hire refresh', () => {
   const net = network();
-  const stop = openFloorStream({ csrf: CSRF }, HERE, net.connect, net.timers);
+  const stop = openFloorStream({ device: REQUEST_ID }, HERE, net.connect, net.timers);
   try {
     net.sockets[0].emit('open');
     net.sockets[0].emit('message', snapshotFrame([agentRow(OTHER, 'Leo')]));
@@ -1299,9 +1299,9 @@ test('after hired_without_goal for session_expired or session_revoked, a fresh l
     resetFloorStore();
     hire.resetHire();
     subscribe();
-    let csrf = CSRF;
+    let held = REQUEST_ID;
     const net = daemon(PARTIAL({ reason, current_goal: null }), COMPLETE);
-    net.csrf = () => csrf;
+    net.signedIn = () => held !== null;
     await hireOnce(net);
     assert.deepEqual(hire.getHireState().outcome,
       { kind: 'partial', agent: AGENT, reason, currentGoal: null, retired: false });
@@ -1312,12 +1312,11 @@ test('after hired_without_goal for session_expired or session_revoked, a fresh l
     assert.match(html, />Check status</, 'a goal the session lost cannot be set from a fresh one');
     assert.match(html, /Open Dudes to sign in again in this browser: this page keeps the Hire, and Check status then sets only the goal this Hire recorded\./);
 
-    csrf = FRESH; // a fresh link pasted into this tab
+    held = FRESH; // a fresh link pasted into this tab
     subscribe({ agents: [agentRow(AGENT, 'Kim')] });
     await hire.checkHireStatus(net);
     assert.equal(net.calls.length, 2);
     assert.equal(net.calls[1].init.body, net.calls[0].init.body, 'the fresh session sent a different Hire');
-    assert.equal(net.calls[1].init.headers['X-Dudes-CSRF'], FRESH);
     assert.deepEqual(hire.getHireState().outcome, { kind: 'complete', agent: AGENT, goal: GOAL });
   }
   // A partial a fresh session cannot complete offers no Check.
@@ -1333,9 +1332,9 @@ test('a 403 after pending, a 503 or a lost reply keeps the Hire, and a same-body
     resetFloorStore();
     hire.resetHire();
     subscribe();
-    let csrf = CSRF;
+    let held = REQUEST_ID;
     const net = daemon(first, EMPTY(403), COMPLETE);
-    net.csrf = () => csrf;
+    net.signedIn = () => held !== null;
     await hireOnce(net);
     invalidateFloorEpoch();
     noteTransport('close'); // the session ends
@@ -1351,12 +1350,11 @@ test('a 403 after pending, a 503 or a lost reply keeps the Hire, and a same-body
     assert.match(html, /Open Dudes to sign in again in this browser/);
     assert.match(html, />Check status</);
 
-    csrf = FRESH;
+    held = FRESH;
     subscribe();
     await hire.checkHireStatus(net);
     assert.equal(net.calls.length, 3);
     assert.equal(net.calls[2].init.body, net.calls[0].init.body, 'the fresh session sent a different Hire');
-    assert.equal(net.calls[2].init.headers['X-Dudes-CSRF'], FRESH);
     assert.deepEqual(hire.getHireState().outcome, { kind: 'complete', agent: AGENT, goal: GOAL });
   }
   // The control: a 403 on an attempt's first and only send still lets it go.
@@ -1406,9 +1404,9 @@ test('a reply to an attempt the page no longer holds is ignored', async () => {
 
 test('a hired_without_goal attempt is never let go by a 403, keeps its AgentId on screen, and checks only on a fresh live session', async () => {
   subscribe();
-  let csrf = CSRF;
+  let held = REQUEST_ID;
   const net = daemon(PARTIAL({ reason: 'session_expired', current_goal: null }), EMPTY(403), COMPLETE);
-  net.csrf = () => csrf;
+  net.signedIn = () => held !== null;
   await hireOnce(net);
   assert.equal(hire.getHireState().recordedAgent, AGENT);
   invalidateFloorEpoch();
@@ -1434,22 +1432,21 @@ test('a hired_without_goal attempt is never let go by a 403, keeps its AgentId o
   assert.match(html, /<button type="button" aria-disabled="true" aria-busy="false"[^>]*>Check status<\/button>/);
 
   // A fresh link pasted into this tab, and a snapshot of that session offering hiring.
-  csrf = FRESH;
+  held = FRESH;
   subscribe({ agents: [agentRow(AGENT, 'Kim')] });
   assert.match(render(), /<button type="button" aria-disabled="false" aria-busy="false"[^>]*>Check status<\/button>/);
   await hire.checkHireStatus(net);
   assert.equal(net.calls.length, 3);
   assert.equal(net.calls[2].init.body, net.calls[0].init.body, 'the fresh session sent a different Hire');
-  assert.equal(net.calls[2].init.headers['X-Dudes-CSRF'], FRESH);
   assert.deepEqual(hire.getHireState().outcome, { kind: 'complete', agent: AGENT, goal: GOAL });
 });
 
 test('a recorded hire keeps its AgentId through every later reply, and after a fresh link names Check status, not a paste', async () => {
   subscribe();
-  let csrf = CSRF;
+  let held = REQUEST_ID;
   const net = daemon(PARTIAL({ reason: 'session_expired', current_goal: null }),
     PENDING, EMPTY(503), LOST, EMPTY(400), EMPTY(403));
-  net.csrf = () => csrf;
+  net.signedIn = () => held !== null;
   await hireOnce(net);
   assert.equal(hire.getHireState().recordedAgent, AGENT);
   const shown = (step) => {
@@ -1465,7 +1462,7 @@ test('a recorded hire keeps its AgentId through every later reply, and after a f
   // Each Check is pressed from a fresh snapshot that offers hiring, as the page allows it.
   for (const [kind, step] of [['pending', '202'], ['unavailable', '503'], ['unknown', 'a lost reply'],
     ['rejected', '400'], ['refused', '403']]) {
-    csrf = FRESH;
+    held = FRESH;
     resubscribe({ agents: [agentRow(AGENT, 'Kim')] });
     assert.match(render(), /<button type="button" aria-disabled="false" aria-busy="false"[^>]*>Check status<\/button>/, `before the ${step}`);
     await hire.checkHireStatus(net);
@@ -1482,7 +1479,7 @@ test('a recorded hire keeps its AgentId through every later reply, and after a f
   assert.match(shown('the session ended'), /Open Dudes to sign in again/);
 
   // A fresh link, and a snapshot of that session offering hiring: the next step is Check status.
-  csrf = FRESH;
+  held = FRESH;
   subscribe({ agents: [agentRow(AGENT, 'Kim')] });
   const html = shown('a fresh snapshot');
   assert.doesNotMatch(html, /Open Dudes to sign in again/, 'the page asks for another sign-in beside an enabled Check status');

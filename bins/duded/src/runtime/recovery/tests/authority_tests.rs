@@ -184,13 +184,7 @@ fn wait_for_human(daemon: &mut TestDaemon, agent: AgentId) {
 fn sign_in(sessions: &FloorSessions, host: &str) -> SessionIdentity {
     sessions.detach_devices_for_test();
     let origin = format!("http://{host}");
-    let bootstrap = sessions.issue().unwrap();
-    let exchange = sessions
-        .exchange(host, &origin, bootstrap.bootstrap.as_bytes())
-        .unwrap();
-    sessions
-        .authorize_onboard(host, &origin, &exchange.cookie, &exchange.csrf)
-        .unwrap()
+    sessions.admitted_for_test(host, &origin).0
 }
 
 fn inspected_intent(daemon: &mut TestDaemon, agent: AgentId, request: u8) -> RecoverySubmitParams {
@@ -249,7 +243,7 @@ fn floor_settings(fixture: &common::Fixture, checkpoints: u64) -> crate::setting
     settings.floor = Some(FloorSettings {
         assets_dir: std::path::PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/floor-release-v3"
+            "/tests/fixtures/floor-release-v4"
         )),
         port: Some(0),
     });
