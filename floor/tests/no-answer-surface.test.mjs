@@ -296,12 +296,14 @@ const FIRST_RUN_GUIDE = 'src/renderer/setup/FirstRunGuide.tsx';
 const FIRST_TASK = 'src/renderer/setup/FirstTask.tsx';
 const SETTINGS_VIEW = 'src/renderer/settings/SettingsView.tsx';
 const FLOOR_SHELL = 'src/shell.tsx';
+const NAVIGATION = 'src/navigation.ts';
 const AGENT_ORDER = 'src/renderer/AgentOrder.tsx';
 const ARCHIVED_AGENTS = 'src/renderer/ArchivedAgents.tsx';
 const CONTROL_VIEW = 'src/renderer/Control.tsx';
 /** Escape closes a Control view, or the drawer from anywhere on the stage, unless a field already used it. It sends nothing. */
 const CLOSE_ON_ESCAPE = '(event) => { if (closesPanel(event)) { event.stopPropagation(); onClose(); } }';
 const CLOSE_DRAWER_ON_ESCAPE = '(event) => { if (closesDrawer(event, drawerOpen)) { event.stopPropagation(); clearSelection(); } }';
+const CLOSE_PAGE_ON_ESCAPE = '(event) => {\n        if (page !== null && closesPanel(event)) { event.stopPropagation(); closeView(); }\n      }';
 const ACTIVITY_PANEL = 'src/renderer/LogPanel.tsx';
 const HIRE_ENTRY = 'src/renderer/onboarding/HireEntry.tsx';
 /**
@@ -475,6 +477,7 @@ const ADMITTED_HANDLERS = [
   { file: ARCHIVED_AGENTS, tag: 'details', className: 'archive-memory', handler: 'onToggle',
     expression: '(event) => setOpen(event.currentTarget.open)' },
   { file: FLOOR_SHELL, tag: 'div', className: 'floor-stage', handler: 'onKeyDown', expression: CLOSE_DRAWER_ON_ESCAPE },
+  { file: FLOOR_SHELL, tag: 'main', className: 'shell', handler: 'onKeyDown', expression: CLOSE_PAGE_ON_ESCAPE },
   { file: CONTROL_VIEW, tag: 'section', className: 'control-panel', handler: 'onKeyDown', expression: CLOSE_ON_ESCAPE },
   { file: CONTROL_VIEW, tag: 'dialog', className: 'ticket-dialog', handler: 'onCancel',
     expression: '(event) => { event.preventDefault(); closeOverlay(); }' },
@@ -1135,7 +1138,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(7).fill(FIRST_TASK),
     ...Array(10).fill(TERMINAL_PANEL),
     ...Array(5).fill(LOGIN_PANEL),
-    ...Array(6).fill('src/shell.tsx'),
+    ...Array(7).fill('src/shell.tsx'),
     'src/renderer/SignInExpired.tsx',
     'src/renderer/StreamNotice.tsx',
   ];
@@ -1249,7 +1252,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(center, /\{ view: 'setup', label: 'Setup', refresh: true \}/);
   assert.match(center, /\{ view: 'settings', label: 'Settings', refresh: true \}/);
   assert.match(center, /onSetup=\{\(\) => onView\('setup'\)\}/);
-  assert.match(shell, /function openView\(next: ControlView\): void \{\s*setFocused\(false\);\s*setView\(next\);\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === next && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}/);
+  assert.match(shell, /function openView\(next: ControlView\): void \{\s*setFocused\(false\);\s*if \(isPageView\(next\)\) \{\s*setPanel\(null\);\s*openPage\(next\);\s*\} else \{\s*openPage\(null\);\s*setPanel\(next\);\s*\}\s*\}/);
+  assert.match(shell, /if \(page === null\) return;\s*setFocused\(false\);\s*setPanel\(null\);\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === page && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}, \[page\]\)/);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup', 'onSetup',
     '() => { void changeSetting(settingKey, next); }', '() => { void confirmSetting(); }', '() => cancelSetting()',
     '() => { void desktopNotificationPreference.setEnabled(!on); }', '() => setOfficePin(id)']);
@@ -1294,6 +1298,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ['(event) => onAddAgent(event.currentTarget)']);
   assert.deepEqual(clicksIn(await readFile(resolve(source, 'shell.tsx'), 'utf8')), [
     'reloadPage',
+    'closeView',
     'toggleCrew',
     'toggleFocus',
     '(event) => openHire(event.currentTarget)',
@@ -2020,6 +2025,7 @@ function domUrlSinksIn(text) {
 
 const ADMITTED_VIEW_STORAGE = Object.freeze({ path: 'src/renderer/view.ts', line: 'return window.localStorage;' });
 const ADMITTED_SESSION_STORAGE = Object.freeze({ path: 'src/session.ts', line: 'window.localStorage.removeItem(LEGACY_SECRET);' });
+const ADMITTED_PAGE_HASH = Object.freeze({ path: NAVIGATION, line: "window.location.hash = page === null ? '' : PAGE_HASH[page];" });
 /** The one file that keeps the browser's sign-in key: in IndexedDB, as a key the page cannot export. */
 const KEY_STORE = 'src/signer.ts';
 const KEY_STORE_SINKS = ['IndexedDB', 'a service-worker cache'];
@@ -2251,6 +2257,16 @@ function unadmittedSinksIn(text, relative) {
   let viewStorageHits = 0;
   let fontStorageHits = 0;
   let sessionStorageHits = 0;
+  let pageHashHits = 0;
+  if (relative === ADMITTED_PAGE_HASH.path) {
+    scanned = scanned.replace(/^.*$/gm, (line) => {
+      if (line.trim() === ADMITTED_PAGE_HASH.line) {
+        pageHashHits += 1;
+        return '';
+      }
+      return line;
+    });
+  }
   if (relative === ADMITTED_VIEW_STORAGE.path) {
     scanned = scanned.replace(/^.*$/gm, (line) => {
       if (line.trim() === ADMITTED_VIEW_STORAGE.line) {
@@ -2280,7 +2296,7 @@ function unadmittedSinksIn(text, relative) {
   }
   const sinks = sessionMaterialSinksIn(scanned).filter((name) => relative !== KEY_STORE || !KEY_STORE_SINKS.includes(name));
   return { found: [...sinks, ...domUrlSinksIn(scanned)],
-    viewStorageHits, fontStorageHits, sessionStorageHits };
+    viewStorageHits, fontStorageHits, sessionStorageHits, pageHashHits };
 }
 
 test('session material has no browser persistence, URL, argv or log sink', async () => {
@@ -2357,20 +2373,33 @@ test('session material has no browser persistence, URL, argv or log sink', async
   let viewStorageHits = 0;
   let fontStorageHits = 0;
   let sessionStorageHits = 0;
+  let pageHashHits = 0;
   for (const path of await filesUnder(source, ['.ts', '.tsx'])) {
     const relative = path.slice(floor.length + 1);
     const text = await readFile(path, 'utf8');
-    const { found, viewStorageHits: storageHits, fontStorageHits: fontHits, sessionStorageHits: sessionHits } =
+    const { found, viewStorageHits: storageHits, fontStorageHits: fontHits, sessionStorageHits: sessionHits, pageHashHits: hashHits } =
       unadmittedSinksIn(text, relative);
     viewStorageHits += storageHits;
     fontStorageHits += fontHits;
     sessionStorageHits += sessionHits;
+    pageHashHits += hashHits;
     if (found.length > 0) carrying.push(`${relative}: ${found.join(', ')}`);
   }
   assert.deepEqual(carrying, [], 'session material gained a browser, URL, argv or log sink');
   assert.equal(viewStorageHits, 1, 'the view-only storage getter moved, disappeared, or was duplicated');
   assert.equal(fontStorageHits, 1, 'the font-only storage getter moved, disappeared, or was duplicated');
   assert.equal(sessionStorageHits, 1, 'the removal of the old secret moved, disappeared, or was duplicated');
+  assert.equal(pageHashHits, 1, 'the page-only fragment write moved, disappeared, or was duplicated');
+  const navigation = await readFile(resolve(floor, NAVIGATION), 'utf8');
+  const navigationSyntax = parsedByExtension(navigation, NAVIGATION);
+  assert.deepEqual(navigationSyntax.statements.filter(ts.isImportDeclaration), []);
+  assert.match(navigation, /const PAGE_HASH: Readonly<Record<PageView, string>> = Object\.freeze\(\{\s*log: '#\/log', setup: '#\/setup', settings: '#\/settings',\s*\}\);/);
+  assert.equal([...navigation.matchAll(/\bPAGE_HASH\b/g)].length, 2);
+  const openPage = navigationSyntax.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === 'openPage');
+  assert.equal(openPage.body.statements.length, 1);
+  assert.equal(openPage.body.statements[0].getText(navigationSyntax), ADMITTED_PAGE_HASH.line);
+  assert.deepEqual(unadmittedSinksIn(navigation, 'src/other.ts').found, ['a fragment write']);
+  assert.deepEqual(unadmittedSinksIn(navigation + '\nlocation.hash = secret;', NAVIGATION).found, ['a fragment write']);
   const viewText = await readFile(resolve(floor, ADMITTED_VIEW_STORAGE.path), 'utf8');
   const viewSyntax = parsedByExtension(viewText, ADMITTED_VIEW_STORAGE.path);
   const imports = viewSyntax.statements.filter(ts.isImportDeclaration);
@@ -2618,6 +2647,8 @@ test('no control names halt: no route or member, and no label says halt or resta
 
 const ADMITTED_LISTENERS = Object.freeze([
   { path: 'src/main.tsx', line: "window.addEventListener('hashchange', () => {" },
+  { path: NAVIGATION, line: "window.addEventListener('hashchange', listener);" },
+  { path: NAVIGATION, line: "window.addEventListener('popstate', listener);" },
   { path: 'src/renderer/AgentDetail.tsx', line: "strip.addEventListener('wheel', wheel, { passive: false });" },
   { path: 'src/renderer/OfficeCanvas.tsx', line: "document.addEventListener('visibilitychange', onVisibilityChange);" },
   { path: 'src/renderer/OfficeCanvas.tsx', line: "motionPreference.addEventListener('change', onMotionChange);" },

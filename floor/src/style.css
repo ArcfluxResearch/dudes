@@ -3475,7 +3475,7 @@ samp,
 
 /* A phone sheet fills the screen and its close button sits in the top 2.75rem, so the area hangs from just below that row. */
 @media (max-width: 800px) {
-  .shell:has(.agent-drawer, .floor-stage > .control-panel:is([data-view='setup'], [data-view='settings'], [data-view='log'])) .top-region > .notice-area {
+  .shell:not([data-page]):has(.agent-drawer) .top-region > .notice-area {
     position: fixed;
     top: 2.75rem;
     padding-top: 0.3rem;
@@ -3498,10 +3498,6 @@ samp,
 }
 
 @media (max-width: 800px) {
-  .shell[data-notices] .floor-stage > .control-panel:is([data-view='setup'], [data-view='settings'], [data-view='log']) .control-view {
-    margin-top: max(0px, calc(var(--notice-stack-height) - 1.2rem));
-  }
-
   .shell[data-notices] .agent-drawer {
     padding-top: calc(3.05rem + var(--notice-stack-height));
   }
@@ -3885,20 +3881,7 @@ samp,
   border: 1px solid var(--line);
 }
 
-/* Setup, Settings and Log fill a phone screen when opened, so the tap on their tab visibly does something. */
 @media (max-width: 800px) {
-  .floor-stage > .control-panel:is([data-view='setup'], [data-view='settings'], [data-view='log']) {
-    position: fixed;
-    inset: 0;
-    z-index: calc(var(--layer-top-bar) + 1);
-    width: auto;
-    max-height: none;
-    margin: 0;
-    padding: 1rem;
-    border-width: 0;
-    border-radius: 0;
-  }
-
   .control-panel .panel-close {
     width: 2.5rem;
     height: 2.5rem;
@@ -4018,4 +4001,50 @@ samp,
 .crew-row[aria-pressed='false'] .crew-activity:not([data-activity='question']),
 .crew-row[aria-pressed='false'] .crew-live-activity {
   display: none;
+}
+
+.shell[data-page] {
+  height: 100dvh;
+  --notice-offset: 0.6rem;
+}
+
+.shell[data-page] .office-bar {
+  display: none;
+}
+
+.floor-stage[data-page] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.floor-stage[data-page] > :not(.control-panel, .first-run-guide) {
+  display: none;
+}
+
+.floor-stage > .control-panel[data-page] {
+  position: static;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  width: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 1.5rem max(1rem, calc((100% - 52rem) / 2));
+  border: 0;
+  border-radius: 0;
+}
+
+.shell[data-page] .top-region > .notice-area {
+  position: absolute;
+  top: 100%;
+  padding-top: var(--notice-offset);
+}
+
+.shell[data-page][data-notices] .control-panel[data-page] {
+  padding-top: calc(1.5rem + var(--notice-offset) + var(--notice-stack-height));
+}
+
+.shell[data-page][data-notices] .control-panel[data-page] .control-view {
+  margin-top: 0;
 }

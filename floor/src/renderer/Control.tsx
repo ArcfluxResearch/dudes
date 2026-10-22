@@ -26,6 +26,7 @@ import { TicketPanel } from './ticket/TicketPanel.tsx';
 import { workspaceGroups, workspaceLabel } from './workspace.ts';
 import { WorkersList } from './WorkersList.tsx';
 import { HireEntry } from './onboarding/HireEntry.tsx';
+import { isPageView } from '../navigation.ts';
 
 export type ControlView = 'overview' | 'board' | 'log' | 'setup' | 'settings';
 
@@ -42,7 +43,6 @@ export const CONTROL_TITLE_ID = 'control-title';
 
 type BoardOverlay = { readonly kind: 'new' } | { readonly kind: 'card'; readonly id: string } | null;
 
-/** A view button's target: no view when that view is already open beside the office, else the view itself. */
 export function toggledView(open: ControlView | null, pressed: ControlView, focused: boolean): ControlView | null {
   return open === pressed && !focused ? null : pressed;
 }
@@ -280,6 +280,7 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
   const label = labelOf(view);
   return (
     <section className="control-panel" id="control-panel" data-view={view} aria-labelledby={CONTROL_TITLE_ID}
+      data-page={isPageView(view) ? 'true' : undefined}
       ref={handFocusOnLeave} data-focus-on-leave={viewButtonId(view)}
       onKeyDown={(event) => { if (closesPanel(event)) { event.stopPropagation(); onClose(); } }}>
       <header className="control-panel-head">
@@ -287,8 +288,8 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
           <h2 id={CONTROL_TITLE_ID} tabIndex={-1} ref={focusOnArrival}>{label}</h2>
           {view === 'board' ? <p className="board-description">Give work a clear next step.</p> : null}
         </div>
-        <button type="button" className="panel-close" aria-label={`Close ${label}`} title="Close (Escape)"
-          onClick={onClose}>×</button>
+        {isPageView(view) ? null : <button type="button" className="panel-close" aria-label={`Close ${label}`} title="Close (Escape)"
+          onClick={onClose}>×</button>}
       </header>
       <div className="control-view">{panels[view]}</div>
       {view === 'board' ? <dialog className="ticket-dialog" id="selected-card-detail" ref={dialog}

@@ -1,4 +1,5 @@
 import { browserName } from './renderer/devices/browserName.ts';
+import { pageFromHash } from './navigation.ts';
 import { KeyUnavailable, floorSigner, signatureHeaders } from './signer.ts';
 import type { KeyRecord, Signer } from './signer.ts';
 import { floorFetch, plainFetch } from './transport.ts';
@@ -312,7 +313,7 @@ export async function establishFloorSessionWith(
   if (location.hash.startsWith(BOOTSTRAP_PREFIX)) {
     return exchangeBootstrap(location, history, ports);
   }
-  if (location.hash !== '') return null;
+  if (location.hash !== '' && pageFromHash(location.hash) === null) return null;
   // A reload keeps the key and the cookie. A cookie with no key gets no session, so a page that
   // holds no key is signed out and says so.
   const device = await ports.signer.device();

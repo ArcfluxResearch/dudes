@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
+import { currentPage, isPageView, openPage, subscribeToPage } from './navigation.ts';
 
 import { DeviceNotices } from './renderer/devices/DeviceNotices';
 import { getDevicesState, loadDevices, subscribeToDevices } from './renderer/devices/devices';
@@ -27,7 +28,7 @@ import {
   agentToReveal, getHireState, leaveHire, markRevealed, prepareArchiveHire, prepareHire, subscribeToHire,
 } from './renderer/onboarding/hire';
 import type { RetiredAgentRow } from './renderer/archive';
-import { AGENT_DETAIL_HEADING_ID, closesDrawer, focusAnswer, handFocusOnLeave, restoreFocusAfterDialog } from './renderer/focus';
+import { AGENT_DETAIL_HEADING_ID, closesDrawer, closesPanel, focusAnswer, handFocusOnLeave, restoreFocusAfterDialog } from './renderer/focus';
 import { RetireDialog } from './renderer/retire/RetirePanel';
 import { selectedAgentRow } from './renderer/scene/selection';
 import { TerminalPanel } from './renderer/terminal/TerminalPanel';
@@ -179,7 +180,9 @@ function SignedInShell() {
   const [archiveHireKept, setArchiveHireKept] = useState(false);
   const [officeBar, setOfficeBar] = useState<HTMLDivElement | null>(null);
   const hire = useSyncExternalStore(subscribeToHire, getHireState, getHireState);
-  const [view, setView] = useState<ControlView | null>(null);
+  const page = useSyncExternalStore(subscribeToPage, currentPage, () => null);
+  const [panel, setPanel] = useState<'overview' | 'board' | null>(null);
+  const view = page ?? panel;
   const [answerAsked, setAnswerAsked] = useState<{ readonly id: string } | null>(null);
   const [recoveryAsked, setRecoveryAsked] = useState<{ readonly id: string } | null>(null);
   const [recoveryReceiptAsked, setRecoveryReceiptAsked] = useState<string | null>(null);
@@ -213,8 +216,15 @@ function SignedInShell() {
     setGuide('closed');
     if (hiring) closeHire(true);
     if (target.kind === 'ticket') openCard(target.id);
-    else { setFocused(false); setView(null); setCrewOpen(true); openQuestion(target.id); }
+    else { setFocused(false); closeView(); setCrewOpen(true); openQuestion(target.id); }
   });
+
+  useEffect(() => {
+    if (page === null) return;
+    setFocused(false);
+    setPanel(null);
+    if (CONTROL_VIEWS.some((entry) => entry.view === page && entry.refresh)) refreshFloorSnapshot();
+  }, [page]);
 
   // A new agent shows in Crew and the office but is not opened: its drawer would fill a phone screen and push the bar away.
   useEffect(() => {
@@ -283,6 +293,7 @@ function SignedInShell() {
 
   function selectAgent(id: string): boolean {
     if (!selectable || !floor.agents.some((row) => row.id === id)) return false;
+    if (page !== null) closeView();
     selectOutputAgent(id);
     setSelectedId(id);
     return true;
@@ -294,31 +305,41 @@ function SignedInShell() {
 
   function reviewRecovery(id: string): void {
     if (!selectAgent(id)) return;
-    setView(null);
+    closeView();
     setRecoveryAsked({ id });
   }
 
   function readRecoveryReceipt(id: string): void {
     clearSelection();
-    setView(null);
+    closeView();
     setRecoveryReceiptAsked(id);
   }
 
   function openView(next: ControlView): void {
     setFocused(false);
-    setView(next);
-    if (CONTROL_VIEWS.some((entry) => entry.view === next && entry.refresh)) refreshFloorSnapshot();
+    if (isPageView(next)) {
+      setPanel(null);
+      openPage(next);
+    } else {
+      openPage(null);
+      setPanel(next);
+    }
+  }
+
+  function closeView(): void {
+    setPanel(null);
+    openPage(null);
   }
 
   function toggleView(next: ControlView): void {
     const target = toggledView(view, next, focused);
-    if (target === null) setView(null);
+    if (target === null) closeView();
     else openView(target);
   }
 
   function toggleCrew(): void {
-    if (view === 'board') {
-      setView(null);
+    if (page !== null || view === 'board') {
+      closeView();
       setFocused(false);
       setCrewOpen(true);
     } else if (focused) {
@@ -378,6 +399,7 @@ function SignedInShell() {
   }
 
   function toggleFocus(): void {
+    if (page !== null) closeView();
     if (!focused) {
       setHiring(false);
       const id = focusAgentId(floor, selectedId);
@@ -451,6 +473,10 @@ function SignedInShell() {
 
   return (
     <main className="shell" ref={shellRef} aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
+      data-page={page ?? undefined}
+      onKeyDown={(event) => {
+        if (page !== null && closesPanel(event)) { event.stopPropagation(); closeView(); }
+      }}
       data-theme={preferences.theme} data-scheme={effectiveTheme} style={{ '--side-width': `${preferences.sidebarWidth}px` } as CSSProperties}>
       <div className="top-region">
         <header className="top-bar">
@@ -458,8 +484,9 @@ function SignedInShell() {
           <CrewStats agents={floor.agents} cards={floor.cards} statuses={focused} />
           <ControlNav floor={floor} view={focused ? null : view} onToggle={toggleView} />
           <div className="top-bar-actions" role="group" aria-label="Floor actions">
-            <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={crewOpen && !focused && view !== 'board'}
-              aria-controls={crewOpen && !focused && view !== 'board' ? 'crew-list' : undefined}
+            {page === null ? null : <button type="button" id="office-open" onClick={closeView}>Office</button>}
+            <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={page === null && crewOpen && !focused && view !== 'board'}
+              aria-controls={page === null && crewOpen && !focused && view !== 'board' ? 'crew-list' : undefined}
               onClick={toggleCrew}>Crew</button>
             <button type="button" className="focus-toggle" id="focus-toggle" aria-pressed={focused}
               aria-keyshortcuts="Alt+Shift+F" onClick={toggleFocus}>
@@ -479,7 +506,7 @@ function SignedInShell() {
         </header>
         {noticeHost === null ? notices : createPortal(notices, noticeHost)}
       </div>
-      <div className="floor-stage"
+      <div className="floor-stage" data-page={page ?? undefined}
         onKeyDown={(event) => { if (closesDrawer(event, drawerOpen)) { event.stopPropagation(); clearSelection(); } }}>
         {crewOpen && !focused ? <CrewList agents={floor.agents} cards={floor.cards} selectedId={currentSelectedId}
           selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent}
@@ -487,13 +514,13 @@ function SignedInShell() {
           addAgent={floor.agents.length === 0 && hireSwitchOn(floor) ? null
             : <HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
         {view === null || focused ? null : <Control key={view} floor={floor} view={view} selectedId={currentSelectedId}
-          onClose={() => setView(null)} onView={openView} onOpenQuestion={openQuestion} onOpenTicket={openCard}
+          onClose={closeView} onView={openView} onOpenQuestion={openQuestion} onOpenTicket={openCard}
           onReviewRecovery={reviewRecovery} onHire={openHire} onHireAgain={hireAgain}
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className="office-slot">
           <div className="office-area">
-            <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
-              onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} />
+            {page === null ? <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
+              onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} /> : null}
             <div className="office-notices" ref={setOfficeNotices} />
             <FirstTask floor={floor} onHire={openHire} />
           </div>
