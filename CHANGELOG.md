@@ -11,6 +11,32 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.93.0] - 2026-10-22
+
+### Highlights
+
+- **The Floor signs every request with a key the page cannot read.** When a browser signs in, it makes a key it cannot export and keeps it in IndexedDB, and the daemon keeps only the public half. Every read, action and connection the page makes carries a signature made with that key, so a copied cookie opens nothing. A browser needs WebCrypto and IndexedDB; one without them is told so on the sign-in screen. Checked in Chrome, Firefox and Safari, in normal and private windows. (#156)
+- **See and end the browsers signed in to the Floor.** Settings lists each signed-in browser by name, with when it signed in and was last used, and a Sign out button. Every other open Floor announces a new sign-in with Keep and Remove, and a signed-out page says why: you signed out, another browser or the terminal removed it, it expired, or a newer sign-in replaced it. In the terminal, `dudes devices` lists them, `dudes devices remove <id>` signs one out and closes its connections, and `dudes devices keep <id>` keeps a new one. (#150, #151)
+- **Sign-ins last longer and survive restarts.** A browser stays signed in for 30 days without use and 90 days in all, instead of 24 hours and 30 days, and stays signed in across `dudes stop`, `dudes start` and `dudes upgrade`. The daemon keeps up to eight browsers. A ninth sign-in removes one that was never used, else one nobody has kept, else the one used longest ago. (#150)
+
+### Changes
+
+- `dudes open` in a browser that is already signed in keeps it as the same browser, instead of adding another one. (#156)
+- A link printed by `dudes floor open` lives 10 minutes and has its own slot, so printing one never blocks `dudes open`, whose links live 60 seconds. (#150)
+- A held ticket's Review opens the interrupted work instead of Chat, and the recovery panel uses plainer words. (#157)
+- The README opens with the Floor, a screenshot and a two-command quick start, and links a demo that needs no account. Upgrade details moved to Get started. (#146, #155)
+
+### Fixes
+
+- A ticket whose engine turn failed shows the exit code or signal and the time on its card and in its detail. (#152)
+- Notices show over the full-screen Setup, Settings, Log and agent sheets on a phone, and several at once no longer cover most of the screen. (#149)
+- Notices no longer make the Hire and Retire buttons unreachable or cover the first-task input. (#153)
+- On a phone, the open agent panel no longer covers the receipt a held ticket points to. (#157)
+
+### Breaking
+
+- **Every browser signs in once more.** Browsers that signed in before this release hold no key, so the first 0.93.0 daemon ends each of them once. Run `dudes open` to sign in again. A page left open across the upgrade says the daemon stopped or restarted without its sign-in. (#156)
+
 ## [0.92.0] - 2026-10-21
 
 ### Highlights
@@ -295,7 +321,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.92.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.93.0...HEAD
+[0.93.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.92.0...v0.93.0
 [0.92.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.91.0...v0.92.0
 [0.91.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.90.0...v0.91.0
 [0.90.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.89.1...v0.90.0
