@@ -329,7 +329,7 @@ const ADMITTED = new Map([
   [ACTIVITY_PANEL, Object.freeze(['an input', 'a select', 'a change handler'])],
   [GOAL_PANEL, ADMITTED_IN_GOAL_FORM],
   [TICKET_BOARD, Object.freeze([...ADMITTED_IN_TICKET_FORM, 'a key handler'])], [TICKET_PANEL, ADMITTED_IN_TICKET_FORM],
-  [CHAT_PANEL, Object.freeze(['a textarea', 'a change handler', 'a key handler'])],
+  [CHAT_PANEL, Object.freeze(['a textarea', 'an input', 'a change handler', 'a key handler'])],
   [RENAME_PANEL, Object.freeze(['an input', 'a change handler', 'a key handler'])],
   [ADD_PROJECT_FORM, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
   [SETTINGS_VIEW, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
@@ -458,6 +458,10 @@ const ADMITTED_HANDLERS = [
   { file: GOAL_PANEL, tag: 'input', handler: 'onChange', expression: "() => choose('keep')" },
   { file: GOAL_PANEL, tag: 'input', handler: 'onChange', expression: '() => choose({ id: option.id })' },
   { file: CHAT_PANEL, tag: 'textarea', handler: 'onChange', expression: '(event) => editChatDraft(row.id, event.currentTarget.value)' },
+  { file: CHAT_PANEL, tag: 'textarea', handler: 'onPaste', expression: '(event) => pasteChatFiles(event, gate)' },
+  { file: CHAT_PANEL, tag: 'input', className: 'chat-file-input', handler: 'onChange', expression: '(event) => pickChatFiles(event, gate)' },
+  { file: CHAT_PANEL, tag: 'section', className: 'chat-compose', handler: 'onDragOver', expression: 'overChatFiles' },
+  { file: CHAT_PANEL, tag: 'section', className: 'chat-compose', handler: 'onDrop', expression: '(event) => dropChatFiles(event, gate)' },
   { file: CHAT_PANEL, tag: 'textarea', handler: 'onKeyDown',
     expression: '(event) => {\n          if (!queuesChatOnKey(event) || blocked || action.sending) return;\n          event.preventDefault();\n          void submitChat(gate, browserChatDeps);\n        }' },
   { file: CHAT_PANEL, tag: 'div', className: 'chat-scroll', handler: 'onScroll',
@@ -1114,7 +1118,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(ANSWER_FORM),
     ...Array(2).fill(DEVICE_NOTICES),
     DEVICES_SECTION,
-    ...Array(8).fill(CHAT_PANEL),
+    ...Array(9).fill(CHAT_PANEL),
     ...Array(4).fill(CONTROL_PANEL),
     ...Array(5).fill(PAUSE_ALL_PANEL),
     ...Array(5).fill(RECOVERY_PANEL),
@@ -1319,6 +1323,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => selectChatAnswer(row.id, null)',
     '() => selectChatAnswer(row.id, { questionLsn: question.questionLsn, question: question.question })',
     '() => void startFreshChat(attempt, outcome, browserChatDeps)',
+    '() => removeChatFile(row.id, file.id)',
   ].sort());
   assert.deepEqual(clicksIn(await readFile(resolve(floor, CONTROL_PANEL), 'utf8')).sort(), [
     'dismissReceipt',
@@ -1553,9 +1558,11 @@ const OUTBOUND = [
 
 const REQUESTS = {
   [CHAT_MODULE]: {
-    paths: ['/floor/chat/send', 'application/json', '/floor/chat/cancel', 'application/json'],
-    methods: ['POST', 'POST'],
-    fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', "fetch('/floor/chat/send')", "fetch('/floor/chat/cancel')"],
+    paths: ['/floor/chat/send', 'application/json', '/floor/chat/cancel', 'application/json',
+      'template: `/floor/chat/file?agent=${agent}&name=${encodeURIComponent(file.name)}`', 'application/octet-stream'],
+    methods: ['POST', 'POST', 'POST'],
+    fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', "fetch('/floor/chat/send')", "fetch('/floor/chat/cancel')",
+      'deps.fetch(url)'],
   },
   [DEVICES_MODULE]: {
     paths: ['application/json', '/floor/devices', '/floor/devices/keep', '/floor/devices/remove'],
@@ -2533,18 +2540,19 @@ test('no source asks for an answer method, steer, terminal or generic RPC, and o
 
 /** The goal route. The goal module names it once, in its one fetch, and nothing else names it. */
 const GOAL_ROUTE = /\/floor\/goal\b/g;
-const CHAT_ROUTES = /\/floor\/chat\/(?:send|cancel)\b/g;
+const CHAT_ROUTES = /\/floor\/chat\/(?:send|cancel|file)\b/g;
 
-test('only the Chat module names its two routes and its field writes only the in-memory draft', async () => {
-  assert.equal([..."fetch('/floor/chat/send'); fetch('/floor/chat/cancel'); fetch('/floor/chat/sends');".matchAll(CHAT_ROUTES)].length, 2);
+test('only the Chat module names its three routes and its fields write only the in-memory draft and file chips', async () => {
+  assert.equal([..."fetch('/floor/chat/send'); fetch('/floor/chat/cancel'); fetch('/floor/chat/file'); fetch('/floor/chat/sends');".matchAll(CHAT_ROUTES)].length, 3);
   const naming = {};
   for (const path of await filesUnder(source, ['.ts', '.tsx'])) {
     const routes = [...(await readFile(path, 'utf8')).matchAll(CHAT_ROUTES)].length;
     if (routes > 0) naming[path.slice(floor.length + 1)] = routes;
   }
-  assert.deepEqual(naming, { [CHAT_MODULE]: 2 });
+  assert.deepEqual(naming, { [CHAT_MODULE]: 3 });
   assert.deepEqual(fieldsIn(await readFile(resolve(floor, CHAT_PANEL), 'utf8')), [{ tag: 'textarea', name: 'chat_text',
-    type: null, change: '(event) => editChatDraft(row.id, event.currentTarget.value)' }]);
+    type: null, change: '(event) => editChatDraft(row.id, event.currentTarget.value)' },
+  { tag: 'input', name: null, type: 'file', change: '(event) => pickChatFiles(event, gate)' }]);
 });
 
 test('Chat requires its own fresh sibling and revokes its mounted history and actions with authority', async () => {

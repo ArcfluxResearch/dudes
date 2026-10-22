@@ -569,6 +569,12 @@ where
     let socket = transport.path().to_path_buf();
     let stop = Arc::new(StopFlag::new());
     let subscribers = Arc::new(Subscribers::new());
+    // A crash between a retirement and the delete of its files leaves them behind; finish it.
+    for (agent, row) in &sup.world().agents {
+        if row.retired {
+            crate::floor_chat_file::remove_for(&settings.state_dir.join("agents"), *agent);
+        }
+    }
     // Replay is the authority on whether this run ever had a pre-agent epoch. A retired agent is
     // still a recorded agent: acquisition never reopens after the first hire in the directory's
     // history.
@@ -624,6 +630,7 @@ where
             onboarding_index,
             answer_index,
             chat_index,
+            agents_root: settings.state_dir.join("agents"),
             running_mcp: options.mcp_servers().clone(),
             running_providers: options.into_providers(),
             browser_launches,

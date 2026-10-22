@@ -8,6 +8,8 @@ import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { ATTEMPT_ID, mintAttemptId, trimAsciiSpace, utf8Bytes } from '../onboarding/hire.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { chatReason, exactObject } from './model.ts';
+import { MAX_FILE_BYTES, decodeUpload, filesProblem, messageText, tooBig } from './chatFiles.ts';
+import type { ChatFile } from './chatFiles.ts';
 import type { ChatReason, ChatView, PendingNote } from './model.ts';
 import { floorFetch } from '../../transport.ts';
 
@@ -18,6 +20,8 @@ export interface ChatAttempt {
   readonly payload: ChatPayload;
   readonly body: string;
   readonly draft?: ChatDraft;
+  /** The chips this message carries, dropped when it is queued. */
+  readonly files?: readonly number[];
 }
 interface ChatDraft { readonly text: string }
 export interface AcknowledgedNote {
@@ -47,6 +51,8 @@ export interface ChatState {
   readonly drafts: ReadonlyMap<string, ChatDraft>;
   readonly acknowledged: readonly AcknowledgedNote[];
   readonly answerTargets: ReadonlyMap<string, ChatAnswerTarget>;
+  /** Files attached to each agent's next message. */
+  readonly files: ReadonlyMap<string, readonly ChatFile[]>;
   readonly attempt: ChatAttempt | null;
   readonly outcome: ChatOutcome | null;
   readonly sending: boolean;
@@ -55,7 +61,7 @@ export interface ChatState {
 }
 
 const INITIAL = { attempt: null, outcome: null, sending: false, uncertain: false, problem: null };
-let state: ChatState = Object.freeze({ ...INITIAL, drafts: new Map(), acknowledged: [], answerTargets: new Map() });
+let state: ChatState = Object.freeze({ ...INITIAL, drafts: new Map(), acknowledged: [], answerTargets: new Map(), files: new Map() });
 const listeners = new Set<() => void>();
 
 export function getChatState(): ChatState { return state; }
@@ -66,7 +72,7 @@ export function subscribeToChat(listener: () => void): () => void {
 }
 
 export function resetChat(): void {
-  state = Object.freeze({ ...INITIAL, drafts: new Map(), acknowledged: [], answerTargets: new Map() });
+  state = Object.freeze({ ...INITIAL, drafts: new Map(), acknowledged: [], answerTargets: new Map(), files: new Map() });
   listeners.clear();
 }
 
@@ -129,6 +135,8 @@ export interface ChatDeps {
   floor(): FloorState;
   session(): number;
   refresh(): void;
+  /** Pause between upload retries; defaults to a timer. */
+  wait?(ms: number): Promise<void>;
 }
 
 export const browserChatDeps: ChatDeps = {
@@ -154,15 +162,36 @@ export function releaseChat(): void {
   if (chatReleasable(state)) commit({ ...state, ...INITIAL });
 }
 
+export function chatFiles(chat: ChatState, agent: string): readonly ChatFile[] {
+  return chat.files?.get(agent) ?? [];
+}
+
+export function chatUploading(chat: ChatState, agent: string): boolean {
+  return chatFiles(chat, agent).some(file => file.status === 'uploading');
+}
+
+/** What the next message to `agent` would say, with the ready files after the typed text. */
+export function chatNoteText(chat: ChatState, agent: string): string {
+  return messageText(chatDraft(chat, agent), chatFiles(chat, agent).filter(file => file.status === 'ready'));
+}
+
+/** Why the next message to `agent` cannot be sent, or `null`. */
+export function chatSendProblem(chat: ChatState, agent: string): string | null {
+  const all = chatFiles(chat, agent);
+  if (all.some(file => file.status === 'failed')) return 'A file did not upload. Remove it, or attach it again, before sending.';
+  const ready = all.filter(file => file.status === 'ready');
+  return filesProblem(chatDraft(chat, agent), ready) ?? noteProblem(chatNoteText(chat, agent));
+}
+
 export async function submitChat(gate: ChatGate, deps: ChatDeps): Promise<void> {
   const floor = deps.floor();
   if (!gate.open || !chatGate(floor, floor.agents.find(row => row.id === gate.agent) ?? null).open
-    || state.attempt !== null) return;
-  const draft = chatDraft(state, gate.agent);
-  if (noteProblem(draft) !== null) return;
+    || state.attempt !== null || chatUploading(state, gate.agent)) return;
+  if (chatSendProblem(state, gate.agent) !== null) return;
   if (state.answerTargets.has(gate.agent)) selectChatAnswer(gate.agent, null);
-  const payload = Object.freeze({ request_id: mintAttemptId(deps.random), agent: gate.agent, text: trimAsciiSpace(draft) });
-  await start(Object.freeze({ verb: 'send', payload, body: JSON.stringify(payload), draft: state.drafts.get(gate.agent) }), deps);
+  const files = chatFiles(state, gate.agent).map(file => file.id);
+  const payload = Object.freeze({ request_id: mintAttemptId(deps.random), agent: gate.agent, text: chatNoteText(state, gate.agent) });
+  await start(Object.freeze({ verb: 'send', payload, body: JSON.stringify(payload), draft: state.drafts.get(gate.agent), files }), deps);
 }
 
 export async function startFreshChat(attempt: ChatAttempt, outcome: ChatOutcome, deps: ChatDeps): Promise<void> {
@@ -177,7 +206,7 @@ export async function startFreshChat(attempt: ChatAttempt, outcome: ChatOutcome,
   }
   const payload = Object.freeze({ request_id: requestId, agent: attempt.payload.agent, text: attempt.payload.text,
     context_reset_turn: outcome.turnId });
-  await start(Object.freeze({ verb: 'send', payload, body: JSON.stringify(payload), draft: attempt.draft }), deps);
+  await start(Object.freeze({ verb: 'send', payload, body: JSON.stringify(payload), draft: attempt.draft, files: attempt.files }), deps);
 }
 
 export async function cancelChat(gate: ChatGate, note: PendingNote, deps: ChatDeps): Promise<void> {
@@ -218,8 +247,13 @@ export async function retryChat(deps: ChatDeps): Promise<void> {
   const drafts = new Map(state.drafts);
   if (outcome.kind === 'queued' && 'text' in attempt.payload) {
     if (drafts.get(attempt.payload.agent) === attempt.draft) drafts.delete(attempt.payload.agent);
+    const files = new Map(state.files);
+    const sent = new Set(attempt.files ?? []);
+    const kept = chatFiles(state, attempt.payload.agent).filter(file => !sent.has(file.id));
+    if (kept.length === 0) files.delete(attempt.payload.agent);
+    else files.set(attempt.payload.agent, kept);
     const note = Object.freeze({ agent_id: attempt.payload.agent, note_lsn: outcome.noteLsn, text: attempt.payload.text });
-    commit({ ...state, ...INITIAL, drafts, acknowledged: [...state.acknowledged, note] });
+    commit({ ...state, ...INITIAL, drafts, files, acknowledged: [...state.acknowledged, note] });
     if (current.chat !== null) reconcileChat(current.chat);
     return;
   }
@@ -270,4 +304,119 @@ export function decodeChatResponse(status: number, text: string, attempt: ChatAt
     if (status === 400 || status === 413) return Object.freeze({ kind: 'rejected' });
   }
   return Object.freeze({ kind: 'unknown' });
+}
+
+let fileSeq = 0;
+let uploads: Promise<void> = Promise.resolve();
+/** Another tab may be sending 10 MiB, so a busy answer is retried for about this long. */
+const BUSY_PATIENCE_MS = 30_000;
+const BUSY_FIRST_PAUSE_MS = 400;
+const BUSY_LONGEST_PAUSE_MS = 3_000;
+
+function setFiles(agent: string, next: readonly ChatFile[]): void {
+  const files = new Map(state.files);
+  if (next.length === 0) files.delete(agent);
+  else files.set(agent, next);
+  commit({ ...state, files });
+}
+
+function changeFile(agent: string, id: number, patch: Partial<ChatFile>): boolean {
+  const current = chatFiles(state, agent);
+  if (!current.some(file => file.id === id)) return false;
+  setFiles(agent, current.map(file => file.id === id ? Object.freeze({ ...file, ...patch }) : file));
+  return true;
+}
+
+/** Drop a chip. The copy the daemon kept stays until the agent retires. */
+export function removeChatFile(agent: string, id: number): void {
+  setFiles(agent, chatFiles(state, agent).filter(file => file.id !== id));
+}
+
+/** Whether files can be attached for this agent: only agents Dudes launches get the folder. */
+export function chatAcceptsFiles(floor: FloorState, agent: string): boolean {
+  const row = floor.agents.find(candidate => candidate.id === agent);
+  return row !== undefined && row.mode !== 'attached';
+}
+
+/** Show a chip for each picked file at once, then send them to the daemon one after another. */
+export function attachChatFiles(gate: ChatGate, picked: readonly File[], deps: ChatDeps): void {
+  if (!gate.open || picked.length === 0 || !chatAcceptsFiles(deps.floor(), gate.agent)) return;
+  const agent = gate.agent;
+  const chips: [ChatFile, File][] = picked.map(file => {
+    const tooLarge = file.size > MAX_FILE_BYTES;
+    fileSeq += 1;
+    return [Object.freeze({ id: fileSeq, name: file.name === '' ? 'file' : file.name, size: file.size,
+      status: tooLarge ? 'failed' as const : 'uploading' as const, path: null, kept: null,
+      error: tooLarge ? tooBig(file.name === '' ? 'file' : file.name, file.size) : null }), file];
+  });
+  setFiles(agent, [...chatFiles(state, agent), ...chips.map(([chip]) => chip)]);
+  for (const [chip, file] of chips) {
+    if (chip.status === 'uploading') uploads = uploads.then(() => uploadOne(agent, chip.id, file, deps));
+  }
+}
+
+async function uploadOne(agent: string, id: number, file: File, deps: ChatDeps): Promise<void> {
+  const failed = (error: string) => { changeFile(agent, id, { status: 'failed', error }); };
+  const session = deps.session();
+  const wait = deps.wait ?? ((ms: number) => new Promise<void>(resolve => { setTimeout(resolve, ms); }));
+  let bytes: Uint8Array<ArrayBuffer>;
+  try { bytes = new Uint8Array(await file.arrayBuffer()); } catch { failed('This file could not be read.'); return; }
+  const url = `/floor/chat/file?agent=${agent}&name=${encodeURIComponent(file.name)}`;
+  let waited = 0;
+  let pause = BUSY_FIRST_PAUSE_MS;
+  while (waited <= BUSY_PATIENCE_MS) {
+    if (!chatFiles(state, agent).some(chip => chip.id === id)) return;
+    if (!deps.signedIn()) { failed('This page has no Floor session, so nothing was uploaded.'); return; }
+    let result;
+    try {
+      const response = await deps.fetch(url, { method: 'POST', credentials: 'same-origin', cache: 'no-store',
+        referrerPolicy: 'no-referrer', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes });
+      result = decodeUpload(response.status, await response.text());
+    } catch { failed('The upload did not reach the Floor. Try again.'); return; }
+    if (deps.session() !== session) { removeChatFile(agent, id); return; }
+    if (result.kind === 'busy') {
+      await wait(pause);
+      waited += pause;
+      pause = Math.min(pause * 2, BUSY_LONGEST_PAUSE_MS);
+      continue;
+    }
+    if (result.kind === 'failed') { failed(result.message); return; }
+    changeFile(agent, id, { status: 'ready', path: result.path, kept: result.name, error: null });
+    return;
+  }
+  failed('The Floor is busy with another upload. Try again.');
+}
+
+/** Resolves once every upload started so far has finished. */
+export function chatUploadsSettled(): Promise<void> {
+  return uploads;
+}
+
+/** What of a paste, drop or pick this module reads. */
+interface FileEvent {
+  preventDefault(): void;
+}
+
+export function pasteChatFiles(event: FileEvent & { readonly clipboardData: { readonly files: Iterable<File> } }, gate: ChatGate): void {
+  const picked = [...event.clipboardData.files];
+  if (picked.length === 0 || !gate.open || !chatAcceptsFiles(browserChatDeps.floor(), gate.agent)) return;
+  event.preventDefault();
+  attachChatFiles(gate, picked, browserChatDeps);
+}
+
+/** A file dragged over the composer may be dropped. Without this the browser would open it. */
+export function overChatFiles(event: FileEvent & { readonly dataTransfer: { readonly types: readonly string[] } }): void {
+  if (event.dataTransfer.types.includes('Files')) event.preventDefault();
+}
+
+export function dropChatFiles(event: FileEvent & { readonly dataTransfer: { readonly types: readonly string[]; readonly files: Iterable<File> } },
+  gate: ChatGate): void {
+  if (!event.dataTransfer.types.includes('Files')) return;
+  event.preventDefault();
+  attachChatFiles(gate, [...event.dataTransfer.files], browserChatDeps);
+}
+
+export function pickChatFiles(event: { readonly currentTarget: { files: Iterable<File> | null; value: string } }, gate: ChatGate): void {
+  attachChatFiles(gate, [...(event.currentTarget.files ?? [])], browserChatDeps);
+  event.currentTarget.value = '';
 }

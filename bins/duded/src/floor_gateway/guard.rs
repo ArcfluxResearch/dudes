@@ -28,15 +28,15 @@ use std::io;
 use dudes_proto::FloorPeerRefusal;
 
 use super::{
-    ANSWER_PATH, ActionRoute, CHAT_CANCEL_PATH, CHAT_SEND_PATH, Catalog, Clock, DEVICES_KEEP_PATH,
-    DEVICES_PATH, DEVICES_REMOVE_PATH, DIFF_PATH, DeviceVerb, ENGINE_LOGIN_PATH, FloorSessions,
-    GIT_PATH, GOAL_PATH, Handle, INSPECT_RECOVERY_PATH, LOOK_PATH, MEMORY_ENTRY_PATH,
-    MEMORY_PAGE_PATH, ONBOARD_PATH, PAUSE_PATH, PROJECT_ADD_PATH, PROJECT_CHOOSE_PATH,
-    PROJECT_PREVIEW_PATH, PROJECT_REMOVE_PATH, RECEIPT_RECOVERY_PATH, RENAME_PATH, RENEW_PATH,
-    RESUME_PATH, RETIRE_PATH, ReceiptSession, RecoveryRoute, Response, SESSION_CHECK_PATH,
-    SESSION_END_PATH, SETTINGS_PATH, SIGN_IN_PATH, STREAM_PATH, SUBMIT_RECOVERY_PATH,
-    SessionIdentity, SocketAddr, SocketRoute, SocketSession, TERMINAL_PATH, TicketRoute,
-    action_json, error_response,
+    ANSWER_PATH, ActionRoute, CHAT_CANCEL_PATH, CHAT_FILE_PATH, CHAT_SEND_PATH, Catalog, Clock,
+    DEVICES_KEEP_PATH, DEVICES_PATH, DEVICES_REMOVE_PATH, DIFF_PATH, DeviceVerb, ENGINE_LOGIN_PATH,
+    FloorSessions, GIT_PATH, GOAL_PATH, Handle, INSPECT_RECOVERY_PATH, LOOK_PATH,
+    MEMORY_ENTRY_PATH, MEMORY_PAGE_PATH, ONBOARD_PATH, PAUSE_PATH, PROJECT_ADD_PATH,
+    PROJECT_CHOOSE_PATH, PROJECT_PREVIEW_PATH, PROJECT_REMOVE_PATH, RECEIPT_RECOVERY_PATH,
+    RENAME_PATH, RENEW_PATH, RESUME_PATH, RETIRE_PATH, ReceiptSession, RecoveryRoute, Response,
+    SESSION_CHECK_PATH, SESSION_END_PATH, SETTINGS_PATH, SIGN_IN_PATH, STREAM_PATH,
+    SUBMIT_RECOVERY_PATH, SessionIdentity, SocketAddr, SocketRoute, SocketSession, TERMINAL_PATH,
+    TicketRoute, action_json, error_response,
 };
 use crate::floor_peer::Verdict;
 use crate::floor_session::{Presentation, Refusal};
@@ -73,6 +73,7 @@ pub(super) const DYNAMIC_PATHS: &[&str] = &[
     MEMORY_ENTRY_PATH,
     CHAT_SEND_PATH,
     CHAT_CANCEL_PATH,
+    CHAT_FILE_PATH,
     DEVICES_PATH,
     DEVICES_REMOVE_PATH,
     DEVICES_KEEP_PATH,
@@ -358,7 +359,9 @@ impl Guard<'_> {
                     return Err(self.refused(head, Refusal::Gone));
                 }
                 let body = read_body()?;
-                clean_body(&body)?;
+                if action != ActionRoute::ChatFile {
+                    clean_body(&body)?;
+                }
                 let request = head.presentation(cookie, &body);
                 let admitted = if action == ActionRoute::Recovery(RecoveryRoute::Receipt) {
                     sessions.authorize_receipt(&request).map(Admitted::Receipt)

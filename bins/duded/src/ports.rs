@@ -1061,6 +1061,13 @@ pub enum Job {
         /// The fixed reply.
         reply: Sender<crate::floor_ticket::TicketReply>,
     },
+    /// Which folder an agent keeps files in, or why it keeps none.
+    ChatFile {
+        /// The agent a file is for.
+        agent: dudes_types::AgentId,
+        /// The agent's directory, or a fixed reason.
+        reply: Sender<Result<std::path::PathBuf, &'static str>>,
+    },
     /// One typed browser-note operation.
     Chat {
         /// The admitting registry session.
@@ -1113,6 +1120,13 @@ pub struct Handle {
         reason = "one channel pair, read in one place"
     )]
     copy_hold: Arc<Mutex<Option<(Sender<()>, Receiver<()>)>>>,
+    /// Armed only by a test, to hold a chat file between its write and the retirement recheck.
+    #[cfg(feature = "testing")]
+    #[allow(
+        clippy::type_complexity,
+        reason = "one channel pair, read in one place"
+    )]
+    chat_file_hold: Arc<Mutex<Option<(Sender<()>, Receiver<()>)>>>,
     /// The folder dialog the Floor's project routes open, wired once the daemon has built it.
     folder_picker: Arc<std::sync::OnceLock<Arc<crate::folder_picker::FolderPicker>>>,
 }
@@ -1158,6 +1172,65 @@ impl Handle {
     /// Whether the exit path has started, so work that waits on the loop should stop waiting.
     pub(crate) fn is_stopping(&self) -> bool {
         self.stopping.load(Ordering::Acquire)
+    }
+
+    /// The directory a file for `agent` is kept under, or the fixed reason it cannot be: the agent
+    /// is unknown or retired, or Dudes does not launch its engine.
+    pub(crate) fn chat_file_dir(
+        &self,
+        agent: dudes_types::AgentId,
+    ) -> Result<std::path::PathBuf, &'static str> {
+        let (reply, answer) = std::sync::mpsc::channel();
+        self.send_floor(Job::ChatFile { agent, reply })
+            .map_err(|_| "unavailable")?;
+        answer.recv().map_err(|_| "unavailable")?
+    }
+
+    /// Ask the writer again after a chat file was written: an agent retired in between has had its
+    /// folder deleted before the write, so the copy is deleted here and the upload is refused.
+    pub(crate) fn chat_file_kept(
+        &self,
+        agent: dudes_types::AgentId,
+        dir: &std::path::Path,
+    ) -> Result<(), &'static str> {
+        #[cfg(feature = "testing")]
+        self.hold_chat_file();
+        match self.chat_file_dir(agent) {
+            Err(reason @ ("agent_retired" | "agent_absent")) => {
+                if let Some(root) = dir.parent() {
+                    crate::floor_chat_file::remove_for(root, agent);
+                }
+                Err(reason)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Stop a chat file after it is written and before the retirement recheck: tell the test it is
+    /// there, then wait to be released.
+    #[doc(hidden)]
+    #[cfg(feature = "testing")]
+    pub fn hold_after_chat_file_write(&self) -> (Receiver<()>, Sender<()>) {
+        let (reached, wait_for_it) = mpsc::channel();
+        let (release, held) = mpsc::channel();
+        *self
+            .chat_file_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((reached, held));
+        (wait_for_it, release)
+    }
+
+    #[cfg(feature = "testing")]
+    fn hold_chat_file(&self) {
+        let armed = self
+            .chat_file_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some((reached, held)) = armed {
+            let _ = reached.send(());
+            let _ = held.recv_timeout(Duration::from_secs(20));
+        }
     }
 
     /// Queue one strictly typed Chat operation on the daemon writer.
@@ -1629,6 +1702,8 @@ impl Handle {
             stopping: Arc::new(AtomicBool::new(false)),
             worktrees: Arc::new(std::sync::OnceLock::new()),
             copy_hold: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "testing")]
+            chat_file_hold: Arc::new(Mutex::new(None)),
             folder_picker: Arc::default(),
         }
     }

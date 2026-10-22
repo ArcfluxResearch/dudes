@@ -35,7 +35,7 @@ export class ReloadNeeded extends Error {
 /** A request body the page cannot sign exactly as it sends it. */
 export class UnsignableBody extends TypeError {
   constructor() {
-    super('Floor requests send text bodies only');
+    super('Floor requests send text or bytes only');
   }
 }
 
