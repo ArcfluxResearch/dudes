@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test, { after, before } from 'node:test';
 import { createElement } from 'react';
@@ -97,6 +98,112 @@ test('the chronological conversation joins reserved notes and turns once and put
   const sending = render(view(), {}, row, busy);
   assert.doesNotMatch(sending, /<textarea[^>]*disabled/);
   assert.match(sending, /class="chat-send"[^>]*disabled/);
+});
+
+test('the composer follows the thread while the conversation fills and scrolls the remaining sheet height', async () => {
+  const html = render({ ...view(), turns: [turn()] });
+  assert.ok(html.indexOf('class="chat-thread"') < html.indexOf('class="chat-compose"'));
+  assert.ok(html.indexOf('<summary>Conversation details</summary>') < html.indexOf('class="chat-compose"'));
+  assert.match(html, /class="chat-scroll"[^>]*role="log"/);
+  const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
+  const rule = selector => css.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]+)\\}`))?.[1] ?? '';
+  assert.match(rule(".agent-drawer:has(.agent-detail[data-detail-tab='chat'])"), /overflow: clip/);
+  assert.match(rule('#agent-detail-panel-chat'), /flex: 1 1 auto; min-height: 0/);
+  assert.match(rule('.chat-thread'), /flex: 1 1 auto/);
+  assert.match(rule('.chat-scroll'), /flex: 1 1 auto; min-height: 0; overflow-y: auto/);
+  assert.doesNotMatch(rule('.chat-scroll'), /(?:^|;)\s*height:/);
+  assert.match(rule('.chat-compose'), /flex: 0 0 auto/);
+  assert.doesNotMatch(rule('.chat-compose'), /overflow/);
+});
+
+test('the Chat sheet follows the visible viewport while a phone keyboard opens and clears its listeners on leave', async () => {
+  const { fakePage } = await import('./helpers/fake-page.mjs');
+  const { createRoot } = await import('react-dom/client');
+  const { act } = await import('react');
+  const page = fakePage();
+  const prototype = Object.getPrototypeOf(page.host);
+  const closest = prototype.closest;
+  const viewport = new EventTarget();
+  Object.assign(viewport, { height: 844, offsetTop: 0 });
+  window.visualViewport = viewport;
+  prototype.closest = function (selector) { return selector === '.agent-drawer' ? page.host : closest.call(this, selector); };
+  page.host.style.removeProperty = name => { delete page.host.style[name]; };
+  try {
+    const root = createRoot(page.host);
+    await act(() => root.render(createElement(ChatPanelView, { floor: floor(), row, action })));
+    assert.equal(page.host.style['--chat-viewport-height'], '844px');
+    assert.equal(page.host.getAttribute('data-chat-short'), 'false');
+    Object.assign(viewport, { height: 500, offsetTop: 75 });
+    viewport.dispatchEvent(new Event('resize'));
+    assert.equal(page.host.style['--chat-viewport-height'], '500px');
+    assert.equal(page.host.style['--chat-viewport-top'], '75px');
+    assert.equal(page.host.getAttribute('data-chat-short'), 'true');
+    viewport.offsetTop = 20;
+    viewport.dispatchEvent(new Event('scroll'));
+    assert.equal(page.host.style['--chat-viewport-top'], '20px');
+    await act(() => root.unmount());
+    viewport.dispatchEvent(new Event('resize'));
+    assert.equal(page.host.style['--chat-viewport-height'], undefined);
+    assert.equal(page.host.style['--chat-viewport-top'], undefined);
+    assert.equal(page.host.getAttribute('data-chat-short'), null);
+  } finally {
+    prototype.closest = closest;
+    page.restore();
+  }
+});
+
+test('a short Chat sheet reserves its composer and lets the header and tabs scroll under notices', async () => {
+  const html = renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(), row, selectedId: A,
+    onClose() {}, leaveFocusTo: 'crew-toggle' }));
+  assert.match(html, /class="agent-detail-context">[\s\S]*<header class="agent-detail-head">[\s\S]*class="agent-detail-tabs"/);
+  const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
+  assert.match(css, /\.agent-detail-context \{ display: contents; \}/);
+  assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] \{[^}]*grid-template-rows: minmax\(0, auto\) minmax\(0, 1fr\) auto auto/);
+  assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] > \.agent-detail-context \{[^}]*overflow-y: auto/);
+  assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] \.chat-panel \{ display: contents/);
+  assert.match(css, /\[data-chat-short='true'\] \.chat-compose \{ grid-row: 4/);
+});
+
+test('resizing the thread follows the newest reply unless the reader has scrolled away', async () => {
+  const { fakePage } = await import('./helpers/fake-page.mjs');
+  const { createRoot } = await import('react-dom/client');
+  const { act } = await import('react');
+  const page = fakePage();
+  const previousObserver = globalThis.ResizeObserver;
+  let resized, observed, disconnected = false;
+  globalThis.ResizeObserver = class {
+    constructor(callback) { resized = callback; }
+    observe(node) { observed = node; }
+    disconnect() { disconnected = true; }
+  };
+  try {
+    const root = createRoot(page.host);
+    await act(() => root.render(createElement(ChatPanelView, { floor: floor(), row, action })));
+    const node = page.host.querySelector('[class="chat-scroll"]');
+    assert.equal(observed, node);
+    Object.assign(node, { scrollHeight: 600, clientHeight: 200, scrollTop: 0 });
+    resized();
+    assert.equal(node.scrollTop, 600);
+    const props = node[Object.keys(node).find(key => key.startsWith('__reactProps$'))];
+    Object.assign(node, { clientHeight: 100, scrollTop: 200 });
+    props.onScroll({ currentTarget: node });
+    resized();
+    assert.equal(node.scrollTop, 600);
+    node.scrollTop = 0;
+    props.onScroll({ currentTarget: node });
+    node.scrollHeight = 900;
+    resized();
+    assert.equal(node.scrollTop, 0);
+    node.scrollTop = 800;
+    props.onScroll({ currentTarget: node });
+    resized();
+    assert.equal(node.scrollTop, 900);
+    await act(() => root.unmount());
+    assert.equal(disconnected, true);
+  } finally {
+    globalThis.ResizeObserver = previousObserver;
+    page.restore();
+  }
 });
 
 test('acknowledged messages remain visible until their snapshot row arrives without duplicate text', () => {

@@ -293,6 +293,7 @@ const LOOK_PANEL = 'src/renderer/look/LookEditor.tsx';
 const ADMITTED_IN_GOAL_FORM = Object.freeze(['a textarea', 'an input', 'a change handler']);
 const SETUP_VIEW = 'src/renderer/setup/SetupView.tsx';
 const FIRST_RUN_GUIDE = 'src/renderer/setup/FirstRunGuide.tsx';
+const FIRST_TASK = 'src/renderer/setup/FirstTask.tsx';
 const SETTINGS_VIEW = 'src/renderer/settings/SettingsView.tsx';
 const FLOOR_SHELL = 'src/shell.tsx';
 const AGENT_ORDER = 'src/renderer/AgentOrder.tsx';
@@ -338,6 +339,7 @@ const ADMITTED = new Map([
   [CONTROL_VIEW, Object.freeze(['a key handler'])],
   [TERMINAL_PANEL, Object.freeze(['a textarea', 'a key handler'])],
   [FIRST_RUN_GUIDE, Object.freeze(['a key handler'])],
+  [FIRST_TASK, Object.freeze(['a key handler'])],
 ]);
 /** The slot's one key handler: a held key's repeats are not presses. It sends nothing. */
 const REFUSE_REPEAT = '(event) => { if (event.repeat) event.preventDefault(); }';
@@ -403,6 +405,14 @@ const ADMITTED_HANDLERS = [
   { file: TERMINAL_PANEL, tag: 'textarea', handler: 'onFocus', expression: '(event) => event.currentTarget.select()' },
   { file: FIRST_RUN_GUIDE, tag: 'aside', className: 'first-run-guide', handler: 'onKeyDown',
     expression: "(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }" },
+  { file: FIRST_TASK, tag: 'section', className: 'first-task', handler: 'onKeyDown',
+    expression: `(event) => {
+      if (offer.kind !== 'task' || current.mode !== 'open' || !closesPanel(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setPrompt({ freeIds, mode: 'collapsed' });
+      openButton.current?.focus();
+    }` },
   { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
     expression: '(event) => setFilters({ ...filters, agentId: event.currentTarget.value })' },
   { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
@@ -449,7 +459,7 @@ const ADMITTED_HANDLERS = [
   { file: CHAT_PANEL, tag: 'textarea', handler: 'onKeyDown',
     expression: '(event) => {\n          if (!queuesChatOnKey(event) || blocked || action.sending) return;\n          event.preventDefault();\n          void submitChat(gate, browserChatDeps);\n        }' },
   { file: CHAT_PANEL, tag: 'div', className: 'chat-scroll', handler: 'onScroll',
-    expression: 'event => {\n        const node = event.currentTarget;\n        follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;\n      }' },
+    expression: 'event => {\n        const node = event.currentTarget;\n        if (node.clientWidth !== size.current.width || node.clientHeight !== size.current.height) return;\n        follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;\n      }' },
   // ControlPanel.tsx: Pause and Resume keep keyboard focus while they wait, so a
   // held Enter would otherwise press the verb the slot flips to. Each refuses
   // repeats and nothing else, pinned by its exact body on its own button.
@@ -1122,7 +1132,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(3).fill(SETUP_VIEW),
     ...Array(9).fill(SETTINGS_VIEW),
     ...Array(7).fill(FIRST_RUN_GUIDE),
-    ...Array(5).fill('src/renderer/setup/FirstTask.tsx'),
+    ...Array(7).fill(FIRST_TASK),
     ...Array(10).fill(TERMINAL_PANEL),
     ...Array(5).fill(LOGIN_PANEL),
     ...Array(6).fill('src/shell.tsx'),
@@ -2621,6 +2631,8 @@ const ADMITTED_LISTENERS = Object.freeze([
   { path: 'src/renderer/OfficeCanvas.tsx', line: "box.addEventListener('focusin', schedule);" },
   { path: 'src/renderer/OfficeCanvas.tsx', line: "box.addEventListener('focusout', schedule);" },
   { path: 'src/renderer/OfficeCanvas.tsx', line: "canvas.addEventListener('webglcontextlost', onContextLost);" },
+  { path: 'src/renderer/chat/ChatPanel.tsx', line: "viewport.addEventListener('resize', fit);" },
+  { path: 'src/renderer/chat/ChatPanel.tsx', line: "viewport.addEventListener('scroll', fit);" },
   { path: 'src/renderer/desktopNotifications.ts', line: "notification.addEventListener('click', () => {" },
   { path: 'src/renderer/floor/stream.ts', line: "document.addEventListener('visibilitychange', listener);" },
   { path: 'src/shell.tsx', line: "preference.addEventListener('change', onThemePreference);" },

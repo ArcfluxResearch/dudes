@@ -127,7 +127,7 @@ export function FirstTaskForm({ floor, agents }: { readonly floor: FloorState; r
         {agents.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
       </select></p> : null}
     <label htmlFor={`${ids}-task`} className="first-task-label">What should {agent.name} do?</label>
-    <textarea id={`${ids}-task`} rows={3} maxLength={8192} value={task} autoFocus
+    <textarea id={`${ids}-task`} rows={3} maxLength={8192} value={task}
       placeholder="For example: add a dark mode switch to the settings page"
       onChange={(event) => setTask(event.target.value)} />
     <p className="first-task-note">When {agent.name} says it is finished, Dudes checks it itself ({agent.check.label}) before you review it.</p>

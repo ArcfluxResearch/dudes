@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { useRef, useState } from 'react';
 import type { FloorState } from '../floor/store.ts';
+import { closesPanel } from '../focus.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { INSTALL_COMMANDS } from './daemon.ts';
 import { copyToClipboard } from './SetupView.tsx';
-import { appName, firstTaskOffer } from './nextStep.ts';
+import { appName, firstTaskOffer, freeTaskAgents } from './nextStep.ts';
 import { FirstTaskForm } from '../ticket/TicketBoard.tsx';
+import { viewConfirmed } from '../ticket/model.ts';
 import { AddProject, projectAddOn } from '../project/AddProject.tsx';
 
 function Install({ command }: { readonly command: string }) {
@@ -14,15 +17,44 @@ function Install({ command }: { readonly command: string }) {
     <button type="button" onClick={() => refreshFloorSnapshot()}>Recheck</button></p>;
 }
 
-/** The one obvious next step on a Floor where nobody has work yet. */
+type TaskPrompt = {
+  readonly freeIds: string;
+  readonly mode: 'collapsed' | 'open' | 'hidden';
+};
+
 export function FirstTask({ floor, onHire }: {
   readonly floor: FloorState;
   readonly onHire: (opener: HTMLElement | null) => void;
 }) {
+  const freeIds = JSON.stringify(freeTaskAgents(floor).map((agent) => agent.id).sort());
+  const [prompt, setPrompt] = useState<TaskPrompt>({ freeIds, mode: 'collapsed' });
+  const openButton = useRef<HTMLButtonElement>(null);
+  const current: TaskPrompt = !viewConfirmed(floor) || prompt.freeIds === freeIds
+    ? prompt : { freeIds, mode: 'collapsed' };
+  if (current !== prompt) setPrompt(current);
   const offer = firstTaskOffer(floor);
-  if (offer === null) return null;
-  return <section className="first-task" aria-label="Next step" data-first-task={offer.kind}>
-    {offer.kind === 'task' ? <FirstTaskForm floor={floor} agents={offer.agents} /> : null}
+  if (offer === null || (offer.kind === 'task' && current.mode === 'hidden')) return null;
+  return <section className="first-task" aria-label="Next step" data-first-task={offer.kind}
+    onKeyDown={(event) => {
+      if (offer.kind !== 'task' || current.mode !== 'open' || !closesPanel(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setPrompt({ freeIds, mode: 'collapsed' });
+      openButton.current?.focus();
+    }}>
+    {offer.kind === 'task' ? <>
+      <div className="first-task-line">
+        <button type="button" className="first-task-open" ref={openButton} aria-expanded={current.mode === 'open'}
+          onClick={() => setPrompt({ freeIds, mode: current.mode === 'open' ? 'collapsed' : 'open' })}>
+          <span className="first-task-free">{offer.agents.length === 1
+            ? `${offer.agents[0]!.name} is free` : `${offer.agents.length} agents are free`}</span>
+          {' · Give a task'}</button>
+        <button type="button" className="first-task-close"
+          aria-label={current.mode === 'open' ? 'Close task form' : 'Hide task suggestion'}
+          onClick={() => setPrompt({ freeIds, mode: current.mode === 'open' ? 'collapsed' : 'hidden' })}>×</button>
+      </div>
+      {current.mode === 'open' ? <FirstTaskForm floor={floor} agents={offer.agents} /> : null}
+    </> : null}
     {offer.kind === 'install' ? <>
       <h2>Install {offer.engine === null ? 'the app' : appName(offer.engine)} for {offer.agent}</h2>
       <p>{offer.agent} needs {offer.engine === null ? 'its app' : appName(offer.engine)}, which is not installed on
