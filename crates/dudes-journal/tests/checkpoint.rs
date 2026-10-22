@@ -80,6 +80,10 @@ const RECOVERY_PREFIX_PLACEMENT: Placement = Placement::Out(
 /// kind the story never writes is invisible to every assertion in this file — measured, a
 /// `question_lsn` on `AgentRow` written in the `HumanQuestion` arm left the suite green while a
 /// field the story does reach reddened it. A hand-listed corpus is a standing gap; this is not.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per record kind, and each new kind adds its arm"
+)]
 fn placement(kind: RecordKind) -> Placement {
     use Placement::At;
     match kind {
@@ -181,6 +185,17 @@ fn placement(kind: RecordKind) -> Placement {
         RecordKind::MemoryCondenseModelAdmitted => At(45),
         // A Floor audit record: inert in every projection, like the admission audit above.
         RecordKind::FloorPeerRefused => At(46),
+        RecordKind::WorkspaceTrustSet => Placement::Out(
+            "inert in every journal projection; only the supervisor's world folds it, and its own tests replay it",
+        ),
+        RecordKind::FloorDeviceEnrolled
+        | RecordKind::FloorDeviceKeyEnrolled
+        | RecordKind::FloorDeviceFirstUsed
+        | RecordKind::FloorDeviceAcknowledged
+        | RecordKind::FloorDeviceRemoved
+        | RecordKind::FloorDeviceUsed => Placement::Out(
+            "inert in every journal projection; only the supervisor's world folds them, and its own tests replay them",
+        ),
         RecordKind::WorktreeLeased | RecordKind::WorktreeRemoved => Placement::Out(
             "the lease lifecycle needs its own agent and removal order; tests/worktrees.rs replays it with and without checkpoints",
         ),

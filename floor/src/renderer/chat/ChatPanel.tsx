@@ -7,8 +7,11 @@ import { selectOutputAgent } from '../floor/store.ts';
 import type { FloorState, OutputStatus } from '../floor/store.ts';
 import { handFocusOnLeave } from '../focus.ts';
 import type { AgentRow } from '../scene/cast.ts';
-import { browserChatDeps, cancelChat, chatDraft, chatGate, chatReleasable, chatSettled, editChatDraft,
-  getChatState, noteProblem, queuesChatOnKey, reconcileChat, releaseChat, retryChat, selectChatAnswer, startFreshChat, submitChat, subscribeToChat } from './chat.ts';
+import { browserChatDeps, cancelChat, chatDraft, chatFiles, chatGate, chatReleasable, chatSendProblem,
+  chatSettled, chatUploading, dropChatFiles, editChatDraft, getChatState, overChatFiles, pasteChatFiles, pickChatFiles,
+  queuesChatOnKey, reconcileChat, releaseChat, removeChatFile,
+  retryChat, selectChatAnswer, startFreshChat, submitChat, subscribeToChat } from './chat.ts';
+import { formatBytes } from './chatFiles.ts';
 import type { ChatState } from './chat.ts';
 import type { ChatReason, ChatTurn, PendingNote } from './model.ts';
 import { conversationEntries } from './thread.ts';
@@ -67,9 +70,11 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
   if (!gate.open || view === null) return null;
   const entries = conversationEntries(view, row.id, action.acknowledged);
   const draft = chatDraft(action, row.id);
-  const problem = noteProblem(draft);
+  const files = chatFiles(action, row.id);
+  const problem = chatSendProblem(action, row.id);
   const attempt = action.attempt?.payload.agent === row.id ? action.attempt : null;
-  const blocked = action.attempt !== null || problem !== null;
+  const blocked = action.attempt !== null || problem !== null || chatUploading(action, row.id);
+  const accepts = row.mode !== 'attached';
   const name = typeof row.name === 'string' ? row.name : row.id;
   const question = answerGate(floor, row);
   const target = action.answerTargets.get(row.id);
@@ -79,7 +84,8 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
     <ChatThread key={row.id} entries={entries} floor={floor} row={row} action={action}
       fullOutput={fullOutput} onFullOutput={onFullOutput} />
     {row.mode === 'attached' ? <p className="chat-guidance">Attached replies are unavailable. Messages are sent as context.</p> : null}
-    <section aria-labelledby="chat-compose-title" className="chat-compose">
+    <section aria-labelledby="chat-compose-title" className="chat-compose"
+      onDragOver={overChatFiles} onDrop={(event) => dropChatFiles(event, gate)}>
       <h3 id="chat-compose-title" tabIndex={-1}>{replying ? 'Reply to' : 'Message'} {name}</h3>
       {replying ? <div className="chat-question" data-chat-question-lsn={target.questionLsn}>
         <blockquote>{target.question}</blockquote>
@@ -98,6 +104,7 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
       <label className="chat-composer-label" htmlFor="chat-text">Your message</label>
       <textarea id="chat-text" name="chat_text" value={draft} rows={3} placeholder="Write a message…"
         aria-describedby="chat-text-limit" onChange={(event) => editChatDraft(row.id, event.currentTarget.value)}
+        onPaste={(event) => pasteChatFiles(event, gate)}
         onKeyDown={(event) => {
           if (!queuesChatOnKey(event) || blocked || action.sending) return;
           event.preventDefault();
@@ -105,21 +112,33 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
         }} />
       {action.attempt !== null && attempt === null ? <p role="status">
         A request for another agent is unresolved. Select that agent to check its status before sending.</p> : null}
+      {files.length === 0 ? null : <ul className="chat-files" aria-label="Attached files">
+        {files.map(file => <li key={file.id} className="chat-file" data-chat-file-status={file.status}>
+          <span className="chat-file-name">{file.name}</span>
+          <span className="chat-file-size">{formatBytes(file.size)}</span>
+          <span className="chat-file-state" role={file.status === 'failed' ? 'alert' : 'status'}>
+            {file.status === 'uploading' ? 'Uploading…' : file.status === 'failed' ? file.error : 'Ready'}</span>
+          <button type="button" className="chat-file-remove" aria-label={`Remove ${file.name}`}
+            onClick={() => removeChatFile(row.id, file.id)}>Remove</button>
+        </li>)}
+      </ul>}
       <div className="chat-compose-actions">
-        <p id="chat-text-limit">Enter to send · Shift+Enter for a newline.</p>
-        <button type="button" className="chat-send" disabled={blocked}
-          onClick={() => void submitChat(gate, browserChatDeps)}>Send</button>
+        <p id="chat-text-limit">{accepts ? 'Enter to send · Shift+Enter for a newline · Paste or drop files to attach.'
+          : 'Enter to send · Shift+Enter for a newline.'}</p>
+        <div className="chat-compose-buttons">
+          {accepts ? <label className="chat-attach" title="Attach files">
+            <input type="file" multiple className="chat-file-input" aria-label="Attach files"
+              onChange={(event) => pickChatFiles(event, gate)} />
+            <span aria-hidden="true">+</span>
+          </label> : null}
+          <button type="button" className="chat-send" disabled={blocked}
+            onClick={() => void submitChat(gate, browserChatDeps)}>Send</button>
+        </div>
       </div>
-      {draft !== '' && problem !== null ? <p role="alert">{problem}</p> : null}
+      {accepts ? null : <p className="chat-guidance">Files work with agents Dudes launches.</p>}
+      {(draft !== '' || files.length > 0) && problem !== null ? <p role="alert">{problem}</p> : null}
       {action.problem === null ? null : <p role="alert">{action.problem}</p>}
       </>}
-      <details className="chat-guidance"><summary>Conversation details</summary>
-        <p>Only a limited history is retained; individual turns may be unavailable.</p>
-        {row.mode === 'attached' ? <p>Messages wait for a supported hook before they are sent as context.</p>
-          : <p>Messages during active goal work join an admitted goal turn. Otherwise, each message can start one conversation turn.
-            Queuing does not confirm delivery, and a reply does not confirm the goal is complete.</p>}
-        <p>Messages can contain up to 4096 UTF-8 bytes. Drafts stay with each agent in this tab until reload.</p>
-      </details>
     </section>
   </div>;
 }
@@ -130,6 +149,39 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
 }) {
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
+  const size = useRef({ width: 0, height: 0 });
+  useLayoutEffect(() => {
+    const node = scroll.current;
+    if (!node) return;
+    size.current = { width: node.clientWidth, height: node.clientHeight };
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      size.current = { width: node.clientWidth, height: node.clientHeight };
+      if (follow.current) node.scrollTop = node.scrollHeight;
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  useLayoutEffect(() => {
+    const drawer = scroll.current?.closest<HTMLElement>('.agent-drawer');
+    const viewport = window.visualViewport;
+    if (!drawer || !viewport) return;
+    const fit = () => {
+      drawer.style.setProperty('--chat-viewport-height', `${viewport.height}px`);
+      drawer.style.setProperty('--chat-viewport-top', `${viewport.offsetTop}px`);
+      drawer.setAttribute('data-chat-short', String(viewport.height < 600));
+    };
+    fit();
+    viewport.addEventListener('resize', fit);
+    viewport.addEventListener('scroll', fit);
+    return () => {
+      viewport.removeEventListener('resize', fit);
+      viewport.removeEventListener('scroll', fit);
+      drawer.style.removeProperty('--chat-viewport-height');
+      drawer.style.removeProperty('--chat-viewport-top');
+      drawer.removeAttribute('data-chat-short');
+    };
+  }, []);
   useLayoutEffect(() => {
     if (follow.current && scroll.current !== null) scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [entries, floor.output, action.attempt, action.outcome]);
@@ -143,6 +195,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
     <div className="chat-scroll" ref={scroll} role="log" aria-label={`Conversation with ${name}`} aria-relevant="additions"
       onScroll={event => {
         const node = event.currentTarget;
+        if (node.clientWidth !== size.current.width || node.clientHeight !== size.current.height) return;
         follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
       }}>
       {entries.length === 0 && attempt === null ? <div className="chat-empty">
@@ -214,6 +267,13 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
             ref={handFocusOnLeave} data-focus-on-leave="chat-text"
             onClick={() => void retryChat(browserChatDeps)}>Check status</button>}
       </section>}
+      <details className="chat-guidance"><summary>Conversation details</summary>
+        <p>Only a limited history is retained; individual turns may be unavailable.</p>
+        {row.mode === 'attached' ? <p>Messages wait for a supported hook before they are sent as context.</p>
+          : <p>Messages during active goal work join an admitted goal turn. Otherwise, each message can start one conversation turn.
+            Queuing does not confirm delivery, and a reply does not confirm the goal is complete.</p>}
+        <p>Messages can contain up to 4096 UTF-8 bytes. Drafts stay with each agent in this tab until reload.</p>
+      </details>
     </div>
   </section>;
 }

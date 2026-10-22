@@ -554,6 +554,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_terminal_grant_requires_its_full_identity_tuple() {
+        let channel = ChannelKey {
+            session_digest: dudes_proto::record::Hex32::new([1; 32]),
+            browser_epoch: 1,
+        };
+        let live = LiveGrant::opened(channel, AgentId::from_parts(1, 1), PtyId(1));
+        assert!(live.admits(&live.grant));
+        let mut changed = [live.grant; 5];
+        changed[0].channel.session_digest = dudes_proto::record::Hex32::new([2; 32]);
+        changed[1].channel.browser_epoch += 1;
+        changed[2].daemon_epoch ^= 1;
+        changed[3].agent = AgentId::from_parts(1, 2);
+        changed[4].pty = PtyId(2);
+        for presented in changed {
+            assert!(!live.admits(&presented));
+        }
+        assert!(live.revoke());
+        assert!(!live.admits(&live.grant));
+    }
+
+    #[test]
     fn only_the_four_listed_messages_decode() {
         let agent = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
         let decode = |text: &str| crate::floor_stream::decode_object::<ClientMessage>(text);

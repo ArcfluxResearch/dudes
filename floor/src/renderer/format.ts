@@ -20,3 +20,9 @@ export function recordedTime(at: number | string): string {
     timeZoneName: 'short',
   });
 }
+
+/** The time of day alone, such as 18:40, for a notice about something that just happened. */
+export function clockTime(at: number | string): string {
+  const date = new Date(at);
+  return Number.isNaN(date.getTime()) ? 'an unknown time' : date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}

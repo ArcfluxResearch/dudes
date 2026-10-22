@@ -128,10 +128,10 @@ test('controls that leave when pressed name a surviving focus target', async () 
     ['LiveWork.tsx', 'onClear', 'leaveFocusTo'],
     ['onboarding/HireWizard.tsx', 'onClose', 'hire-open'],
     ['onboarding/HireWizard.tsx',
-      '() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }',
+      '() => { if (blocked === null && !frozen && !hire.sending) void hireWithFirstTask(floor, browserHireDeps); }',
       'hire-title'],
     ['onboarding/HireWizard.tsx',
-      '() => { if (!hire.sending && !waiting) void checkHireStatus(browserHireDeps); }', 'hire-title'],
+      '() => { if (!hire.sending) void checkHireStatusWithFirstTask(browserHireDeps); }', 'hire-title'],
     ['onboarding/HireWizard.tsx', '() => { if (!hire.sending) releaseAttempt(); }', 'hire-title'],
     ['onboarding/HireWizard.tsx',
       '() => { if (fresh && floor.onboarding !== null) startAnotherHire(); }',
@@ -149,7 +149,7 @@ test('controls that leave when pressed name a surviving focus target', async () 
       'goal-status-title'],
   ]) {
     const found = (await elementsOf(path)).filter((entry) => entry.tag === 'button' && entry.props.onClick === click);
-    assert.equal(found.length, path === 'onboarding/HireWizard.tsx' && click === 'onClose' ? 2 : 1,
+    assert.equal(found.length, path === 'onboarding/HireWizard.tsx' && click === 'onClose' ? 3 : 1,
       `${path} ${click} has the wrong number of controls`);
     for (const entry of found) {
       assert.equal(entry.props.ref, 'handFocusOnLeave', `${path} ${click} loses focused button`);
@@ -173,10 +173,10 @@ test('buttons that disable while focused keep their native focus', async () => {
       '() => { if (!goal.sending && floor.goalChange) void checkGoalStatus(browserGoalDeps); }'],
     ['onboarding/HireWizard.tsx', '() => { if (at !== 0 && !frozen && !stuck) moveSection(-1, floor); }'],
     ['onboarding/HireWizard.tsx',
-      '() => { if (at !== SECTIONS.length - 1 && !frozen && !stuck) moveSection(1, floor); }'],
+      '() => { if (!frozen && !stuck) moveSection(1, floor); }'],
     ['onboarding/HireWizard.tsx',
-      '() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }'],
-    ['onboarding/HireWizard.tsx', '() => { if (!hire.sending && !waiting) void checkHireStatus(browserHireDeps); }'],
+      '() => { if (blocked === null && !frozen && !hire.sending) void hireWithFirstTask(floor, browserHireDeps); }'],
+    ['onboarding/HireWizard.tsx', '() => { if (!hire.sending) void checkHireStatusWithFirstTask(browserHireDeps); }'],
     ['onboarding/HireWizard.tsx', '() => { if (!hire.sending) releaseAttempt(); }'],
     ['onboarding/HireWizard.tsx',
       '() => { if (fresh && floor.onboarding !== null) startAnotherHire(); }'],

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { Journey } from './journey.mjs';
 
 const execute = promisify(execFile);
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -19,6 +20,7 @@ const timeout = 30_000;
 // a generous-but-bounded wait for transient contention, not a fix for a genuinely wedged Chrome.
 export const navigateTimeout = 120_000;
 let interrupted = false;
+let journeyRun;
 
 class WaitTimeout extends Error {}
 
@@ -136,7 +138,7 @@ export class DevTools {
 }
 
 export class ScratchRun {
-  constructor(root, workspace, xtask, version, chrome) {
+  constructor(root, workspace, xtask, version, chrome, prefix = join(root, 'prefix')) {
     this.root = root;
     this.workspace = workspace;
     this.xtask = xtask;
@@ -145,7 +147,7 @@ export class ScratchRun {
     this.groups = new Map();
     this.owned = new Map();
     this.chromeChildren = new Map();
-    this.prefix = join(root, 'prefix');
+    this.prefix = prefix;
     this.repo = join(root, 'repo');
     this.home = join(root, 'home');
     this.runtime = join(root, 'run');
@@ -328,7 +330,7 @@ exec /bin/sleep 120
     await this.rememberManaged();
   }
 
-  async browser() {
+  async launchChrome() {
     const profile = join(this.root, 'chrome');
     this.chrome = spawn(this.chromeProgram, [
       ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : ['--password-store=basic']),
@@ -356,9 +358,10 @@ exec /bin/sleep 120
     this.cdp.session = sessionId;
     await this.cdp.send('Page.enable', {}, sessionId);
     await this.cdp.send('Runtime.enable', {}, sessionId);
-    const { stdout } = await this.cli(['floor', 'open', '--no-browser']);
-    const link = stdout.match(/http:\/\/127\.0\.0\.1:\d+\/floor\/#bootstrap=[A-Za-z0-9_-]+/)?.[0];
-    check(link, 'Floor open returned no bootstrap link');
+  }
+
+  async openFloor(link) {
+    const sessionId = this.cdp.session;
     const navigation = await this.cdp.send('Page.navigate', { url: link, referrerPolicy: 'noReferrer' }, sessionId, navigateTimeout);
     check(!navigation.errorText && !navigation.isDownload, 'Chrome could not navigate to the Floor');
     const page = new URL(link);
@@ -369,7 +372,15 @@ exec /bin/sleep 120
       return committed.origin === page.origin && committed.pathname === '/floor/'
         && (!navigation.loaderId || frameTree.frame.loaderId === navigation.loaderId);
     }, 'Chrome did not commit the Floor navigation', navigateTimeout);
-    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-open-office'))`), 'Floor bundle did not render Hire');
+    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-open'))`), 'Floor bundle did not render Hire');
+  }
+
+  async browser() {
+    await this.launchChrome();
+    const { stdout } = await this.cli(['floor', 'open']);
+    const link = stdout.match(/http:\/\/127\.0\.0\.1:\d+\/floor\/#bootstrap=[A-Za-z0-9_-]+/)?.[0];
+    check(link, 'Floor open returned no bootstrap link');
+    await this.openFloor(link);
   }
 
   async hire() {
@@ -380,7 +391,7 @@ exec /bin/sleep 120
       el.dispatchEvent(new Event('input', { bubbles: true })); return true;
     })()`);
     const next = () => this.cdp.evaluate(`(() => { const el = [...document.querySelectorAll('.hire-actions button')].find(el => el.textContent === 'Next'); if (!el) return false; el.click(); return true; })()`);
-    check(await click('#hire-open-office'), 'Hire opener missing');
+    check(await click('#hire-open'), 'Hire opener missing');
     await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-name'))`), 'Hire wizard did not open');
     check(await fill('#hire-name', 'Smoke agent'), 'Hire name missing');
     check(await fill('#hire-role', 'First-run smoke'), 'Hire role missing');
@@ -391,8 +402,8 @@ exec /bin/sleep 120
     await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('input[name="engine"][value="codex"]'))`), 'stand-in engine was not offered');
     await click('input[name="engine"][value="codex"]');
     await next();
-    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-goal'))`), 'Hire briefing missing');
-    await fill('#hire-goal', 'Keep the smoke stand-in alive');
+    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-task'))`), 'Hire briefing missing');
+    await fill('#hire-task', 'Keep the smoke stand-in alive');
     await click('.hire-submit');
     this.agent = await waitFor(async () => {
       const result = await this.cdp.evaluate(`(() => {
@@ -560,7 +571,8 @@ exec /bin/sleep 120
     check(stopped, 'daemon still answers after stop');
   }
 
-  async cleanup() {
+  // Ends Chrome and every helper it started. Returns what went wrong, so cleanup can report it.
+  async closeChrome() {
     const failures = [];
     const clean = async (action) => {
       try { await action(); } catch (error) { failures.push(error.message); }
@@ -574,6 +586,14 @@ exec /bin/sleep 120
       for (const identity of chromeIdentities) await clean(() => this.killOwned(identity));
       await clean(() => waitFor(async () => (await Promise.all(chromeIdentities.map((identity) => this.ownedAlive(identity)))).every((alive) => !alive), 'Chrome helper survived cleanup', 10_000, true));
     }
+    return failures;
+  }
+
+  async cleanup() {
+    const failures = await this.closeChrome();
+    const clean = async (action) => {
+      try { await action(); } catch (error) { failures.push(error.message); }
+    };
     for (const child of [...this.groups.values()]) await clean(() => this.stopGroup(child.pid, child));
     await clean(() => this.rememberManaged());
     await this.cli(['stop', '--hard']).catch(() => {});
@@ -586,12 +606,33 @@ exec /bin/sleep 120
   }
 }
 
+// A newcomer's whole path on a second scratch home, sharing the install: quickstart, open, then
+// only the page, up to an accepted ticket.
+async function newcomerJourney(first, chrome) {
+  const root = await mkdtemp(join(tmpdir(), 'dudes-jrny-'));
+  await chmod(root, 0o700);
+  const second = new ScratchRun(root, first.workspace, first.xtask, first.version, chrome, first.prefix);
+  // The same Chrome: a wrapper that admits one proof browser at a time would refuse a second.
+  Object.assign(second, { chrome: first.chrome, chromeChild: first.chromeChild, chromeIdentity: first.chromeIdentity,
+    chromeChildren: first.chromeChildren, cdp: first.cdp });
+  journeyRun = second;
+  try {
+    await second.prepare();
+    await new Journey(second).walk();
+    await second.stop();
+  } finally {
+    await second.cleanup();
+  }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   let run;
   const interrupt = () => {
     interrupted = true;
-    if (run?.chrome?.pid) void run.signalChrome('SIGTERM').catch(() => {});
-    run?.signalChildren('SIGTERM');
+    for (const each of [run, journeyRun]) {
+      if (each?.chrome?.pid) void each.signalChrome('SIGTERM').catch(() => {});
+      each?.signalChildren('SIGTERM');
+    }
   };
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', interrupt);
@@ -612,6 +653,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       await stage('hire and live activity', () => run.hire());
     } else console.log('SKIP browser (Chrome absent)');
     await stage('stop', () => run.stop());
+    if (chrome) await stage('journey from quickstart to an accepted ticket', () => newcomerJourney(run, chrome));
   } catch (error) {
     console.error(`smoke: ${error.message}`);
     process.exitCode = 1;

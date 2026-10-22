@@ -117,7 +117,7 @@ export function decodeResponse(verb: Verb, status: number, text: string): Outcom
   }
 }
 
-export async function postTicket(verb: Verb, payload: object, csrf: string, fetch: ControlDeps['fetch']): Promise<Outcome> {
+export async function postTicket(verb: Verb, payload: object, fetch: ControlDeps['fetch']): Promise<Outcome> {
   let status: number;
   let text: string;
   try {
@@ -126,7 +126,7 @@ export async function postTicket(verb: Verb, payload: object, csrf: string, fetc
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     status = response.status;
@@ -224,9 +224,8 @@ function inTurn<T>(job: () => Promise<T>): Promise<T> {
 }
 
 async function send(verb: Verb, payload: object, deps: ControlDeps): Promise<Outcome> {
-  const csrf = deps.csrf();
-  if (csrf === null) return Object.freeze({ kind: 'forbidden' });
-  const sent = await inTurn(() => postTicket(verb, payload, csrf, deps.fetch));
+  if (!deps.signedIn()) return Object.freeze({ kind: 'forbidden' });
+  const sent = await inTurn(() => postTicket(verb, payload, deps.fetch));
   // An answer about another ticket proves nothing about this one.
   const asked = (payload as { card?: unknown }).card;
   const outcome = sent.kind === 'done' && verb !== 'read' && asked !== undefined && sent.card !== asked ? UNKNOWN : sent;

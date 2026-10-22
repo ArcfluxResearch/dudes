@@ -14,9 +14,13 @@ publish = false
 [dependencies]
 dudes-proto.workspace = true
 dudes-types = { workspace = true, features = ["std"] }
+serde_json.workspace = true
 sha2.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 toml_edit.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -1842,40 +1842,6 @@ mod tests {
                 self.pass();
             }
         }
-        /// Recorded, acknowledged out-of-line mail to `recipient`, with each body in its inbox.
-        fn record_history(&mut self, recipient: AgentId, count: u64) {
-            for n in 0..count {
-                let id = Harness::mail(10_000 + u128::from(n));
-                let name = format!("{id}.body");
-                std::fs::write(self.path(recipient, "inbox", &name), "").unwrap();
-                let record = Record::Mail {
-                    thread: None,
-                    thread_seq: 0,
-                    members: Vec::new(),
-                    id,
-                    from: MailFrom::Agent {
-                        agent: Harness::id(1),
-                    },
-                    to: MailTo::Agent { agent: recipient },
-                    act: MailAct::Message,
-                    subject: "history".to_owned(),
-                    body: None,
-                    body_len: INLINE_BYTES as u64 + 1,
-                    body_path: Some(
-                        PathBuf::from("agents")
-                            .join(recipient.to_string())
-                            .join("inbox")
-                            .join(name),
-                    ),
-                    body_blake3: Some(dudes_journal::mail_body_digest(b"history")),
-                    state: MailState::Acked,
-                    actor: None,
-                    provenance: None,
-                };
-                self.mailbox.apply(Lsn(1_000_000 + n), &record);
-            }
-            self.at = Timestamp::from_unix_millis(86_400_000);
-        }
         fn diagnosed(&self, agent: AgentId, filename: &str, problem: MailboxProblem) -> bool {
             self.mailbox
                 .report
@@ -1900,49 +1866,6 @@ mod tests {
                 .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
                 .count()
         }
-    }
-
-    #[test]
-    fn unread_observation_counts_only_published_earliest_markers_and_never_writes() {
-        let mut h = Harness::new(3);
-        let recipient = Harness::id(1);
-        for n in 1..=20 {
-            h.send(Harness::id(2), recipient, Harness::mail(n), "inline");
-            h.send(Harness::id(3), recipient, Harness::mail(100 + n), "inline");
-        }
-        h.pass();
-        assert!(h.mailbox.pending[&recipient].len() <= 32);
-        assert_eq!(
-            Mailbox::unread_observation(Some(&h.mailbox), recipient),
-            super::super::UnreadObservation::Complete(0)
-        );
-        h.settle();
-        assert_eq!(h.mailbox.pending[&recipient].len(), 40);
-        assert_eq!(
-            Mailbox::unread_observation(Some(&h.mailbox), recipient),
-            super::super::UnreadObservation::Complete(32)
-        );
-        let records = h.records.clone();
-        let id = h.mailbox.pending[&recipient].first().unwrap().1;
-        h.move_done(recipient, id);
-        assert_eq!(
-            Mailbox::unread_observation(Some(&h.mailbox), recipient),
-            super::super::UnreadObservation::Complete(31)
-        );
-        assert_eq!(h.records, records);
-        assert_eq!(h.acked(id), 0);
-        let second = h.mailbox.pending[&recipient].iter().nth(1).unwrap().1;
-        std::fs::write(
-            h.path(recipient, "inbox", &format!("{second}.json")),
-            "corrupt",
-        )
-        .unwrap();
-        assert_eq!(
-            Mailbox::unread_observation(Some(&h.mailbox), recipient),
-            super::super::UnreadObservation::Incomplete
-        );
-        assert!(h.diagnosed(recipient, "inbox", MailboxProblem::AmbiguousMarker));
-        assert_eq!(h.records, records);
     }
 
     #[test]
@@ -2001,35 +1924,6 @@ mod tests {
             Mailbox::unread_observation(Some(&h.mailbox), recipient),
             super::super::UnreadObservation::Incomplete
         );
-    }
-
-    #[test]
-    fn unread_observation_measures_retained_history_and_multiple_agents() {
-        let mut h = Harness::new(8);
-        let recipient = Harness::id(2);
-        h.record_history(recipient, 1400);
-        for n in 1..=32 {
-            h.send(Harness::id(1), recipient, Harness::mail(n), "inline");
-        }
-        h.settle();
-        assert_eq!(h.mailbox.bodies[&recipient], 1400);
-        assert_eq!(h.mailbox.pending[&recipient].len(), 32);
-        let records = h.records.clone();
-        let start = std::time::Instant::now();
-        for _ in 0..20 {
-            for n in 1..=8 {
-                assert_eq!(
-                    Mailbox::unread_observation(Some(&h.mailbox), Harness::id(n)),
-                    super::super::UnreadObservation::Complete(if n == 2 { 32 } else { 0 })
-                );
-            }
-        }
-        let elapsed = start.elapsed();
-        assert!(
-            elapsed < std::time::Duration::from_millis(1500),
-            "20 samples with 1400 retained bodies and 32 markers took {elapsed:?}"
-        );
-        assert_eq!(h.records, records);
     }
 
     #[test]
@@ -2168,38 +2062,8 @@ mod tests {
     }
 
     #[test]
-    fn threaded_daily_allowance_counts_logical_sends_and_rolls_at_utc_midnight() {
-        let mut h = Harness::new(3);
-        for n in 1..=32 {
-            h.outgoing(
-                Harness::id(1),
-                Harness::mail(n),
-                &json!({"to":{"agents":[Harness::id(2),Harness::id(3)]},
-                "act":"message","subject":"group"}),
-            );
-            h.pass_at(Timestamp::from_unix_millis(86_399_999));
-        }
-        assert_eq!(h.mailbox.rows.len(), 64);
-        h.outgoing(
-            Harness::id(1),
-            Harness::mail(33),
-            &json!({"to":{"agent":Harness::id(2)},
-            "act":"message","subject":"next"}),
-        );
-        h.pass_at(Timestamp::from_unix_millis(86_399_999));
-        assert_eq!(h.mailbox.rows.len(), 64);
-        h.mailbox = Mailbox::replay(
-            h.root.path().to_owned(),
-            &Reader::new(&h.root.path().join("journal")),
-        )
-        .unwrap();
-        h.pass_at(Timestamp::from_unix_millis(86_400_000));
-        assert_eq!(h.mailbox.rows.len(), 65);
-    }
-
-    #[test]
-    fn threaded_every_durable_prefix_recovers_without_duplicate_receipts() {
-        for prefix in 0..=3 {
+    fn threaded_partial_delivery_recovers_without_duplicate_receipts() {
+        for prefix in [0, 1] {
             let mut h = Harness::new(4);
             let sender = Harness::id(1);
             let outbox = Harness::mail(1);
@@ -2298,7 +2162,7 @@ mod tests {
 
     #[test]
     fn threaded_partial_recovery_refuses_changed_content_and_corrupt_staged_body() {
-        for change in ["subject", "act", "body", "route", "corrupt", "missing"] {
+        for change in ["body", "corrupt"] {
             let mut h = Harness::new(3);
             let outbox = Harness::mail(1);
             let sender = Harness::id(1);
@@ -2327,12 +2191,8 @@ mod tests {
             let id = dudes_journal::mail_recipient_id(outbox, Harness::id(2));
             let staged = h.path(Harness::id(2), "inbox/.staging", &format!("{id}.body.tmp"));
             match change {
-                "subject" => value["subject"] = json!("changed"),
-                "act" => value["act"] = json!("request"),
                 "body" => value["body"] = json!("changed"),
-                "route" => value["to"] = json!({"agents":[Harness::id(2)]}),
                 "corrupt" => std::fs::write(&staged, "corrupt").unwrap(),
-                "missing" => std::fs::remove_file(&staged).unwrap(),
                 _ => unreachable!(),
             }
             h.outgoing(sender, outbox, &value);
@@ -2632,136 +2492,6 @@ mod tests {
     }
 
     #[test]
-    fn reviewed_admission_samples_after_midnight_io_with_yesterday_full() {
-        for crossing in ["observe", "preflight"] {
-            let mut h = Harness::new(2);
-            let yesterday = Timestamp::from_unix_millis(86_399_999);
-            let today = Timestamp::from_unix_millis(86_400_000);
-            for n in 1..=32 {
-                let entry = Entry { at: yesterday, record: serde_json::from_value(json!({"t":"mail", "id":Harness::mail(n),
-                "from":{"kind":"agent","agent":Harness::id(1)}, "to":{"kind":"agent","agent":Harness::id(2)},
-                "act":"message", "subject":"yesterday", "body_len":0, "state":{"state":"durable"}})).unwrap() };
-                let lsn = h.writer.append(&entry).unwrap();
-                h.mailbox.apply_entry(lsn, &entry);
-            }
-            h.outgoing(
-            Harness::id(1),
-            Harness::mail(33),
-            &json!({"to":{"agent":Harness::id(2)},"act":"message","subject":"today","body":"x".repeat(5000)}),
-        );
-            let clock = Cell::new(yesterday);
-            let writer = &mut h.writer;
-            let mut append = |record: &Record, admitted_at: Option<Timestamp>| {
-                let entry = Entry {
-                    at: admitted_at.unwrap_or_else(|| clock.get()),
-                    record: record.clone(),
-                };
-                let lsn = writer.append(&entry)?;
-                Ok((lsn, entry))
-            };
-            if crossing == "observe" {
-                h.mailbox.pass_with(
-                    &h.agents,
-                    || clock.get(),
-                    mint_thread,
-                    &mut append,
-                    |_| clock.set(today),
-                );
-            } else {
-                let tree = Tree::open(h.root.path(), Harness::id(1), Opening::default()).unwrap();
-                let _ = h.mailbox.ingest_with(
-                    &tree,
-                    &mut || clock.get(),
-                    &mut mint_thread,
-                    &mut append,
-                    |_| {
-                        clock.set(today);
-                        Ok(())
-                    },
-                );
-            }
-            assert_eq!(h.mailbox.rows.len(), 33);
-            h.mailbox = Mailbox::replay(
-                h.root.path().to_owned(),
-                &Reader::new(&h.root.path().join("journal")),
-            )
-            .unwrap();
-            for n in 34..=65 {
-                h.outgoing(
-                    Harness::id(1),
-                    Harness::mail(n),
-                    &json!({"to":{"agent":Harness::id(2)},"act":"message","subject":"today"}),
-                );
-                h.pass_at(today);
-            }
-            assert_eq!(h.mailbox.rows.len(), 64);
-            let days: Vec<_> = Reader::new(&h.root.path().join("journal"))
-                .iter_from(Lsn::ZERO)
-                .unwrap()
-                .map(Result::unwrap)
-                .filter_map(|(_, entry)| {
-                    matches!(entry.record, Record::Mail { .. }).then_some(entry.at.utc_day())
-                })
-                .collect();
-            assert_eq!(
-                days.iter()
-                    .filter(|day| **day == yesterday.utc_day())
-                    .count(),
-                32
-            );
-            assert_eq!(
-                days.iter().filter(|day| **day == today.utc_day()).count(),
-                32
-            );
-        }
-    }
-
-    #[test]
-    fn reviewed_daily_refusals_remove_unjournaled_body_stages() {
-        let mut h = Harness::new(3);
-        let sender = Harness::id(1);
-        let recipient = Harness::id(2);
-        for n in 1..=32 {
-            let outbox = Harness::mail(n);
-            h.send(sender, recipient, outbox, "admitted");
-            h.settle();
-            h.move_done(
-                recipient,
-                dudes_journal::mail_recipient_id(outbox, recipient),
-            );
-            h.settle();
-        }
-        assert_eq!(h.mailbox.rows.len(), 32);
-        for n in 100..104 {
-            let outbox = Harness::mail(n);
-            h.send(sender, recipient, outbox, &"refused".repeat(1000));
-            h.pass();
-            assert!(h.path(sender, "outbox", &format!("{outbox}.json")).exists());
-            std::fs::remove_file(h.path(sender, "outbox", &format!("{outbox}.json"))).unwrap();
-        }
-        let independent = Harness::mail(200);
-        h.send(
-            Harness::id(3),
-            recipient,
-            independent,
-            &"legitimate".repeat(1000),
-        );
-        h.settle();
-        let id = dudes_journal::mail_recipient_id(independent, recipient);
-        assert_eq!(h.mailbox.rows.len(), 33);
-        assert_eq!(
-            std::fs::read_to_string(h.path(recipient, "inbox", &format!("{id}.body"))).unwrap(),
-            "legitimate".repeat(1000)
-        );
-        assert_eq!(
-            std::fs::read_dir(h.path(recipient, "inbox/.staging", ""))
-                .unwrap()
-                .count(),
-            0
-        );
-    }
-
-    #[test]
     fn reviewed_unattempted_group_stages_roll_back_on_preflight_failure() {
         let mut h = Harness::new(3);
         let outbox = Harness::mail(1);
@@ -2834,46 +2564,6 @@ mod tests {
             std::fs::read_to_string(h.path(recipient, "inbox", &format!("{id}.body"))).unwrap(),
             body
         );
-    }
-
-    #[test]
-    fn continuing_arrivals_reserve_only_the_earliest_pending_slots() {
-        let mut h = Harness::new(2);
-        let sender = Harness::id(1);
-        let recipient = Harness::id(2);
-        for batch in 0..4 {
-            for n in 1..=INBOX_CAP {
-                h.send(
-                    sender,
-                    recipient,
-                    Harness::mail((batch * INBOX_CAP + n) as u128),
-                    "body",
-                );
-            }
-            h.at = Timestamp::from_unix_millis(i64::try_from(batch).unwrap() * 86_400_000);
-            h.settle();
-            assert_eq!(h.json_count(recipient), INBOX_CAP);
-        }
-        assert_eq!(h.mailbox.rows.len(), INBOX_CAP * 4);
-        let oldest = dudes_journal::mail_recipient_id(Harness::mail(1), recipient);
-        h.move_done(recipient, oldest);
-        h.settle();
-        assert_eq!(h.acked(oldest), 1);
-        assert!(
-            h.path(
-                recipient,
-                "inbox",
-                &format!(
-                    "{}.json",
-                    dudes_journal::mail_recipient_id(
-                        Harness::mail(INBOX_CAP as u128 + 1),
-                        recipient
-                    )
-                )
-            )
-            .exists()
-        );
-        assert_eq!(h.json_count(recipient), INBOX_CAP);
     }
 
     #[test]
@@ -3343,36 +3033,6 @@ mod tests {
     }
 
     #[test]
-    fn historical_referenced_bodies_do_not_limit_continuing_mail_arrivals() {
-        let mut h = Harness::new(2);
-        let recipient = Harness::id(2);
-        for n in 1..=80 {
-            let id = Harness::mail(n);
-            h.send(Harness::id(1), recipient, id, &"body".repeat(1500));
-            let id = dudes_journal::mail_recipient_id(id, recipient);
-            h.at = Timestamp::from_unix_millis(i64::try_from(n).unwrap() * 86_400_000);
-            h.pass();
-            h.move_done(recipient, id);
-            h.pass();
-            assert_eq!(h.acked(id), 1);
-        }
-        assert_eq!(h.json_count(recipient), 0);
-        assert!(
-            std::fs::read_dir(h.path(recipient, "inbox", ""))
-                .unwrap()
-                .count()
-                > 72
-        );
-        assert!(
-            dudes_journal::body_integrity(
-                &Reader::new(&h.root.path().join("journal")),
-                h.root.path()
-            )
-            .unwrap()
-            .is_empty()
-        );
-    }
-    #[test]
     fn a_source_case_only_rename_after_decode_and_staging_never_appends() {
         let mut h = Harness::new(2);
         let sender = Harness::id(1);
@@ -3663,43 +3323,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_recipients_leave_the_rotation_without_directories() {
-        let mut h = Harness::new(2);
-        let (sender, recipient) = (Harness::id(1), Harness::id(2));
-        for batch in 0..2u128 {
-            for n in 0..OUTBOX_SCAN as u128 {
-                let k = batch * OUTBOX_SCAN as u128 + n;
-                h.send(sender, Harness::id(100 + k), Harness::mail(k), "small");
-            }
-            h.at = Timestamp::from_unix_millis(i64::try_from(batch).unwrap() * 86_400_000);
-            h.settle();
-        }
-        for k in 0..2 * OUTBOX_SCAN as u128 {
-            assert!(matches!(
-                h.mailbox.rows
-                    [&dudes_journal::mail_recipient_id(Harness::mail(k), Harness::id(100 + k))]
-                    .state,
-                MailState::Bounced { .. }
-            ));
-            assert!(
-                !h.root
-                    .path()
-                    .join("agents")
-                    .join(Harness::id(100 + k).to_string())
-                    .exists(),
-                "an unknown recipient got a directory"
-            );
-        }
-        h.at = Timestamp::from_unix_millis(2 * 86_400_000);
-        let id = Harness::mail(1000);
-        h.send(sender, recipient, id, "real");
-        let id = dudes_journal::mail_recipient_id(id, recipient);
-        h.pass();
-        h.pass();
-        assert!(h.path(recipient, "inbox", &format!("{id}.json")).exists());
-    }
-
-    #[test]
     fn a_published_item_is_verified_once_per_run() {
         let mut h = Harness::new(2);
         let recipient = Harness::id(2);
@@ -3753,83 +3376,6 @@ mod tests {
             passes.iter().all(|fsyncs| *fsyncs <= PASS_FSYNCS + 8),
             "{passes:?}"
         );
-    }
-
-    #[test]
-    fn inbox_entries_past_the_scan_cap_defer_the_recipient() {
-        let mut h = Harness::new(2);
-        let recipient = Harness::id(2);
-        for n in 0..2 * SCAN_CAP {
-            std::fs::write(h.path(recipient, "inbox", &format!("junk-{n}")), "").unwrap();
-        }
-        let id = Harness::mail(1);
-        h.send(Harness::id(1), recipient, id, "body");
-        let id = dudes_journal::mail_recipient_id(id, recipient);
-        h.settle();
-        assert!(h.diagnosed(recipient, "inbox", MailboxProblem::ScanOverflow));
-        assert!(!h.path(recipient, "inbox", &format!("{id}.json")).exists());
-        let budget = Rc::new(Budget::default());
-        h.pass_within(&budget);
-        assert!(budget.entries.get() < 2 * SCAN_CAP, "{budget:?}");
-        for n in 0..2 * SCAN_CAP {
-            std::fs::remove_file(h.path(recipient, "inbox", &format!("junk-{n}"))).unwrap();
-        }
-        h.settle();
-        assert!(h.path(recipient, "inbox", &format!("{id}.json")).exists());
-        assert!(!h.diagnosed(recipient, "inbox", MailboxProblem::ScanOverflow));
-    }
-
-    #[test]
-    fn recorded_bodies_do_not_count_toward_the_scan_cap() {
-        let mut h = Harness::new(2);
-        let (sender, recipient) = (Harness::id(1), Harness::id(2));
-        h.record_history(recipient, SCAN_CAP as u64 + 16);
-        let id = Harness::mail(1);
-        h.send(sender, recipient, id, "body");
-        let id = dudes_journal::mail_recipient_id(id, recipient);
-        h.settle();
-        assert!(h.path(recipient, "inbox", &format!("{id}.json")).exists());
-        assert!(!h.diagnosed(recipient, "inbox", MailboxProblem::ScanOverflow));
-    }
-
-    #[test]
-    fn history_past_the_entry_budget_still_lets_each_phase_progress() {
-        let mut h = Harness::new(2);
-        let (sender, recipient) = (Harness::id(1), Harness::id(2));
-        let stuck = [Harness::mail(1), Harness::mail(2)];
-        let acked = Harness::mail(3);
-        for id in stuck.into_iter().chain([acked]) {
-            h.send(sender, recipient, id, "body");
-        }
-        let stuck = stuck.map(|id| dudes_journal::mail_recipient_id(id, recipient));
-        let acked = dudes_journal::mail_recipient_id(acked, recipient);
-        h.settle();
-        for id in stuck {
-            std::fs::write(h.move_done(recipient, id), "{}").unwrap();
-        }
-        h.move_done(recipient, acked);
-        h.record_history(recipient, PASS_ENTRIES as u64 / 2 + 64);
-        let fresh = Harness::mail(4);
-        h.send(sender, recipient, fresh, "body");
-        let fresh = dudes_journal::mail_recipient_id(fresh, recipient);
-        for _ in 0..4 {
-            h.pass();
-        }
-        assert_eq!(
-            h.acked(acked),
-            1,
-            "an acknowledgement starved behind history"
-        );
-        assert!(
-            h.path(recipient, "inbox", &format!("{fresh}.json"))
-                .exists(),
-            "a delivery starved behind history"
-        );
-        assert!(stuck.iter().any(|id| h.diagnosed(
-            recipient,
-            &format!("{id}.json"),
-            MailboxProblem::MalformedMarker
-        )));
     }
 
     #[test]

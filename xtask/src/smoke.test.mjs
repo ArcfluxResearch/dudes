@@ -695,7 +695,7 @@ test('Chrome drives the page over pipes without a DevTools TCP endpoint', { time
   if (!chrome) return t.skip('Chrome absent');
   const root = await mkdtemp(join(tmpdir(), 'dudes-smoke-test-'));
   const server = createServer((_request, response) => {
-    response.end('<!doctype html><title>Smoke pipe</title><button id="hire-open-office">Hire</button>');
+    response.end('<!doctype html><title>Smoke pipe</title><button id="hire-open">Hire</button>');
   });
   const run = new ScratchRun(root, process.cwd(), '', '', chrome);
   try {

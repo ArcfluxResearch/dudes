@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use dudes_policy::WorkInput;
 use dudes_proto::Spend;
-use dudes_proto::goal::{Evidence, Goal, Predicate};
+use dudes_proto::goal::{Evidence, Predicate};
 use dudes_proto::record::{
     BrowserAnswer, BrowserControl, BrowserGoal, BrowserRename, BrowserRetire, Hex32,
 };
@@ -829,10 +829,8 @@ pub enum Input {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Command {
-    /// One finite browser hire with a pre-minted intended goal in its durable record.
+    /// One finite browser hire.
     BrowserOnboardHire(Box<BrowserOnboardHire>),
-    /// Append only the recorded initial goal for exactly its hired agent.
-    BrowserOnboardGoal(Box<BrowserOnboardGoal>),
     /// `agent.hire`.
     Hire {
         /// Display name.
@@ -883,6 +881,19 @@ pub enum Command {
         /// The lease this one is based on.
         from: Option<dudes_types::WorktreeId>,
     },
+    /// Record that the operator trusts, or stops trusting, one enrolled project.
+    SetWorkspaceTrust {
+        /// The enrolled project.
+        workspace_id: String,
+        /// Whether it is trusted from now on.
+        trusted: bool,
+        /// The repository vouched for. Absent when `trusted` is false.
+        repository: Option<dudes_proto::record::TrustedRepository>,
+        /// The settings vouched for. Absent when `trusted` is false.
+        pin: Option<dudes_proto::record::TrustPin>,
+    },
+    /// Record a change to the Floor's device table.
+    RecordFloorDevice(FloorDeviceChange),
     /// End a lease whose tree is gone. Ignored unless the lease's state allows it:
     /// `NeverAssigned` only while pending, `Operator` only once released.
     RemoveWorktree {
@@ -1171,18 +1182,6 @@ pub struct BrowserOnboardHire {
     pub budget: AgentBudget,
     /// Operator-enrolled isolation selection, for an engine that takes one.
     pub isolation: Option<IsolationMode>,
-    /// Bounded initial goal text.
-    pub goal_text: String,
-    /// Operator-enrolled completion predicate.
-    pub predicate: Predicate,
-    /// The enrolled check's name and revision, recorded on the intended goal.
-    pub completion_check: Option<dudes_proto::CompletionCheckRef>,
-    /// What the hire's check run saw before the first turn, recorded on the intended goal.
-    pub baseline: Option<dudes_proto::CheckBaseline>,
-    /// Operator-enrolled goal ceiling.
-    pub goal_budget: GoalBudget,
-    /// Operator-enrolled positive turn limit.
-    pub hop_cap: u32,
     /// Decoded browser attempt identity.
     pub attempt_id: Hex32,
     /// Digest of the canonical request fields.
@@ -1193,30 +1192,15 @@ pub struct BrowserOnboardHire {
     pub workspace_label: String,
     /// Digest of the admitting Floor session.
     pub session_digest: Hex32,
+    /// The lease the agent works in, when it asked for its own copy of the project.
+    pub worktree: Option<dudes_types::WorktreeId>,
+    /// The project trust grant that admitted a hire into a copy.
+    pub trust_lsn: Option<Lsn>,
 }
 
 impl std::fmt::Debug for BrowserOnboardHire {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("BrowserOnboardHire(<redacted>)")
-    }
-}
-
-/// The exact intended goal read from a durable browser hire.
-#[derive(Clone, PartialEq, Eq)]
-pub struct BrowserOnboardGoal {
-    /// Agent named by the durable hire.
-    pub agent: AgentId,
-    /// Exact goal pre-minted and recorded on the hire.
-    pub goal: Goal,
-    /// Decoded browser attempt identity.
-    pub attempt_id: Hex32,
-    /// Digest of the session admitting this later append.
-    pub session_digest: Hex32,
-}
-
-impl std::fmt::Debug for BrowserOnboardGoal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("BrowserOnboardGoal(<redacted>)")
     }
 }
 
@@ -1318,4 +1302,35 @@ mod recorded_append_tests {
         let zero = RecordedAppend::try_new(Lsn::ZERO, (Lsn::ZERO, main), None).unwrap();
         assert_eq!((zero.lsn(), zero.through()), (Lsn::ZERO, Lsn::ZERO));
     }
+}
+
+/// One change to the Floor's device table, appended as the matching journal record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FloorDeviceChange {
+    /// A browser signed in.
+    Enroll {
+        /// The new device's id: the SHA-256 of its key.
+        device: Hex32,
+        /// The Floor origin it signed in on.
+        origin: String,
+        /// Its cleaned, capped name.
+        name: String,
+        /// Its public key as SPKI DER in unpadded base64url.
+        key: String,
+        /// SHA-256 of its cookie.
+        cookie: Hex32,
+    },
+    /// A device made its first request.
+    FirstUse(Hex32),
+    /// A device made a request, at most once a day.
+    Use(Hex32),
+    /// Someone kept a new device.
+    Acknowledge(Hex32),
+    /// A device ended.
+    Remove {
+        /// The device.
+        device: Hex32,
+        /// Why.
+        reason: dudes_proto::record::FloorDeviceRemoval,
+    },
 }

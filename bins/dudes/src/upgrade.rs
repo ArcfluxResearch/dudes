@@ -528,7 +528,7 @@ fn restart(
 /// how many were kept. Any failure ends in the plain "sign in again": the upgrade itself already
 /// succeeded.
 fn sign_in_report(daemon: &dyn Restart, exported: Result<SessionExport, String>) -> Option<String> {
-    let again = "Run dudes floor open to sign in again.";
+    let again = "Run dudes open to sign in again.";
     let Ok(exported) = exported else {
         return Some(format!(
             "This upgrade could not keep Floor sign-ins: the running version did not hand them over (a version from before this feature cannot). If a Floor tab was open, {}",

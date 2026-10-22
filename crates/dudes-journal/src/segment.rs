@@ -532,6 +532,13 @@ mod tests {
             | Record::BudgetDecision { .. }
             | Record::MemoryCondenseModelAdmitted { .. }
             | Record::FloorPeerRefused { .. }
+            | Record::WorkspaceTrustSet { .. }
+            | Record::FloorDeviceEnrolled { .. }
+            | Record::FloorDeviceKeyEnrolled { .. }
+            | Record::FloorDeviceFirstUsed { .. }
+            | Record::FloorDeviceAcknowledged { .. }
+            | Record::FloorDeviceRemoved { .. }
+            | Record::FloorDeviceUsed { .. }
             | Record::BreakerBeat { .. }
             | Record::CardCreated { .. }
             | Record::CardTransition { .. }

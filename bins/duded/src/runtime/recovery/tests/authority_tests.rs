@@ -182,14 +182,9 @@ fn wait_for_human(daemon: &mut TestDaemon, agent: AgentId) {
 }
 
 fn sign_in(sessions: &FloorSessions, host: &str) -> SessionIdentity {
+    sessions.detach_devices_for_test();
     let origin = format!("http://{host}");
-    let bootstrap = sessions.issue().unwrap();
-    let exchange = sessions
-        .exchange(host, &origin, bootstrap.bootstrap.as_bytes())
-        .unwrap();
-    sessions
-        .authorize_onboard(host, &origin, &exchange.cookie, &exchange.csrf)
-        .unwrap()
+    sessions.admitted_for_test(host, &origin).0
 }
 
 fn inspected_intent(daemon: &mut TestDaemon, agent: AgentId, request: u8) -> RecoverySubmitParams {
@@ -248,7 +243,7 @@ fn floor_settings(fixture: &common::Fixture, checkpoints: u64) -> crate::setting
     settings.floor = Some(FloorSettings {
         assets_dir: std::path::PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/floor-release-v3"
+            "/tests/fixtures/floor-release-v5"
         )),
         port: Some(0),
     });
@@ -256,7 +251,7 @@ fn floor_settings(fixture: &common::Fixture, checkpoints: u64) -> crate::setting
 }
 
 fn boot_at(settings: &crate::settings::Settings, clock: &Arc<common::TestClock>) -> TestDaemon {
-    crate::boot(
+    let daemon = crate::boot(
         settings,
         common::seams(
             settings,
@@ -266,7 +261,16 @@ fn boot_at(settings: &crate::settings::Settings, clock: &Arc<common::TestClock>)
             Witness::default(),
         ),
     )
-    .unwrap()
+    .unwrap();
+    // These tests sign browsers in while the loop is not running, so nothing could make a device
+    // durable. They are about recovery, not about devices.
+    if let Some(floor) = daemon.floor.as_ref() {
+        floor
+            .carry(crate::baseline::CheckRuns::default())
+            .sessions()
+            .detach_devices_for_test();
+    }
+    daemon
 }
 
 fn signed_fixture(
@@ -500,7 +504,7 @@ fn delayed_new_issue_rechecks_expiry_and_cancels_only_its_unwritten_launch() {
         let (reached, waiting) = std::sync::mpsc::channel();
         owned.daemon.ctx.before_recovery_append = Some(Box::new(move |record| {
             if matches!(record, Record::TurnIssued { .. }) {
-                clock.advance(30 * 60_000);
+                clock.advance(30 * 24 * 60 * 60_000);
                 reached.send(()).unwrap();
             }
         }));
@@ -686,7 +690,7 @@ fn expiry_after_preparation_holds_the_durable_issue_without_a_host_or_terminal_r
     let clock = Arc::clone(&owned.clock);
     let (prepared, waiting) = std::sync::mpsc::channel();
     owned.daemon.ctx.before_recovery_dispatch = Some(Box::new(move || {
-        clock.advance(30 * 60_000);
+        clock.advance(30 * 24 * 60 * 60_000);
         prepared.send(()).unwrap();
     }));
     let host = owned.daemon.ctx.host.clone();
@@ -1198,7 +1202,7 @@ fn one_runtime_scope_joins_each_claim_to_its_own_original_registry_row() {
             .recovery_submit_browser(owned.identity.clone(), &owned.intent),
         RecoverySubmitResult::Accepted { .. }
     ));
-    owned.clock.advance(15 * 60_000);
+    owned.clock.advance(15 * 24 * 60 * 60_000);
     let second = failed_source_at(&mut owned.daemon, &owned.fixture, 916);
     wait_for_human(&mut owned.daemon, second);
     let second_intent = inspected_intent(&mut owned.daemon, second, 124);
@@ -1212,7 +1216,7 @@ fn one_runtime_scope_joins_each_claim_to_its_own_original_registry_row() {
             .recovery_submit_browser(second_identity, &second_intent),
         RecoverySubmitResult::Accepted { .. }
     ));
-    owned.clock.advance(15 * 60_000);
+    owned.clock.advance(15 * 24 * 60 * 60_000);
     let before = owned.fixture.entries().len();
     owned
         .daemon

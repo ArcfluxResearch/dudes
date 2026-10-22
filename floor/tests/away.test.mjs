@@ -36,9 +36,11 @@ import {
   openFloorStream,
   refreshFloorSnapshot,
 } from '../src/renderer/floor/stream.ts';
+import { installSigner } from '../src/signer.ts';
 import { floorFetch, floorRequestsPaused, lazyChunk } from '../src/transport.ts';
+import { enrolledSigner } from './helpers/signer.mjs';
 
-const CSRF = 'p8Zt3Qd1Kx9Lm2Nv5Rb7Yc0Ae4Gh6Jk8Sw1Uz3Xq0';
+const DEVICE = 'p8Zt3Qd1Kx9Lm2Nv5Rb7Yc0Ae4Gh6Jk8Sw1Uz3Xq0';
 const HERE = { protocol: 'http:', host: '127.0.0.1:7717' };
 const OWN = ['/floor/assets/app-aaaaaaaa.js'];
 const index = (name) => `<!doctype html><script type="module" src="/floor/assets/${name}"></script>`;
@@ -103,7 +105,7 @@ test('the reconnect ladder ends in the away watch, and nothing else is opened', 
   const ports = { fetchIndex: async () => (asked.push(1), null), ownRefs: OWN };
   const opened = [];
   openFloorStream(
-    { csrf: CSRF },
+    { device: DEVICE },
     HERE,
     () => {
       const socket = fakeSocket();
@@ -131,7 +133,7 @@ test('the reconnect ladder ends in the away watch, and nothing else is opened', 
 
 async function runLadder(timers, ports, opened = []) {
   const stop = openFloorStream(
-    { csrf: CSRF },
+    { device: DEVICE },
     HERE,
     () => {
       const socket = fakeSocket();
@@ -264,7 +266,8 @@ test('the watch asks for the index with no credentials, no cache and a bound', a
 
 test('a paused page sends no request at all, and refuses sockets', async () => {
   const sent = [];
-  globalThis.window = { fetch: async (url) => (sent.push(url), { ok: true }) };
+  installSigner((await enrolledSigner()).signer);
+  globalThis.window = { fetch: async (url) => (sent.push(url), { ok: true, status: 200 }) };
   await floorFetch('/floor/answer', { method: 'POST', credentials: 'same-origin' });
   assert.deepEqual(sent, ['/floor/answer'], 'control: before the pause the request goes out');
 
@@ -275,6 +278,7 @@ test('a paused page sends no request at all, and refuses sockets', async () => {
   assert.equal(refreshFloorSnapshot(), false);
 
   resetAway();
+  installSigner(undefined);
   assert.equal(floorRequestsPaused(), false, 'a reload starts unpaused');
 });
 
@@ -323,7 +327,12 @@ test('every other way the page can load something goes through the pause too', a
           && !(path.endsWith('renderer/floor/stream.ts') && /floorRequestsPaused\(\)\) throw[^;]*;\s*return new WebSocket/.test(text))) {
           offenders.push(`${path.slice(root.length + 1)}: a WebSocket that does not honour the pause`);
         }
-        for (const [pattern, what] of sites) if (pattern.test(text)) offenders.push(`${path.slice(root.length + 1)}: ${what}`);
+        // The signer parses a request address and unregisters service workers, and nothing else does.
+        const own = path.endsWith('/signer.ts');
+        for (const [pattern, what] of sites) {
+          if (own && (what.startsWith('URL') || what === 'a service worker')) continue;
+          if (pattern.test(text)) offenders.push(`${path.slice(root.length + 1)}: ${what}`);
+        }
       }
     }
   };
@@ -379,7 +388,7 @@ test('each away state says its one thing, in words', async () => {
   const text = () => renderToStaticMarkup(createElement(StreamNotice,
     { floor: { ...store.getFloorState(), phase: 'closed', stale: false, epoch: 1, snapshotEpoch: 1 } }))
     .replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
-  assert.match(text(), /^Disconnected\./, 'control: with the daemon present the old line stands');
+  assert.match(text(), /^Dudes stopped\./, 'control: with the daemon present the old line stands');
 
   const cases = [
     ['updated', 'Dudes was updated. Reload this tab to continue.'],
@@ -407,6 +416,6 @@ test('each away state says its one thing, in words', async () => {
   for (let looks = 0; away.getAway().kind === 'watching' && looks < 400; looks += 1) await timers.step(AWAY_POLL_MS);
   assert.equal(
     text(),
-    'You are signed out of this Floor. That happens after 30 minutes without use, or when Dudes restarts. Run dudes floor open for a new link. Each link works once, in one browser.',
+    'You are signed out of this Floor. That happens when you sign out, when the browser is removed, or after 30 days without use or 90 days in all. To sign in again, run dudes openCopy in a terminal.',
   );
 });

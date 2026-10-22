@@ -2,6 +2,7 @@
 
 import type { FloorState } from '../floor/store.ts';
 import { viewConfirmed } from './model.ts';
+import { projectAddOn } from '../project/AddProject.tsx';
 
 export function TicketOffHint({ floor }: { readonly floor: FloorState }) {
   if (!viewConfirmed(floor)) return null;
@@ -14,6 +15,8 @@ export function TicketOffHint({ floor }: { readonly floor: FloorState }) {
   </p>;
 }
 
-export function NoTicketProjectHint() {
-  return <p className="ticket-hint">Tickets run in a project, and none is set up yet. In your project&apos;s folder run <code>dudes project add</code>.</p>;
+export function NoTicketProjectHint({ floor }: { readonly floor?: FloorState } = {}) {
+  return floor !== undefined && projectAddOn(floor)
+    ? <p className="ticket-hint">Tickets run in a project, and none is set up yet. Add the folder of your project in Settings.</p>
+    : <p className="ticket-hint">Tickets run in a project, and none is set up yet. In your project&apos;s folder run <code>dudes project add</code>.</p>;
 }

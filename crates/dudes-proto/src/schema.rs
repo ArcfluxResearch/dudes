@@ -480,10 +480,15 @@ mod tests {
                 at,
                 record: samples::record(kind),
             };
-            assert_valid(
-                &schema,
-                &serde_json::to_value(&entry).unwrap(),
-                &format!("Entry::{kind:?}"),
+            let instance = serde_json::to_value(&entry).unwrap();
+            let errors: Vec<String> = validator
+                .iter_errors(&instance)
+                .map(|err| format!("{err} at {}", err.instance_path()))
+                .collect();
+            assert!(
+                errors.is_empty(),
+                "Entry::{kind:?} does not match its schema:\n{}\n{instance:#}",
+                errors.join("\n")
             );
             assert!(
                 !validator.is_valid(&serde_json::to_value(samples::record(kind)).unwrap()),

@@ -15,7 +15,7 @@
 //   a) add `<button onClick={...}>answer</button>` to `OfficeCanvas.tsx` — the
 //      exact control count goes red;
 //   b) send an extra message in `stream.ts` — say `socket.send('{"type":
-//      "agent.answer"}')` — "the page sends only the four named read-only stream messages" goes red
+//      "agent.answer"}')` — "the page sends only the five named read-only stream messages" goes red
 //      naming the message;
 //   c) delete a pattern from `FORBIDDEN` — "the scan finds what it looks for"
 //      goes red, because the fixture that carries a match for each
@@ -243,12 +243,17 @@ const HIRE_FIELDS = Object.freeze([
   { tag: 'input', name: 'workspace_id', type: 'radio', change: '() => editDraft({ workspaceId: space.workspaceId })' },
   { tag: 'input', name: 'engine', type: 'radio', change: '() => editDraft({ engine: name })' },
   { tag: 'input', name: 'check_id', type: 'radio', change: '() => editDraft({ checkId: option.id })' },
-  { tag: 'textarea', name: 'goal_text', type: null, change: '(event) => editDraft({ goalText: event.target.value })' },
+  { tag: 'input', name: 'own_copy', type: 'checkbox',
+    change: '(event) => editDraft({ ownCopy: event.target.checked })' },
+  { tag: 'textarea', name: 'first_task', type: null, change: '(event) => editDraft({ taskText: event.target.value })' },
 ]);
 const ADMITTED_IN_HIRE_FORM = Object.freeze(['an input', 'a textarea', 'a select', 'a change handler']);
 
 const ANSWER_FORM = 'src/renderer/answer/AnswerPanel.tsx';
 const ANSWER_MODULE = 'src/renderer/answer/answer.ts';
+const DEVICES_MODULE = 'src/renderer/devices/devices.ts';
+const DEVICE_NOTICES = 'src/renderer/devices/DeviceNotices.tsx';
+const DEVICES_SECTION = 'src/renderer/devices/DevicesSection.tsx';
 const CHAT_PANEL = 'src/renderer/chat/ChatPanel.tsx';
 const CHAT_MODULE = 'src/renderer/chat/chat.ts';
 const ADMITTED_IN_ANSWER_FORM = Object.freeze(['a textarea', 'a change handler', 'a key handler']);
@@ -260,9 +265,13 @@ const RECOVERY_MODULE = 'src/renderer/recovery/recovery.ts';
 const TERMINAL_PANEL = 'src/renderer/terminal/TerminalPanel.tsx';
 const TERMINAL_MODULE = 'src/renderer/terminal/terminal.ts';
 const TERMINAL_CONTROLS = 'src/renderer/terminal/controls.ts';
+const LOGIN_MODULE = 'src/renderer/login/login.ts';
+const LOGIN_PANEL = 'src/renderer/login/EngineSignIn.tsx';
 const RETIRE_PANEL = 'src/renderer/retire/RetirePanel.tsx';
 const RETIRE_MODULE = 'src/renderer/retire/retire.ts';
 const SETTINGS_EDIT_MODULE = 'src/renderer/settings/edit.ts';
+const ADD_PROJECT_MODULE = 'src/renderer/project/add.ts';
+const ADD_PROJECT_FORM = 'src/renderer/project/AddProject.tsx';
 const TICKET_MODULE = 'src/renderer/ticket/ticket.ts';
 const TICKET_BOARD = 'src/renderer/ticket/TicketBoard.tsx';
 const TICKET_PANEL = 'src/renderer/ticket/TicketPanel.tsx';
@@ -284,14 +293,17 @@ const LOOK_PANEL = 'src/renderer/look/LookEditor.tsx';
 const ADMITTED_IN_GOAL_FORM = Object.freeze(['a textarea', 'an input', 'a change handler']);
 const SETUP_VIEW = 'src/renderer/setup/SetupView.tsx';
 const FIRST_RUN_GUIDE = 'src/renderer/setup/FirstRunGuide.tsx';
+const FIRST_TASK = 'src/renderer/setup/FirstTask.tsx';
 const SETTINGS_VIEW = 'src/renderer/settings/SettingsView.tsx';
 const FLOOR_SHELL = 'src/shell.tsx';
+const NAVIGATION = 'src/navigation.ts';
 const AGENT_ORDER = 'src/renderer/AgentOrder.tsx';
 const ARCHIVED_AGENTS = 'src/renderer/ArchivedAgents.tsx';
 const CONTROL_VIEW = 'src/renderer/Control.tsx';
 /** Escape closes a Control view, or the drawer from anywhere on the stage, unless a field already used it. It sends nothing. */
 const CLOSE_ON_ESCAPE = '(event) => { if (closesPanel(event)) { event.stopPropagation(); onClose(); } }';
 const CLOSE_DRAWER_ON_ESCAPE = '(event) => { if (closesDrawer(event, drawerOpen)) { event.stopPropagation(); clearSelection(); } }';
+const CLOSE_PAGE_ON_ESCAPE = '(event) => {\n        if (page !== null && closesPanel(event)) { event.stopPropagation(); closeView(); }\n      }';
 const ACTIVITY_PANEL = 'src/renderer/LogPanel.tsx';
 const HIRE_ENTRY = 'src/renderer/onboarding/HireEntry.tsx';
 /**
@@ -303,6 +315,8 @@ const STREAM_NOTICE = 'src/renderer/StreamNotice.tsx';
 const ADMITTED_WITHOUT_HANDLER = new Map([
   [SETUP_VIEW, Object.freeze(['a link'])], [SETTINGS_VIEW, Object.freeze(['a link'])], [STREAM_NOTICE, Object.freeze(['a link'])],
   [RECOVERED_REVIEW, Object.freeze(['a link'])],
+  // The sign-in link the engine printed, drawn whole in a read-only field and offered as one link to open in a new tab.
+  [LOGIN_PANEL, Object.freeze(['an input', 'a link'])],
 ]);
 /**
  * The `FORBIDDEN` kinds each listed file may carry. "the floor ships no
@@ -315,8 +329,10 @@ const ADMITTED = new Map([
   [ACTIVITY_PANEL, Object.freeze(['an input', 'a select', 'a change handler'])],
   [GOAL_PANEL, ADMITTED_IN_GOAL_FORM],
   [TICKET_BOARD, Object.freeze([...ADMITTED_IN_TICKET_FORM, 'a key handler'])], [TICKET_PANEL, ADMITTED_IN_TICKET_FORM],
-  [CHAT_PANEL, Object.freeze(['a textarea', 'a change handler', 'a key handler'])],
+  [CHAT_PANEL, Object.freeze(['a textarea', 'an input', 'a change handler', 'a key handler'])],
   [RENAME_PANEL, Object.freeze(['an input', 'a change handler', 'a key handler'])],
+  [ADD_PROJECT_FORM, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
+  [SETTINGS_VIEW, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
   [LOOK_PANEL, Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler',
     'a submit handler', 'a key handler'])],
   [FLOOR_SHELL, Object.freeze(['a key handler', 'a pointer handler'])],
@@ -325,6 +341,7 @@ const ADMITTED = new Map([
   [CONTROL_VIEW, Object.freeze(['a key handler'])],
   [TERMINAL_PANEL, Object.freeze(['a textarea', 'a key handler'])],
   [FIRST_RUN_GUIDE, Object.freeze(['a key handler'])],
+  [FIRST_TASK, Object.freeze(['a key handler'])],
 ]);
 /** The slot's one key handler: a held key's repeats are not presses. It sends nothing. */
 const REFUSE_REPEAT = '(event) => { if (event.repeat) event.preventDefault(); }';
@@ -390,6 +407,14 @@ const ADMITTED_HANDLERS = [
   { file: TERMINAL_PANEL, tag: 'textarea', handler: 'onFocus', expression: '(event) => event.currentTarget.select()' },
   { file: FIRST_RUN_GUIDE, tag: 'aside', className: 'first-run-guide', handler: 'onKeyDown',
     expression: "(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }" },
+  { file: FIRST_TASK, tag: 'section', className: 'first-task', handler: 'onKeyDown',
+    expression: `(event) => {
+      if (offer.kind !== 'task' || current.mode !== 'open' || !closesPanel(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setPrompt({ freeIds, mode: 'collapsed' });
+      openButton.current?.focus();
+    }` },
   { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
     expression: '(event) => setFilters({ ...filters, agentId: event.currentTarget.value })' },
   { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
@@ -402,6 +427,11 @@ const ADMITTED_HANDLERS = [
   { file: RENAME_PANEL, tag: 'input', handler: 'onFocus', expression: '(event) => event.currentTarget.select()' },
   { file: RENAME_PANEL, tag: 'input', handler: 'onChange' },
   { file: RENAME_PANEL, tag: 'input', handler: 'onKeyDown' },
+  { file: ADD_PROJECT_FORM, tag: 'form', className: 'add-project', handler: 'onSubmit' },
+  { file: ADD_PROJECT_FORM, tag: 'input', handler: 'onChange' },
+  { file: SETTINGS_VIEW, tag: 'form', className: 'settings-limit', handler: 'onSubmit' },
+  { file: SETTINGS_VIEW, tag: 'input', handler: 'onChange',
+    expression: '(event) => { setTyped(event.target.value); setProblem(null); }' },
   { file: LOOK_PANEL, tag: 'form', handler: 'onSubmit',
     expression: '(event) => { event.preventDefault(); void submitLook(row, browserLookDeps); }' },
   { file: LOOK_PANEL, tag: 'form', handler: 'onKeyDown',
@@ -428,10 +458,14 @@ const ADMITTED_HANDLERS = [
   { file: GOAL_PANEL, tag: 'input', handler: 'onChange', expression: "() => choose('keep')" },
   { file: GOAL_PANEL, tag: 'input', handler: 'onChange', expression: '() => choose({ id: option.id })' },
   { file: CHAT_PANEL, tag: 'textarea', handler: 'onChange', expression: '(event) => editChatDraft(row.id, event.currentTarget.value)' },
+  { file: CHAT_PANEL, tag: 'textarea', handler: 'onPaste', expression: '(event) => pasteChatFiles(event, gate)' },
+  { file: CHAT_PANEL, tag: 'input', className: 'chat-file-input', handler: 'onChange', expression: '(event) => pickChatFiles(event, gate)' },
+  { file: CHAT_PANEL, tag: 'section', className: 'chat-compose', handler: 'onDragOver', expression: 'overChatFiles' },
+  { file: CHAT_PANEL, tag: 'section', className: 'chat-compose', handler: 'onDrop', expression: '(event) => dropChatFiles(event, gate)' },
   { file: CHAT_PANEL, tag: 'textarea', handler: 'onKeyDown',
     expression: '(event) => {\n          if (!queuesChatOnKey(event) || blocked || action.sending) return;\n          event.preventDefault();\n          void submitChat(gate, browserChatDeps);\n        }' },
   { file: CHAT_PANEL, tag: 'div', className: 'chat-scroll', handler: 'onScroll',
-    expression: 'event => {\n        const node = event.currentTarget;\n        follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;\n      }' },
+    expression: 'event => {\n        const node = event.currentTarget;\n        if (node.clientWidth !== size.current.width || node.clientHeight !== size.current.height) return;\n        follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;\n      }' },
   // ControlPanel.tsx: Pause and Resume keep keyboard focus while they wait, so a
   // held Enter would otherwise press the verb the slot flips to. Each refuses
   // repeats and nothing else, pinned by its exact body on its own button.
@@ -447,6 +481,7 @@ const ADMITTED_HANDLERS = [
   { file: ARCHIVED_AGENTS, tag: 'details', className: 'archive-memory', handler: 'onToggle',
     expression: '(event) => setOpen(event.currentTarget.open)' },
   { file: FLOOR_SHELL, tag: 'div', className: 'floor-stage', handler: 'onKeyDown', expression: CLOSE_DRAWER_ON_ESCAPE },
+  { file: FLOOR_SHELL, tag: 'main', className: 'shell', handler: 'onKeyDown', expression: CLOSE_PAGE_ON_ESCAPE },
   { file: CONTROL_VIEW, tag: 'section', className: 'control-panel', handler: 'onKeyDown', expression: CLOSE_ON_ESCAPE },
   { file: CONTROL_VIEW, tag: 'dialog', className: 'ticket-dialog', handler: 'onCancel',
     expression: '(event) => { event.preventDefault(); closeOverlay(); }' },
@@ -655,6 +690,8 @@ function urlAttributesIn(text, file) {
       const expression = value.expression;
       if (ts.isIdentifier(expression) && assets.has(expression.text)) continue;
       if (file === SETTINGS_VIEW && expression.getText(syntax) === ADMITTED_RELEASE_NOTES_HREF) continue;
+      // The engine's own sign-in link, which `offerableLink` has already refused unless it is a plain https address.
+      if (file === LOGIN_PANEL && expression.getText(syntax) === 'link') continue;
       found.push({ tag, name, expression: expression.getText(syntax) });
     }
   }
@@ -939,7 +976,9 @@ test('the floor admits only the named controls and forms', async () => {
   }
   assert.deepEqual(carrying, [], 'the floor grew a mutation control');
   // Each exemption is for exactly what its form carries, and it does carry it.
-  for (const [file, kinds] of [...ADMITTED, ...ADMITTED_WITHOUT_HANDLER]) {
+  const exempt = new Map();
+  for (const [file, kinds] of [...ADMITTED, ...ADMITTED_WITHOUT_HANDLER]) exempt.set(file, [...(exempt.get(file) ?? []), ...kinds]);
+  for (const [file, kinds] of exempt) {
     assert.deepEqual((admitted.get(file) ?? []).sort(), [...kinds].sort(), `${file} was not scanned as itself`);
   }
   const byFile = (map) => [...map].map(([file, kinds]) => `${file}: ${[...kinds].sort().join(', ')}`).sort();
@@ -1053,9 +1092,9 @@ test('the goal form has one text field, named goal, and one check choice, each w
 });
 
 test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Pause all, resume, goal change, look edit and dismiss buttons, '
-  + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, Retire\'s own four, the Git tab\'s Refresh and Copy path, '
+  + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
-  + 'Settings\' office layout and desktop notification choices, recovery inspection, context choices, one authorization and inert receipt lookup, earlier acknowledged-review disclosure, the guide\'s navigation and Hire opener, '
+  + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation and Hire opener, '
   + 'and checkout differences\' explicit show, refresh, hide, open and more-files controls', async () => {
   const buttons = [];
   const clicks = [];
@@ -1077,28 +1116,35 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(6).fill('src/renderer/OfficeCanvas.tsx'),
     'src/renderer/ReadError.tsx',
     ...Array(4).fill(ANSWER_FORM),
-    ...Array(8).fill(CHAT_PANEL),
+    ...Array(2).fill(DEVICE_NOTICES),
+    DEVICES_SECTION,
+    ...Array(9).fill(CHAT_PANEL),
     ...Array(4).fill(CONTROL_PANEL),
     ...Array(5).fill(PAUSE_ALL_PANEL),
-    ...Array(4).fill(RECOVERY_PANEL),
+    ...Array(5).fill(RECOVERY_PANEL),
     ...Array(3).fill(GOAL_PANEL),
+    ...Array(2).fill('src/renderer/ticket/StuckActions.tsx'),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
-    ...Array(7).fill(TICKET_BOARD),
+    ...Array(8).fill(TICKET_BOARD),
     ...Array(10).fill(TICKET_PANEL),
-    ...Array(11).fill(HIRE_FORM),
+    ...Array(14).fill(HIRE_FORM),
     HIRE_ENTRY,
     ...Array(6).fill(RETIRE_PANEL),
     ...Array(2).fill(GIT_PANEL),
     ...Array(5).fill(DIFF_PANEL),
     ...Array(4).fill(MEMORY_PANEL),
     ...Array(4).fill(RENAME_PANEL),
+    ...Array(6).fill(ADD_PROJECT_FORM),
     ...Array(4).fill(LOOK_PANEL),
     ...Array(3).fill(SETUP_VIEW),
-    ...Array(8).fill(SETTINGS_VIEW),
+    ...Array(9).fill(SETTINGS_VIEW),
     ...Array(7).fill(FIRST_RUN_GUIDE),
-    ...Array(5).fill('src/renderer/setup/FirstTask.tsx'),
+    ...Array(7).fill(FIRST_TASK),
     ...Array(10).fill(TERMINAL_PANEL),
-    ...Array(4).fill('src/shell.tsx'),
+    ...Array(5).fill(LOGIN_PANEL),
+    ...Array(7).fill('src/shell.tsx'),
+    'src/renderer/SignInExpired.tsx',
+    'src/renderer/StreamNotice.tsx',
   ];
   assert.deepEqual(buttons.sort(), [...expected, AGENT_ORDER].sort());
   expected.sort();
@@ -1108,12 +1154,17 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
+  // The folder form submits with a button that has no click handler of its own.
+  clickExpected.splice(clickExpected.indexOf(ADD_PROJECT_FORM), 1);
+  // Each spending limit's Save button submits its form.
+  clickExpected.splice(clickExpected.indexOf(SETTINGS_VIEW), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
   clickExpected.push(RECOVERED_REVIEW);
   assert.deepEqual(clicks.sort(), clickExpected.sort());
   const readError = await readFile(resolve(source, 'renderer/ReadError.tsx'), 'utf8');
   assert.deepEqual(clicksIn(await readFile(resolve(floor, RECOVERY_PANEL), 'utf8')), [
     '(event) => { if (event.detail < 2) void inspectRecovery(row.id, browserRecoveryDeps); }',
+    '() => onReadReceipt(id)',
     '() => { if (problem === null && !blocked) chooseRecovery(draft.key, choice); }',
     '(event) => { if (event.detail < 2) void submitRecovery(draft.key, browserRecoveryDeps); }',
     '(event) => { if (event.detail < 2) void checkRecoveryReceipt(id, browserRecoveryDeps); }',
@@ -1199,16 +1250,17 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => onOpenTicket?.(item.card)', '() => onToggle(entry.view)', 'onClose', 'closeOverlay']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TICKET_BOARD), 'utf8')), [
     '() => dismissNotice(notice)', '(event) => onHire(event.currentTarget)', 'onCancel',
-    '(event) => onSelect(card.id, event.currentTarget)', '(event) => onNewTicket(event.currentTarget)',
+    '(event) => onSelect(card.id, event.currentTarget)', '(event) => onNewTicket(event.currentTarget)', '() => setDoneShown(doneShown + DONE_SHOWN)',
   ]);
   // Opening Setup or Settings takes a fresh snapshot: the same resubscription Recheck starts.
   assert.match(center, /\{ view: 'setup', label: 'Setup', refresh: true \}/);
   assert.match(center, /\{ view: 'settings', label: 'Settings', refresh: true \}/);
   assert.match(center, /onSetup=\{\(\) => onView\('setup'\)\}/);
-  assert.match(shell, /function openView\(next: ControlView\): void \{\s*setFocused\(false\);\s*setView\(next\);\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === next && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}/);
-  assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup',
-    '() => { void changeSetting(key, next); }', '() => { void confirmSetting(); }', '() => cancelSetting()',
-    '() => { void desktopNotificationPreference.setEnabled(!on); }', '() => setOfficePin(id)', 'onCopyAdd']);
+  assert.match(shell, /function openView\(next: ControlView\): void \{\s*setFocused\(false\);\s*if \(isPageView\(next\)\) \{\s*setPanel\(null\);\s*openPage\(next\);\s*\} else \{\s*openPage\(null\);\s*setPanel\(next\);\s*\}\s*\}/);
+  assert.match(shell, /if \(page === null\) return;\s*setFocused\(false\);\s*setPanel\(null\);\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === page && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}, \[page\]\)/);
+  assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup', 'onSetup',
+    '() => { void changeSetting(settingKey, next); }', '() => { void confirmSetting(); }', '() => cancelSetting()',
+    '() => { void desktopNotificationPreference.setEnabled(!on); }', '() => setOfficePin(id)']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETUP_VIEW), 'utf8')).sort(), [
     '() => copyToClipboard(install)',
     '() => refreshFloorSnapshot()',
@@ -1230,16 +1282,19 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
 
   // The Hire form's activators, each named: sections, Back, Next, the one
   // Hire, Check again for a missing engine, Check status on the same attempt,
-  // Edit after a no-effect refusal, Hire another after a durable answer, and
-  // Close. The shell opens it.
+  // Edit after a no-effect refusal, Try again for an unsaved first task, Turn on tickets, Hire another after a durable answer, Open the
+  // hired agent, and Close. The shell opens it.
   assert.deepEqual(clicksIn(await readFile(resolve(floor, HIRE_FORM), 'utf8')).sort(), [
     '() => copyToClipboard(INSTALL_COMMANDS[engine]!)',
     '() => { if (at !== 0 && !frozen && !stuck) moveSection(-1, floor); }',
-    '() => { if (at !== SECTIONS.length - 1 && !frozen && !stuck) moveSection(1, floor); }',
+    '() => { if (!frozen && !stuck) moveSection(1, floor); }',
     '() => { if (!stuck) showSection(entry.key); }',
     '() => refreshFloorSnapshot()',
-    '() => { if (!hire.sending && !waiting) void checkHireStatus(browserHireDeps); }',
-    '() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }',
+    '() => { if (!hire.sending) void checkHireStatusWithFirstTask(browserHireDeps); }',
+    '() => { if (blocked === null && !frozen && !hire.sending) void hireWithFirstTask(floor, browserHireDeps); }',
+    "() => { void changeSetting('floor.board', 'on'); }",
+    '() => { void makeFirstTask(browserHireDeps); }',
+    'onClose',
     'onClose',
     'onClose',
     '() => { if (!hire.sending) releaseAttempt(); }',
@@ -1248,10 +1303,13 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.deepEqual(clicksIn(await readFile(resolve(floor, HIRE_ENTRY), 'utf8')),
     ['(event) => onAddAgent(event.currentTarget)']);
   assert.deepEqual(clicksIn(await readFile(resolve(source, 'shell.tsx'), 'utf8')), [
+    'reloadPage',
+    'closeView',
     'toggleCrew',
     'toggleFocus',
     '(event) => openHire(event.currentTarget)',
     '() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))',
+    'signOut',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, ANSWER_FORM), 'utf8')).sort(), [
     'dismissReceipt',
@@ -1265,6 +1323,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => selectChatAnswer(row.id, null)',
     '() => selectChatAnswer(row.id, { questionLsn: question.questionLsn, question: question.question })',
     '() => void startFreshChat(attempt, outcome, browserChatDeps)',
+    '() => removeChatFile(row.id, file.id)',
   ].sort());
   assert.deepEqual(clicksIn(await readFile(resolve(floor, CONTROL_PANEL), 'utf8')).sort(), [
     'dismissReceipt',
@@ -1360,7 +1419,7 @@ test('the served HTML and CSS match no FORBIDDEN pattern and no static activator
   assert.match(html, /<div id="root"><\/div>/);
 });
 
-test('the page sends only the four named read-only stream messages', async () => {
+test('the page sends only the five named read-only stream messages', async () => {
   // The output view adds exactly one selected output read filter and its clear to
   // `floor.subscribe` and `floor.unsubscribe`. An unlisted type has no
   // dispatch target — but a page that tried would be a page asking for
@@ -1378,19 +1437,19 @@ test('the page sends only the four named read-only stream messages', async () =>
     ts.forEachChild(node, collect);
   }
   collect(syntax);
-  assert.deepEqual(sent, ['CLEAR_OUTPUT', "JSON.stringify({ type: 'floor.output.select', agent_id: desired.targetId,\n          ...(desired.view === 'reply' ? { view: 'reply' } : {}) })", 'SUBSCRIBE', 'UNSUBSCRIBE'],
-    'the page sent anything beyond the four read-only browser-wire messages');
+  assert.deepEqual(sent, ['visible ? VISIBLE : HIDDEN', 'CLEAR_OUTPUT', "JSON.stringify({ type: 'floor.output.select', agent_id: desired.targetId,\n          ...(desired.view === 'reply' ? { view: 'reply' } : {}) })", 'SUBSCRIBE', 'UNSUBSCRIBE'],
+    'the page sent anything beyond the five read-only browser-wire messages');
 
-  const literals = [...stream.matchAll(/const (SUBSCRIBE|UNSUBSCRIBE|CLEAR_OUTPUT) = '([^']+)'/g)];
-  assert.equal(literals.length, 3, 'the fixed client messages changed');
+  const literals = [...stream.matchAll(/const (SUBSCRIBE|UNSUBSCRIBE|CLEAR_OUTPUT|VISIBLE|HIDDEN) = '([^']+)'/g)];
+  assert.equal(literals.length, 5, 'the fixed client messages changed');
   const types = literals.map(([, , text]) => JSON.parse(text).type).sort();
-  assert.deepEqual(types, ['floor.output.clear', 'floor.subscribe', 'floor.unsubscribe']);
+  assert.deepEqual(types, ['floor.output.clear', 'floor.subscribe', 'floor.unsubscribe', 'floor.visibility', 'floor.visibility']);
   assert.match(stream, /live\.send\(JSON\.stringify\(\{ type: 'floor\.output\.select', agent_id: desired\.targetId,\s+\.\.\.\(desired\.view === 'reply' \? \{ view: 'reply' \} : \{\}\) \}\)\)/);
 
   // Nothing else in the renderer sends anything on a socket, but the terminal
-  // channel, whose sends the next test pins.
+  // channel and the engine sign-in channel, whose sends the next tests pin.
   for (const path of await filesUnder(source, ['.ts', '.tsx'])) {
-    if (path.endsWith('floor/stream.ts') || path.endsWith(TERMINAL_MODULE)) continue;
+    if (path.endsWith('floor/stream.ts') || path.endsWith(TERMINAL_MODULE) || path.endsWith(LOGIN_MODULE)) continue;
     const text = await readFile(path, 'utf8');
     assert.doesNotMatch(text, /\.send\(/, `${path.slice(floor.length + 1)} sends on a socket`);
   }
@@ -1400,8 +1459,8 @@ test('the page sends only the four named read-only stream messages', async () =>
  * What the terminal module puts on its socket: each `.send(` call, and the
  * `type` of each object literal handed to its own `send(channel, …)`.
  */
-function terminalSendsIn(text) {
-  const syntax = parsedByExtension(text, TERMINAL_MODULE);
+function terminalSendsIn(text, file = TERMINAL_MODULE) {
+  const syntax = parsedByExtension(text, file);
   const sockets = [];
   const sent = [];
   (function walk(node) {
@@ -1457,6 +1516,37 @@ test("the terminal channel sends only the four terminal-grant client messages, a
       'something other than the operator\'s own input is written to the terminal');
   });
 
+test("the engine sign-in channel sends only its three client messages, and only the person's own input is written", async () => {
+  const found = terminalSendsIn(await readFile(resolve(floor, LOGIN_MODULE), 'utf8'), LOGIN_MODULE);
+  assert.deepEqual(found.sockets, ['channel.socket.send(JSON.stringify(message))'],
+    'the sign-in module sends on its socket somewhere new');
+  assert.deepEqual(found.sent, ['login.resize', 'login.start', 'login.write'],
+    'the sign-in channel sends something beyond its three client messages');
+  assert.deepEqual(terminalSendsIn(`
+    function send(channel, message) { channel.socket.send(JSON.stringify(message)); }
+    send(live, { type: 'login.hire', engine }); send(live, message); live.socket.send('{}');
+  `, LOGIN_MODULE), {
+    sockets: ['channel.socket.send(JSON.stringify(message))', "live.socket.send('{}')"],
+    sent: ['login.hire', 'not a literal: send(live, message)'],
+  }, 'a planted fourth message or second send is not seen');
+
+  // The one way bytes reach `login.write` is the grid's own input event, handed on unchanged.
+  const writers = [];
+  for (const path of await filesUnder(source, ['.ts', '.tsx'])) {
+    const relative = path.slice(floor.length + 1);
+    const syntax = parsedByExtension(await readFile(path, 'utf8'), relative);
+    (function walk(node) {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'writeLogin') {
+        const around = ts.findAncestor(node.parent, ts.isCallExpression);
+        writers.push(`${relative}: ${around?.getText(syntax) ?? node.getText(syntax)}`);
+      }
+      ts.forEachChild(node, walk);
+    })(syntax);
+  }
+  assert.deepEqual(writers, [`${LOGIN_PANEL}: term.onData((data) => writeLogin(data))`],
+    "something other than the person's own input is written to the sign-in terminal");
+});
+
 /** Five network primitives, matched as text, not only the one the page uses. */
 const OUTBOUND = [
   ['fetch', /\bfetch\(/],
@@ -1468,9 +1558,16 @@ const OUTBOUND = [
 
 const REQUESTS = {
   [CHAT_MODULE]: {
-    paths: ['/floor/chat/send', 'application/json', '/floor/chat/cancel', 'application/json'],
-    methods: ['POST', 'POST'],
-    fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', "fetch('/floor/chat/send')", "fetch('/floor/chat/cancel')"],
+    paths: ['/floor/chat/send', 'application/json', '/floor/chat/cancel', 'application/json',
+      'template: `/floor/chat/file?agent=${agent}&name=${encodeURIComponent(file.name)}`', 'application/octet-stream'],
+    methods: ['POST', 'POST', 'POST'],
+    fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', "fetch('/floor/chat/send')", "fetch('/floor/chat/cancel')",
+      'deps.fetch(url)'],
+  },
+  [DEVICES_MODULE]: {
+    paths: ['application/json', '/floor/devices', '/floor/devices/keep', '/floor/devices/remove'],
+    methods: ['POST'],
+    fetches: ['floorFetch', 'floorFetch(path)'],
   },
   [LOOK_MODULE]: {
     paths: ['/floor/look', 'application/json'],
@@ -1511,6 +1608,11 @@ const REQUESTS = {
     paths: ['/floor/retire', 'application/json'],
     methods: ['POST'],
     fetches: ['deps.fetch', "fetch('/floor/retire')"],
+  },
+  [ADD_PROJECT_MODULE]: {
+    paths: ['/floor/project/preview', '/floor/project/add', '/floor/project/remove', '/floor/project/choose', 'application/json'],
+    methods: ['POST'],
+    fetches: ['floorFetch', 'floorFetch', 'fetch', 'floorFetch', 'deps.fetch(path)'],
   },
   [SETTINGS_EDIT_MODULE]: {
     paths: ['/floor/settings', 'application/json'],
@@ -1555,8 +1657,8 @@ const REQUESTS = {
   },
   'src/transport.ts': {
     paths: [],
-    methods: [],
-    fetches: ['window.fetch(url)'],
+    methods: ['not a literal: method'],
+    fetches: ['window.fetch(url)', 'signedFetch(floorSigner())', 'window.fetch(target)'],
   },
   'src/renderer/onboarding/hire.ts': {
     paths: ['/floor/onboard', 'application/json'],
@@ -1569,10 +1671,12 @@ const REQUESTS = {
     fetches: [],
   },
   'src/session.ts': {
-    paths: ['/floor/assets/', '/floor/session', 'text/plain;charset=UTF-8', '/floor/'],
-    methods: ['POST', 'GET'],
-    fetches: ['floorFetch', 'floorFetch', 'FetchPort', 'fetch', 'floorFetch', 'FetchPort', 'fetch', 'FetchPort', 'fetch',
-      'FetchPort', 'fetch', "fetch('/floor/session')", 'FetchPort', "fetch('/floor/')"],
+    paths: ['/floor/assets/', '/floor/session/check', 'application/json', '/floor/session/end', 'application/json', '/floor/session',
+      'application/json', '/floor/'],
+    methods: ['POST', 'POST', 'POST', 'GET'],
+    fetches: ['floorFetch', 'plainFetch', 'FetchPort', 'FetchPort', 'plainFetch', 'floorFetch', 'FetchPort', 'floorFetch',
+      "fetch('/floor/session/check')", 'FetchPort', 'floorFetch', "fetch('/floor/session/end')", "fetch('/floor/session')",
+      'FetchPort', 'FetchPort', 'FetchPort', "fetch('/floor/')"],
   },
 };
 
@@ -1707,7 +1811,7 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
     Object.fromEntries([...reaching].sort().map(([name, files]) => [name, [...files].sort()])),
     {
       WebSocket: ['src/renderer/floor/stream.ts'],
-      fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE,
+      fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', ADD_PROJECT_MODULE, RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE,
         SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
     },
     'the page reaches the network somewhere new',
@@ -1809,7 +1913,7 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
 
   const fetching = reaching.get('fetch') ?? [];
   assert.deepEqual(fetching.sort(),
-    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE, SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
+    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', ADD_PROJECT_MODULE, RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE, SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
     'something other than the admitted action, read, session and transport modules fetches');
   assert.deepEqual(calling.sort(), fetching,
     'a module other than those six calls fetch with a space before the parenthesis');
@@ -1863,11 +1967,11 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
   const targets = [...session.matchAll(/fetch\(\s*'([^']+)'/g)].map((match) => match[1]);
   assert.deepEqual(
     targets,
-    ['/floor/session', '/floor/'],
+    ['/floor/session/check', '/floor/session/end', '/floor/session', '/floor/'],
     'session startup calls somewhere else too',
   );
   const methods = [...session.matchAll(/method:\s*'([A-Z]+)'/g)].map((match) => match[1]);
-  assert.deepEqual(methods, ['POST', 'GET'], 'session startup uses a method other than POST, or the one index GET');
+  assert.deepEqual(methods, ['POST', 'POST', 'POST', 'GET'], 'session startup uses a method other than POST, or the one index GET');
 
   assert.equal(valueBindingsIn(parsedByExtension(controlText, CONTROL_MODULE)).filter(({ name }) => name === 'ROUTES')
     .length, 1, 'control.ts binds ROUTES more than once, so the pinned routes may not be the ones it fetches');
@@ -1929,7 +2033,11 @@ function domUrlSinksIn(text) {
 }
 
 const ADMITTED_VIEW_STORAGE = Object.freeze({ path: 'src/renderer/view.ts', line: 'return window.localStorage;' });
-const ADMITTED_SESSION_STORAGE = Object.freeze({ path: 'src/session.ts', line: 'return window.localStorage;' });
+const ADMITTED_SESSION_STORAGE = Object.freeze({ path: 'src/session.ts', line: 'window.localStorage.removeItem(LEGACY_SECRET);' });
+const ADMITTED_PAGE_HASH = Object.freeze({ path: NAVIGATION, line: "window.location.hash = page === null ? '' : PAGE_HASH[page];" });
+/** The one file that keeps the browser's sign-in key: in IndexedDB, as a key the page cannot export. */
+const KEY_STORE = 'src/signer.ts';
+const KEY_STORE_SINKS = ['IndexedDB', 'a service-worker cache'];
 const ADMITTED_FONT_STORAGE = Object.freeze({ path: TERMINAL_CONTROLS,
   line: "return typeof window === 'undefined' ? null : window.localStorage;" });
 const TERMINAL_CONTROL_FUNCTIONS = [
@@ -2122,20 +2230,31 @@ test('font preference storage admits one exact getter in its own module and stil
   }
 });
 
-test('the session secret is kept in one localStorage key, written only from the exchange', async () => {
+test('the old readable secret is only ever removed, and nothing else is kept in localStorage', async () => {
   const text = await readFile(resolve(source, 'session.ts'), 'utf8');
   const clean = unadmittedSinksIn(text, ADMITTED_SESSION_STORAGE.path);
   assert.deepEqual(clean.found, []);
   assert.equal(clean.sessionStorageHits, 1);
   assert.deepEqual([...text.matchAll(/\b(?:getItem|setItem|removeItem|clear|key)\(([^)]*)\)/g)].map((match) => match[0]),
-    ['getItem(SECRET_KEY)', 'setItem(SECRET_KEY, secret)']);
-  assert.deepEqual([...text.matchAll(/\bstore\.write\(([^)]*)\)/g)].map((match) => match[1]), ['session.csrf']);
+    ['removeItem(LEGACY_SECRET)']);
   assert.deepEqual(unadmittedSinksIn(text, 'src/other.ts').found, ['localStorage']);
-  for (const extra of ["localStorage.setItem('csrf', secret);", 'sessionStorage.csrf = secret;', 'console.log(secret);']) {
+  for (const extra of ["localStorage.setItem('secret', secret);", 'sessionStorage.secret = secret;', 'console.log(secret);']) {
     assert.ok(unadmittedSinksIn(text + '\n' + extra, ADMITTED_SESSION_STORAGE.path).found.length > 0, extra);
   }
   assert.equal(unadmittedSinksIn(text + '\n' + ADMITTED_SESSION_STORAGE.line, ADMITTED_SESSION_STORAGE.path)
     .sessionStorageHits, 2);
+});
+
+test('the browser key is made once, cannot be exported, and is stored whole in one IndexedDB record', async () => {
+  const text = await readFile(resolve(source, 'signer.ts'), 'utf8');
+  assert.deepEqual([...text.matchAll(/\.generateKey\(([^)]*)\)/g)].map((match) => match[1]),
+    ["KEY_ALGORITHM, false, ['sign', 'verify']"], 'the key must be made not exportable');
+  assert.deepEqual([...text.matchAll(/\.exportKey\(([^)]*)\)/g)].map((match) => match[1]), ["'spki', pair.publicKey"],
+    'only the public key is ever exported');
+  assert.deepEqual([...text.matchAll(/\bstore\.put\(([^;]*)\)\);/g)].map((match) => match[1]),
+    ['{ device: record.device, privateKey: record.privateKey }, RECORD']);
+  assert.match(text, /KEY_ALGORITHM = \{ name: 'ECDSA', namedCurve: 'P-256' \} as const/);
+  assert.doesNotMatch(text, /localStorage|sessionStorage|document\.cookie/);
 });
 
 function unadmittedSinksIn(text, relative) {
@@ -2147,6 +2266,16 @@ function unadmittedSinksIn(text, relative) {
   let viewStorageHits = 0;
   let fontStorageHits = 0;
   let sessionStorageHits = 0;
+  let pageHashHits = 0;
+  if (relative === ADMITTED_PAGE_HASH.path) {
+    scanned = scanned.replace(/^.*$/gm, (line) => {
+      if (line.trim() === ADMITTED_PAGE_HASH.line) {
+        pageHashHits += 1;
+        return '';
+      }
+      return line;
+    });
+  }
   if (relative === ADMITTED_VIEW_STORAGE.path) {
     scanned = scanned.replace(/^.*$/gm, (line) => {
       if (line.trim() === ADMITTED_VIEW_STORAGE.line) {
@@ -2174,8 +2303,9 @@ function unadmittedSinksIn(text, relative) {
       return line;
     });
   }
-  return { found: [...sessionMaterialSinksIn(scanned), ...domUrlSinksIn(scanned)],
-    viewStorageHits, fontStorageHits, sessionStorageHits };
+  const sinks = sessionMaterialSinksIn(scanned).filter((name) => relative !== KEY_STORE || !KEY_STORE_SINKS.includes(name));
+  return { found: [...sinks, ...domUrlSinksIn(scanned)],
+    viewStorageHits, fontStorageHits, sessionStorageHits, pageHashHits };
 }
 
 test('session material has no browser persistence, URL, argv or log sink', async () => {
@@ -2221,7 +2351,10 @@ test('session material has no browser persistence, URL, argv or log sink', async
     ['a dynamic DOM src, href or srcset assignment']);
   assert.deepEqual(domUrlSinksIn('image.src = tilesUrl;'), [DOM_URL_WRITE]);
   assert.deepEqual(sessionMaterialSinksIn('data-agent-id={row.id}'), []);
-  assert.deepEqual(sessionMaterialSinksIn("connect(streamUrl(location), streamProtocols(session.csrf));"), []);
+  assert.deepEqual(sessionMaterialSinksIn("connect(streamUrl(location), streamProtocols(signed));"), []);
+  assert.deepEqual(unadmittedSinksIn('const db = indexedDB.open("x");', KEY_STORE).found, [], 'the key store is admitted');
+  assert.deepEqual(unadmittedSinksIn('const db = indexedDB.open("x");', 'src/other.ts').found, ['IndexedDB'],
+    'IndexedDB is admitted outside the key store');
 
   assert.deepEqual(
     unadmittedSinksIn(
@@ -2249,20 +2382,33 @@ test('session material has no browser persistence, URL, argv or log sink', async
   let viewStorageHits = 0;
   let fontStorageHits = 0;
   let sessionStorageHits = 0;
+  let pageHashHits = 0;
   for (const path of await filesUnder(source, ['.ts', '.tsx'])) {
     const relative = path.slice(floor.length + 1);
     const text = await readFile(path, 'utf8');
-    const { found, viewStorageHits: storageHits, fontStorageHits: fontHits, sessionStorageHits: sessionHits } =
+    const { found, viewStorageHits: storageHits, fontStorageHits: fontHits, sessionStorageHits: sessionHits, pageHashHits: hashHits } =
       unadmittedSinksIn(text, relative);
     viewStorageHits += storageHits;
     fontStorageHits += fontHits;
     sessionStorageHits += sessionHits;
+    pageHashHits += hashHits;
     if (found.length > 0) carrying.push(`${relative}: ${found.join(', ')}`);
   }
   assert.deepEqual(carrying, [], 'session material gained a browser, URL, argv or log sink');
   assert.equal(viewStorageHits, 1, 'the view-only storage getter moved, disappeared, or was duplicated');
   assert.equal(fontStorageHits, 1, 'the font-only storage getter moved, disappeared, or was duplicated');
-  assert.equal(sessionStorageHits, 1, 'the session secret storage getter moved, disappeared, or was duplicated');
+  assert.equal(sessionStorageHits, 1, 'the removal of the old secret moved, disappeared, or was duplicated');
+  assert.equal(pageHashHits, 1, 'the page-only fragment write moved, disappeared, or was duplicated');
+  const navigation = await readFile(resolve(floor, NAVIGATION), 'utf8');
+  const navigationSyntax = parsedByExtension(navigation, NAVIGATION);
+  assert.deepEqual(navigationSyntax.statements.filter(ts.isImportDeclaration), []);
+  assert.match(navigation, /const PAGE_HASH: Readonly<Record<PageView, string>> = Object\.freeze\(\{\s*log: '#\/log', setup: '#\/setup', settings: '#\/settings',\s*\}\);/);
+  assert.equal([...navigation.matchAll(/\bPAGE_HASH\b/g)].length, 2);
+  const openPage = navigationSyntax.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === 'openPage');
+  assert.equal(openPage.body.statements.length, 1);
+  assert.equal(openPage.body.statements[0].getText(navigationSyntax), ADMITTED_PAGE_HASH.line);
+  assert.deepEqual(unadmittedSinksIn(navigation, 'src/other.ts').found, ['a fragment write']);
+  assert.deepEqual(unadmittedSinksIn(navigation + '\nlocation.hash = secret;', NAVIGATION).found, ['a fragment write']);
   const viewText = await readFile(resolve(floor, ADMITTED_VIEW_STORAGE.path), 'utf8');
   const viewSyntax = parsedByExtension(viewText, ADMITTED_VIEW_STORAGE.path);
   const imports = viewSyntax.statements.filter(ts.isImportDeclaration);
@@ -2314,6 +2460,7 @@ const TERMINAL_GRID = 'src/renderer/terminal/grid.ts';
 const ADMITTED_TERMINAL_LINES = Object.freeze({
   [TERMINAL_GRID]: ["import '@xterm/xterm/css/xterm.css';", "export { Terminal } from '@xterm/xterm';"],
   [TERMINAL_CONTROLS]: ["const drawn = term.element?.querySelector('.xterm-screen')?.getBoundingClientRect();"],
+  [LOGIN_PANEL]: ["const drawn = term.element?.querySelector('.xterm-screen')?.getBoundingClientRect();"],
 });
 
 /**
@@ -2393,18 +2540,19 @@ test('no source asks for an answer method, steer, terminal or generic RPC, and o
 
 /** The goal route. The goal module names it once, in its one fetch, and nothing else names it. */
 const GOAL_ROUTE = /\/floor\/goal\b/g;
-const CHAT_ROUTES = /\/floor\/chat\/(?:send|cancel)\b/g;
+const CHAT_ROUTES = /\/floor\/chat\/(?:send|cancel|file)\b/g;
 
-test('only the Chat module names its two routes and its field writes only the in-memory draft', async () => {
-  assert.equal([..."fetch('/floor/chat/send'); fetch('/floor/chat/cancel'); fetch('/floor/chat/sends');".matchAll(CHAT_ROUTES)].length, 2);
+test('only the Chat module names its three routes and its fields write only the in-memory draft and file chips', async () => {
+  assert.equal([..."fetch('/floor/chat/send'); fetch('/floor/chat/cancel'); fetch('/floor/chat/file'); fetch('/floor/chat/sends');".matchAll(CHAT_ROUTES)].length, 3);
   const naming = {};
   for (const path of await filesUnder(source, ['.ts', '.tsx'])) {
     const routes = [...(await readFile(path, 'utf8')).matchAll(CHAT_ROUTES)].length;
     if (routes > 0) naming[path.slice(floor.length + 1)] = routes;
   }
-  assert.deepEqual(naming, { [CHAT_MODULE]: 2 });
+  assert.deepEqual(naming, { [CHAT_MODULE]: 3 });
   assert.deepEqual(fieldsIn(await readFile(resolve(floor, CHAT_PANEL), 'utf8')), [{ tag: 'textarea', name: 'chat_text',
-    type: null, change: '(event) => editChatDraft(row.id, event.currentTarget.value)' }]);
+    type: null, change: '(event) => editChatDraft(row.id, event.currentTarget.value)' },
+  { tag: 'input', name: null, type: 'file', change: '(event) => pickChatFiles(event, gate)' }]);
 });
 
 test('Chat requires its own fresh sibling and revokes its mounted history and actions with authority', async () => {
@@ -2509,6 +2657,8 @@ test('no control names halt: no route or member, and no label says halt or resta
 
 const ADMITTED_LISTENERS = Object.freeze([
   { path: 'src/main.tsx', line: "window.addEventListener('hashchange', () => {" },
+  { path: NAVIGATION, line: "window.addEventListener('hashchange', listener);" },
+  { path: NAVIGATION, line: "window.addEventListener('popstate', listener);" },
   { path: 'src/renderer/AgentDetail.tsx', line: "strip.addEventListener('wheel', wheel, { passive: false });" },
   { path: 'src/renderer/OfficeCanvas.tsx', line: "document.addEventListener('visibilitychange', onVisibilityChange);" },
   { path: 'src/renderer/OfficeCanvas.tsx', line: "motionPreference.addEventListener('change', onMotionChange);" },
@@ -2522,9 +2672,15 @@ const ADMITTED_LISTENERS = Object.freeze([
   { path: 'src/renderer/OfficeCanvas.tsx', line: "box.addEventListener('focusin', schedule);" },
   { path: 'src/renderer/OfficeCanvas.tsx', line: "box.addEventListener('focusout', schedule);" },
   { path: 'src/renderer/OfficeCanvas.tsx', line: "canvas.addEventListener('webglcontextlost', onContextLost);" },
+  { path: 'src/renderer/chat/ChatPanel.tsx', line: "viewport.addEventListener('resize', fit);" },
+  { path: 'src/renderer/chat/ChatPanel.tsx', line: "viewport.addEventListener('scroll', fit);" },
   { path: 'src/renderer/desktopNotifications.ts', line: "notification.addEventListener('click', () => {" },
+  { path: 'src/renderer/floor/stream.ts', line: "document.addEventListener('visibilitychange', listener);" },
   { path: 'src/shell.tsx', line: "preference.addEventListener('change', onThemePreference);" },
   { path: 'src/shell.tsx', line: "document.addEventListener('keydown', onShortcut);" },
+  { path: 'src/signer.ts', line: "target.addEventListener(success, () => resolve(), { once: true });" },
+  { path: 'src/signer.ts', line: "target.addEventListener('error', () => reject(new Error('storage failed')), { once: true });" },
+  { path: 'src/signer.ts', line: "opening.addEventListener('upgradeneeded', () => {" },
 ]);
 const SOCKET_LISTENER = /(socket|live)\.addEventListener\('(open|message|close)'|addEventListener\(type: '(open|close|message)'/;
 
@@ -3228,7 +3384,7 @@ test('no control is built without JSX', async () => {
   assert.deepEqual(carrying, [], 'a control is built without JSX');
   assert.deepEqual(admitted, ["src/renderer/figurePortrait.ts: document.createElement('canvas').getContext('webgl2')"],
     'the admitted build is not made exactly once');
-  assert.equal(terminals, 1, 'the floor does not build its one terminal, so the fontFamily check measured nothing');
+  assert.equal(terminals, 2, 'the floor does not build its two grids, so the fontFamily check measured nothing');
 });
 
 test('a refused name is found however the source reads it', () => {
@@ -3329,6 +3485,8 @@ function credentialsByPath(text) {
 test('the session module reads the served index with no credentials and sends each exchange with its own', async () => {
   const text = await readFile(resolve(source, 'session.ts'), 'utf8');
   assert.deepEqual(credentialsByPath(text), {
+    '/floor/session/check': 'same-origin',
+    '/floor/session/end': 'same-origin',
     '/floor/session': 'same-origin',
     '/floor/': 'omit',
   });

@@ -46,6 +46,15 @@ pub struct TicketCheckResult {
     pub at: Timestamp,
 }
 
+/// How the latest completed engine turn on a ticket ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TicketTurnEnd {
+    /// The engine process's recorded exit status.
+    pub exit: crate::ExitStatus,
+    /// When the turn's end was recorded.
+    pub at: Timestamp,
+}
+
 /// What the board keeps of a ticket beyond what every card has.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TicketRow {
@@ -75,6 +84,9 @@ pub struct TicketRow {
     /// [`MAX_SUMMARY_BYTES`]. These are the agent's own words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// The newest completed turn on the ticket's goal, retained while another turn runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_end: Option<TicketTurnEnd>,
     /// The daemon's newest run of the check on the ticket's goal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check: Option<TicketCheckResult>,
@@ -154,7 +166,7 @@ impl TicketReason {
     pub const fn sentence(self) -> &'static str {
         match self {
             Self::RecoveryRequired => {
-                "This work was interrupted. Recovery keeps the same goal and ticket round. Review recovery in the agent drawer when available, or run `dudes recovery inspect <agent-id>` in a terminal. Earlier effects may repeat."
+                "This work was interrupted. Recovery keeps the same goal and ticket round. Review recovery to see what was recorded and choose how to continue. Earlier effects may repeat."
             }
             Self::ProjectUnavailable => {
                 "This project is not set up any more. Enroll it again with `dudes project add`, then Give to agent, or Remove the ticket."
@@ -181,10 +193,10 @@ impl TicketReason {
                 "The agent used all its turns on this ticket. Give to agent to try again, or Stop."
             }
             Self::HeldLaunch => {
-                "The agent's engine would not start. Fix the cause, then resume the agent in the Floor or with `dudes resume`."
+                "The agent's engine would not start. Fix the cause, then resume the agent."
             }
             Self::HeldFailing => {
-                "The agent's turns kept failing at once. Fix the cause, then resume the agent in the Floor or with `dudes resume`."
+                "The agent's turns kept failing at once. Fix the cause, then resume the agent."
             }
             Self::HeldUnsure => {
                 "Dudes could not confirm how the agent's last turn ended. Resume the agent, or Stop."

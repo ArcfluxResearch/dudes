@@ -34,14 +34,14 @@ export interface LookState {
 }
 export interface LookDeps {
   fetch(url: string, init: RequestInit): Promise<{ readonly status: number; text(): Promise<string> }>;
-  csrf(): string | null;
+  signedIn(): boolean;
   random(bytes: Uint8Array<ArrayBuffer>): void;
   session(): number;
   refresh(): void;
 }
 export const browserLookDeps: LookDeps = {
   fetch: floorFetch,
-  csrf: () => currentFloorSession()?.csrf ?? null,
+  signedIn: () => currentFloorSession() !== null,
   random: (bytes) => { crypto.getRandomValues(bytes); },
   session: floorSessionGeneration,
   refresh: refreshFloorSnapshot,
@@ -109,29 +109,27 @@ export async function submitLook(row: AgentRow, deps: LookDeps): Promise<void> {
   const { draft, expected } = state;
   if (!lookAvailable(getFloorState(), row) || lookBlocked(state, deps.session()) || state.editor !== row.id
     || draft === null || expected === null || lookProblem(draft) !== null) return;
-  const csrf = deps.csrf();
-  if (csrf === null) return;
+  if (!deps.signedIn()) return;
   const payload = Object.freeze({ request_id: mintAttemptId(deps.random), agent: row.id, expected_lsn: expected,
     character: draft.character, accent: draft.accent, role: trimAsciiSpace(draft.role) });
   const attempt = Object.freeze({ payload, body: JSON.stringify(payload) });
   commit({ ...state, attempt, sending: true, outcome: null, uncertain: false, refusedUnder: null });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
 export async function checkLook(deps: LookDeps): Promise<void> {
   const { attempt, outcome, sending } = state;
   if (attempt === null || sending || outcome === 'changed' || outcome === 'conflict'
     || outcome === 'refused' || outcome === 'full') return;
-  const csrf = deps.csrf();
-  if (csrf === null) return;
+  if (!deps.signedIn()) return;
   commit({ ...state, sending: true });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
-async function send(attempt: LookAttempt, csrf: string, deps: LookDeps): Promise<void> {
+async function send(attempt: LookAttempt, deps: LookDeps): Promise<void> {
   let outcome: LookOutcome;
   try {
     const response = await deps.fetch('/floor/look', {
       method: 'POST', credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf }, body: attempt.body,
+      headers: { 'Content-Type': 'application/json' }, body: attempt.body,
     });
     outcome = decodeLookResponse(response.status, await response.text(), attempt.payload);
   } catch { outcome = 'unknown'; }

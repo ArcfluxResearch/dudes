@@ -110,7 +110,13 @@ const QUOTED_ROUTES: &[&str] = &["\"sh\"", "\"bash\"", "\"/bin/sh\"", "\"-c\""];
 const MIN_FILES: usize = 6;
 
 /// The files that may name a command type, each with one spawn item.
-const ROUTE_FILES: [&str; 4] = ["quickstart.rs", "login.rs", "editor.rs", "runner.rs"];
+const ROUTE_FILES: [&str; 5] = [
+    "quickstart.rs",
+    "login.rs",
+    "editor.rs",
+    "runner.rs",
+    "opener.rs",
+];
 
 /// The one interpreter `dudes upgrade` runs: the release's `install.sh`, as `/bin/sh <file> ...`.
 /// `src/upgrade.rs` names it exactly once, and its test module may repeat the path to assert the
@@ -131,11 +137,12 @@ const BAN_LINTS: [&str; 5] = [
 /// The files of this package that may carry one `#[expect(clippy::disallowed_types)]`, and nothing
 /// else from [`BAN_LINTS`]: the three route items, and the two test helpers that start a real
 /// process (`bins/dudes/clippy.toml` item 3).
-const ADMITTED_EXPECTATIONS: [&str; 6] = [
+const ADMITTED_EXPECTATIONS: [&str; 7] = [
     "src/quickstart.rs",
     "src/login.rs",
     "src/editor.rs",
     "src/runner.rs",
+    "src/opener.rs",
     "tests/common/mod.rs",
     "tests/windows_pipe_owner.rs",
 ];
@@ -390,6 +397,7 @@ fn route_violations(package: &Path) -> Vec<String> {
         ("login.rs", &COMMAND_ROUTES[..1]),
         ("editor.rs", &COMMAND_ROUTES[..1]),
         ("runner.rs", &COMMAND_ROUTES[..1]),
+        ("opener.rs", &COMMAND_ROUTES[..1]),
     ] {
         for route in routes {
             if !found
@@ -3585,6 +3593,295 @@ mod runner_item {
                 "a process group of its own",
                 "    command.process_group(0);\n",
                 "",
+            ),
+        ] {
+            assert_eq!(
+                text.matches(from).count(),
+                1,
+                "{name}: the mutation target drifted"
+            );
+            assert!(
+                !violations(&text.replacen(from, to, 1)).is_empty(),
+                "surviving {name}"
+            );
+        }
+    }
+}
+
+/// `src/opener.rs` is the one place `dudes open` creates a process. It starts the operator's
+/// opener with an absolute program, the link as its one argument, a cleared environment, no
+/// standard streams and a process group of its own, and it never signals it: the browser the opener
+/// starts must outlive this command.
+mod opener_item {
+    use std::path::Path;
+
+    use syn::visit::{self, Visit};
+    use syn::{Expr, ExprCall, ExprMethodCall, ItemConst, ItemFn, LitStr};
+
+    /// A method with one of these names creates, feeds or ends a process.
+    const SENSITIVE: &[&str] = &[
+        "arg",
+        "args",
+        "arg0",
+        "env",
+        "envs",
+        "env_clear",
+        "env_remove",
+        "current_dir",
+        "stdin",
+        "stdout",
+        "stderr",
+        "process_group",
+        "pre_exec",
+        "spawn",
+        "status",
+        "output",
+        "exec",
+        "kill",
+        "wait",
+        "wait_with_output",
+        "try_wait",
+    ];
+
+    /// The string literals under one item.
+    #[derive(Default)]
+    struct Lits(Vec<String>);
+
+    impl<'ast> Visit<'ast> for Lits {
+        fn visit_lit_str(&mut self, lit: &'ast LitStr) {
+            self.0.push(lit.value());
+        }
+    }
+
+    #[derive(Default)]
+    struct Calls {
+        methods: Vec<String>,
+        paths: Vec<String>,
+        programs: Vec<String>,
+        absolute_checks: usize,
+        env_names: Vec<String>,
+        ssh_names: Vec<String>,
+        openers: Vec<String>,
+    }
+
+    impl<'ast> Visit<'ast> for Calls {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            let name = call.method.to_string();
+            if name == "is_absolute" {
+                self.absolute_checks += 1;
+            }
+            if SENSITIVE.contains(&name.as_str()) {
+                self.methods.push(name);
+            }
+            visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_item_const(&mut self, item: &'ast ItemConst) {
+            if item.ident == "OPENER_ENV" {
+                let mut lits = Lits::default();
+                lits.visit_expr(&item.expr);
+                self.env_names = lits.0;
+            }
+            visit::visit_item_const(self, item);
+        }
+
+        fn visit_item_fn(&mut self, item: &'ast ItemFn) {
+            let target = match item.sig.ident.to_string().as_str() {
+                "over_ssh" => Some(&mut self.ssh_names),
+                "system_opener" => Some(&mut self.openers),
+                _ => None,
+            };
+            if let Some(target) = target {
+                let mut lits = Lits::default();
+                lits.visit_block(&item.block);
+                *target = lits.0;
+            }
+            visit::visit_item_fn(self, item);
+        }
+
+        fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+            if let Expr::Path(path) = &*call.func {
+                let name = path
+                    .path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.ident.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                if name.ends_with("Command::new") {
+                    self.programs.push(
+                        call.args
+                            .iter()
+                            .map(|arg| match arg {
+                                Expr::Path(path) => path
+                                    .path
+                                    .get_ident()
+                                    .map_or_else(|| "?".to_owned(), ToString::to_string),
+                                _ => "?".to_owned(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    );
+                }
+                if name.contains("Command") || name.contains("Stdio") || name.contains("process") {
+                    self.paths.push(name);
+                }
+            }
+            visit::visit_expr_call(self, call);
+        }
+    }
+
+    fn violations(text: &str) -> Vec<String> {
+        let file = syn::parse_file(text).expect("the opener parses");
+        let mut calls = Calls::default();
+        calls.visit_file(&file);
+        calls.methods.sort();
+        calls.paths.sort();
+        let mut found = Vec::new();
+        let methods = [
+            "arg",
+            "env",
+            "env_clear",
+            "process_group",
+            "spawn",
+            "stderr",
+            "stdin",
+            "stdout",
+            "try_wait",
+        ];
+        if calls.methods != methods {
+            found.push(format!("methods: {:?}", calls.methods));
+        }
+        let paths = [
+            "Stdio::null",
+            "Stdio::null",
+            "Stdio::null",
+            "std::process::Command::new",
+        ];
+        if calls.paths != paths {
+            found.push(format!("calls: {:?}", calls.paths));
+        }
+        if calls.programs != ["program"] {
+            found.push(format!("program: {:?}", calls.programs));
+        }
+        // The environment the opener is given is exactly this list, and nothing else is copied in.
+        let env_names = [
+            "HOME",
+            "PATH",
+            "LANG",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "XDG_RUNTIME_DIR",
+            "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_TYPE",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "BROWSER",
+        ];
+        if calls.env_names != env_names {
+            found.push(format!("environment names: {:?}", calls.env_names));
+        }
+        if calls.absolute_checks != 1 {
+            found.push(format!("is_absolute checks: {}", calls.absolute_checks));
+        }
+        if calls.ssh_names != ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] {
+            found.push(format!("ssh names: {:?}", calls.ssh_names));
+        }
+        let programs = [
+            "/usr/bin/open",
+            "/usr/bin/xdg-open",
+            "/usr/local/bin/xdg-open",
+            "/bin/xdg-open",
+        ];
+        if calls.openers != programs {
+            found.push(format!("system openers: {:?}", calls.openers));
+        }
+        let launch = text
+            .split("pub(crate) fn launch")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .unwrap_or_default();
+        let skip = launch.find("if over_ssh() {");
+        let absolute = launch.find("Some(path) if path.is_absolute() => path.to_path_buf(),");
+        let run = launch.find("run(&program, url)");
+        if !matches!((skip, absolute, run), (Some(skip), Some(absolute), Some(run))
+            if skip < absolute && absolute < run)
+        {
+            found.push("launch: not skip, then absolute check, then run".to_owned());
+        }
+        found
+    }
+
+    fn source() -> String {
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/opener.rs"))
+            .expect("the opener source")
+    }
+
+    #[test]
+    fn the_opener_makes_only_its_admitted_calls() {
+        assert_eq!(violations(&source()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn opener_mutants_are_rejected() {
+        let text = source();
+        for (name, from, to) in [
+            (
+                "a second spawn",
+                "    command.spawn()\n",
+                "    let _first = command.spawn()?;\n    command.spawn()\n",
+            ),
+            ("inherited environment", "    command.env_clear();\n", ""),
+            (
+                "a composed program",
+                "Command::new(program)",
+                "Command::new(\"/usr/bin/true\")",
+            ),
+            (
+                "an inherited stdin",
+                "command.stdin(Stdio::null());",
+                "command.stdin(Stdio::inherit());",
+            ),
+            (
+                "an inherited stdout",
+                "command.stdout(Stdio::null());",
+                "command.stdout(Stdio::piped());",
+            ),
+            (
+                "a process group of its own removed",
+                "    command.process_group(0);\n",
+                "",
+            ),
+            (
+                "a second argument",
+                "    command.arg(url);\n",
+                "    command.arg(url);\n    command.arg(\"-c\");\n",
+            ),
+            (
+                "a name added to the environment list",
+                "    \"BROWSER\",\n];",
+                "    \"BROWSER\",\n    \"DUDES_TOKEN\",\n];",
+            ),
+            (
+                "the whole environment copied back in",
+                "    command.arg(url);\n",
+                "    for (key, value) in std::env::vars() {\n        command.env(key, value);\n    }\n    command.arg(url);\n",
+            ),
+            (
+                "a relative DUDES_OPENER admitted",
+                "Some(path) if path.is_absolute() => path.to_path_buf(),",
+                "Some(path) => path.to_path_buf(),",
+            ),
+            (
+                "the SSH skip removed",
+                "    if over_ssh() {",
+                "    if false {",
+            ),
+            ("an SSH name dropped", "\"SSH_CLIENT\", ", ""),
+            (
+                "a signal to the opener",
+                "            Ok(None) => return Launch::Opened,\n",
+                "            Ok(None) => {\n                let _ = child.kill();\n                return Launch::Opened;\n            }\n",
             ),
         ] {
             assert_eq!(

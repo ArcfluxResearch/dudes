@@ -229,8 +229,8 @@ function OutcomeBody({ outcome, attempt, answer, floor, session }: {
           {now === 'checking'
             ? 'The daemon refused this request before any effect. Checking whether this Floor session is still live…'
             : now === 'ended'
-              ? 'Your Floor session has ended or was revoked. Paste a new link from dudes floor open '
-                + `into this tab’s address bar: this page keeps the answer. ${next}`
+              ? 'Your Floor session has ended or was revoked. Open Dudes to sign in again '
+                + `in this browser: this page keeps the answer. ${next}`
               : now === 'renewed'
                 ? 'The daemon refused an earlier request before any effect, under a Floor session this page no '
                   + 'longer uses. This page has signed in again and can answer now: '
@@ -238,7 +238,7 @@ function OutcomeBody({ outcome, attempt, answer, floor, session }: {
                     ? 'Check status asks again with the same request, which never answers twice.'
                     : 'Edit and send again sends it under the new session.')
                 : 'The daemon refused this request before any effect, and this page can no longer answer with its '
-                  + `session. Paste a new Floor link into this tab’s address bar to answer again. ${next}`}
+                  + `session. Open Dudes to sign in again, then answer again. ${next}`}
         </p>
       );
     }

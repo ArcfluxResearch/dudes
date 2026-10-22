@@ -1,11 +1,30 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { useRef } from 'react';
+
 import type { DoneNotice } from './done.ts';
 import { dismissDoneNotice } from './floor/store.ts';
 import { handFocusAfterLeave } from './focus.ts';
+import { useAutoDismiss } from './useAutoDismiss.ts';
 
 function dismissId(notice: DoneNotice): string {
   return `done-dismiss-${notice.key}`;
+}
+
+function DoneNoticeItem({ notice, focusNext }: { readonly notice: DoneNotice; readonly focusNext: string }) {
+  const item = useRef<HTMLLIElement>(null);
+  useAutoDismiss(item, notice.key, () => dismissDoneNotice(notice.key));
+  return (
+    <li ref={item} className="done-notice" data-done-agent-id={notice.agentId}>
+      <p className="agent-detail-kicker">Done</p>
+      <p className="done-notice-met"><strong>{notice.name}</strong> <span>met its goal.</span></p>
+      <p className="done-notice-goal" title={notice.goal}>{notice.goal}</p>
+      <button type="button" id={dismissId(notice)} ref={handFocusAfterLeave}
+        data-focus-on-leave={focusNext}
+        aria-label={`Dismiss the Done notice for ${notice.name}: ${notice.goal}`}
+        onClick={() => dismissDoneNotice(notice.key)}>Dismiss</button>
+    </li>
+  );
 }
 
 /**
@@ -23,17 +42,8 @@ export function DoneNotices({ notices, leaveFocusTo }: {
         <ol aria-label="Goals done">
           {notices.map((notice, at) => {
             const neighbour = notices[at + 1] ?? notices[at - 1];
-            return (
-              <li key={notice.key} className="done-notice" data-done-agent-id={notice.agentId}>
-                <p className="agent-detail-kicker">Done</p>
-                <p className="done-notice-met"><strong>{notice.name}</strong> <span>met its goal.</span></p>
-                <p className="done-notice-goal" title={notice.goal}>{notice.goal}</p>
-                <button type="button" id={dismissId(notice)} ref={handFocusAfterLeave}
-                  data-focus-on-leave={neighbour === undefined ? leaveFocusTo : dismissId(neighbour)}
-                  aria-label={`Dismiss the Done notice for ${notice.name}: ${notice.goal}`}
-                  onClick={() => dismissDoneNotice(notice.key)}>Dismiss</button>
-              </li>
-            );
+            return <DoneNoticeItem key={notice.key} notice={notice}
+              focusNext={neighbour === undefined ? leaveFocusTo : dismissId(neighbour)} />;
           })}
         </ol>
       )}

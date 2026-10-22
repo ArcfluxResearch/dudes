@@ -31,16 +31,7 @@ export function titleOf(task: string): string {
   return line.length <= 120 ? line : `${line.slice(0, 117)}...`;
 }
 
-export function firstTaskOffer(floor: FloorState): FirstTaskOffer | null {
-  if (!viewConfirmed(floor)) return null;
-  if (floor.agents.length === 0) {
-    if (floor.settings?.switches.hire === false) return { kind: 'hire', why: 'off' };
-    if (floor.onboarding === null && noProjects(floor)) return { kind: 'hire', why: 'no_project' };
-    const apps = floor.daemon?.providers.filter((row) => isHireEngine(row.provider)) ?? [];
-    if (apps.length > 0 && apps.every((row) => !row.found)) return { kind: 'hire', why: 'no_app' };
-    return { kind: 'hire', why: 'ready' };
-  }
-  if (!floor.ticket || tickets(floor.cards).some((card) => card.status !== 'done')) return null;
+export function freeTaskAgents(floor: FloorState): readonly FirstTaskAgent[] {
   const free = floor.agents.filter((row) => {
     const fields = fieldsOf(row);
     return (fields.status === 'idle' || fields.status === 'done') && (fields.goal === '' || fields.goalStatus === 'achieved'
@@ -56,6 +47,20 @@ export function firstTaskOffer(floor: FloorState): FirstTaskOffer | null {
         project, check });
     }
   }
+  return agents;
+}
+
+export function firstTaskOffer(floor: FloorState): FirstTaskOffer | null {
+  if (!viewConfirmed(floor)) return null;
+  if (floor.agents.length === 0) {
+    if (floor.settings?.switches.hire === false) return { kind: 'hire', why: 'off' };
+    if (floor.onboarding === null && noProjects(floor)) return { kind: 'hire', why: 'no_project' };
+    const apps = floor.daemon?.providers.filter((row) => isHireEngine(row.provider)) ?? [];
+    if (apps.length > 0 && apps.every((row) => !row.found)) return { kind: 'hire', why: 'no_app' };
+    return { kind: 'hire', why: 'ready' };
+  }
+  if (!floor.ticket || tickets(floor.cards).some((card) => card.status !== 'done')) return null;
+  const agents = freeTaskAgents(floor);
   const first = agents[0];
   if (first === undefined) return null;
   const row = floor.agents.find((entry) => entry.id === first.id)!;

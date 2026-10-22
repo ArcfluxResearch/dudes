@@ -128,13 +128,17 @@ test('with the ticket switch off, board cards use the same columns and only true
   assert.match(html, /Needs you \(0\)/);
 });
 
-test('Done shows the newest twenty and says how many it leaves out', () => {
+test('Done shows the newest twenty and Show more adds the next page', () => {
   subscribe(store, { cards: Array.from({ length: 25 }, (_, n) => ticketCard(n + 1, 'done')) });
   const { columns, doneHidden } = model.boardColumns(store.getFloorState().cards);
   assert.equal(columns.done.length, 20);
   assert.deepEqual([columns.done[0].title, columns.done[19].title], ['Ticket 25', 'Ticket 6']);
   assert.equal(doneHidden, 5);
-  assert.match(board(), /5 older cards not shown\. List tickets with <code>dudes ticket list --status done<\/code> and other cards with <code>dudes board list<\/code>/);
+  const html = board();
+  assert.match(html, /5 older cards not shown\..*Show more/);
+  assert.doesNotMatch(html, /dudes ticket list|dudes board list/);
+  const more = model.boardColumns(store.getFloorState().cards, 40);
+  assert.deepEqual([more.columns.done.length, more.doneHidden], [25, 0]);
 });
 
 test('an empty ticket board gives one next step in every labelled lane', () => {
@@ -276,7 +280,7 @@ test('ticket switches are not called off before a snapshot or after the stream c
   assert.match(board(), /Tickets are off\. Turn them on with <code>dudes config set floor.board on<\/code>, then restart the daemon\./);
   store.noteTransport('close');
   assert.doesNotMatch(board(), /Tickets are off/);
-  assert.match(board(), /View unconfirmed/);
+  assert.match(board(), /Not connected to Dudes/);
 });
 
 test('the tickets-off command includes only companion controls reported off', () => {
@@ -317,9 +321,9 @@ test('with no project the new ticket form says how to set one up', () => {
 
 test('unavailable project choices do not imply missing agents or missing enrollment', () => {
   const settings = {
-    switches: { answer: false, control: true, recovery: false, goal: true, retire: false, terminal: false, hire: true, git: false, renew: false, board: false, diff: false, project: false },
+    folder_picker: false, switches: { answer: false, control: true, recovery: false, goal: true, retire: false, terminal: false, hire: true, git: false, renew: false, board: false, diff: false, project: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
-    providers: ['claude'], about: { daemon_version: '0.85.0', browser_wire_version: 3 },
+    providers: ['claude'], about: { daemon_version: '0.85.0', browser_wire_version: 5 },
     workspaces: [{ workspace_id: 'service', label: 'Service', agent_usd_per_day_micros: null,
       agent_tokens_per_day: null, goal_usd_micros: null, goal_tokens: null }],
   };
@@ -336,7 +340,7 @@ test('the new ticket form is a title, and everything else is optional', () => {
   assert.match(html, /<label[^>]*>Title<\/label><input[^>]*required=""[^>]*name="title"/);
   assert.match(html, /Note \(optional\)/);
   assert.match(html, /Done when/);
-  assert.match(html, /<option value="default" selected="">default passes \(may already pass\)<\/option>|<option value="default">default passes \(may already pass\)<\/option>/);
+  assert.match(html, /<option value="default" selected="">default passes \(may already be true\)<\/option>|<option value="default">default passes \(may already be true\)<\/option>/);
   assert.match(html, /<option value="second">second passes<\/option>/);
   assert.match(html, /Give to agent \(optional\)/);
   assert.match(html, /<option value=""[^>]*>Not yet<\/option>/);
@@ -405,4 +409,18 @@ test('creating a ticket sends the title, and the check by id and revision, and n
   }), { title: 'x', description: 'details', project: 'service' });
   void CHECKS;
   void cardId;
+});
+
+test('a failed engine turn is shown on its card and detail until a successful end arrives', () => {
+  const at = new Date(2026, 9, 22, 14, 2).getTime();
+  const show = (exit) => {
+    subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'doing', { claimed_by: ADA }, {
+      last_turn_end: { exit, at },
+    })] });
+    const floor = store.getFloorState();
+    return [board(), renderToStaticMarkup(createElement(TicketPanel, { floor, card: floor.cards[0] }))];
+  };
+  for (const html of show({ code: 1 })) assert.ok(html.includes('The engine stopped (exit 1) at 14:02'), html);
+  for (const html of show({ signal: 15 })) assert.ok(html.includes('The engine stopped (SIGTERM) at 14:02'), html);
+  for (const html of [...show({ code: 0 }), ...show({})]) assert.ok(!html.includes('The engine stopped'), html);
 });

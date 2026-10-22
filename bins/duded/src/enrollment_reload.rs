@@ -59,11 +59,12 @@ pub(crate) struct Reloader {
 
 impl Reloader {
     pub(crate) fn new(path: Option<PathBuf>, handle: Handle, pause: OnboardingPause) -> Self {
+        let sequence = handle.reload_lock();
         Self {
             path,
             handle,
             pause,
-            sequence: Arc::new(Mutex::new(0)),
+            sequence,
         }
     }
 

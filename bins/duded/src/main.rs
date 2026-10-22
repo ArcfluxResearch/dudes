@@ -206,6 +206,10 @@ impl duded::ports::PtyHostPort for MainPtyHost {
         self.host.write(pty, bytes)
     }
 
+    fn write_ready(&mut self, pty: PtyId, bytes: &[u8]) -> io::Result<usize> {
+        self.host.write_ready(pty, bytes)
+    }
+
     fn resize(&mut self, pty: PtyId, cols: u16, rows: u16) -> io::Result<()> {
         self.host.resize(pty, dudes_pty::PtySize { cols, rows })
     }
@@ -292,6 +296,10 @@ impl duded::ports::PtyHostPort for MainPtyHost {
         }
         self.native_closes.remove(&pty);
         true
+    }
+
+    fn exit_success(&mut self, pty: PtyId) -> io::Result<Option<bool>> {
+        Ok(self.host.exit_status(pty)?.map(|status| status.success()))
     }
 
     fn shutdown(&mut self) -> io::Result<()> {
@@ -767,9 +775,7 @@ fn announce(
              one there), or start duded directly with DUDES_FLOOR_ASSETS"
                 .to_owned()
         },
-        |addr| {
-            format!("Floor at http://{addr}/floor/, sign in with a link from `dudes floor open`")
-        },
+        |addr| format!("Floor at http://{addr}/floor/, sign in with `dudes open`"),
     );
     // A daemon that cannot write its own log line keeps serving rather than stop over it.
     let _ = write_line(
@@ -1210,6 +1216,7 @@ mod native_tests {
             floor_git_enabled: false,
             floor_diff_enabled: false,
             floor_project_enabled: false,
+            engine_login: None,
             condense_model_enabled: true,
             condense_model: None,
             breaker: BreakerConfig::default(),
@@ -1218,6 +1225,7 @@ mod native_tests {
             predicate_path: Some("/usr/bin:/bin".into()),
             git_checkout_deadline: duded::worktree::git::CHECKOUT_DEADLINE,
             max_connections: NonZeroUsize::new(8).expect("nonzero"),
+            hook_reply_timeout: duded::ports::DEFAULT_HOOK_REPLY_TIMEOUT,
             beat: Duration::from_hours(1),
             floor: None,
             hook_command: Some({
@@ -1669,6 +1677,10 @@ fn settings_from_environment() -> anyhow::Result<(
         floor_git_enabled: operator.git_enabled,
         floor_diff_enabled: operator.diff_enabled,
         floor_project_enabled: operator.project_enabled,
+        engine_login: Some(duded::settings::EngineLogin {
+            host: || Box::new(MainPtyHost::new()),
+            timeout: duded::settings::ENGINE_LOGIN_TIMEOUT,
+        }),
         condense_model_enabled: operator.condense_model_enabled,
         condense_model: operator.condense_model,
         breaker: BreakerConfig::default(),
@@ -1679,6 +1691,7 @@ fn settings_from_environment() -> anyhow::Result<(
         git_checkout_deadline: duded::worktree::git::CHECKOUT_DEADLINE,
         max_connections: NonZeroUsize::new(DEFAULT_MAX_CONNECTIONS)
             .expect("the default cap is not zero"),
+        hook_reply_timeout: duded::ports::DEFAULT_HOOK_REPLY_TIMEOUT,
         beat: DEFAULT_BEAT,
         floor: duded::settings::floor_from_values(
             floor_assets,

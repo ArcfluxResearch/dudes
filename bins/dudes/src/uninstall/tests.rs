@@ -159,6 +159,59 @@ fn the_plan_lists_every_path_with_its_size() {
     assert!(fixture.everything_exists());
 }
 
+#[test]
+fn the_launcher_install_sh_wrote_goes_and_a_lookalike_of_the_same_name_stays() {
+    let fixture = Fixture::new();
+    let home = &fixture.layout.home;
+    let app = home.join("Applications/Dudes.app");
+    std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+    std::fs::write(
+        app.join("Contents/Info.plist"),
+        "<dict>\n\t<key>DudesLauncher</key><true/>\n</dict>",
+    )
+    .unwrap();
+    let applications = home.join(".local/share/applications");
+    std::fs::create_dir_all(&applications).unwrap();
+    let mine = applications.join("dudes.desktop");
+    std::fs::write(
+        &mine,
+        "[Desktop Entry]\nName=Somebody else's Dudes\n# X-Dudes-Launcher=1 is mentioned here, not set\n",
+    )
+    .unwrap();
+
+    let (code, out, err) = fixture.run(yes(), None, &Fake::default());
+
+    assert_eq!((code, err.as_str()), (exit::SUCCESS, ""));
+    assert!(!app.exists(), "the launcher install.sh wrote is removed");
+    assert!(out.contains(&format!("removed {}", app.display())), "{out}");
+    assert!(mine.exists(), "a file without the marker is not deleted");
+    assert!(
+        out.contains(&format!(
+            "skipped: {} is not deleted: it is not the launcher install.sh writes",
+            mine.display()
+        )),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_desktop_entry_goes_only_with_the_exact_marker_line() {
+    let fixture = Fixture::new();
+    let applications = fixture.layout.home.join(".local/share/applications");
+    std::fs::create_dir_all(&applications).unwrap();
+    let entry = applications.join("dudes.desktop");
+    std::fs::write(
+        &entry,
+        "[Desktop Entry]\nType=Application\nX-Dudes-Launcher=1\nExec=\"/x/dudes\" open\n",
+    )
+    .unwrap();
+
+    let (code, _, err) = fixture.run(yes(), None, &Fake::default());
+
+    assert_eq!((code, err.as_str()), (exit::SUCCESS, ""));
+    assert!(!entry.exists());
+}
+
 fn plant_tree(fixture: &Fixture) -> (PathBuf, PathBuf) {
     let repository = fixture.base().join("repo");
     let admin = repository.join(".git/worktrees/01TREE");

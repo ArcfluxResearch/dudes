@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use duded::settings::{FloorSettings, RunOptions};
 use dudes_proto::{LoopDecision, MAIL_INSTRUCTION, MEMORY_INSTRUCTION, NoteAdmission, Record};
-use dudes_supervisor::{Input, World};
+use dudes_supervisor::{Clock as _, Input, World};
 use dudes_types::{AgentId, GoalId, Lsn, Mode, Provenance, TurnId, Usage};
 use serde_json::json;
 
 mod common;
 
-use common::{Fixture, ScriptedRunner, SharedHost, TestClock, floor_post, floor_session, seams};
+use common::{Fixture, ScriptedRunner, SharedHost, TestClock, floor_post, floor_session_on, seams};
 
 struct Completed {
     agent: AgentId,
@@ -22,12 +22,16 @@ struct Completed {
     completion_lsn: Lsn,
 }
 
-fn start(fixture: &Fixture, host: &SharedHost) -> (duded::Settings, common::Running, SocketAddr) {
+fn start(
+    fixture: &Fixture,
+    host: &SharedHost,
+    clock: &Arc<TestClock>,
+) -> (duded::Settings, common::Running, SocketAddr) {
     let mut settings = fixture.settings();
     settings.floor = Some(FloorSettings {
         assets_dir: PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/floor-release-v3"
+            "/tests/fixtures/floor-release-v5"
         )),
         port: Some(0),
     });
@@ -35,7 +39,7 @@ fn start(fixture: &Fixture, host: &SharedHost) -> (duded::Settings, common::Runn
         &settings,
         host.clone(),
         Arc::new(ScriptedRunner::scripted([common::passes()])),
-        Arc::new(TestClock::new()),
+        Arc::clone(clock),
         duded::startup::Witness::default(),
     );
     host.bind_child_ends(Arc::clone(&seams.children));
@@ -221,18 +225,21 @@ fn assert_completed_history(fixture: &Fixture, completed: &Completed, note_turn:
 #[test]
 fn completed_note_exact_utf8_boundary_is_issued_and_survives_restart() {
     let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::new());
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
-    let (settings, mut running, addr) = start(&fixture, &host);
+    let (settings, mut running, addr) = start(&fixture, &host, &clock);
     let completed = complete_goal(&fixture, &running, &host);
-    let (cookie, csrf) = floor_session(&settings, addr);
+    let page = floor_session_on(&settings, addr, {
+        let clock = Arc::clone(&clock);
+        move || clock.now().unix_millis()
+    });
     let note = "é".repeat(2_048);
     assert_eq!(note.len(), 4_096);
     let initial_launches = host.spawned().len();
     assert_eq!(initial_launches, 1);
     let (head, receipt) = floor_post(
-        addr,
+        &page,
         "/floor/chat/send",
-        (&cookie, &csrf),
         &json!({
             "request_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "agent": completed.agent,
@@ -264,9 +271,8 @@ fn completed_note_exact_utf8_boundary_is_issued_and_survives_restart() {
     let over_limit = format!("{note}x");
     assert_eq!(over_limit.len(), 4_097);
     let (head, _) = floor_post(
-        addr,
+        &page,
         "/floor/chat/send",
-        (&cookie, &csrf),
         &json!({
             "request_id": "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "agent": completed.agent,
@@ -282,7 +288,7 @@ fn completed_note_exact_utf8_boundary_is_issued_and_survives_restart() {
     assert_completed_history(&fixture, &completed, note_turn);
     assert_eq!(host.spawned().len(), 2);
     let restart_host = SharedHost::with_native_evidence(fixture.journal_dir());
-    let (_, mut restarted, _) = start(&fixture, &restart_host);
+    let (_, mut restarted, _) = start(&fixture, &restart_host, &clock);
     restarted.stop(duded::ExitCause::Signal);
     assert_completed_history(&fixture, &completed, note_turn);
     assert!(restart_host.spawned().is_empty());

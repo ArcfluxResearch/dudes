@@ -43,11 +43,12 @@
 #
 # # `slow-timeout`
 #
-# No test may run longer than a minute. A test is reported slow after 30 seconds and terminated at
-# 60. A test that needs longer is doing too much: shrink its scale or split it.
+# A test should finish in under five seconds. One that runs longer is reported slow at five and
+# terminated as a failure at ten, so a test near the line on a busy runner is flagged rather than
+# failed at random. A test that needs longer is doing too much: shrink its scale, or delete it.
 [profile.default]
 leak-timeout = "5s"
-slow-timeout = { period = "30s", terminate-after = 2 }
+slow-timeout = { period = "5s", terminate-after = 2 }
 
 [[profile.default.overrides]]
 filter = 'package(=dudes) & binary(=quickstart) & test(=capture_timeout_reaps_a_retained_handle_daemon_at_an_alternate_root)'

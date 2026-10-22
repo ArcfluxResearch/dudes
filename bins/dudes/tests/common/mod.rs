@@ -327,6 +327,7 @@ impl Fixture {
             floor_git_enabled: false,
             floor_diff_enabled: false,
             floor_project_enabled: false,
+            engine_login: None,
             floor_board_enabled: false,
             // Off by default here too: nothing in this suite exercises the
             // memory-condense model path, and turning it on would let the daemon's own resolution
@@ -359,6 +360,7 @@ impl Fixture {
             predicate_path: Some(OsString::from("/usr/bin:/bin")),
             git_checkout_deadline: duded::worktree::git::CHECKOUT_DEADLINE,
             max_connections: NonZeroUsize::new(8).expect("not zero"),
+            hook_reply_timeout: duded::ports::DEFAULT_HOOK_REPLY_TIMEOUT,
             // Far longer than any test here: a beat that fired mid-assertion would make a test about
             // a door a test about timing.
             beat: Duration::from_secs(3600),
@@ -597,6 +599,7 @@ impl Run {
 /// consumes it, which is what stops a half-built invocation from being reused by accident.
 #[derive(Clone)]
 pub(crate) struct Cli {
+    program: PathBuf,
     env: BTreeMap<OsString, OsString>,
     args: Vec<OsString>,
     cwd: Option<PathBuf>,
@@ -612,6 +615,7 @@ impl Cli {
             runtime_dir.as_os_str().to_owned(),
         );
         Self {
+            program: PathBuf::from(env!("CARGO_BIN_EXE_dudes")),
             env,
             args: Vec::new(),
             cwd: None,
@@ -621,10 +625,16 @@ impl Cli {
     /// A CLI with no environment at all, for the arms about a missing socket.
     pub(crate) fn bare() -> Self {
         Self {
+            program: PathBuf::from(env!("CARGO_BIN_EXE_dudes")),
             env: BTreeMap::new(),
             args: Vec::new(),
             cwd: None,
         }
+    }
+
+    pub(crate) fn program(mut self, program: PathBuf) -> Self {
+        self.program = program;
+        self
     }
 
     /// Set an environment variable for this run.
@@ -665,11 +675,7 @@ impl Cli {
 
     /// Run it through this package's one test-side process seam.
     pub(crate) fn run(self) -> Run {
-        let mut command = process(
-            OsStr::new(env!("CARGO_BIN_EXE_dudes")),
-            &self.args,
-            Some(&self.env),
-        );
+        let mut command = process(self.program.as_os_str(), &self.args, Some(&self.env));
         if let Some(dir) = &self.cwd {
             command.current_dir(dir);
         }
@@ -682,11 +688,7 @@ impl Cli {
     }
 
     pub(crate) fn spawn_captured(self) -> std::process::Child {
-        let mut command = process(
-            OsStr::new(env!("CARGO_BIN_EXE_dudes")),
-            &self.args,
-            Some(&self.env),
-        );
+        let mut command = process(self.program.as_os_str(), &self.args, Some(&self.env));
         if let Some(dir) = &self.cwd {
             command.current_dir(dir);
         }
@@ -702,11 +704,7 @@ impl Cli {
     /// follower side, as an operator at a terminal runs it.
     #[cfg(unix)]
     pub(crate) fn spawn_on_terminal(self, terminal: &std::os::fd::OwnedFd) -> std::process::Child {
-        let mut command = process(
-            OsStr::new(env!("CARGO_BIN_EXE_dudes")),
-            &self.args,
-            Some(&self.env),
-        );
+        let mut command = process(self.program.as_os_str(), &self.args, Some(&self.env));
         if let Some(dir) = &self.cwd {
             command.current_dir(dir);
         }
@@ -722,11 +720,7 @@ impl Cli {
     /// Spawn the real CLI with all three standard streams piped, retaining the caller's stdin
     /// writer while a worker drains both output streams and waits for exit.
     pub(crate) fn spawn_with_piped_stdin(self) -> PipedRun {
-        let mut command = process(
-            OsStr::new(env!("CARGO_BIN_EXE_dudes")),
-            &self.args,
-            Some(&self.env),
-        );
+        let mut command = process(self.program.as_os_str(), &self.args, Some(&self.env));
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -805,6 +799,61 @@ pub(crate) fn process(
     command
 }
 
+/// Stops the daemons a test started if the test process itself dies without running its
+/// destructors, as when the runner kills it at the slow-test limit.
+///
+/// A daemon leaves its starter's process group, so the runner's kill of the test's group misses
+/// it. This starts a watcher in a group of its own, holding the read end of a pipe whose write end
+/// only the test holds. When the pipe closes the watcher reads the pids each `duded.log` under
+/// `root` records and stops those still running `root/bin/duded`, so a pid that has since been
+/// reused by any other process, another daemon included, is left alone. Dropping this ends the
+/// watcher first, so a test that finishes normally leaves it nothing to do.
+#[cfg(unix)]
+pub(crate) struct Lifeline(std::process::Child);
+
+#[cfg(unix)]
+impl Lifeline {
+    const WATCHER: &'static str = r#"
+root=$1
+cat >/dev/null
+pids=$(find "$root" -name duded.log -exec sed -n 's/^quickstart started duded pid \([0-9][0-9]*\)$/\1/p' {} +)
+stop() {
+    for pid in $pids; do
+        case $(ps -ww -o command= -p "$pid") in "$root/bin/duded" | "$root/bin/duded "*) kill "$@" "$pid" ;; esac
+    done
+}
+stop -TERM
+sleep 2
+stop -KILL
+"#;
+
+    pub(crate) fn start(root: &Path) -> Self {
+        use std::os::unix::process::CommandExt as _;
+        let args: Vec<OsString> = vec![
+            "-c".into(),
+            Self::WATCHER.into(),
+            "watcher".into(),
+            root.as_os_str().to_owned(),
+        ];
+        let child = process(OsStr::new("/bin/sh"), &args, None)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("start the daemon lifeline");
+        Self(child)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Lifeline {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Argument lines the suite reuses
 // ---------------------------------------------------------------------------------------------
@@ -858,6 +907,12 @@ pub(crate) fn goal_args(agent: &str, text: &str) -> Vec<OsString> {
 /// other method with an error, for as long as the test process runs.
 #[cfg(unix)]
 pub(crate) fn ping_as(socket: &Path, version: &str) {
+    answer_as(socket, version, None);
+}
+
+/// [`ping_as`] that also answers `agent.list` with `agents`, a JSON array.
+#[cfg(unix)]
+pub(crate) fn answer_as(socket: &Path, version: &str, agents: Option<serde_json::Value>) {
     use std::io::{BufRead as _, Write as _};
     let listener = std::os::unix::net::UnixListener::bind(socket).expect("a stand-in daemon");
     let ping = serde_json::json!({"version": version, "socket": socket, "lsn": 0});
@@ -876,6 +931,8 @@ pub(crate) fn ping_as(socket: &Path, version: &str) {
             };
             let reply = if request["method"] == "system.ping" {
                 serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": ping})
+            } else if request["method"] == "agent.list" && agents.is_some() {
+                serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": agents})
             } else {
                 serde_json::json!({"jsonrpc": "2.0", "id": request["id"],
                     "error": {"code": -32601, "message": "this stand-in answers only system.ping"}})

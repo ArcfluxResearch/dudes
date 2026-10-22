@@ -504,3 +504,117 @@ fn a_resumed_agent_is_not_held_again_at_its_next_turn_end() {
         "the agent is not held now"
     );
 }
+
+fn set_trust(harness: &mut Harness, trusted: bool) {
+    use dudes_proto::record::{FileIdentity, TrustPin, TrustedRepository};
+    let identity = FileIdentity {
+        device: 1,
+        inode: 2,
+    };
+    harness.drive(Input::Command(Command::SetWorkspaceTrust {
+        workspace_id: "repo".into(),
+        trusted,
+        repository: trusted.then(|| TrustedRepository {
+            directory: PathBuf::from("/repo"),
+            directory_identity: identity,
+            common_dir: PathBuf::from("/repo/.git"),
+            common_identity: identity,
+        }),
+        pin: trusted.then(|| TrustPin {
+            claude_tree: None,
+            mcp_json: None,
+            attributes: Hex32::new([1; 32]),
+            config: Hex32::new([2; 32]),
+        }),
+    }));
+}
+
+#[test]
+fn the_latest_trust_record_wins_and_a_restart_keeps_it() {
+    let mut harness = Harness::new();
+    assert!(harness.supervisor.world().workspace_trust.is_empty());
+    set_trust(&mut harness, true);
+    let first = harness.supervisor.world().workspace_trust["repo"].lsn;
+    set_trust(&mut harness, true);
+    let second = harness.supervisor.world().workspace_trust["repo"].lsn;
+    assert!(second > first, "a new grant replaces the old one");
+    harness.restart();
+    assert_eq!(
+        harness.supervisor.world().workspace_trust["repo"].lsn,
+        second
+    );
+    set_trust(&mut harness, false);
+    assert!(harness.supervisor.world().workspace_trust.is_empty());
+    harness.restart();
+    assert!(
+        harness.supervisor.world().workspace_trust.is_empty(),
+        "a revocation survives a restart"
+    );
+}
+
+fn device_change(harness: &mut Harness, change: dudes_supervisor::FloorDeviceChange) {
+    harness.drive(Input::Command(Command::RecordFloorDevice(change)));
+}
+
+#[test]
+fn a_restart_keeps_the_devices_and_the_removed_stay_removed() {
+    use dudes_proto::record::FloorDeviceRemoval;
+    use dudes_supervisor::FloorDeviceChange as Change;
+    let mut harness = Harness::new();
+    let (kept, gone) = (Hex32::new([1; 32]), Hex32::new([2; 32]));
+    for (device, cookie) in [(kept, 11), (gone, 12)] {
+        device_change(
+            &mut harness,
+            Change::Enroll {
+                device,
+                origin: "http://127.0.0.1:7700".into(),
+                name: "Chrome on macOS".into(),
+                key: "a2V5".into(),
+                cookie: Hex32::new([cookie; 32]),
+            },
+        );
+    }
+    device_change(&mut harness, Change::FirstUse(kept));
+    device_change(&mut harness, Change::Acknowledge(kept));
+    device_change(
+        &mut harness,
+        Change::Remove {
+            device: gone,
+            reason: FloorDeviceRemoval::Removed,
+        },
+    );
+    device_change(&mut harness, Change::Use(gone));
+    harness.restart();
+    let devices = &harness.supervisor.world().floor_devices;
+    let kept = &devices[&kept];
+    assert!(kept.removed.is_none());
+    assert_eq!(kept.key.as_deref(), Some("a2V5"));
+    assert!(kept.first_used.is_some() && kept.last_used.is_some());
+    assert!(kept.acknowledged.is_some());
+    let gone = &devices[&gone];
+    assert_eq!(
+        gone.removed.map(|(why, _)| why),
+        Some(FloorDeviceRemoval::Removed)
+    );
+    assert_eq!(gone.last_used, None, "a removed device is not used again");
+}
+
+#[test]
+fn records_for_a_device_the_journal_never_enrolled_change_nothing() {
+    use dudes_proto::record::FloorDeviceRemoval;
+    use dudes_supervisor::FloorDeviceChange as Change;
+    let mut harness = Harness::new();
+    let unknown = Hex32::new([9; 32]);
+    device_change(&mut harness, Change::FirstUse(unknown));
+    device_change(&mut harness, Change::Use(unknown));
+    device_change(&mut harness, Change::Acknowledge(unknown));
+    device_change(
+        &mut harness,
+        Change::Remove {
+            device: unknown,
+            reason: FloorDeviceRemoval::Expired,
+        },
+    );
+    harness.restart();
+    assert!(harness.supervisor.world().floor_devices.is_empty());
+}

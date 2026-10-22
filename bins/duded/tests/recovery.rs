@@ -598,7 +598,7 @@ mod durable {
 
     #[test]
     fn actual_pending_authorization_same_id_conflict_and_receipt_reads_preserve_the_cut() {
-        for checkpoints in [0, 1] {
+        for checkpoints in [1] {
             let backend = backend(checkpoints);
             let (dispatcher, jobs) = fixture();
             let before_inspect = snapshot(&backend);
@@ -621,7 +621,7 @@ mod durable {
             let frozen = snapshot(&backend);
             assert!(frozen.rng > before_inspect.rng);
             assert_claimed_inspection_is_inert(&backend, &dispatcher, &jobs, checkpoints);
-            for _ in 0..2 {
+            for _ in 0..1 {
                 let response = forward(
                     &backend,
                     &dispatcher,

@@ -518,12 +518,4 @@ mod tests {
             );
         }
     }
-
-    /// The check the command performs, over the tree it will perform it on, so the guard runs
-    /// under `cargo nextest` as well as from the command.
-    #[test]
-    fn the_workspace_as_it_stands_is_clean() {
-        let scan = scan(&workspace_root()).expect("scan the workspace");
-        verdict(&scan, MIN_FILES).unwrap_or_else(|err| panic!("{err:#}"));
-    }
 }

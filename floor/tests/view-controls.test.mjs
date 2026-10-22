@@ -69,7 +69,7 @@ test('view preferences accept only bounded view data and survive unavailable sto
   const encoded = JSON.parse([...stored.values()][0]);
   assert.deepEqual(Object.keys(encoded).sort(), ['rosterCollapsed', 'sidebarWidth', 'theme']);
   stored.set([...stored.keys()][0], JSON.stringify({ theme: 'forged', sidebarWidth: 99999,
-    rosterCollapsed: 'yes', csrf: 'do not read' }));
+    rosterCollapsed: 'yes', secret: 'do not read' }));
   assert.deepEqual(readViewPreferences(storage), {
     theme: 'system', sidebarWidth: DEFAULT_SIDEBAR_WIDTH, rosterCollapsed: false,
   });

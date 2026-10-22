@@ -30,7 +30,7 @@ function socket() {
 
 function open() {
   const live = socket();
-  const stop = openFloorStream({ csrf: 'test-nonce' }, HERE, () => live);
+  const stop = openFloorStream({ device: 'fixture' }, HERE, () => live);
   live.emit('open');
   live.emit('message', JSON.parse(projection));
   return { live, stop };
@@ -181,7 +181,7 @@ test('a reply selection survives reconnect while all previous text and revisions
   const second = socket();
   const sockets = [first, second];
   const timers = { now: () => 0, repeat: () => () => {}, after: (_, run) => { run(); return () => {}; } };
-  const stop = openFloorStream({ csrf: 'test-nonce' }, HERE, () => sockets.shift(), timers);
+  const stop = openFloorStream({ device: 'fixture' }, HERE, () => sockets.shift(), timers);
   try {
     first.emit('open');
     first.emit('message', JSON.parse(projection));
@@ -333,7 +333,7 @@ test('turn history exhaustion closes and reconnects before accepting another sna
   const second = socket();
   const sockets = [first, second];
   const timers = { now: () => 0, repeat: () => () => {}, after: (_, run) => { run(); return () => {}; } };
-  const stop = openFloorStream({ csrf: 'test-nonce' }, HERE, () => sockets.shift(), timers);
+  const stop = openFloorStream({ device: 'fixture' }, HERE, () => sockets.shift(), timers);
   first.emit('open');
   first.emit('message', JSON.parse(projection));
   selectOutputAgent(A);
@@ -379,7 +379,7 @@ test('a closed socket clears output before a replacement subscription can resele
   const second = socket();
   const sockets = [first, second];
   const timers = { now: () => 0, repeat: () => () => {}, after: (_, run) => { run(); return () => {}; } };
-  const stop = openFloorStream({ csrf: 'test-nonce' }, HERE, () => sockets.shift(), timers);
+  const stop = openFloorStream({ device: 'fixture' }, HERE, () => sockets.shift(), timers);
   first.emit('open');
   first.emit('message', JSON.parse(projection));
   selectOutputAgent(A);
@@ -417,4 +417,24 @@ test('resync, restart without run output, retirement and expiry do not retain as
   noteTransport('close');
   assert.deepEqual(getFloorState().output.chunks, []);
   assert.equal(getFloorState().output.status, 'unavailable');
+});
+
+test('the page tells the daemon when it is hidden or shown, and stops listening on dispose', () => {
+  let shown = true;
+  let notify = () => {};
+  let listening = true;
+  const visibility = {
+    visible: () => shown,
+    watch: (listener) => { notify = listener; return () => { listening = false; }; },
+  };
+  const live = socket();
+  const stop = openFloorStream({ device: 'fixture' }, HERE, () => live, undefined, undefined,
+    undefined, undefined, visibility);
+  live.emit('open');
+  assert.deepEqual(live.sent, [{ type: 'floor.subscribe' }, { type: 'floor.visibility', visible: true }]);
+  shown = false;
+  notify();
+  assert.deepEqual(live.sent.at(-1), { type: 'floor.visibility', visible: false });
+  stop();
+  assert.equal(listening, false);
 });

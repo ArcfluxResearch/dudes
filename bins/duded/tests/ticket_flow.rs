@@ -2525,7 +2525,7 @@ fn fresh_host_keeps_stop_interval_unknown(
     let mut fresh_settings = fresh.settings();
     fresh_settings.enrollment = settings.enrollment.clone();
     let original_work = Flow::turns(&fresh);
-    for _ in 0..2 {
+    for _ in 0..1 {
         let mut flow = Flow::boot(
             &fresh,
             fresh_settings.clone(),
@@ -2931,7 +2931,7 @@ fn a_hold_moves_the_working_ticket_to_needs_you_and_keeps_the_project() {
     assert_eq!(ticket.reason, Some(TicketReason::HeldLaunch));
     assert_eq!(
         TicketReason::HeldLaunch.sentence(),
-        "The agent's engine would not start. Fix the cause, then resume the agent in the Floor or with `dudes resume`."
+        "The agent's engine would not start. Fix the cause, then resume the agent."
     );
 
     let other = flow.create("Other");

@@ -72,7 +72,7 @@ test('the real stream creates one envelope beyond Number precision and a mixed l
   let motion = [];
   let now = 1000;
   const stop = subscribeToProjection(next => { motion = planEnvelopes(motion, next, desks, now, false); });
-  const close = openFloorStream({ csrf: 'fixture' }, { protocol: 'http:', host: '127.0.0.1:7717' }, () => socket,
+  const close = openFloorStream({ device: 'fixture' }, { protocol: 'http:', host: '127.0.0.1:7717' }, () => socket,
     { now: () => 0, repeat: () => () => {}, after: () => () => {} });
   const emit = frame => listeners.get('message')({ data: JSON.stringify(frame) });
   const update = (cut, rows) => emit({ type: 'floor.delta', delta: { lsn: Number(cut) }, messages_lsn: cut, messages: rows, threads: [], threads_lsn: cut });

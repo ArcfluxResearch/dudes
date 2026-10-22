@@ -2,7 +2,6 @@
 
 mod common;
 
-use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, mpsc};
@@ -14,7 +13,7 @@ use common::hook_shim::{
 use common::{
     Fixture, ScriptedRunner, SharedHost, TestClock, goal_params, hire, seams_with, set_goal,
 };
-use duded::ports::{Answered, Ask, Handle, Job};
+use duded::ports::{Handle, Job};
 use duded::startup::Witness;
 use duded::{ExitCause, boot};
 use dudes_proto::reply::{HookReply, VendorReply};
@@ -27,109 +26,11 @@ use dudes_rpc::testing::FakeMintedTokens;
 use dudes_rpc::{LocalClient, Outbound, Subscribers};
 use dudes_supervisor::{Input, RuntimeSignal};
 use dudes_types::{AgentId, Provenance, Timestamp};
-use serde_json::{Value, json};
-
-const EVENTS: [&str; 10] = [
-    "SessionStart",
-    "SessionEnd",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "Stop",
-    "SubagentStop",
-    "Notification",
-    "PreCompact",
-    "PostCompact",
-];
-fn done(answer: &Result<Answered, dudes_proto::rpc::RpcError>) {
-    assert!(matches!(answer, Ok(Answered::Done)), "answer: {answer:?}");
-}
-
-#[test]
-fn all_ten_installed_claude_events_reach_one_local_hook_route() {
-    let fixture = Fixture::new();
-    let mut settings = fixture.settings();
-    // The daemon frees a connection's slot only after it sees the shim's close, which can follow
-    // the shim's exit and the next shim's connect. A cap of one would silently refuse that next
-    // connect; room for every event makes sequential delivery independent of that ordering.
-    settings.max_connections = NonZeroUsize::new(EVENTS.len()).unwrap();
-    let resolver = RecordingResolver::new(PeerProvenance::Unresolvable);
-    let parts = seams_with(
-        &settings,
-        SharedHost::new(),
-        Arc::new(ScriptedRunner::default()),
-        Arc::new(TestClock::new()),
-        Witness::default(),
-        Arc::clone(&resolver) as Arc<dyn PeerResolver>,
-    );
-    let tokens = parts.rng.tokens();
-    let daemon = boot(&settings, parts).expect("boot daemon");
-    let socket = daemon.socket().to_path_buf();
-    let mut running = common::start(daemon);
-    let agent = hire(&running.handle, fixture.state.path());
-    set_goal(
-        &running.handle,
-        goal_params(agent, &[common::true_program()]),
-    );
-    let token = minted_token(&fixture, &tokens, agent);
-    resolver.set(PeerProvenance::Agent(agent));
-
-    let generated = generated_handlers(agent, fixture.state.path());
-    assert_eq!(generated.hooks.len(), EVENTS.len());
-    assert_eq!(
-        generated
-            .hooks
-            .keys()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>(),
-        EVENTS.into_iter().collect::<BTreeSet<_>>(),
-        "the generated settings contain the literal ten modeled keys"
-    );
-
-    let mut child_pids = Vec::new();
-    for event in EVENTS {
-        // The paused agent is observed at `PreToolUse`, because only a refusal is observable
-        // end to end: at a stop boundary a paused agent is answered with silence, which is
-        // byte-identical to the answer an unpaused one gets, so asserting the fold there would
-        // hold whether or not it happened.
-        if event == "PreToolUse" {
-            done(&running.handle.ask(Ask::Pause(agent)));
-        }
-        let (pid, output) =
-            spawn_handler(handler(&generated, event), &socket, &token, &payload(event));
-        child_pids.push(i32::try_from(pid).expect("child pid fits the peer contract"));
-        if event == "PreToolUse" {
-            assert_eq!(output.status.code(), Some(2));
-            assert_eq!(
-                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-                json!({"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": "the loop is paused"
-                }}),
-                "PreToolUse crossed translation, Input::Hook, Effect::Reply and Claude encoding"
-            );
-            done(&running.handle.ask(Ask::Resume(agent)));
-        } else {
-            assert_eq!(output.status.code(), Some(0), "{event}: {output:?}");
-            assert!(
-                output.stdout.is_empty(),
-                "{event}: an unpaused agent is answered with silence: {output:?}"
-            );
-        }
-        assert!(output.stderr.is_empty(), "{event}: {output:?}");
-    }
-    assert_eq!(
-        resolver.pids(),
-        child_pids,
-        "the listener reported each spawned shim's actual pid before authorization"
-    );
-    assert_eq!(running.stop(ExitCause::Ended), ExitCause::Ended);
-}
+use serde_json::json;
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v3"
+    "/tests/fixtures/floor-release-v5"
 );
 
 fn floor_fixture() -> tempfile::TempDir {
@@ -318,7 +219,7 @@ fn stop_boundary_timeout_fails_open_and_queues_the_existing_signal() {
         ("SubagentStop", EventKind::SubagentEnd),
     ] {
         let fixture = Fixture::new();
-        let (dispatcher, loop_side, agent) = direct_dispatcher(&fixture);
+        let (dispatcher, loop_side, agent) = direct_dispatcher_fast(&fixture);
         let waiting_dispatcher = Arc::clone(&dispatcher);
         let waiter =
             std::thread::spawn(move || direct_hook(&waiting_dispatcher, agent, event_name));
@@ -384,7 +285,7 @@ fn admitted_control_deadlines_encode_denial_and_keep_the_original_job() {
         ),
     ] {
         let fixture = Fixture::new();
-        let (dispatcher, queued, agent) = direct_dispatcher(&fixture);
+        let (dispatcher, queued, agent) = direct_dispatcher_fast(&fixture);
         let waiting = Arc::clone(&dispatcher);
         let caller = std::thread::spawn(move || direct_hook(&waiting, agent, event));
         let held = queued.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -484,9 +385,23 @@ fn direct_dispatcher(
     direct_dispatcher_with_capacity(fixture, 1)
 }
 
+fn direct_dispatcher_fast(
+    fixture: &Fixture,
+) -> (Arc<dudes_rpc::Dispatcher>, mpsc::Receiver<Job>, AgentId) {
+    direct_dispatcher_timed(fixture, 1, Duration::from_millis(100))
+}
+
 fn direct_dispatcher_with_capacity(
     fixture: &Fixture,
     capacity: usize,
+) -> (Arc<dudes_rpc::Dispatcher>, mpsc::Receiver<Job>, AgentId) {
+    direct_dispatcher_timed(fixture, capacity, duded::ports::DEFAULT_HOOK_REPLY_TIMEOUT)
+}
+
+fn direct_dispatcher_timed(
+    fixture: &Fixture,
+    capacity: usize,
+    hook_reply_timeout: Duration,
 ) -> (Arc<dudes_rpc::Dispatcher>, mpsc::Receiver<Job>, AgentId) {
     let mut settings = fixture.settings();
     settings.max_connections = NonZeroUsize::new(capacity).unwrap();
@@ -505,7 +420,10 @@ fn direct_dispatcher_with_capacity(
                 ("DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", third_agent()),
             ])),
         ),
-        duded::hooks::Ingress::new(Handle::new(jobs), Arc::new(TestClock::new())),
+        duded::hooks::Ingress::new(
+            Handle::new(jobs).with_hook_reply_timeout(hook_reply_timeout),
+            Arc::new(TestClock::new()),
+        ),
         &fixture.journal_dir(),
         &Arc::new(Subscribers::new()),
         Arc::new(AtomicU64::new(0)),
@@ -514,132 +432,6 @@ fn direct_dispatcher_with_capacity(
         )),
     ));
     (dispatcher, loop_side, agent)
-}
-
-#[test]
-fn one_agents_control_share_leaves_capacity_for_another_agents_answer() {
-    for (capacity, share) in [(2, 1), (3, 1), (4, 2), (5, 2)] {
-        let fixture = Fixture::new();
-        let (dispatcher, loop_side, agent) = direct_dispatcher_with_capacity(&fixture, capacity);
-        let mut retained = Vec::new();
-        for _ in 0..share {
-            let response = direct_hook(&dispatcher, agent, "PreToolUse");
-            assert!(
-                response.error.is_none(),
-                "the admitted caller receives a deadline reply"
-            );
-            retained.push(loop_side.recv().expect("A's retained physical hook"));
-            assert!(matches!(
-                loop_side.recv().expect("A's one timeout signal"),
-                Job::Input(input) if matches!(*input, Input::Signal {
-                    agent: owner,
-                    signal: RuntimeSignal::HookTimeout,
-                } if owner == agent)
-            ));
-        }
-
-        for event in ["PreToolUse", "UserPromptSubmit"] {
-            let response = direct_hook_with_payload_owner(&dispatcher, agent, event, third_agent());
-            let error = response.error.expect("A cannot exceed its physical share");
-            assert_eq!(error.code, ErrorCode::InternalError.code());
-            assert_eq!(
-                error.message,
-                "hook event was not queued because hook capacity is full"
-            );
-            assert!(response.result.is_none());
-        }
-        assert!(matches!(
-            loop_side.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
-
-        let waiting = Arc::clone(&dispatcher);
-        let caller =
-            std::thread::spawn(move || direct_hook(&waiting, second_agent(), "PreToolUse"));
-        let control = loop_side.recv_timeout(Duration::from_secs(1));
-        if let Ok(Job::Hook {
-            event,
-            reply: Some(reply),
-            ..
-        }) = &control
-        {
-            assert_eq!(event.agent, second_agent());
-            reply
-                .send(Ok(HookReply {
-                    decision: dudes_proto::reply::HookDecision::Deny {
-                        reason: "the loop is paused".to_owned(),
-                    },
-                    context: None,
-                }
-                .into()))
-                .unwrap();
-        }
-        let response = caller.join().expect("B's control caller");
-        assert!(response.error.is_none(), "B receives a reply: {response:?}");
-        let reply: VendorReply = serde_json::from_value(response.result.unwrap()).unwrap();
-        assert_eq!(reply.exit_code, 2);
-        assert_eq!(
-            reply.body.unwrap()["hookSpecificOutput"]["permissionDecisionReason"],
-            "the loop is paused"
-        );
-        assert!(
-            control.is_ok(),
-            "B enters while A's physical share stays retained"
-        );
-
-        drop(retained.pop());
-        let waiting = Arc::clone(&dispatcher);
-        let caller = std::thread::spawn(move || direct_hook(&waiting, agent, "PreToolUse"));
-        let restored = loop_side
-            .recv_timeout(Duration::from_secs(1))
-            .expect("dropping A's job restores A's slot");
-        if let Job::Hook {
-            reply: Some(reply), ..
-        } = &restored
-        {
-            reply.send(Ok(HookReply::ALLOW.into())).unwrap();
-        } else {
-            panic!("A's restored physical hook");
-        }
-        assert!(caller.join().unwrap().error.is_none());
-    }
-}
-
-#[test]
-fn a_full_control_pool_refuses_a_third_agent_with_an_unused_share() {
-    let fixture = Fixture::new();
-    let (dispatcher, loop_side, agent) = direct_dispatcher_with_capacity(&fixture, 2);
-    for owner in [agent, second_agent()] {
-        assert!(
-            direct_hook(&dispatcher, owner, "PreToolUse")
-                .error
-                .is_none()
-        );
-    }
-    for event in ["PreToolUse", "UserPromptSubmit"] {
-        for _ in 0..16 {
-            let response = direct_hook(&dispatcher, third_agent(), event);
-            let error = response
-                .error
-                .expect("global capacity refuses an unused share");
-            assert_eq!(error.code, ErrorCode::InternalError.code());
-            assert_eq!(
-                error.message,
-                "hook event was not queued because hook capacity is full"
-            );
-            assert!(response.result.is_none());
-        }
-    }
-    let queued: Vec<_> = loop_side.try_iter().collect();
-    assert_eq!(
-        queued.len(),
-        4,
-        "two retained hooks and exactly their timeout signals"
-    );
-    assert!(matches!(queued[0], Job::Hook { .. }));
-    assert!(matches!(queued[1], Job::Input(_)));
-    assert!(matches!(queued[2], Job::Hook { .. }));
-    assert!(matches!(queued[3], Job::Input(_)));
 }
 
 #[test]

@@ -2,11 +2,12 @@
 //
 // The authenticated projection and selected-output stream, as the browser speaks it.
 //
-// The gateway admits an upgrade that offers exactly two subprotocols — the
-// floor protocol and the session's CSRF nonce — and carries the session cookie,
-// which the browser attaches itself because the socket is same-origin. Anything
-// else is refused before the handshake completes, so all three parts are built
-// in one place and neither is optional.
+// The gateway admits an upgrade that offers exactly four subprotocols — the
+// floor protocol, then a signature, a time and a request id made with the
+// browser's key — and carries the session cookie, which the browser attaches
+// itself because the socket is same-origin. Anything else is refused before the
+// handshake completes, so all the parts are built in one place and none is
+// optional.
 //
 // The socket factory and the clock are parameters so this file can be exercised
 // without a DOM and without waiting in real time. Nothing else here is
@@ -59,9 +60,7 @@ function noteRetry(attempt: number, delayMs: number | null): void {
 }
 
 /** The one protocol the gateway completes a handshake for. */
-export const FLOOR_PROTOCOL = 'dudes-floor-v3';
-/** The CSRF nonce rides as the second offered subprotocol. */
-export const CSRF_PROTOCOL_PREFIX = 'dudes-csrf.';
+export const FLOOR_PROTOCOL = 'dudes-floor-v4';
 
 /**
  * How long a view may go unspoken to before it stops claiming to be current.
@@ -107,9 +106,26 @@ export const RECONNECT_ATTEMPTS = 5;
 const SUBSCRIBE = '{"type":"floor.subscribe"}';
 const UNSUBSCRIBE = '{"type":"floor.unsubscribe"}';
 const CLEAR_OUTPUT = '{"type":"floor.output.clear"}';
+const VISIBLE = '{"type":"floor.visibility","visible":true}';
+const HIDDEN = '{"type":"floor.visibility","visible":false}';
+
+/** What the page knows about being on screen. `null` from `visible` means it cannot tell. */
+export interface VisibilityPort {
+  visible(): boolean | null;
+  watch(listener: () => void): () => void;
+}
+
+const BROWSER_VISIBILITY: VisibilityPort = {
+  visible: () => (typeof document === 'undefined' ? null : document.visibilityState === 'visible'),
+  watch: (listener) => {
+    if (typeof document === 'undefined') return () => {};
+    document.addEventListener('visibilitychange', listener);
+    return () => document.removeEventListener('visibilitychange', listener);
+  },
+};
 
 export interface FloorSessionLike {
-  readonly csrf: string;
+  readonly device: string;
 }
 
 export interface MessageLike {
@@ -197,8 +213,7 @@ let reauthenticateOpenStream: ((session: FloorSessionLike) => void) | null = nul
  *
  * A fresh Floor link pasted into this tab is exchanged in place, without a
  * reload, so that a Hire or an answer the page holds in memory survives the
- * old session ending. The socket has to follow: its CSRF offer names the
- * session it was opened for. This takes the same resync path as
+ * old session ending. The socket has to follow, signed afresh. This takes the same resync path as
  * `refreshFloorSnapshot`, with the new session and a full reconnect budget. No
  * new message, no new route.
  *
@@ -210,6 +225,29 @@ export function reauthenticateFloorStream(session: FloorSessionLike): boolean {
   return true;
 }
 
+/**
+ * What the stream does when its first socket of a run closes, to tell a session the daemon no longer
+ * knows from a daemon that blinked. `ask` is the daemon's own answer about the session; only
+ * `unknown` calls `onUnknown`, which decides what the page does about it.
+ */
+export interface StandingPorts {
+  ask(session: FloorSessionLike): Promise<'live' | 'unknown' | 'unclear'>;
+  onUnknown(): void;
+}
+
+/**
+ * How the stream signs the handshake of each socket it opens. `offer` returns the entries that go
+ * after the page's own protocol, signed for the socket's address now, or `null` when the browser
+ * holds no key. The stream treats `null` as a failed attempt and climbs the same ladder. Left out,
+ * the socket opens at once with the protocol alone, which is for tests that drive the stream with
+ * a fake socket.
+ */
+export interface SignPort {
+  offer(url: string): Promise<readonly string[] | null>;
+}
+
+const NO_STANDING: StandingPorts = { ask: async () => 'unclear', onUnknown: () => {} };
+
 /** What the page asks when the daemon has gone away: the browser's own request and the files it was loaded with. */
 const BROWSER_AWAY: AwayPorts = { fetchIndex: browserIndexFetch, ownRefs: loadedAssetRefs() };
 
@@ -219,9 +257,9 @@ export function streamUrl(location: LocationLike): string {
   return `${scheme}//${location.host}/floor/stream`;
 }
 
-/** Exactly two offers, in this order. A third, or a missing one, is a refusal. */
-export function streamProtocols(csrf: string): readonly string[] {
-  return Object.freeze([FLOOR_PROTOCOL, `${CSRF_PROTOCOL_PREFIX}${csrf}`]);
+/** Exactly four offers, in this order: the protocol, then the signature, time and request id. */
+export function streamProtocols(signed: readonly string[]): readonly string[] {
+  return Object.freeze([FLOOR_PROTOCOL, ...signed]);
 }
 
 /**
@@ -239,9 +277,12 @@ export function openFloorStream(
   connect: SocketFactory,
   timers: StreamTimers = browserTimers,
   away: AwayPorts = BROWSER_AWAY,
+  standing: StandingPorts = NO_STANDING,
+  signing?: SignPort,
+  visibility: VisibilityPort = BROWSER_VISIBILITY,
 ): () => void {
   // The session every socket is opened for. It changes only when the page is
-  // re-authenticated in place, and the next socket then offers the new nonce.
+  // re-authenticated in place, and the next socket is then signed afresh.
   let session = initial;
   // When the page was last told anything true. Opening starts the clock, which
   // is why a stream that never delivers its first snapshot goes unconfirmed on
@@ -260,11 +301,52 @@ export function openFloorStream(
   let reconcileSelection = () => {};
   const stopSelectionWatch = subscribeToFloor(() => reconcileSelection());
 
+  // Which subscription's signature the stream is waiting for; a newer one makes an older answer stale.
+  let proving = 0;
+
   function subscribe(): void {
     // The epoch is minted before the socket exists, so there is no window in
     // which a frame could arrive unstamped.
     const epoch = beginFloorEpoch();
-    const live = connect(streamUrl(location), streamProtocols(session.csrf));
+    if (signing === undefined) {
+      open(epoch, []);
+      return;
+    }
+    const asked = session;
+    const turn = ++proving;
+    socket = null;
+    ended = false;
+    void signing.offer(streamUrl(location)).catch(() => null).then((signed) => {
+      if (disposed || turn !== proving || session !== asked) return;
+      if (signed !== null) {
+        try {
+          open(epoch, signed);
+          return;
+        } catch {
+          // The page paused before the socket opened: the same as a signature that failed.
+        }
+      }
+      socket = null;
+      ended = true;
+      noteTransport('close');
+      retry();
+    });
+  }
+
+  let openedSocket: SocketLike | null = null;
+
+  // Tell the daemon whether the page is on screen, so a tab being watched stays signed in.
+  function tellVisibility(live: SocketLike): void {
+    const visible = visibility.visible();
+    if (visible !== null) live.send(visible ? VISIBLE : HIDDEN);
+  }
+
+  const stopVisibility = visibility.watch(() => {
+    if (!disposed && socket !== null && openedSocket === socket) tellVisibility(socket);
+  });
+
+  function open(epoch: number, signed: readonly string[]): void {
+    const live = connect(streamUrl(location), streamProtocols(signed));
     socket = live;
     ended = false;
     let ready = false;
@@ -304,6 +386,8 @@ export function openFloorStream(
       lastFrameAt = timers.now();
       noteTransport('open');
       live.send(SUBSCRIBE);
+      openedSocket = live;
+      tellVisibility(live);
     });
 
     live.addEventListener('message', (event: MessageLike) => {
@@ -412,6 +496,10 @@ export function openFloorStream(
       void indexAnswers(away).then((answered) => {
         if (!disposed) answeredAtFirstClose = answered;
       });
+      const asked = session;
+      void standing.ask(asked).then((answer) => {
+        if (!disposed && session === asked && answer === 'unknown') standing.onUnknown();
+      });
     }
     // Clearing here rather than on the next open: the rows stop being confirmed
     // the moment the subscription ends, and a page that held them until a
@@ -473,6 +561,7 @@ export function openFloorStream(
     if (refreshOpenStream === refresh) refreshOpenStream = null;
     if (reauthenticateOpenStream === reauthenticate) reauthenticateOpenStream = null;
     stopSelectionWatch();
+    stopVisibility();
     stopWatching();
     cancelRetry?.();
     cancelRetry = null;

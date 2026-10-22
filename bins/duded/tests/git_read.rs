@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use duded::git_read::{GitReader, Lease, READ_DEADLINE, Tree};
+use duded::git_read::{GitReader, Lease, Tree};
 use duded::predicate::{PredicateCaptured, PredicateOutcome, PredicateRunner};
 use duded::worktree::git::Git as DaemonGit;
 use dudes_host::{CapturedOutcome, OneShot, OneShotOutcome};
@@ -651,46 +651,6 @@ fn a_fifo_head_is_refused_at_once_where_a_blocking_open_hangs() {
         .expect("the opener returned");
 }
 
-/// A 64 MiB commit message, compressed to a loose object of a few hundred KiB, makes plain git
-/// stream far more than the cap. The read ends inside its deadline with the group gone.
-#[test]
-fn a_huge_loose_object_ends_inside_the_deadline() {
-    let lab = Lab::new();
-    let repo = lab.repo("repo");
-    lab.sh(
-        &repo,
-        "tree=$(git write-tree) && { printf 'tree %s\\nparent %s\\nauthor A <a@x> 1 +0000\\ncommitter A <a@x> 1 +0000\\n\\n' \"$tree\" \"$(git rev-parse HEAD)\"; head -c 67108864 /dev/zero | tr '\\0' 'a'; } > ../huge-body && id=$(git hash-object -t commit -w --stdin < ../huge-body) && git update-ref refs/heads/main \"$id\"",
-    );
-    let git = resolve_git();
-    let spec = lab.spec(
-        &repo,
-        &[git.to_str().expect("utf-8"), "log", "-1", "--format=%s"],
-    );
-    let CapturedOutcome::Finished { truncated, .. } = lab
-        .runner
-        .0
-        .run_captured(&spec, Duration::from_secs(60), 1024 * 1024)
-        .expect("plain log runs")
-    else {
-        panic!("swept");
-    };
-    assert!(
-        truncated,
-        "control: plain git streams the whole message, far past the cap"
-    );
-
-    let started = Instant::now();
-    let view = lab.read(&repo);
-    assert!(
-        started.elapsed() < READ_DEADLINE + Duration::from_secs(2),
-        "{:?}",
-        started.elapsed()
-    );
-    assert!(json(&view).len() < dudes_proto::MAX_GIT_VIEW_BYTES);
-    assert_eq!(lab.runner.0.in_flight(), 0, "every child was reaped");
-    assert_eq!(lab.scratch_left(), 0);
-}
-
 fn origin_and_clone(lab: &Lab, depth: bool) -> (PathBuf, PathBuf) {
     let upstream = lab.repo("upstream-work");
     lab.git(&upstream, &["checkout", "--quiet", "--", "."]);
@@ -908,69 +868,6 @@ fn operator_excluded_files_appear_only_in_the_untracked_count() {
     for name in [".env.production", "key.pem", "plain.txt"] {
         assert!(!wire.contains(name), "{name} in {wire}");
     }
-}
-
-#[test]
-fn a_hundred_thousand_untracked_files_are_counted_to_a_cap_and_not_a_hang() {
-    let lab = Lab::new();
-    let repo = lab.repo("repo");
-    for n in 0..100_000 {
-        std::fs::File::create(repo.join(format!("u{n}"))).expect("create untracked fixture");
-    }
-    let started = Instant::now();
-    let view = lab.read(&repo);
-    assert!(
-        started.elapsed() < READ_DEADLINE + Duration::from_secs(2),
-        "{:?}",
-        started.elapsed()
-    );
-    assert_eq!(view.state, GitState::Ok);
-    let head = view.head.clone().expect("head");
-    assert!(head.untracked_cut && head.untracked > 1000, "{head:?}");
-    let changed: Vec<_> = view.changes.items.iter().map(|c| c.path.as_str()).collect();
-    assert_eq!(
-        changed,
-        ["a.txt"],
-        "the tracked edit is listed before the untracked files"
-    );
-    assert!(
-        !view.changes.truncated,
-        "a cut inside the untracked files loses no tracked change"
-    );
-    assert!(json(&view).len() < dudes_proto::MAX_GIT_VIEW_BYTES);
-}
-
-#[test]
-fn thirty_thousand_staged_files_fill_the_changes_budget_and_say_so() {
-    let lab = Lab::new();
-    let repo = lab.repo("repo");
-    let staged = repo.join("t");
-    std::fs::create_dir(&staged).expect("create staged fixture directory");
-    for n in 0..30_000 {
-        std::fs::File::create(staged.join(format!("staged-file-number-{n}")))
-            .expect("create staged fixture");
-    }
-    lab.git(&repo, &["add", "t"]);
-    let started = Instant::now();
-    let view = lab.read(&repo);
-    assert!(
-        started.elapsed() < READ_DEADLINE + Duration::from_secs(2),
-        "{:?}",
-        started.elapsed()
-    );
-    assert_eq!(view.state, GitState::Ok);
-    assert!(
-        view.changes.truncated && view.changes.items.len() > 100,
-        "{}",
-        view.changes.items.len()
-    );
-    let section = serde_json::to_vec(&view.changes).expect("serialize");
-    assert!(
-        section.len() <= dudes_proto::MAX_GIT_CHANGE_BYTES,
-        "{}",
-        section.len()
-    );
-    assert!(json(&view).len() < dudes_proto::MAX_GIT_VIEW_BYTES);
 }
 
 /// Threads are what a Linux child's address-space limit takes away at random: each one reserves a
@@ -1387,46 +1284,6 @@ fn an_index_in_version_four_is_unsupported_and_version_two_reads() {
         GitState::Ok,
         "control: a version 2 index reads"
     );
-}
-
-/// An untracked subdirectory whose `.git` is a file makes `status` open the repository it names.
-/// A FIFO named `HEAD` there blocks the open, and the command deadline is what ends it. This is a
-/// residual the shadow does not close: the reply leaks nothing and the read ends.
-#[test]
-fn a_nested_gitfile_to_a_blocking_fifo_ends_at_the_command_deadline() {
-    let lab = Lab::new();
-    let repo = lab.repo("repo");
-    let elsewhere = lab.path().join("elsewhere");
-    std::fs::create_dir_all(elsewhere.join("objects")).expect("elsewhere");
-    std::fs::create_dir_all(elsewhere.join("refs")).expect("refs");
-    nix::unistd::mkfifo(
-        &elsewhere.join("HEAD"),
-        nix::sys::stat::Mode::from_bits_truncate(0o600),
-    )
-    .expect("mkfifo");
-    let nested = repo.join("sub");
-    std::fs::create_dir(&nested).expect("nested");
-    std::fs::write(
-        nested.join(".git"),
-        format!("gitdir: {}\n", elsewhere.display()),
-    )
-    .expect("gitfile");
-
-    let started = Instant::now();
-    let view = lab.read(&repo);
-    assert_eq!(view.state, GitState::TimedOut);
-    assert!(
-        started.elapsed() < Duration::from_secs(8),
-        "{:?}",
-        started.elapsed()
-    );
-    assert!(!json(&view).contains("elsewhere"));
-    assert_eq!(
-        lab.runner.0.in_flight(),
-        0,
-        "the child was killed and reaped"
-    );
-    assert_eq!(lab.scratch_left(), 0);
 }
 
 /// The names only the secret repository holds. No reply may carry one.

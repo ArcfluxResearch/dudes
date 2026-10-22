@@ -240,77 +240,6 @@ mod tests {
     }
 
     #[test]
-    fn a_control_deadline_stays_denied_when_the_journal_stopped() {
-        for kind in [
-            EventKind::PreTool {
-                name: "Bash".to_owned(),
-                input: serde_json::json!({"command":"fixture"}),
-            },
-            EventKind::PromptSubmit,
-        ] {
-            let admission = Admission::new(NonZeroUsize::MIN, None);
-            let permit = admission.acquire(AgentId::NIL).unwrap();
-            let (jobs, queued) = mpsc::channel();
-            let handle = Handle::new(jobs);
-            let caller = handle.clone();
-            let original = Event { kind, ..event() };
-            let sent = original.clone();
-            let answer = std::thread::spawn(move || caller.hook(sent, permit));
-            let held = queued.recv_timeout(Duration::from_secs(1)).unwrap();
-            handle.publish_journal_stopped(dudes_types::Lsn(9));
-            let result = answer.join().unwrap();
-            let Job::Hook { event, .. } = &held else {
-                panic!("the admitted event remains queued")
-            };
-            assert_eq!(event, &original);
-            assert!(admission.acquire(AgentId::NIL).is_none());
-            assert!(matches!(
-                queued.recv_timeout(Duration::from_secs(1)).unwrap(),
-                Job::Input(input) if matches!(*input, Input::Signal {
-                    agent: AgentId::NIL,
-                    signal: RuntimeSignal::HookTimeout,
-                })
-            ));
-            assert!(matches!(queued.try_recv(), Err(mpsc::TryRecvError::Empty)));
-            drop(held);
-            assert!(admission.acquire(AgentId::NIL).is_some());
-            assert_eq!(
-                result.unwrap(),
-                HookReply {
-                    decision: dudes_proto::HookDecision::Deny {
-                        reason: "the daemon did not answer the control hook; retry, and restart duded if this persists".to_owned(),
-                    },
-                    context: None,
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn stop_boundary_deadlines_keep_an_empty_allow() {
-        for kind in [
-            EventKind::TurnEnd { last_message: None },
-            EventKind::SubagentEnd,
-        ] {
-            let admission = Admission::new(NonZeroUsize::MIN, None);
-            let (jobs, queued) = mpsc::channel();
-            let handle = Handle::new(jobs);
-            let permit = admission.acquire(AgentId::NIL).unwrap();
-            let answer = std::thread::spawn(move || handle.hook(Event { kind, ..event() }, permit));
-            let held = queued.recv_timeout(Duration::from_secs(1)).unwrap();
-            let result = answer.join().unwrap().unwrap();
-            drop(held);
-            assert_eq!(
-                result,
-                HookReply {
-                    decision: dudes_proto::HookDecision::Allow,
-                    context: None,
-                }
-            );
-        }
-    }
-
-    #[test]
     fn confirmed_control_answers_and_errors_survive_the_deadline_change() {
         for stopped in [None, Some(dudes_types::Lsn(9))] {
             for original in [
@@ -573,6 +502,77 @@ mod tests {
     }
 
     #[test]
+    fn a_control_deadline_stays_denied_when_the_journal_stopped() {
+        for kind in [
+            EventKind::PreTool {
+                name: "Bash".to_owned(),
+                input: serde_json::json!({"command":"fixture"}),
+            },
+            EventKind::PromptSubmit,
+        ] {
+            let admission = Admission::new(NonZeroUsize::MIN, None);
+            let permit = admission.acquire(AgentId::NIL).unwrap();
+            let (jobs, queued) = mpsc::channel();
+            let handle = Handle::new(jobs).with_hook_reply_timeout(Duration::from_millis(250));
+            let caller = handle.clone();
+            let original = Event { kind, ..event() };
+            let sent = original.clone();
+            let answer = std::thread::spawn(move || caller.hook(sent, permit));
+            let held = queued.recv_timeout(Duration::from_secs(1)).unwrap();
+            handle.publish_journal_stopped(dudes_types::Lsn(9));
+            let result = answer.join().unwrap();
+            let Job::Hook { event, .. } = &held else {
+                panic!("the admitted event remains queued")
+            };
+            assert_eq!(event, &original);
+            assert!(admission.acquire(AgentId::NIL).is_none());
+            assert!(matches!(
+                queued.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Job::Input(input) if matches!(*input, Input::Signal {
+                    agent: AgentId::NIL,
+                    signal: RuntimeSignal::HookTimeout,
+                })
+            ));
+            assert!(matches!(queued.try_recv(), Err(mpsc::TryRecvError::Empty)));
+            drop(held);
+            assert!(admission.acquire(AgentId::NIL).is_some());
+            assert_eq!(
+                result.unwrap(),
+                HookReply {
+                    decision: dudes_proto::HookDecision::Deny {
+                        reason: "the daemon did not answer the control hook; retry, and restart duded if this persists".to_owned(),
+                    },
+                    context: None,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn stop_boundary_deadlines_keep_an_empty_allow() {
+        for kind in [
+            EventKind::TurnEnd { last_message: None },
+            EventKind::SubagentEnd,
+        ] {
+            let admission = Admission::new(NonZeroUsize::MIN, None);
+            let (jobs, queued) = mpsc::channel();
+            let handle = Handle::new(jobs).with_hook_reply_timeout(Duration::from_millis(20));
+            let permit = admission.acquire(AgentId::NIL).unwrap();
+            let answer = std::thread::spawn(move || handle.hook(Event { kind, ..event() }, permit));
+            let held = queued.recv_timeout(Duration::from_secs(1)).unwrap();
+            let result = answer.join().unwrap().unwrap();
+            drop(held);
+            assert_eq!(
+                result,
+                HookReply {
+                    decision: dudes_proto::HookDecision::Allow,
+                    context: None,
+                }
+            );
+        }
+    }
+
+    #[test]
     fn non_control_timeouts_and_control_disconnect_keep_the_typed_delivery_error() {
         use dudes_types::Lsn;
         for (kind, disconnect) in [
@@ -583,7 +583,7 @@ mod tests {
             let admission = Admission::new(NonZeroUsize::new(1).unwrap(), None);
             let permit = admission.acquire(AgentId::NIL).unwrap();
             let (jobs, queued) = mpsc::channel();
-            let handle = Handle::new(jobs);
+            let handle = Handle::new(jobs).with_hook_reply_timeout(Duration::from_millis(250));
             let caller = handle.clone();
             let answer = std::thread::spawn(move || caller.hook(Event { kind, ..event() }, permit));
             let held = queued.recv_timeout(Duration::from_secs(1)).unwrap();

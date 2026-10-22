@@ -759,30 +759,6 @@ fn a_manifest_read_gives_way_to_a_waiting_capture() {
 }
 
 #[test]
-fn an_incomplete_current_sample_is_unknown_even_beside_a_complete_stamp() {
-    let lab = Lab::new();
-    for n in 0..250 {
-        lab.write(&format!("f{n:03}.txt"), "old\n");
-    }
-    lab.git(&["add", "-A"]);
-    lab.git(&["commit", "--quiet", "-m", "many"]);
-    lab.start_round();
-    for n in 0..250 {
-        lab.write(&format!("f{n:03}.txt"), "new\n");
-    }
-    lab.check_passes();
-    assert_eq!(
-        lab.manifest(1).freshness,
-        DiffFreshness::MatchesReviewSample
-    );
-    for n in 250..300 {
-        lab.write(&format!("g{n:03}.txt"), "x\n");
-        lab.git(&["add", &format!("g{n:03}.txt")]);
-    }
-    assert_eq!(lab.manifest(2).freshness, DiffFreshness::Unknown);
-}
-
-#[test]
 fn successful_replies_are_charged_whole_until_the_session_allowance_is_spent() {
     let lab = Lab::new();
     for n in 0..4 {

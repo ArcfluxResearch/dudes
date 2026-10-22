@@ -25,6 +25,7 @@ const BOUND: Duration = Duration::from_secs(30);
 
 struct NativeDaemon {
     child: Child,
+    _lifeline: common::Lifeline,
     socket: PathBuf,
     runtime: PathBuf,
     ended: bool,
@@ -93,9 +94,17 @@ fn native_hire(daemon: &NativeDaemon, here: &Path, args: &[OsString]) -> common:
 
 impl NativeDaemon {
     fn start(fixture: &common::Fixture, env: &BTreeMap<OsString, OsString>) -> Self {
-        let binary = native_binary("duded");
-        assert!(binary.is_file(), "preflight the standalone duded sibling");
+        let source = native_binary("duded");
+        assert!(source.is_file(), "preflight the standalone duded sibling");
+        let bin = fixture.runtime.path().join("bin");
+        fs::create_dir(&bin).expect("private daemon directory");
+        let binary = bin.join("duded");
+        fs::hard_link(&source, &binary)
+            .or_else(|_| fs::copy(&source, &binary).map(|_| ()))
+            .expect("install the test daemon");
+        let lifeline = common::Lifeline::start(fixture.runtime.path());
         let stderr = fs::File::create(fixture.runtime.path().join("daemon.stderr")).unwrap();
+        let settings = fixture.settings();
         let child = common::process(binary.as_os_str(), &[], Some(env))
             .current_dir(fixture.runtime.path())
             .process_group(0)
@@ -104,13 +113,18 @@ impl NativeDaemon {
             .stderr(Stdio::from(stderr))
             .spawn()
             .expect("scratch standalone daemon");
-        let settings = fixture.settings();
         let mut daemon = Self {
             child,
+            _lifeline: lifeline,
             socket: settings.socket(),
             runtime: settings.runtime_dir,
             ended: false,
         };
+        fs::write(
+            fixture.runtime.path().join("duded.log"),
+            format!("quickstart started duded pid {}\n", daemon.child.id()),
+        )
+        .expect("register the daemon with its lifeline");
         let deadline = Instant::now() + BOUND;
         loop {
             assert!(

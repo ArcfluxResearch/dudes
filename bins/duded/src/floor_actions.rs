@@ -10,7 +10,7 @@ use dudes_proto::record::{BrowserOnboardingHire, Hex32, RecordedWorkspace};
 use dudes_proto::rpc::floor::{CheckView, ChecksView, WorkspaceChecks};
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, ENROLLED_CHECK_ID};
 use dudes_proto::{AgentBudget, CompletionCheckRef, GoalBudget, Predicate, Record};
-use dudes_types::{AgentId, GoalId, IsolationMode, Lsn, Provider, Timestamp, Tokens, Usd};
+use dudes_types::{AgentId, IsolationMode, Lsn, Provider, Timestamp, Tokens, Usd};
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -211,6 +211,9 @@ struct WorkspaceView {
     agent_tokens_per_day: Option<String>,
     goal_tokens: Option<String>,
     hop_cap: u32,
+    /// The operator trusts this project, so a hire may ask for its own copy of it. Nothing else
+    /// of the grant is shown.
+    trusted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     reload_mark: Option<MarkView>,
 }
@@ -263,7 +266,7 @@ impl Enrollment {
             floor_usd_per_day,
             self.profiles
                 .iter()
-                .map(|profile| (profile, BROWSER_ENGINES.to_vec())),
+                .map(|profile| (profile, BROWSER_ENGINES.to_vec(), true)),
         );
         let bytes = serde_json::to_vec(&view).map_err(|_| CatalogError::TooLarge)?;
         if bytes.len() > 16_384 {
@@ -301,10 +304,10 @@ impl Enrollment {
     }
 
     /// The sole safe wire form of eligible profiles, already sorted at config admission, each
-    /// beside the engines offered for it.
+    /// beside the engines offered for it and whether the operator trusts it.
     pub(crate) fn view<'a>(
         floor: Option<Usd>,
-        profiles: impl IntoIterator<Item = (&'a Profile, Vec<Provider>)>,
+        profiles: impl IntoIterator<Item = (&'a Profile, Vec<Provider>, bool)>,
     ) -> OnboardingView {
         let dollars = |usd: Option<Usd>| usd.map(|usd| usd.micros().to_string());
         let tokens = |tokens: Option<Tokens>| tokens.map(|tokens| tokens.count().to_string());
@@ -312,7 +315,7 @@ impl Enrollment {
             floor_usd_per_day_micros: dollars(floor),
             workspaces: profiles
                 .into_iter()
-                .map(|(profile, engines)| WorkspaceView {
+                .map(|(profile, engines, trusted)| WorkspaceView {
                     workspace_id: profile.id.clone(),
                     label: profile.label.clone(),
                     engines,
@@ -321,6 +324,7 @@ impl Enrollment {
                     agent_tokens_per_day: tokens(profile.agent_budget.tokens_per_day),
                     goal_tokens: tokens(profile.goal_budget.tokens),
                     hop_cap: profile.hop_cap,
+                    trusted,
                     reload_mark: profile.mark.map(|mark| MarkView {
                         kind: mark.kind,
                         at: rfc3339_seconds(mark.at),
@@ -352,10 +356,7 @@ impl Enrollment {
 #[derive(Clone, Debug)]
 pub(crate) struct Attempt {
     pub(crate) agent: AgentId,
-    pub(crate) hire: Record,
     pub(crate) metadata: BrowserOnboardingHire,
-    pub(crate) goal_set: bool,
-    pub(crate) goal_conflict: bool,
 }
 
 /// A replayable in-memory index; only journal records may change it.
@@ -379,64 +380,29 @@ impl OnboardingIndex {
     }
 
     pub(crate) fn apply(&mut self, record: &Record) -> Result<()> {
-        match record {
-            Record::AgentHired {
-                id,
-                browser_onboarding: Some(metadata),
-                ..
-            } => {
-                if self.attempts.contains_key(&metadata.attempt_id) {
-                    bail!("duplicate browser onboarding attempt in journal");
-                }
-                let count = self
-                    .hires_per_session
-                    .entry(metadata.session_digest)
-                    .or_default();
-                *count = count
-                    .checked_add(1)
-                    .context("browser hire count overflow")?;
-                self.attempts.insert(
-                    metadata.attempt_id,
-                    Attempt {
-                        agent: *id,
-                        hire: record.clone(),
-                        metadata: (**metadata).clone(),
-                        goal_set: false,
-                        goal_conflict: false,
-                    },
-                );
+        if let Record::AgentHired {
+            id,
+            browser_onboarding: Some(metadata),
+            ..
+        } = record
+        {
+            if self.attempts.contains_key(&metadata.attempt_id) {
+                bail!("duplicate browser onboarding attempt in journal");
             }
-            Record::GoalSet {
-                agent,
-                goal,
-                browser_onboarding: Some(metadata),
-                ..
-            } => {
-                let attempt = self
-                    .attempts
-                    .get_mut(&metadata.attempt_id)
-                    .context("browser goal without matching hire")?;
-                if attempt.agent != *agent
-                    || attempt.metadata.intended_goal != *goal
-                    || attempt.goal_set
-                {
-                    bail!("browser goal does not match its durable hire");
-                }
-                attempt.goal_set = true;
-            }
-            Record::GoalSet {
-                agent,
-                browser_onboarding: None,
-                ..
-            }
-            | Record::TicketStarted { agent, .. } => {
-                for attempt in self.attempts.values_mut() {
-                    if attempt.agent == *agent && !attempt.goal_set {
-                        attempt.goal_conflict = true;
-                    }
-                }
-            }
-            _ => {}
+            let count = self
+                .hires_per_session
+                .entry(metadata.session_digest)
+                .or_default();
+            *count = count
+                .checked_add(1)
+                .context("browser hire count overflow")?;
+            self.attempts.insert(
+                metadata.attempt_id,
+                Attempt {
+                    agent: *id,
+                    metadata: (**metadata).clone(),
+                },
+            );
         }
         Ok(())
     }
@@ -499,10 +465,11 @@ pub struct OnboardRequest {
     pub(crate) provider: Provider,
     pub(crate) name: String,
     pub(crate) role: String,
-    pub(crate) goal_text: String,
     /// The enrolled check the hire names, by id and revision. Absent only on a retry of an
     /// attempt the onboarding index already holds.
     pub(crate) check: Option<(String, Hex32)>,
+    /// The agent works in a git worktree of its own rather than in the project folder.
+    pub(crate) own_copy: bool,
 }
 
 impl fmt::Debug for OnboardRequest {
@@ -514,44 +481,82 @@ impl fmt::Debug for OnboardRequest {
 /// What the authenticated POST may truthfully report after the daemon job.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OnboardOutcome {
-    /// Both matching domain records are durable.
+    /// The hire is durable.
     Complete {
         /// Canonical attempt id to return to the page.
         attempt_id: String,
         /// Durable hired agent.
         agent: AgentId,
-        /// Durable initial goal.
-        goal: GoalId,
-    },
-    /// Only the matching hire is durable.
-    Partial {
-        /// Canonical attempt id to return to the page.
-        attempt_id: String,
-        /// Durable hired agent.
-        agent: AgentId,
-        /// Bounded reason selected by the decision order.
-        reason: &'static str,
-        /// Current projected goal, which may be a local winner.
-        current_goal: Option<GoalId>,
-        /// Current projected retirement state.
-        retired: bool,
     },
 }
 
-/// What a browser hire's first job answers: the request's answer, or its check running once
-/// before anything is appended.
+/// What a browser hire's first job answers: the request's answer, or the copy to make first.
 #[derive(Debug)]
 pub enum OnboardStep {
     /// The request's answer.
     Answer(Result<OnboardOutcome, OnboardRefusal>),
-    /// The hire's check is running; the request waits on it.
-    Check {
-        /// The run.
-        ticket: crate::baseline::Ticket,
-        /// What a retried partial attempt answers when its check refuses the goal; `None` for a
-        /// new attempt, which answers the refusal.
-        on_refusal: Option<OnboardOutcome>,
+    /// The hire asked for its own copy of the project: the connection thread makes the copy,
+    /// then asks for the hire into it.
+    Copy {
+        /// The hire the copy is made for. Only the copy's admission reads it.
+        params: Box<dudes_proto::rpc::agent::HireParams>,
+        /// The operator's grant the copy rests on.
+        trust: Box<crate::worktree::hire::TrustTicket>,
     },
+}
+
+/// Why a browser hire's own copy was not made. Each is a sentence the page shows as it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CopyRefusal {
+    /// Only Claude Code agents can work in a copy for now.
+    Engine,
+    /// The platform cannot make copies.
+    Platform,
+    /// The operator has not trusted this project.
+    NotTrusted(String),
+    /// The operator trusted this project, but its location or settings are not what they vouched
+    /// for any more.
+    TrustChanged(String),
+    /// The project's folder is not inside a git repository.
+    NotARepository,
+    /// Anything else that stopped the copy: git, the folder, or the daemon's admission.
+    Failed,
+}
+
+impl fmt::Display for CopyRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Engine => f.write_str(
+                "Only Claude Code agents can work in their own copy for now. Choose Claude Code, \
+                 or hire without a copy. Nobody was hired.",
+            ),
+            Self::Platform => f.write_str(
+                "Own copies are not available on Windows yet. Hire without a copy. Nobody was hired.",
+            ),
+            Self::NotTrusted(id) => write!(
+                f,
+                "This project is not trusted yet, so Dudes will not make a copy of it. A copy runs \
+                 the repository's own Claude settings, such as environment values and helper \
+                 commands, without asking. To allow it, run `dudes project trust {id}` in a \
+                 terminal, or hire without a copy. Nobody was hired."
+            ),
+            Self::TrustChanged(id) => write!(
+                f,
+                "This project's folder or settings changed since you trusted it, so Dudes did not \
+                 make a copy. Run `dudes project trust {id}` again to vouch for what it holds \
+                 now, or hire without a copy. Nobody was hired."
+            ),
+            Self::NotARepository => f.write_str(
+                "This project's folder is not a git repository, so Dudes cannot make a separate \
+                 copy of it. Hire without a copy, or turn the folder into a git repository first. \
+                 Nobody was hired.",
+            ),
+            Self::Failed => f.write_str(
+                "Dudes could not make the copy, so nobody was hired. Check that git is installed \
+                 and the project's folder is healthy, then try again, or hire without a copy.",
+            ),
+        }
+    }
 }
 
 /// An empty HTTP refusal with no invented domain identity.
@@ -576,6 +581,8 @@ pub enum OnboardRefusal {
     Check(&'static str),
     /// Current owned-child admission refused before a hire was appended.
     SharedFolder(dudes_supervisor::SharedFolderRefusal),
+    /// The hire's own copy was refused or could not be made; nothing was hired.
+    OwnCopy(CopyRefusal),
 }
 
 #[derive(Deserialize)]
@@ -593,34 +600,48 @@ struct OnboardJson {
     provider: Option<Provider>,
     name: String,
     role: String,
-    goal_text: String,
     #[serde(default)]
     check_id: Option<String>,
     #[serde(default)]
     check_revision: Option<Hex32>,
+    #[serde(default)]
+    own_copy: Option<bool>,
 }
 
-/// The request digest's domain and the fields it frames after the four text fields. v1 frames
-/// none, v2 adds the appearance, v3, for a request that names an engine, always frames all seven,
-/// and v4, for a request that names a check, frames v3's seven and then the check. A request valid
-/// under an older domain keeps its bytes.
+/// The request digest's domain version and the fields it frames after the text fields. The domain
+/// is `dudes.onboard.nogoal.<version>`, apart from the digests of hires that framed a goal text. v1
+/// frames none, v2 adds the appearance, v3, for a request that names an engine, always frames all seven,
+/// v4, for a request that names a check, frames v3's seven and then the check, and v5, for a request
+/// that asks for its own copy, frames v4's fields and then the choice.
 fn request_framing<'a>(
     check: Option<(&'a str, &'a str)>,
     names_engine: bool,
+    own_copy: bool,
     seven: [(&'static str, &'a str); 3],
-) -> (&'static [u8], Vec<(&'static str, &'a str)>) {
+) -> (&'static str, Vec<(&'static str, &'a str)>) {
     let [_, character, accent] = seven;
     match (check, names_engine, character.1, accent.1) {
+        (Some((id, revision)), ..) if own_copy => (
+            "v5",
+            seven
+                .into_iter()
+                .chain([
+                    ("check_id", id),
+                    ("check_revision", revision),
+                    ("own_copy", "true"),
+                ])
+                .collect(),
+        ),
         (Some((id, revision)), ..) => (
-            b"dudes.onboard.v4\0",
+            "v4",
             seven
                 .into_iter()
                 .chain([("check_id", id), ("check_revision", revision)])
                 .collect(),
         ),
-        (None, true, ..) => (b"dudes.onboard.v3\0", seven.to_vec()),
-        (None, false, "", "") => (b"dudes.onboard.v1\0", Vec::new()),
-        (None, false, ..) => (b"dudes.onboard.v2\0", vec![character, accent]),
+        (None, true, ..) => ("v3", seven.to_vec()),
+        (None, false, "", "") => ("v1", Vec::new()),
+        (None, false, ..) => ("v2", vec![character, accent]),
     }
 }
 
@@ -653,13 +674,6 @@ impl OnboardRequest {
         let role = dudes_types::DisplayRole::parse(&raw.role)
             .context("invalid browser hire role")?
             .into_string();
-        let goal_text = raw
-            .goal_text
-            .trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))
-            .to_owned();
-        if !(1..=2048).contains(&goal_text.len()) {
-            bail!("browser onboarding text is outside its byte limit");
-        }
         // A Claude request names no engine; naming one explicitly would give one hire two digests.
         let provider = match raw.provider {
             None => Provider::Claude,
@@ -678,24 +692,29 @@ impl OnboardRequest {
         let revision = check
             .as_ref()
             .map(|(id, revision)| (id.as_str(), crate::goal_replacement::hex(*revision)));
+        let own_copy = raw.own_copy.unwrap_or(false);
+        if own_copy && check.is_none() {
+            bail!("a browser hire in its own copy names a check");
+        }
         let (domain, extra) = request_framing(
             revision
                 .as_ref()
                 .map(|(id, revision)| (*id, revision.as_str())),
             raw.provider.is_some(),
+            own_copy,
             [
                 ("provider", provider.as_str()),
                 ("character", character),
                 ("accent", accent),
             ],
         );
+        let domain = format!("dudes.onboard.nogoal.{domain}\0");
         let request_digest = crate::goal_replacement::digest(
-            domain,
+            domain.as_bytes(),
             [
                 ("workspace_id", raw.workspace_id.as_str()),
                 ("name", name.as_str()),
                 ("role", role.as_str()),
-                ("goal_text", goal_text.as_str()),
             ]
             .into_iter()
             .chain(extra)
@@ -712,8 +731,8 @@ impl OnboardRequest {
             workspace_revision,
             name,
             role,
-            goal_text,
             check,
+            own_copy,
         })
     }
 }
@@ -783,13 +802,13 @@ mod tests {
 
     #[test]
     fn canonical_fields_have_one_domain_separated_request_digest() {
-        let request = OnboardRequest::parse(br#"{"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","workspace_id":"repo_1","name":" Kim \n","role":"engineer","goal_text":"ship"}"#)
+        let request = OnboardRequest::parse(br#"{"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","workspace_id":"repo_1","name":" Kim \n","role":"engineer"}"#)
             .expect("canonical request");
         assert_eq!(request.name, "Kim");
         assert_eq!(request.attempt_id.bytes(), [0; 32]);
         assert_eq!(
             serde_json::to_value(request.request_digest).unwrap(),
-            "2e33d3aad10a50a1eeae4c310d191a3ca16648446e070f4ad65cac40e6cc1b3e"
+            "728e519747fffbebcb400da058a0b10a10543933fd4e3c376e4d31acc5d53d48"
         );
     }
 
@@ -799,7 +818,7 @@ mod tests {
             OnboardRequest::parse(
                 &serde_json::to_vec(&serde_json::json!({
                     "attempt_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                    "workspace_id": "repo_1", "name": name, "role": role, "goal_text": "ship"
+                    "workspace_id": "repo_1", "name": name, "role": role
                 }))
                 .unwrap(),
             )
@@ -823,7 +842,7 @@ mod tests {
     fn appearance_choices_bind_the_v2_digest_without_changing_legacy_v1() {
         let legacy = serde_json::json!({
             "attempt_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "workspace_id": "repo_1", "name": "Kim", "role": "engineer", "goal_text": "ship"
+            "workspace_id": "repo_1", "name": "Kim", "role": "engineer"
         });
         let parse = |value: &serde_json::Value| {
             OnboardRequest::parse(&serde_json::to_vec(value).unwrap()).unwrap()
@@ -839,7 +858,7 @@ mod tests {
         let chosen = parse(&explicit);
         assert_eq!(
             serde_json::to_value(chosen.request_digest).unwrap(),
-            "1622b613581c628c006be7a1a8847d062127c98f6e222787a986fd9a0165e428"
+            "853cc66641d623842bd1ea495bc082fb80dbb811abce287e7bba0e7b4fffbc4a"
         );
         assert_ne!(old.request_digest, chosen.request_digest);
         for (field, value) in [
@@ -872,7 +891,7 @@ mod tests {
     fn an_engine_binds_the_v3_digest_and_claude_keeps_v1_and_v2() {
         let legacy = serde_json::json!({
             "attempt_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "workspace_id": "repo_1", "name": "Kim", "role": "engineer", "goal_text": "ship"
+            "workspace_id": "repo_1", "name": "Kim", "role": "engineer"
         });
         let parse =
             |value: &serde_json::Value| OnboardRequest::parse(&serde_json::to_vec(value).unwrap());
@@ -888,11 +907,11 @@ mod tests {
         };
         assert_eq!(
             digest(&legacy),
-            "2e33d3aad10a50a1eeae4c310d191a3ca16648446e070f4ad65cac40e6cc1b3e"
+            "728e519747fffbebcb400da058a0b10a10543933fd4e3c376e4d31acc5d53d48"
         );
         assert_eq!(
             digest(&with(&[("provider", serde_json::Value::Null)])),
-            "2e33d3aad10a50a1eeae4c310d191a3ca16648446e070f4ad65cac40e6cc1b3e",
+            "728e519747fffbebcb400da058a0b10a10543933fd4e3c376e4d31acc5d53d48",
             "a null provider is an absent one"
         );
         assert_eq!(
@@ -900,12 +919,12 @@ mod tests {
                 ("character", "h".into()),
                 ("accent", "sky".into())
             ])),
-            "1622b613581c628c006be7a1a8847d062127c98f6e222787a986fd9a0165e428"
+            "853cc66641d623842bd1ea495bc082fb80dbb811abce287e7bba0e7b4fffbc4a"
         );
         let codex = with(&[("provider", "codex".into())]);
         assert_eq!(
             digest(&codex),
-            "9cd190db8747e1e0bbb2cdb5e3c6912d28cfcde0ae8930b2a6ee1bc7da4db2bc"
+            "fb15e79b60a515d34f946bdf79180cc1d249ff6ecf615200b567e3e902b5beb5"
         );
         assert_eq!(parse(&codex).unwrap().provider, Provider::Codex);
         assert_eq!(
@@ -914,7 +933,7 @@ mod tests {
                 ("character", "h".into()),
                 ("accent", "sky".into())
             ])),
-            "4c4f265e712489be83fbdc4e151c69110810ea4c40a418341935c0fce746ae2c"
+            "a17cf1a64f9dd6384274fbc5e9c046f25c73899b5582b1a43e38584ac1cd6ae5"
         );
         assert_eq!(parse(&legacy).unwrap().provider, Provider::Claude);
         for refused in ["claude", "copilot", "Codex", ""] {
@@ -929,7 +948,7 @@ mod tests {
     /// The derived struct decoder also accepts positional arrays. This route accepts objects.
     #[test]
     fn only_an_object_is_a_request() {
-        let object = br#"{"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","workspace_id":"repo_1","name":"Kim","role":"engineer","goal_text":"ship"}"#;
+        let object = br#"{"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","workspace_id":"repo_1","name":"Kim","role":"engineer"}"#;
         let spaced = [b" \n".as_slice(), object].concat();
         assert!(
             OnboardRequest::parse(&spaced).is_ok(),
@@ -962,58 +981,17 @@ mod tests {
     fn nesting_above_sixteen_is_rejected_before_struct_decode() {
         let nested = format!("{}0{}", "[".repeat(17), "]".repeat(17));
         let body = format!(
-            "{{\"attempt_id\":\"{}\",\"workspace_id\":\"repo_1\",\"name\":\"Kim\",\"role\":\"engineer\",\"goal_text\":\"ship\",\"extra\":{nested}}}",
+            "{{\"attempt_id\":\"{}\",\"workspace_id\":\"repo_1\",\"name\":\"Kim\",\"role\":\"engineer\",\"extra\":{nested}}}",
             "A".repeat(43),
         );
         let error = OnboardRequest::parse(body.as_bytes()).expect_err("depth refusal");
         assert!(error.to_string().contains("too large or nested"));
     }
 
-    /// A goal that takes over from a browser hire's intended goal before the onboarding goal
-    /// lands makes that attempt conflicted. A ticket's start installs a goal the same way.
+    /// The request carries no goal: a body that names one is refused like any unknown field.
     #[test]
-    fn ticket_start_conflicts_an_unfinished_hire_attempt() {
-        use dudes_proto::RecordKind;
-        use dudes_proto::record::samples;
-
-        let attempt_id = Hex32::new([3; 32]);
-        for carrier in [RecordKind::GoalSet, RecordKind::TicketStarted] {
-            let mut hire = samples::record(RecordKind::AgentHired);
-            let Record::AgentHired {
-                id,
-                browser_onboarding,
-                ..
-            } = &mut hire
-            else {
-                unreachable!("the sample is a hire");
-            };
-            let Record::GoalSet { goal, .. } = samples::record(RecordKind::GoalSet) else {
-                unreachable!("the sample is a goal set");
-            };
-            let agent = *id;
-            *browser_onboarding = Some(Box::new(BrowserOnboardingHire {
-                attempt_id,
-                request_digest: Hex32::new([4; 32]),
-                profile_id: "repo_1".into(),
-                session_digest: Hex32::new([5; 32]),
-                intended_goal: goal,
-            }));
-            let mut index = OnboardingIndex::default();
-            index.apply(&hire).unwrap();
-            assert!(!index.attempt(attempt_id).unwrap().goal_conflict);
-            let mut other = samples::record(carrier);
-            match &mut other {
-                Record::GoalSet { agent: owner, .. }
-                | Record::TicketStarted { agent: owner, .. } => {
-                    *owner = agent;
-                }
-                _ => unreachable!("a goal carrier"),
-            }
-            index.apply(&other).unwrap();
-            assert!(
-                index.attempt(attempt_id).unwrap().goal_conflict,
-                "{carrier:?} conflicts the unfinished attempt"
-            );
-        }
+    fn a_request_naming_a_goal_is_refused() {
+        let body = br#"{"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","workspace_id":"repo_1","name":"Kim","role":"engineer","goal_text":"ship"}"#;
+        assert!(OnboardRequest::parse(body).is_err());
     }
 }

@@ -53,8 +53,8 @@ impl AddOptions {
         let argv = self
             .predicate_argv
             .clone()
-            .or_else(|| crate::setup::suggest_check(&path))
-            .unwrap_or_else(crate::setup::changed_check);
+            .or_else(|| dudes_config::check::suggest_check(&path))
+            .unwrap_or_else(dudes_config::check::changed_check);
         let id = self.id.clone().unwrap_or_else(|| project_id(&path, ids));
         Ok(NewWorkspace {
             path,
@@ -63,7 +63,7 @@ impl AddOptions {
             completion_check_label: self
                 .completion_check_label
                 .clone()
-                .unwrap_or_else(|| crate::setup::check_label(&argv)),
+                .unwrap_or_else(|| dudes_config::check::check_label(&argv)),
             department: self.department.clone(),
             agent_usd_per_day: self.agent_usd_per_day.clone(),
             goal_usd: self.goal_usd.clone(),
@@ -75,28 +75,4 @@ impl AddOptions {
             may_already_pass: false,
         })
     }
-}
-
-pub(crate) fn project_id(path: &Path, ids: &[String]) -> String {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let slug: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .take(118)
-        .collect();
-    let base = slug.trim_matches('-');
-    let base = if base.is_empty() { "project" } else { base };
-    let mut id = base.to_owned();
-    let mut suffix = 2_u32;
-    while ids.contains(&id) {
-        id = format!("{base}-{suffix}");
-        suffix += 1;
-    }
-    id
 }

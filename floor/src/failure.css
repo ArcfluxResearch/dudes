@@ -6,16 +6,6 @@
   color: var(--danger-ink);
 }
 
-.top-bar:has(.stream-notice, .journal-stopped-banner) {
-  flex-wrap: wrap;
-}
-
-.stream-notice,
-.journal-stopped-banner {
-  flex: 0 0 100%;
-  margin: 0;
-}
-
 .read-error button,
 .office-failure button {
   margin-left: 0.5rem;

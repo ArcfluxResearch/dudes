@@ -215,7 +215,7 @@ export type GitOutcome =
   | { readonly kind: 'unknown' };
 
 /** The one request: the agent, and nothing else. */
-export async function postGit(agent: string, csrf: string, fetch: ControlDeps['fetch']): Promise<GitOutcome> {
+export async function postGit(agent: string, fetch: ControlDeps['fetch']): Promise<GitOutcome> {
   let status: number;
   let body: string;
   try {
@@ -224,7 +224,7 @@ export async function postGit(agent: string, csrf: string, fetch: ControlDeps['f
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent_id: agent }),
     });
     status = response.status;
@@ -310,16 +310,15 @@ export function needsRead(current: GitTabState, agent: string, active: boolean):
  * one is read.
  */
 export async function loadGit(agent: string, deps: ControlDeps): Promise<void> {
-  const csrf = deps.csrf();
   const sameAgent = state.agent === agent;
-  if (csrf === null) {
+  if (!deps.signedIn()) {
     commitState({ agent, phase: 'failed', view: sameAgent ? state.view : null,
       failure: Object.freeze({ kind: 'forbidden' }), busy: false });
     return;
   }
   const ticket = ++latest;
   commitState({ agent, phase: 'loading', view: sameAgent ? state.view : null, failure: null, busy: false });
-  const outcome = await postGit(agent, csrf, deps.fetch);
+  const outcome = await postGit(agent, deps.fetch);
   if (ticket !== latest) return;
   if (outcome.kind === 'view') {
     // `busy` says nothing about the repository, so it does not wipe a reading already on screen.

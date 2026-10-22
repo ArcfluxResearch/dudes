@@ -4,5 +4,6 @@
 //! start rules. [`workspace`] enrolls and removes projects. Both keep the file's other bytes and
 //! comments as they were and write through a temporary file renamed over the original.
 
+pub mod check;
 pub mod config;
 pub mod workspace;

@@ -45,7 +45,7 @@ const REFUSALS: Readonly<Record<DiffRefusalReason, string>> = {
   disabled: 'The Changes view is turned off on this daemon.',
   busy: 'Dudes is reading a checkout for someone else, or you asked again too soon. Wait a few seconds, then choose Refresh.',
   session_limit: 'This Floor session has used all the reading it is allowed (about 1 MiB), and Refresh does not renew it. '
-    + 'Open the checkout in your editor with dudes ticket open, or start a new Floor session with dudes floor open.',
+    + 'Open the checkout in your editor with dudes ticket open, or open Dudes to start a new Floor session.',
   unsupported_platform: 'The Changes view does not work on this daemon’s operating system. Use dudes ticket open instead.',
   worktree_mismatch: 'The agent’s worktree no longer matches the one Dudes recorded, so nothing was read.',
   unsupported_storage: 'This repository uses storage the Changes view cannot read. Use dudes ticket open instead.',

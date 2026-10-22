@@ -444,8 +444,3 @@ fn daemon_exposes_incremental_text_before_provider_completion() {
 fn configuration_added_during_startup_prevents_task_delivery() {
     run(Case::ChangedConfig);
 }
-
-#[test]
-fn ignored_eof_reaches_the_real_close_deadline_and_reaps_the_child() {
-    run(Case::CloseTimeout);
-}

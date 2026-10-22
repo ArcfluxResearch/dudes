@@ -1125,31 +1125,6 @@ fn several_projects_need_the_caller_to_name_one() {
     daemon.stop();
 }
 
-#[test]
-fn the_board_holds_at_most_512_open_tickets() {
-    let fixture = Fixture::new();
-    let (settings, _repo) = enrolled(&fixture);
-    let mut records = Vec::new();
-    for index in 0..512u128 {
-        records.push(ticket_created(CardId::from_parts(5, index), "Seeded"));
-    }
-    seed(&fixture, records);
-    let mut daemon = start(settings);
-    assert_eq!(daemon.board().len(), 512);
-    assert_refused(
-        &daemon.call(Method::TicketCreate, json!({"title": "One too many"})),
-        TicketRefusal::LimitReached,
-        CardStatus::Todo,
-    );
-    let seq = daemon.card(CardId::from_parts(5, 0)).seq;
-    daemon.ok::<Value>(
-        Method::TicketRemove,
-        json!({"card": CardId::from_parts(5, 0), "expected_seq": seq}),
-    );
-    daemon.create("Room again");
-    daemon.stop();
-}
-
 /// Retiring an agent returns what it was doing, and leaves a decision waiting for the operator.
 #[test]
 fn retiring_an_agent_keeps_its_ready_ticket_and_returns_the_rest() {

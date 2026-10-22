@@ -21,7 +21,7 @@ use dudes_policy::{
     admit,
 };
 use dudes_proto::goal::{Evidence, Predicate};
-use dudes_proto::record::{BrowserOnboardingGoal, BrowserOnboardingHire};
+use dudes_proto::record::BrowserOnboardingHire;
 use dudes_proto::reply::{HookDecision, HookReply};
 use dudes_proto::rpc::{JSONRPC, Notification};
 use dudes_proto::{
@@ -4248,15 +4248,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Command::BrowserOnboardHire(input) => {
                 let input = *input;
                 let id = AgentId::from_ulid(self.rng.ulid());
-                let intended_goal = Goal {
-                    completion_check: input.completion_check,
-                    id: GoalId::from_ulid(self.rng.ulid()),
-                    text: input.goal_text,
-                    predicate: input.predicate,
-                    budget: input.goal_budget,
-                    hop_cap: input.hop_cap,
-                    baseline: input.baseline,
-                };
                 self.persist(
                     Record::AgentHired {
                         character: input.character,
@@ -4276,34 +4267,19 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         isolation: input.isolation,
                         max_turns: None,
                         max_budget: None,
-                        trusted: false,
-                        worktree: None,
+                        trusted: input.worktree.is_some(),
+                        worktree: input.worktree,
                         mcp_servers: Vec::new(),
                         browser_onboarding: Some(Box::new(BrowserOnboardingHire {
                             attempt_id: input.attempt_id,
                             request_digest: input.request_digest,
                             profile_id: input.profile_id,
                             session_digest: input.session_digest,
-                            intended_goal,
+                            intended_goal: None,
+                            trust_lsn: input.trust_lsn,
                         })),
                     },
                     Then::Fold,
-                );
-            }
-            Command::BrowserOnboardGoal(input) => {
-                let input = *input;
-                self.persist(
-                    Record::GoalSet {
-                        agent: input.agent,
-                        goal: input.goal,
-                        browser_onboarding: Some(BrowserOnboardingGoal {
-                            attempt_id: input.attempt_id,
-                            session_digest: input.session_digest,
-                        }),
-                        browser_goal: None,
-                        goal_replacement: None,
-                    },
-                    Then::Decide { agent: input.agent },
                 );
             }
             Command::Hire {
@@ -4348,6 +4324,45 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     },
                     Then::Fold,
                 );
+            }
+            Command::SetWorkspaceTrust {
+                workspace_id,
+                trusted,
+                repository,
+                pin,
+            } => self.persist(
+                Record::WorkspaceTrustSet {
+                    workspace_id,
+                    trusted,
+                    repository,
+                    pin,
+                },
+                Then::Fold,
+            ),
+            Command::RecordFloorDevice(change) => {
+                use crate::input::FloorDeviceChange as Change;
+                let record = match change {
+                    Change::Enroll {
+                        device,
+                        origin,
+                        name,
+                        key,
+                        cookie,
+                    } => Record::FloorDeviceKeyEnrolled {
+                        device,
+                        key,
+                        origin,
+                        name,
+                        cookie,
+                    },
+                    Change::FirstUse(device) => Record::FloorDeviceFirstUsed { device },
+                    Change::Use(device) => Record::FloorDeviceUsed { device },
+                    Change::Acknowledge(device) => Record::FloorDeviceAcknowledged { device },
+                    Change::Remove { device, reason } => {
+                        Record::FloorDeviceRemoved { device, reason }
+                    }
+                };
+                self.persist(record, Then::Fold);
             }
             Command::LeaseWorktree { origin, base, from } => {
                 // A ULID leads with its millisecond timestamp, and the branch name takes the first

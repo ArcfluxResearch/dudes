@@ -70,8 +70,8 @@ use dudes_rpc::{StopFlag, Subscribers};
 #[cfg(feature = "fault-injection")]
 use dudes_supervisor::input::RecoveryStage;
 use dudes_supervisor::input::{
-    BrowserAnswerCommand, BrowserOnboardGoal, BrowserOnboardHire, DurableInputError, Handled,
-    MailWakeRefreshFailure, RecordedAppend, SpendView,
+    BrowserAnswerCommand, BrowserOnboardHire, DurableInputError, Handled, MailWakeRefreshFailure,
+    RecordedAppend, SpendView,
 };
 use dudes_supervisor::{
     Clock, Command, Effect, HookId, Input, KillOutcome, ProcessHost, Rng, SpawnResult, Supervisor,
@@ -98,6 +98,7 @@ use crate::ports::{
 };
 
 mod agent_mcp;
+mod browser_project;
 mod browser_ticket;
 mod ticket_run;
 #[cfg(test)]
@@ -339,6 +340,8 @@ enum PumpFailure {
 pub enum OnboardingPausePoint {
     /// After request admission and reservation, before the first append permit.
     BeforeHireAppend,
+    /// The hire's append permit is held; revocation must wait for its fsync.
+    AfterHirePermit,
     /// After the hire frame fsync, before its fold.
     AfterHireFsync,
     /// After the hire fold and before the goal continuation is queued.
@@ -677,7 +680,7 @@ impl OnboardingPause {
                 ..
             } => (
                 Some(Point::BeforeHireAppend),
-                None,
+                Some(Point::AfterHirePermit),
                 Some(Point::AfterHireFsync),
             ),
             Record::GoalSet {
@@ -905,6 +908,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// Only attributed durable answers populate this replayable request index.
     pub(crate) answer_index: crate::floor_answer::AnswerIndex,
     pub(crate) chat_index: crate::floor_chat::ChatIndex,
+    /// `<state dir>/agents`: each agent's own folder is under it, named by its id.
+    pub(crate) agents_root: PathBuf,
     pub(crate) running_providers: crate::config::ProviderTables,
     /// The `[mcp.servers]` table this run loaded, for a reload to compare.
     pub(crate) running_mcp: dudes_providers::mcp::DeclaredServers,
@@ -912,6 +917,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) resolved_browser_turn: Option<(TurnId, u64)>,
     /// The operator file the Settings page edits and a reload reads; `None` without one.
     pub(crate) operator_config: Option<PathBuf>,
+    /// The folders the Floor's project add will not take.
+    pub(crate) project_folders: crate::floor_project::Folders,
     /// Every `[floor.*]` switch as the last applied reload left it, shared with the gateway.
     pub(crate) switches: crate::floor_switches::SharedSwitches,
     /// Only attributed durable pauses and resumes populate this replayable request index.
@@ -945,6 +952,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// Set only while one typed browser intent is passing through the persist ledger.
     pub(crate) browser_session: Option<crate::floor_session::SessionIdentity>,
     pub(crate) onboarding_pause: OnboardingPause,
+    /// The system folder dialog the Floor's Add project and Hire open.
+    pub(crate) folder_picker: Arc<crate::folder_picker::FolderPicker>,
     pub(crate) onboarding_failure: OnboardingFailure,
     #[cfg(feature = "fault-injection")]
     pub(crate) recovery_stop: Option<crate::fault::RecoveryStop>,
@@ -1216,6 +1225,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.provider_check.clone()
     }
 
+    /// The folder dialog, so a test can put a stand-in program in its place.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn folder_picker(&self) -> Arc<crate::folder_picker::FolderPicker> {
+        Arc::clone(&self.ctx.folder_picker)
+    }
+
     /// One ordering pause retained by an integration test before `run` consumes the daemon.
     #[doc(hidden)]
     #[must_use]
@@ -1445,6 +1461,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 } => {
                     let _ = reply.send(self.browser_chat(&session, &request));
                 }
+                Job::ChatFile { agent, reply } => {
+                    let _ = reply.send(self.chat_file_dir(agent));
+                }
                 Job::Closing(job) => {
                     let answer = self.closing_request(job.request);
                     if let Some(reply) = job.reply {
@@ -1456,26 +1475,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     request,
                     reply,
                 } => {
-                    let next = self.onboard(&session, &request);
-                    self.onboard_next(next, session, request, reply);
+                    let _ = reply.send(self.onboard(&session, &request));
                 }
-                Job::OnboardChecked {
+                Job::OnboardCopied {
                     session,
                     request,
-                    baseline,
-                    run,
+                    worktree,
+                    trust,
                     reply,
                 } => {
-                    let next = self.onboard_checked(&session, &request, baseline, run);
-                    self.onboard_next(next, session, request, reply);
-                }
-                Job::OnboardContinue {
-                    session,
-                    request,
-                    reply,
-                } => {
-                    let answer = self.onboard_goal(&session, &request);
-                    let _ = reply.send(OnboardStep::Answer(answer));
+                    let _ = reply.send(self.onboard_copied(&session, &request, worktree, &trust));
                 }
                 Job::InspectRecoveryFromFloor {
                     session,
@@ -1583,6 +1592,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     reply,
                 } => {
                     let answer = self.browser_settings_edit(&session, &request);
+                    let _ = reply.send(answer);
+                }
+                Job::Project {
+                    session,
+                    request,
+                    reply,
+                } => {
+                    let answer = self.browser_project(&session, &request);
                     let _ = reply.send(answer);
                 }
                 Job::Ticket {
@@ -2098,6 +2115,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 .filter(|profile| self.onboarding_profile_eligible(profile))
                 .map(|profile| (profile, self.offered_engines(profile)))
                 .filter(|(_, engines)| !engines.is_empty())
+                .map(|(profile, engines)| {
+                    let trusted = self.sup.world().workspace_trust.contains_key(&profile.id);
+                    (profile, engines, trusted)
+                })
                 .collect()
         } else {
             Vec::new()
@@ -2121,6 +2142,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         switches.project = live.project;
         let settings = crate::floor_settings::view(
             switches,
+            live.project && self.ctx.folder_picker.available(),
             self.sup.config().floor_usd_per_day,
             self.sup.config().per_turn_floor,
             &self.ctx.enrollment,
@@ -2216,6 +2238,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
         if decision.result.applied {
             self.ctx.enrollment = decision.candidate;
+            self.revoke_stale_grants();
             self.install_switches(decision.switches);
             match decision.resync {
                 Resync::None => {}
@@ -2383,49 +2406,33 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// each of Claude, Codex and Pi that has an adapter in this run's registry, less any that the
     /// billing-credential guard withdraws because `profile` sets no ceiling that counts for it.
     fn offered_engines(&self, profile: &Profile) -> Vec<Provider> {
+        self.engines_for(&profile.agent_budget, &profile.goal_budget)
+    }
+
+    /// [`Self::offered_engines`] for a project that sets these ceilings.
+    fn engines_for(
+        &self,
+        agent: &dudes_proto::AgentBudget,
+        goal: &dudes_proto::GoalBudget,
+    ) -> Vec<Provider> {
         crate::floor_actions::BROWSER_ENGINES
             .into_iter()
             .filter(|engine| {
                 self.sup.adapters().get(*engine).is_some()
-                    && (self.guard_satisfied(
-                        *engine,
-                        &profile.agent_budget,
-                        Some(&profile.goal_budget),
-                    ) || !self.sup.billing_credential_visible(*engine))
+                    && (self.guard_satisfied(*engine, agent, Some(goal))
+                        || !self.sup.billing_credential_visible(*engine))
             })
             .collect()
     }
 
-    /// Answer a browser hire's job, or hand its reply to the job that appends its goal.
-    fn onboard_next(
-        &mut self,
-        next: OnboardNext,
-        session: crate::floor_session::SessionIdentity,
-        request: OnboardRequest,
-        reply: std::sync::mpsc::Sender<OnboardStep>,
-    ) {
-        match next {
-            OnboardNext::Reply(step) => {
-                let _ = reply.send(step);
-            }
-            OnboardNext::Goal => {
-                self.ctx
-                    .onboarding_pause
-                    .hit(OnboardingPausePoint::BetweenEffects);
-                self.handle.onboard_continue(session, request, reply);
-            }
-        }
-    }
-
     /// A browser hire's first job: the index's answer for an attempt it holds, else the new
-    /// attempt's admission and then its check's run, or the hire itself for a check that may
-    /// already pass. A partial attempt's retry runs its check again before its goal's append.
+    /// attempt's admission and the hire itself.
     fn onboard(
         &mut self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
-    ) -> OnboardNext {
-        let answer = |answer| OnboardNext::Reply(OnboardStep::Answer(answer));
+    ) -> OnboardStep {
+        let answer = OnboardStep::Answer;
         let existing = self
             .ctx
             .onboarding_index
@@ -2436,152 +2443,95 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             if attempt.metadata.request_digest != request.request_digest {
                 return answer(Err(OnboardRefusal::Conflict));
             }
-            if attempt.goal_set {
-                return answer(Ok(OnboardOutcome::Complete {
-                    attempt_id: request.attempt_wire.clone(),
-                    agent: attempt.agent,
-                    goal: attempt.metadata.intended_goal.id,
-                }));
-            }
-        }
-        if self.ctx.journal_writes_stopped() {
-            // An indexed hire may already be durable; keep its reservation pending until replay.
-            // An unindexed request is refused before any effect in this invocation, so its
-            // newly acquired reservation can be released.
-            return answer(Err(if existing.is_some() {
-                OnboardRefusal::Unavailable
-            } else {
-                OnboardRefusal::UnavailableNoEffect
+            return answer(Ok(OnboardOutcome::Complete {
+                attempt_id: request.attempt_wire.clone(),
+                agent: attempt.agent,
             }));
         }
-        let Some(attempt) = existing else {
-            return self.onboard_new(session, request);
-        };
-        if let Some(partial) = self.onboarding_goal_refusal(session, request, &attempt) {
-            return answer(Ok(partial));
-        }
-        let intended = &attempt.metadata.intended_goal;
-        let Predicate::Command { argv, timeout_s } = intended.predicate.clone() else {
-            return OnboardNext::Goal;
-        };
-        if crate::goal_replacement::may_already_pass(intended) {
-            return OnboardNext::Goal;
-        }
-        // The hire is durable, so a check that cannot run now, beside the agent's own work or past
-        // a session limit, is not a refusal of the hire. Nothing happened here, so the answer
-        // releases the request's guard and the page's Check status asks again; the onboarding
-        // index, not the guard, holds the attempt.
-        if self.work_beside(attempt.agent) {
+        if self.ctx.journal_writes_stopped() {
+            // Nothing is indexed, so this request has appended nothing: its newly acquired
+            // reservation can be released.
             return answer(Err(OnboardRefusal::UnavailableNoEffect));
         }
-        let Ok(run) = self
-            .ctx
-            .baselines
-            .start_browser(Some(attempt.agent), session.digest())
-        else {
-            return answer(Err(OnboardRefusal::UnavailableNoEffect));
-        };
-        let Some(cwd) = self
-            .sup
-            .world()
-            .agents
-            .get(&attempt.agent)
-            .map(|row| row.cwd.clone())
-        else {
-            self.ctx.baselines.end(run);
-            return answer(Err(OnboardRefusal::Unavailable));
-        };
-        match self.start_baseline(run, argv, timeout_s, cwd) {
-            Ok(Answered::CheckRunning(ticket)) => OnboardNext::Reply(OnboardStep::Check {
-                ticket: *ticket,
-                on_refusal: Some(OnboardOutcome::Partial {
-                    attempt_id: request.attempt_wire.clone(),
-                    agent: attempt.agent,
-                    reason: "goal_refused",
-                    current_goal: None,
-                    retired: false,
-                }),
-            }),
-            _ => answer(Err(OnboardRefusal::Unavailable)),
-        }
+        self.onboard_new(session, request)
     }
 
-    /// A new browser hire: the new-attempt validation, the admission, then its check's run or, for a check
-    /// that may already pass, the hire.
+    /// A new browser hire: the new-attempt validation, the admission, then the hire. The check the
+    /// hire names is validated here and run when the first ticket starts, not before the hire.
     fn onboard_new(
         &mut self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
-    ) -> OnboardNext {
-        let answer = |answer| OnboardNext::Reply(OnboardStep::Answer(answer));
-        // The goal text becomes the agent's goal, which no launch can carry with
-        // U+0000 in it. This validates a new attempt only: an attempt the index
-        // already holds never reaches it, whatever its recorded goal holds.
-        if request.goal_text.contains('\0') || request.check.is_none() {
-            return answer(Err(OnboardRefusal::InvalidInput));
+    ) -> OnboardStep {
+        if request.check.is_none() {
+            return OnboardStep::Answer(Err(OnboardRefusal::InvalidInput));
         }
-        let (profile, check) = match self.onboarding_admission(session, request) {
-            Ok(admitted) => admitted,
-            Err(refusal) => return answer(Err(refusal)),
-        };
-        if check.may_already_pass {
-            return self.hire_onboarded(
-                session,
-                request,
-                &profile,
-                &check,
-                CheckBaseline::MayAlreadyPass,
-            );
-        }
-        let Predicate::Command { argv, timeout_s } = check.predicate.clone() else {
-            return answer(Err(OnboardRefusal::Forbidden));
-        };
-        let run = match self.ctx.baselines.start_browser(None, session.digest()) {
-            Ok(run) => run,
-            Err(limit) => return answer(Err(OnboardRefusal::Check(limit.reason()))),
-        };
-        match self.start_baseline(run, argv, timeout_s, profile.cwd.clone()) {
-            Ok(Answered::CheckRunning(ticket)) => OnboardNext::Reply(OnboardStep::Check {
-                ticket: *ticket,
-                on_refusal: None,
-            }),
-            _ => answer(Err(OnboardRefusal::UnavailableNoEffect)),
+        match self.onboarding_admission(session, request) {
+            Ok((profile, _)) => self.hire_onboarded(session, request, &profile, None),
+            Err(refusal) => OnboardStep::Answer(Err(refusal)),
         }
     }
 
-    /// A browser hire once its check ran and did not pass: the new attempt's admission again,
-    /// then the hire, or for a retried partial attempt, its goal's append.
-    fn onboard_checked(
-        &mut self,
-        session: &crate::floor_session::SessionIdentity,
+    /// What a hire into its own copy needs before anything is made: a Claude agent on a platform
+    /// that makes copies, in a project the operator trusts. The agent then works in the copy and
+    /// not in the project's folder, so the shared-folder check is made on the copy later.
+    fn own_copy_admission(
+        &self,
         request: &OnboardRequest,
-        baseline: CheckBaseline,
-        run: u64,
-    ) -> OnboardNext {
-        self.ctx.baselines.end(run);
-        if !self.ctx.switches.load().hire {
-            return OnboardNext::Reply(OnboardStep::Answer(Err(OnboardRefusal::Check(ACTION_OFF))));
+        profile: &Profile,
+    ) -> Result<(), OnboardRefusal> {
+        use crate::floor_actions::CopyRefusal;
+        if request.provider != Provider::Claude {
+            return Err(OnboardRefusal::OwnCopy(CopyRefusal::Engine));
         }
-        let indexed = self
-            .ctx
-            .onboarding_index
-            .attempt(request.attempt_id)
-            .is_some();
-        if self.exited || self.ctx.journal_writes_stopped() {
-            return OnboardNext::Reply(OnboardStep::Answer(Err(if indexed {
-                OnboardRefusal::Unavailable
-            } else {
-                OnboardRefusal::UnavailableNoEffect
-            })));
+        if cfg!(windows) {
+            return Err(OnboardRefusal::OwnCopy(CopyRefusal::Platform));
         }
-        if indexed {
-            return OnboardNext::Goal;
+        if !self.sup.world().workspace_trust.contains_key(&profile.id) {
+            return Err(OnboardRefusal::OwnCopy(CopyRefusal::NotTrusted(
+                profile.id.clone(),
+            )));
         }
-        match self.onboarding_admission(session, request) {
-            Ok((profile, check)) => {
-                self.hire_onboarded(session, request, &profile, &check, baseline)
-            }
-            Err(refusal) => OnboardNext::Reply(OnboardStep::Answer(Err(refusal))),
+        Ok(())
+    }
+
+    /// The copy a new hire asks for, as the params the shared worktree path takes, with the
+    /// grant it rests on. The browser sends no trust: the operator's grant is read from the journal.
+    fn copy_step(&self, request: &OnboardRequest, profile: &Profile) -> OnboardStep {
+        use crate::floor_actions::CopyRefusal;
+        let refuse = |why| OnboardStep::Answer(Err(OnboardRefusal::OwnCopy(why)));
+        let Some(grant) = self.sup.world().workspace_trust.get(&profile.id) else {
+            return refuse(CopyRefusal::NotTrusted(profile.id.clone()));
+        };
+        let ticket = crate::worktree::hire::TrustTicket {
+            workspace_id: profile.id.clone(),
+            lsn: grant.lsn,
+            vouch: crate::worktree::trust::Vouch {
+                repository: grant.repository.clone(),
+                pin: grant.pin.clone(),
+            },
+        };
+        let params = HireParams {
+            name: request.name.clone(),
+            character: request.character,
+            accent: request.accent,
+            role: request.role.clone(),
+            department: profile.department.clone(),
+            provider: request.provider,
+            cwd: profile.cwd.clone(),
+            budget: profile.agent_budget,
+            sandbox: None,
+            isolation: browser_isolation(request.provider, profile),
+            max_turns: None,
+            max_budget: None,
+            trusted: true,
+            checkout: Some(dudes_proto::rpc::agent::Checkout::Worktree),
+            from: None,
+            mcp_servers: Vec::new(),
+        };
+        OnboardStep::Copy {
+            params: Box::new(params),
+            trust: Box::new(ticket),
         }
     }
 
@@ -2615,16 +2565,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if self.refuse_overlap(&profile.cwd, None).is_err() {
             return Err(OnboardRefusal::Forbidden);
         }
-        self.ctx
-            .admit_shared_folder(
-                &self.sup,
-                None,
-                request.provider,
-                browser_isolation(request.provider, &profile),
-                dudes_types::Mode::Managed,
-                &profile.cwd,
-            )
-            .map_err(OnboardRefusal::SharedFolder)?;
+        if request.own_copy {
+            self.own_copy_admission(request, &profile)?;
+        } else {
+            self.ctx
+                .admit_shared_folder(
+                    &self.sup,
+                    None,
+                    request.provider,
+                    browser_isolation(request.provider, &profile),
+                    dudes_types::Mode::Managed,
+                    &profile.cwd,
+                )
+                .map_err(OnboardRefusal::SharedFolder)?;
+        }
         let (id, revision) = request.check.as_ref().ok_or(OnboardRefusal::InvalidInput)?;
         let check = profile
             .check(id)
@@ -2639,21 +2593,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 
     /// Append one admitted browser hire whose intended goal carries its check and what the
-    /// check's run saw, then hand the reply on to the goal's append.
+    /// check's run saw, then hand the reply on to the goal's append. A hire that asks for its own
+    /// copy first answers with the copy to make; `copy` is that copy once it exists.
     fn hire_onboarded(
         &mut self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
         profile: &Profile,
-        check: &crate::floor_actions::EnrolledCheck,
-        baseline: CheckBaseline,
-    ) -> OnboardNext {
+        copy: Option<(crate::worktree::hire::LeaseView, dudes_types::Lsn)>,
+    ) -> OnboardStep {
+        if request.own_copy && copy.is_none() {
+            return self.copy_step(request, profile);
+        }
         // Seal before the hire command can reach the supervisor, as `LoopControl::hire` does. A
         // browser first hire ends the pre-agent epoch exactly as a local one: a connection that
         // acquires after this point, an escaped agent child included, gets no operator effect
         // authority. Irreversible, so no permit, persistence or
         // spawn failure below reopens it.
         self.operator_authority.seal();
+        let (cwd, worktree, trust_lsn) = match copy {
+            Some((lease, lsn)) => (lease.path, Some(lease.worktree), Some(lsn)),
+            None => (profile.cwd.clone(), None, None),
+        };
         match self.pump_onboarding(
             session,
             Command::BrowserOnboardHire(Box::new(BrowserOnboardHire {
@@ -2663,203 +2624,91 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 role: request.role.clone(),
                 department: profile.department.clone(),
                 provider: request.provider,
-                cwd: profile.cwd.clone(),
+                cwd,
                 budget: profile.agent_budget,
                 isolation: browser_isolation(request.provider, profile),
-                goal_text: request.goal_text.clone(),
-                completion_check: check.reference(),
-                baseline: Some(baseline),
-                predicate: check.predicate.clone(),
-                goal_budget: profile.goal_budget,
-                hop_cap: profile.hop_cap,
                 attempt_id: request.attempt_id,
                 request_digest: request.request_digest,
                 profile_id: profile.id.clone(),
                 workspace_label: profile.label.clone(),
                 session_digest: session.digest(),
-            })),
-        ) {
-            Ok(()) => OnboardNext::Goal,
-            Err(refusal) => OnboardNext::Reply(OnboardStep::Answer(Err(refusal))),
-        }
-    }
-
-    /// The initial goal's append for a hire the index holds.
-    fn onboard_goal(
-        &mut self,
-        session: &crate::floor_session::SessionIdentity,
-        request: &OnboardRequest,
-    ) -> Result<OnboardOutcome, OnboardRefusal> {
-        let attempt = self
-            .ctx
-            .onboarding_index
-            .attempt(request.attempt_id)
-            .cloned()
-            .ok_or(OnboardRefusal::Unavailable)?;
-        if attempt.metadata.request_digest != request.request_digest {
-            return Err(OnboardRefusal::Conflict);
-        }
-        if attempt.goal_set {
-            return Ok(OnboardOutcome::Complete {
-                attempt_id: request.attempt_wire.clone(),
-                agent: attempt.agent,
-                goal: attempt.metadata.intended_goal.id,
-            });
-        }
-        if self.ctx.journal_writes_stopped() {
-            return Err(OnboardRefusal::Unavailable);
-        }
-        self.finish_onboarding_goal(session, request, &attempt)
-    }
-
-    /// Why a durable hire's initial goal cannot be appended now, as the partial answer the page
-    /// reads; `None` when it can. An agent the world has not folded yet is not partial.
-    fn onboarding_goal_refusal(
-        &self,
-        session: &crate::floor_session::SessionIdentity,
-        request: &OnboardRequest,
-        attempt: &crate::floor_actions::Attempt,
-    ) -> Option<OnboardOutcome> {
-        let row = self.sup.world().agents.get(&attempt.agent)?;
-        let partial = |reason| {
-            Some(OnboardOutcome::Partial {
-                attempt_id: request.attempt_wire.clone(),
-                agent: attempt.agent,
-                reason,
-                current_goal: row.goal,
-                retired: row.retired,
-            })
-        };
-        if row.retired {
-            return partial("agent_retired");
-        }
-        if attempt.goal_conflict || row.goal.is_some() {
-            return partial("goal_conflict");
-        }
-        if let Err(reason) = session.permit() {
-            return partial(match reason {
-                crate::floor_session::PermitFailure::Expired => "session_expired",
-                crate::floor_session::PermitFailure::Revoked => "session_revoked",
-            });
-        }
-        let Some(profile) = self.ctx.enrollment.profile(&request.workspace_id) else {
-            return partial("profile_changed");
-        };
-        if !Self::recorded_profile_matches(attempt, profile, request.provider) {
-            return partial("profile_changed");
-        }
-        if !self.ctx.switches.load().hire
-            || !self.onboarding_profile_eligible(profile)
-            || !self.offered_engines(profile).contains(&request.provider)
-        {
-            return partial("goal_refused");
-        }
-        None
-    }
-
-    fn finish_onboarding_goal(
-        &mut self,
-        session: &crate::floor_session::SessionIdentity,
-        request: &OnboardRequest,
-        attempt: &crate::floor_actions::Attempt,
-    ) -> Result<OnboardOutcome, OnboardRefusal> {
-        let row = self
-            .sup
-            .world()
-            .agents
-            .get(&attempt.agent)
-            .ok_or(OnboardRefusal::Unavailable)?;
-        let (current_goal, retired) = (row.goal, row.retired);
-        let partial = |reason| OnboardOutcome::Partial {
-            attempt_id: request.attempt_wire.clone(),
-            agent: attempt.agent,
-            reason,
-            current_goal,
-            retired,
-        };
-        if let Some(refused) = self.onboarding_goal_refusal(session, request, attempt) {
-            return Ok(refused);
-        }
-        let intended = attempt.metadata.intended_goal.clone();
-        match self.pump_onboarding(
-            session,
-            Command::BrowserOnboardGoal(Box::new(BrowserOnboardGoal {
-                agent: attempt.agent,
-                goal: intended.clone(),
-                attempt_id: request.attempt_id,
-                session_digest: session.digest(),
+                worktree,
+                trust_lsn,
             })),
         ) {
             Ok(()) => {
-                if self
-                    .ctx
-                    .onboarding_index
-                    .attempt(request.attempt_id)
-                    .is_some_and(|indexed| indexed.goal_set)
-                {
-                    Ok(OnboardOutcome::Complete {
-                        attempt_id: request.attempt_wire.clone(),
-                        agent: attempt.agent,
-                        goal: intended.id,
-                    })
-                } else {
-                    Err(OnboardRefusal::Unavailable)
-                }
+                self.ctx
+                    .onboarding_pause
+                    .hit(OnboardingPausePoint::BetweenEffects);
+                OnboardStep::Answer(
+                    self.ctx
+                        .onboarding_index
+                        .attempt(request.attempt_id)
+                        .map(|attempt| OnboardOutcome::Complete {
+                            attempt_id: request.attempt_wire.clone(),
+                            agent: attempt.agent,
+                        })
+                        .ok_or(OnboardRefusal::Unavailable),
+                )
             }
-            Err(OnboardRefusal::Forbidden) => {
-                let reason =
-                    session
-                        .permit()
-                        .err()
-                        .map_or("goal_refused", |failure| match failure {
-                            crate::floor_session::PermitFailure::Expired => "session_expired",
-                            crate::floor_session::PermitFailure::Revoked => "session_revoked",
-                        });
-                Ok(partial(reason))
-            }
-            Err(other) => Err(other),
+            Err(refusal) => OnboardStep::Answer(Err(refusal)),
         }
     }
 
-    /// Whether `profile` still holds every effective value the durable hire recorded, the chosen
-    /// `engine` included.
-    fn recorded_profile_matches(
-        attempt: &crate::floor_actions::Attempt,
-        profile: &Profile,
-        engine: Provider,
-    ) -> bool {
-        let Record::AgentHired {
-            department,
-            provider,
-            cwd,
-            budget,
-            isolation,
-            ..
-        } = &attempt.hire
-        else {
-            return false;
+    /// A browser hire into its own copy once the copy exists: the admission again, the grant it
+    /// rests on checked again, the shared-folder check on the copy, then the hire into it.
+    fn onboard_copied(
+        &mut self,
+        session: &crate::floor_session::SessionIdentity,
+        request: &OnboardRequest,
+        worktree: dudes_types::WorktreeId,
+        trust: &crate::worktree::hire::TrustTicket,
+    ) -> OnboardStep {
+        use crate::floor_actions::CopyRefusal;
+        let answer = OnboardStep::Answer;
+        if !self.ctx.switches.load().hire {
+            return answer(Err(OnboardRefusal::Check(ACTION_OFF)));
+        }
+        if self.exited || self.ctx.journal_writes_stopped() {
+            return answer(Err(OnboardRefusal::UnavailableNoEffect));
+        }
+        if self
+            .ctx
+            .onboarding_index
+            .attempt(request.attempt_id)
+            .is_some()
+        {
+            return answer(Err(OnboardRefusal::Unavailable));
+        }
+        let (profile, _) = match self.onboarding_admission(session, request) {
+            Ok(admitted) => admitted,
+            Err(refusal) => return answer(Err(refusal)),
         };
-        *provider == engine
-            && attempt.metadata.profile_id == profile.id
-            && *department == profile.department
-            && *cwd == profile.cwd
-            && *budget == profile.agent_budget
-            && *isolation == browser_isolation(engine, profile)
-            && Self::recorded_check_enrolled(&attempt.metadata.intended_goal, profile)
-            && attempt.metadata.intended_goal.budget == profile.goal_budget
-            && attempt.metadata.intended_goal.hop_cap == profile.hop_cap
-    }
-
-    /// Whether a hire's intended goal still names a check the workspace enrolls: the named check
-    /// with the same command and revision, or, for a hire that recorded no name, the workspace's
-    /// own check with the same command.
-    fn recorded_check_enrolled(intended: &dudes_proto::Goal, profile: &Profile) -> bool {
-        match &intended.completion_check {
-            Some(named) => profile.check(&named.id).is_some_and(|check| {
-                check.predicate == intended.predicate && check.reference().as_ref() == Some(named)
-            }),
-            None => profile.first_check().predicate == intended.predicate,
+        let Some(lease) = self.pending_lease(worktree) else {
+            return answer(Err(OnboardRefusal::OwnCopy(CopyRefusal::Failed)));
+        };
+        if self
+            .trust_still_holds(Some(trust), &lease.origin, &profile.cwd)
+            .is_err()
+        {
+            return answer(Err(OnboardRefusal::OwnCopy(CopyRefusal::TrustChanged(
+                profile.id.clone(),
+            ))));
         }
+        if self.refuse_overlap(&lease.path, Some(worktree)).is_err() {
+            return answer(Err(OnboardRefusal::Forbidden));
+        }
+        if let Err(refusal) = self.ctx.admit_shared_folder(
+            &self.sup,
+            None,
+            request.provider,
+            browser_isolation(request.provider, &profile),
+            dudes_types::Mode::Managed,
+            &lease.path,
+        ) {
+            return answer(Err(OnboardRefusal::SharedFolder(refusal)));
+        }
+        self.hire_onboarded(session, request, &profile, Some((lease, trust.lsn)))
     }
 
     fn pump_onboarding(
@@ -4717,9 +4566,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 origin,
                 base,
                 from,
+                trust,
             } => {
                 self.worktree_admission(&params)?;
                 self.refuse_overlap(&origin, None)?;
+                self.trust_still_holds(trust.as_deref(), &origin, &params.cwd)?;
                 if let Some(from) = from {
                     let same =
                         self.sup.world().worktrees.get(&from).is_some_and(|row| {
@@ -4867,6 +4718,53 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     how: dudes_proto::WorktreeRemoval::Operator,
                 }))?;
                 Ok(Answered::Done)
+            }
+            Ask::TrustTarget(workspace_id) => match self.ctx.enrollment.profile(&workspace_id) {
+                Some(profile) => Ok(Answered::TrustTarget(profile.cwd.clone())),
+                None => Err(error(
+                    ErrorCode::InvalidParams,
+                    format!("project trust: no project is named `{workspace_id}`"),
+                )),
+            },
+            Ask::FloorDevice(change) => {
+                self.pump_or_refuse(Input::Command(Command::RecordFloorDevice(change)))?;
+                Ok(Answered::Done)
+            }
+            Ask::TrustSet {
+                workspace_id,
+                directory,
+                vouch,
+            } => {
+                let Some((vouch, directory)) = vouch.zip(directory) else {
+                    // A revocation with no grant appends nothing, so removing a project that was
+                    // never trusted does not put a required record in anyone's journal.
+                    if !self.sup.world().workspace_trust.contains_key(&workspace_id) {
+                        return Ok(Answered::TrustSet(false));
+                    }
+                    self.revoke_grant(workspace_id)?;
+                    return Ok(Answered::TrustSet(true));
+                };
+                let enrolled = self
+                    .ctx
+                    .enrollment
+                    .profile(&workspace_id)
+                    .is_some_and(|profile| profile.cwd == directory);
+                if !enrolled {
+                    return Err(error(
+                        ErrorCode::Refused,
+                        format!(
+                            "project trust: `{workspace_id}` is no longer set up at the folder \
+                             that was read; run the command again"
+                        ),
+                    ));
+                }
+                self.pump_or_refuse(Input::Command(Command::SetWorkspaceTrust {
+                    workspace_id,
+                    trusted: true,
+                    repository: Some(vouch.repository),
+                    pin: Some(vouch.pin),
+                }))?;
+                Ok(Answered::TrustSet(true))
             }
             Ask::WorktreePending => {
                 let world = self.sup.world();
@@ -6701,6 +6599,69 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
     }
 
+    /// Append the revocation of the grant for `workspace_id`.
+    fn revoke_grant(&mut self, workspace_id: String) -> Result<(), RpcError> {
+        self.pump_or_refuse(Input::Command(Command::SetWorkspaceTrust {
+            workspace_id,
+            trusted: false,
+            repository: None,
+            pin: None,
+        }))
+    }
+
+    /// Revoke every grant whose project is no longer enrolled, or is enrolled somewhere that is not
+    /// inside the repository that was vouched for. Run in the loop step that replaces the
+    /// enrollment, so a removed project cannot come back trusted. Appends only where a grant exists.
+    fn revoke_stale_grants(&mut self) {
+        let stale: Vec<String> = self
+            .sup
+            .world()
+            .workspace_trust
+            .iter()
+            .filter(|(id, grant)| {
+                self.ctx.enrollment.profile(id).is_none_or(|profile| {
+                    !crate::worktree::contains(&grant.repository.directory, &profile.cwd)
+                })
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            if let Err(error) = self.revoke_grant(id.clone()) {
+                tracing::warn!(project = %id, %error.message, "could not revoke a trust grant");
+            }
+        }
+    }
+
+    /// A copy for the Floor rests on one grant. It holds only while that grant is still the
+    /// project's latest, so an untrust or a new grant between steps ends the hire, and only while
+    /// `origin` is still the directory the grant vouched for, by path and by identity.
+    fn trust_still_holds(
+        &self,
+        ticket: Option<&crate::worktree::hire::TrustTicket>,
+        origin: &std::path::Path,
+        project: &std::path::Path,
+    ) -> Result<(), RpcError> {
+        let Some(ticket) = ticket else {
+            return Ok(());
+        };
+        let holds = self
+            .sup
+            .world()
+            .workspace_trust
+            .get(&ticket.workspace_id)
+            .is_some_and(|grant| {
+                grant.lsn == ticket.lsn
+                    && crate::worktree::trust::still_there(&grant.repository, origin, project)
+            });
+        if holds {
+            Ok(())
+        } else {
+            Err(crate::worktree::unavailable(
+                crate::worktree::hire::TRUST_CHANGED,
+            ))
+        }
+    }
+
     fn pending_lease(
         &self,
         worktree: dudes_types::WorktreeId,
@@ -6752,9 +6713,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Job::Chat { reply, .. } => {
                     let _ = reply.send(Err(crate::floor_chat::ChatRefusal::UnavailableNoEffect));
                 }
-                Job::Onboard { reply, .. }
-                | Job::OnboardChecked { reply, .. }
-                | Job::OnboardContinue { reply, .. } => {
+                Job::ChatFile { reply, .. } => {
+                    let _ = reply.send(Err("unavailable"));
+                }
+                Job::Onboard { reply, .. } | Job::OnboardCopied { reply, .. } => {
                     let _ = reply.send(OnboardStep::Answer(Err(OnboardRefusal::Unavailable)));
                 }
                 Job::Answer { reply, .. } => {
@@ -6783,6 +6745,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let _ = reply.send(Err(
                         crate::floor_settings_edit::SettingsRefusal::Unavailable,
                     ));
+                }
+                Job::Project { reply, .. } => {
+                    let _ = reply.send(Err(crate::floor_project::Refusal::Unavailable));
                 }
                 Job::Ticket { reply, .. } => {
                     let _ = reply.send(crate::floor_ticket::TicketReply::Unavailable);
@@ -7256,6 +7221,9 @@ pub(crate) fn refuse_action_off(live: crate::floor_switches::Switches, job: Job)
         Job::Ticket { reply, .. } if !live.board => {
             let _ = reply.send(crate::floor_ticket::TicketReply::Refused(ACTION_OFF));
         }
+        Job::Project { reply, .. } if !live.project => {
+            let _ = reply.send(Err(crate::floor_project::Refusal::ActionOff));
+        }
         job => return Some(job),
     }
     None
@@ -7410,13 +7378,6 @@ fn question_closed_refusal() -> RpcError {
         })
         .ok(),
     }
-}
-
-/// What a browser hire's job does next: answer its request, or hand the reply to the job that
-/// appends the hire's goal.
-enum OnboardNext {
-    Reply(OnboardStep),
-    Goal,
 }
 
 /// The answer for a browser goal request whose `GoalSet` the index holds.
@@ -8288,6 +8249,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             return Err(error.context("invalid live goal replacement"));
         }
         let committed = self.append_checked(entry, recovery)?;
+        if let Record::AgentRetired { id, .. } = &entry.record {
+            crate::floor_chat_file::remove_for(&self.agents_root, *id);
+        }
         let lsn = committed.lsn();
         let through = committed.through();
         let output = self.children.output();
@@ -8481,6 +8445,24 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .transpose()
     }
 
+    /// Arm the writer's injected short write, unless this append is a device record, which is not
+    /// the one a test aims it at.
+    #[cfg(debug_assertions)]
+    fn inject_short_write(&mut self, incidental: bool) {
+        let armed = (!incidental)
+            .then(|| {
+                self.append_failure
+                    .short_write
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+            })
+            .flatten();
+        if let Some((frames_to_skip, bytes)) = armed {
+            self.writer.fail_write_after(frames_to_skip, bytes);
+        }
+    }
+
     fn append_checked(
         &mut self,
         entry: &Entry,
@@ -8488,20 +8470,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     ) -> Result<CheckedAppend> {
         self.ensure_memory_ready()?;
         self.ensure_journal_ready()?;
-        if self.append_failure.take() {
+        // A browser signing in or making its first request writes a device record of its own,
+        // and an injected failure is aimed at the append a test is about.
+        let incidental = entry.record.is_floor_device();
+        if !incidental && self.append_failure.take() {
             return Err(anyhow::Error::new(KnownNoEffect));
         }
         let identity = self.append_browser_identity(entry, recovery)?;
         #[cfg(debug_assertions)]
-        if let Some((frames_to_skip, bytes)) = self
-            .append_failure
-            .short_write
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
-            self.writer.fail_write_after(frames_to_skip, bytes);
-        }
+        self.inject_short_write(incidental);
         let pause = &self.onboarding_pause;
         let failure = &self.onboarding_failure;
         let grants = self.recovery_grants();
@@ -9924,90 +9901,88 @@ mod mail_wake_fence_tests {
     #[test]
     fn post_fsync_uncertainty_refuses_mail_refresh_and_writes() {
         let mut observed = Vec::new();
-        for fence in 0..3 {
-            for kind in 0..3 {
-                let mut owned = Owned::pending(Usd::from_dollars(10));
-                if kind == 1 {
-                    owned.make_ready();
-                }
-                let effect = match kind {
-                    0 => one(std::mem::take(&mut owned.pending)),
-                    1 => owned.refreshed_effect(),
-                    _ => owned.notify(),
-                };
-                if fence == 1 {
-                    owned.post_fsync_failure();
-                }
-                if fence == 2 {
-                    let target = if let Effect::MailWakeNotify { target, .. } = &effect {
-                        target.clone()
-                    } else {
-                        let (lsn, record) = owned
-                            .fixture
-                            .entries()
-                            .into_iter()
-                            .find(|(_, entry)| matches!(&entry.record, Record::Mail { .. }))
-                            .expect("receipt");
-                        let Record::Mail { id, .. } = record.record else {
-                            panic!("receipt");
-                        };
-                        dudes_proto::MailWakeTarget {
-                            mail: dudes_proto::MailRef { id, lsn },
-                            original_count: u8::from(kind == 1),
-                            target_count: u8::from(kind == 1) + 1,
-                        }
-                    };
-                    let root = owned
+        for (fence, kind) in [(0, 0), (1, 1), (2, 2)] {
+            let mut owned = Owned::pending(Usd::from_dollars(10));
+            if kind == 1 {
+                owned.make_ready();
+            }
+            let effect = match kind {
+                0 => one(std::mem::take(&mut owned.pending)),
+                1 => owned.refreshed_effect(),
+                _ => owned.notify(),
+            };
+            if fence == 1 {
+                owned.post_fsync_failure();
+            }
+            if fence == 2 {
+                let target = if let Effect::MailWakeNotify { target, .. } = &effect {
+                    target.clone()
+                } else {
+                    let (lsn, record) = owned
                         .fixture
                         .entries()
                         .into_iter()
-                        .find_map(|(lsn, entry)| {
-                            matches!(
-                                entry.record,
-                                Record::MailWakeTurnDecided(dudes_proto::MailWakeDecision {
-                                    purpose: MailWakePurpose::FreshPreparation { .. },
-                                    ..
-                                })
-                            )
-                            .then_some(lsn)
-                        })
-                        .unwrap();
-                    let mailbox = owned.daemon.ctx.mailbox.as_mut().unwrap();
-                    assert!(
-                        mailbox
-                            .notify_prepared(owned.agent, root, &target, |_, _| Err(
-                                anyhow::anyhow!("owned uncertain callback")
-                            ))
-                            .is_err()
-                    );
-                    assert!(mailbox.is_fenced());
-                }
-                let before = owned.fixture.records().len();
-                let mut queue = VecDeque::new();
-                let result = owned.daemon.ctx.execute(
-                    &effect,
-                    &mut queue,
-                    &mut PumpReport::Discard,
-                    &mut owned.daemon.sup,
-                    &mut owned.daemon.closing,
+                        .find(|(_, entry)| matches!(&entry.record, Record::Mail { .. }))
+                        .expect("receipt");
+                    let Record::Mail { id, .. } = record.record else {
+                        panic!("receipt");
+                    };
+                    dudes_proto::MailWakeTarget {
+                        mail: dudes_proto::MailRef { id, lsn },
+                        original_count: u8::from(kind == 1),
+                        target_count: u8::from(kind == 1) + 1,
+                    }
+                };
+                let root = owned
+                    .fixture
+                    .entries()
+                    .into_iter()
+                    .find_map(|(lsn, entry)| {
+                        matches!(
+                            entry.record,
+                            Record::MailWakeTurnDecided(dudes_proto::MailWakeDecision {
+                                purpose: MailWakePurpose::FreshPreparation { .. },
+                                ..
+                            })
+                        )
+                        .then_some(lsn)
+                    })
+                    .unwrap();
+                let mailbox = owned.daemon.ctx.mailbox.as_mut().unwrap();
+                assert!(
+                    mailbox
+                        .notify_prepared(owned.agent, root, &target, |_, _| Err(anyhow::anyhow!(
+                            "owned uncertain callback"
+                        )))
+                        .is_err()
                 );
-                if fence == 0 {
-                    assert!(result.is_ok());
-                    assert_eq!(queue.len(), 1);
-                } else {
-                    observed.push((
-                        queue.iter().all(|input| {
-                            !matches!(
-                                input,
-                                Input::MailWakeReady { result: Ok(_), .. }
-                                    | Input::Journaled { .. }
-                                    | Input::InstructionJournaled { .. }
-                                    | Input::Persisted { .. }
-                            )
-                        }),
-                        owned.fixture.records().len() == before,
-                    ));
-                }
+                assert!(mailbox.is_fenced());
+            }
+            let before = owned.fixture.records().len();
+            let mut queue = VecDeque::new();
+            let result = owned.daemon.ctx.execute(
+                &effect,
+                &mut queue,
+                &mut PumpReport::Discard,
+                &mut owned.daemon.sup,
+                &mut owned.daemon.closing,
+            );
+            if fence == 0 {
+                assert!(result.is_ok());
+                assert_eq!(queue.len(), 1);
+            } else {
+                observed.push((
+                    queue.iter().all(|input| {
+                        !matches!(
+                            input,
+                            Input::MailWakeReady { result: Ok(_), .. }
+                                | Input::Journaled { .. }
+                                | Input::InstructionJournaled { .. }
+                                | Input::Persisted { .. }
+                        )
+                    }),
+                    owned.fixture.records().len() == before,
+                ));
             }
         }
         assert!(

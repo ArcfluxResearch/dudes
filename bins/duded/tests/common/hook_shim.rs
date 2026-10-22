@@ -60,73 +60,41 @@ pub(crate) fn hook_binary() -> &'static Path {
     HOOK_BINARY.get_or_init(publish_hook).as_path()
 }
 
-/// Every test process builds the shim. On macOS, Cargo copies each executable out of its build
-/// tree instead of hard-linking it, so every build removes that copy and writes it again, even
-/// when it compiles nothing. A process that looks in that moment finds no file. So the shim builds
-/// in a target directory of its own, and the workspace's `target/debug/dudes-hook` stays with the
-/// tests that run it. These tests run a copy named by its content, which no later build replaces,
-/// and the lock stops another test process from rebuilding while that copy is taken.
 fn publish_hook() -> PathBuf {
+    let built = std::env::current_exe()
+        .expect("this test executable")
+        .parent()
+        .and_then(Path::parent)
+        .expect("the test executable is under the build directory")
+        .join(format!("dudes-hook{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        built.is_file(),
+        "{} is absent; run `cargo build --locked -p dudes-hook` before a filtered test run",
+        built.display()
+    );
+    copy_by_content(&built)
+}
+
+fn copy_by_content(built: &Path) -> PathBuf {
     let dir = option_env!("CARGO_TARGET_TMPDIR").map_or_else(
         || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp"),
         PathBuf::from,
     );
-    let lock = std::fs::File::create(dir.join("dudes-hook.lock")).expect("open the shim lock");
-    lock.lock().expect("take the shim lock");
-    let built = build_hook(&dir.join("hook-target"));
-    let digest = dudes_supervisor::blake3_hex(&std::fs::read(&built).expect("read the built shim"));
+    copy_by_content_in(&dir, built)
+}
+
+fn copy_by_content_in(dir: &Path, built: &Path) -> PathBuf {
+    let digest = dudes_supervisor::blake3_hex(&std::fs::read(built).expect("read the built shim"));
     let published = dir.join(format!(
         "dudes-hook-{digest}{}",
         std::env::consts::EXE_SUFFIX
     ));
     if !published.exists() {
-        let staged = published.with_extension("partial");
-        std::fs::copy(&built, &staged).expect("stage the shim");
+        let staged = published.with_extension(format!("partial{}", std::process::id()));
+        std::fs::copy(built, &staged).expect("stage the shim");
         std::fs::rename(&staged, &published).expect("publish the shim");
     }
     published
-}
-
-#[allow(
-    clippy::disallowed_types,
-    reason = "the test harness builds the sibling shim binary named by the accepted end-to-end check; daemon src/ remains guarded by host_seam.rs"
-)]
-fn build_hook(target_dir: &Path) -> PathBuf {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("bins/duded is two levels below the workspace root");
-    let output = std::process::Command::new(env!("CARGO"))
-        .current_dir(root)
-        .env("CARGO_BUILD_JOBS", "2")
-        .args([
-            "build",
-            "--locked",
-            "-p",
-            "dudes-hook",
-            "--bin",
-            "dudes-hook",
-            "--message-format=json",
-        ])
-        .arg("--target-dir")
-        .arg(target_dir)
-        .output()
-        .expect("run Cargo for the sibling shim");
-    assert!(
-        output.status.success(),
-        "building dudes-hook failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("Cargo JSON is UTF-8")
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find_map(|message| {
-            (message["reason"] == "compiler-artifact" && message["target"]["name"] == "dudes-hook")
-                .then(|| message["executable"].as_str().map(PathBuf::from))
-                .flatten()
-        })
-        .expect("Cargo reported the dudes-hook executable")
 }
 
 pub(crate) fn generated_handlers(agent: AgentId, agent_dir: &Path) -> Settings {

@@ -53,6 +53,6 @@ body:
   - type: textarea
     id: doctor
     attributes:
-      label: Output of `dudes doctor`
+      label: Output of `dudes status`
       description: Optional, but it often answers the question.
       render: text

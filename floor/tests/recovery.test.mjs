@@ -49,8 +49,8 @@ function floor({ row = ROW, enabled = true } = {}) {
 }
 function network(answers = []) {
   const calls = [];
-  let generation = 1, nonce = 0, csrf = 'C'.repeat(43);
-  const deps = { floor: store.getFloorState, session: () => generation, csrf: () => csrf,
+  let generation = 1, nonce = 0, held = 'C'.repeat(43);
+  const deps = { floor: store.getFloorState, session: () => generation, signedIn: () => held !== null,
     random(bytes) { bytes.fill(++nonce); },
     async fetch(url, init) {
       calls.push({ url, init, body: JSON.parse(init.body) });
@@ -59,7 +59,7 @@ function network(answers = []) {
       if (answer instanceof Error) throw answer;
       return answer;
     } };
-  return { calls, deps, reauth() { generation++; }, noSession() { csrf = null; } };
+  return { calls, deps, reauth() { generation++; }, noSession() { held = null; } };
 }
 function draft() {
   const current = model.getRecoveryState().inspections.get(AGENT);
@@ -121,20 +121,21 @@ test('strict recovery decoders retain literal decimal positions and reject priva
 test('inspection offers only advertised context choices, literal repeat warnings and remaining admission waits', async () => {
   floor(); const net = network();
   for (const [choices, labels] of [['recorded_or_fresh', ['Try recorded conversation', 'Start fresh with recorded recap']],
-    ['fresh_only', ['Start fresh with recorded recap']], ['repeat_issued_fresh', ['Repeat issued task in fresh context']]]) {
+    ['fresh_only', ['Start fresh with recorded recap']], ['repeat_issued_fresh', ['Repeat the same task in fresh context']]]) {
     model.resetRecovery();
     await inspected(net, { ...INSPECTION, choices, reason: choices === 'repeat_issued_fresh' ? 'missing_spawn' : choices === 'fresh_only' ? 'unconfirmed_context' : 'vanished',
       waiting: { ...INSPECTION.waiting, open_question: 'waiting', instruction_review: 'waiting' } });
     const html = panel();
     for (const label of labels) assert.match(html, new RegExp(`>${label}</button>`));
-    for (const label of ['Try recorded conversation', 'Start fresh with recorded recap', 'Repeat issued task in fresh context'].filter(label => !labels.includes(label))) {
+    for (const label of ['Try recorded conversation', 'Start fresh with recorded recap', 'Repeat the same task in fresh context'].filter(label => !labels.includes(label))) {
       assert.ok(!html.includes(`>${label}</button>`));
     }
     assert.match(html, /An open question needs an answer/);
-    assert.match(html, /Ticket instructions need review/);
-    assert.match(html, /Ordinary Resume remains separate and does not release a recovery barrier/);
+    assert.match(html, /At this inspection, work was also waiting for/);
+    assert.match(html, /Open this ticket on the Board and review its instructions/);
+    assert.match(html, /Resume alone cannot release this interruption/);
     assert.match(html, /current budget, hop cap, questions/);
-    if (choices === 'repeat_issued_fresh') assert.match(html, /A child may have run before its launch was recorded\. Earlier effects may repeat/);
+    if (choices === 'repeat_issued_fresh') assert.match(html, /The engine may have run before Dudes recorded its launch\. Earlier effects may repeat/);
     else assert.match(html, /recap, which may shrink or be omitted/);
     assert.doesNotMatch(html, /<(?:textarea|input|select)\b|provider_session|\/private\/|transcript/);
   }
@@ -164,7 +165,6 @@ test('one explicit press freezes the full selector and request before await and 
   const stored = [...model.getRecoveryState().requests.values()][0];
   assert.equal(stored.submitting, true);
   assert.deepEqual(net.calls.map(call => [call.url, call.body]), [['/floor/recovery/submit', { request_id: ID, expected: EXPECTED, choice: 'try_recorded' }]]);
-  assert.equal(net.calls[0].init.headers['X-Dudes-CSRF'], 'C'.repeat(43));
   assert.equal(net.calls[0].init.credentials, 'same-origin');
   assert.equal(net.calls[0].init.cache, 'no-store');
   assert.equal(net.calls[0].init.referrerPolicy, 'no-referrer');
@@ -175,8 +175,9 @@ test('one explicit press freezes the full selector and request before await and 
   pending.resolve(reply(200, { state: 'accepted', receipt: receipt() })); await first;
   assert.equal(model.getRecoveryState().requests.get(ID).outcome.state, 'accepted');
   assert.match(receipts(), /Authorization recorded/);
-  assert.match(receipts(), /Pending\. The authorized new turn has not been issued/);
-  assert.match(receipts(), /does not by itself prove issuance, launch, success or restored history/);
+  assert.match(receipts(), /Waiting to issue the task/);
+  assert.match(receipts(), /does not prove the task was issued or launched/);
+  assert.match(receipts(), /does not prove success or restored conversation history/);
 });
 
 test('a matching receipt establishes authorization after a lost submit reply and later lookup loss preserves historical facts', async () => {
@@ -210,10 +211,11 @@ test('consumed consent with a recorded Spawn and no end never says the physical 
   const net = network([reply(200, { state: 'accepted', receipt: consumed })]);
   const original = await inspected(net); model.chooseRecovery(original.key, 'try_recorded'); await model.submitRecovery(original.key, net.deps);
   const html = receipts();
-  assert.match(html, /Consumed\. Authorization was consumed at record 100/);
+  assert.match(html, /Permission used at record<\/dt><dd>100/);
   assert.match(html, /Launch recorded at 100/);
   assert.match(html, /No end is recorded/);
-  assert.doesNotMatch(html, /attempt closed|process ended|process terminated/);
+  assert.match(html, /does not prove the process ended or the task succeeded/);
+  assert.doesNotMatch(html, /attempt closed|The process ended|The process terminated/);
 });
 
 test('off, stale, changed goal or control and fresh sign-in retain drafts without sending or rebinding selectors', async () => {
@@ -280,7 +282,7 @@ test('lost or malformed submission is unknown, and authenticated receipt lookup 
       ['/floor/recovery/receipt', { request_id: ID }],
     ]);
     const html = stage({ floor: store.getFloorState(), row: null });
-    assert.match(html, /Recovery request/); assert.match(html, /Pending/);
+    assert.match(html, /Recovery request/); assert.match(html, /Waiting to issue the task/);
     assert.doesNotMatch(html, /secret/);
   }
 });
@@ -580,11 +582,11 @@ test('successor consent compares against the retained actual claim instead of it
 
 test('all finite receipt states describe only durable facts and survive drawer closure', async () => {
   const states = [
-    [{ state: 'pending' }, 'Pending. The authorized new turn has not been issued'],
-    [{ state: 'issue_bound', turn: TURN, issue_lsn: UNSAFE }, 'Issue-bound. Turn'],
-    [{ state: 'consumed', turn: TURN, issue_lsn: UNSAFE, evidence_lsn: MAX }, 'Consumed. Authorization was consumed'],
-    [{ state: 'invalidated', invalidation_lsn: MAX, reason: 'authority_unavailable' }, 'Invalidated. The original browser authority became unavailable'],
-    [{ state: 'superseded', turn: TURN, issue_lsn: UNSAFE, successor: EXPECTED.episode, barrier_lsn: MAX }, 'Superseded. A later missing-launch episode'],
+    [{ state: 'pending' }, 'Waiting to issue the task. Remaining reviews and limits still apply.'],
+    [{ state: 'issue_bound', turn: TURN, issue_lsn: UNSAFE }, 'The task is recorded. No launch or terminal failure is recorded for this recovery yet.'],
+    [{ state: 'consumed', turn: TURN, issue_lsn: UNSAFE, evidence_lsn: MAX }, 'Recovery permission was used. This does not prove the process ended or the task succeeded.'],
+    [{ state: 'invalidated', invalidation_lsn: MAX, reason: 'authority_unavailable' }, 'Recovery permission is closed. The original browser authority became unavailable.'],
+    [{ state: 'superseded', turn: TURN, issue_lsn: UNSAFE, successor: EXPECTED.episode, barrier_lsn: MAX }, 'A later interruption replaced this permission.'],
   ];
   for (const [status, wording] of states) {
     model.resetRecovery(); floor(); const net = network([reply(200, { state: 'accepted', receipt: receipt(ID, status) })]);
@@ -619,7 +621,7 @@ test('receipt reader forbidden, unavailable and lost replies never recover authe
   const original = await inspected(net); model.chooseRecovery(original.key, 'try_recorded'); await model.submitRecovery(original.key, net.deps);
   const pending = model.checkRecoveryReceipt(ID, net.deps); await model.checkRecoveryReceipt(ID, net.deps);
   assert.equal(net.calls.length, 2); check.resolve(reply(403, '')); await pending;
-  assert.match(receipts(), /Paste a new link from dudes floor open/);
+  assert.match(receipts(), /Open Dudes to sign in again/);
   net.reauth(); panel(); receipts(); assert.equal(net.calls.length, 2);
   await model.checkRecoveryReceipt(ID, net.deps); assert.match(receipts(), /presence and absence could not be certified/);
   await model.checkRecoveryReceipt(ID, net.deps); assert.match(receipts(), /receipt reply was lost or unreadable/);
@@ -642,11 +644,11 @@ test('receipt reads bind exact known claim, retain prior facts on loss, and dist
     assert.deepEqual(model.getRecoveryState().requests.get(ID).lastReceipt, observed);
   }
   const html = receipts();
-  assert.match(html, /Last recorded receipt facts/);
+  assert.match(html, /What Dudes recorded/);
   assert.match(html, new RegExp(`Launch recorded at ${UNSAFE}`));
   assert.match(html, /Identifier confirmation recorded at 18446744073709551615; this does not prove restored history/);
   assert.match(html, /End recorded at 18446744073709551615; this receipt does not classify success/);
-  assert.match(html, /terminal failure without a recorded launch/);
+  assert.match(html, /terminal failure before launch/);
 });
 
 test('mounted StrictMode controls require explicit presses and keep the receipt when the drawer closes and grants turn off', async () => {
@@ -654,10 +656,11 @@ test('mounted StrictMode controls require explicit presses and keep the receipt 
   const session = await server.ssrLoadModule('/src/session.ts');
   const { RecoveryPanel, RecoveryReceipts } = await server.ssrLoadModule('/src/renderer/recovery/RecoveryPanel.tsx');
   const pending = held();
-  const net = network([reply(200, INSPECTION), () => pending.promise, reply(200, { state: 'absent', checked_through: MAX })]);
+  const net = network([reply(200, INSPECTION), () => pending.promise, reply(200, INSPECTION), reply(200, { state: 'absent', checked_through: MAX })]);
   net.deps.session = session.floorSessionGeneration;
   const saved = { ...model.browserRecoveryDeps };
   Object.assign(model.browserRecoveryDeps, net.deps);
+  let readRequest = null;
   const page = fakePage(); const root = createRoot(page.host);
   const text = node => node.nodeType === 3 ? node.nodeValue : node.childNodes.map(text).join('');
   const buttons = node => node.childNodes.flatMap(child => child.nodeType === 1
@@ -669,7 +672,7 @@ test('mounted StrictMode controls require explicit presses and keep the receipt 
     props.onClick({ detail: 0, currentTarget: button });
   };
   const draw = open => createElement(StrictMode, null, createElement(Fragment, null,
-    open ? createElement(RecoveryPanel, { floor: store.getFloorState(), row: ROW }) : null,
+    open ? createElement(RecoveryPanel, { floor: store.getFloorState(), row: ROW, onReadReceipt: id => { readRequest = id; } }) : null,
     createElement(RecoveryReceipts, { floor: store.getFloorState() })));
   try {
     await act(async () => root.render(draw(true)));
@@ -680,19 +683,53 @@ test('mounted StrictMode controls require explicit presses and keep the receipt 
     assert.deepEqual(net.calls.map(call => call.url), ['/floor/recovery/inspect', '/floor/recovery/submit']);
     await act(async () => { pending.resolve(reply(202, { state: 'unknown', request_id: ID })); });
     assert.match(text(page.host), /Authorization is unknown/);
+    await act(async () => press('Read recovery receipt'));
+    assert.equal(readRequest, ID);
+    assert.equal(net.calls.length, 2, 'opening the receipt does not resend recovery');
+    readRequest = null;
+    await act(async () => press('Inspect recovery'));
+    assert.equal(draft().requestId, null);
+    await act(async () => press('Read recovery receipt'));
+    assert.equal(readRequest, ID, 're-inspection keeps a route to the retained request');
     await act(async () => root.render(draw(false)));
     assert.match(text(page.host), /Recovery request/);
     assert.doesNotMatch(text(page.host), /Inspect recovery/);
     await act(async () => { floor({ enabled: false }); root.render(draw(false)); });
-    assert.equal(net.calls.length, 2);
+    assert.equal(net.calls.length, 3);
     await act(async () => press('Check receipt'));
     assert.deepEqual(net.calls.map(call => [call.url, call.body]), [
       ['/floor/recovery/inspect', { agent: AGENT }],
       ['/floor/recovery/submit', { request_id: ID, expected: EXPECTED, choice: 'try_recorded' }],
+      ['/floor/recovery/inspect', { agent: AGENT }],
       ['/floor/recovery/receipt', { request_id: ID }],
     ]);
     assert.match(text(page.host), /does not prove that nothing happened/);
   } finally {
     await act(async () => root.unmount()); page.restore(); Object.assign(model.browserRecoveryDeps, saved);
+  }
+});
+
+
+test('a recovery request reveals Overview from Chat and focuses its visible heading without authorizing', async () => {
+  const current = { ...floor(), chat: { enabled: true, max_text_bytes: 4096, pending: [], turns: [], context_sent: [] } };
+  const { AgentDrawer } = await server.ssrLoadModule('/src/renderer/AgentDrawer.tsx');
+  const page = fakePage();
+  const root = createRoot(page.host);
+  const scrolled = [];
+  page.host.constructor.prototype.scrollIntoView = function (options) { scrolled.push({ id: this.id, ...options }); };
+  const draw = request => createElement(AgentDrawer, { floor: current, row: ROW, selectedId: AGENT,
+    onClose() {}, leaveFocusTo: 'crew-toggle', recoveryRequested: request });
+  try {
+    await act(async () => root.render(draw(null)));
+    assert.equal(page.host.querySelector('[id="agent-detail-tab-chat"]').getAttribute('aria-selected'), 'true');
+    await act(async () => root.render(draw({ id: AGENT })));
+    assert.equal(page.host.querySelector('[id="agent-detail-tab-overview"]').getAttribute('aria-selected'), 'true');
+    assert.equal(page.host.querySelector('[id="agent-detail-panel-overview"]').getAttribute('hidden'), null);
+    assert.equal(page.document.activeElement.id, 'recovery-title');
+    assert.deepEqual(scrolled, [{ id: 'recovery-title', block: 'start' }]);
+    assert.equal(model.getRecoveryState().requests.size, 0);
+  } finally {
+    await act(async () => root.unmount());
+    page.restore();
   }
 });

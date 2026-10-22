@@ -1356,6 +1356,25 @@ mod tests {
         assert_forwarded(&host, &sentinel);
     }
 
+    #[test]
+    fn a_peer_waiting_on_an_aborted_spawn_is_refused() {
+        let resolver = super::Resolver::processes(Arc::new(PendingRelation {
+            answer: super::Relation::Pending(1),
+            finish: true,
+        }));
+        let peer = PeerIdentity {
+            uid: Some(501),
+            gid: Some(20),
+            pid: PeerPid::Reported {
+                pid: 42,
+                pidversion: cfg!(target_os = "macos").then_some(7),
+            },
+        };
+        let pending = resolver.begin_spawn().expect("arm the pending owner");
+        resolver.abort_spawn(pending);
+        assert_eq!(resolver.resolve(&peer), PeerResolution::Refuse);
+    }
+
     /// A resolver that answers a constant, including a refusal.
     #[derive(Debug)]
     struct Constant(PeerResolution);

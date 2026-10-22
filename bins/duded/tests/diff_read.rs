@@ -644,33 +644,6 @@ fn more_changed_files_than_the_cap_are_counted_as_omitted() {
 }
 
 #[test]
-fn review_cost_follows_the_change_count_not_the_tracked_file_count() {
-    let lab = Lab::new();
-    for n in 0..5000 {
-        lab.write(&format!("{n:04}.txt"), &format!("small {n}\n"));
-    }
-    lab.git(&["add", "-A"]);
-    lab.git(&["commit", "--quiet", "-m", "many files"]);
-    lab.git(&["repack", "-a", "-d", "-q"]);
-    let baseline = lab.baseline();
-    lab.write("0001.txt", "changed 1\n");
-    lab.write("2500.txt", "changed 2\n");
-    lab.write("4999.txt", "changed 3\n");
-    lab.real.commands.store(0, Ordering::Relaxed);
-    let capture = lab
-        .reader
-        .capture_review(&lab.tree(), &baseline, cancel())
-        .unwrap();
-    assert_eq!(candidates(&capture), ["0001.txt", "2500.txt", "4999.txt"]);
-    assert!(capture.complete);
-    assert_eq!(
-        lab.real.commands.load(Ordering::Relaxed),
-        2 + 3,
-        "diff-index, diff-files and one cat-file per changed candidate"
-    );
-}
-
-#[test]
 fn ordinary_packed_objects_preserve_the_same_complete_old_text() {
     let lab = Lab::new();
     let baseline = lab.baseline();

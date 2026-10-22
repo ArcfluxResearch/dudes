@@ -89,7 +89,7 @@ export function checksFor(catalog: CheckCatalog | null, workspaceId: string): re
 
 /** A check's label as a choice shows it. */
 export function choiceLabel(check: EnrolledCheck): string {
-  return check.mayAlreadyPass ? `${check.label} (may already pass)` : check.label;
+  return check.mayAlreadyPass ? `${check.label} (may already be true)` : check.label;
 }
 
 /** Why the daemon ran no check, or what the one run it made found, refused before any effect. */
@@ -121,6 +121,6 @@ export function checkRefusalText(reason: CheckRefusal, label: string | null, rou
     case 'check_running':
       return 'A check is still running for this Floor session. Try again when it ends.';
     case 'check_limit':
-      return 'This Floor session has run its 32 checks. Open a new Floor session from a terminal (dudes floor open).';
+      return 'This Floor session has run its 32 checks. Open Dudes to start a new Floor session.';
   }
 }

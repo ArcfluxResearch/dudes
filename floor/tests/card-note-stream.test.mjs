@@ -23,7 +23,7 @@ test('only admitted snapshots and advanced deltas reach notes, with a new genera
   const seen = [];
   const pending = [];
   const stop = subscribeToProjection((event) => seen.push(event));
-  const close = openFloorStream({ csrf: 'fixture' }, { protocol: 'http:', host: '127.0.0.1:7717' }, () => {
+  const close = openFloorStream({ device: 'fixture' }, { protocol: 'http:', host: '127.0.0.1:7717' }, () => {
     const next = socket();
     sockets.push(next);
     return next;

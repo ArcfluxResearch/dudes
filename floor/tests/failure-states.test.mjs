@@ -65,13 +65,13 @@ test('the office reports loading before its renderer is ready', () => {
 });
 
 test('About explains a page and daemon build mismatch in plain text', () => {
-  const settings = { switches: { answer: false, control: false, goal: false, retire: false, terminal: false },
+  const settings = { folder_picker: false, switches: { answer: false, control: false, goal: false, retire: false, terminal: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '0', per_turn_tokens: '0' },
-    providers: [], workspaces: [], about: { daemon_version: '99.0.0', browser_wire_version: 3 } };
+    providers: [], workspaces: [], about: { daemon_version: '99.0.0', browser_wire_version: 5 } };
   const rendered = html(SettingsView, floor({ phase: 'live', epoch: 1, snapshotEpoch: 1, settings }));
   assert.match(rendered, /page and daemon.*different builds/i);
   assert.match(rendered, /99\.0\.0/);
-  assert.match(rendered, /Run <code>dudes floor open<\/code> to load the matching page/);
+  assert.match(rendered, /Open Dudes to load the matching page/);
 });
 
 for (const [name, component] of [['Setup', () => SetupView], ['Settings', () => SettingsView], ['Archived', () => ArchivedAgents]]) {
@@ -85,9 +85,9 @@ for (const [name, component] of [['Setup', () => SetupView], ['Settings', () => 
 
 test('a silent open stream says it is waiting rather than retrying', () => {
   const rendered = html(StreamNotice, floor({ phase: 'live', epoch: 1, snapshotEpoch: 1, stale: true }));
-  assert.match(rendered, /connection is still open/);
-  assert.match(rendered, /waiting for a frame and is not retrying/);
-  assert.match(rendered, /fresh link.*dudes floor/);
+  assert.match(rendered, /Nothing has come from Dudes for 5 seconds/);
+  assert.match(rendered, /<button type="button" class="notice-action">Reconnect<\/button>/);
+  assert.doesNotMatch(rendered, /not retrying/);
 });
 
 test('the stream notice reports the actual retry schedule and then says the daemon stopped answering', async () => {
@@ -95,7 +95,7 @@ test('the stream notice reports the actual retry schedule and then says the daem
   awayModule.resetAway();
   const sockets = [];
   let scheduled;
-  const dispose = streamModule.openFloorStream({ csrf: 'test-nonce' },
+  const dispose = streamModule.openFloorStream({ device: 'fixture' },
     { protocol: 'http:', host: '127.0.0.1:7777' }, () => {
       const listeners = new Map();
       const socket = { addEventListener(kind, callback) { listeners.set(kind, callback); },
@@ -109,7 +109,7 @@ test('the stream notice reports the actual retry schedule and then says the daem
   try {
     sockets[0].emit('close');
     let rendered = html(StreamNotice, streamStore.getFloorState());
-    assert.match(rendered, /page is retrying.*Reconnect attempt 1 starts after 250 ms/);
+    assert.match(rendered, /Reconnecting to Dudes \(attempt 1\)/);
     for (let i = 0; i < 5; i += 1) {
       const run = scheduled;
       scheduled = undefined;
@@ -127,7 +127,7 @@ test('a socket that never opens cannot claim an open connection after silence', 
   streamStore.resetFloorStore();
   let now = 0;
   let tick;
-  const dispose = streamModule.openFloorStream({ csrf: 'test-nonce' },
+  const dispose = streamModule.openFloorStream({ device: 'fixture' },
     { protocol: 'http:', host: '127.0.0.1:7777' },
     () => ({ addEventListener() {}, send() {}, close() {} }),
     { now: () => now, repeat: (_interval, poll) => { tick = poll; return () => {}; }, after: () => () => {} });

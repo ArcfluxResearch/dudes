@@ -295,6 +295,45 @@ fn a_half_written_answer_keeps_the_control_events_fail_open() {
     }
 }
 
+#[test]
+fn a_connection_dropped_after_the_request_blocks_control_events_and_fails_open_for_others() {
+    const UNANSWERED_BLOCK: &[u8] = b"dudes-hook: daemon accepted the connection but did not answer; control step blocked; retry, and restart duded if this persists\n";
+    for (event, control) in [
+        ("PreToolUse", true),
+        ("UserPromptSubmit", true),
+        ("Stop", false),
+        ("PostToolUse", false),
+        ("Notification", false),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let transport = bind(root.path());
+        let endpoint = transport.path().to_path_buf();
+        let server = std::thread::spawn(move || {
+            let (connection, _) = transport.accept().unwrap();
+            let (mut reader, writer) = connection.split().unwrap();
+            read_frame(&mut reader).unwrap().expect("a request");
+            drop(writer);
+            drop(reader);
+        });
+        let input = serde_json::to_vec(&serde_json::json!({"hook_event_name": event})).unwrap();
+        let output = wait_bounded(spawn_hook(
+            Some(&endpoint),
+            Some(OsStr::new(TOKEN)),
+            &input,
+            InputDelivery::Required,
+        ));
+        server.join().unwrap();
+        assert!(output.stdout.is_empty(), "{event}: {output:?}");
+        if control {
+            assert_eq!(output.status.code(), Some(2), "{event}: {output:?}");
+            assert_eq!(output.stderr, UNANSWERED_BLOCK, "{event}");
+        } else {
+            assert_eq!(output.status.code(), Some(0), "{event}: {output:?}");
+            assert_eq!(output.stderr, FAILURE, "{event}");
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum EndpointInput {
     Bound,

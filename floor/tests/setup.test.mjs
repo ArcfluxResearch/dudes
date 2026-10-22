@@ -33,7 +33,7 @@ import * as hire from '../src/renderer/onboarding/hire.ts';
 import { decodeDaemonReport } from '../src/renderer/setup/daemon.ts';
 
 const root = resolve(import.meta.dirname, '..');
-const CSRF = 'A'.repeat(43);
+const REQUEST_ID = 'A'.repeat(43);
 const HERE = { protocol: 'http:', host: '127.0.0.1:7717' };
 
 const CATALOG = Object.freeze({
@@ -90,12 +90,12 @@ test('the daemon sibling decodes exactly, and anything malformed reads as not re
   assert.deepEqual(decodeDaemonReport(structuredClone(REPORT)), {
     stateDir: '~/.local/share/dudes',
     providers: [
-      { provider: 'claude', program: 'claude', found: true, path: '~/.local/bin/claude', detail: null },
-      { provider: 'codex', program: 'codex', found: false, path: null, detail: null },
+      { provider: 'claude', program: 'claude', found: true, path: '~/.local/bin/claude', detail: null, signIn: null },
+      { provider: 'codex', program: 'codex', found: false, path: null, detail: null, signIn: null },
     ],
   });
   assert.deepEqual(decodeDaemonReport({ providers: [{ provider: 'pi', found: false }] }),
-    { stateDir: null, providers: [{ provider: 'pi', program: null, found: false, path: null, detail: null }] },
+    { stateDir: null, providers: [{ provider: 'pi', program: null, found: false, path: null, detail: null, signIn: null }] },
     'every optional value may be omitted');
   const malformed = {
     absent: undefined,
@@ -107,6 +107,8 @@ test('the daemon sibling decodes exactly, and anything malformed reads as not re
     'a duplicate provider': { providers: [FOUND, FOUND] },
     'a path on a row not found': { providers: [{ ...MISSING, path: '/usr/bin/codex' }] },
     'a detail on a found row': { providers: [{ ...FOUND, detail: 'not found' }] },
+    'an unknown sign-in word': { providers: [{ ...FOUND, sign_in: 'maybe' }] },
+    'a sign-in on a row not found': { providers: [{ ...MISSING, sign_in: 'signed_out' }] },
     'a control character in detail': { providers: [{ ...MISSING, detail: 'bad\u0007' }] },
     'a 2,049-byte detail': { providers: [{ ...MISSING, detail: 'x'.repeat(2_049) }] },
     'a found that is not a boolean': { providers: [{ ...FOUND, found: 'yes' }] },
@@ -206,7 +208,7 @@ test('opening Setup and pressing Recheck each end the stream with floor.unsubscr
     repeat: () => () => {},
     after(afterMs, run) { pending.push(run); return () => {}; },
   };
-  const stop = openFloorStream({ csrf: CSRF }, HERE, () => {
+  const stop = openFloorStream({ device: REQUEST_ID }, HERE, () => {
     const socket = fakeSocket();
     sockets.push(socket);
     return socket;
@@ -238,23 +240,24 @@ const wizard = () => renderToStaticMarkup(createElement(HireWizardView, {
   hire: hire.getHireState(), floor: getFloorState(), onClose() {},
 }));
 
-const NEXT_DISABLED = /<button type="button" aria-disabled="true">Next<\/button>/;
+const NEXT_DISABLED = /<button type="button" class="hire-next" aria-disabled="true">Next<\/button>/;
 const HIRE_DISABLED = /<button type="button" class="hire-submit" aria-disabled="true"/;
+const HIRE_OFFERED = /class="hire-submit"/;
 
 test('the Hire wizard holds on Engine when the enrolled engine is not found, and never on an absent report', () => {
   const missing = { providers: [{ provider: 'claude', program: 'claude', found: false }] };
   subscribe({ onboarding: CATALOG, daemon: missing });
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', goalText: 'Make the tests pass' });
+  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', taskText: 'Make the tests pass' });
   hire.showSection('engine');
   let html = wizard();
   assert.match(html, /data-engine-found="false">Claude is not installed on this computer\./);
   assert.match(html, /role="alert"><p>Claude is not installed on this computer, so this agent could not start\./);
   assert.match(html, /<button type="button">Check again<\/button>/);
   assert.match(html, NEXT_DISABLED);
-  assert.match(html, HIRE_DISABLED);
+  assert.doesNotMatch(html, HIRE_OFFERED, 'Hire is not offered before the last step');
 
   hire.showSection('briefing');
-  assert.match(wizard(), HIRE_DISABLED, 'Hire stays disabled from any section');
+  assert.match(wizard(), HIRE_DISABLED, 'Hire stays disabled on the last step');
 
   for (const [name, daemon] of [
     ['an absent report', null],
@@ -276,12 +279,12 @@ test('the Hire wizard holds on Engine when the enrolled engine is not found, and
 test('the engine block follows the chosen engine', () => {
   const both = { ...CATALOG, workspaces: [{ ...CATALOG.workspaces[0], engines: ['claude', 'codex'] }] };
   subscribe({ onboarding: both, daemon: REPORT });
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'codex', goalText: 'Make the tests pass' });
+  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'codex', taskText: 'Make the tests pass' });
   hire.showSection('engine');
   assert.match(wizard(), /role="alert"><p>Codex is not installed on this computer, so this agent could not start\./);
-  assert.match(wizard(), HIRE_DISABLED);
+  assert.match(wizard(), NEXT_DISABLED);
   hire.editDraft({ engine: 'claude' });
   assert.doesNotMatch(wizard(), /Check again/);
-  assert.doesNotMatch(wizard(), HIRE_DISABLED);
+  assert.doesNotMatch(wizard(), NEXT_DISABLED);
   assert.match(wizard(), /data-engine-found="true">Claude is installed on this computer\./);
 });

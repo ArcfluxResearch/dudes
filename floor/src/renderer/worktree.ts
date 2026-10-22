@@ -35,7 +35,7 @@ export function worktreeStateText(state: WorktreeState): string {
 }
 
 export function worktreeText(worktree: Worktree): string {
-  return `Branch ${worktree.branch}, ${STATE_TEXT[worktree.state]}`;
+  return `Own copy on branch ${worktree.branch}, ${STATE_TEXT[worktree.state]}`;
 }
 
 /** Another live agent records this agent's working directory too. A hint, not a guard. */
@@ -53,7 +53,7 @@ export const SHARED_DIRECTORY_TEXT = 'Shared directory';
 
 export function checkoutOf(row: Readonly<Record<string, unknown>>): CheckoutOwnership {
   const worktree = decodeWorktree(row.worktree);
-  return { worktree: worktree === null ? null : `Worktree ${worktree.branch}, ${STATE_TEXT[worktree.state]}`,
+  return { worktree: worktree === null ? null : `Own copy on branch ${worktree.branch}, ${STATE_TEXT[worktree.state]}`,
     shared: sharesCheckout(row) };
 }
 
@@ -64,7 +64,7 @@ export function checkoutSummary(rows: readonly Readonly<Record<string, unknown>>
     return state === 'pending' || state === 'active';
   }).length;
   const shared = rows.filter(sharesCheckout).length;
-  const parts = [own === 0 ? '' : `${own} in own worktree`, shared === 0 ? '' : `${shared} share a directory`]
+  const parts = [own === 0 ? '' : `${own} in their own copy`, shared === 0 ? '' : `${shared} share a directory`]
     .filter((part) => part !== '');
   return parts.length === 0 ? null : parts.join(' · ');
 }

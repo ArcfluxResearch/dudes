@@ -128,7 +128,7 @@ pub use task::{
 };
 pub use ticket::{
     QueueClass, QueueKey, TicketCheck, TicketCheckResult, TicketReason, TicketRefusal, TicketRow,
-    TicketWait, TicketWaiting,
+    TicketTurnEnd, TicketWait, TicketWaiting,
 };
 pub use traces::{
     MAX_AGENT_TRACE_BYTES, MAX_AGENT_TRACES, MAX_TRACE_BYTES, MAX_TRACES, TraceOutcome,

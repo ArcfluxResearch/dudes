@@ -142,12 +142,17 @@ fn apply_outcome(
             turn,
             mode: Mode::Managed,
             last_message,
+            exit,
             ..
         } => {
             let goal = get_row::<TurnRow>(turns, &turn.to_bytes())?.and_then(|row| row.goal);
             match goal {
                 Some(goal) => update_goal_ticket(table, goal, |ticket| {
                     ticket.summary = last_message.as_deref().map(summary_text);
+                    ticket.last_turn_end = Some(dudes_proto::TicketTurnEnd {
+                        exit: *exit,
+                        at: entry.at,
+                    });
                 }),
                 None => Ok(()),
             }
@@ -224,6 +229,7 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
                 round: 0,
                 reason: None,
                 summary: None,
+                last_turn_end: None,
                 check: None,
                 instruction_review: None,
                 coverage: None,
@@ -361,10 +367,12 @@ pub(super) fn apply_instruction(
                 row.view.status_by = Actor::System;
             }
             row.view.ticket = Some(dudes_proto::CardTicket {
+                goal: ticket.goal,
                 position: None,
                 round: ticket.round,
                 reason: ticket.reason,
                 stopping: false,
+                last_turn_end: ticket.last_turn_end,
                 instruction_review: ticket
                     .instruction_review
                     .as_ref()

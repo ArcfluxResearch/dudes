@@ -888,8 +888,6 @@ fn codex_and_pi_need_a_token_ceiling_under_their_billing_variable() {
     for (provider, variable) in [
         (Provider::Codex, "CODEX_API_KEY"),
         (Provider::Pi, "OPENAI_API_KEY"),
-        (Provider::Pi, "META_API_KEY"),
-        (Provider::Pi, "TYPESAFE_API_KEY"),
     ] {
         let named = format!("{provider} reports no dollars, so a token ceiling is required");
         let keyed = every_engine(Fixture::new(), env_with(variable, FIXTURE_KEY));

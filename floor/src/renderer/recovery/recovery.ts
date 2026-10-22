@@ -44,14 +44,14 @@ export interface RecoveryState {
 }
 export interface RecoveryDeps {
   fetch(url: string, init: RequestInit): Promise<{ readonly status: number; text(): Promise<string> }>;
-  csrf(): string | null;
+  signedIn(): boolean;
   session(): number;
   floor(): FloorState;
   random(bytes: Uint8Array<ArrayBuffer>): void;
 }
 export const browserRecoveryDeps: RecoveryDeps = {
   fetch: floorFetch,
-  csrf: () => currentFloorSession()?.csrf ?? null,
+  signedIn: () => currentFloorSession() !== null,
   session: floorSessionGeneration,
   floor: getFloorState,
   random: bytes => { crypto.getRandomValues(bytes); },
@@ -117,9 +117,9 @@ function inspectedSuccessor(request: RecoveryRequest, draft: Draft): boolean {
     ?? (request.payload.expected.expected_predecessor === null ? request.payload.expected.episode : null);
   return previous !== null && sameWork(previous.work, next.work) && previous.origin !== next.episode.origin;
 }
-function init(body: string, csrf: string): RequestInit {
+function init(body: string): RequestInit {
   return { method: 'POST', credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'no-referrer',
-    headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf }, body };
+    headers: { 'Content-Type': 'application/json' }, body };
 }
 function freeze<T>(value: T): T {
   if (typeof value === 'object' && value !== null) { for (const child of Object.values(value)) freeze(child); Object.freeze(value); }
@@ -129,8 +129,7 @@ export async function inspectRecovery(agent: string, deps: RecoveryDeps): Promis
   const floor = deps.floor();
   const row = floor.agents.find(row => row.id === agent) ?? null;
   if (!recoveryEnabled(floor, row) || state.inspections.get(agent)?.kind === 'loading') return;
-  const csrf = deps.csrf();
-  if (csrf === null) { view(agent, { kind: 'problem', text: 'This page has no Floor session. Paste a new link from dudes floor open into this tab. Nothing was sent.' }); return; }
+  if (!deps.signedIn()) { view(agent, { kind: 'problem', text: 'This page has no Floor session. Open Dudes to sign in again in this browser. Nothing was sent.' }); return; }
   const session = deps.session();
   const sequence = ++inspectionNumber;
   const marker: InspectionView = { kind: 'loading' };
@@ -138,13 +137,13 @@ export async function inspectRecovery(agent: string, deps: RecoveryDeps): Promis
   let result: Inspection | null = null;
   let forbidden = false;
   try {
-    const response = await deps.fetch('/floor/recovery/inspect', init(JSON.stringify({ agent }), csrf));
+    const response = await deps.fetch('/floor/recovery/inspect', init(JSON.stringify({ agent })));
     forbidden = response.status === 403;
     if (response.status === 200) result = decodeInspection(await response.text());
   } catch {}
   if (state.inspections.get(agent) !== marker) return;
   if (result === null) {
-    view(agent, { kind: 'problem', text: forbidden ? 'This Floor session cannot inspect recovery. Paste a new link from dudes floor open into this tab, then inspect explicitly.'
+    view(agent, { kind: 'problem', text: forbidden ? 'This Floor session cannot inspect recovery. Open Dudes to sign in again in this browser, then inspect explicitly.'
       : 'Recovery could not be inspected. No choice was submitted. Inspect again when the daemon is available.' });
     return;
   }
@@ -164,8 +163,7 @@ export function chooseRecovery(key: string, choice: RecoveryChoice): void {
 export async function submitRecovery(key: string, deps: RecoveryDeps): Promise<void> {
   const draft = state.drafts.get(key);
   if (!draft || draft.choice === null || blocksDraft(draft) || draftProblem(draft, deps.floor(), deps.session()) !== null) return;
-  const csrf = deps.csrf();
-  if (csrf === null) return;
+  if (!deps.signedIn()) return;
   const bytes = new Uint8Array(32);
   deps.random(bytes);
   const requestId = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
@@ -177,7 +175,7 @@ export async function submitRecovery(key: string, deps: RecoveryDeps): Promise<v
     requests: new Map(state.requests).set(payload.request_id, request) });
   let outcome: SubmitOutcome = { state: 'unknown', request_id: payload.request_id };
   try {
-    const response = await deps.fetch('/floor/recovery/submit', init(request.body, csrf));
+    const response = await deps.fetch('/floor/recovery/submit', init(request.body));
     const decoded = decodeSubmission(response.status, await response.text());
     if (response.status === 403) outcome = { state: 'forbidden' };
     else if (decoded?.state === 'refused') outcome = decoded;
@@ -206,12 +204,11 @@ function sameWork(left: RecoveryWork, right: RecoveryWork): boolean {
 export async function checkRecoveryReceipt(id: string, deps: RecoveryDeps): Promise<void> {
   const request = state.requests.get(id);
   if (!request || request.submitting || request.checking || !liveReader(deps.floor())) return;
-  const csrf = deps.csrf();
-  if (csrf === null) { updateRequest(id, { read: { state: 'forbidden' } }); return; }
+  if (!deps.signedIn()) { updateRequest(id, { read: { state: 'forbidden' } }); return; }
   updateRequest(id, { checking: true });
   let read: ReadOutcome = { state: 'unknown' };
   try {
-    const response = await deps.fetch('/floor/recovery/receipt', init(JSON.stringify({ request_id: id }), csrf));
+    const response = await deps.fetch('/floor/recovery/receipt', init(JSON.stringify({ request_id: id })));
     if (response.status === 403) read = { state: 'forbidden' };
     else if (response.status === 200) {
       const decoded = decodeReceipt(await response.text());
