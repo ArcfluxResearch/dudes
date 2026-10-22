@@ -7,7 +7,7 @@
 // operator enrolled for it, and writes its first task. Everything else that
 // decides how the agent runs — folder, command, the check's command, ceilings,
 // isolation, trust — is the daemon's configuration and never a field here. The
-// daemon runs the chosen check once before it hires and writes the agent to its
+// daemon validates the chosen check, hires, and writes the agent to its
 // own journal; the page only asks, and then says what the answer proves.
 //
 // The hire carries no task. Once the daemon answers `complete`, the page makes
@@ -41,8 +41,8 @@ import type { FloorState } from '../floor/store.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { HIRE_ENGINES, isHireEngine } from './catalog.ts';
 import type { EnrolledWorkspace, HireEngine, OnboardingCatalog } from './catalog.ts';
-import { checkRefusalText, checksFor, isCheckRefusal } from './checks.ts';
-import type { CheckCatalog, CheckRefusal, EnrolledCheck } from './checks.ts';
+import { checksFor } from './checks.ts';
+import type { CheckCatalog, EnrolledCheck } from './checks.ts';
 import { floorFetch } from '../../transport.ts';
 import type { ControlDeps } from '../control/control.ts';
 
@@ -101,8 +101,6 @@ export interface FieldProblem {
   readonly field: FieldName | null;
   readonly section: SectionKey;
   readonly message: string;
-  /** The check refusal this problem reports, when it reports one. */
-  readonly refusal?: CheckRefusal;
 }
 
 /**
@@ -125,11 +123,10 @@ export interface HirePayload {
   readonly accent?: AccentColour;
 }
 
-/** One attempt: its frozen payload, the serialized body every send reuses, and its check's label. */
+/** One attempt: its frozen payload and the serialized body every send reuses. */
 export interface HireAttempt {
   readonly payload: HirePayload;
   readonly body: string;
-  readonly checkLabel: string;
 }
 
 /** What one answer proves. Only `complete` is a success. */
@@ -150,11 +147,6 @@ export type HireOutcome =
    * page was offered it. Refused before any effect.
    */
   | { readonly kind: 'stale' }
-  /**
-   * 409 refused by the chosen check's run, or by this session's limits on
-   * running checks. Refused before any effect.
-   */
-  | { readonly kind: 'check'; readonly reason: CheckRefusal }
   /** 400 or 413: the request itself was refused before any effect. */
   | { readonly kind: 'rejected'; readonly status: number };
 
@@ -235,7 +227,6 @@ const INITIAL: HireState = Object.freeze({
 
 /** The canonical attempt form: 32 bytes, unpadded base64url, no stray bits. */
 export const ATTEMPT_ID = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
-const REFUSED_KEYS = Object.freeze(['attempt_id', 'state', 'reason']);
 const UTF8 = new TextEncoder();
 
 let state: HireState = INITIAL;
@@ -508,7 +499,7 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
     ...(state.draft.character ? { character: state.draft.character } : {}),
     ...(state.draft.accent ? { accent: state.draft.accent } : {}),
   });
-  const attempt: HireAttempt = Object.freeze({ payload, body: JSON.stringify(payload), checkLabel: check.label });
+  const attempt: HireAttempt = Object.freeze({ payload, body: JSON.stringify(payload) });
   commit({ ...state, attempt, sending: true, outcome: null, problem: null, revealed: null, uncertain: false });
   await send(attempt, deps);
 }
@@ -538,15 +529,6 @@ async function send(attempt: HireAttempt, deps: HireDeps): Promise<void> {
     || outcome.kind === 'pending' || outcome.kind === 'unavailable' || outcome.kind === 'unknown';
   const next: HireState = { ...state, sending: false, outcome, uncertain,
     askedAtEpoch: ask ? deps.epoch() : state.askedAtEpoch };
-  if (outcome.kind === 'check' && releasable(next)) {
-    // The offer on screen is still current, unlike after a stale workspace, so
-    // the form comes back at its check choice without waiting for a snapshot.
-    const sessionLimit = outcome.reason === 'check_running' || outcome.reason === 'check_limit';
-    commit({ ...next, attempt: null, outcome: null, revealed: null, section: 'briefing',
-      problem: Object.freeze({ field: sessionLimit ? null : 'check_id', section: 'briefing', refusal: outcome.reason,
-        message: checkRefusalText(outcome.reason, attempt.checkLabel, 'hire') }) });
-    return;
-  }
   commit(next);
   if (ask) deps.refresh();
 }
@@ -563,7 +545,7 @@ export function releasable(hire: HireState): boolean {
   const kind = hire.outcome?.kind;
   if (hire.sending) return false;
   if (kind === 'conflict') return true;
-  return (kind === 'refused' || kind === 'rejected' || kind === 'stale' || kind === 'check') && !hire.uncertain;
+  return (kind === 'refused' || kind === 'rejected' || kind === 'stale') && !hire.uncertain;
 }
 
 /**
@@ -670,12 +652,9 @@ export function decodeHireResponse(status: number, text: string, attemptId: stri
         && !/[\u0000-\u001f\u007f]/u.test(body.note)) {
         return Object.freeze({ kind: 'refused', note: body.note });
       }
-      if (exactly(body, REFUSED_KEYS)) {
-        if (body.attempt_id !== attemptId || body.state !== 'refused') return unknown;
-        if (body.reason === 'profile_changed') return Object.freeze({ kind: 'stale' });
-        return isCheckRefusal(body.reason) ? Object.freeze({ kind: 'check', reason: body.reason }) : unknown;
-      }
-      return unknown;
+      return exactly(body, ['attempt_id', 'state', 'reason']) && body.attempt_id === attemptId
+        && body.state === 'refused' && body.reason === 'profile_changed'
+        ? Object.freeze({ kind: 'stale' }) : unknown;
     }
     case 503:
       return Object.freeze({ kind: 'unavailable' });

@@ -21,7 +21,7 @@ use dudes_policy::{
     admit,
 };
 use dudes_proto::goal::{Evidence, Predicate};
-use dudes_proto::record::{BrowserOnboardingGoal, BrowserOnboardingHire};
+use dudes_proto::record::BrowserOnboardingHire;
 use dudes_proto::reply::{HookDecision, HookReply};
 use dudes_proto::rpc::{JSONRPC, Notification};
 use dudes_proto::{
@@ -4280,22 +4280,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         })),
                     },
                     Then::Fold,
-                );
-            }
-            Command::BrowserOnboardGoal(input) => {
-                let input = *input;
-                self.persist(
-                    Record::GoalSet {
-                        agent: input.agent,
-                        goal: input.goal,
-                        browser_onboarding: Some(BrowserOnboardingGoal {
-                            attempt_id: input.attempt_id,
-                            session_digest: input.session_digest,
-                        }),
-                        browser_goal: None,
-                        goal_replacement: None,
-                    },
-                    Then::Decide { agent: input.agent },
                 );
             }
             Command::Hire {

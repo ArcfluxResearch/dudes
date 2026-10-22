@@ -19,7 +19,7 @@ import { EngineSignIn } from '../login/EngineSignIn.tsx';
 import type { ProviderRow } from '../setup/daemon.ts';
 import { HIRE_ENGINES, formatUsdMicros, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
-import { checkRefusalText, checksFor, choiceLabel } from './checks.ts';
+import { checksFor, choiceLabel } from './checks.ts';
 import { changeSetting } from '../settings/edit.ts';
 import { checkHireStatusWithFirstTask, hireWithFirstTask, makeFirstTask } from './firstTask.ts';
 import {
@@ -378,11 +378,10 @@ function HireForm({ hire, floor, onClose }: {
                         ))}
                       </fieldset>
                       {check?.mayAlreadyPass === true
-                        ? <p className="hire-note">This check might already be true before the agent starts, so Dudes does not
-                          try it first. It checks again when the agent finishes, but a pass does not prove the work is
-                          right, so look at the result yourself.</p>
-                        : <p className="hire-note">Dudes tries this check once before hiring. If it already passes, there
-                          is nothing for the agent to do, so no one is hired.</p>}
+                        ? <p className="hire-note">This check might already be true before the agent starts. It checks again
+                          when the agent finishes, but a pass does not prove the work is right, so look at the result
+                          yourself.</p>
+                        : null}
                     </>
                   )}
                   <SharedProjectNote names={sharing} copy={copy} />
@@ -408,7 +407,7 @@ function HireForm({ hire, floor, onClose }: {
             </>
           )}
           {hire.problem === null || (noProject && hire.problem.field === 'workspace_id') ? null : (
-            <p className="hire-problem" id="hire-problem" role="alert" data-check-refusal={hire.problem.refusal}>
+            <p className="hire-problem" id="hire-problem" role="alert">
               {hire.problem.message}
             </p>
           )}
@@ -429,9 +428,6 @@ function HireForm({ hire, floor, onClose }: {
           : <button type="button" className="hire-next" aria-disabled={frozen || stuck}
             onClick={() => { if (!frozen && !stuck) moveSection(1, floor); }}>Next</button>}
       </footer>
-      {hire.sending && hire.attempt !== null ? (
-        <p className="hire-note" role="status">{`Running “${hire.attempt.checkLabel}” once before hiring.`}</p>
-      ) : null}
       {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <NoHireProjectHint floor={floor} />)
         : blocked === null || stuck ? null : <p className="hire-note" role="status">{blocked}</p>}
     </>
@@ -683,13 +679,6 @@ function AnswerBody({ outcome, hire, floor }: {
       return (
         <p className="hire-error" role="alert">
           The daemon refused the request itself (HTTP {outcome.status}) before any effect. No agent was hired.
-        </p>
-      );
-    case 'check':
-      // Only an attempt an earlier reply left uncertain keeps a check refusal here; any other went back to the form.
-      return (
-        <p className="hire-error" role="alert" data-check-refusal={outcome.reason}>
-          {checkRefusalText(outcome.reason, (hire.attempt as HireAttempt).checkLabel, 'hire')}
         </p>
       );
   }

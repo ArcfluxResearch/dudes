@@ -509,7 +509,7 @@ function checkOptions(html) {
       label]);
 }
 
-test('Briefing offers the workspace’s checks by label, the first chosen, and says Hire runs it once first', () => {
+test('Briefing offers the workspace’s checks by label, the first chosen, and says nothing about running it first', () => {
   subscribe();
   hire.editDraft({ workspaceId: 'repo_1' });
   hire.showSection('briefing');
@@ -519,7 +519,7 @@ test('Briefing offers the workspace’s checks by label, the first chosen, and s
     ['default', true, 'Parser tests pass'],
     ['contributing', false, 'CONTRIBUTING.md exists (may already be true)'],
   ]);
-  assert.match(html, /<\/fieldset><p class="hire-note">Dudes tries this check once before hiring\. If it already passes, there is nothing for the agent to do, so no one is hired\.<\/p>/);
+  assert.doesNotMatch(html, /once before hiring|no one is hired/, 'the hire runs no check');
   assert.doesNotMatch(html, /<dt>Completion check<\/dt>/, 'the old configured-limits row is still drawn');
 
   hire.editDraft({ checkId: 'contributing' });
@@ -527,8 +527,7 @@ test('Briefing offers the workspace’s checks by label, the first chosen, and s
     ['default', false, 'Parser tests pass'],
     ['contributing', true, 'CONTRIBUTING.md exists (may already be true)'],
   ]);
-  assert.match(render(), /<p class="hire-note">This check might already be true before the agent starts, so Dudes does not try it first\./);
-  assert.doesNotMatch(render(), /no one is hired/, 'a check that may already pass still says a pass hires nobody');
+  assert.match(render(), /<p class="hire-note">This check might already be true before the agent starts\./);
   // Another workspace has its own checks; a choice it does not offer falls back to its first.
   hire.editDraft({ workspaceId: 'repo_2' });
   html = render();
@@ -566,99 +565,6 @@ test('a workspace the checks sibling does not list cannot be hired, and says why
     assert.deepEqual(hire.getHireState().problem, { field: 'check_id', section: 'briefing', message: NO_CHECK });
     assert.ok(render().includes(`<p class="hire-problem" id="hire-problem" role="alert">${NO_CHECK}</p>`));
   }
-});
-
-test('while the Hire waits, the page says it is running the chosen check once', async () => {
-  subscribe();
-  let release;
-  const held = new Promise((resolve) => { release = resolve; });
-  const net = daemon(COMPLETE);
-  const slow = { ...net, fetch: async (url, init) => { await held; return net.fetch(url, init); } };
-  fillDraft();
-  hire.editDraft({ checkId: 'contributing' });
-  const sent = hire.submitHire(getFloorState(), slow);
-  assert.ok(render().includes('<p class="hire-note" role="status">Running “CONTRIBUTING.md exists” once before '
-    + 'hiring.</p>'), 'the wait does not name the check it runs');
-  release();
-  await sent;
-  assert.doesNotMatch(render(), /once before hiring/);
-});
-
-const CHECK_REFUSED = (reason) => (request) => ({ status: 409,
-  body: JSON.stringify({ attempt_id: request.attempt_id, state: 'refused', reason }) });
-
-/** What each check refusal says when the chosen check is "CONTRIBUTING.md exists". */
-const HIRE_REFUSALS = Object.freeze({
-  check_already_passes: '“CONTRIBUTING.md exists” already passes in this project, so it cannot show when this goal '
-    + 'is done. Nothing was hired. Choose another check, or ask the operator to add one for this goal with dudes '
-    + 'project check add.',
-  check_did_not_finish: '“CONTRIBUTING.md exists” did not finish, so it cannot show whether it already passes. '
-    + 'Nothing was hired. Try again, or ask the operator to raise its timeout.',
-  check_cannot_run: '“CONTRIBUTING.md exists” could not run, so nothing was hired. The daemon log says why.',
-  check_running: 'A check is still running for this Floor session. Try again when it ends.',
-  check_limit: 'This Floor session has run its 32 checks. Open Dudes to start a new Floor session.',
-});
-
-test('each check refusal keeps the wizard open on its check choice, in its own words, and keeps the catalog', async () => {
-  for (const [reason, text] of Object.entries(HIRE_REFUSALS)) {
-    resetFloorStore();
-    hire.resetHire();
-    subscribe();
-    fillDraft();
-    hire.editDraft({ checkId: 'contributing' });
-    hire.showSection('identity');
-    const net = daemon(CHECK_REFUSED(reason), COMPLETE);
-    await hire.submitHire(getFloorState(), net);
-    const state = hire.getHireState();
-    assert.equal(state.outcome, null, `${reason} left the form for an answer screen`);
-    assert.equal(state.attempt, null, `${reason} kept an attempt that had no effect`);
-    assert.equal(state.section, 'briefing', `${reason} did not return to the check choice`);
-    assert.equal(state.draft.checkId, 'contributing', `${reason} dropped the chosen check`);
-    assert.equal(state.draft.name, '  Kim ', `${reason} dropped what was typed`);
-    assert.equal(net.refreshes, 0, `${reason} asked for a fresh snapshot, which drops the catalog`);
-    assert.notEqual(getFloorState().onboarding, null);
-    const html = render();
-    assert.ok(html.includes(`<p class="hire-problem" id="hire-problem" role="alert" data-check-refusal="${reason}">`
-      + `${text}</p>`), `${reason} is not shown as itself`);
-    assert.deepEqual(checkOptions(html), [
-      ['default', false, 'Parser tests pass'],
-      ['contributing', true, 'CONTRIBUTING.md exists (may already be true)'],
-    ], `${reason} lost the check choice`);
-    const sessionLimit = reason === 'check_running' || reason === 'check_limit';
-    assert.match(html, new RegExp(`data-check-choice="hire" aria-invalid="${!sessionLimit}"`),
-      `${reason} marks the wrong field`);
-    assert.match(html, /class="hire-submit" aria-disabled="false"/, `${reason} holds the Hire button`);
-    assert.doesNotMatch(html, SUCCESS);
-  }
-  // Choosing another check clears the refusal, and the next Hire is a new attempt naming it.
-  hire.editDraft({ checkId: 'default' });
-  assert.doesNotMatch(render(), /data-check-refusal/);
-  const net = daemon(CHECK_REFUSED('check_already_passes'), COMPLETE);
-  fillDraft();
-  hire.editDraft({ checkId: 'contributing' });
-  await hire.submitHire(getFloorState(), net);
-  hire.editDraft({ checkId: 'default' });
-  await hire.submitHire(getFloorState(), net);
-  assert.equal(net.calls.length, 2);
-  assert.notEqual(net.calls[1].request.attempt_id, net.calls[0].request.attempt_id);
-  assert.deepEqual([net.calls[0].request.check_id, net.calls[1].request.check_id], ['contributing', 'default']);
-  assert.deepEqual(hire.getHireState().outcome, { kind: 'complete', agent: AGENT });
-});
-
-test('a check refusal after an unresolved reply keeps the attempt, and one after a recorded hire keeps its agent', async () => {
-  subscribe();
-  const net = daemon(PENDING, CHECK_REFUSED('check_running'));
-  await hireOnce(net);
-  await hire.checkHireStatus(net);
-  assert.deepEqual(hire.getHireState().outcome, { kind: 'check', reason: 'check_running' });
-  assert.equal(hire.releasable(hire.getHireState()), false, 'a refusal after an unresolved reply let the Hire go');
-  hire.releaseAttempt();
-  assert.notEqual(hire.getHireState().attempt, null);
-  let html = render();
-  assert.ok(html.includes('<p class="hire-error" role="alert" data-check-refusal="check_running">'
-    + `${HIRE_REFUSALS.check_running}</p>`));
-  assert.match(html, />Check status</);
-  assert.doesNotMatch(html, />Edit the form</);
 });
 
 test('the Engine step states what each offered engine can touch', () => {
@@ -843,7 +749,7 @@ test('the response map: every row, and anything off the row proves nothing', () 
   assert.equal(decode(400, '').kind, 'rejected');
   assert.equal(decode(413, '').kind, 'rejected');
   for (const reason of ['check_cannot_run', 'check_already_passes', 'check_did_not_finish', 'check_running', 'check_limit']) {
-    assert.deepEqual(decode(409, { attempt_id: id, state: 'refused', reason }), { kind: 'check', reason });
+    assert.equal(decode(409, { attempt_id: id, state: 'refused', reason }).kind, 'unknown', `${reason}: a hire runs no check`);
   }
   for (const [status, body] of [
     [200, { attempt_id: 'other', state: 'complete', agent: AGENT }],

@@ -1148,25 +1148,6 @@ fn browser_hires(fixture: &Fixture) -> Vec<(Provider, Option<IsolationMode>)> {
         .collect()
 }
 
-/// The binding ceiling of the first refused `BudgetDecision`, once one is on the disk.
-fn await_refused_ceiling(fixture: &Fixture) -> dudes_proto::Ceiling {
-    fixture.await_record("a refused BudgetDecision", |record| match record {
-        Record::BudgetDecision {
-            allowed: false,
-            ceiling,
-            ..
-        } => Some(*ceiling),
-        _ => None,
-    })
-}
-
-fn any_turn_issued(fixture: &Fixture) -> bool {
-    fixture
-        .records()
-        .iter()
-        .any(|record| matches!(record, Record::TurnIssued { .. }))
-}
-
 /// With `[floor.hire]` on and no budget anywhere, the catalog offers every
 /// registered engine with each ceiling `null`, the settings sibling reports the switch and the
 /// default reserves, and a hire of each engine completes.
@@ -1343,9 +1324,12 @@ fn browser_hire_is_refused_while_the_hire_switch_is_off() {
 }
 
 /// Plant what a daemon wrote before a hire started with a ticket: a Claude browser hire with its
-/// goal and the workspace's ceilings recorded, and no goal appended. Returns the request that
-/// retries it and the recorded goal.
-fn plant_old_hire(fixture: &Fixture, settings: &duded::Settings) -> (Value, dudes_proto::Goal) {
+/// goal and the workspace's ceilings recorded, and its goal appended when `appended`.
+fn plant_old_hire(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    appended: bool,
+) -> (AgentId, dudes_proto::Goal) {
     let profile = settings.enrollment.profiles[0].clone();
     let agent = AgentId::from_parts(7, 1);
     let goal = dudes_proto::Goal {
@@ -1357,133 +1341,75 @@ fn plant_old_hire(fixture: &Fixture, settings: &duded::Settings) -> (Value, dude
         hop_cap: profile.hop_cap,
         baseline: Some(dudes_proto::CheckBaseline::MayAlreadyPass),
     };
-    let request = json!({
-        "attempt_id": "Q".repeat(43), "workspace_id": "repo_1", "name": "Kim",
-        "role": "engineer", "goal_text": "ship", "check_id": null
-    });
-    seed(
-        fixture,
-        [Record::AgentHired {
-            character: None,
-            accent: None,
-            id: agent,
-            name: "Kim".to_owned(),
-            role: "engineer".to_owned(),
-            department: profile.department.clone(),
-            provider: Provider::Claude,
-            cwd: profile.cwd.clone(),
-            budget: profile.agent_budget,
-            sandbox: None,
-            isolation: Some(IsolationMode::Default),
-            max_turns: None,
-            max_budget: None,
-            trusted: false,
-            workspace: None,
-            worktree: None,
-            mcp_servers: Vec::new(),
-            browser_onboarding: Some(Box::new(BrowserOnboardingHire {
-                attempt_id: Hex32::new(std::array::from_fn(|k| [0x41, 0x04, 0x10][k % 3])),
-                request_digest: Hex32::new(onboard_digest("repo_1", "Kim", "engineer", "ship")),
-                profile_id: profile.id.clone(),
-                session_digest: Hex32::new([7; 32]),
-                intended_goal: Some(goal.clone()),
-                trust_lsn: None,
-            })),
-        }],
-    );
-    (request, goal)
+    let attempt_id = Hex32::new([0x41; 32]);
+    let session_digest = Hex32::new([7; 32]);
+    let mut records = vec![Record::AgentHired {
+        character: None,
+        accent: None,
+        id: agent,
+        name: "Kim".to_owned(),
+        role: "engineer".to_owned(),
+        department: profile.department.clone(),
+        provider: Provider::Claude,
+        cwd: profile.cwd.clone(),
+        budget: profile.agent_budget,
+        sandbox: None,
+        isolation: Some(IsolationMode::Default),
+        max_turns: None,
+        max_budget: None,
+        trusted: false,
+        workspace: None,
+        worktree: None,
+        mcp_servers: Vec::new(),
+        browser_onboarding: Some(Box::new(BrowserOnboardingHire {
+            attempt_id,
+            request_digest: Hex32::new([5; 32]),
+            profile_id: profile.id.clone(),
+            session_digest,
+            intended_goal: Some(goal.clone()),
+            trust_lsn: None,
+        })),
+    }];
+    if appended {
+        records.push(Record::GoalSet {
+            agent,
+            goal: goal.clone(),
+            browser_onboarding: Some(BrowserOnboardingGoal {
+                attempt_id,
+                session_digest,
+            }),
+            browser_goal: None,
+            goal_replacement: None,
+        });
+    }
+    seed(fixture, records);
+    (agent, goal)
 }
 
-/// A journal written before a hire started with a ticket replays: a Claude browser hire recorded
-/// with its goal and the workspace's ceilings, whose goal was never appended, completes that goal
-/// after the upgrade when the same request is retried, and the ceilings it recorded still bind
-/// that goal's first turn.
+/// A journal written before a hire started with a ticket replays whatever it holds: a hire whose
+/// goal was appended keeps it, and a hire cut off before its goal comes back hired and idle, with no
+/// goal and no turn. New hires still work beside them.
 #[test]
-fn an_old_journal_with_ceilings_replays_and_its_ceilings_still_bind() {
-    let fixture = Fixture::new();
-    let mut settings = enrolled_settings(&fixture);
-    settings.enrollment.profiles[0].goal_budget.tokens = Some(Tokens::ZERO);
-    let (request, goal) = plant_old_hire(&fixture, &settings);
-
-    let (_, mut running, _, page) = default_floor(&settings);
-    let (head, complete) = post_onboard(&page, &request);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    assert_eq!(complete["state"], "complete");
-    assert_eq!(complete["goal"], goal.id.to_string());
-    let binding = await_refused_ceiling(&fixture);
-    assert_eq!(
-        (binding.scope, binding.usd, binding.tokens),
-        (
-            BudgetScope::Goal,
-            Some(Usd::from_dollars(5)),
-            Some(Tokens::ZERO)
-        )
-    );
-    assert!(!any_turn_issued(&fixture), "no turn at a reached ceiling");
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
-
-/// A hire written before a hire started with a ticket is retried against a changed project: every
-/// change to a value the hire recorded refuses the goal's append and leaves the journal as it was.
-#[test]
-fn an_old_hire_refuses_every_effective_profile_change() {
-    let fixture = Fixture::new();
-    let settings = enrolled_settings(&fixture);
-    let (request, _) = plant_old_hire(&fixture, &settings);
-    let new_repo = fixture.state.path().join("different-repo");
-    std::fs::create_dir_all(new_repo.join(".git")).expect("new repository marker");
-
-    for change in [
-        "removed",
-        "cwd",
-        "department",
-        "isolation",
-        "agent_budget",
-        "goal_budget",
-        "predicate_argv",
-        "predicate_timeout",
-        "hop_cap",
-    ] {
-        let mut changed = settings.clone();
-        if change == "removed" {
-            changed.enrollment.profiles.clear();
+fn an_old_journal_with_a_recorded_goal_replays() {
+    for appended in [true, false] {
+        let fixture = Fixture::new();
+        let settings = enrolled_settings(&fixture);
+        let (agent, goal) = plant_old_hire(&fixture, &settings, appended);
+        let (_, mut running, _, page) = default_floor(&settings);
+        let (frame, _) = snapshot(&page);
+        let row = frame["projection"]["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == agent.to_string())
+            .expect("the old hire is on the floor");
+        if appended {
+            assert_eq!(row["goal"]["id"], goal.id.to_string());
         } else {
-            let profile = &mut changed.enrollment.profiles[0];
-            match change {
-                "cwd" => profile.cwd = new_repo.canonicalize().expect("canonical alternate"),
-                "department" => profile.department = "infra".into(),
-                "isolation" => profile.isolation = IsolationMode::Inherit,
-                "agent_budget" => profile.agent_budget.usd_per_day = Some(Usd::from_dollars(11)),
-                "goal_budget" => profile.goal_budget.usd = Some(Usd::from_dollars(6)),
-                "predicate_argv" => {
-                    profile.checks[0].predicate = Predicate::Command {
-                        argv: vec!["/usr/bin/false".into()],
-                        timeout_s: 10,
-                    }
-                }
-                "predicate_timeout" => {
-                    profile.checks[0].predicate = Predicate::Command {
-                        argv: vec![true_program().into()],
-                        timeout_s: 11,
-                    }
-                }
-                "hop_cap" => profile.hop_cap = 4,
-                _ => unreachable!(),
-            }
+            assert!(row["goal"].is_null(), "the cut-off hire has no goal: {row}");
         }
-        let (_, mut running, _, page) = default_floor(&changed);
-        let before = fixture.records();
-        let (head, outcome) = post_onboard(&page, &request);
-        assert!(
-            head.starts_with("HTTP/1.1 409 Conflict"),
-            "{change}: {head}"
-        );
-        assert_eq!(outcome["reason"], "profile_changed", "{change}");
-        assert_eq!(
-            fixture.records(),
-            before,
-            "{change}: retry cannot replace the goal"
-        );
+        let (head, body) = post_onboard(&page, &hire_request('B', None));
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
 }
@@ -1993,148 +1919,23 @@ fn refused_body_drain_discards_a_pipelined_action_without_effects() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// The request digest over the fields as the parser trims and admits them.
-fn onboard_digest(workspace_id: &str, name: &str, role: &str, goal_text: &str) -> [u8; 32] {
-    use sha2::{Digest as _, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"dudes.onboard.v1\0");
-    for (field, value) in [
-        ("workspace_id", workspace_id),
-        ("name", name),
-        ("role", role),
-        ("goal_text", goal_text),
-    ] {
-        hasher.update(u16::try_from(field.len()).unwrap().to_be_bytes());
-        hasher.update(field.as_bytes());
-        hasher.update(u32::try_from(value.len()).unwrap().to_be_bytes());
-        hasher.update(value.as_bytes());
-    }
-    hasher.finalize().into()
-}
-
-/// A new onboarding attempt that carries `goal_text` is refused in the new-attempt validation with
-/// the route's existing empty `400`, before any effect: no `AgentHired` and no `GoalSet`.
-///
-/// Control, first: the same request without it completes, with a hire and no goal.
-///
-/// Durable retry: a hire written before a hire started with a ticket, planted with [`seed`] as a
-/// complete hire and goal, still answers a same-key, same-payload retry from the
-/// journal-derived index with its original `200`.
-///
+/// A hire request that carries `goal_text` is refused with the route's existing empty `400`,
+/// before any effect: no `AgentHired` and no `GoalSet`. The same request without it completes.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one planted journal serves the control, the refusal and the durable retry"
-)]
 fn browser_onboarding_with_a_goal_is_refused_before_effect() {
     let fixture = Fixture::new();
     let settings = enrolled_settings(&fixture);
-    let profile = settings.enrollment.profiles[0].clone();
-    let planted_agent = AgentId::from_parts(7, 1);
-    let planted_goal = dudes_proto::Goal {
-        completion_check: None,
-        id: dudes_types::GoalId::from_parts(7, 2),
-        text: "ship\u{0}it".to_owned(),
-        predicate: profile.checks[0].predicate.clone(),
-        budget: profile.goal_budget,
-        hop_cap: profile.hop_cap,
-        baseline: None,
-    };
-    // Forty-three `Q`s decode to the bytes 0x41 0x04 0x10, repeated; the index keys on those.
-    let durable = "Q".repeat(43);
-    let attempt = Hex32::new(std::array::from_fn(|k| [0x41, 0x04, 0x10][k % 3]));
-    let admitting = Hex32::new([7; 32]);
-    seed(
-        &fixture,
-        [
-            Record::AgentHired {
-                character: None,
-                accent: None,
-                id: planted_agent,
-                name: "Kim".to_owned(),
-                role: "engineer".to_owned(),
-                department: profile.department.clone(),
-                provider: Provider::Claude,
-                cwd: profile.cwd.clone(),
-                budget: profile.agent_budget,
-                sandbox: None,
-                isolation: Some(profile.isolation),
-                max_turns: None,
-                max_budget: None,
-                trusted: false,
-                workspace: None,
-                worktree: None,
-                mcp_servers: Vec::new(),
-                browser_onboarding: Some(Box::new(BrowserOnboardingHire {
-                    attempt_id: attempt,
-                    request_digest: Hex32::new(onboard_digest(
-                        "repo_1",
-                        "Kim",
-                        "engineer",
-                        "ship\u{0}it",
-                    )),
-                    profile_id: profile.id.clone(),
-                    session_digest: admitting,
-                    intended_goal: Some(planted_goal.clone()),
-                    trust_lsn: None,
-                })),
-            },
-            Record::GoalSet {
-                agent: planted_agent,
-                goal: planted_goal.clone(),
-                browser_onboarding: Some(BrowserOnboardingGoal {
-                    attempt_id: attempt,
-                    session_digest: admitting,
-                }),
-                browser_goal: None,
-                goal_replacement: None,
-            },
-        ],
-    );
-    let daemon = boot(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot Floor");
-    let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
-    let page = exchange(addr, &issue(&settings).bootstrap);
-    let request = |attempt: &str, goal_text: Option<&str>| {
-        let mut body = json!({
-            "attempt_id": attempt, "workspace_id": "repo_1", "name": "Kim", "role": "engineer"
-        });
-        if let Some(goal_text) = goal_text {
-            body["goal_text"] = goal_text.into();
-        }
-        body
-    };
+    let (_, mut running, _, page) = default_floor(&settings);
     let effects = |records: &[Record]| {
         records
             .iter()
             .filter(|record| matches!(record, Record::AgentHired { .. } | Record::GoalSet { .. }))
             .count()
     };
-
-    let (head, complete) = post_onboard(&page, &request(&"A".repeat(43), None));
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "control: {head}");
-    assert_eq!(complete["state"], "complete", "{complete}");
-    assert!(
-        fixture.records().iter().any(|record| matches!(
-            record,
-            Record::AgentHired { browser_onboarding: Some(meta), .. } if meta.intended_goal.is_none()
-        )),
-        "control: the hire records no goal"
-    );
-
+    let mut request = hire_request('A', None);
+    request["goal_text"] = "ship".into();
     let before = effects(&fixture.records());
-    let refused_attempt = format!("AQ{}", "A".repeat(41));
-    let (head, refused) = post_onboard(&page, &request(&refused_attempt, Some("ship")));
+    let (head, refused) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 400 Bad Request"), "{head}");
     assert!(refused.is_null(), "the refusal has no onboarding envelope");
     assert_eq!(
@@ -2143,22 +1944,16 @@ fn browser_onboarding_with_a_goal_is_refused_before_effect() {
         "no AgentHired and no GoalSet"
     );
 
-    let mut older = request(&durable, Some("ship\u{0}it"));
-    older["check_id"] = Value::Null;
-    let (head, retried) = post_onboard(&page, &older);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "durable retry: {head}");
-    assert_eq!(
-        retried,
-        json!({
-            "attempt_id": durable, "state": "complete",
-            "agent": planted_agent, "goal": planted_goal.id
-        }),
-        "the index answers with the original ids"
-    );
-    assert_eq!(
-        effects(&fixture.records()),
-        before,
-        "the retry appends nothing"
+    request.as_object_mut().unwrap().remove("goal_text");
+    let (head, complete) = post_onboard(&page, &request);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "control: {head}");
+    assert_eq!(complete["state"], "complete", "{complete}");
+    assert!(
+        fixture.records().iter().any(|record| matches!(
+            record,
+            Record::AgentHired { browser_onboarding: Some(meta), .. } if meta.intended_goal.is_none()
+        )),
+        "control: the hire records no goal"
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -13983,15 +13778,14 @@ fn set_goal_once_idle(handle: &duded::Handle, agent: AgentId, key: &str) -> Goal
     }
 }
 
-/// A hire whose check already passes waits for that run and is refused: nobody is hired, and a
-/// same-key follower that arrives during the run gets `202 pending`. A hire naming a check that
-/// fails completes.
-///
-/// Mutation: hiring without waiting for the run hires an agent whose check already passes.
+/// A hire runs no check, so a healthy project whose check already passes is hired like any other,
+/// and the first ticket given to the new agent still starts: a ticket's start takes its own
+/// baseline, which may already pass.
 #[test]
-fn browser_onboard_refuses_a_passing_check_before_hire() {
+fn a_hire_into_a_project_whose_check_passes_is_hired_and_its_first_ticket_starts() {
     let fixture = Fixture::new();
-    let settings = checks_settings(&fixture);
+    let mut settings = checks_settings(&fixture);
+    settings.floor_board_enabled = true;
     let runner = BaselineRunner::new();
     runner.answer("default", common::passes());
     let daemon = boot(
@@ -14008,24 +13802,35 @@ fn browser_onboard_refuses_a_passing_check_before_hire() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let page = exchange(addr, &issue(&settings).bootstrap);
-    runner.hold_next();
-    let body = hire_naming(&attempt(0), "default");
-    let owner = {
-        let (page, body) = (Arc::clone(&page), body.clone());
-        std::thread::spawn(move || post_onboard(&page, &body))
-    };
-    runner.wait_runs(1);
-    let (head, follower) = post_onboard(&page, &body);
-    assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
-    assert_eq!(follower["state"], "pending");
-    runner.release();
-    let (head, refused) = owner.join().expect("the owner's answer");
-    assert_eq!(refused_reason(&head, &refused), "check_already_passes");
-    assert!(hires(&fixture).is_empty(), "nobody was hired");
+    let (head, hired) = post_onboard(&page, &hire_naming(&attempt(0), "default"));
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {hired}");
+    assert_eq!(hired["state"], "complete");
+    assert!(runner.ran().is_empty(), "the hire ran a check");
+    let agent = AgentId::parse(hired["agent"].as_str().unwrap()).unwrap();
 
-    let (head, complete) = post_onboard(&page, &hire_naming(&attempt(1), "contributing"));
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {complete}");
-    assert_eq!(runner.ran(), ["default", "contributing"]);
+    let revision = enrolled_revision("default");
+    let create = json!({"title": "Write CONTRIBUTING.md", "project": "repo_1",
+        "done_when": "default", "done_when_revision": revision});
+    let (head, made) = post_bytes(
+        &page,
+        "/floor/ticket",
+        &serde_json::to_vec(&create).unwrap(),
+        None,
+    );
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {made}");
+    let give = json!({"card": made["card"], "agent": agent, "expected_seq": made["seq"]});
+    let (head, given) = post_bytes(
+        &page,
+        "/floor/ticket/assign",
+        &serde_json::to_vec(&give).unwrap(),
+        None,
+    );
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {given}");
+    await_entry(
+        &fixture,
+        "the ticket's start",
+        |_, record| matches!(record, Record::TicketStarted { agent: who, .. } if *who == agent),
+    );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
@@ -14088,7 +13893,7 @@ fn browser_onboard_binds_the_chosen_check() {
         ],
     );
     assert_eq!(hire.request_digest, digest, "the digest binds the check");
-    assert_eq!(runner.ran(), ["contributing"]);
+    assert!(runner.ran().is_empty(), "the hire ran a check");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
@@ -14585,12 +14390,13 @@ fn browser_baselines_are_limited_per_agent_and_session() {
     .expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let elsewhere = tempfile::tempdir().expect("a directory outside the workspace");
-    let agent = common::hire(&running.handle, elsewhere.path());
-    running.handle.ask(Ask::Pause(agent)).expect("local pause");
-    let goal = set_goal_once_idle(&running.handle, agent, "first");
     let page = exchange(addr, &issue(&settings).bootstrap);
     let other_page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, hired) = post_onboard(&page, &hire_naming(&attempt(0), "contributing"));
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {hired}");
+    let agent = AgentId::parse(hired["agent"].as_str().unwrap()).unwrap();
+    running.handle.ask(Ask::Pause(agent)).expect("local pause");
+    let goal = set_goal_once_idle(&running.handle, agent, "first");
 
     runner.hold_next();
     let held_change = {
@@ -14608,7 +14414,7 @@ fn browser_baselines_are_limited_per_agent_and_session() {
         "check_running",
         "the same agent"
     );
-    let (head, body) = post_onboard(&page, &hire_naming(&attempt(0), "default"));
+    let (head, body) = post_goal(&page, &goal_naming(&request_id(3), agent, goal, "default"));
     assert_eq!(
         refused_reason(&head, &body),
         "check_running",
@@ -14635,14 +14441,20 @@ fn browser_baselines_are_limited_per_agent_and_session() {
     assert_eq!(refused_reason(&head, &body), "stale_goal");
 
     for n in 1..=32 {
-        let (head, body) = post_onboard(&other_page, &hire_naming(&attempt(n), "default"));
+        let (head, body) = post_goal(
+            &other_page,
+            &goal_naming(&attempt(100 + n), agent, replaced, "default"),
+        );
         assert_eq!(
             refused_reason(&head, &body),
             "check_already_passes",
             "run {n}"
         );
     }
-    let (head, body) = post_onboard(&other_page, &hire_naming(&attempt(33), "default"));
+    let (head, body) = post_goal(
+        &other_page,
+        &goal_naming(&attempt(143), agent, replaced, "default"),
+    );
     assert_eq!(refused_reason(&head, &body), "check_limit");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }

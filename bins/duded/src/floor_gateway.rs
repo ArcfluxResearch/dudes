@@ -1999,35 +1999,10 @@ fn onboard_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) 
     };
     let outcome = handle.onboard(session, request);
     match outcome {
-        Ok(OnboardOutcome::Complete {
-            attempt_id,
-            agent,
-            goal,
-        }) => action_json(
+        Ok(OnboardOutcome::Complete { attempt_id, agent }) => action_json(
             200,
             "OK",
-            &match goal {
-                Some(goal) => serde_json::json!({
-                    "attempt_id":attempt_id,"state":"complete","agent":agent,"goal":goal
-                }),
-                None => serde_json::json!({
-                    "attempt_id":attempt_id,"state":"complete","agent":agent
-                }),
-            },
-        ),
-        Ok(OnboardOutcome::Partial {
-            attempt_id,
-            agent,
-            reason,
-            current_goal,
-            retired,
-        }) => action_json(
-            409,
-            "Conflict",
-            &serde_json::json!({
-                "attempt_id":attempt_id,"state":"hired_without_goal","agent":agent,
-                "goal":null,"reason":reason,"current_goal":current_goal,"retired":retired
-            }),
+            &serde_json::json!({ "attempt_id": attempt_id, "state": "complete", "agent": agent }),
         ),
         Err(OnboardRefusal::Forbidden) => error_response(403, "Forbidden"),
         Err(OnboardRefusal::Conflict) => error_response(409, "Conflict"),
