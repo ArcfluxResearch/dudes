@@ -1376,6 +1376,27 @@ impl RequestReader for TcpStream {
     }
 }
 
+/// The upload slot and the longer deadline a file body gets, or the busy answer when another
+/// upload holds the slot. Any other body keeps the head's deadline.
+fn claim_upload(
+    uploading: bool,
+    slot: &mut Option<crate::floor_chat_file::UploadSlot>,
+    head_deadline: Instant,
+) -> Result<Instant, Denied> {
+    if !uploading {
+        return Ok(head_deadline);
+    }
+    let Some(taken) = crate::floor_chat_file::UploadSlot::take() else {
+        return Err(Denied::Response(action_json(
+            200,
+            "OK",
+            &serde_json::json!({ "busy": true }),
+        )));
+    };
+    *slot = Some(taken);
+    Ok(Instant::now() + UPLOAD_DEADLINE)
+}
+
 fn read_request<'a>(
     stream: &mut impl RequestReader,
     guard: Guard<'a>,
@@ -1412,19 +1433,7 @@ fn read_request<'a>(
                         if buffered.len() > parsed.content_length {
                             return Err(Denied::Response(error_response(400, "Bad Request")));
                         }
-                        let deadline = if uploading {
-                            let Some(taken) = crate::floor_chat_file::UploadSlot::take() else {
-                                return Err(Denied::Response(action_json(
-                                    200,
-                                    "OK",
-                                    &serde_json::json!({ "busy": true }),
-                                )));
-                            };
-                            slot = Some(taken);
-                            Instant::now() + UPLOAD_DEADLINE
-                        } else {
-                            deadline
-                        };
+                        let deadline = claim_upload(uploading, &mut slot, deadline)?;
                         match read_body(stream, buffered, parsed.content_length, deadline, phase) {
                             Ok(Some(body)) => Ok(body),
                             Ok(None) => Err(Denied::Closed),
@@ -1486,6 +1495,10 @@ fn read_request<'a>(
 
 /// Run an admitted request's handler. This is the only caller of any route's handler, and every
 /// handler takes what [`Guard::admit`] returned.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match sends every admitted route to its handler"
+)]
 fn dispatch<'a>(
     admitted: Admitted,
     route: Route,
@@ -1907,7 +1920,14 @@ fn action_request(
     } else {
         b"application/json"
     };
-    browser_head(route, version, headers, action.max_body(), true, content_type)
+    browser_head(
+        route,
+        version,
+        headers,
+        action.max_body(),
+        true,
+        content_type,
+    )
 }
 
 /// The head of a check or a sign-out. Unlike an action it may carry no cookie, or a malformed
@@ -2782,7 +2802,11 @@ fn chat_file_response<'a>(handle: &Handle, target: &str, body: &[u8]) -> Respons
     use crate::floor_chat_file::{Refusal, store};
     let agent = crate::floor_chat_file::query_value(target, "agent")
         .and_then(|raw| String::from_utf8(raw).ok())
-        .and_then(|raw| dudes_types::AgentId::parse(&raw).ok().filter(|id| id.to_string() == raw));
+        .and_then(|raw| {
+            dudes_types::AgentId::parse(&raw)
+                .ok()
+                .filter(|id| id.to_string() == raw)
+        });
     let Some(agent) = agent else {
         return error_response(400, "Bad Request");
     };

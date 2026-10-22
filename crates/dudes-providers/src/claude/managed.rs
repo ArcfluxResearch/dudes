@@ -30,8 +30,8 @@ use dudes_types::{AgentId, ModelSelection, Provider, Tier};
 use serde_json::{Map, Value};
 
 use crate::adapter::{
-    Adapter, AgentCtx, ContextMode, HookInstall, Isolation, ManagedInstall, SessionAcquisition,
-    TurnSession, UsageSource,
+    Adapter, AgentCtx, CHAT_FILES_DIR, ContextMode, HookInstall, Isolation, ManagedInstall,
+    SessionAcquisition, TurnSession, UsageSource,
 };
 use dudes_types::IsolationMode;
 
@@ -259,13 +259,6 @@ impl ClaudeAdapter {
             }
         }
         argv.extend(session);
-        // Files sent in Chat live outside the project, and Claude reads outside its working
-        // directories only for a folder it is given. `--add-dir` takes every following element
-        // that is not an option, and an option or the end of the argv always follows.
-        let files = ctx.agent_dir.join("files");
-        if files.is_dir() {
-            argv.extend([OsString::from("--add-dir"), files.into_os_string()]);
-        }
         // `--mcp-config` takes every following element that is not an option, so what follows the
         // value is always an option, the `--` before an argv task, or the end of the argv.
         if !ctx.mcp_servers.is_empty() {
@@ -296,6 +289,14 @@ impl ClaudeAdapter {
         );
         append_list(&mut argv, "--allowedTools", &self.config.allowed_tools);
         append_list(&mut argv, "--tools", &self.config.tools);
+        // Files sent in Chat live outside the project, and Claude reads outside its working
+        // directories only for a folder it is given. The launch creates the folder, so the flag
+        // always names one that exists. `--add-dir` takes every following element that is not an
+        // option, and the operator's extra arguments that follow begin with an option.
+        argv.extend([
+            OsString::from("--add-dir"),
+            ctx.agent_dir.join(CHAT_FILES_DIR).into_os_string(),
+        ]);
         argv.extend(self.config.extra_args.iter().cloned());
         if let Some(task) = task {
             argv.push("--".into());
@@ -651,7 +652,7 @@ impl Adapter for ClaudeAdapter {
             files.push((ctx.agent_dir.join(ENV_GUARD_FILE), ENV_GUARD.to_owned()));
         }
         ManagedInstall {
-            directories: Vec::new(),
+            directories: vec![ctx.agent_dir.join(CHAT_FILES_DIR)],
             files,
         }
     }
@@ -776,6 +777,14 @@ mod tests {
         }
     }
 
+    /// The chat files folder as the adapter composes it: after the tool lists, before `--`.
+    fn files_flag() -> Vec<OsString> {
+        vec![
+            OsString::from("--add-dir"),
+            Path::new(AGENT_DIR).join("files").into_os_string(),
+        ]
+    }
+
     fn os(parts: &[&str]) -> Vec<OsString> {
         parts.iter().map(OsString::from).collect()
     }
@@ -872,9 +881,9 @@ mod tests {
             "--session-id",
             UUID,
             "--dangerously-skip-permissions",
-            "--",
-            "echo hello",
         ]));
+        want.extend(files_flag());
+        want.extend(os(&["--", "echo hello"]));
         assert_eq!(spec.argv, want);
         assert_eq!(spec.stdin, crate::launch::LaunchInput::Null);
         assert_eq!(spec.cwd, Path::new("/tmp/dudes-fixture"));
@@ -889,42 +898,32 @@ mod tests {
             .expect("a non-empty task without NUL is a launch");
         let mut want = os(&HEAD);
         want.extend(isolation(""));
-        want.extend(os(&[
-            "--resume",
-            "s-2",
-            "--dangerously-skip-permissions",
-            "--",
-            "echo hello",
-        ]));
+        want.extend(os(&["--resume", "s-2", "--dangerously-skip-permissions"]));
+        want.extend(files_flag());
+        want.extend(os(&["--", "echo hello"]));
         assert_eq!(resumed.argv, want);
     }
 
     #[test]
-    fn a_files_folder_is_added_only_when_it_exists() {
-        let dir = tempfile::tempdir().expect("a scratch folder");
-        let launch = |dir: &Path| {
-            ClaudeAdapter::default()
-                .managed(
-                    &AgentCtx {
-                        agent_dir: dir,
-                        ..ctx(&[])
-                    },
-                    "t",
-                    &first(),
-                    &none(),
-                )
-                .expect("a launch")
-                .argv
-        };
-        assert!(!launch(dir.path()).contains(&OsString::from("--add-dir")));
-        std::fs::create_dir(dir.path().join("files")).expect("the folder");
-        let argv = launch(dir.path());
-        let at = argv
+    fn the_chat_files_folder_is_given_to_claude_and_made_by_the_launch() {
+        let adapter = ClaudeAdapter::default();
+        let spec = adapter
+            .managed(&ctx(&[]), "t", &first(), &none())
+            .expect("a launch");
+        let at = spec
+            .argv
             .iter()
             .position(|part| part == "--add-dir")
             .expect("the flag");
-        assert_eq!(argv[at + 1], dir.path().join("files").into_os_string());
-        assert!(argv[at + 2].to_string_lossy().starts_with("--"));
+        let folder = Path::new(AGENT_DIR).join("files").into_os_string();
+        assert_eq!(spec.argv[at + 1], folder);
+        assert!(spec.argv[at + 2].to_string_lossy().starts_with("--"));
+        assert!(
+            adapter
+                .managed_install(&ctx(&[]), &none())
+                .directories
+                .contains(&PathBuf::from(folder))
+        );
     }
 
     #[test]
@@ -955,9 +954,9 @@ mod tests {
             "--session-id",
             UUID,
             "--dangerously-skip-permissions",
-            "--",
-            "t",
         ]));
+        want.extend(files_flag());
+        want.extend(os(&["--", "t"]));
         assert_eq!(spec.argv, want);
         assert_eq!(
             ClaudeAdapter::default().isolation(),
@@ -1235,6 +1234,7 @@ mod tests {
             "--dangerously-skip-permissions",
         ]));
         want.extend(os(tools));
+        want.extend(files_flag());
         want.extend(os(&["--", "t"]));
         want
     }
@@ -1358,22 +1358,18 @@ mod tests {
             .expect("a non-empty task without NUL is a launch")
             .argv;
         let tail = &argv[HEAD.len() + isolation("").len()..];
-        assert_eq!(
-            tail,
-            os(&[
-                "--session-id",
-                UUID,
-                "--max-turns",
-                "3",
-                "--max-budget-usd",
-                "2.500000",
-                "--dangerously-skip-permissions",
-                "--model",
-                "haiku",
-                "--",
-                "t",
-            ])
-        );
+        let mut want = os(&[
+            "--session-id",
+            UUID,
+            "--max-turns",
+            "3",
+            "--max-budget-usd",
+            "2.500000",
+            "--dangerously-skip-permissions",
+        ]);
+        want.extend(files_flag());
+        want.extend(os(&["--model", "haiku", "--", "t"]));
+        assert_eq!(tail, want);
 
         let plain = ClaudeAdapter::new(ClaudeConfig {
             permission_mode: PermissionMode::Default,
@@ -1479,10 +1475,15 @@ mod tests {
                         &argv[..argv.len() - 1]
                     };
                     let value = argv.iter().position(|a| a == "--settings").map(|i| i + 1);
+                    let files = argv.iter().position(|a| a == "--add-dir").map(|i| i + 1);
                     for (i, part) in flags.iter().enumerate() {
                         let text = part.to_str().unwrap();
                         if Some(i) == value {
                             assert_eq!(part, &spaced.join(MANAGED_SETTINGS_FILE));
+                            continue;
+                        }
+                        if Some(i) == files {
+                            assert_eq!(part, &spaced.join("files"));
                             continue;
                         }
                         assert!(!text.contains(char::is_whitespace), "{text:?} is joined");
@@ -1811,9 +1812,9 @@ mod tests {
             "--session-id",
             UUID,
             "--dangerously-skip-permissions",
-            "--",
-            "t",
         ]));
+        want.extend(files_flag());
+        want.extend(os(&["--", "t"]));
         let argv = bare
             .managed(&ctx(&[]), "t", &first(), &none())
             .expect("a non-empty task without NUL is a launch")
@@ -1987,7 +1988,9 @@ mod tests {
             | "--bare"
             | "--dangerously-skip-permissions" => Arity::Fixed(0),
             "--output-format" | "--setting-sources" | "--settings" | "--session-id"
-            | "--resume" | "--mcp-config" | "--max-turns" | "--max-budget-usd" => Arity::Fixed(1),
+            | "--resume" | "--mcp-config" | "--max-turns" | "--max-budget-usd" | "--add-dir" => {
+                Arity::Fixed(1)
+            }
             "--disallowedTools" | "--allowedTools" | "--tools" => Arity::Variadic,
             _ => Arity::Unknown,
         }
@@ -2173,7 +2176,7 @@ mod tests {
     /// Four arms, and the order is deliberate:
     ///
     /// 1. **Reservation** — every extracted name is in `RESERVED_EXTRA_ARGS`.
-    /// 2. **Coverage** — all seventeen composed spellings were actually seen. A walker that
+    /// 2. **Coverage** — all eighteen composed spellings were actually seen. A walker that
     ///    returned nothing would sail through arm 1; measured, this is also the arm that catches
     ///    a variadic rule blunted to stop at a known flag, because such a walker eats the `--`.
     /// 3. **Value controls** — three dash-leading *values* that must not have been reported as
@@ -2199,8 +2202,10 @@ mod tests {
         let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (label, argv) in &rows {
             for flag in composed_flags(argv) {
+                // Directories add up: an operator's own `--add-dir` cannot undo the chat files
+                // folder, so this one flag is composed and deliberately not reserved.
                 assert!(
-                    RESERVED_EXTRA_ARGS.contains(&flag.as_str()),
+                    flag == "--add-dir" || RESERVED_EXTRA_ARGS.contains(&flag.as_str()),
                     "`{flag}` is composed by the adapter ({label}) but is not reserved in \
                      extra_args; add it to RESERVED_EXTRA_ARGS"
                 );
@@ -2226,6 +2231,7 @@ mod tests {
             "--disallowedTools",
             "--allowedTools",
             "--tools",
+            "--add-dir",
             "--",
         ] {
             assert!(

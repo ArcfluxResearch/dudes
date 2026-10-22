@@ -5,6 +5,7 @@
 //! daemon never opens, parses or runs them. Nothing the page sends becomes a folder or a path part:
 //! the name is cut down to a short ASCII set and put after random hex in one flat folder.
 
+use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ pub(crate) const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
 /// The most one agent's `files` folder may hold, counting the file being added.
 pub(crate) const MAX_FOLDER_BYTES: u64 = 200 * 1024 * 1024;
 /// The folder under an agent's directory.
-pub(crate) const FOLDER: &str = "files";
+pub(crate) const FOLDER: &str = dudes_providers::adapter::CHAT_FILES_DIR;
 const MAX_NAME_BYTES: usize = 80;
 
 static UPLOADING: AtomicBool = AtomicBool::new(false);
@@ -113,7 +114,10 @@ pub(crate) enum Refusal {
 fn hex_id() -> String {
     let mut bytes = [0_u8; 8];
     getrandom::fill(&mut bytes).expect("the operating system's entropy source");
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    bytes.iter().fold(String::new(), |mut hex, byte| {
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    })
 }
 
 fn folder_bytes(folder: &Path) -> std::io::Result<u64> {
@@ -230,9 +234,6 @@ mod tests {
             .set_len(MAX_FOLDER_BYTES - 3)
             .unwrap();
         assert!(store(dir.path(), b"a", b"12").is_ok());
-        assert_eq!(
-            store(dir.path(), b"a", b"12"),
-            Err(Refusal::Full(folder))
-        );
+        assert_eq!(store(dir.path(), b"a", b"12"), Err(Refusal::Full(folder)));
     }
 }

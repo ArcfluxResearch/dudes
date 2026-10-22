@@ -32,7 +32,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     /// The folder a chat file for `agent` goes under. An Attached agent's engine is not launched by
     /// Dudes, so it could not be given the folder.
-    pub(super) fn chat_file_dir(&self, agent: dudes_types::AgentId) -> Result<std::path::PathBuf, &'static str> {
+    pub(super) fn chat_file_dir(
+        &self,
+        agent: dudes_types::AgentId,
+    ) -> Result<std::path::PathBuf, &'static str> {
         match self.sup.world().agents.get(&agent) {
             None => Err("agent_absent"),
             Some(row) if row.retired => Err("agent_retired"),

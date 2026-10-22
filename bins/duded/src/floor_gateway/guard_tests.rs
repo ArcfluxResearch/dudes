@@ -512,14 +512,7 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
         };
         let max = max_body_of(path);
         let sign = |body: &[u8]| page.sign("POST", path, body);
-        let too_big = post(
-            path,
-            Some(cookie),
-            Some(&sign(&[])),
-            kind,
-            max + 1,
-            &[],
-        );
+        let too_big = post(path, Some(cookie), Some(&sign(&[])), kind, max + 1, &[]);
         let elsewhere = page
             .browser
             .sign("POST", path, "http://127.0.0.1:1", body, 0);
@@ -537,7 +530,8 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
             ),
             (
                 "another browser's signature",
-                body_post(kind, 
+                body_post(
+                    kind,
                     path,
                     Some(cookie),
                     Some(&other.sign("POST", path, body)),
@@ -552,7 +546,8 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
             ),
             (
                 "a signature made for another path",
-                body_post(kind, 
+                body_post(
+                    kind,
                     path,
                     Some(cookie),
                     Some(&page.sign("POST", "/floor/elsewhere", body)),
@@ -567,7 +562,8 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
             ),
             (
                 "a time over a minute ahead",
-                body_post(kind, 
+                body_post(
+                    kind,
                     path,
                     Some(cookie),
                     Some(
@@ -594,7 +590,8 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
             ("a body over the cap", too_big, 413),
             (
                 "a NUL byte",
-                body_post(kind, 
+                body_post(
+                    kind,
                     path,
                     Some(cookie),
                     Some(&sign(b"{\"a\":\"\0\"}")),
@@ -604,7 +601,8 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
             ),
             (
                 "invalid UTF-8",
-                body_post(kind, 
+                body_post(
+                    kind,
                     path,
                     Some(cookie),
                     Some(&sign(b"{\"a\":\"\xff\"}")),

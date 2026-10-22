@@ -4,7 +4,8 @@
 mod common;
 use common::PageHttp as _;
 
-use std::io::Write as _;
+use std::fmt::Write as _;
+use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -64,7 +65,10 @@ fn finish(mut floor: Floor) {
 }
 
 fn encode(name: &str) -> String {
-    name.bytes().map(|byte| format!("%{byte:02X}")).collect()
+    name.bytes().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "%{byte:02X}");
+        out
+    })
 }
 
 fn target(agent: AgentId, name: &str) -> String {
@@ -105,8 +109,10 @@ fn files_dir(fixture: &Fixture, agent: AgentId) -> PathBuf {
 fn is_copy_name(path: &Path, clean: &str) -> bool {
     let file = path.file_name().unwrap().to_str().unwrap();
     file.len() == 17 + clean.len()
-        && file[..16].bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        && &file[16..] == format!("-{clean}")
+        && file[..16]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && file[16..] == format!("-{clean}")
 }
 
 #[test]
@@ -127,12 +133,24 @@ fn a_signed_upload_keeps_the_exact_bytes_and_adds_no_journal_record() {
     assert_eq!(path.parent().unwrap(), files_dir(&fixture, agent));
     assert!(is_copy_name(&path, "shot.png"), "{}", path.display());
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(
-        std::fs::metadata(files_dir(&fixture, agent)).unwrap().permissions().mode() & 0o777,
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::metadata(files_dir(&fixture, agent))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
         0o700
     );
-    assert_eq!(std::fs::read_dir(files_dir(&fixture, agent)).unwrap().count(), 1);
+    assert_eq!(
+        std::fs::read_dir(files_dir(&fixture, agent))
+            .unwrap()
+            .count(),
+        1
+    );
     assert_eq!(fixture.records().len(), before);
     finish(floor);
 }
@@ -224,10 +242,12 @@ fn unknown_retired_and_attached_agents_and_bad_requests_are_refused() {
     floor
         .running
         .handle
-        .ask(Ask::Retire(Box::new(dudes_proto::rpc::agent::RetireParams {
-            agent: retired,
-            reason: "retire fixture".into(),
-        })))
+        .ask(Ask::Retire(Box::new(
+            dudes_proto::rpc::agent::RetireParams {
+                agent: retired,
+                reason: "retire fixture".into(),
+            },
+        )))
         .unwrap();
     assert_eq!(
         refused(retired),
@@ -245,7 +265,13 @@ fn unknown_retired_and_attached_agents_and_bad_requests_are_refused() {
     let text = {
         let target = target(live, "a.txt");
         let signed = floor.page.signed("POST", &target, b"x");
-        let mut request = head(&floor.page, &target, 1, &signed.header_lines(), "application/json");
+        let mut request = head(
+            &floor.page,
+            &target,
+            1,
+            &signed.header_lines(),
+            "application/json",
+        );
         request.push(b'x');
         common::send(floor.addr, &request)
     };
@@ -327,10 +353,12 @@ fn retiring_deletes_the_folder_and_a_restart_finishes_a_missed_delete() {
     first
         .running
         .handle
-        .ask(Ask::Retire(Box::new(dudes_proto::rpc::agent::RetireParams {
-            agent,
-            reason: "retire fixture".into(),
-        })))
+        .ask(Ask::Retire(Box::new(
+            dudes_proto::rpc::agent::RetireParams {
+                agent,
+                reason: "retire fixture".into(),
+            },
+        )))
         .unwrap();
 
     assert!(!folder.exists());
@@ -352,27 +380,32 @@ fn a_second_upload_while_one_is_being_read_is_told_it_is_busy() {
     let agent = common::hire(&floor.running.handle, fixture.state.path());
     let slow = target(agent, "slow.bin");
     let signed = floor.page.signed("POST", &slow, b"");
-    let mut holder = TcpStream::connect(floor.addr).unwrap();
-    holder
-        .write_all(&head(
-            &floor.page,
-            &slow,
-            100,
-            &signed.header_lines(),
-            "application/octet-stream",
-        ))
-        .unwrap();
-    holder.write_all(b"0123456789").unwrap();
+    // The holder sends a head that promises 100 bytes and then 10 of them. If it hears an answer
+    // the slot was not its to take, so it tries again; silence means the daemon is waiting for it.
+    let holder = (0..10)
+        .find_map(|_| {
+            let mut holder = TcpStream::connect(floor.addr).unwrap();
+            holder
+                .write_all(&head(
+                    &floor.page,
+                    &slow,
+                    100,
+                    &signed.header_lines(),
+                    "application/octet-stream",
+                ))
+                .unwrap();
+            holder.write_all(b"0123456789").unwrap();
+            holder
+                .set_read_timeout(Some(Duration::from_millis(300)))
+                .unwrap();
+            let mut heard = [0_u8; 1];
+            holder.read(&mut heard).is_err().then_some(holder)
+        })
+        .expect("the daemon waits for the holder's body");
 
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let reply = upload(&floor.page, &target(agent, "b.bin"), b"x");
-        if reply.status() == 200 && reply.json() == json!({"busy": true}) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "never busy: {}", reply.head);
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let busy = upload(&floor.page, &target(agent, "b.bin"), b"x");
+    assert_eq!(busy.status(), 200, "{}", busy.head);
+    assert_eq!(busy.json(), json!({"busy": true}));
     drop(holder);
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
@@ -383,6 +416,11 @@ fn a_second_upload_while_one_is_being_read_is_told_it_is_busy() {
         assert!(Instant::now() < deadline, "never free: {}", reply.head);
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(std::fs::read_dir(files_dir(&fixture, agent)).unwrap().count(), 1);
+    assert_eq!(
+        std::fs::read_dir(files_dir(&fixture, agent))
+            .unwrap()
+            .count(),
+        1
+    );
     finish(floor);
 }
