@@ -388,9 +388,9 @@ test('each state wording is rendered from paused, mode and status alone', () => 
       const label = `${fields.mode}/${fields.status}, sibling ${sibling !== null}`;
       const html = center();
       assert.deepEqual(wordingsIn(html), [[state, text]], label);
-      // In the selected agent's own detail, directly under its name.
+      // The same control wording is now beside the fitting Resume action.
       assert.match(html,
-        /<aside class="agent-detail"[^>]*>[\s\S]*<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<div class="agent-detail-actions"><div class="agent-detail-control"[^>]*><p class="agent-detail-pause"/,
+        /<aside class="agent-detail"[^>]*>[\s\S]*<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<section class="agent-overview-now"[^>]*>[\s\S]*?<div class="agent-detail-control"[^>]*><p class="agent-detail-pause"/,
         label);
     }
   }
@@ -423,7 +423,7 @@ test('an idle paused agent whose goal predicate passed shows Paused, never Done'
     subscribe({ agents: [passed], control: sibling });
     const html = center();
     assert.deepEqual(wordingsIn(html), [['paused', 'Paused']]);
-    assert.match(html, /<dt>Status<\/dt><dd>idle<\/dd>/, 'the row is not drawn, so the absence below proves nothing');
+    assert.match(html, /<p class="agent-overview-now-line">Paused<\/p>/, 'the row is not drawn, so the absence below proves nothing');
     assert.doesNotMatch(html, /\bDone\b/, 'an idle paused agent reads Done');
     assert.doesNotMatch(html, /data-status="done"|<dd>done<\/dd>/);
   }
