@@ -103,6 +103,7 @@ test('the chronological conversation joins reserved notes and turns once and put
 test('the composer follows the thread while the conversation fills and scrolls the remaining sheet height', async () => {
   const html = render({ ...view(), turns: [turn()] });
   assert.ok(html.indexOf('class="chat-thread"') < html.indexOf('class="chat-compose"'));
+  assert.ok(html.indexOf('<summary>Conversation details</summary>') < html.indexOf('class="chat-compose"'));
   assert.match(html, /class="chat-scroll"[^>]*role="log"/);
   const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
   const rule = selector => css.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]+)\\}`))?.[1] ?? '';

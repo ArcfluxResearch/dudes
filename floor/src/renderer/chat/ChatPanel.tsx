@@ -113,13 +113,6 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
       {draft !== '' && problem !== null ? <p role="alert">{problem}</p> : null}
       {action.problem === null ? null : <p role="alert">{action.problem}</p>}
       </>}
-      <details className="chat-guidance"><summary>Conversation details</summary>
-        <p>Only a limited history is retained; individual turns may be unavailable.</p>
-        {row.mode === 'attached' ? <p>Messages wait for a supported hook before they are sent as context.</p>
-          : <p>Messages during active goal work join an admitted goal turn. Otherwise, each message can start one conversation turn.
-            Queuing does not confirm delivery, and a reply does not confirm the goal is complete.</p>}
-        <p>Messages can contain up to 4096 UTF-8 bytes. Drafts stay with each agent in this tab until reload.</p>
-      </details>
     </section>
   </div>;
 }
@@ -246,6 +239,13 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
             ref={handFocusOnLeave} data-focus-on-leave="chat-text"
             onClick={() => void retryChat(browserChatDeps)}>Check status</button>}
       </section>}
+      <details className="chat-guidance"><summary>Conversation details</summary>
+        <p>Only a limited history is retained; individual turns may be unavailable.</p>
+        {row.mode === 'attached' ? <p>Messages wait for a supported hook before they are sent as context.</p>
+          : <p>Messages during active goal work join an admitted goal turn. Otherwise, each message can start one conversation turn.
+            Queuing does not confirm delivery, and a reply does not confirm the goal is complete.</p>}
+        <p>Messages can contain up to 4096 UTF-8 bytes. Drafts stay with each agent in this tab until reload.</p>
+      </details>
     </div>
   </section>;
 }
