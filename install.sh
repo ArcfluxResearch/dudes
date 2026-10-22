@@ -198,6 +198,64 @@ valid_rollback() {
 	return 0
 }
 
+# Add a "Dudes" launcher that runs `dudes open`: an app in ~/Applications on macOS, a desktop entry
+# on Linux. It registers no URL scheme and no file type, so nothing outside the user's own menu can
+# start it. Each carries a marker line, `X-Dudes-Launcher=1` or `<key>DudesLauncher</key><true/>`,
+# which `dudes uninstall` looks for before it deletes one. A launcher that cannot be written never fails the install.
+add_launcher() {
+	[ -n "${HOME:-}" ] || return 0
+	program=$bin/dudes
+	case $program in
+	*[\"\`\$\\]* | *'
+'*) return 0 ;;
+	esac
+	case $(uname -s) in
+	Darwin)
+		app=$HOME/Applications/Dudes.app
+		quoted=$(printf '%s' "$program" | sed "s/'/'\\\\''/g") || return 0
+		{
+			rm -rf "$app" &&
+				mkdir -p "$app/Contents/MacOS" &&
+				cat > "$app/Contents/Info.plist" <<EOF &&
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key><string>Dudes</string>
+	<key>CFBundleIdentifier</key><string>dev.dudes.launcher</string>
+	<key>CFBundleName</key><string>Dudes</string>
+	<key>CFBundlePackageType</key><string>APPL</string>
+	<key>CFBundleVersion</key><string>1</string>
+	<key>LSUIElement</key><true/>
+	<key>DudesLauncher</key><true/>
+</dict>
+</plist>
+EOF
+				printf '#!/bin/sh\nexec '"'"'%s'"'"' open\n' "$quoted" > "$app/Contents/MacOS/Dudes" &&
+				chmod 755 "$app/Contents/MacOS/Dudes"
+		} 2>/dev/null || return 0
+		launcher=$app
+		;;
+	Linux)
+		applications=$HOME/.local/share/applications
+		{
+			mkdir -p "$applications" &&
+				cat > "$applications/dudes.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Dudes
+Comment=Open the Dudes Floor
+Exec="$program" open
+Terminal=false
+Categories=Development;
+X-Dudes-Launcher=1
+EOF
+		} 2>/dev/null || return 0
+		launcher=$applications/dudes.desktop
+		;;
+	esac
+}
+
 main() {
 	umask 022
 	version=
@@ -445,6 +503,9 @@ main() {
 	say "  duded, dudes and dudes-hook in $bin"
 	say "  the Floor in $share/floor"
 	say "  the licence notices in $share"
+	launcher=
+	add_launcher 2>/dev/null || true
+	[ -z "$launcher" ] || say "  the Dudes launcher in $launcher"
 	run=dudes
 	case ":${PATH:-}:" in
 	*":$bin:"*) say "$bin is on your PATH." ;;

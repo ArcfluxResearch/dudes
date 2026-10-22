@@ -40,8 +40,10 @@ twelve and HQ with sixteen:
 ## Open the Floor
 
 `dudes open` starts the daemon when it is down, mints a one-time sign-in link and opens it in your
-default browser (`open` on macOS, `xdg-open` on Linux). `dudes quickstart` ends by doing the same.
-Over SSH, or where no opener is found, `dudes open` prints
+default browser (`open` on macOS, `xdg-open` on Linux). `dudes quickstart` ends by doing the same,
+and the installer adds a Dudes launcher that runs it: an app in `~/Applications` on macOS, an entry in
+your applications menu on Linux. The launcher registers no web address and no file type, so no web page
+can start it. `dudes uninstall` removes it. Over SSH, or where no opener is found, `dudes open` prints
 the link instead, to paste into a browser on this computer within 60 seconds.
 `dudes floor open` always prints the link and opens nothing. Because you carry that link to another
 browser yourself, it works for 10 minutes. It has its own slots, and the daemon keeps the last four it
