@@ -23,6 +23,7 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ### Changes
 
+- An agent's Overview opens on one line that says what it is doing now, with the one action that fits, then anything that needs you, then its current work with the latest check. Output and the details (engine, mode, project, turns, cost and id) are folded away, and Edit look moves to the sheet's header. (#166)
 - The "Give a task" prompt starts as one line for all free agents, does not take focus, and closes with its close button or Escape until the set of free agents changes. (#160)
 - Chat keeps its message box at the bottom of the sheet, with the conversation scrolling above it, on desktop and phones. (#160)
 - Re-running `dudes quickstart` keeps every Floor setting of a config that already turns one on, applies Floor switch and project changes to a running daemon at once, and restarts the daemon only when no agent is busy. When one is, it names the agents, prints the restart commands and exits 4. (#159)
