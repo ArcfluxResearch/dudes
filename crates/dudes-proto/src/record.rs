@@ -293,6 +293,23 @@ pub struct BrowserOnboardingHire {
     pub trust_lsn: Option<dudes_types::Lsn>,
 }
 
+/// The retry identity a Floor page gave a ticket creation, as digests only: the digest of the
+/// browser-generated request id and the digest of the normalized creation fields. A repeat of the
+/// same id with the same fields is answered with the ticket already made.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "digest names distinguish journal attribution from raw browser identities"
+)]
+pub struct TicketRequestAttribution {
+    /// Digest of the browser-generated request identity.
+    #[schemars(with = "String")]
+    pub request_id_digest: Hex32,
+    /// Digest of the normalized creation fields.
+    #[schemars(with = "String")]
+    pub request_digest: Hex32,
+}
+
 /// Attribution of the later initial-goal append, which may use a new Floor session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BrowserOnboardingGoal {
@@ -1794,6 +1811,9 @@ pub enum Record {
         done_when: TicketCheck,
         /// Who created it, and so the author of the card's `Todo` status.
         by: Actor,
+        /// The page's retry identity; absent for a ticket made from the command line.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<TicketRequestAttribution>,
     },
     /// `ticket.edit`: the complete new values, so replay needs no merge. Conditional on
     /// `expected_seq`.
@@ -3386,6 +3406,7 @@ pub mod samples {
                     pid: 77,
                     uid: Some(501),
                 },
+                request: None,
             },
             RecordKind::TicketEdited => Record::TicketEdited {
                 card: card(),
@@ -4036,6 +4057,28 @@ mod tests {
 
     use super::samples::{agent, goal, mail, other_agent, turn};
     use super::*;
+
+    #[test]
+    fn a_ticket_made_before_request_ids_still_reads_and_unknown_members_are_ignored() {
+        let mut value = serde_json::to_value(samples::record(RecordKind::TicketCreated)).unwrap();
+        let body = value.as_object_mut().unwrap();
+        assert!(!body.contains_key("request"));
+        body.insert(
+            "request".into(),
+            serde_json::json!({"request_id_digest": "11".repeat(32), "request_digest": "22".repeat(32)}),
+        );
+        let Record::TicketCreated { request, .. } =
+            serde_json::from_value::<Record>(value.clone()).unwrap()
+        else {
+            panic!("a ticket");
+        };
+        assert_eq!(request.unwrap().request_id_digest, Hex32::new([0x11; 32]));
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("a_member_from_a_later_release".into(), 1.into());
+        assert!(serde_json::from_value::<Record>(value).is_ok());
+    }
 
     #[test]
     fn chat_records_require_every_new_field_and_explicit_nullable_session() {

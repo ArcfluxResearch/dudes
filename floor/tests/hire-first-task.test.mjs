@@ -38,6 +38,7 @@ function subscribe({ ticket = {}, settings = SETTINGS } = {}) {
 /** The daemon's answers by path; a function answers with a `{ status, body }` and an Error is a lost reply. */
 function daemon(routes) {
   const calls = [];
+  let minted = 0;
   const fetch = async (url, init) => {
     const request = JSON.parse(init.body);
     calls.push({ url, request });
@@ -47,7 +48,7 @@ function daemon(routes) {
     if (response instanceof Error) throw response;
     return { status: response.status, text: async () => response.body ?? '' };
   };
-  const base = { fetch, signedIn: () => true, random: (bytes) => { bytes.fill(0); bytes[0] = 1; }, refresh() {},
+  const base = { fetch, signedIn: () => true, random: (bytes) => { bytes.fill(0); bytes[0] = ++minted; }, refresh() {},
     epoch: () => getFloorState().epoch, session: () => 1 };
   return { calls, deps: { ...base, tickets: base } };
 }
@@ -84,7 +85,9 @@ test('a hire sends no task, then the page makes the ticket in the hire\'s projec
   await hireWithFirstTask(getFloorState(), net.deps);
   assert.deepEqual(net.calls.map((call) => call.url), ['/floor/onboard', '/floor/ticket', '/floor/ticket/assign']);
   assert.equal('goal_text' in net.calls[0].request, false, 'the hire carried the task');
-  assert.deepEqual(net.calls[1].request, { title: 'Write CONTRIBUTING.md', description: TASK, project: 'repo_1',
+  const { request_id: requestId, ...fields } = net.calls[1].request;
+  assert.match(requestId, /^[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(fields, { title: 'Write CONTRIBUTING.md', description: TASK, project: 'repo_1',
     done_when: 'default', done_when_revision: REV });
   assert.deepEqual(net.calls[2].request, { card: CARD, agent: AGENT, expected_seq: 1 });
   const task = hire.getHireState().task;
@@ -109,6 +112,9 @@ test('a ticket that was not saved keeps the typed text and tries again on reques
 
   await makeFirstTask(net.deps);
   assert.equal(hire.getHireState().task.phase, 'made');
+  const creates = net.calls.filter((call) => call.url === '/floor/ticket');
+  assert.equal(creates.length, 2);
+  assert.equal(creates[1].request.request_id, creates[0].request.request_id, 'Try again made a new create');
   assert.equal(net.calls.filter((call) => call.url === '/floor/onboard').length, 1, 'the retry hired again');
   assert.equal(net.calls.filter((call) => call.url === '/floor/ticket/assign').length, 1);
   await makeFirstTask(net.deps);

@@ -13,7 +13,7 @@ use dudes_proto::instruction::{
     InstructionObservationOwner, InstructionPendingReview, InstructionReviewInterval,
     InstructionReviewWatermark,
 };
-use dudes_proto::record::Hex32;
+use dudes_proto::record::{Hex32, TicketRequestAttribution};
 use dudes_proto::rpc::ticket::{
     TicketAcceptParams, TicketAssignParams, TicketCreateParams, TicketEditParams, TicketReadParams,
     TicketReadResult, TicketRemoveParams, TicketStopParams,
@@ -23,6 +23,7 @@ use dudes_types::{AgentId, CardId, Lsn, Seq};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 
 /// The most bytes of a ticket request, and of the answer to a read.
 pub const MAX_TICKET_BODY_BYTES: usize = 24_576;
@@ -82,8 +83,8 @@ impl TicketRoute {
 /// One admitted request. Each is exactly the members of the matching `ticket.*` method.
 #[derive(Clone, Debug)]
 pub enum TicketRequest {
-    /// Make a ticket.
-    Create(TicketCreateParams),
+    /// Make a ticket. The attribution is present when the page sent a retry identity.
+    Create(TicketCreateParams, Option<TicketRequestAttribution>),
     /// Change a ticket in To do.
     Edit(TicketEditParams),
     /// Give a ticket to an agent.
@@ -114,12 +115,24 @@ impl TicketRequest {
         }
         Ok(match route {
             TicketRoute::Create => {
-                let request: TicketCreateParams = decode(bytes)?;
+                let raw: FloorCreate = decode(bytes)?;
+                let request = TicketCreateParams {
+                    title: raw.title,
+                    description: raw.description,
+                    project: raw.project,
+                    done_when: raw.done_when,
+                    done_when_revision: raw.done_when_revision,
+                };
                 named_check(
                     request.done_when.is_some(),
                     request.done_when_revision.is_some(),
                 )?;
-                Self::Create(request)
+                let attribution = raw
+                    .request_id
+                    .as_deref()
+                    .map(|wire| create_attribution(wire, &request))
+                    .transpose()?;
+                Self::Create(request, attribution)
             }
             TicketRoute::Edit => {
                 let request: TicketEditParams = decode(bytes)?;
@@ -156,10 +169,90 @@ impl TicketRequest {
     /// Whether the request counts against the session's creations or its assignments.
     pub(crate) const fn kind(&self) -> Option<Counted> {
         match self {
-            Self::Create(_) => Some(Counted::Create),
+            Self::Create(..) => Some(Counted::Create),
             Self::Assign(_) => Some(Counted::Assign),
             _ => None,
         }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FloorCreate {
+    #[serde(default)]
+    request_id: Option<String>,
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    done_when: Option<String>,
+    #[serde(default)]
+    done_when_revision: Option<Hex32>,
+}
+
+/// The digests that let a repeat of one creation be recognised: the request id as the page minted
+/// it, and the fields it carried, so the same id with other fields is told apart from a retry.
+fn create_attribution(
+    wire: &str,
+    request: &TicketCreateParams,
+) -> Result<TicketRequestAttribution> {
+    let id = crate::floor_actions::decode_attempt(wire)?;
+    let revision = request.done_when_revision.map(Hex32::to_hex);
+    let fields = [
+        ("title", Some(request.title.as_str())),
+        ("description", request.description.as_deref()),
+        ("project", request.project.as_deref()),
+        ("done_when", request.done_when.as_deref()),
+        ("done_when_revision", revision.as_deref()),
+    ];
+    let present: Vec<(&str, &str)> = fields
+        .into_iter()
+        .filter_map(|(name, value)| value.map(|value| (name, value)))
+        .collect();
+    Ok(TicketRequestAttribution {
+        request_id_digest: Hex32::new(Sha256::digest(id.bytes()).into()),
+        request_digest: crate::floor_chat::digest_fields("dudes.ticket.create.v1", &present),
+    })
+}
+
+/// Which ticket each page-sent creation request made, rebuilt from the journal at start so a
+/// repeat after a restart is still recognised.
+#[derive(Debug, Default)]
+pub(crate) struct TicketCreateIndex {
+    made: BTreeMap<Hex32, (Hex32, CardId)>,
+}
+
+impl TicketCreateIndex {
+    pub(crate) fn replay(reader: &dudes_journal::Reader) -> Result<Self> {
+        let mut index = Self::default();
+        for item in reader.iter_from(Lsn::ZERO)? {
+            let (_, entry) = item?;
+            index.apply(&entry.record)?;
+        }
+        Ok(index)
+    }
+
+    pub(crate) fn apply(&mut self, record: &dudes_proto::Record) -> Result<()> {
+        if let dudes_proto::Record::TicketCreated {
+            card,
+            request: Some(request),
+            ..
+        } = record
+            && self
+                .made
+                .insert(request.request_id_digest, (request.request_digest, *card))
+                .is_some()
+        {
+            bail!("duplicate Floor ticket request in journal");
+        }
+        Ok(())
+    }
+
+    /// The ticket this request id made and the digest of the fields it carried.
+    pub(crate) fn get(&self, request_id_digest: Hex32) -> Option<(Hex32, CardId)> {
+        self.made.get(&request_id_digest).copied()
     }
 }
 

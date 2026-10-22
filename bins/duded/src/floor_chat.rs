@@ -232,7 +232,7 @@ fn request_digest(domain: &str, agent: &str, field: &str, value: &str) -> Hex32 
     digest_fields(domain, &[("agent", agent), (field, value)])
 }
 
-fn digest_fields(domain: &str, fields: &[(&str, &str)]) -> Hex32 {
+pub(crate) fn digest_fields(domain: &str, fields: &[(&str, &str)]) -> Hex32 {
     let mut hasher = Sha256::new();
     hasher.update(domain.as_bytes());
     hasher.update([0]);

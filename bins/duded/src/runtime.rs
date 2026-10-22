@@ -908,6 +908,7 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// Only attributed durable answers populate this replayable request index.
     pub(crate) answer_index: crate::floor_answer::AnswerIndex,
     pub(crate) chat_index: crate::floor_chat::ChatIndex,
+    pub(crate) ticket_creates: crate::floor_ticket::TicketCreateIndex,
     /// `<state dir>/agents`: each agent's own folder is under it, named by its id.
     pub(crate) agents_root: PathBuf,
     pub(crate) running_providers: crate::config::ProviderTables,
@@ -8408,6 +8409,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         self.chat_index
             .apply(lsn, record)
             .context("indexing durable browser note record")?;
+        self.ticket_creates
+            .apply(record)
+            .context("indexing durable browser ticket record")?;
         self.control_index
             .apply(lsn, record)
             .context("indexing durable browser control record")?;

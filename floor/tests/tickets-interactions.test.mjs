@@ -272,7 +272,7 @@ test('a refused optional assignment stays visible on the auto-opened created car
     assert.equal(notice.getAttribute('data-tone'), 'problem');
     assert.ok(textOf(notice).includes('Ticket created, but it was not given to Ada. That agent is not available for this project.'));
     assert.deepEqual(seen.filter(([url]) => url === '/floor/ticket' || url.endsWith('/assign')), [
-      ['/floor/ticket', { title: 'Keep the saved ticket', project: 'service', done_when: 'default', done_when_revision: 'a'.repeat(64) }],
+      ['/floor/ticket', { request_id: 'A'.repeat(43), title: 'Keep the saved ticket', project: 'service', done_when: 'default', done_when_revision: 'a'.repeat(64) }],
       ['/floor/ticket/assign', { card: cardId(2), agent: ADA, expected_seq: 0 }],
     ]);
   } finally { await app.close(); }

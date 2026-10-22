@@ -47,7 +47,7 @@ pub(crate) fn register(dispatcher: &mut Dispatcher, handle: &Handle) {
         move |call, pid| {
             let request: TicketCreateParams = params(&call)?;
             let by = actor(call.role, pid)?;
-            match create.ask(Ask::Ticket(TicketAsk::Create { request, by }))? {
+            match create.ask(Ask::Ticket(TicketAsk::command_create(request, by)))? {
                 Answered::TicketCreated(result) => encode(Method::TicketCreate, &result),
                 _ => Err(wrong_answer(Method::TicketCreate)),
             }

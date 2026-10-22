@@ -58,6 +58,7 @@ fn created(card: CardId) -> Record {
         project: "service".into(),
         done_when: check(),
         by: operator(),
+        request: None,
     }
 }
 

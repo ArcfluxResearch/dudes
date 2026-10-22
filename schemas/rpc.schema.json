@@ -7404,6 +7404,17 @@
               "description": "The enrolled project the ticket runs in.",
               "type": "string"
             },
+            "request": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TicketRequestAttribution"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The page's retry identity; absent for a ticket made from the command line."
+            },
             "t": {
               "const": "ticket_created",
               "type": "string"
@@ -19464,6 +19475,24 @@
       "required": [
         "card",
         "expected_seq"
+      ],
+      "type": "object"
+    },
+    "TicketRequestAttribution": {
+      "description": "The retry identity a Floor page gave a ticket creation, as digests only: the digest of the\nbrowser-generated request id and the digest of the normalized creation fields. A repeat of the\nsame id with the same fields is answered with the ticket already made.",
+      "properties": {
+        "request_digest": {
+          "description": "Digest of the normalized creation fields.",
+          "type": "string"
+        },
+        "request_id_digest": {
+          "description": "Digest of the browser-generated request identity.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id_digest",
+        "request_digest"
       ],
       "type": "object"
     },

@@ -95,6 +95,7 @@ fn story(goal: Goal) -> Vec<Record> {
             project: "service".into(),
             done_when: check(),
             by: operator,
+            request: None,
         },
         Record::TicketAssigned {
             card: card(),

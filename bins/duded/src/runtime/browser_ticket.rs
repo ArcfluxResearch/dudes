@@ -29,7 +29,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             session_digest: session.digest(),
         };
         let (ask, state, card) = match request {
-            TicketRequest::Create(request) => (TicketAsk::Create { request, by }, "created", None),
+            TicketRequest::Create(request, retry) => {
+                (TicketAsk::Create { request, retry, by }, "created", None)
+            }
             TicketRequest::Edit(request) => {
                 let card = request.card;
                 (TicketAsk::Edit { request, by }, "edited", Some(card))

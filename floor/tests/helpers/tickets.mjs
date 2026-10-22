@@ -70,6 +70,7 @@ export function subscribe(store, { agents = [], cards = [], ticket = {}, checks 
 /** A daemon that answers each request from `reply(url, body)`, and the requests it saw. */
 export function daemon(reply) {
   const seen = [];
+  let minted = 0;
   const deps = {
     fetch: async (url, init) => {
       const body = init.body === undefined ? undefined : JSON.parse(init.body);
@@ -78,7 +79,7 @@ export function daemon(reply) {
       return { status, text: async () => text };
     },
     signedIn: () => true,
-    random: () => {},
+    random: (bytes) => { bytes.fill(0); bytes[0] = ++minted; },
     refresh: () => { deps.refreshed += 1; },
     epoch: () => 1,
     session: () => 1,

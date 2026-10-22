@@ -997,6 +997,89 @@ fn a_create_lost_after_the_fsync_leaves_exactly_one_ticket() {
     board.stop();
 }
 
+const CREATE_ID: &str = "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+/// A page that retries a create whose answer it never saw sends the same request id, and gets the
+/// ticket the first try made. Nothing is appended the second time.
+#[test]
+fn a_retried_create_makes_one_ticket() {
+    let fixture = Fixture::new();
+    let (settings, repo) = settings(&fixture, true);
+    let board = Board::boot(settings, repo, vec![common::passes()]);
+    let page = board.page();
+    let body = json!({"request_id": CREATE_ID, "title": "Maybe saved"});
+    let first = id_of(&page.create(&body).ok());
+    assert_eq!(id_of(&page.create(&body).ok()), first);
+    assert_eq!(tickets_made(&fixture), 1);
+    let other = id_of(
+        &page
+            .create(&json!({"request_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "title": "Maybe saved"}))
+            .ok(),
+    );
+    assert_ne!(other, first);
+    assert_eq!(tickets_made(&fixture), 2);
+    board.stop();
+}
+
+/// The same request id with other fields is no retry: it is refused and appends nothing.
+#[test]
+fn a_create_that_reuses_an_id_for_other_fields_is_refused() {
+    let fixture = Fixture::new();
+    let (settings, repo) = settings(&fixture, true);
+    let board = Board::boot(settings, repo, vec![common::passes()]);
+    let page = board.page();
+    page.create(&json!({"request_id": CREATE_ID, "title": "First"}))
+        .ok();
+    page.create(&json!({"request_id": CREATE_ID, "title": "Second"}))
+        .empty(400);
+    page.create(&json!({"request_id": CREATE_ID, "title": "First", "description": "More"}))
+        .empty(400);
+    page.create(&json!({"request_id": "short", "title": "First"}))
+        .empty(400);
+    assert_eq!(tickets_made(&fixture), 1);
+    board.stop();
+}
+
+/// The id is remembered across a restart, because the daemon rebuilds it from the journal.
+#[test]
+fn a_retried_create_is_recognised_after_a_restart() {
+    let fixture = Fixture::new();
+    let (settings, repo) = settings(&fixture, true);
+    let body = json!({"request_id": CREATE_ID, "title": "Before the restart"});
+    let board = Board::boot(settings.clone(), repo.clone(), vec![common::passes()]);
+    let first = id_of(&board.page().create(&body).ok());
+    board.stop();
+    let board = Board::boot(settings, repo, vec![common::passes()]);
+    assert_eq!(id_of(&board.page().create(&body).ok()), first);
+    assert_eq!(tickets_made(&fixture), 1);
+    board.stop();
+}
+
+/// A lost answer to the assignment that follows a create is retried with the sequence the page
+/// had. The ticket is given once; the retry is told the ticket changed.
+#[test]
+fn a_retried_assignment_gives_the_ticket_once() {
+    let fixture = Fixture::new();
+    let (settings, repo) = settings(&fixture, true);
+    let board = Board::boot(settings, repo, vec![common::passes()]);
+    let agent = board.hire("Cody");
+    let page = board.page();
+    let created = page
+        .create(&json!({"request_id": CREATE_ID, "title": "Create then give"}))
+        .ok();
+    let give = json!({"card": id_of(&created), "agent": agent, "expected_seq": created["seq"]});
+    page.post("/floor/ticket/assign", &give).ok();
+    page.post("/floor/ticket/assign", &give)
+        .refused("stale_card");
+    let assigned = fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::TicketAssigned { .. }))
+        .count();
+    assert_eq!(assigned, 1);
+    board.stop();
+}
+
 // ---- stop, remove and the old decoder --------------------------------------------------------
 
 /// Stop returns a Working ticket to To do and Remove takes it off the board, both through the
