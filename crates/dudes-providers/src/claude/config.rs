@@ -357,6 +357,23 @@ pub enum ConfigError {
 }
 
 impl ClaudeConfig {
+    /// The model `extra_args` name with `--model <x>` or `--model=<x>`, the last one winning as it
+    /// does on the command line. Appended after the settings file, it overrides that file's model.
+    #[must_use]
+    pub fn extra_args_model(&self) -> Option<OsString> {
+        let mut found = None;
+        let mut args = self.extra_args.iter();
+        while let Some(arg) = args.next() {
+            if arg == "--model" {
+                found = Some(args.next().cloned().unwrap_or_default());
+            } else if let Some(value) = arg.to_str().and_then(|text| text.strip_prefix("--model="))
+            {
+                found = Some(OsString::from(value));
+            }
+        }
+        found
+    }
+
     /// Whether this table is one the adapter can honour, given the environment the daemon will
     /// hand a managed child. Pure: the environment is an argument, nothing is read here.
     ///
@@ -560,6 +577,25 @@ mod tests {
             serde_json::from_str::<ClaudeConfig>(r#"{"setting_sources":["workspace"]}"#).is_err(),
             "an unknown setting source is refused"
         );
+    }
+
+    /// A model in `extra_args` is found in both spellings, the last one wins, and a flag with no
+    /// value still counts as fixing one.
+    #[test]
+    fn a_model_in_extra_args_is_found_in_both_spellings() {
+        let model = |args: &[&str]| {
+            ClaudeConfig {
+                extra_args: args.iter().map(OsString::from).collect(),
+                ..ClaudeConfig::default()
+            }
+            .extra_args_model()
+        };
+        assert_eq!(model(&[]), None);
+        assert_eq!(model(&["--add-dir", "/tmp/x", "--modelx"]), None);
+        assert_eq!(model(&["--model", "haiku"]), Some("haiku".into()));
+        assert_eq!(model(&["--model=haiku"]), Some("haiku".into()));
+        assert_eq!(model(&["--model", "a", "--model=b"]), Some("b".into()));
+        assert_eq!(model(&["--model"]), Some(OsString::new()));
     }
 
     /// the two managed-run limit spellings are refused in `extra_args` — bare

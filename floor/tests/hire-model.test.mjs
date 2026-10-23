@@ -11,22 +11,20 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { getFloorState, resetFloorStore, applyServerFrame, beginFloorEpoch, noteTransport } from '../src/renderer/floor/store.ts';
+import { decodeDaemonReport } from '../src/renderer/setup/daemon.ts';
 import * as hire from '../src/renderer/onboarding/hire.ts';
 
 const root = resolve(import.meta.dirname, '..');
 const AGENT = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
-const REV = 'a'.repeat(64);
 const CATALOG = { floor_usd_per_day_micros: null, workspaces: [{ workspace_id: 'repo_1', label: 'Parser',
   engines: ['claude', 'codex'], goal_usd_micros: null, agent_usd_per_day_micros: null, agent_tokens_per_day: null,
   goal_tokens: null, hop_cap: 8 }] };
-const CHECKS = { workspaces: [{ workspace_id: 'repo_1', checks: [
-  { id: 'default', label: 'Tests pass', revision: REV, may_already_pass: false }] }] };
 
 function subscribe(claudeRow = { provider: 'claude', program: 'claude', found: true }) {
   const epoch = beginFloorEpoch();
   noteTransport('open');
   applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 3, agents: [] }, onboarding: CATALOG,
-    checks: CHECKS, ticket: {}, daemon: { providers: [claudeRow, { provider: 'codex', program: 'codex', found: true }] } }), epoch);
+    ticket: {}, daemon: { providers: [claudeRow, { provider: 'codex', program: 'codex', found: true }] } }), epoch);
 }
 
 function daemon() {
@@ -51,7 +49,7 @@ after(async () => { await server?.close(); });
 beforeEach(() => { resetFloorStore(); hire.resetHire(); });
 
 const render = () => renderToStaticMarkup(createElement(View, { hire: hire.getHireState(), floor: getFloorState(), onClose() {} }));
-const fill = (patch = {}) => hire.editDraft({ name: 'Kim', workspaceId: 'repo_1', engine: 'claude', taskText: 'go', ...patch });
+const fill = (patch = {}) => hire.editDraft({ name: 'Kim', workspaceId: 'repo_1', engine: 'claude', ...patch });
 
 test('a hire sends model only when one is chosen, a suggestion or a typed name', async () => {
   subscribe();
@@ -101,4 +99,28 @@ test('with a configured model the default says so, and a typed name shows in the
   assert.doesNotMatch(render(), /Engine default/);
   hire.editDraft({ model: 'my-model' });
   assert.match(render(), /name="model_name"[^>]*value="my-model"/);
+});
+
+test('a model the configuration fixes is shown with no choice, and a configured one that is not fixed still offers the choice', () => {
+  subscribe({ provider: 'claude', program: 'claude', found: true, configured_model: 'haiku', model_fixed: true });
+  fill();
+  hire.showSection('engine');
+  const html = render();
+  assert.match(html, /The configuration sets this engine.s model to haiku/);
+  assert.doesNotMatch(html, /name="model"|name="model_name"|Configured: /);
+  subscribe({ provider: 'claude', program: 'claude', found: true, model_fixed: true });
+  assert.match(render(), /The configuration sets this engine.s model, so it cannot be chosen here/);
+  assert.doesNotMatch(render(), /name="model"/);
+  subscribe({ provider: 'claude', program: 'claude', found: true, configured_model: 'haiku' });
+  assert.match(render(), /name="model"[^>]*value="opus"/);
+});
+
+test('the daemon report decodes the fixed flag only as true, and a refused hire shows the daemon\'s note', () => {
+  const decode = (row) => decodeDaemonReport({ providers: [row] });
+  assert.equal(decode({ provider: 'claude', program: 'claude', found: true, model_fixed: true })?.providers[0].modelFixed, true);
+  assert.equal(decode({ provider: 'claude', program: 'claude', found: true })?.providers[0].modelFixed, undefined);
+  assert.equal(decode({ provider: 'claude', program: 'claude', found: true, model_fixed: false }), null);
+  const note = 'the configuration sets this engine\'s model, so a hire cannot choose one';
+  assert.deepEqual(hire.decodeHireResponse(409, JSON.stringify({ attempt_id: 'x', state: 'refused', reason: 'model_fixed', note }), 'x'),
+    { kind: 'refused', note });
 });

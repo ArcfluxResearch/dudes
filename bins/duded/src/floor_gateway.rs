@@ -74,7 +74,7 @@ use recovery::RecoveryRoute;
 /// The configured public root for the first static shell.
 pub const BASE_PATH: &str = "/floor/";
 /// The browser-wire generation required by the daemon and its matching Floor bundle.
-pub const BROWSER_WIRE_VERSION: u32 = 5;
+pub const BROWSER_WIRE_VERSION: u32 = 6;
 
 const MANIFEST_NAME: &str = "release-manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -2092,6 +2092,14 @@ fn onboard_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) 
             409,
             "Conflict",
             &serde_json::json!({ "attempt_id": attempt_wire, "state": "refused", "reason": reason }),
+        ),
+        Err(OnboardRefusal::ModelFixed) => action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({
+                "attempt_id": attempt_wire, "state": "refused", "reason": "model_fixed",
+                "note": "the configuration sets this engine's model, so a hire cannot choose one"
+            }),
         ),
         Err(OnboardRefusal::SharedFolder(refusal)) => action_json(
             409,

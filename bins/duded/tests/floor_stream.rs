@@ -32,7 +32,7 @@ const NATIVE_EXTENSION_OFFER: &str = "permessage-deflate; client_max_window_bits
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v5"
+    "/tests/fixtures/floor-release-v6"
 );
 
 fn free_port() -> u16 {

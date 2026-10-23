@@ -144,14 +144,22 @@ function OwnCopyChoice({ copy, workspace, names, frozen }: {
 }
 
 /** Which model the agent runs: the engine's own default, a suggestion, or any name typed. */
-function ModelChoice({ engine, draft, frozen, configured, invalid }: {
+function ModelChoice({ engine, draft, frozen, configured, fixed, invalid }: {
   readonly engine: HireEngine;
   readonly draft: HireDraft;
   readonly frozen: boolean;
   /** The model the daemon's configuration gives every agent of this engine, if it does. */
   readonly configured: string | null;
+  /** Whether the configuration fixes that model beyond what a hire can replace. */
+  readonly fixed: boolean;
   readonly invalid: boolean;
 }) {
+  if (fixed) {
+    return <p className="hire-note" data-hire-model="fixed">
+      {configured === null ? 'The configuration sets this engine\u2019s model, so it cannot be chosen here.'
+        : `The configuration sets this engine\u2019s model to ${configured}, so it cannot be chosen here.`}
+    </p>;
+  }
   const suggestions = MODEL_SUGGESTIONS[engine];
   const chosen = draft.model ?? '';
   const typed = suggestions.includes(chosen) ? '' : chosen;
@@ -360,7 +368,7 @@ function HireForm({ hire, floor, onClose }: {
                 </fieldset>
               )}
               {engine === null ? null : <ModelChoice engine={engine} draft={hire.draft} frozen={frozen}
-                configured={row?.configuredModel ?? null} invalid={invalid('model')} />}
+                configured={row?.configuredModel ?? null} fixed={row?.modelFixed === true} invalid={invalid('model')} />}
               {workspace === null ? null
                 : <OwnCopyChoice copy={copy} workspace={workspace} names={sharing} frozen={frozen} />}
               {withdrawn ? <p className="hire-note">{"An engine missing here is turned off in the daemon's "

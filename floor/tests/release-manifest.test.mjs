@@ -16,9 +16,9 @@ const contract = JSON.parse(await readFile(resolve(import.meta.dirname, 'fixture
 
 test('the release build selects browser generation four with manifest schema one', async () => {
   const build = JSON.parse(await readFile(resolve(import.meta.dirname, '../build-contract.json'), 'utf8'));
-  assert.deepEqual(build, { schema_version: 1, base_path: '/floor/', browser_wire_version: 5 });
+  assert.deepEqual(build, { schema_version: 1, base_path: '/floor/', browser_wire_version: 6 });
   assert.doesNotThrow(() => validateBuildContract(build));
-  for (const browser_wire_version of [1, 2, 3, 4]) {
+  for (const browser_wire_version of [1, 2, 3, 4, 5]) {
     assert.throws(() => validateBuildContract({ ...build, browser_wire_version }), /unsupported Floor build contract/);
   }
   assert.throws(() => validateBuildContract({ ...build, schema_version: 3 }), /unsupported Floor build contract/);

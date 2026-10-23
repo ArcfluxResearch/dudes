@@ -92,6 +92,8 @@ Dudes reads no engine's credentials or files.
    turned on. The App step also lets you choose the model the agent runs (`dudes hire --model <name>`
    does the same): Claude Code suggests `opus`, `sonnet` and `haiku`, and any other name may be typed.
    Left alone, the agent uses the app's own default, or the model your configuration sets for that app.
+   If the configuration passes `--model` in Claude Code's extra arguments, that model wins over any other, so
+   the App step shows it and offers no choice, and a hire that names a model is refused.
    The model is fixed for the agent's life; Dudes checks only its spelling, and the app reports a
    name it does not know when the agent first runs. From the command line, hire an agent, then give it a goal with the id that `hire`
    prints. This one gets a folder of its own. Dudes cannot check another agent's engine settings

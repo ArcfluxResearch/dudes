@@ -621,7 +621,7 @@ export function decodeHireResponse(status: number, text: string, attemptId: stri
       const body = json(text);
       if (exactly(body, ['attempt_id', 'state', 'reason', 'note'])
         && body.attempt_id === attemptId && body.state === 'refused'
-        && (body.reason === 'shared_folder' || body.reason === 'own_copy')
+        && (body.reason === 'shared_folder' || body.reason === 'own_copy' || body.reason === 'model_fixed')
         && typeof body.note === 'string' && body.note.length > 0 && body.note.length <= 512
         && !/[\u0000-\u001f\u007f]/u.test(body.note)) {
         return Object.freeze({ kind: 'refused', note: body.note });

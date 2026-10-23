@@ -201,7 +201,7 @@ impl Daemon {
         settings.floor = Some(duded::settings::FloorSettings {
             assets_dir: std::path::PathBuf::from(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/floor-release-v5"
+                "/tests/fixtures/floor-release-v6"
             )),
             port: Some(0),
         });

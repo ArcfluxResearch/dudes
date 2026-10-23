@@ -36,8 +36,29 @@ const MAX_DETAIL_BYTES: usize = 2048;
 pub(crate) struct Configured {
     pub(crate) provider: Provider,
     pub(crate) program: OsString,
-    /// The model the operator's configuration fixes for every agent of this engine, if any.
+    /// The model the operator's configuration gives every agent of this engine, if any and if the
+    /// Floor can show it: a value that is not a valid model name is left out, because the page
+    /// would otherwise reject the whole report.
     pub(crate) model: Option<String>,
+    /// Whether that model is fixed in a way a hire's own model cannot replace.
+    pub(crate) model_fixed: bool,
+}
+
+impl Configured {
+    /// The report's model fields from the adapter's configured selector and its fixed model.
+    pub(crate) fn model_fields(
+        selector: Option<&str>,
+        fixed: Option<&std::ffi::OsStr>,
+    ) -> (Option<String>, bool) {
+        let shown = match fixed {
+            Some(value) => value.to_str(),
+            None => selector,
+        };
+        let shown = shown
+            .filter(|name| dudes_types::ModelName::parse(name).is_ok())
+            .map(str::to_owned);
+        (shown, fixed.is_some())
+    }
 }
 
 /// What one check found for one provider: the file a launch would run, or why there is none.
@@ -328,6 +349,9 @@ impl Shared {
                         .file_name()
                         .and_then(|name| displayable(name, MAX_PROGRAM_BYTES)),
                     found: found.resolved.is_ok(),
+                    model_fixed: self.providers.iter().any(|configured| {
+                        configured.provider == found.provider && configured.model_fixed
+                    }),
                     configured_model: self
                         .providers
                         .iter()
@@ -366,6 +390,8 @@ struct ProviderView {
     found: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     configured_model: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    model_fixed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -755,6 +781,57 @@ mod tests {
         };
         let probes: Vec<ProviderProbe> = rows.iter().map(probe).collect();
         serde_json::to_value(shared.view(rows, &probes)).expect("the view serializes")
+    }
+
+    /// The report says which model the configuration gives an engine and whether it is fixed, and
+    /// leaves out a value the page could not show, because the page rejects the whole report for it.
+    #[test]
+    fn the_report_names_the_configured_model_and_hides_one_the_page_cannot_show() {
+        let fields = |selector: Option<&str>, fixed: Option<&str>| {
+            Configured::model_fields(selector, fixed.map(OsStr::new))
+        };
+        assert_eq!(fields(None, None), (None, false));
+        assert_eq!(
+            fields(Some("sonnet"), None),
+            (Some("sonnet".to_owned()), false)
+        );
+        assert_eq!(fields(Some("--bad"), None), (None, false));
+        assert_eq!(fields(Some("a b"), None), (None, false));
+        assert_eq!(
+            fields(Some("sonnet"), Some("haiku")),
+            (Some("haiku".to_owned()), true),
+            "a model fixed in the extra arguments wins over the model key"
+        );
+        assert_eq!(fields(Some("sonnet"), Some("")), (None, true));
+        assert_eq!(fields(None, Some("-x y")), (None, true));
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            assert_eq!(
+                Configured::model_fields(None, Some(OsStr::from_bytes(b"\xff"))),
+                (None, true)
+            );
+        }
+
+        let shared = Shared {
+            codex_profile: None,
+            providers: vec![Configured {
+                provider: Provider::Claude,
+                program: OsString::from("claude"),
+                model: Some("haiku".to_owned()),
+                model_fixed: true,
+            }],
+            path: None,
+            home: Home::default(),
+            state_dir: PathBuf::from("/s"),
+            state: Mutex::default(),
+            changed: Condvar::new(),
+        };
+        let rows = [found(Provider::Claude, "claude", None)];
+        let probes: Vec<ProviderProbe> = rows.iter().map(probe).collect();
+        let view = serde_json::to_value(shared.view(&rows, &probes)).expect("the view serializes");
+        assert_eq!(view["providers"][0]["configured_model"], "haiku");
+        assert_eq!(view["providers"][0]["model_fixed"], true);
     }
 
     #[test]

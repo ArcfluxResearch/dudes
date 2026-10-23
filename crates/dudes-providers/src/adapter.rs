@@ -268,6 +268,12 @@ pub trait Adapter: Send + Sync {
     /// Pure, and asked **once per turn** by the supervisor, before the `TurnIssued`
     /// that records it is fsynced.
     fn model_selection(&self) -> ModelSelection;
+    /// The model the operator's configuration fixes for every agent of this engine in a way a
+    /// hire's model cannot replace, as its raw spelling (empty when the flag carries no value).
+    /// `None` when nothing fixes it. Pure and constant.
+    fn fixed_model(&self) -> Option<std::ffi::OsString> {
+        None
+    }
     /// The launch of one managed turn. Invariant 7: typed parts, the task text is one argv
     /// element or stdin, nothing is interpolated into a shell.
     ///

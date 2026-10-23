@@ -37,7 +37,7 @@ const SESSION: &str = "DUDES_FLOOR_OUTPUT_SESSION";
 const DIR: &str = "DUDES_FLOOR_OUTPUT_DIR";
 const ASSETS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v5"
+    "/tests/fixtures/floor-release-v6"
 );
 
 #[test]

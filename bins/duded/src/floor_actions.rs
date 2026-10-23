@@ -579,6 +579,8 @@ pub enum OnboardRefusal {
     Check(&'static str),
     /// Current owned-child admission refused before a hire was appended.
     SharedFolder(dudes_supervisor::SharedFolderRefusal),
+    /// The engine's configuration fixes the model, so a hire cannot choose one; nothing was hired.
+    ModelFixed,
     /// The hire's own copy was refused or could not be made; nothing was hired.
     OwnCopy(CopyRefusal),
 }
