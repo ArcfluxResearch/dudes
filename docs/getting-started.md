@@ -27,9 +27,9 @@ Dudes reads no engine's credentials or files.
      answer, change goals, give tickets to agents, retire, recover and add projects from the
      Floor. A ticket given to an agent starts it, and agents then run and spend under your
      account. Anyone holding your one-time Floor link could start agents that act with your
-     account's full reach. The terminal and the changed-file views (`floor.git` and `floor.diff`)
-     stay off; turn the views on in the Floor's **Settings**, under **Show changed files** and
-     **Read ticket changes**. When your file already turns any Floor action on, quickstart keeps
+     account's full reach. The changed-file views (`floor.git` and `floor.diff`) are on too, so
+     a ticket lists the files its agent changed and opens each one side by side. The terminal
+     stays off. When your file already turns any Floor action on, quickstart keeps
      every Floor setting as it is.
    - **No cap, project or agent.** It sets no spending cap (subscription plans have their own
      limits; see [Budgets](configuration.md#budgets)), enrolls no project and hires no agent. You
