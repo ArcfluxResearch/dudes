@@ -1223,6 +1223,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn new_file_listing_drops_a_cut_record_and_splits_nested_repositories() {
+        let path = |name: &str| RepoPath::from_bytes(name.as_bytes()).unwrap();
+        let cut = new_files(b"a\0b", true).unwrap();
+        assert_eq!(cut.files, BTreeSet::from([path("a")]));
+        assert!(cut.nested.is_empty());
+        assert!(cut.cut);
+        let whole = new_files(b"a\0b/\0", false).unwrap();
+        assert_eq!(whole.files, BTreeSet::from([path("a")]));
+        assert_eq!(whole.nested, BTreeSet::from([path("b")]));
+        assert!(!whole.cut);
+    }
+
     #[cfg(unix)]
     #[test]
     fn program_probe_uses_only_the_remaining_content_budget() {

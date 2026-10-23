@@ -164,6 +164,21 @@ test('omitted and untracked counts are stated, with a lower bound when the daemo
   assert.match(page, /At least 4 new files are not listed because the list is full or its name cannot be shown\./);
 });
 
+test('a cut new-file listing with no counted files says it was cut short, not "at least 0"', () => {
+  const page = html(diffPage({ untracked: 0, untracked_lower_bound: true }));
+  assert.match(page, /The list of new files was cut short, so some may be missing\./);
+  assert.doesNotMatch(page, /At least 0|not listed because/);
+});
+
+test('only a nested repository row mentions a Git repository; other unsupported kinds do not', () => {
+  const row = (kind) => html(diffPage({ entries: [diffEntry({ entry_id: null, path: 'x', kind,
+    availability: { state: 'unavailable', reason: 'unsupported_kind' } })] }));
+  assert.match(row('nested_repository'), /A folder with its own Git repository is not opened\./);
+  assert.doesNotMatch(row('nested_repository'), /no text to show/);
+  assert.match(row('added'), /This kind of file has no text to show\./);
+  assert.doesNotMatch(row('added'), /Git repository/);
+});
+
 test('binary and oversize rows say why and have no Open button', () => {
   const page = diffPage({ entries: [
     diffEntry({ entry_id: null, path: 'image.bin', availability: { state: 'unavailable', reason: 'binary' } }),

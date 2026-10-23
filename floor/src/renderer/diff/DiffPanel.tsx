@@ -31,12 +31,13 @@ const OMISSIONS: Readonly<Record<DiffOmissionReason, string>> = {
   sensitive_content: 'This file looks like it holds a secret, so it is not shown.',
   oversize_file: 'Too large to show here. Files over 16 KiB per side are not shown.',
   oversize_line: 'This file has a line longer than 4 KiB, so it is not shown.',
-  unsupported_kind: 'This kind of file has no text to show. A folder with its own Git repository is not opened.',
+  unsupported_kind: 'This kind of file has no text to show.',
   raced: 'This file changed while it was being read, so it is not shown.',
   unreadable: 'This file could not be read.',
   response_limit: 'Showing this file would pass the size limit for one reply.',
   hard_linked: 'This file has another hard link, so its bytes may belong to a file outside the project and are not shown.',
 };
+const NESTED_OMISSION = 'A folder with its own Git repository is not opened.';
 const REFUSALS: Readonly<Record<DiffRefusalReason, string>> = {
   baseline_unavailable: 'Dudes did not record where this round started, so it cannot list the changes. '
     + 'Open the checkout in your editor with dudes ticket open.',
@@ -141,14 +142,15 @@ export function DiffReview({ review, loading, onOpen, onPage }: {
     <p className="diff-note">Round {page.binding.round}. Files left out, files Git ignores, and changes the bounded read cannot see
       are outside this comparison.</p>
     {page.omitted > 0 || page.truncated ? <p className="diff-omission">{page.omitted_lower_bound ? 'At least ' : ''}{page.omitted} changed {page.omitted === 1 ? 'file was' : 'files were'} left out of this list.{page.truncated ? ' The list reached its limit.' : ''}</p> : null}
-    {page.untracked > 0 || page.untracked_lower_bound ? <p className="diff-note">{page.untracked_lower_bound ? 'At least ' : ''}{page.untracked} new {page.untracked === 1 ? 'file is' : 'files are'} not listed because the list is full or its name cannot be shown.</p> : null}
+    {page.untracked > 0 ? <p className="diff-note">{page.untracked_lower_bound ? 'At least ' : ''}{page.untracked} new {page.untracked === 1 ? 'file is' : 'files are'} not listed because the list is full or its name cannot be shown.</p>
+      : page.untracked_lower_bound ? <p className="diff-note">The list of new files was cut short, so some may be missing.</p> : null}
     {entries.length === 0 ? <p>No file differs from where this round began.</p> : <ul className="diff-selection">
       {entries.map((entry, index) => {
         const isOpen = entry.entry_id !== null && opened === entry.entry_id;
         return <li key={index}>
           <div className="diff-row-name"><span className="diff-kind">{KINDS[entry.kind]}</span>{' '}<span className="diff-path" id={`${id}-${index}`}>{entry.path}</span></div>
           {entry.availability.state === 'unavailable' || entry.entry_id === null
-            ? <p className="diff-note">{entry.availability.state === 'unavailable' ? OMISSIONS[entry.availability.reason] : ''}</p>
+            ? <p className="diff-note">{entry.availability.state === 'unavailable' ? (entry.kind === 'nested_repository' ? NESTED_OMISSION : OMISSIONS[entry.availability.reason]) : ''}</p>
             : <button type="button" aria-describedby={`${id}-${index}`} aria-pressed={isOpen} disabled={loading}
               onClick={() => { onOpen(entry); }}>{isOpen ? 'Close file' : 'Open side by side'}</button>}
           {isOpen && content !== null ? <Compare content={content} entry={entry} /> : null}
