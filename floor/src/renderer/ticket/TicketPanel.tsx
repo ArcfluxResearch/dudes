@@ -330,7 +330,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   // The ticket moved, so the form that was open for its old state no longer fits it.
   useEffect(() => { setMode('none'); }, [card.id, card.status, card.seq]);
   const actions = open ? actionsOf(card) : [];
-  const changesView = floor.diff && (card.status === 'review' || card.status === 'blocked');
+  const changesView = floor.diff && (card.status === 'review' || card.status === 'blocked' || card.status === 'done');
   const loaded = detail.card === card.id ? detail.detail : null;
   const fresh = checkDisplayCurrent(detail, card, floor);
   const editable = editableDetail(detail, card);
@@ -386,7 +386,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
       ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4>
         <p>{COVERAGE_SUMMARY}</p>
         <details><summary>Details</summary><p>{coverageText(loaded.coverage)}</p></details></section> : null}
-    {card.status === 'review' && !changesView ? <ChangedFiles floor={floor} card={card} /> : null}
+    {(card.status === 'review' || card.status === 'done') && !changesView ? <ChangedFiles floor={floor} card={card} /> : null}
     {changesView
       ? <DiffPanel card={card.id} expectedSeq={card.seq} transport={browserDiffTransport} /> : null}
     {loaded?.result == null ? null : <section aria-label="Check result"><h4>Last recorded check</h4>

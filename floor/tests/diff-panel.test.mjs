@@ -335,9 +335,9 @@ const drawer = (status) => {
   return renderToStaticMarkup(createElement(TicketPanel, { floor, card: floor.cards.find((c) => c.id === cardId(1)) }));
 };
 
-test('the view exists only when the snapshot carries the diff signal and the ticket is under review', () => {
+test('the view requires the diff signal and stays available after review', () => {
   for (const [diff, status, shown] of [[false, 'review', false], [true, 'review', true], [true, 'blocked', true],
-    [true, 'todo', false], [true, 'doing', false], [true, 'done', false], [false, 'blocked', false]]) {
+    [true, 'todo', false], [true, 'doing', false], [true, 'done', true], [false, 'blocked', false]]) {
     store.resetFloorStore();
     subscribe(store, { agents: [agent()], cards: [reviewCard(status)], diff });
     const out = drawer(status);
