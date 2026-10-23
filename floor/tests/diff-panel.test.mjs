@@ -126,7 +126,7 @@ test('each freshness label says what it means and never reads as fresh or as a p
   assert.match(unknown, /leaving out any one file makes a sample incomplete/);
   assert.match(unknown, /Unknown does not mean fresh\./);
   assert.doesNotMatch(unknown, /Unchanged since|Changed since|passed the check|is unchanged/);
-  for (const page of [matches, changed, unknown]) assert.match(page, /Files Git does not track yet, files left out, and changes the bounded read cannot see\s+are outside this comparison/);
+  for (const page of [matches, changed, unknown]) assert.match(page, /Files left out, files Git ignores, and changes the bounded read cannot see\s+are outside this comparison/);
 });
 
 test('tracked changes from before the round are warned about, and only then', () => {
@@ -135,10 +135,33 @@ test('tracked changes from before the round are warned about, and only then', ()
   assert.doesNotMatch(html(diffPage()), /already had changes/);
 });
 
+test('new files from before the round are warned about, and only then', () => {
+  assert.match(html(diffPage({ binding: diffBinding({ preexisting_untracked: true }) })),
+    /Some new files already existed when this round began, so the list below can include files the agent did not create\./);
+  assert.doesNotMatch(html(diffPage()), /already existed/);
+});
+
+test('a page of only new files lists them and never says nothing differs or that names are hidden', () => {
+  const out = html(diffPage({ untracked: 0, entries: [
+    diffEntry({ path: 'src/fresh.rs', kind: 'added' }),
+    diffEntry({ entry_id: null, path: 'vendored', kind: 'nested_repository', availability: { state: 'unavailable', reason: 'unsupported_kind' } }),
+  ] }));
+  assert.match(out, /Added<\/span> <span class="diff-path"[^>]*>src\/fresh\.rs/);
+  assert.match(out, /Nested repository<\/span> <span class="diff-path"[^>]*>vendored/);
+  assert.doesNotMatch(out, /No file differs|never shown|not listed/);
+  assert.match(html(diffPage({ entries: [], untracked: 0 })), /No file differs from where this round began\./);
+});
+
+test('a hard-linked file says why its text is withheld', () => {
+  const out = html(diffPage({ entries: [diffEntry({ entry_id: null, path: 'linked.txt', kind: 'added',
+    availability: { state: 'unavailable', reason: 'hard_linked' } })] }));
+  assert.match(out, /another hard link, so its bytes may belong to a file outside the project/);
+});
+
 test('omitted and untracked counts are stated, with a lower bound when the daemon only has one', () => {
   const page = html(diffPage({ omitted: 3, omitted_lower_bound: true, untracked: 4, untracked_lower_bound: true, truncated: true }));
   assert.match(page, /At least 3 changed files were left out of this list\. The list reached its limit\./);
-  assert.match(page, /At least 4 untracked files are not listed\./);
+  assert.match(page, /At least 4 new files are not listed because the list is full or its name cannot be shown\./);
 });
 
 test('binary and oversize rows say why and have no Open button', () => {

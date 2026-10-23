@@ -145,6 +145,54 @@ fn status_dirty(output: &[u8], cut: bool, success: bool) -> Result<bool, DiffRef
         Err(DiffRefusal::Unreadable)
     }
 }
+/// What the new-file step found: untracked files that are not ignored.
+#[derive(Default)]
+struct NewFiles {
+    /// Regular candidates, by path.
+    files: BTreeSet<RepoPath>,
+    /// Folders that hold their own Git repository, which are listed and never opened.
+    nested: BTreeSet<RepoPath>,
+    /// Names the Floor cannot show.
+    unnamed: usize,
+    /// The step ran out of time or output, so there may be more.
+    cut: bool,
+}
+
+impl NewFiles {
+    fn any(&self) -> bool {
+        self.cut || self.unnamed > 0 || !self.files.is_empty() || !self.nested.is_empty()
+    }
+}
+
+/// Parse `git ls-files --others --exclude-standard -z`. A cut drops the record it ended inside,
+/// as `status_dirty` does. A folder with its own repository is reported as `dir/`.
+fn new_files(output: &[u8], cut: bool) -> Result<NewFiles, DiffRefusal> {
+    let mut parts = output.split(|byte| *byte == 0).collect::<Vec<_>>();
+    let last = parts.pop().ok_or(DiffRefusal::Unreadable)?;
+    if !cut && !last.is_empty() {
+        return Err(DiffRefusal::Unreadable);
+    }
+    let mut found = NewFiles {
+        cut,
+        ..NewFiles::default()
+    };
+    for record in parts {
+        let (name, folder) = match record.strip_suffix(b"/") {
+            Some(name) => (name, true),
+            None => (record, false),
+        };
+        match RepoPath::from_bytes(name) {
+            Some(path) if folder => found.nested.insert(path),
+            Some(path) => found.files.insert(path),
+            None => {
+                found.unnamed += 1;
+                true
+            }
+        };
+    }
+    Ok(found)
+}
+
 fn relative_name(name: &[u8]) -> bool {
     !name.starts_with(b"/")
         && !name.split(|byte| *byte == b'/').any(|part| {
@@ -161,6 +209,8 @@ pub struct BaselineCapture {
     pub head: GitCommit,
     /// Exact tracked-change flag observed at the round start.
     pub preexisting_tracked: bool,
+    /// Whether any untracked, unignored file already existed.
+    pub preexisting_untracked: bool,
 }
 
 /// One bounded complete-or-incomplete scope sample. No per-file hash reaches the Floor.
@@ -176,9 +226,9 @@ pub struct ReviewCapture {
     pub omitted: u32,
     /// Whether the omitted count is only a lower bound.
     pub omitted_lower_bound: bool,
-    /// Purely untracked names, counted without being disclosed.
+    /// New files the listing could not name: past its slots, or with a name it cannot show.
     pub untracked: u32,
-    /// Whether untracked enumeration stopped early.
+    /// Whether the new-file step stopped early, so the count is a lower bound.
     pub untracked_lower_bound: bool,
     metadata_digest: String,
 }
@@ -296,8 +346,10 @@ impl DiffReader {
                 root: shadow.root().identity(),
                 head: shadow.head(),
                 preexisting_tracked: false,
+                preexisting_untracked: false,
             };
             baseline.preexisting_tracked = self.metadata_dirty(tree, &shadow, &budget)?;
+            baseline.preexisting_untracked = self.new_file_listing(tree, &shadow, &budget)?.any();
             Ok(baseline)
         }
         #[cfg(not(unix))]
@@ -420,7 +472,13 @@ impl DiffReader {
         let status = self.metadata_run(
             tree,
             content,
-            &["status", "--porcelain=v1", "-z", "--ignore-submodules=all"],
+            &[
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--ignore-submodules=all",
+                "--untracked-files=no",
+            ],
             budget,
         )?;
         let dirty = status_dirty(&status.bytes, status.cut, status.exit == Some(0))?;
@@ -428,6 +486,36 @@ impl DiffReader {
             return Err(DiffRefusal::BaselineUnavailable);
         }
         Ok(dirty)
+    }
+
+    /// The untracked files Git does not ignore, in a step of its own: a timeout or a cut leaves
+    /// what it did find and marks the listing as a lower bound, and never fails the tracked view.
+    #[cfg(unix)]
+    fn new_file_listing(
+        &self,
+        tree: &super::super::Tree,
+        content: &ContentShadow,
+        budget: &Budget,
+    ) -> Result<NewFiles, DiffRefusal> {
+        let listing = match self.metadata_run(
+            tree,
+            content,
+            &["ls-files", "--others", "--exclude-standard", "-z"],
+            budget,
+        ) {
+            Ok(listing) => listing,
+            Err(DiffRefusal::TimedOut) if budget.check().is_ok() => {
+                return Ok(NewFiles {
+                    cut: true,
+                    ..NewFiles::default()
+                });
+            }
+            Err(refusal) => return Err(refusal),
+        };
+        if listing.exit != Some(0) && !listing.cut {
+            return Err(DiffRefusal::Unreadable);
+        }
+        new_files(&listing.bytes, listing.cut)
     }
 
     /// Run one protected read-only command against the live worktree in the metadata scratch
@@ -627,6 +715,62 @@ impl DiffReader {
         Ok(sample)
     }
 
+    /// Samples for the new files that fit in the slots tracked changes left, and how many more
+    /// there were. A path with a blob at the round's start is compared with it as a tracked change,
+    /// so it is never also a new file.
+    #[cfg(unix)]
+    fn new_file_samples(
+        &self,
+        shadow: &ContentShadow,
+        listing: &NewFiles,
+        tracked: &BTreeSet<RepoPath>,
+        taken: usize,
+        budget: &Budget,
+    ) -> Result<(Vec<Sample>, u32), DiffRefusal> {
+        let mut fresh = listing
+            .files
+            .iter()
+            .map(|path| (path, false))
+            .chain(listing.nested.iter().map(|path| (path, true)))
+            .filter(|(path, _)| !tracked.contains(*path))
+            .collect::<Vec<_>>();
+        fresh.sort();
+        let room = MAX_DIFF_CANDIDATES.saturating_sub(taken);
+        let unlisted = u32::try_from(
+            listing
+                .unnamed
+                .saturating_add(fresh.len().saturating_sub(room)),
+        )
+        .unwrap_or(u32::MAX);
+        let mut samples = Vec::new();
+        for (path, nested) in fresh.into_iter().take(room) {
+            let candidate = Candidate {
+                entry: DiffEntry {
+                    entry_id: None,
+                    old_path: None,
+                    path: path.as_str().to_owned(),
+                    kind: if nested {
+                        DiffKind::NestedRepository
+                    } else {
+                        DiffKind::Added
+                    },
+                    availability: DiffAvailability::Available,
+                },
+                path: path.clone(),
+                old_path: None,
+                old: None,
+                current: None,
+                observed_current_mode: None,
+            };
+            samples.push(if nested {
+                Sample::unopened(candidate)
+            } else {
+                self.sample(shadow, candidate, budget)?
+            });
+        }
+        Ok((samples, unlisted))
+    }
+
     #[cfg(unix)]
     fn observe(
         &self,
@@ -680,8 +824,8 @@ impl DiffReader {
         let omitted =
             u32::try_from(invalid.saturating_add(paths.len().saturating_sub(MAX_DIFF_CANDIDATES)))
                 .unwrap_or(u32::MAX);
-        let (untracked, untracked_lower_bound) =
-            shadow.root().untracked(shadow.tracked_names(), budget)?;
+        let listing = self.new_file_listing(tree, shadow, budget)?;
+        let tracked = paths.keys().cloned().collect::<BTreeSet<_>>();
         let mut samples = Vec::new();
         for (path, (old, current)) in paths.into_iter().take(MAX_DIFF_CANDIDATES) {
             let kind = if old.as_ref().is_some_and(|file| !regular(file.mode))
@@ -708,11 +852,16 @@ impl DiffReader {
             let sample = self.sample(shadow, candidate, budget)?;
             samples.push(sample);
         }
+        let (fresh, untracked) =
+            self.new_file_samples(shadow, &listing, &tracked, samples.len(), budget)?;
+        samples.extend(fresh);
+        let untracked_lower_bound = listing.cut;
         let mut review = ReviewCapture {
             candidates: Vec::new(),
             digest: String::new(),
             complete: omitted == 0
                 && !cut
+                && untracked == 0
                 && !untracked_lower_bound
                 && !shadow.has_hidden_entries(),
             omitted,
@@ -732,7 +881,7 @@ impl ReviewCapture {
         pair_renames(&mut samples);
         samples.sort_by(|left, right| left.candidate.path.cmp(&right.candidate.path));
         let mut hash = Sha256::new();
-        hash.update(b"bounded-review-sample-v1");
+        hash.update(b"bounded-review-sample-v2");
         for mut sample in samples {
             hash.update(
                 serde_json::to_vec(&(
@@ -900,6 +1049,18 @@ struct Sample {
     reason: Option<DiffOmissionReason>,
 }
 impl Sample {
+    /// A nested repository: listed with a reason and never opened.
+    fn unopened(candidate: Candidate) -> Self {
+        Self {
+            old: Vec::new(),
+            current: Vec::new(),
+            old_present: false,
+            current_present: false,
+            current_mode: 0,
+            reason: Some(DiffOmissionReason::UnsupportedKind),
+            candidate,
+        }
+    }
     fn changed(&self) -> bool {
         self.old_present != self.current_present
             || self.old != self.current
