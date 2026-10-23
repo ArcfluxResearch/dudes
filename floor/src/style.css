@@ -3044,6 +3044,8 @@ samp,
 #agent-detail-panel-chat { flex: 1 1 auto; min-height: 0; }
 .chat-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: .75rem; }
 .chat-panel section { min-width: 0; }
+.chat-thread-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
+.chat-clear-question { max-width: 30rem; padding: .75rem; margin-bottom: .5rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-muted); }
 .chat-thread { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
 .chat-panel h3 { margin: 0 0 .5rem; }
 .chat-panel p { margin: .5rem 0; }

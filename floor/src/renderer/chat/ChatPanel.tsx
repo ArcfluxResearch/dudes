@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { answerGate, canonicalLsn } from '../answer/answer.ts';
 import { AnswerForm } from '../answer/AnswerPanel.tsx';
 import { selectOutputAgent } from '../floor/store.ts';
 import type { FloorState, OutputStatus } from '../floor/store.ts';
 import { handFocusOnLeave } from '../focus.ts';
 import type { AgentRow } from '../scene/cast.ts';
-import { browserChatDeps, cancelChat, chatDraft, chatFiles, chatGate, chatReleasable, chatSendProblem,
+import { browserChatDeps, cancelChat, clearQueuedChat, queuedChatNotes, chatDraft, chatFiles, chatGate, chatReleasable, chatSendProblem,
   chatSettled, chatUploading, dropChatFiles, editChatDraft, getChatState, overChatFiles, pasteChatFiles, pickChatFiles,
   queuesChatOnKey, reconcileChat, releaseChat, removeChatFile,
   retryChat, selectChatAnswer, startFreshChat, submitChat, subscribeToChat } from './chat.ts';
@@ -73,7 +73,7 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
   const files = chatFiles(action, row.id);
   const problem = chatSendProblem(action, row.id);
   const attempt = action.attempt?.payload.agent === row.id ? action.attempt : null;
-  const blocked = action.attempt !== null || problem !== null || chatUploading(action, row.id);
+  const blocked = action.attempt !== null || action.clearing != null || problem !== null || chatUploading(action, row.id);
   const accepts = row.mode !== 'attached';
   const name = typeof row.name === 'string' ? row.name : row.id;
   const question = answerGate(floor, row);
@@ -191,7 +191,9 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
   const outcome = action.outcome;
   const latestTurn = row.mode === 'managed' ? entries.filter(entry => entry.kind !== 'context' && entry.turn !== null).at(-1) : undefined;
   return <section className="chat-thread" aria-labelledby="chat-thread-title">
-    <h3 id="chat-thread-title">Conversation</h3>
+    <div className="chat-thread-heading"><h3 id="chat-thread-title">Conversation</h3>
+      <ClearQueuedNotes floor={floor} row={row} action={action} />
+    </div>
     <div className="chat-scroll" ref={scroll} role="log" aria-label={`Conversation with ${name}`} aria-relevant="additions"
       onScroll={event => {
         const node = event.currentTarget;
@@ -224,7 +226,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
               <p>{pendingText(note)}</p>
               {note.reason === null || note.reason === 'delivery_uncertain' ? null
                 : <p className="chat-reason" data-chat-reason={note.reason}>{CHAT_REASON_TEXT[note.reason]}</p>}
-              {note.cancellable ? <button type="button" className="chat-cancel" disabled={action.attempt !== null}
+              {note.cancellable ? <button type="button" className="chat-cancel" disabled={action.attempt !== null || action.clearing != null}
                 onClick={() => void cancelChat(gate, note, browserChatDeps)}>
                 {note.state === 'delivery_uncertain' ? 'Stop future reissue' : 'Cancel note'}</button>
                 : <p>Cancellation is unavailable for this message.</p>}
@@ -261,7 +263,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
           ref={handFocusOnLeave} data-focus-on-leave="chat-text"
           onClick={() => void startFreshChat(attempt, outcome, browserChatDeps)}>Start fresh and resend this message</button> : null}
         {chatReleasable(action)
-          ? <button type="button" className="chat-dismiss" ref={handFocusOnLeave} data-focus-on-leave="chat-text"
+          ? <button type="button" className="chat-dismiss" disabled={action.clearing != null} ref={handFocusOnLeave} data-focus-on-leave="chat-text"
             onClick={releaseChat}>Continue composing</button>
           : <button type="button" className="chat-retry" disabled={action.sending || chatSettled(action)}
             ref={handFocusOnLeave} data-focus-on-leave="chat-text"
@@ -276,6 +278,29 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
       </details>
     </div>
   </section>;
+}
+
+function ClearQueuedNotes({ floor, row, action }: {
+  readonly floor: FloorState; readonly row: AgentRow; readonly action: ChatState;
+}) {
+  const [asking, setAsking] = useState(false);
+  const queued = queuedChatNotes(floor, row.id);
+  const blocked = action.attempt !== null || action.clearing != null;
+  if (queued.length === 0 && !asking && action.clearing?.agent !== row.id) return null;
+  return <div className="chat-clear">
+    <button type="button" className="chat-clear-all" ref={handFocusOnLeave} data-focus-on-leave="chat-text" disabled={blocked || queued.length === 0}
+      onClick={() => setAsking(true)}>Clear all</button>
+    {action.clearing?.agent === row.id ? <p role="status">Removing queued notes…</p> : null}
+    {asking ? <div className="chat-clear-question" role="group" aria-label="Clear queued notes">
+      <p>Remove all queued notes for {typeof row.name === 'string' ? row.name : 'this agent'}?
+        Notes already sent or with unknown delivery stay.</p>
+      <button type="button" className="chat-clear-confirm" ref={handFocusOnLeave} data-focus-on-leave="chat-text" disabled={blocked} onClick={() => {
+        setAsking(false);
+        void clearQueuedChat(chatGate(floor, row), browserChatDeps);
+      }}>Remove queued notes</button>{' '}
+      <button type="button" className="chat-clear-keep" onClick={() => setAsking(false)}>Keep notes</button>
+    </div> : null}
+  </div>;
 }
 
 function outcomeText(action: ChatState): string {

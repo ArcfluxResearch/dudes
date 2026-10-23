@@ -56,12 +56,13 @@ export interface ChatState {
   readonly attempt: ChatAttempt | null;
   readonly outcome: ChatOutcome | null;
   readonly sending: boolean;
+  readonly clearing: { readonly agent: string } | null;
   readonly uncertain: boolean;
   readonly problem: string | null;
 }
 
 const INITIAL = { attempt: null, outcome: null, sending: false, uncertain: false, problem: null };
-let state: ChatState = Object.freeze({ ...INITIAL, drafts: new Map(), acknowledged: [], answerTargets: new Map(), files: new Map() });
+let state: ChatState = Object.freeze({ ...INITIAL, clearing: null, drafts: new Map(), acknowledged: [], answerTargets: new Map(), files: new Map() });
 const listeners = new Set<() => void>();
 
 export function getChatState(): ChatState { return state; }
@@ -72,7 +73,7 @@ export function subscribeToChat(listener: () => void): () => void {
 }
 
 export function resetChat(): void {
-  state = Object.freeze({ ...INITIAL, drafts: new Map(), acknowledged: [], answerTargets: new Map(), files: new Map() });
+  state = Object.freeze({ ...INITIAL, clearing: null, drafts: new Map(), acknowledged: [], answerTargets: new Map(), files: new Map() });
   listeners.clear();
 }
 
@@ -186,7 +187,7 @@ export function chatSendProblem(chat: ChatState, agent: string): string | null {
 export async function submitChat(gate: ChatGate, deps: ChatDeps): Promise<void> {
   const floor = deps.floor();
   if (!gate.open || !chatGate(floor, floor.agents.find(row => row.id === gate.agent) ?? null).open
-    || state.attempt !== null || chatUploading(state, gate.agent)) return;
+    || state.attempt !== null || state.clearing !== null || chatUploading(state, gate.agent)) return;
   if (chatSendProblem(state, gate.agent) !== null) return;
   if (state.answerTargets.has(gate.agent)) selectChatAnswer(gate.agent, null);
   const files = chatFiles(state, gate.agent).map(file => file.id);
@@ -210,6 +211,39 @@ export async function startFreshChat(attempt: ChatAttempt, outcome: ChatOutcome,
 }
 
 export async function cancelChat(gate: ChatGate, note: PendingNote, deps: ChatDeps): Promise<void> {
+  if (state.clearing !== null) return;
+  await cancelNote(gate, note, deps);
+}
+
+export function queuedChatNotes(floor: FloorState, agent: string): readonly PendingNote[] {
+  return floor.chat?.pending.filter(note => note.agent_id === agent && note.cancellable
+    && (note.state === 'queued' || note.state === 'reserved')) ?? [];
+}
+
+export async function clearQueuedChat(gate: ChatGate, deps: ChatDeps): Promise<void> {
+  if (!gate.open || state.attempt !== null || state.clearing !== null) return;
+  const notes = queuedChatNotes(deps.floor(), gate.agent);
+  if (notes.length === 0) return;
+  const clearing = Object.freeze({ agent: gate.agent });
+  commit({ ...state, clearing });
+  try {
+    for (const note of notes) {
+      if (state.clearing !== clearing || state.attempt !== null) break;
+      const floor = deps.floor();
+      if (!chatGate(floor, floor.agents.find(row => row.id === gate.agent) ?? null).open) break;
+      const current = queuedChatNotes(floor, gate.agent).find(row => row.note_lsn === note.note_lsn);
+      if (current === undefined) continue;
+      await cancelNote(gate, current, deps);
+      if (state.clearing !== clearing || state.outcome?.kind !== 'cancelled'
+        || state.outcome.noteLsn !== note.note_lsn) break;
+      releaseChat();
+    }
+  } finally {
+    if (state.clearing === clearing) commit({ ...state, clearing: null });
+  }
+}
+
+async function cancelNote(gate: ChatGate, note: PendingNote, deps: ChatDeps): Promise<void> {
   const floor = deps.floor();
   if (!gate.open || !chatGate(floor, floor.agents.find(row => row.id === gate.agent) ?? null).open
     || state.attempt !== null || note.agent_id !== gate.agent

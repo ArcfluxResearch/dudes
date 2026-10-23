@@ -600,3 +600,56 @@ test('opening Show full output switches the stream to output, closing restores t
     page.restore();
   }
 });
+
+test('mounted Clear all asks once, keeps per-note removal and clears only this agent through existing routes', async () => {
+  const { fakePage, press } = await import('./helpers/fake-page.mjs');
+  const { createRoot } = await import('react-dom/client');
+  const { act, useSyncExternalStore } = await import('react');
+  const { ChatPanel } = await server.ssrLoadModule('/src/renderer/chat/ChatPanel.tsx');
+  const note = (note_lsn, patch = {}) => ({ agent_id: A, note_lsn, text: `Queued ${note_lsn}`, goal_id: null,
+    state: 'queued', turn_id: null, cancellable: true, reason: null, ...patch });
+  let pending = [note('1'), note('2'), note('3', { agent_id: B }),
+    note('4', { state: 'delivery_uncertain', turn_id: T, reason: 'delivery_uncertain' })];
+  store.resetFloorStore(); chatModule.resetChat();
+  const epoch = store.beginFloorEpoch();
+  const snapshot = () => store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: {
+    lsn: 10, agents: [row, { ...row, id: B, name: 'Grace' }] }, chat: { ...view(), pending } }), epoch);
+  snapshot();
+  const calls = [];
+  const original = { ...chatModule.browserChatDeps };
+  Object.assign(chatModule.browserChatDeps, { floor: store.getFloorState, signedIn: () => true, session: () => 1,
+    random(bytes) { bytes.fill(calls.length); }, async fetch(url, init) {
+      const payload = JSON.parse(init.body); calls.push({ url, payload });
+      pending = pending.filter(note => note.note_lsn !== payload.note_lsn); snapshot();
+      return { status: 200, text: async () => JSON.stringify({ ...payload, state: 'cancelled' }) };
+    } });
+  function Page() {
+    const current = useSyncExternalStore(store.subscribeToFloor, store.getFloorState, store.getFloorState);
+    return createElement(ChatPanel, { floor: current, row });
+  }
+  const page = fakePage();
+  const root = createRoot(page.host);
+  const control = name => page.host.querySelector(`[class="${name}"]`);
+  try {
+    await act(() => root.render(createElement(Page)));
+    await act(() => press(control('chat-clear-all')));
+    assert.equal(calls.length, 0);
+    assert.ok(page.host.querySelector('[aria-label="Clear queued notes"]'));
+    await act(() => press(control('chat-clear-keep')));
+    assert.equal(calls.length, 0);
+    assert.equal(control('chat-clear-confirm'), null);
+    await act(() => press(control('chat-clear-all')));
+    pending.push(note('5')); await act(snapshot);
+    await act(async () => press(control('chat-clear-confirm')));
+    assert.deepEqual(calls.map(call => [call.url, call.payload.agent, call.payload.note_lsn]), [
+      ['/floor/chat/cancel', A, '1'], ['/floor/chat/cancel', A, '2'], ['/floor/chat/cancel', A, '5']]);
+    assert.deepEqual(pending.map(note => note.note_lsn), ['3', '4']);
+    assert.ok(control('chat-cancel'), 'uncertain delivery keeps its individual stop control');
+    assert.equal(control('chat-clear-all'), null);
+    assert.equal(chatModule.getChatState().attempt, null);
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(chatModule.browserChatDeps, original);
+    page.restore(); store.resetFloorStore(); chatModule.resetChat();
+  }
+});

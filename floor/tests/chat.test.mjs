@@ -29,7 +29,7 @@ test('Chat drafts belong to each agent and reload forgets unsent text', () => {
 function live(pending = []) {
   const epoch = beginFloorEpoch();
   applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 9,
-    agents: [{ id: ADA, name: 'Ada', mode: 'managed' }] }, chat: {
+    agents: [{ id: ADA, name: 'Ada', mode: 'managed' }, { id: GRACE, name: 'Grace', mode: 'managed' }] }, chat: {
     enabled: true, max_text_bytes: 4096, pending, turns: [], context_sent: [],
   } }), epoch);
   return chatGate(getFloorState(), getFloorState().agents[0]);
@@ -377,4 +377,83 @@ test('Chat validates normalized UTF-8 bounds and refuses controls and lone surro
     assert.equal(noteProblem(text), null, JSON.stringify(text.slice(0, 20)));
   }
   assert.equal(noteProblem('🙂'.repeat(1025)), 'The note is 4100 UTF-8 bytes; the limit is 4096.');
+});
+
+test('Clear all cancels only selected queued notes, serially through per-note requests', async () => {
+  const { clearQueuedChat } = await import('../src/renderer/chat/chat.ts');
+  const note = (lsn, patch = {}) => ({ agent_id: ADA, note_lsn: lsn, goal_id: null, text: `Note ${lsn}`,
+    state: 'queued', turn_id: null, cancellable: true, reason: null, ...patch });
+  const gate = live([note('1'), note('2', { state: 'reserved', turn_id: LOST_TURN }),
+    note('3', { state: 'delivery_uncertain', turn_id: LOST_TURN, reason: 'delivery_uncertain' }),
+    note('4', { agent_id: GRACE }), note('5', { cancellable: false })]);
+  const calls = [];
+  let nonce = 0;
+  const deps = dependencies(async (url, init) => {
+    const payload = JSON.parse(init.body); calls.push({ url, payload });
+    return { status: 200, text: async () => JSON.stringify({ ...payload, state: 'cancelled' }) };
+  });
+  deps.random = bytes => bytes.fill(nonce++);
+  await clearQueuedChat(gate, deps);
+  assert.deepEqual(calls.map(call => [call.url, call.payload.agent, call.payload.note_lsn]), [
+    ['/floor/chat/cancel', ADA, '1'], ['/floor/chat/cancel', ADA, '2']]);
+  assert.notEqual(calls[0].payload.request_id, calls[1].payload.request_id);
+  assert.equal(getChatState().attempt, null);
+  assert.equal(getChatState().clearing, null);
+});
+
+test('Clear all stops at a partial failure and preserves the exact receipt for retry', async () => {
+  const { clearQueuedChat } = await import('../src/renderer/chat/chat.ts');
+  for (const failure of ['pending', 'unknown', 'refused']) {
+    resetChat(); resetFloorStore();
+    const notes = ['1', '2', '3'].map(note_lsn => ({ agent_id: ADA, note_lsn, goal_id: null, text: 'Queued',
+      state: 'queued', turn_id: null, cancellable: true, reason: null }));
+    const gate = live(notes);
+    const calls = [];
+    const deps = dependencies(async (_url, init) => {
+      calls.push(init.body);
+      const payload = JSON.parse(init.body);
+      if (payload.note_lsn === '1') return { status: 200, text: async () => JSON.stringify({ ...payload, state: 'cancelled' }) };
+      if (failure === 'unknown') throw Error('offline');
+      return { status: failure === 'pending' ? 202 : 409, text: async () => JSON.stringify({
+        request_id: payload.request_id, state: failure, ...(failure === 'refused' ? { reason: 'delivery_started' } : {}) }) };
+    });
+    await clearQueuedChat(gate, deps);
+    assert.deepEqual(calls.map(body => JSON.parse(body).note_lsn), ['1', '2']);
+    assert.equal(getChatState().outcome.kind, failure);
+    assert.equal(getChatState().clearing, null);
+    const attempt = getChatState().attempt;
+    await clearQueuedChat(gate, deps);
+    assert.equal(calls.length, 2);
+    await retryChat(deps);
+    assert.equal(calls[2], attempt.body);
+    assert.equal(getChatState().attempt, attempt);
+  }
+});
+
+test('Clear all captures on confirmation and rechecks delivery before each cancellation', async () => {
+  const { clearQueuedChat } = await import('../src/renderer/chat/chat.ts');
+  const note = note_lsn => ({ agent_id: ADA, note_lsn, goal_id: null, text: 'Queued',
+    state: 'queued', turn_id: null, cancellable: true, reason: null });
+  const gate = live([note('1'), note('2'), note('3')]);
+  let settle;
+  const calls = [];
+  const deps = dependencies(async (_url, init) => {
+    const payload = JSON.parse(init.body); calls.push(payload.note_lsn);
+    if (calls.length === 1) await new Promise(resolve => { settle = resolve; });
+    return { status: 200, text: async () => JSON.stringify({ ...payload, state: 'cancelled' }) };
+  });
+  const clear = clearQueuedChat(gate, deps);
+  editChatDraft(ADA, 'Keep my draft');
+  await submitChat(gate, deps);
+  await cancelChat(gate, note('3'), deps);
+  await clearQueuedChat(gate, deps);
+  assert.deepEqual(calls, ['1']);
+  const floor = getFloorState();
+  applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 10, agents: floor.agents }, chat: {
+    enabled: true, max_text_bytes: 4096, pending: [note('1'), { ...note('3'), cancellable: false }, note('4')],
+    turns: [], context_sent: [],
+  } }), floor.epoch);
+  settle(); await clear;
+  assert.deepEqual(calls, ['1'], 'delivered, noncancellable and newly queued notes are not removed');
+  assert.equal(chatDraft(getChatState(), ADA), 'Keep my draft');
 });
