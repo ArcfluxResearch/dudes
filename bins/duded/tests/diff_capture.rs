@@ -199,7 +199,7 @@ fn a_clean_start_records_the_head_the_root_and_the_interval() {
     assert_eq!(baseline.binding, binding());
     assert_eq!(baseline.interval.started_at.unix_millis(), 1_000);
     assert_eq!(baseline.interval.ended_at.unix_millis(), 1_001);
-    assert_eq!(baseline.versions.sampler, 1);
+    assert_eq!(baseline.versions.sampler, 2);
     let BaselineOutcome::Captured {
         head: recorded,
         preexisting_tracked,
@@ -228,6 +228,30 @@ fn tracked_edits_before_the_round_set_the_dirty_flag() {
         panic!("not captured")
     };
     assert!(preexisting_tracked);
+}
+
+#[test]
+fn files_that_already_existed_untracked_set_the_predate_flag_but_ignored_ones_do_not() {
+    let lab = Lab::new();
+    let flag = |lab: &Lab| {
+        let BaselineOutcome::Captured {
+            preexisting_untracked,
+            ..
+        } = lab.baseline().outcome
+        else {
+            panic!("not captured")
+        };
+        preexisting_untracked
+    };
+    assert!(!flag(&lab));
+    lab.write(".gitignore", "build/\n");
+    lab.git(&["add", ".gitignore"]);
+    lab.git(&["commit", "--quiet", "-m", "ignore"]);
+    std::fs::create_dir(lab.repo().join("build")).unwrap();
+    lab.write("build/out.bin", "ignored\n");
+    assert!(!flag(&lab), "an ignored file is not a new file");
+    lab.write("left-behind.rs", "fn main() {}\n");
+    assert!(flag(&lab));
 }
 
 #[test]
@@ -284,7 +308,7 @@ fn a_stamp_samples_the_scope_and_names_its_baseline_and_check() {
     assert_eq!(first.check_lsn, Lsn(41));
     assert_eq!(first.baseline_lsn, Lsn(12));
     let (complete, digest, omitted, untracked) = sampled(&first);
-    assert_eq!((complete, omitted, untracked), (true, 0, 1));
+    assert_eq!((complete, omitted, untracked), (true, 0, 0));
     assert_eq!(digest.len(), 64);
     assert_eq!(sampled(&lab.stamp(&baseline)).1, digest);
     lab.write("a.txt", "edited again\n");
@@ -349,6 +373,7 @@ fn a_missing_start_commit_is_an_unavailable_stamp_never_a_new_base() {
         device,
         inode,
         preexisting_tracked,
+        preexisting_untracked,
         ..
     } = baseline.outcome
     else {
@@ -359,6 +384,7 @@ fn a_missing_start_commit_is_an_unavailable_stamp_never_a_new_base() {
         inode,
         head: "1111111111111111111111111111111111111111".parse().unwrap(),
         preexisting_tracked,
+        preexisting_untracked,
     };
     assert_eq!(
         lab.stamp(&baseline).outcome,

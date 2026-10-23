@@ -959,6 +959,11 @@
               "description": "Tracked changes existed when the round started.",
               "type": "boolean"
             },
+            "preexisting_untracked": {
+              "default": false,
+              "description": "Untracked, unignored files existed when the round started. Records written before\nthis field existed read as `false`.",
+              "type": "boolean"
+            },
             "state": {
               "const": "captured",
               "type": "string"
@@ -18289,13 +18294,13 @@
               "type": "string"
             },
             "untracked": {
-              "description": "Purely untracked names.",
+              "description": "New files the listing could not name.",
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
             },
             "untracked_lower_bound": {
-              "description": "The untracked count is only a lower bound.",
+              "description": "The new-file count is only a lower bound.",
               "type": "boolean"
             }
           },

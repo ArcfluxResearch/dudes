@@ -127,6 +127,7 @@ impl DiffCapture {
                 inode: capture.root.inode,
                 head: capture.head,
                 preexisting_tracked: capture.preexisting_tracked,
+                preexisting_untracked: capture.preexisting_untracked,
             },
             Err(reason) => BaselineOutcome::Unavailable { reason },
         };
@@ -224,6 +225,7 @@ impl DiffCapture {
             inode,
             head,
             preexisting_tracked,
+            preexisting_untracked,
         } = baseline.outcome
         else {
             return Err(DiffRefusal::BaselineUnavailable);
@@ -232,6 +234,7 @@ impl DiffCapture {
             root: RootIdentity { device, inode },
             head,
             preexisting_tracked,
+            preexisting_untracked,
         };
         self.reader.capture_review(tree, &capture, cancelled)
     }

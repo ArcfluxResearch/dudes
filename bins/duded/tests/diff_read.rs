@@ -16,7 +16,10 @@ use duded::git_read::{
 };
 use duded::predicate::{PredicateCaptured, PredicateOutcome, PredicateRunner};
 use dudes_host::{CapturedOutcome, OneShot, OneShotOutcome};
-use dudes_proto::{DiffBinding, DiffFreshness, DiffKind, DiffRefusal, DiffResponse};
+use dudes_proto::{
+    DiffAvailability, DiffBinding, DiffFreshness, DiffKind, DiffOmissionReason, DiffRefusal,
+    DiffResponse,
+};
 use dudes_providers::launch::{EnvVar, LaunchInput, LaunchSpec};
 use dudes_types::{AgentId, CardId, GoalId, Seq, Timestamp};
 
@@ -25,6 +28,7 @@ struct Real {
     commands: AtomicUsize,
     argv: Mutex<Vec<Vec<OsString>>>,
     cut_listing: AtomicBool,
+    new_files_time_out: AtomicBool,
     exhaust: AtomicBool,
 }
 impl PredicateRunner for Real {
@@ -53,6 +57,19 @@ impl PredicateRunner for Real {
         if self.exhaust.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(400));
             return Err(io::Error::other("the program was lost"));
+        }
+        if self.new_files_time_out.load(Ordering::Relaxed)
+            && spec
+                .argv
+                .get(3)
+                .is_some_and(|command| command == "ls-files")
+        {
+            return Ok(PredicateCaptured::Finished {
+                exit: None,
+                stdout: Vec::new(),
+                truncated: false,
+                timed_out: true,
+            });
         }
         self.host
             .run_captured(spec, timeout, cap)
@@ -109,6 +126,7 @@ impl Lab {
             commands: AtomicUsize::new(0),
             argv: Mutex::new(Vec::new()),
             cut_listing: AtomicBool::new(false),
+            new_files_time_out: AtomicBool::new(false),
             exhaust: AtomicBool::new(false),
         });
         let git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
@@ -254,9 +272,10 @@ fn binding() -> DiffBinding {
         check_lsn: None,
         baseline_id: "a".repeat(64),
         target_id: "b".repeat(64),
-        sampler_version: 1,
-        policy_version: 1,
+        sampler_version: 2,
+        policy_version: 2,
         preexisting_tracked: false,
+        preexisting_untracked: false,
     }
 }
 
@@ -276,7 +295,7 @@ fn baseline_and_current_text_include_committed_staged_and_uncommitted_edits() {
         .reader
         .capture_review(&lab.tree(), &baseline, cancel())
         .unwrap();
-    assert_eq!(capture.untracked, 1);
+    assert_eq!(capture.untracked, 0);
     assert!(capture.complete);
     let files = lab.files(&baseline).files;
     assert_eq!(
@@ -292,7 +311,13 @@ fn baseline_and_current_text_include_committed_staged_and_uncommitted_edits() {
         vec![
             ("a.txt", DiffKind::Modified, "old a\n", "current a\n"),
             ("b.txt", DiffKind::Deleted, "old b\n", ""),
-            ("new.txt", DiffKind::Added, "", "new\n")
+            ("new.txt", DiffKind::Added, "", "new\n"),
+            (
+                "untracked-private-name",
+                DiffKind::Added,
+                "",
+                "not admitted\n"
+            )
         ]
     );
 }
@@ -389,6 +414,7 @@ fn vector(name: &str, plant: impl FnOnce(&Lab), plain: &[&str]) {
             .candidates
             .iter()
             .map(|candidate| candidate.entry.path.as_str())
+            .filter(|path| *path != ".gitattributes")
             .collect::<Vec<_>>(),
         ["a.txt"]
     );
@@ -409,7 +435,7 @@ fn vector(name: &str, plant: impl FnOnce(&Lab), plain: &[&str]) {
     commands.dedup();
     assert_eq!(
         commands,
-        ["cat-file", "diff-files", "diff-index"],
+        ["cat-file", "diff-files", "diff-index", "ls-files"],
         "each new protected argv ran under the live control"
     );
     for argv in lab.real.argv.lock().unwrap().iter() {
@@ -445,6 +471,17 @@ fn vector(name: &str, plant: impl FnOnce(&Lab), plain: &[&str]) {
                     "--ignore-submodules=all",
                     "--no-ext-diff",
                     "--no-textconv"
+                ]
+            ),
+            Some("ls-files") => assert_eq!(
+                words[1..],
+                [
+                    "--no-pager",
+                    "--no-optional-locks",
+                    "ls-files",
+                    "--others",
+                    "--exclude-standard",
+                    "-z"
                 ]
             ),
             _ => {}
@@ -617,7 +654,7 @@ fn a_change_after_the_256th_tracked_path_is_still_a_candidate() {
         ),
         (0, false, true)
     );
-    assert_eq!(lab.real.commands.load(Ordering::Relaxed), 3);
+    assert_eq!(lab.real.commands.load(Ordering::Relaxed), 4);
 }
 
 #[test]
@@ -890,6 +927,269 @@ fn staging_unchanged_current_text_does_not_claim_a_scope_content_change() {
         .unwrap();
     assert!(before.complete && after.complete);
     assert_eq!(before.digest, after.digest);
+}
+
+impl Lab {
+    /// The first page of a fresh manifest, and the content of every available entry on it.
+    fn review(
+        &self,
+        baseline: &BaselineCapture,
+    ) -> (dudes_proto::DiffPage, dudes_proto::DiffContent) {
+        let capture = self
+            .reader
+            .capture_review(&self.tree(), baseline, cancel())
+            .unwrap();
+        let manifest = capture
+            .into_manifest(binding(), Timestamp::UNIX_EPOCH, DiffFreshness::Unknown)
+            .unwrap();
+        let DiffResponse::Manifest(page) =
+            serde_json::from_slice(manifest.page(None).unwrap().bytes()).unwrap()
+        else {
+            panic!("page")
+        };
+        let ids = page
+            .entries
+            .iter()
+            .filter_map(|entry| entry.entry_id.clone())
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            let none = dudes_proto::DiffContent {
+                manifest_id: page.manifest_id.clone(),
+                binding: page.binding.clone(),
+                expires_at: page.expires_at,
+                freshness: DiffFreshness::Unknown,
+                files: Vec::new(),
+                omitted: Vec::new(),
+                truncated: false,
+            };
+            return (page, none);
+        }
+        let DiffResponse::Content(content) = serde_json::from_slice(
+            self.reader
+                .read_content(&self.tree(), baseline, &manifest, &ids, cancel())
+                .unwrap()
+                .bytes(),
+        )
+        .unwrap() else {
+            panic!("content")
+        };
+        (page, content)
+    }
+}
+
+fn rows(page: &dudes_proto::DiffPage) -> Vec<(&str, DiffKind, bool)> {
+    page.entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.path.as_str(),
+                entry.kind,
+                entry.availability == DiffAvailability::Available,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_new_file_is_listed_as_added_and_opens_with_its_text() {
+    let lab = Lab::new();
+    let baseline = lab.baseline();
+    std::fs::create_dir(lab.repo().join("src")).unwrap();
+    lab.write("src/fresh.rs", "pub fn fresh() {}\n");
+    let (page, content) = lab.review(&baseline);
+    assert_eq!(rows(&page), [("src/fresh.rs", DiffKind::Added, true)]);
+    assert_eq!((page.untracked, page.untracked_lower_bound), (0, false));
+    assert_eq!(
+        content
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.old.as_str(), file.current.as_str()))
+            .collect::<Vec<_>>(),
+        [("src/fresh.rs", "", "pub fn fresh() {}\n")]
+    );
+}
+
+#[test]
+fn ignored_files_are_neither_listed_nor_counted_and_the_private_exclude_list_is_honoured() {
+    let lab = Lab::new();
+    let baseline = lab.baseline();
+    lab.write(".gitignore", "build/\n*.log\n");
+    std::fs::create_dir(lab.repo().join("build")).unwrap();
+    lab.write("build/out.rs", "ignored\n");
+    lab.write("run.log", "ignored\n");
+    std::fs::write(lab.repo().join(".git/info/exclude"), "private-notes.md\n").unwrap();
+    lab.write("private-notes.md", "operator excluded\n");
+    lab.write("kept.rs", "listed\n");
+    let (page, _) = lab.review(&baseline);
+    assert_eq!(
+        rows(&page),
+        [
+            (".gitignore", DiffKind::Added, true),
+            ("kept.rs", DiffKind::Added, true)
+        ]
+    );
+    assert_eq!(page.untracked, 0);
+}
+
+#[test]
+fn a_staged_deletion_still_on_disk_is_one_changed_file_never_also_a_new_one() {
+    let lab = Lab::new();
+    let baseline = lab.baseline();
+    lab.git(&["rm", "--quiet", "--cached", "b.txt"]);
+    lab.write("b.txt", "rewritten b\n");
+    let (page, content) = lab.review(&baseline);
+    assert_eq!(rows(&page), [("b.txt", DiffKind::Modified, true)]);
+    assert_eq!(
+        content
+            .files
+            .iter()
+            .map(|file| (file.old.as_str(), file.current.as_str()))
+            .collect::<Vec<_>>(),
+        [("old b\n", "rewritten b\n")]
+    );
+}
+
+#[test]
+fn a_nested_repository_is_listed_once_and_never_opened() {
+    let lab = Lab::new();
+    let baseline = lab.baseline();
+    lab.git(&["init", "--quiet", "nested"]);
+    lab.write("nested/inner.rs", "never read\n");
+    let capture = lab
+        .reader
+        .capture_review(&lab.tree(), &baseline, cancel())
+        .unwrap();
+    assert!(
+        !capture.complete,
+        "an unopened folder keeps the label Unknown"
+    );
+    let (page, content) = lab.review(&baseline);
+    assert_eq!(rows(&page), [("nested", DiffKind::NestedRepository, false)]);
+    assert_eq!(
+        page.entries[0].availability,
+        DiffAvailability::Unavailable {
+            reason: DiffOmissionReason::UnsupportedKind
+        }
+    );
+    assert!(content.files.is_empty());
+}
+
+#[test]
+fn a_hard_linked_new_file_is_listed_with_its_text_withheld_for_its_own_reason() {
+    let lab = Lab::new();
+    let baseline = lab.baseline();
+    let outside = lab.root.path().join("outside.txt");
+    std::fs::write(&outside, "belongs elsewhere\n").unwrap();
+    std::fs::hard_link(&outside, lab.repo().join("linked.txt")).unwrap();
+    let (page, content) = lab.review(&baseline);
+    assert_eq!(rows(&page), [("linked.txt", DiffKind::Added, false)]);
+    assert_eq!(
+        page.entries[0].availability,
+        DiffAvailability::Unavailable {
+            reason: DiffOmissionReason::HardLinked
+        }
+    );
+    assert!(content.files.is_empty());
+}
+
+#[test]
+fn a_new_file_with_a_credential_name_is_listed_as_added_and_withheld() {
+    let lab = Lab::new();
+    let baseline = lab.baseline();
+    lab.write("prod.tfvars", "region = \"eu\"\n");
+    let (page, content) = lab.review(&baseline);
+    assert_eq!(rows(&page), [("prod.tfvars", DiffKind::Added, false)]);
+    assert_eq!(
+        page.entries[0].availability,
+        DiffAvailability::Unavailable {
+            reason: DiffOmissionReason::SensitivePath
+        }
+    );
+    assert!(content.files.is_empty());
+}
+
+#[test]
+fn a_source_file_that_declares_a_password_field_is_still_shown() {
+    let lab = Lab::new();
+    let baseline = lab.baseline();
+    lab.write("login.rs", "struct Login { password: String }\n");
+    let (_, content) = lab.review(&baseline);
+    assert_eq!(
+        content
+            .files
+            .iter()
+            .map(|file| file.current.as_str())
+            .collect::<Vec<_>>(),
+        ["struct Login { password: String }\n"]
+    );
+}
+
+#[test]
+fn a_symbolic_link_and_a_binary_new_file_stay_added() {
+    let lab = Lab::new();
+    let baseline = lab.baseline();
+    std::os::unix::fs::symlink("a.txt", lab.repo().join("alias")).unwrap();
+    std::fs::write(lab.repo().join("blob.bin"), b"\0\x01binary").unwrap();
+    let (page, _) = lab.review(&baseline);
+    assert_eq!(
+        rows(&page),
+        [
+            ("alias", DiffKind::Added, false),
+            ("blob.bin", DiffKind::Added, false)
+        ]
+    );
+}
+
+#[test]
+fn a_new_file_step_that_times_out_leaves_the_tracked_changes_and_a_lower_bound() {
+    let lab = Lab::new();
+    let baseline = lab.baseline();
+    lab.write("a.txt", "tracked edit\n");
+    lab.write("fresh.rs", "unlisted\n");
+    lab.real.new_files_time_out.store(true, Ordering::Relaxed);
+    let capture = lab
+        .reader
+        .capture_review(&lab.tree(), &baseline, cancel())
+        .unwrap();
+    assert_eq!(candidates(&capture), ["a.txt"]);
+    assert_eq!(
+        (
+            capture.untracked,
+            capture.untracked_lower_bound,
+            capture.complete
+        ),
+        (0, true, false)
+    );
+}
+
+#[test]
+fn tracked_changes_keep_their_slots_when_new_files_exceed_the_cap() {
+    let lab = Lab::new();
+    let baseline = lab.baseline();
+    for n in 0..250 {
+        lab.write(&format!("t{n:04}.txt"), "staged\n");
+    }
+    lab.git(&["add", "-A"]);
+    for n in 0..10 {
+        lab.write(&format!("a-new{n}.txt"), "untracked\n");
+    }
+    let capture = lab
+        .reader
+        .capture_review(&lab.tree(), &baseline, cancel())
+        .unwrap();
+    assert_eq!(capture.candidates.len(), 256);
+    assert_eq!(
+        capture
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.entry.path.starts_with("t0"))
+            .count(),
+        250
+    );
+    assert_eq!(
+        (capture.omitted, capture.untracked, capture.complete),
+        (0, 4, false)
+    );
 }
 
 fn open_descriptors() -> usize {

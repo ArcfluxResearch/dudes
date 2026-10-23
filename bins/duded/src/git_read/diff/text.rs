@@ -1,4 +1,4 @@
-pub(super) const POLICY_VERSION: u32 = 1;
+pub(super) const POLICY_VERSION: u32 = 2;
 
 const SIDE_BYTES: usize = 16 * 1024;
 const LINE_BYTES: usize = 4 * 1024;
@@ -14,6 +14,43 @@ const CREDENTIAL_KEYS: &[&[u8]] = &[
     b"clientsecret",
     b"password",
 ];
+
+/// File names whose text is never shown, matched on the last path component without regard to
+/// case. `Exact` is the whole name, `Suffix` its end, and `Between` its start and end.
+enum Name {
+    Exact(&'static str),
+    Suffix(&'static str),
+    Between(&'static str, &'static str),
+}
+
+const SENSITIVE_NAMES: &[Name] = &[
+    Name::Exact("id_rsa"),
+    Name::Exact("id_ed25519"),
+    Name::Exact("credentials"),
+    Name::Exact("credentials.json"),
+    Name::Exact(".npmrc"),
+    Name::Exact(".netrc"),
+    Name::Exact(".pgpass"),
+    Name::Exact(".git-credentials"),
+    Name::Exact(".pypirc"),
+    Name::Suffix(".tfvars"),
+    Name::Suffix(".tfstate"),
+    Name::Suffix(".keystore"),
+    Name::Between("service-account", ".json"),
+];
+
+fn sensitive_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    SENSITIVE_NAMES.iter().any(|rule| match rule {
+        Name::Exact(exact) => lower == *exact,
+        Name::Suffix(suffix) => lower.ends_with(suffix),
+        Name::Between(start, end) => {
+            lower.len() >= start.len() + end.len()
+                && lower.starts_with(start)
+                && lower.ends_with(end)
+        }
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TextRefusal {
@@ -62,11 +99,11 @@ pub(super) fn sensitive_path(path: &str) -> bool {
             return true;
         }
         if parts.peek().is_none()
-            && part.rsplit_once('.').is_some_and(|(_, suffix)| {
+            && (part.rsplit_once('.').is_some_and(|(_, suffix)| {
                 ["pem", "key", "p12", "pfx"]
                     .iter()
                     .any(|ext| suffix.eq_ignore_ascii_case(ext))
-            })
+            }) || sensitive_name(part))
         {
             return true;
         }
@@ -76,8 +113,33 @@ pub(super) fn sensitive_path(path: &str) -> bool {
 
 fn contains_secret(bytes: &[u8]) -> bool {
     (0..bytes.len()).any(|start| {
-        private_key(&bytes[start..]) || token(bytes, start) || credential_value(bytes, start)
+        private_key(&bytes[start..])
+            || token(bytes, start)
+            || credential_value(bytes, start)
+            || url_password(&bytes[start..])
     })
+}
+
+/// `://user:password@host`, with a non-empty user and password and no space, slash or second `@`
+/// before the host.
+fn url_password(bytes: &[u8]) -> bool {
+    let Some(rest) = bytes.strip_prefix(b"://") else {
+        return false;
+    };
+    let userinfo =
+        |byte: &u8| !byte.is_ascii_whitespace() && !matches!(byte, b'/' | b'@' | b'"' | b'\'');
+    let user = rest
+        .iter()
+        .take_while(|&byte| userinfo(byte) && *byte != b':')
+        .count();
+    if user == 0 || rest.get(user) != Some(&b':') {
+        return false;
+    }
+    let rest = &rest[user + 1..];
+    let password = rest.iter().take_while(|&byte| userinfo(byte)).count();
+    password > 0
+        && rest.get(password) == Some(&b'@')
+        && rest.get(password + 1).is_some_and(|&host| word(host))
 }
 
 fn private_key(bytes: &[u8]) -> bool {
@@ -109,6 +171,11 @@ fn token(bytes: &[u8], start: usize) -> bool {
     }
     let (prefix_len, allow_hyphen) = if rest.starts_with(b"sk-") {
         (3, true)
+    } else if [&b"sk_live_"[..], b"sk_test_", b"rk_live_"]
+        .iter()
+        .any(|prefix| rest.starts_with(prefix))
+    {
+        (8, false)
     } else if rest.starts_with(b"gh")
         && rest.get(2).is_some_and(|kind| b"pousr".contains(kind))
         && rest.get(3) == Some(&b'_')
@@ -184,7 +251,7 @@ fn horizontal_space(bytes: &[u8]) -> &[u8] {
 mod tests {
     use super::*;
 
-    const _: () = assert!(POLICY_VERSION == 1);
+    const _: () = assert!(POLICY_VERSION == 2);
 
     fn eligible(text: &str) {
         assert!(
@@ -302,6 +369,73 @@ mod tests {
         ] {
             assert!(!sensitive_path(path), "ordinary path refused");
         }
+    }
+
+    #[test]
+    fn v2_name_table_matches_the_last_component_only() {
+        for path in [
+            "id_rsa",
+            "home/ID_ED25519",
+            "credentials",
+            "aws/Credentials.json",
+            ".npmrc",
+            "web/.NETRC",
+            ".pgpass",
+            ".git-credentials",
+            ".pypirc",
+            "infra/prod.tfvars",
+            "terraform.TFSTATE",
+            "release.keystore",
+            "service-account.json",
+            "ci/service-account-prod.json",
+        ] {
+            assert!(sensitive_path(path), "{path} admitted");
+        }
+        for path in [
+            "credentials/mod.rs",
+            "id_rsa.pub",
+            "id_rsa_notes.md",
+            "credentials.rs",
+            "service-account.rs",
+            "service-account",
+            "terraform.tfstate.backup",
+            "src/npmrc",
+            "tfvars",
+        ] {
+            assert!(!sensitive_path(path), "{path} refused");
+        }
+    }
+
+    #[test]
+    fn v2_refuses_a_url_with_a_password_and_two_payment_key_shapes() {
+        for text in [
+            "postgres://admin:hunter2@db.example.test/app",
+            "clone https://me:tok3n@host/x.git",
+        ] {
+            refused(text.as_bytes(), TextRefusal::SensitiveContent);
+        }
+        for text in [
+            "https://example.test/a@b",
+            "https://user@example.test/",
+            "https://:pw@example.test/",
+            "https://user:@example.test/",
+            "see http://localhost:8080/a",
+        ] {
+            eligible(text);
+        }
+        for prefix in ["sk_live_", "sk_test_", "rk_live_"] {
+            refused(
+                format!("key = {prefix}{}", "a1".repeat(10)).as_bytes(),
+                TextRefusal::SensitiveContent,
+            );
+            eligible(&format!("{prefix}{}", "a".repeat(19)));
+            eligible(&format!("x{prefix}{}", "a".repeat(20)));
+        }
+    }
+
+    #[test]
+    fn v2_ordinary_source_with_credential_words_stays_readable() {
+        eligible("struct Login { password: String, token: String }\nfn credentials() {}\n");
     }
 
     #[test]

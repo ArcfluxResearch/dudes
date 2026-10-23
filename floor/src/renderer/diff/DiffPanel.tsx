@@ -22,6 +22,7 @@ const FRESHNESS: Readonly<Record<DiffFreshness, string>> = {
 };
 const KINDS: Readonly<Record<DiffKind, string>> = {
   added: 'Added', modified: 'Modified', deleted: 'Deleted', renamed: 'Renamed', type_changed: 'Type changed',
+  nested_repository: 'Nested repository',
 };
 const OMISSIONS: Readonly<Record<DiffOmissionReason, string>> = {
   binary: 'Binary file. Its contents are not shown.',
@@ -34,7 +35,9 @@ const OMISSIONS: Readonly<Record<DiffOmissionReason, string>> = {
   raced: 'This file changed while it was being read, so it is not shown.',
   unreadable: 'This file could not be read.',
   response_limit: 'Showing this file would pass the size limit for one reply.',
+  hard_linked: 'This file has another hard link, so its bytes may belong to a file outside the project and are not shown.',
 };
+const NESTED_OMISSION = 'A folder with its own Git repository is not opened.';
 const REFUSALS: Readonly<Record<DiffRefusalReason, string>> = {
   baseline_unavailable: 'Dudes did not record where this round started, so it cannot list the changes. '
     + 'Open the checkout in your editor with dudes ticket open.',
@@ -60,6 +63,7 @@ const ABSENT_SIDE: Readonly<Record<DiffKind, { readonly old: string; readonly cu
   deleted: { old: 'Empty.', current: 'Deleted: nothing is left in the checkout.' },
   renamed: { old: 'Empty.', current: 'Empty.' },
   type_changed: { old: 'Empty.', current: 'Empty.' },
+  nested_repository: { old: 'Empty.', current: 'Empty.' },
 };
 
 export interface DiffReviewState {
@@ -133,17 +137,20 @@ export function DiffReview({ review, loading, onOpen, onPage }: {
     </p>
     {page.binding.preexisting_tracked ? <p className="diff-warning">
       Some tracked files already had changes when this round began, so the list below can include changes the agent did not make.</p> : null}
-    <p className="diff-note">Round {page.binding.round}. Files Git does not track yet, files left out, and changes the bounded read cannot see
+    {page.binding.preexisting_untracked ? <p className="diff-warning">
+      Some new files already existed when this round began, so the list below can include files the agent did not create.</p> : null}
+    <p className="diff-note">Round {page.binding.round}. Files left out, files Git ignores, and changes the bounded read cannot see
       are outside this comparison.</p>
     {page.omitted > 0 || page.truncated ? <p className="diff-omission">{page.omitted_lower_bound ? 'At least ' : ''}{page.omitted} changed {page.omitted === 1 ? 'file was' : 'files were'} left out of this list.{page.truncated ? ' The list reached its limit.' : ''}</p> : null}
-    {page.untracked > 0 ? <p className="diff-note">{page.untracked_lower_bound ? 'At least ' : ''}{page.untracked} untracked {page.untracked === 1 ? 'file is' : 'files are'} not listed. Their names and contents are never shown.</p> : null}
-    {entries.length === 0 ? <p>No tracked file differs from where this round began.</p> : <ul className="diff-selection">
+    {page.untracked > 0 ? <p className="diff-note">{page.untracked_lower_bound ? 'At least ' : ''}{page.untracked} new {page.untracked === 1 ? 'file is' : 'files are'} not listed because the list is full or its name cannot be shown.</p>
+      : page.untracked_lower_bound ? <p className="diff-note">The list of new files was cut short, so some may be missing.</p> : null}
+    {entries.length === 0 ? <p>No file differs from where this round began.</p> : <ul className="diff-selection">
       {entries.map((entry, index) => {
         const isOpen = entry.entry_id !== null && opened === entry.entry_id;
         return <li key={index}>
           <div className="diff-row-name"><span className="diff-kind">{KINDS[entry.kind]}</span>{' '}<span className="diff-path" id={`${id}-${index}`}>{entry.path}</span></div>
           {entry.availability.state === 'unavailable' || entry.entry_id === null
-            ? <p className="diff-note">{entry.availability.state === 'unavailable' ? OMISSIONS[entry.availability.reason] : ''}</p>
+            ? <p className="diff-note">{entry.availability.state === 'unavailable' ? (entry.kind === 'nested_repository' ? NESTED_OMISSION : OMISSIONS[entry.availability.reason]) : ''}</p>
             : <button type="button" aria-describedby={`${id}-${index}`} aria-pressed={isOpen} disabled={loading}
               onClick={() => { onOpen(entry); }}>{isOpen ? 'Close file' : 'Open side by side'}</button>}
           {isOpen && content !== null ? <Compare content={content} entry={entry} /> : null}
@@ -232,7 +239,7 @@ export function DiffPanel({ card, expectedSeq, transport }: {
   return <section className="diff-panel" aria-label="Changes">
     <h4>Changes</h4>
     {closed ? <>
-      <p className="diff-note">Read the tracked files this round changed, side by side. Nothing is read until you ask.</p>
+      <p className="diff-note">Read the files this round changed or created, side by side. Nothing is read until you ask.</p>
       <button type="button" onClick={refresh}>Show changes</button>
     </> : <>
       <div className="diff-actions">

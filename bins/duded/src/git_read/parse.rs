@@ -106,7 +106,6 @@ pub(super) fn check_index(bytes: &[u8]) -> Result<(), IndexRefusal> {
 pub(super) struct IndexSummary {
     pub(super) has_gitlinks: bool,
     pub(super) has_hidden_entries: bool,
-    pub(super) names: std::collections::BTreeSet<Vec<u8>>,
 }
 
 pub(super) fn index_summary(bytes: &[u8]) -> Result<IndexSummary, IndexRefusal> {
@@ -156,7 +155,6 @@ pub(super) fn index_summary(bytes: &[u8]) -> Result<IndexSummary, IndexRefusal> 
         {
             return Err(IndexRefusal::Unsafe);
         }
-        summary.names.insert(name.to_vec());
         // The entry, name and padding are a multiple of eight bytes, with at least one NUL.
         at += (start - at + length + 8) & !7;
     }

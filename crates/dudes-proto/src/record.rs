@@ -5657,6 +5657,7 @@ mod tests {
                 head: dudes_types::GitCommit::parse("0123456789abcdef0123456789abcdef01234567")
                     .unwrap(),
                 preexisting_tracked: false,
+                preexisting_untracked: false,
             },
         )
         .unwrap();
@@ -5688,7 +5689,7 @@ mod tests {
                 stamp,
             },
         ];
-        for (record, payload_len) in records.iter().zip([425, 551]) {
+        for (record, payload_len) in records.iter().zip([455, 551]) {
             let encoded = serde_json::to_vec(record).unwrap();
             assert_eq!(serde_json::from_slice::<Record>(&encoded).unwrap(), *record);
             assert!(encoded.len() < 1024 + 160, "{} bytes", encoded.len());

@@ -12,7 +12,9 @@
 //! surface, and the clean filter survived the ones tried. So [`GitReader::read`] builds a
 //! per-read shadow gitdir the daemon owns (`shadow`), with a literal configuration and copies of
 //! the repository's small files, and runs a **fixed** set of read-only commands against it. The
-//! agent's `config`, `hooks` and `info` are never opened, so nothing about them needs enumerating.
+//! agent's `config` and `hooks` are never opened, so nothing about them needs enumerating. The one
+//! file read from `info` is `exclude`: a plain file of at most 64 KiB, opened without following a
+//! link and copied as bytes, which Git reads only as ignore patterns.
 //!
 //! # Two layouts, one per [`Tree`]
 //!

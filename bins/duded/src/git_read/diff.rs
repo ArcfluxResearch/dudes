@@ -17,7 +17,7 @@ pub use reader::{BaselineCapture, DiffReader, ReviewCapture};
 /// Text and sensitive-content recognizer version used by this reader.
 pub const TEXT_POLICY_VERSION: u32 = text::POLICY_VERSION;
 /// Ordered eligible-pair sampling algorithm version.
-pub const SAMPLER_VERSION: u32 = 1;
+pub const SAMPLER_VERSION: u32 = 2;
 
 /// Identity of the opened recorded checkout root. Replacing its pathname never substitutes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

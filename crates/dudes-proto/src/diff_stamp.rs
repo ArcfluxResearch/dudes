@@ -150,6 +150,10 @@ pub enum BaselineOutcome {
         head: GitCommit,
         /// Tracked changes existed when the round started.
         preexisting_tracked: bool,
+        /// Untracked, unignored files existed when the round started. Records written before
+        /// this field existed read as `false`.
+        #[serde(default)]
+        preexisting_untracked: bool,
     },
     /// No baseline could be observed.
     Unavailable {
@@ -173,9 +177,9 @@ pub enum StampOutcome {
         omitted: u32,
         /// The omitted count is only a lower bound.
         omitted_lower_bound: bool,
-        /// Purely untracked names.
+        /// New files the listing could not name.
         untracked: u32,
-        /// The untracked count is only a lower bound.
+        /// The new-file count is only a lower bound.
         untracked_lower_bound: bool,
     },
     /// No sample could be taken.
@@ -400,6 +404,7 @@ mod tests {
                 inode: 4_242,
                 head: commit(),
                 preexisting_tracked: true,
+                preexisting_untracked: true,
             },
         )
         .unwrap();
@@ -411,10 +416,31 @@ mod tests {
                 r#""goal":"00000000000000000000000000","claimant":"00000000000000000000000000","#,
                 r#""started_at":1000,"ended_at":1250,"versions":{"sampler":1,"policy":3},"#,
                 r#""outcome":{"state":"captured","device":16777231,"inode":4242,"#,
-                r#""head":"0123456789abcdef0123456789abcdef01234567","preexisting_tracked":true}}"#,
+                r#""head":"0123456789abcdef0123456789abcdef01234567","preexisting_tracked":true,"#,
+                r#""preexisting_untracked":true}}"#,
             )
         );
         assert_eq!(BaselinePayload::decode(bytes.as_slice()).unwrap(), payload);
+    }
+
+    #[test]
+    fn a_baseline_recorded_before_the_untracked_flag_reads_as_none_present() {
+        let old = concat!(
+            r#"{"v":1,"card":"00000000000000000000000000","round":2,"#,
+            r#""goal":"00000000000000000000000000","claimant":"00000000000000000000000000","#,
+            r#""started_at":1000,"ended_at":1250,"versions":{"sampler":1,"policy":1},"#,
+            r#""outcome":{"state":"captured","device":1,"inode":2,"#,
+            r#""head":"0123456789abcdef0123456789abcdef01234567","preexisting_tracked":true}}"#,
+        );
+        let BaselineOutcome::Captured {
+            preexisting_tracked,
+            preexisting_untracked,
+            ..
+        } = BaselinePayload::decode(old.as_bytes()).unwrap().outcome
+        else {
+            panic!("captured");
+        };
+        assert_eq!((preexisting_tracked, preexisting_untracked), (true, false));
     }
 
     #[test]
@@ -496,10 +522,11 @@ mod tests {
                 inode: u64::MAX,
                 head: commit(),
                 preexisting_tracked: false,
+                preexisting_untracked: false,
             },
         )
         .unwrap();
-        assert_eq!(baseline.encode().unwrap().as_slice().len(), 425);
+        assert_eq!(baseline.encode().unwrap().as_slice().len(), 455);
         let stamp = StampPayload::new(
             worst_binding,
             Lsn(u64::MAX),

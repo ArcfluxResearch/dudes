@@ -17,7 +17,7 @@ use duded::git_read::Tree;
 use duded::git_read::diff::DiffReader;
 use duded::predicate::{PredicateCaptured, PredicateOutcome, PredicateRunner};
 use dudes_host::{CapturedOutcome, OneShot, OneShotOutcome};
-use dudes_proto::diff_stamp::{StampOutcome, StampPayload, TicketBinding};
+use dudes_proto::diff_stamp::{SamplerVersions, StampOutcome, StampPayload, TicketBinding};
 use dudes_proto::{
     DiffAvailability, DiffBinding, DiffContent, DiffFreshness, DiffKind, DiffOmissionReason,
     DiffPage, DiffRefusal, DiffResponse,
@@ -36,6 +36,7 @@ const START: i64 = 1_000_000;
 struct Real {
     host: OneShot,
     exhaust: AtomicBool,
+    new_files_time_out: AtomicBool,
 }
 impl PredicateRunner for Real {
     fn run(&self, spec: &LaunchSpec, timeout: Duration) -> io::Result<PredicateOutcome> {
@@ -61,6 +62,19 @@ impl PredicateRunner for Real {
         if self.exhaust.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(400));
             return Err(io::Error::other("the program was lost"));
+        }
+        if self.new_files_time_out.load(Ordering::Relaxed)
+            && spec
+                .argv
+                .get(3)
+                .is_some_and(|command| command == "ls-files")
+        {
+            return Ok(PredicateCaptured::Finished {
+                exit: None,
+                stdout: Vec::new(),
+                truncated: false,
+                timed_out: true,
+            });
         }
         self.host
             .run_captured(spec, timeout, cap)
@@ -117,6 +131,7 @@ impl Lab {
         let runner = Arc::new(Real {
             host: OneShot::new(),
             exhaust: AtomicBool::new(false),
+            new_files_time_out: AtomicBool::new(false),
         });
         let git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
             .map(|dir| dir.join("git"))
@@ -351,9 +366,10 @@ fn a_manifest_names_the_changed_files_and_content_returns_them_whole() {
         check_lsn: None,
         baseline_id: page.binding.baseline_id.clone(),
         target_id: page.binding.target_id.clone(),
-        sampler_version: 1,
-        policy_version: 1,
+        sampler_version: 2,
+        policy_version: 2,
         preexisting_tracked: false,
+        preexisting_untracked: false,
     };
     assert_eq!(page.binding, expected);
     assert!(is_fingerprint(&page.binding.baseline_id));
@@ -365,7 +381,8 @@ fn a_manifest_names_the_changed_files_and_content_returns_them_whole() {
             .collect::<Vec<_>>(),
         vec![
             ("a.txt", DiffKind::Modified, None),
-            ("c.txt", DiffKind::Added, None)
+            ("c.txt", DiffKind::Added, None),
+            ("untracked-name", DiffKind::Added, None)
         ]
     );
     assert!(
@@ -382,7 +399,7 @@ fn a_manifest_names_the_changed_files_and_content_returns_them_whole() {
             page.freshness,
             page.expires_at.unix_millis()
         ),
-        (None, 0, 1, false, DiffFreshness::Unknown, START + 60_000)
+        (None, 0, 0, false, DiffFreshness::Unknown, START + 60_000)
     );
 
     let content = lab.content(1, &page, &id_refs(&ids(&page)));
@@ -401,10 +418,70 @@ fn a_manifest_names_the_changed_files_and_content_returns_them_whole() {
             .collect::<Vec<_>>(),
         vec![
             ("a.txt", DiffKind::Modified, "old a\n", "new a\n"),
-            ("c.txt", DiffKind::Added, "", "added\n")
+            ("c.txt", DiffKind::Added, "", "added\n"),
+            ("untracked-name", DiffKind::Added, "", "not disclosed\n")
         ]
     );
     assert!(content.omitted.is_empty() && !content.truncated);
+}
+
+#[test]
+fn new_files_are_listed_and_opened_and_a_slow_listing_never_hides_the_tracked_changes() {
+    let lab = Lab::new();
+    lab.start_round();
+    lab.write("a.txt", "new a\n");
+    lab.git(&["rm", "--quiet", "--cached", "b.txt"]);
+    lab.write("b.txt", "rewritten b\n");
+    lab.write("fresh.rs", "fn fresh() {}\n");
+    lab.git(&["init", "--quiet", "vendored"]);
+
+    let page = lab.manifest(1);
+    assert_eq!(
+        page.entries
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            ("a.txt", DiffKind::Modified),
+            ("b.txt", DiffKind::Modified),
+            ("fresh.rs", DiffKind::Added),
+            ("vendored", DiffKind::NestedRepository)
+        ]
+    );
+    assert_eq!(
+        page.entries[3].availability,
+        DiffAvailability::Unavailable {
+            reason: DiffOmissionReason::UnsupportedKind
+        }
+    );
+    assert_eq!((page.untracked, page.untracked_lower_bound), (0, false));
+    let content = lab.content(1, &page, &id_refs(&ids(&page)));
+    assert_eq!(
+        content
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.old.as_str(), file.current.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("a.txt", "old a\n", "new a\n"),
+            ("b.txt", "old b\n", "rewritten b\n"),
+            ("fresh.rs", "", "fn fresh() {}\n")
+        ]
+    );
+
+    lab.runner.new_files_time_out.store(true, Ordering::Relaxed);
+    let slow = lab.manifest(2);
+    assert_eq!(
+        slow.entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>(),
+        ["a.txt", "b.txt"]
+    );
+    assert_eq!(
+        (slow.untracked_lower_bound, slow.freshness),
+        (true, DiffFreshness::Unknown)
+    );
 }
 
 #[test]
@@ -495,6 +572,18 @@ fn a_missing_incomplete_or_foreign_stamp_is_unknown_never_fresh() {
         lab.manifest(4).freshness,
         DiffFreshness::Unknown,
         "another sampler's digest"
+    );
+
+    let mut previous_release = sampled;
+    previous_release.versions = SamplerVersions {
+        sampler: 1,
+        policy: 1,
+    };
+    lab.edit(|recorded| recorded.stamp = Some(previous_release));
+    assert_eq!(
+        lab.manifest(4).freshness,
+        DiffFreshness::Unknown,
+        "a ticket sampled before new files were listed"
     );
 
     lab.edit(|recorded| recorded.stamp = Some(sampled));
