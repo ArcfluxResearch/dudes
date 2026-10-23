@@ -496,7 +496,7 @@ test('the composer explains revoked authority inside its modal and keeps the dra
       await app.render({ ...app.floor, ...closed });
       const dialog = app.page.host.querySelector('.ticket-dialog');
       assert.ok(textOf(dialog).includes(closed.stale ? 'Not connected to Dudes'
-        : 'Tickets are off. Turn them on with dudes config set floor.board on, then restart the daemon.'));
+        : 'Tickets are off. Turn on Make tickets under Floor switches in Settings.'));
       assert.equal(dialog.querySelector('.ticket-create').disabled, true);
       await act(async () => propsOf(dialog.querySelector('form')).onSubmit({ preventDefault() {} }));
       assert.deepEqual(seen, []);
@@ -553,7 +553,7 @@ test('Give, Edit and changes retain unsent fields while authority is unavailable
         await app.render({ ...app.floor, ...closed });
         assert.notEqual(mode.getAttribute('hidden'), null);
         assert.ok(textOf(app.page.host.querySelector('.ticket-dialog')).includes(closed.stale
-          ? 'Not connected to Dudes' : 'Tickets are off. Turn them on with'));
+          ? 'Not connected to Dudes' : 'Tickets are off. Turn on Make tickets'));
         assert.equal(app.page.host.querySelector('.ticket-action'), null);
         const form = mode.querySelector('form');
         await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));

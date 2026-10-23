@@ -15,7 +15,7 @@ import {
  * It includes the one line that names `dudes open`, which every signed-out message draws: a page with
  * no session has nothing left to ask the daemon with, so only a terminal can get the person back in.
  */
-const PLACES = 33;
+const PLACES = 22;
 /**
  * The different `dudes ...` commands those lines name. Lower it when the last mention of one goes.
  * It includes `dudes project trust`, the one named exit of the optional own-copy box on Hire, which

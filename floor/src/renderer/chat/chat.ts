@@ -202,7 +202,7 @@ export async function startFreshChat(attempt: ChatAttempt, outcome: ChatOutcome,
   if (!chatGate(floor, floor.agents.find(row => row.id === attempt.payload.agent) ?? null).open) return;
   const requestId = mintAttemptId(deps.random);
   if (requestId === attempt.payload.request_id) {
-    commit({ ...state, problem: 'A new request ID could not be created. Try again.' });
+    commit({ ...state, problem: 'This page could not prepare a new request. Try again.' });
     return;
   }
   const payload = Object.freeze({ request_id: requestId, agent: attempt.payload.agent, text: attempt.payload.text,

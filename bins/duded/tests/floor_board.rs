@@ -1187,20 +1187,26 @@ fn stop_and_remove_take_a_ticket_off_the_agent_and_the_board() {
     board.stop();
 }
 
-/// The daemon sends codes, and the page words them from its own table. Each code is pinned to its
-/// sentence in that table, character for character, so the two cannot drift apart.
+/// The page covers each daemon code, while its guidance names actions available in the browser.
 #[test]
-fn the_page_words_match_the_daemon_words() {
+fn the_page_words_cover_the_daemon_codes() {
     use dudes_proto::{TicketReason, TicketRefusal, TicketWait};
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../floor/src/renderer/ticket/words.ts");
     let source = std::fs::read_to_string(&path).expect("the page's table of ticket words");
-    let pinned = |key: &str, sentence: &str| {
-        assert!(
-            source.contains(&format!("{key}: \"{sentence}\",")),
-            "{key} is not worded {sentence:?}"
-        );
+    let table_keys = |name: &str| {
+        source
+            .split_once(&format!("const {name}:"))
+            .unwrap()
+            .1
+            .split_once("\n});")
+            .unwrap()
+            .0
+            .lines()
+            .filter_map(|line| line.trim().split_once(": \"").map(|(key, _)| key.to_owned()))
+            .collect::<std::collections::BTreeSet<_>>()
     };
+    let mut reasons = std::collections::BTreeSet::new();
     for reason in [
         TicketReason::ProjectUnavailable,
         TicketReason::CheckCannotRun,
@@ -1214,10 +1220,15 @@ fn the_page_words_match_the_daemon_words() {
         TicketReason::HeldFailing,
         TicketReason::HeldUnsure,
         TicketReason::WorktreeMissing,
+        TicketReason::SharedInstructionsChanged,
+        TicketReason::SharedInstructionsUnknown,
+        TicketReason::RecoveryRequired,
     ] {
         let key = serde_json::to_value(reason).unwrap();
-        pinned(key.as_str().unwrap(), reason.sentence());
+        reasons.insert(key.as_str().unwrap().to_owned());
     }
+    assert_eq!(table_keys("REASONS"), reasons);
+    let mut refusals = std::collections::BTreeSet::new();
     for refusal in [
         TicketRefusal::NotATicket,
         TicketRefusal::TicketCard,
@@ -1228,12 +1239,13 @@ fn the_page_words_match_the_daemon_words() {
         TicketRefusal::QueueFull,
         TicketRefusal::LimitReached,
         TicketRefusal::Busy,
+        TicketRefusal::StaleCard,
+        TicketRefusal::InstructionComparisonPending,
+        TicketRefusal::InstructionReviewRequired,
     ] {
-        pinned(
-            refusal.code(),
-            &refusal.sentence(dudes_types::CardStatus::Todo),
-        );
+        refusals.insert(refusal.code().to_owned());
     }
+    assert_eq!(table_keys("REFUSALS"), refusals);
     // The page has already fetched the latest when it says this, so its sentence differs from
     // the one a command line prints.
     assert!(source.contains("stale_card: \"This ticket changed while you were looking. "));

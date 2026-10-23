@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // The words a ticket is shown in. The daemon sends codes and counts, never a sentence, so the page
-// keeps a table of them. A test in the daemon's suite reads this file and fails when a sentence
-// here differs from the one the daemon owns.
+// keeps its own table of page guidance. The contract test checks coverage of the daemon codes.
 
 import type { CardRow, TicketReason, TicketTurnEnd } from '../board.ts';
 
@@ -19,11 +18,11 @@ export const REFUSAL_CODES: readonly RefusalCode[] = Object.freeze([
 const REFUSALS: Readonly<Record<Exclude<RefusalCode, 'wrong_state'>, string>> = Object.freeze({
   stale_card: "This ticket changed while you were looking. Showing the latest.",
   not_a_ticket: "That card is not a ticket.",
-  ticket_card: "That card is a ticket. Use the ticket commands.",
+  ticket_card: "That card is a ticket. Open it on the Board to make changes.",
   project_unavailable: "That project is not set up any more.",
   done_when_changed: "The Done when check for this project changed. Choose it again.",
   agent_unavailable: "That agent is not available for this project.",
-  agent_no_project: "That agent was hired before projects were recorded. Hire a new agent in this project with `dudes hire`.",
+  agent_no_project: "That agent has no recorded project. Hire a new agent into this project from the Floor.",
   queue_full: "That agent already has 8 tickets waiting.",
   limit_reached: "Too many tickets for now. Remove some, or wait.",
   busy: "Another ticket request is still running. Try again in a moment.",
@@ -65,10 +64,10 @@ export function refusalSentence(code: RefusalCode, status: CardRow['status'] | n
 
 const REASONS: Readonly<Record<TicketReason, string>> = Object.freeze({
   recovery_required: "This work was interrupted. Recovery keeps the same goal and ticket round. Review recovery to see what was recorded and choose how to continue. Earlier effects may repeat.",
-  project_unavailable: "This project is not set up any more. Enroll it again with `dudes project add`, then Give to agent, or Remove the ticket.",
-  check_cannot_run: "The check cannot run: its program is missing, or it is a file inside the project that an agent could change. Install the program, or use one outside the project's repository. To use a script from the repository, run it through its interpreter, for example `sh test.sh` for a shell script; an agent can still edit that script, so review its changes before you accept the work. Then Give to agent. If the check itself is wrong, Remove this ticket and create it again.",
-  ceiling_required: "Set a spending limit first, because your account bills per use. Add one to the project's enrollment (`dudes project add`) or the agent's hire, then Give to agent.",
-  reserve_missing: "A per-turn spending reserve is missing. Run `dudes config set budget.per_turn_floor.usd <dollars>` (or `budget.per_turn_floor.tokens <count>`), then Give to agent.",
+  project_unavailable: "This ticket’s project is no longer set up. Add the project in Settings, then create a new ticket for it. Keep anything you need from this ticket before removing it.",
+  check_cannot_run: "The completion check could not run. Its program may be missing or unsafe to run directly. Review the check in the project setup, then try again. If the check changed, remove this ticket and create it again.",
+  ceiling_required: "This account bills per use and needs a spending limit. Review the project limits in Settings. Ask the person who set up the project to add a limit before trying again.",
+  reserve_missing: "A spending reserve is missing. Set a per-turn reserve under Spending limits in Settings, then try again.",
   goal_changed: "The agent's goal was changed outside the board. Give to agent to try again, or Stop.",
   limit_goal: "This ticket reached its spending limit. Give to agent to try again, or Stop.",
   slowed: "The agent kept failing and was slowed down. Look at the agent, then Give to agent to try again, or Stop.",
@@ -78,7 +77,7 @@ const REASONS: Readonly<Record<TicketReason, string>> = Object.freeze({
   held_unsure: "Dudes could not confirm how the agent's last turn ended. Resume the agent, or Stop.",
   shared_instructions_changed: "Shared project instructions changed during this work. Review the change, then Accept or Ask for changes.",
   shared_instructions_unknown: "Dudes could not determine whether shared project instructions changed during this work. Review the work, then Accept or Ask for changes.",
-  worktree_missing: "The agent's worktree is missing. Restore it and resume the agent, or Stop and give the ticket to another agent.",
+  worktree_missing: "The agent's project copy is missing. Restore the folder and resume the agent, or Stop and give the ticket to another agent.",
 });
 
 /** The sentence that names the next step for a ticket in Needs you. */

@@ -170,7 +170,7 @@ test('creating then giving to an idle agent says it started, and a queue says th
   ({ deps } = daemon((url) => url === '/floor/ticket' ? done('created', NEW, { seq: 0 })
     : done('assigned', NEW, { start: { state: 'needs_you', reason: 'reserve_missing' } })));
   await ticket.createTicket({ ...FORM, agent: ADA }, deps);
-  assert.match(ticket.getTicketState().notice.text, /^Ticket created\. A per-turn spending reserve is missing\./);
+  assert.match(ticket.getTicketState().notice.text, /^Ticket created\. A spending reserve is missing\./);
   ticket.resetTicket();
   ({ deps } = daemon(() => done('created', NEW, { seq: 0 })));
   const { seen } = daemon(() => done('created', NEW, { seq: 0 }));

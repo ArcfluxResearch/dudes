@@ -118,7 +118,7 @@ test('recovered review links only the actual acknowledgment and keeps settlement
       assert.match(html, /id="earlier-review-31"/);
       assert.match(html, /record 30/);
       assert.ok(html.includes('ab'.repeat(32)));
-      assert.match(html, boundary.state === 'unsettled' ? /earlier uncertainty remains/ : boundary.state === 'settled' ? /Effects of earlier work may still be unknown/ : /says nothing about effects of other earlier attempts/);
+      assert.match(html, boundary.state === 'unsettled' ? /earlier uncertainty remains/ : boundary.state === 'settled' ? /Effects of earlier work may still be unknown/ : /Effects of other earlier attempts may still be unknown/);
       assert.match(html, action === 'changes_requested' ? /Asked for changes/ : action === 'accepted_completed' ? /Accepted completed work/ : /Accepted instructions while work continued/);
     }
   }

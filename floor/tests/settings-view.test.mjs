@@ -40,6 +40,13 @@ test('Settings shows read-only running values, local commands, Setup and About',
       assert.ok(html.includes(expected), `missing ${expected}: ${html}`);
     }
     assert.doesNotMatch(html, /dudes config|dudes project (?:add|list|remove)|--completion-check-label/);
+    const collapsed = html.replace(/<details[^>]*>[\s\S]*?<\/details>/g, '');
+    assert.doesNotMatch(collapsed, /floor\.[a-z]+|browser-wire|dudes (?:project|quickstart|upgrade)/);
+    assert.deepEqual([...html.matchAll(/<h3[^>]*>([^<]+)<\/h3>/g)].map(match => match[1]), [
+      'Engines', 'Projects', 'Spending limits', 'Desktop notifications', 'Signed-in browsers', 'Floor switches', 'Office layout', 'About',
+    ]);
+    assert.match(html, /<details><summary>Configuration details<\/summary><dl>[\s\S]*<code>floor\.git<\/code>/);
+
     const anchors = [...html.matchAll(/<a ([^>]*)>/g)].map((match) => match[1]).filter((attrs) => attrs.includes('github.com'));
     const link = (href) => `href="${href}" target="_blank" rel="noopener noreferrer"`;
     assert.deepEqual(anchors, [
@@ -47,7 +54,7 @@ test('Settings shows read-only running values, local commands, Setup and About',
       link('https://github.com/ArcfluxResearch/dudes'),
       link('https://github.com/ArcfluxResearch/dudes/issues'),
     ]);
-    assert.match(html, /never checks for updates[^<]*<code>dudes upgrade --check<\/code>/);
+    assert.match(html, /<details><summary>Update and restart details<\/summary><p>To check for a newer version, run <code>dudes upgrade --check<\/code>/);
     assert.match(html, />Release notes for 0\.12\.3<\/a>/);
     for (const version of ['0.89.0-dev', '0.89.0-rc.1', '0.89.0+build.5']) {
       const dev = renderToStaticMarkup(createElement(SettingsView,
@@ -59,17 +66,17 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.doesNotMatch(html, /floor\.chat/);
     const gitRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, git } }), onSetup() {} }));
-    assert.match(gitRow(false), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> Off <button type="button">Turn on<\/button><small class="settings-key"> Setting name: <code>floor\.git<\/code><\/small><\/dd>/);
-    assert.match(gitRow(true), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><small class="settings-key"> Setting name: <code>floor\.git<\/code><\/small><\/dd>/);
-    assert.match(html, /<dt>Start new goals<\/dt><dd><span class="settings-says">[^<]*<\/span> Off It needs Change goals and Hire agents\. <button type="button">Turn on<\/button><small class="settings-key"> Setting name: <code>floor\.renew<\/code><\/small><\/dd>/);
+    assert.match(gitRow(false), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> Off <button type="button">Turn on<\/button><\/dd>/);
+    assert.match(gitRow(true), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
+    assert.match(html, /<dt>Start new goals<\/dt><dd><span class="settings-says">[^<]*<\/span> Off It needs Change goals and Hire agents\. <button type="button">Turn on<\/button><\/dd>/);
     const renewOn = renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, renew: true } }), onSetup() {} }));
-    assert.match(renewOn, /<dt>Start new goals<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><small class="settings-key"> Setting name: <code>floor\.renew<\/code><\/small><\/dd>/);
+    assert.match(renewOn, /<dt>Start new goals<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
     const hint = (control) => renderToStaticMarkup(createElement(UnavailableControls, { floor: floor(), control }));
     assert.match(hint('retire'), /Turn on Pause, resume and rename and Retire agents under\s+Floor switches in Settings/);
     assert.match(hint('terminal'), /Turn on Attach terminals under Floor switches in Settings/);
 
-    assert.match(html, /Turn a switch or an engine on or off here, and set the spending limits/);
+    assert.match(html, /Manage engines, projects and spending/);
     const diffRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, diff: true, git } }), onSetup() {} }));
     assert.match(diffRow(false), /<dt>Read ticket changes<\/dt><dd><span class="settings-says">[^<]*<\/span> On, but it needs Show changed files /);
@@ -92,10 +99,7 @@ test('Hire says it is off when its switch is off, and names every other reason w
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, hire } }), control: 'hire' }));
     assert.equal(hint(false), '<p class="settings-guidance">Hire is off. Turn on Hire agents under Floor '
       + 'switches in Settings.</p>');
-    assert.equal(hint(true), '<p class="settings-guidance">Hire needs a project (add its folder in Settings), at '
-      + 'least one engine offered for it, and a free Hire slot in this session. An engine is withdrawn when the '
-      + 'daemon&#x27;s configuration turns it off, or when the daemon holds a billing key for it and the project has '
-      + 'no ceiling that key requires.</p>');
+    assert.equal(hint(true), '<p class="settings-guidance">Hire is unavailable. Check Engines and Projects in Settings.</p>');
   } finally { await server.close(); }
 });
 
@@ -148,7 +152,7 @@ test('Settings asks on the page before the terminal goes on or retire or control
     await edit.changeSetting('floor.terminal', 'on');
     assert.equal(edit.getSettingsEditState().asking?.key, 'floor.terminal');
     assert.equal(edit.getSettingsEditState().sending, null, 'nothing was sent yet');
-    assert.match(view(), /aria-label="Turn on floor\.terminal"> [^<]*takes effect after a restart of the daemon\. <button type="button">Turn on<\/button> <button type="button">Cancel<\/button>/);
+    assert.match(view(), /aria-label="Turn on Attach terminals"> [^<]*takes effect after a restart of the daemon\. <button type="button">Turn on<\/button> <button type="button">Cancel<\/button>/);
     edit.cancelSetting();
     assert.equal(edit.getSettingsEditState().asking, null);
     assert.doesNotMatch(view(), /aria-label="Turn (on|off) floor\./);
@@ -156,7 +160,7 @@ test('Settings asks on the page before the terminal goes on or retire or control
     for (const key of ['floor.retire', 'floor.control']) {
       await edit.changeSetting(key, 'off');
       assert.equal(edit.getSettingsEditState().asking?.key, key);
-      assert.match(view(), new RegExp(`aria-label="Turn off ${key.replace('.', '\\.')}"`));
+      assert.match(view(), new RegExp(`aria-label="Turn off ${key === 'floor.retire' ? 'Retire agents' : 'Pause, resume and rename'}"`));
       edit.cancelSetting();
     }
 

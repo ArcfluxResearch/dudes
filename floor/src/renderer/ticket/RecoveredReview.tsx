@@ -22,11 +22,11 @@ export function RecoveredReview({ context, fresh }: { readonly context: TicketCo
       ? 'Some recovery review history is omitted by the display limit.'
       : 'Some exact recovery review relationships are unavailable. No earlier review was guessed.'}</p>}
     <ul>{history.relations.map((row, at) => <li key={`${row.authorization_lsn}-${at}`}>
-      Recovered interval with {intervalText(row.interval)} has its own review.
+      This earlier attempt has its own review.
       {' '}{row.boundary.state === 'unsettled'
         ? 'The earlier launch could not be settled, and the earlier uncertainty remains.'
         : row.boundary.state === 'no_host_call'
-          ? `The earlier interval made no host call, proved by record ${row.boundary.proof_lsn}. This says nothing about effects of other earlier attempts.`
+          ? 'The earlier attempt did not start the engine. Effects of other earlier attempts may still be unknown.'
         : row.boundary.state === 'settled'
           ? 'The earlier tracked launch boundary is now settled. Effects of earlier work may still be unknown.'
           : 'The exact earlier launch boundary is unavailable. Effects of earlier work may still be unknown.'}
@@ -41,11 +41,14 @@ export function RecoveredReview({ context, fresh }: { readonly context: TicketCo
         : row.acknowledgment.state === 'none' ? 'The earlier attempt has no acknowledged review.'
           : row.acknowledgment.state === 'truncated' ? 'The earlier acknowledged review is omitted by the display limit.'
             : 'The earlier acknowledged review is unavailable.'}
+      <details><summary>Details</summary><p>Interval: {intervalText(row.interval)}</p>
+        {row.boundary.state === 'no_host_call' ? <p>Proof record: {row.boundary.proof_lsn}</p> : null}
+      </details>
     </li>)}</ul>
     <div id="earlier-acknowledged-reviews">{history.acknowledgments.map((ack) => <details id={`earlier-review-${ack.lsn}`} key={ack.lsn} tabIndex={-1}
       ref={(node) => { if (node === null) acknowledged.current.delete(ack.lsn); else acknowledged.current.set(ack.lsn, node); }}>
-      <summary>Earlier acknowledged review at record {ack.lsn}</summary>
-      <p>{ACTION[ack.action]} at {recordedTime(ack.at)}. Recorded ticket sequence {ack.expected_seq}.</p>
+      <summary>Earlier acknowledged review</summary>
+      <p>Review record {ack.lsn}. {ACTION[ack.action]} at {recordedTime(ack.at)}. Recorded ticket sequence {ack.expected_seq}.</p>
       <p>Review through record {ack.watermark.through_lsn}. Review digest <code>{ack.watermark.set_digest}</code>.</p>
       <ul>{ack.intervals.map((interval, at) => <li key={at}>Earlier interval with {intervalText(interval)}.</li>)}</ul>
       <p>This acknowledgment does not acknowledge the current review or undo earlier effects.</p>

@@ -40,7 +40,7 @@ const OMISSIONS: Readonly<Record<DiffOmissionReason, string>> = {
 const NESTED_OMISSION = 'A folder with its own Git repository is not opened.';
 const REFUSALS: Readonly<Record<DiffRefusalReason, string>> = {
   baseline_unavailable: 'Dudes did not record where this round started, so it cannot list the changes. '
-    + 'Open the checkout in your editor with dudes ticket open.',
+    + 'Review the files in the agent’s project folder.',
   stale_ticket: 'This ticket has moved on since the list was made. Choose Refresh to see its current changes.',
   stale_manifest: 'This list is out of date. Choose Refresh to make a new one.',
   expired: 'This list expired after a minute. Choose Refresh to make a new one.',
@@ -48,10 +48,10 @@ const REFUSALS: Readonly<Record<DiffRefusalReason, string>> = {
   disabled: 'The Changes view is turned off on this daemon.',
   busy: 'Dudes is reading a checkout for someone else, or you asked again too soon. Wait a few seconds, then choose Refresh.',
   session_limit: 'This Floor session has used all the reading it is allowed (about 1 MiB), and Refresh does not renew it. '
-    + 'Open the checkout in your editor with dudes ticket open, or open Dudes to start a new Floor session.',
-  unsupported_platform: 'The Changes view does not work on this daemon’s operating system. Use dudes ticket open instead.',
-  worktree_mismatch: 'The agent’s worktree no longer matches the one Dudes recorded, so nothing was read.',
-  unsupported_storage: 'This repository uses storage the Changes view cannot read. Use dudes ticket open instead.',
+    + 'Review the files in the agent’s project folder, or open Dudes to start a new Floor session.',
+  unsupported_platform: 'The Changes view does not work on this daemon’s operating system. Review the files in the agent’s project folder.',
+  worktree_mismatch: 'The agent’s project copy no longer matches the one Dudes recorded, so nothing was read.',
+  unsupported_storage: 'This repository uses storage the Changes view cannot read. Review the files in the agent’s project folder.',
   root_mismatch: 'The folder this ticket was recorded in has been replaced, so nothing was read.',
   timed_out: 'Reading the checkout took too long. Choose Refresh to try again.',
   git_unavailable: 'The daemon found no usable Git program to read the checkout with.',
@@ -81,7 +81,7 @@ type PanelState = { readonly owner: { readonly key: string; readonly transport: 
 );
 
 function failureText(reason: Failure): string {
-  if (reason === 'forbidden') return 'This page has no current Floor session, so nothing was read. Reload the page to sign in again.';
+  if (reason === 'forbidden') return 'This page has no current Floor session, so nothing was read. Open Dudes to sign in again.';
   if (reason === 'unavailable') return 'The daemon did not answer. Choose Refresh to try again.';
   if (reason === 'unknown') return 'The daemon sent a reply this page could not read. Choose Refresh to try again.';
   return REFUSALS[reason];
@@ -160,7 +160,9 @@ export function DiffReview({ review, loading, onOpen, onPage }: {
     {page.next_cursor === null ? null : <div className="diff-actions">
       <button type="button" disabled={loading} onClick={onPage}>Show more files</button>
     </div>}
-    <p className="diff-note">For omitted files or a bigger review, run <code>dudes ticket open {page.binding.card}</code> in your terminal.</p>
+    <details className="diff-note"><summary>Local review details</summary>
+      <p>For omitted files or a bigger review, run <code>dudes ticket open {page.binding.card}</code> in your terminal.</p>
+    </details>
   </>;
 }
 
@@ -249,7 +251,9 @@ export function DiffPanel({ card, expectedSeq, transport }: {
       <p className="diff-status" role="status">{loading ? 'Reading the checkout…' : state.phase === 'refused' ? failureText(state.reason) : ''}</p>
       {review === null ? null : <DiffReview review={review} loading={loading} onOpen={open}
         onPage={() => { if (review.page.next_cursor !== null) void read({ mode: 'page', manifest_id: review.page.manifest_id, cursor: review.page.next_cursor }, review); }} />}
-      {review === null ? <p className="diff-note">For a local review, run <code>dudes ticket open {card}</code> in your terminal.</p> : null}
+      {review === null ? <details className="diff-note"><summary>Local review details</summary>
+        <p>For a local review, run <code>dudes ticket open {card}</code> in your terminal.</p>
+      </details> : null}
     </>}
   </section>;
 }

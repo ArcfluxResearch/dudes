@@ -40,9 +40,9 @@ test('card detail shows recorded card kinds and statuses, newest position first'
     event(2, 'card_claimed', 'claimed', 2_000), event(3, 'card_transition', 'doing', 1_000)]);
   assert.match(html, /Recent card activity/);
   assert.deepEqual([...html.matchAll(/data-card-activity-lsn="(\d+)"/g)].map((match) => match[1]), ['3', '2', '1']);
-  assert.match(html, /Moved Recorded title · doing/);
-  assert.match(html, /Recorded Ada claimed Recorded title · claimed/);
-  assert.match(html, /Created Recorded title · todo/);
+  assert.match(html, /Moved Recorded title · Working/);
+  assert.match(html, /Recorded Ada claimed Recorded title · To do/);
+  assert.match(html, /Created Recorded title · To do/);
   assert.match(html, /Events from the current recent activity window\. Older events may be absent\./);
 });
 
@@ -66,10 +66,10 @@ test('card activity preserves recorded claim names and keeps text inert', async 
   claimed.agent.name = '<img src=x onerror=alert(1)>';
   claimed.card.title = '<script>recorded title</script>';
   const html = await render([claimed, event(2, 'card_transition', 'done', 2_000)]);
-  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; claimed &lt;script&gt;recorded title&lt;\/script&gt; · claimed/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; claimed &lt;script&gt;recorded title&lt;\/script&gt; · To do/);
   const recent = html.slice(html.indexOf('Recent card activity'));
   assert.doesNotMatch(recent, /Current renamed Ada|Operator|<img|<script|<button|<input/);
-  assert.match(recent, /Moved Recorded title · done/);
+  assert.match(recent, /Moved Recorded title · Done/);
 });
 
 test('card activity distinguishes missing reads, disconnection, stale and empty windows', async () => {
@@ -83,5 +83,5 @@ test('card activity distinguishes missing reads, disconnection, stale and empty 
   assert.doesNotMatch(closed, /data-card-activity-lsn=/);
   const stale = await render([event(1, 'card_created', 'todo', 1_000)], { stale: true });
   assert.match(stale, /Activity unconfirmed\. These events are from the last snapshot\./);
-  assert.match(stale, /Created Recorded title · todo/);
+  assert.match(stale, /Created Recorded title · To do/);
 });

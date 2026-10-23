@@ -11,11 +11,11 @@ test('the daemon answer to a switch edit is read exactly, and anything else is a
     const { decodeSettingsResponse, editLine, saveSetting } = await server.ssrLoadModule('/src/renderer/settings/edit.ts');
     const saved = decodeSettingsResponse(200, JSON.stringify({ state: 'saved', wrote: true, applied: ['floor.answer'], restart: [] }));
     assert.deepEqual(saved, { kind: 'saved', applied: ['floor.answer'], restart: [] });
-    assert.equal(editLine(saved), 'Saved. The daemon runs it now.');
+    assert.equal(editLine(saved), 'Saved. This change is active now.');
     const restart = decodeSettingsResponse(200, JSON.stringify({ state: 'saved', wrote: true, applied: [], restart: ['floor.terminal'] }));
-    assert.match(editLine(restart), /floor\.terminal takes a restart/);
+    assert.match(editLine(restart), /Restart Dudes to apply this change/);
     const refused = decodeSettingsResponse(409, JSON.stringify({ state: 'refused', reason: 'start_rule', detail: 'floor.goal on needs floor.control on' }));
-    assert.match(editLine(refused), /floor\.goal on needs floor\.control on/);
+    assert.match(editLine(refused), /This change would stop Dudes from starting\. Review Details/);
     const notLive = decodeSettingsResponse(200, JSON.stringify({ state: 'saved_not_live', reason: 'enrollment_drift', wrote: true, applied: [], restart: [] }));
     assert.deepEqual(notLive, { kind: 'not_live', reason: 'enrollment_drift' });
     assert.match(editLine(notLive), /not running yet[^]*next restart/);

@@ -73,7 +73,7 @@ test('a fresh drawer defaults to Chat while explicit preferences and Chat-off fa
 test('reserved preparation stays cancellable and uncertain cancellation names its narrow promise', () => {
   const pending = { agent_id: A, note_lsn: '7', goal_id: G, text: 'Pending note', state: 'reserved',
     turn_id: T, cancellable: true, reason: null };
-  assert.match(render({ ...view(), pending: [pending] }), /Reserved for a turn\. Delivery has not started/);
+  assert.match(render({ ...view(), pending: [pending] }), /Next to be sent\. Delivery has not started/);
   assert.match(render({ ...view(), pending: [pending] }), />Cancel note<\/button>/);
   const uncertain = render({ ...view(), pending: [{ ...pending, state: 'delivery_uncertain', reason: 'delivery_uncertain' }] });
   assert.match(uncertain, /Delivery before restart is unknown/);
@@ -623,9 +623,10 @@ test('mounted Clear all asks once, keeps per-note removal and clears only this a
       pending = pending.filter(note => note.note_lsn !== payload.note_lsn); snapshot();
       return { status: 200, text: async () => JSON.stringify({ ...payload, state: 'cancelled' }) };
     } });
+  let selected = row;
   function Page() {
     const current = useSyncExternalStore(store.subscribeToFloor, store.getFloorState, store.getFloorState);
-    return createElement(ChatPanel, { floor: current, row });
+    return createElement(ChatPanel, { floor: current, row: selected });
   }
   const page = fakePage();
   const root = createRoot(page.host);
@@ -637,6 +638,12 @@ test('mounted Clear all asks once, keeps per-note removal and clears only this a
     assert.ok(page.host.querySelector('[aria-label="Clear queued notes"]'));
     await act(() => press(control('chat-clear-keep')));
     assert.equal(calls.length, 0);
+    assert.equal(control('chat-clear-confirm'), null);
+    await act(() => press(control('chat-clear-all')));
+    selected = { ...row, id: B, name: 'Grace' };
+    await act(() => root.render(createElement(Page)));
+    assert.equal(control('chat-clear-confirm'), null, 'switching agents discards the earlier confirmation');
+    selected = row; await act(() => root.render(createElement(Page)));
     assert.equal(control('chat-clear-confirm'), null);
     await act(() => press(control('chat-clear-all')));
     pending.push(note('5')); await act(snapshot);

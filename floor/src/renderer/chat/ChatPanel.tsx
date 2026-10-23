@@ -22,23 +22,23 @@ import { FullOutput } from '../LiveWork.tsx';
 export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
   agent_absent: 'The agent is no longer on the floor.',
   agent_retired: 'The agent was retired.',
-  halted: 'A halt stands on this agent. Chat cannot lift it.',
-  unsupported_delivery: 'This agent cannot receive notes through its current delivery channel.',
-  goal_absent: 'The required goal is unavailable for this message.',
-  queue_full: 'The browser-note queue is full. Nothing was added.',
+  halted: 'This agent is stopped. Open Overview to review its status.',
+  unsupported_delivery: 'This agent cannot receive messages in this session.',
+  goal_absent: 'The task this message belongs to is unavailable.',
+  queue_full: 'Too many messages are waiting. Remove a queued note or wait for delivery.',
   paused: 'Delivery waits while this agent is paused.',
   hold: 'Delivery waits while this agent is held.',
   open_question: 'Delivery waits for the open question to close. A note does not answer it.',
-  budget: 'Delivery waits for the existing budget admission checks.',
-  ceiling_required: 'Set a spending limit for this engine before chatting.',
-  hops: 'The original goal has no admitted turns remaining.',
-  provenance: 'Delivery waits for an observed turn outcome.',
-  goal_changed: 'The original goal changed. This note stays bound to its original goal.',
+  budget: 'Delivery waits until the spending limit allows more work.',
+  ceiling_required: 'This account needs a spending limit. Review the project limits in Settings before sending.',
+  hops: 'This task has used all its turns. Open Overview to review what happens next.',
+  provenance: 'Delivery waits while Dudes checks how the previous work ended.',
+  goal_changed: 'The task changed. This note still belongs to the earlier task.',
   context_changed: 'The conversation context changed. This message needs a new send after you review the context loss.',
-  mode_changed: 'The delivery mode changed. This note stays bound to its original destination.',
+  mode_changed: 'The session changed. This note still belongs to the earlier session.',
   delivery_uncertain: 'Delivery before restart is unknown.',
   delivery_started: 'Delivery has started. Its text cannot be retracted.',
-  note_unknown: 'No undelivered browser note matches this identity.',
+  note_unknown: 'This note is no longer waiting for delivery. Check the conversation for its status.',
   note_cancelled: 'This note was already cancelled.',
 };
 
@@ -75,7 +75,7 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
   const attempt = action.attempt?.payload.agent === row.id ? action.attempt : null;
   const blocked = action.attempt !== null || action.clearing != null || problem !== null || chatUploading(action, row.id);
   const accepts = row.mode !== 'attached';
-  const name = typeof row.name === 'string' ? row.name : row.id;
+  const name = typeof row.name === 'string' ? row.name : 'this agent';
   const question = answerGate(floor, row);
   const target = action.answerTargets.get(row.id);
   const replying = target !== undefined && question.open && target.questionLsn === question.questionLsn;
@@ -186,7 +186,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
     if (follow.current && scroll.current !== null) scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [entries, floor.output, action.attempt, action.outcome]);
   const gate = chatGate(floor, row);
-  const name = typeof row.name === 'string' ? row.name : row.id;
+  const name = typeof row.name === 'string' ? row.name : 'this agent';
   const attempt = action.attempt?.payload.agent === row.id ? action.attempt : null;
   const outcome = action.outcome;
   const latestTurn = row.mode === 'managed' ? entries.filter(entry => entry.kind !== 'context' && entry.turn !== null).at(-1) : undefined;
@@ -259,6 +259,12 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
         data-chat-receipt-note-lsn={action.outcome !== null && 'noteLsn' in action.outcome ? action.outcome.noteLsn : undefined}>
         {'text' in attempt.payload ? <><p className="chat-speaker">You</p><ChatText text={attempt.payload.text} /></> : null}
         <p>{outcomeText(action)}</p>
+        <details><summary>Details</summary>
+          <p>Request: <code>{attempt.payload.request_id}</code></p>
+          {'note_lsn' in attempt.payload ? <p>Note: <code>{attempt.payload.note_lsn}</code></p> : null}
+          <p>Agent: <code>{attempt.payload.agent}</code></p>
+          <p>Status: <code>{outcome?.kind ?? 'sending'}</code></p>
+        </details>
         {outcome?.kind === 'context_lost' ? <button type="button" className="chat-start-fresh" disabled={action.sending}
           ref={handFocusOnLeave} data-focus-on-leave="chat-text"
           onClick={() => void startFreshChat(attempt, outcome, browserChatDeps)}>Start fresh and resend this message</button> : null}
@@ -308,29 +314,29 @@ function outcomeText(action: ChatState): string {
   if (action.sending) return 'Sending request…';
   if (outcome === null) return 'No request result is available.';
   switch (outcome.kind) {
-    case 'queued': return 'Recorded in the journal. The note is queued; delivery is not confirmed.';
+    case 'queued': return 'The note is saved and queued. Delivery is not confirmed.';
     case 'cancelled': return 'Cancelled before delivery. No text was dispatched for this note.';
     case 'reissue_cancelled': return 'Future reissue stopped. Delivery before restart is unknown; past delivery may have occurred.';
     case 'refused': return CHAT_REASON_TEXT[outcome.reason];
     case 'context_lost': return 'The agent lost its conversational context. This message was not sent. Starting fresh resends it without restoring the previous conversation.';
-    case 'forbidden': return 'This session was refused. A fresh authenticated snapshot is required.';
-    case 'conflict': return 'This request ID names a different request. No new effect was recorded.';
-    case 'rejected': return 'The daemon refused the request format. No effect was recorded.';
-    case 'pending': return 'The request is still pending. Check status repeats the same frozen request.';
-    case 'unavailable': return 'The daemon could not establish durability. Check status repeats the same frozen request.';
-    case 'unknown': return 'The request outcome is unknown. Check status repeats the same frozen request.';
+    case 'forbidden': return 'This page could not confirm your access. Wait for the Floor to reconnect, then check status.';
+    case 'conflict': return 'This request conflicts with an earlier action. Nothing new was saved.';
+    case 'rejected': return 'Dudes could not use this request. Nothing was saved.';
+    case 'pending': return 'This request is still pending. Choose Check status to see whether it finished.';
+    case 'unavailable': return 'Dudes could not confirm this request was saved. Choose Check status before continuing.';
+    case 'unknown': return 'The result is unknown. Choose Check status before continuing.';
   }
 }
 
 function pendingText(note: PendingNote): string {
   return note.state === 'queued' ? 'Queued. Delivery has not started.'
-    : note.state === 'reserved' ? 'Reserved for a turn. Delivery has not started.'
+    : note.state === 'reserved' ? 'Next to be sent. Delivery has not started.'
       : 'Delivery before restart is unknown. Stopping future reissue cannot retract possible past delivery.';
 }
 
 function turnText(turn: ChatTurn, output: OutputStatus | null): string | null {
   switch (turn.state) {
-    case 'reserved': return 'Reserved. Delivery has not started.';
+    case 'reserved': return 'Next to be sent. Delivery has not started.';
     case 'running': return output === 'ended' ? 'Waiting for reply status' : 'Replying…';
     case 'ended': return turn.reply === null ? 'No final reply was reported' : null;
     case 'failed': return turn.reply === null ? 'Turn failed. No final reply was reported' : 'Turn failed.';

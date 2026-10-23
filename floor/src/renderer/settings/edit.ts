@@ -183,15 +183,15 @@ export function limitChange(unit: LimitUnit, typed: string, current: string | nu
 export function editLine(result: SettingsEditResult): string {
   switch (result.kind) {
     case 'saved':
-      return result.restart.length > 0 ? `Saved. ${result.restart.join(', ')} takes a restart.` : 'Saved. The daemon runs it now.';
+      return result.restart.length > 0 ? 'Saved. Restart Dudes to apply this change. A restart ends any running turn.' : 'Saved. This change is active now.';
     case 'not_live':
       return result.reason === 'enrollment_drift'
         ? 'Saved, but not running yet. The file differs from the projects the daemon runs, perhaps from a pending project change. It applies at the next restart.'
         : 'Saved, but the daemon could not adopt it just now. It applies at the next restart.';
     case 'refused':
       if (result.reason === 'zeroes_reserve') return 'Not saved. A per-turn reserve of zero can stop the daemon from starting. It has to stay above zero.';
-      return result.reason === 'start_rule' && result.detail !== null ? `Not saved. ${result.detail}`
-        : `Not saved (${result.reason}).`;
+      return result.reason === 'start_rule' ? 'Not saved. This change would stop Dudes from starting. Review Details.'
+        : 'Not saved. Review Details and try again.';
     case 'failed':
       return 'Not saved. The daemon did not confirm it.';
   }

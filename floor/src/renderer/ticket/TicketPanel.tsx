@@ -28,7 +28,7 @@ import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, engineStopped, rea
 import { StuckActions } from './StuckActions.tsx';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
-import { COVERAGE_SUMMARY, coverageText, groupGaps, instructionContextText } from './instructions.ts';
+import { COVERAGE_SUMMARY, coverageText, groupGaps, instructionContextDetails, instructionContextText } from './instructions.ts';
 import type { InstructionReview } from './instructions.ts';
 
 const TRUNCATED_LABEL: Readonly<Record<TruncatedTicketField, string>> = Object.freeze({
@@ -136,10 +136,15 @@ function InstructionEvidence({ floor, review, reviewing }: {
       {review.gaps.length === 0 ? null : <>
         <h5>Gap details</h5>
         <ul>{review.gaps.map((row, at) => <li key={at}>
-          Coverage gap {at + 1}. {row.reason.replaceAll('_', ' ')}. {instructionContextText(row.context)}.
+          Coverage gap {at + 1}. {row.reason.replaceAll('_', ' ')}. {instructionContextDetails(row.context)}.
           {row.agent === null ? null : <> Participant <code>{row.agent}</code>.</>}
           {row.display === null ? null : <> <span className="git-path data">{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>.</>}
           {row.origin === 'declared' ? ' Standing engine limit.' : ' Found during this ticket.'}
+        </li>)}</ul>
+      </>}
+      {review.changed_paths.length === 0 ? null : <><h5>Changed path details</h5>
+        <ul>{review.changed_paths.map((row, at) => <li key={at}>
+          {row.display}: {instructionContextDetails(row.context)}
         </li>)}</ul>
       </>}
       <h5>Observed intervals</h5>

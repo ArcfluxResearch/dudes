@@ -2959,6 +2959,15 @@ samp,
   font-size: .74rem;
 }
 .settings-view ul { padding-left: 1.25rem; }
+.settings-view button { padding: .4rem .65rem; border: 1px solid var(--line); border-radius: 6px; background: var(--button-background); color: var(--ink); font: inherit; font-size: .8rem; cursor: pointer; }
+.settings-view button:disabled, .settings-view button[aria-disabled='true'] { opacity: .6; cursor: default; }
+.settings-view button:focus-visible, .settings-view summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+.settings-view details { margin: .6rem 0; }
+.settings-view summary { color: var(--muted-ink); font-size: .82rem; line-height: 1.5; cursor: pointer; }
+.settings-view .settings-says { display: block; margin-bottom: .4rem; line-height: 1.5; }
+.settings-view .settings-engines { list-style: none; padding: 0; }
+.settings-engines li { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; margin: .6rem 0; font-size: .84rem; }
+.settings-engines li > details { flex-basis: 100%; }
 .settings-office { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 
 .first-run-guide {
@@ -3129,7 +3138,8 @@ samp,
 }
 .chat-panel button:disabled { opacity: .6; cursor: default; }
 .chat-panel button:focus-visible, .chat-compose textarea:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
-.chat-panel .chat-send { border-color: var(--accent-ink); border-radius: 8px; padding: .5rem 1rem; background: var(--accent-ink); color: var(--on-accent); font-weight: 600; }
+.chat-panel :is(.chat-send, .chat-clear-all, .chat-clear-confirm, .chat-clear-keep) { border-radius: 8px; padding: .5rem 1rem; }
+.chat-panel :is(.chat-send, .chat-clear-confirm) { border-color: var(--accent-ink); background: var(--accent-ink); color: var(--on-accent); font-weight: 600; }
 .chat-receipt, .chat-context { border: 1px solid var(--line); padding: .6rem; border-radius: .4rem; }
 .chat-receipt { margin-top: .75rem; }
 .chat-reason { font-weight: 600; }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { stateName } from './ticket/words.ts';
 import type { CardStatus } from './board.ts';
 
 const ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
@@ -81,7 +82,7 @@ export function decodeActivity(value: unknown): { readonly rows: readonly Activi
 }
 
 export function activityText(row: ActivityRow): string {
-  const name = 'agent' in row ? row.agent.name || row.agent.id : '';
+  const name = 'agent' in row ? row.agent.name || 'An agent' : '';
   switch (row.kind) {
     case 'turn_issued': return `${name} started a turn`;
     case 'turn_ended': return `${name} ended a turn`;
@@ -93,8 +94,15 @@ export function activityText(row: ActivityRow): string {
     case 'agent_retired': return `${name} retired`;
     case 'pause': return `${name} paused`;
     case 'resume': return `${name} resumed`;
-    case 'card_created': return `Created ${row.card.title} · ${row.card.status}`;
-    case 'card_transition': return `Moved ${row.card.title} · ${row.card.status}`;
-    case 'card_claimed': return `${name} claimed ${row.card.title} · ${row.card.status}`;
+    case 'card_created': return `Created ${row.card.title} · ${stateName(row.card.status)}`;
+    case 'card_transition': return `Moved ${row.card.title} · ${stateName(row.card.status)}`;
+    case 'card_claimed': return `${name} claimed ${row.card.title} · ${stateName(row.card.status)}`;
   }
 }
+
+export const ACTIVITY_LABELS: Readonly<Record<ActivityRow['kind'], string>> = Object.freeze({
+  turn_issued: 'Work started', turn_ended: 'Work ended', goal_set: 'Task given', goal_done: 'Task completed',
+  human_question: 'Question asked', human_answer: 'Question answered', agent_renamed: 'Agent renamed',
+  agent_retired: 'Agent retired', pause: 'Agent paused', resume: 'Agent resumed',
+  card_created: 'Card created', card_transition: 'Card moved', card_claimed: 'Card assigned',
+});
