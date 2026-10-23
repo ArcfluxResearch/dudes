@@ -1553,6 +1553,7 @@ pub(crate) mod tests {
                 // `recorded_run_limits_reach_the_agent_row_and_absence_is_none` is asserting.
                 max_turns: None,
                 max_budget: None,
+                model: None,
                 trusted: false,
                 workspace: None,
                 worktree: None,

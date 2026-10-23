@@ -443,6 +443,7 @@ where
                     .map(|adapter| crate::provider_check::Configured {
                         provider,
                         program: adapter.program().to_os_string(),
+                        model: adapter.model_selection().selector().map(str::to_owned),
                     })
             })
             .collect(),

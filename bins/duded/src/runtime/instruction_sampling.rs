@@ -1109,6 +1109,7 @@ mod tests {
             isolation: None,
             max_turns: None,
             max_budget: None,
+            model: None,
             trusted: true,
             worktree: None,
             mcp_servers: Vec::new(),

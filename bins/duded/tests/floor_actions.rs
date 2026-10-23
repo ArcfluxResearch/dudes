@@ -1357,6 +1357,7 @@ fn plant_old_hire(
         isolation: Some(IsolationMode::Default),
         max_turns: None,
         max_budget: None,
+        model: None,
         trusted: false,
         workspace: None,
         worktree: None,
@@ -7958,6 +7959,7 @@ fn browser_goal_index_refuses_a_goal_set_with_both_attributions() {
                     isolation: Some(IsolationMode::Default),
                     max_turns: None,
                     max_budget: None,
+                    model: None,
                     trusted: false,
                     workspace: None,
                     worktree: None,
@@ -10458,6 +10460,7 @@ fn seeded_look_hire(id: AgentId) -> Record {
         isolation: None,
         max_turns: None,
         max_budget: None,
+        model: None,
         trusted: false,
         worktree: None,
         mcp_servers: Vec::new(),
@@ -12458,6 +12461,7 @@ fn browser_renew_refuses_unenrolled_moved_and_changed_workspaces() {
                 isolation: None,
                 max_turns: None,
                 max_budget: None,
+                model: None,
                 trusted: false,
                 workspace: Some(dudes_proto::record::RecordedWorkspace {
                     id: "repo_1".to_owned(),
@@ -13952,6 +13956,80 @@ fn a_hire_that_names_no_check_is_admitted_and_idle() {
         [1, 0, 0],
         "the retry appends nothing"
     );
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// A hire that names a model records it on `AgentHired` under a digest that frames it; the same
+/// attempt with another model, or none, conflicts; and a name outside the bounds is refused before
+/// any effect.
+#[test]
+fn a_browser_hire_records_the_model_it_names_and_refuses_a_bad_shape_before_any_effect() {
+    let fixture = Fixture::new();
+    let settings = enrolled_settings(&fixture);
+    let (_, mut running, _, page) = default_floor(&settings);
+    let before = fixture.records();
+    let too_long = "a".repeat(65);
+    for bad in ["-m", "--model", "a b", "", too_long.as_str(), "é"] {
+        let mut request = hire_request('A', None);
+        request["model"] = json!(bad);
+        let (head, _) = post_onboard(&page, &request);
+        assert!(
+            head.starts_with("HTTP/1.1 400 Bad Request"),
+            "{bad:?}: {head}"
+        );
+    }
+    assert_eq!(fixture.records(), before, "a refused shape appends nothing");
+
+    let mut named = hire_request('B', None);
+    named["model"] = json!("opus");
+    let (head, complete) = post_onboard(&page, &named);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    let [hire] = <[_; 1]>::try_from(hires(&fixture)).expect("one hire");
+    assert_eq!(
+        hire.request_digest,
+        framed(
+            b"dudes.onboard.nogoal.v7\0",
+            &[
+                ("workspace_id", "repo_1"),
+                ("name", "Kim"),
+                ("role", "engineer"),
+                ("provider", "claude"),
+                ("character", ""),
+                ("accent", ""),
+                ("check_id", "default"),
+                (
+                    "check_revision",
+                    &common::check_revision_as(
+                        "default",
+                        "Checks pass",
+                        &[true_program()],
+                        10,
+                        true
+                    ),
+                ),
+                ("model", "opus"),
+            ],
+        )
+    );
+    let recorded: Vec<_> = fixture
+        .records()
+        .iter()
+        .filter_map(|record| match record {
+            Record::AgentHired { model, .. } => Some(model.as_ref().map(ToString::to_string)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(recorded, [Some("opus".to_owned())]);
+
+    let mut other = hire_request('B', None);
+    other["model"] = json!("haiku");
+    let (head, _) = post_onboard(&page, &other);
+    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+    let (head, _) = post_onboard(&page, &hire_request('B', None));
+    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+    let (_, retry) = post_onboard(&page, &named);
+    assert_eq!(retry, complete);
+    assert_eq!(hires(&fixture).len(), 1);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 

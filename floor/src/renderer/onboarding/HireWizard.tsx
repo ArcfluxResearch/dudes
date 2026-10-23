@@ -21,7 +21,7 @@ import type { ProviderRow } from '../setup/daemon.ts';
 import { HIRE_ENGINES, formatUsdMicros, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
 import {
-  LIMITS, NO_PROJECT_LIST, agentsIn, checkHireStatus, lengthNote, ownCopyOffer, SECTIONS, browserHireDeps, chosenWorkspace,
+  LIMITS, MODEL_SUGGESTIONS, NO_PROJECT_LIST, agentsIn, checkHireStatus, lengthNote, ownCopyOffer, SECTIONS, browserHireDeps, chosenWorkspace,
   chosenEngine, editDraft, freshSince, getHireState, moveSection, presenceOf, releasable,
   releaseAttempt, submitHire, TICKETS_OFF_AFTER, ticketsOff,
   sessionAfterRefusal, showSection, startAnotherHire, subscribeToHire,
@@ -140,6 +140,40 @@ function OwnCopyChoice({ copy, workspace, names, frozen }: {
         + `${names.length === 1 ? 'works' : 'work'} in this project's folder. You can untick it.`}</p>
       : null}
     <p className="hire-note">{COPY_EXPLAINED}</p>
+  </div>;
+}
+
+/** Which model the agent runs: the engine's own default, a suggestion, or any name typed. */
+function ModelChoice({ engine, draft, frozen, configured, invalid }: {
+  readonly engine: HireEngine;
+  readonly draft: HireDraft;
+  readonly frozen: boolean;
+  /** The model the daemon's configuration gives every agent of this engine, if it does. */
+  readonly configured: string | null;
+  readonly invalid: boolean;
+}) {
+  const suggestions = MODEL_SUGGESTIONS[engine];
+  const chosen = draft.model ?? '';
+  const typed = suggestions.includes(chosen) ? '' : chosen;
+  return <div className="hire-model" data-hire-model="true">
+    <fieldset className="hire-choices" disabled={frozen}>
+      <legend>Which model?</legend>
+      {['', ...suggestions].map((name) => (
+        <label key={name} className="hire-choice">
+          <input type="radio" name="model" value={name} checked={chosen === name}
+            onChange={() => editDraft({ model: name })} />
+          <span className="hire-choice-label">{name === '' ? (configured === null ? 'Engine default' : `Configured: ${configured}`) : name}</span>
+        </label>
+      ))}
+    </fieldset>
+    <div className="hire-field">
+      <label htmlFor="hire-model-name">Another model name</label>
+      <input id="hire-model-name" name="model_name" type="text" autoComplete="off" spellCheck={false}
+        value={typed} disabled={frozen} aria-invalid={invalid}
+        aria-describedby={invalid ? 'hire-problem' : undefined}
+        onChange={(event) => editDraft({ model: event.target.value })} />
+      <p className="hire-count">Fixed for this agent. Dudes checks only the spelling; the app reports a name it does not know when the agent first runs.</p>
+    </div>
   </div>;
 }
 
@@ -325,6 +359,8 @@ function HireForm({ hire, floor, onClose }: {
                   ))}
                 </fieldset>
               )}
+              {engine === null ? null : <ModelChoice engine={engine} draft={hire.draft} frozen={frozen}
+                configured={row?.configuredModel ?? null} invalid={invalid('model')} />}
               {workspace === null ? null
                 : <OwnCopyChoice copy={copy} workspace={workspace} names={sharing} frozen={frozen} />}
               {withdrawn ? <p className="hire-note">{"An engine missing here is turned off in the daemon's "

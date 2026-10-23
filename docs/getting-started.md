@@ -89,7 +89,11 @@ Dudes reads no engine's credentials or files.
    message. See [Tickets](tickets.md).
 
 5. Hire more agents. The Floor offers Claude Code, and Codex or Pi once they are
-   turned on. From the command line, hire an agent, then give it a goal with the id that `hire`
+   turned on. The App step also lets you choose the model the agent runs (`dudes hire --model <name>`
+   does the same): Claude Code suggests `opus`, `sonnet` and `haiku`, and any other name may be typed.
+   Left alone, the agent uses the app's own default, or the model your configuration sets for that app.
+   The model is fixed for the agent's life; Dudes checks only its spelling, and the app reports a
+   name it does not know when the agent first runs. From the command line, hire an agent, then give it a goal with the id that `hire`
    prints. This one gets a folder of its own. Dudes cannot check another agent's engine settings
    for a ticket, so in a repository two agents share it holds tickets in **Needs you** for review:
 

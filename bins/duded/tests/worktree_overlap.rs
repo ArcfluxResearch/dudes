@@ -65,6 +65,7 @@ fn hired_into(agent: AgentId, worktree: WorktreeId, cwd: &Path) -> Entry {
         isolation: None,
         max_turns: None,
         max_budget: None,
+        model: None,
         trusted: true,
         worktree: Some(worktree),
         mcp_servers: Vec::new(),

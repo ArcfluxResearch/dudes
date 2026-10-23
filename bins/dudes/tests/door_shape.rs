@@ -306,6 +306,7 @@ fn hire_params(cwd: &Path) -> dudes_proto::rpc::agent::HireParams {
         isolation: None,
         max_turns: None,
         max_budget: None,
+        model: None,
         trusted: false,
         checkout: None,
         from: None,

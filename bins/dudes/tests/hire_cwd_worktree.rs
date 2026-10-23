@@ -234,6 +234,7 @@ fn legacy_hire(id: AgentId, cwd: PathBuf) -> Record {
         isolation: None,
         max_turns: None,
         max_budget: None,
+        model: None,
         trusted: false,
         worktree: None,
         mcp_servers: Vec::new(),

@@ -469,6 +469,8 @@ pub struct OnboardRequest {
     pub(crate) check: Option<(String, Hex32)>,
     /// The agent works in a git worktree of its own rather than in the project folder.
     pub(crate) own_copy: bool,
+    /// The model every launch of the agent names, when the hire chose one.
+    pub(crate) model: Option<dudes_types::ModelName>,
 }
 
 impl fmt::Debug for OnboardRequest {
@@ -602,6 +604,8 @@ struct OnboardJson {
     check_revision: Option<Hex32>,
     #[serde(default)]
     own_copy: Option<bool>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 /// The request digest's domain version and the fields it frames after the text fields. The domain
@@ -609,14 +613,28 @@ struct OnboardJson {
 /// frames none, v2 adds the appearance, v3, for a request that names an engine, always frames all seven,
 /// v4, for a request that names a check, frames v3's seven and then the check, and v5, for a request
 /// that names a check and asks for its own copy, frames v4's fields and then the choice. v6, for a
-/// request that asks for its own copy and names no check, frames v3's seven and then the choice.
+/// request that asks for its own copy and names no check, frames v3's seven and then the choice. v7,
+/// for a request that names a model whatever its check and copy, is matched first: it frames v3's
+/// seven, then the check when there is one, then the own-copy choice when it is made, then the model.
 fn request_framing<'a>(
     check: Option<(&'a str, &'a str)>,
     names_engine: bool,
     own_copy: bool,
+    model: Option<&'a str>,
     seven: [(&'static str, &'a str); 3],
 ) -> (&'static str, Vec<(&'static str, &'a str)>) {
     let [_, character, accent] = seven;
+    if let Some(model) = model {
+        let mut fields = seven.to_vec();
+        if let Some((id, revision)) = check {
+            fields.extend([("check_id", id), ("check_revision", revision)]);
+        }
+        if own_copy {
+            fields.push(("own_copy", "true"));
+        }
+        fields.push(("model", model));
+        return ("v7", fields);
+    }
     match (check, names_engine, character.1, accent.1) {
         (Some((id, revision)), ..) if own_copy => (
             "v5",
@@ -694,12 +712,19 @@ impl OnboardRequest {
             .as_ref()
             .map(|(id, revision)| (id.as_str(), crate::goal_replacement::hex(*revision)));
         let own_copy = raw.own_copy.unwrap_or(false);
+        let model = raw
+            .model
+            .as_deref()
+            .map(dudes_types::ModelName::parse)
+            .transpose()
+            .context("invalid browser hire model")?;
         let (domain, extra) = request_framing(
             revision
                 .as_ref()
                 .map(|(id, revision)| (*id, revision.as_str())),
             raw.provider.is_some(),
             own_copy,
+            model.as_ref().map(dudes_types::ModelName::as_str),
             [
                 ("provider", provider.as_str()),
                 ("character", character),
@@ -731,6 +756,7 @@ impl OnboardRequest {
             role,
             check,
             own_copy,
+            model,
         })
     }
 }

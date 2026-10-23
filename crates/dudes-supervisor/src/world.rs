@@ -95,6 +95,8 @@ pub struct AgentRow {
     /// The vendor-run budget backstop recorded at hire, or `None` for none. Not a
     /// spend ceiling and no part of gate 5's admission — see `Record::AgentHired::max_budget`.
     pub max_budget: Option<Usd>,
+    /// The model the hire named, or `None` for the engine's own selection.
+    pub model: Option<dudes_types::ModelName>,
     /// Whether the operator vouched for the repository at hire.
     pub trusted: bool,
     /// The lease this agent was hired into, when it was hired into a worktree.
@@ -1304,6 +1306,7 @@ impl World {
                 isolation,
                 max_turns,
                 max_budget,
+                model,
                 trusted,
                 worktree,
                 mcp_servers,
@@ -1325,6 +1328,7 @@ impl World {
                         sandbox: *sandbox,
                         max_turns: *max_turns,
                         max_budget: *max_budget,
+                        model: model.clone(),
                         trusted: *trusted,
                         worktree: *worktree,
                         mcp: McpPolicy::hired(
@@ -2944,6 +2948,7 @@ mod current_census_tests {
             isolation: None,
             max_turns: None,
             max_budget: None,
+            model: None,
             trusted: true,
             worktree: None,
             mcp_servers: Vec::new(),

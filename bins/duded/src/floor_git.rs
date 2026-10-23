@@ -631,6 +631,7 @@ mod tests {
             isolation: None,
             max_turns: None,
             max_budget: None,
+            model: None,
             trusted: worktree.is_some(),
             worktree,
             mcp_servers: Vec::new(),

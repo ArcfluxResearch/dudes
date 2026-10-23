@@ -71,6 +71,7 @@ fn hired(agent: AgentId, directory: &Path, worktree: WorktreeId) -> Record {
         isolation: None,
         max_turns: None,
         max_budget: None,
+        model: None,
         trusted: false,
         worktree: Some(worktree),
         mcp_servers: Vec::new(),

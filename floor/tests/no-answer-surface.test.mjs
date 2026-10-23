@@ -242,6 +242,8 @@ const HIRE_FIELDS = Object.freeze([
   { tag: 'textarea', name: 'role', type: null, change: '(event) => editDraft({ role: event.target.value })' },
   { tag: 'input', name: 'workspace_id', type: 'radio', change: '() => editDraft({ workspaceId: space.workspaceId })' },
   { tag: 'input', name: 'engine', type: 'radio', change: '() => editDraft({ engine: name })' },
+  { tag: 'input', name: 'model', type: 'radio', change: '() => editDraft({ model: name })' },
+  { tag: 'input', name: 'model_name', type: 'text', change: '(event) => editDraft({ model: event.target.value })' },
   { tag: 'input', name: 'own_copy', type: 'checkbox',
     change: '(event) => editDraft({ ownCopy: event.target.checked })' },
 ]);
@@ -1017,8 +1019,8 @@ function fieldsIn(text) {
 const EXECUTION_CHOICE =
   /cwd|command|argv|exec|provider|engine|model|predicate|check|budget|ceiling|usd|hop|isolat|trust|path|folder|dir|file|repo|env|shell/i;
 
-test('the Hire form has exactly seven named fields, and no field name but workspace_id and engine matches '
-  + 'EXECUTION_CHOICE', async () => {
+test('the Hire form has exactly nine named fields, and no field name but workspace_id, engine, model and '
+  + 'model_name matches EXECUTION_CHOICE', async () => {
   // The control first: a planted path field and a file picker are both seen.
   const planted = fieldsIn(`const x = <><input name="cwd" onChange={(event) => set(event)} />
     <input type="file" name="profile" /></>;`);
@@ -1032,7 +1034,7 @@ test('the Hire form has exactly seven named fields, and no field name but worksp
     HIRE_FIELDS.map(({ tag, name, type }) => `${tag}:${name}:${type ?? ''}`).sort(),
     'the Hire form grew, lost or renamed a field');
   for (const field of fields) {
-    assert.ok(['workspace_id', 'engine'].includes(field.name) || !EXECUTION_CHOICE.test(field.name),
+    assert.ok(['workspace_id', 'engine', 'model', 'model_name'].includes(field.name) || !EXECUTION_CHOICE.test(field.name),
       `${field.name} is an execution choice`);
     assert.notEqual(field.type, 'file', 'the Hire form carries a file picker');
     assert.notEqual(field.type, 'hidden', 'the Hire form carries a hidden field');

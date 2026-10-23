@@ -419,7 +419,7 @@ test('the three sections show only enrolled choices and the configured limits', 
   const names = (html) => [...html.matchAll(/<(?:input|textarea)[^>]*name="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(names(sections.identity), ['name', ...Array(7).fill('accent'), 'role']);
   assert.deepEqual(names(sections.workspace), ['workspace_id', 'workspace_id']);
-  assert.deepEqual(names(sections.engine), ['engine']);
+  assert.deepEqual(names(sections.engine), ['engine', 'model', 'model', 'model', 'model', 'model_name']);
   const radios = [...sections.workspace.matchAll(/<input type="radio"[^>]*>/g)].map(([tag]) => tag);
   assert.ok(radios.every((tag) => tag.includes('name="workspace_id"')));
   const values = radios.map((tag) => /value="([^"]+)"/.exec(tag)?.[1]);

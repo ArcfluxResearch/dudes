@@ -427,6 +427,106 @@ fn a_trusted_project_hires_into_its_own_copy_as_the_command_line_does() {
     assert_ne!(*tree, floor.repo, "and it is not the project's folder");
 }
 
+/// The digests of a copy hire that names no model are today's, and the model reaches the agent
+/// whether it is hired from the browser into a copy or from the command line.
+#[test]
+fn a_copy_hire_keeps_its_digest_and_every_hire_path_records_the_model() {
+    use sha2::{Digest as _, Sha256};
+    let fixture = Fixture::new();
+    let floor = floor(&fixture);
+    set_trust(&floor, true).expect("the grant");
+    let page = session(&floor);
+    let revision = common::check_revision_as(
+        "default",
+        "Checks pass",
+        &[common::true_program()],
+        10,
+        true,
+    );
+    let named = |attempt: char, model: Option<&str>| {
+        let mut body = json!({
+            "attempt_id": format!("{attempt}{}", "A".repeat(42)),
+            "workspace_id": "repo_1", "name": "Kim", "role": "engineer",
+            "check_id": "default", "check_revision": revision, "own_copy": true,
+        });
+        if let Some(model) = model {
+            body["model"] = json!(model);
+        }
+        body
+    };
+    assert_eq!(page.post("/floor/onboard", &named('A', None)).status(), 200);
+    assert_eq!(
+        page.post("/floor/onboard", &named('B', Some("opus")))
+            .status(),
+        200
+    );
+    let mut params: HireParams = common::hire_params(&floor.repo);
+    params.trusted = true;
+    params.checkout = Some(Checkout::Worktree);
+    params.model = Some(dudes_types::ModelName::parse("haiku").unwrap());
+    operator(
+        &floor,
+        Method::AgentHire,
+        serde_json::to_value(params).unwrap(),
+    )
+    .expect("the command line hire");
+
+    let framed = |domain: &[u8], fields: &[(&str, &str)]| {
+        let mut hasher = Sha256::new();
+        hasher.update(domain);
+        for (field, value) in fields {
+            hasher.update(u16::try_from(field.len()).unwrap().to_be_bytes());
+            hasher.update(field.as_bytes());
+            hasher.update(u32::try_from(value.len()).unwrap().to_be_bytes());
+            hasher.update(value.as_bytes());
+        }
+        let digest: [u8; 32] = hasher.finalize().into();
+        digest
+    };
+    let common_fields = [
+        ("workspace_id", "repo_1"),
+        ("name", "Kim"),
+        ("role", "engineer"),
+        ("provider", "claude"),
+        ("character", ""),
+        ("accent", ""),
+        ("check_id", "default"),
+        ("check_revision", revision.as_str()),
+    ];
+    let mut v5 = common_fields.to_vec();
+    v5.push(("own_copy", "true"));
+    let mut v7 = v5.clone();
+    v7.push(("model", "opus"));
+    let hired: Vec<_> = fixture
+        .records()
+        .into_iter()
+        .filter_map(|record| match record {
+            Record::AgentHired {
+                model,
+                browser_onboarding,
+                ..
+            } => Some((
+                model.map(|name| name.to_string()),
+                browser_onboarding.map(|meta| meta.request_digest.bytes()),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hired.len(), 3);
+    assert_eq!(
+        hired[0],
+        (None, Some(framed(b"dudes.onboard.nogoal.v5\0", &v5)))
+    );
+    assert_eq!(
+        hired[1],
+        (
+            Some("opus".to_owned()),
+            Some(framed(b"dudes.onboard.nogoal.v7\0", &v7))
+        )
+    );
+    assert_eq!(hired[2], (Some("haiku".to_owned()), None));
+}
+
 #[test]
 fn a_hire_into_its_own_copy_needs_no_check() {
     let fixture = Fixture::new();

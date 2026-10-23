@@ -556,6 +556,7 @@ mod tests {
             isolation: None,
             max_turns: None,
             max_budget: None,
+            model: None,
             trusted: false,
             checkout: None,
             from: None,

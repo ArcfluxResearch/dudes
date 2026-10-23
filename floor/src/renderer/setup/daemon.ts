@@ -28,6 +28,8 @@ export interface ProviderRow {
   readonly detail: string | null;
   /** `null` when the daemon did not say, which is not the same as `unknown`. */
   readonly signIn: SignInState | null;
+  /** The model the operator's configuration fixes for this engine's agents, when it does. */
+  readonly configuredModel?: string;
 }
 
 export interface DaemonReport {
@@ -47,10 +49,11 @@ export const INSTALL_COMMANDS: Readonly<Partial<Record<ProviderName, string>>> =
 const MAX_PROGRAM_BYTES = 255;
 const MAX_PATH_BYTES = 1_024;
 const MAX_DETAIL_BYTES = 2_048;
+const MAX_MODEL_BYTES = 256;
 const CONTROL = /\p{Cc}/u;
 const UTF8 = new TextEncoder();
 const REPORT_KEYS = Object.freeze(['state_dir', 'providers']);
-const ROW_KEYS = Object.freeze(['provider', 'program', 'found', 'path', 'detail', 'sign_in']);
+const ROW_KEYS = Object.freeze(['provider', 'program', 'found', 'path', 'detail', 'sign_in', 'configured_model']);
 const SIGN_IN_STATES: readonly SignInState[] = Object.freeze(['signed_in', 'signed_out', 'unknown']);
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -81,7 +84,10 @@ function row(value: unknown): ProviderRow | null {
     || detail === undefined || (!value.found && path !== null) || (value.found && detail !== null)) {
     return null;
   }
-  return Object.freeze({ provider, program, found: value.found, path, detail, signIn });
+  const configured = value.configured_model === undefined ? null : text(value.configured_model, MAX_MODEL_BYTES);
+  if (configured === undefined) return null;
+  return Object.freeze({ provider, program, found: value.found, path, detail, signIn,
+    ...(configured === null ? {} : { configuredModel: configured }) });
 }
 
 /**

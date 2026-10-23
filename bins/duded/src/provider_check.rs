@@ -36,6 +36,8 @@ const MAX_DETAIL_BYTES: usize = 2048;
 pub(crate) struct Configured {
     pub(crate) provider: Provider,
     pub(crate) program: OsString,
+    /// The model the operator's configuration fixes for every agent of this engine, if any.
+    pub(crate) model: Option<String>,
 }
 
 /// What one check found for one provider: the file a launch would run, or why there is none.
@@ -326,6 +328,11 @@ impl Shared {
                         .file_name()
                         .and_then(|name| displayable(name, MAX_PROGRAM_BYTES)),
                     found: found.resolved.is_ok(),
+                    configured_model: self
+                        .providers
+                        .iter()
+                        .find(|configured| configured.provider == found.provider)
+                        .and_then(|configured| configured.model.clone()),
                     path: found
                         .resolved
                         .as_ref()
@@ -357,6 +364,8 @@ struct ProviderView {
     #[serde(skip_serializing_if = "Option::is_none")]
     program: Option<String>,
     found: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configured_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

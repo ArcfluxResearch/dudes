@@ -667,6 +667,7 @@ fn seed_active_lease(fixture: &Fixture, origin: &Path, tree: &Path) -> WorktreeI
                 isolation: None,
                 max_turns: None,
                 max_budget: None,
+                model: None,
                 trusted: true,
                 worktree: Some(worktree),
                 mcp_servers: Vec::new(),

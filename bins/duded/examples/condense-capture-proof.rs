@@ -153,6 +153,7 @@ fn seed(info: &serde_json::Value) -> anyhow::Result<()> {
         isolation: None,
         max_turns: None,
         max_budget: None,
+        model: None,
         trusted: false,
         worktree: None,
         mcp_servers: Vec::new(),

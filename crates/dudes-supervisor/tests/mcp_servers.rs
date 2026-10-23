@@ -87,6 +87,7 @@ fn hire(harness: &mut Harness, provider: Provider, trusted: bool, servers: &[&st
         isolation: None,
         max_turns: None,
         max_budget: None,
+        model: None,
         trusted,
         worktree: None,
         mcp_servers: names(servers),

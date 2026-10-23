@@ -2973,10 +2973,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// What this agent's adapter would select right now. `None` only where the
     /// agent's provider has no adapter on this floor, which is the same condition that already
     /// stops [`Self::launch`].
+    ///
+    /// The model the agent was hired with replaces the adapter's configured default for this
+    /// agent; a hire that names none takes the adapter's.
     fn model_selection(&self, row: &AgentRow) -> Option<ModelSelection> {
-        self.adapters
-            .get(row.provider)
-            .map(Adapter::model_selection)
+        let adapter = self.adapters.get(row.provider)?;
+        Some(row.model.as_ref().map_or_else(
+            || adapter.model_selection(),
+            |model| ModelSelection::named(model.as_str()),
+        ))
     }
 
     fn agent_dir(&self, agent: AgentId) -> PathBuf {
@@ -4267,6 +4272,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         isolation: input.isolation,
                         max_turns: None,
                         max_budget: None,
+                        model: input.model,
                         trusted: input.worktree.is_some(),
                         worktree: input.worktree,
                         mcp_servers: Vec::new(),
@@ -4296,6 +4302,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 isolation,
                 max_turns,
                 max_budget,
+                model,
                 trusted,
                 worktree,
                 mcp_servers,
@@ -4317,6 +4324,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         isolation,
                         max_turns,
                         max_budget,
+                        model,
                         trusted,
                         worktree,
                         mcp_servers,

@@ -61,6 +61,7 @@ fn hire_into(harness: &mut Harness, worktree: Option<WorktreeId>) -> AgentId {
         isolation: None,
         max_turns: None,
         max_budget: None,
+        model: None,
         trusted: true,
         worktree,
         mcp_servers: Vec::new(),
