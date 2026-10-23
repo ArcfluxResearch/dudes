@@ -9,6 +9,7 @@ import { createRoot } from 'react-dom/client';
 import { createServer } from 'vite';
 import ts from 'typescript';
 
+import { diffBinding, diffContent, diffFile, diffPage } from './helpers/diff-fixtures.mjs';
 import { restoreFocusAfterDialog } from '../src/renderer/focus.ts';
 import { fakePage, press } from './helpers/fake-page.mjs';
 import { ADA, GRACE, agent, cardId, subscribe, ticketCard, TWO_PROJECTS, instructionReview, instructionSummary, INSTRUCTION_WATERMARK } from './helpers/tickets.mjs';
@@ -52,7 +53,7 @@ beforeEach(() => {
 function pageForTickets() {
   const page = fakePage();
   page.document.defaultView.localStorage = { getItem: (key) => storedDrafts.get(key) ?? null,
-    setItem: (key, value) => storedDrafts.set(key, value) };
+    setItem: (key, value) => storedDrafts.set(key, value), removeItem: (key) => storedDrafts.delete(key) };
   const prototype = Object.getPrototypeOf(page.host);
   const queued = [];
   const modals = [];
@@ -783,6 +784,7 @@ test('New ticket keeps its fields after closing and a fresh mount, and clears on
     await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
     assert.equal(app.page.host.querySelector('[name="title"]').value, '');
     assert.equal(seen.filter(([url]) => url === '/floor/ticket').length, 1);
+    assert.equal(storedDrafts.has('dudes.floor.new-ticket-draft'), false);
   } finally { await app.close(); }
 });
 
@@ -809,6 +811,7 @@ test('Ask for changes keeps per-ticket text after close and reload, retains a re
     reply = (url, body) => url.endsWith('/assign') ? { status: 200, text: async () => JSON.stringify({ state: 'assigned', card: cardId(1), seq: 4, lsn: '4098', start: { state: 'started' } }) } : ordinary(url, body);
     await act(async () => propsOf(app.page.host.querySelector('.ticket-mode').querySelector('form')).onSubmit({ preventDefault() {} }));
     assert.equal(app.page.host.querySelector('.ticket-mode').querySelector('textarea'), null);
+    assert.equal(storedDrafts.has(`dudes.floor.ticket-changes-draft.${cardId(1)}`), false);
     await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
     await openChanges();
     assert.equal(propsOf(app.page.host.querySelector('.ticket-mode').querySelector('textarea')).value, '');
@@ -895,4 +898,40 @@ test('a retained create retry keeps its id when another project is enrolled afte
     assert.deepEqual(seen[1], seen[0]);
     assert.equal(seen.filter(([url]) => url === '/floor/ticket').length, 2);
   } finally { await app.close(); }
+});
+
+test('Accept keeps Changes reachable and reads the Done ticket with its new sequence', async () => {
+  const { browserDiffTransport } = await server.ssrLoadModule('/src/renderer/diff/transport.ts');
+  const previous = { ...browserDiffTransport };
+  const reads = [];
+  let binding;
+  Object.assign(browserDiffTransport, { generation: () => 1, async request(request) {
+    reads.push(request);
+    if (request.mode === 'manifest') binding = diffBinding({ card: cardId(1), seq: request.expected_seq, claimant: ADA });
+    return { kind: 'response', response: request.mode === 'manifest' ? diffPage({ binding })
+      : diffContent({ binding, files: [diffFile({ old: 'Before the task\n', current: 'Done ticket file content\n' })] }) };
+  } });
+  const app = await mount([ticketCard(1, 'review', { claimed_by: ADA })], { strict: true });
+  const diffButton = (label) => app.page.host.querySelector('.diff-panel')?.querySelectorAll('button').find((node) => textOf(node) === label);
+  try {
+    await app.render({ ...app.floor, diff: true });
+    await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
+    await act(async () => press(diffButton('Show changes')));
+    assert.deepEqual(reads, [{ mode: 'manifest', card: cardId(1), expected_seq: 3 }]);
+    const ordinary = reply;
+    reply = (url, body) => url.endsWith('/accept') ? { status: 200, text: async () => JSON.stringify({
+      state: 'accepted', card: cardId(1), seq: 4, lsn: '4097',
+    }) } : ordinary(url, body);
+    await act(async () => press(app.page.host.querySelector('[data-action="accept"]')));
+    await act(async () => subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'done', { claimed_by: ADA, seq: 4 })], diff: true }));
+    await app.render(store.getFloorState());
+    assert.equal(app.page.host.querySelector('.ticket-panel').getAttribute('data-ticket-status'), 'done');
+    assert.ok(diffButton('Show changes'), 'the same Changes control remains after Accept');
+    assert.equal(reads.length, 1, 'the sequence change reads nothing by itself');
+    await act(async () => press(diffButton('Show changes')));
+    assert.deepEqual(reads[1], { mode: 'manifest', card: cardId(1), expected_seq: 4 });
+    await act(async () => press(diffButton('Open side by side')));
+    assert.match(textOf(app.page.host.querySelector('.diff-panel')), /Done ticket file content/);
+    assert.match(textOf(app.page.host.querySelector('.diff-panel')), /Unchanged since the check/);
+  } finally { await app.close(); Object.assign(browserDiffTransport, previous); }
 });

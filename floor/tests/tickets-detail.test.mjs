@@ -306,11 +306,12 @@ test('another ticket of the same agent never shows an earlier ticket\'s files', 
 });
 
 test('with the Changes view shown the older changed files list is gone, and it stays when the signal is absent', async () => {
-  for (const [diff, status, older] of [[true, 'review', false], [false, 'review', true], [true, 'blocked', false]]) {
+  for (const [diff, status, older] of [[true, 'review', false], [false, 'review', true], [true, 'blocked', false],
+    [true, 'done', false], [false, 'done', true]]) {
     store.resetFloorStore();
     subscribe(store, { agents: [agent()], cards: [ticketCard(1, status, { claimed_by: ADA })], git: true, diff });
     const out = panel();
-    assert.equal(out.includes('<h4>Changed files</h4>'), older && status === 'review', `diff=${diff} status=${status}`);
+    assert.equal(out.includes('<h4>Changed files</h4>'), older && (status === 'review' || status === 'done'), `diff=${diff} status=${status}`);
     assert.equal(out.includes('<h4>Changes</h4>'), diff, `diff=${diff} status=${status}`);
   }
 });

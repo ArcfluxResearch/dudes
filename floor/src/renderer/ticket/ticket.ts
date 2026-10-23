@@ -21,7 +21,9 @@ import type { ControlDeps } from '../control/control.ts';
 import { browserControlDeps } from '../control/control.ts';
 import { readTicketCreateAttempt, writeTicketCreateAttempt } from '../view.ts';
 import { mintAttemptId } from '../onboarding/hire.ts';
-import { agentName, holdingTicket, requiresInstructionReview } from './model.ts';
+import { decodeWorkspace } from '../workspace.ts';
+import { decodeWorktree } from '../worktree.ts';
+import { agentRow, agentName, holdingTicket, requiresInstructionReview } from './model.ts';
 import { getFloorState } from '../floor/store.ts';
 import { COULD_NOT_CONFIRM, REFUSAL_CODES, WAITS, placeInLine, reasonSentence, refusalSentence, waitSentence } from './words.ts';
 import type { RefusalCode, Wait } from './words.ts';
@@ -360,10 +362,22 @@ export function changePayload(card: CardRow, change: Change, watermark: Instruct
   }
 }
 
-const DONE_TEXT: Readonly<Record<Exclude<Change['verb'], 'assign'>, string>> = Object.freeze({
-  edit: 'Saved.', accept: 'Accepted. The ticket is Done.', stop: 'Stopped. The agent finishes its current step.',
+const DONE_TEXT: Readonly<Record<Exclude<Change['verb'], 'assign' | 'accept'>, string>> = Object.freeze({
+  edit: 'Saved.', stop: 'Stopped. The agent finishes its current step.',
   remove: 'Removed.',
 });
+
+function acceptedText(card: CardRow): string {
+  const row = agentRow(getFloorState(), card.claimed_by);
+  const project = decodeWorkspace(row?.workspace);
+  const copy = decodeWorktree(row?.worktree);
+  const own = copy?.state === 'active' || copy?.state === 'released';
+  const location = own ? project === null ? "The changes stay in the agent's own project copy."
+    : `The changes stay in the agent's own copy of ${project.label}.`
+    : copy !== null || project === null ? 'This page cannot confirm where the changes are.'
+      : `The changes stay in the project ${project.label}.`;
+  return `Accepted. The ticket is Done. ${location} Dudes did not commit or push the changes. The Changes view lists the files.`;
+}
 
 /** Act on one ticket. Resolves to whether the daemon did it. */
 export async function changeTicket(card: CardRow, change: Change, deps: ControlDeps = browserControlDeps): Promise<boolean> {
@@ -395,7 +409,7 @@ export async function changeTicket(card: CardRow, change: Change, deps: ControlD
       ? 'Stopped. Instruction review still needs you.'
     : change.verb === 'assign' && outcome.start !== null
     ? startText(outcome.start, agentName(getFloorState(), change.agent), holdingTicket(getFloorState(), change.agent)?.title)
-    : change.verb === 'assign' ? COULD_NOT_CONFIRM : DONE_TEXT[change.verb];
+    : change.verb === 'assign' ? COULD_NOT_CONFIRM : change.verb === 'accept' ? acceptedText(card) : DONE_TEXT[change.verb];
   const needs = change.verb === 'assign' && outcome.start?.state === 'needs_you';
   finishRequest(request, { card: card.id, tone: needs ? 'problem' : 'done', text,
     ...(change.verb === 'assign' && outcome.start !== null ? { whileWorking: true as const } : {}) });
