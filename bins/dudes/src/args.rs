@@ -582,13 +582,13 @@ COMMANDS
         the engines it finds on your PATH and, when the file turns no Floor action on yet,
         the Floor's answer, hire, control, goal, retire, board, renew, recovery and project
         actions, and the git and diff views of changed files (the terminal stays off). A file
-        that already turns any Floor action on keeps every Floor setting as it is. It sets no spending cap, enrolls no project and
-        hires no agent unless an option below asks. It writes the operator file once and
-        lists what it changed, starts the daemon, shows where the daemon found each engine
-        and whether it is signed in, makes the hire an option asks for, prints the dudes
-        login command for each engine that is signed out, and last opens the Floor in your
-        browser, or prints its one-time link when no browser can be opened. It reads no
-        engine's files.
+        that already turns any Floor action on keeps every Floor setting as it is. It sets no
+        spending cap, enrolls no project and hires no agent unless an option below asks. It
+        writes the operator file once and lists what it changed, starts the daemon, shows
+        where the daemon found each engine and whether it is signed in, makes the hire an
+        option asks for, prints the dudes login command for each engine that is signed out,
+        and last opens the Floor in your browser, or prints its one-time link when no browser
+        can be opened. It reads no engine's files.
         A running daemon takes the Floor switches and project changes at once. Settings it
         reads only at start need a restart: quickstart restarts the daemon when no agent is
         running a turn, waiting on an answer or attached to a person, and otherwise stops
