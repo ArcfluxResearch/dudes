@@ -664,7 +664,7 @@ test('only complete shows success, with the real AgentId, and the shell shows it
   const wizard = await readFile(resolve(root, 'src/renderer/onboarding/HireWizard.tsx'), 'utf8');
   const shell = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
   assert.doesNotMatch(wizard, /markRevealed/);
-  assert.match(shell, /markRevealed\(reveal\);\s*if \(hire\.outcome\?\.kind === 'complete'\)/);
+  assert.match(shell, /markRevealed\(reveal\);\s*\/\/[^\n]*\n\s*if \(hire\.outcome\?\.kind === 'complete' && !ticketsOff\(floor\)\)/);
   assert.doesNotMatch(shell, /selectAgent\(reveal\)/, 'a new agent fills a phone screen and scrolls the bar away');
   assert.match(shell, /useSyncExternalStore\(subscribeToHire, getHireState, getHireState\)/);
 });

@@ -11,6 +11,7 @@ import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { UnavailableControls } from '../settings/SettingsView.tsx';
 import { INSTALL_COMMANDS, rowFor } from '../setup/daemon.ts';
+import { changeSetting } from '../settings/edit.ts';
 import { copyToClipboard } from '../setup/SetupView.tsx';
 import { decodeWorkspace } from '../workspace.ts';
 import { noProjects, viewConfirmed } from '../ticket/model.ts';
@@ -22,7 +23,7 @@ import type { HireEngine } from './catalog.ts';
 import {
   LIMITS, NO_PROJECT_LIST, agentsIn, checkHireStatus, lengthNote, ownCopyOffer, SECTIONS, browserHireDeps, chosenWorkspace,
   chosenEngine, editDraft, freshSince, getHireState, moveSection, presenceOf, releasable,
-  releaseAttempt, submitHire,
+  releaseAttempt, submitHire, TICKETS_OFF_AFTER, ticketsOff,
   sessionAfterRefusal, showSection, startAnotherHire, subscribeToHire,
 } from './hire.ts';
 import type { FieldName, HireAttempt, HireDraft, HireOutcome, HireState, OwnCopy } from './hire.ts';
@@ -390,6 +391,19 @@ function HireForm({ hire, floor, onClose }: {
   );
 }
 
+/** The hire is complete, but with tickets off nobody can give the agent a task: say so and offer the switch. */
+function TicketsOffNote({ floor }: { readonly floor: FloorState }) {
+  const switches = floor.settings?.switches;
+  const needed = (['control', 'goal'] as const).filter((key) => switches?.[key] === false);
+  return <div className="hire-warning" role="status" data-hire-tickets="off">
+    <p>{TICKETS_OFF_AFTER}</p>
+    {switches?.board === false
+      ? <button type="button" onClick={() => { void changeSetting('floor.board', 'on'); }}>Turn on tickets</button>
+      : null}
+    {needed.length === 0 ? null : <p>{`Tickets also need ${needed.map((key) => `floor.${key}`).join(' and ')} on, under Floor switches in Settings.`}</p>}
+  </div>;
+}
+
 function NoHireProjectHint({ floor }: { readonly floor: FloorState }) {
   return <>
     {projectAddOn(floor)
@@ -509,6 +523,7 @@ function AnswerBody({ outcome, hire, floor }: {
               {`Hired ${agentName(hire, floor, outcome.agent)}.`}
             </p>
           )}
+          {ticketsOff(floor) ? <TicketsOffNote floor={floor} /> : null}
           <dl className="hire-facts">
             {hire.attempt?.payload.own_copy === true ? (
               <div><dt>Works in</dt><dd data-hire-own-copy="true">Its own copy of the project, on its own branch</dd></div>

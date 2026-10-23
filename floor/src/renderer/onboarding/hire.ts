@@ -67,6 +67,13 @@ export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine';
 /** What the page offers a Hire from: the enrolled workspaces and the agents already working. */
 export type HireOffer = Pick<FloorState, 'onboarding' | 'agents'>;
 
+/** Whether the confirmed view says tickets are off, so nobody can give a new agent a task from the Floor. */
+export function ticketsOff(floor: FloorState): boolean {
+  return floor.phase === 'live' && !floor.stale && floor.snapshotEpoch === floor.epoch && !floor.ticket;
+}
+
+export const TICKETS_OFF_AFTER = 'Tickets are off, so nobody can give this agent a task from the Floor yet. Turn on tickets to do that.';
+
 export const NO_PROJECT_LIST = 'Hire cannot list your projects right now. Reload the page, and check Settings if this stays.';
 
 export interface HireDraft {

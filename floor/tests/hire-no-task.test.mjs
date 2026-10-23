@@ -95,15 +95,28 @@ test('a hire sends neither a task nor a check, makes no ticket, and leaves the a
   assert.doesNotMatch(render(), /data-hire-task|first task/);
 });
 
-test('with tickets off the wizard still hires', async () => {
+test('with tickets off the wizard still hires, then says so and offers the switch, and the dialog stays open', async () => {
   subscribe({ ticket: null });
   const net = daemon({ '/floor/onboard': [COMPLETE] });
   fill();
   hire.showSection('engine');
   const html = render();
-  assert.doesNotMatch(html, /Tickets are off|data-hire-tickets/);
+  assert.doesNotMatch(html, /Tickets are off|data-hire-tickets/, 'tickets off blocked the form');
   assert.match(html, /class="hire-submit"(?! aria-disabled="true")/);
   await hire.submitHire(getFloorState(), net.deps);
   assert.equal(hire.getHireState().outcome?.kind, 'complete');
   assert.equal(net.calls.length, 1);
+  assert.equal(hire.ticketsOff(getFloorState()), true, 'the shell keeps the dialog open on this');
+  const done = render();
+  assert.match(done, /Hired Kim\./);
+  assert.match(done, /data-hire-tickets="off"/);
+  assert.match(done, />Turn on tickets</, 'the board switch is off, so the switch is offered');
+});
+
+test('with tickets on the completed hire shows no tickets note', async () => {
+  subscribe();
+  fill();
+  await hire.submitHire(getFloorState(), daemon({ '/floor/onboard': [COMPLETE] }).deps);
+  assert.equal(hire.ticketsOff(getFloorState()), false);
+  assert.doesNotMatch(render(), /data-hire-tickets/);
 });
