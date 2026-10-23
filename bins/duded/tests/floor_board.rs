@@ -1203,7 +1203,11 @@ fn the_page_words_cover_the_daemon_codes() {
             .unwrap()
             .0
             .lines()
-            .filter_map(|line| line.trim().split_once(": \"").map(|(key, _)| key.to_owned()))
+            .filter_map(|line| {
+                line.trim()
+                    .split_once(": \"")
+                    .map(|(key, _)| key.to_owned())
+            })
             .collect::<std::collections::BTreeSet<_>>()
     };
     let mut reasons = std::collections::BTreeSet::new();
