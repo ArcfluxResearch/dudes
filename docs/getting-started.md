@@ -80,9 +80,10 @@ Dudes reads no engine's credentials or files.
    first, because the link is a loopback address. [The Floor](floor.md) explains how it signs in, what each tab shows and what an agent's position
    in the office means.
 
-4. Hire an agent on the Floor once your project is added: click **Hire an agent**, choose the
-   project and an engine, and write the briefing. Then give it a ticket. Open **Board**, press **New ticket**, type a title and
-   choose **Create ticket**. Open the card and choose **Give to agent**. When the agent's check
+4. Hire an agent on the Floor once your project is added: click **Hire an agent**, name it, choose the
+   project and an engine. A hire needs no task; the agent waits, idle, at its desk. The Floor then
+   offers **Give a task** for it: type what it should do and choose **Start**, or open **Board**,
+   press **New ticket**, type a title and choose **Create ticket**, then open the card and choose **Give to agent**. When the agent's check
    passes the ticket moves to **Ready for you**, and the top bar says so. Read what the agent
    says it did and the files it changed, then choose **Accept**, or **Ask for changes** with a
    message. See [Tickets](tickets.md).

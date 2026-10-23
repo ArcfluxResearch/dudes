@@ -26,8 +26,6 @@
 //   - `provider` sent for every engine .......... "an uncapped Codex hire sends provider…"
 //   - an unset ceiling shown as $0 .............. "an unset ceiling reads No cap…"
 //   - the offered-engine comparison dropped ..... "a registered engine this project lacks…"
-//   - the check fields left out of the body ..... "one Hire sends exactly seven fields…",
-//                                                  "the Hire body names the chosen check…"
 //   - a check refusal cleared like a stale one .. "each check refusal keeps the wizard open…"
 
 import assert from 'node:assert/strict';
@@ -162,7 +160,7 @@ const EMPTY = (status) => () => ({ status, body: '' });
 const LOST = () => new TypeError('Failed to fetch');
 
 function fillDraft() {
-  hire.editDraft({ name: '  Kim ', role: 'reviewer', workspaceId: 'repo_1', taskText: 'Make the parser tests pass' });
+  hire.editDraft({ name: '  Kim ', role: 'reviewer', workspaceId: 'repo_1' });
 }
 
 async function hireOnce(net) {
@@ -355,16 +353,16 @@ test('a u64::MAX ceiling renders exactly, never through Number', () => {
   subscribe({ onboarding: { floor_usd_per_day_micros: U64_MAX, workspaces: [{ ...CATALOG.workspaces[0],
     goal_usd_micros: U64_MAX, agent_usd_per_day_micros: '9007199254740993' }] } });
   hire.editDraft({ workspaceId: 'repo_1' });
-  hire.showSection('briefing');
+  hire.showSection('engine');
   const html = render();
-  assert.match(html, /<dt>Spending limit for this task<\/dt><dd>\$18,446,744,073,709\.551615<\/dd>/);
+  assert.match(html, /<dt>Spending limit for a task<\/dt><dd>\$18,446,744,073,709\.551615<\/dd>/);
   assert.match(html, /<dt>Daily spending limit for this agent<\/dt><dd>\$9,007,199,254\.740993 per day<\/dd>/);
   assert.match(html, /<dt>Daily spending limit for the whole Floor<\/dt><dd>\$18,446,744,073,709\.551615 per day<\/dd>/);
 });
 
 test('field limits count UTF-8 bytes after trimming ASCII whitespace only', () => {
   subscribe();
-  const problems = (draft) => hire.problemsIn({ name: 'n', role: 'r', workspaceId: 'repo_1', taskText: 'g', ...draft },
+  const problems = (draft) => hire.problemsIn({ name: 'n', role: 'r', workspaceId: 'repo_1', ...draft },
     getFloorState()).map((problem) => problem.field);
   assert.deepEqual(problems({}), []);
   assert.deepEqual(problems({ name: 'é'.repeat(64) }), [], '128 bytes is inside the limit');
@@ -375,35 +373,27 @@ test('field limits count UTF-8 bytes after trimming ASCII whitespace only', () =
   assert.deepEqual(problems({ name: ' \t\n' }), ['name'], 'whitespace alone is empty');
   assert.deepEqual(problems({ role: 'r'.repeat(512) }), []);
   assert.deepEqual(problems({ role: 'r'.repeat(513) }), ['role']);
-  assert.deepEqual(problems({ taskText: '😀'.repeat(512) }), [], '2048 bytes of four-byte characters');
-  assert.deepEqual(problems({ taskText: `${'😀'.repeat(512)}a` }), ['first_task']);
   assert.equal(hire.trimAsciiSpace(' \t Kim  \r\n'), 'Kim  ');
 });
 
 test('a required field that fails moves to its own section and keeps what was typed', async () => {
   subscribe();
   const net = daemon();
-  hire.editDraft({ role: 'reviewer', workspaceId: 'repo_1', taskText: 'Make the parser tests pass' });
-  hire.showSection('briefing');
+  hire.editDraft({ role: 'reviewer', workspaceId: 'repo_1' });
+  hire.showSection('engine');
   await hire.submitHire(getFloorState(), net);
-  let state = hire.getHireState();
+  const state = hire.getHireState();
   assert.equal(state.section, 'identity');
   assert.equal(state.problem?.field, 'name');
-  assert.deepEqual(state.draft, { name: '', role: 'reviewer', workspaceId: 'repo_1', taskText: 'Make the parser tests pass' });
+  assert.deepEqual(state.draft, { name: '', role: 'reviewer', workspaceId: 'repo_1' });
   assert.match(render(), /<input id="hire-name"[^>]*aria-invalid="true"[^>]*name="name"/);
   assert.match(render(), /role="alert">Name is required\./);
 
-  hire.editDraft({ name: 'Kim', workspaceId: '', taskText: 'x' });
+  hire.editDraft({ name: 'Kim', workspaceId: '' });
   await hire.submitHire(getFloorState(), net);
   assert.equal(hire.getHireState().section, 'workspace');
 
-  hire.editDraft({ workspaceId: 'repo_1', taskText: '   ' });
-  hire.showSection('identity');
-  await hire.submitHire(getFloorState(), net);
-  state = hire.getHireState();
-  assert.equal(state.section, 'briefing');
-  assert.equal(state.problem?.field, 'first_task');
-  assert.equal(state.draft.name, 'Kim');
+  assert.equal(hire.getHireState().draft.name, 'Kim');
 
   // Next checks only the section it leaves.
   hire.showSection('identity');
@@ -414,7 +404,7 @@ test('a required field that fails moves to its own section and keeps what was ty
   assert.equal(net.calls.length, 0, 'nothing was sent for an invalid draft');
 });
 
-test('the four sections show only enrolled choices and the configured limits', () => {
+test('the three sections show only enrolled choices and the configured limits', () => {
   subscribe();
   const sections = {};
   for (const { key } of hire.SECTIONS) {
@@ -423,14 +413,13 @@ test('the four sections show only enrolled choices and the configured limits', (
     sections[key] = render();
   }
   const index = [...sections.identity.matchAll(/class="hire-index-label">([^<]+)</g)].map((match) => match[1]);
-  assert.deepEqual(index, ['Who', 'Project', 'App', 'First task']);
+  assert.deepEqual(index, ['Who', 'Project', 'App']);
   assert.equal((sections.identity.match(/aria-current="step"/g) ?? []).length, 1);
 
   const names = (html) => [...html.matchAll(/<(?:input|textarea)[^>]*name="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(names(sections.identity), ['name', ...Array(7).fill('accent'), 'role']);
   assert.deepEqual(names(sections.workspace), ['workspace_id', 'workspace_id']);
   assert.deepEqual(names(sections.engine), ['engine']);
-  assert.deepEqual(names(sections.briefing), ['first_task', 'check_id']);
   const radios = [...sections.workspace.matchAll(/<input type="radio"[^>]*>/g)].map(([tag]) => tag);
   assert.ok(radios.every((tag) => tag.includes('name="workspace_id"')));
   const values = radios.map((tag) => /value="([^"]+)"/.exec(tag)?.[1]);
@@ -438,12 +427,10 @@ test('the four sections show only enrolled choices and the configured limits', (
   assert.match(sections.workspace, /Parser repository/);
   assert.match(sections.engine, /<input type="radio" name="engine" checked="" value="claude"\/>/,
     'a workspace offering one engine offers it chosen');
-  assert.match(sections.briefing, /data-check-choice="hire" aria-invalid="false"><legend>The task is done when<\/legend>/);
-  assert.deepEqual(checkOptions(sections.briefing), [['default', true, 'Site builds']]);
-  for (const [dt, dd] of [['Most turns for this task', '3'],
-    ['Spending limit for this task', '\\$1\\.5'], ['Token limit for this task', 'No limit'], ['Daily spending limit for this agent', '\\$3 per day'],
+  for (const [dt, dd] of [['Most turns for a task', '3'],
+    ['Spending limit for a task', '\\$1\\.5'], ['Token limit for a task', 'No limit'], ['Daily spending limit for this agent', '\\$3 per day'],
     ['Daily token limit for this agent', 'No limit'], ['Daily spending limit for the whole Floor', '\\$100 per day']]) {
-    assert.match(sections.briefing, new RegExp(`<dt>${dt}</dt><dd>${dd}</dd>`));
+    assert.match(sections.engine, new RegExp(`<dt>${dt}</dt><dd>${dd}</dd>`));
   }
   const all = Object.values(sections).join('\n');
   assert.doesNotMatch(all, /type="file"|name="(?:cwd|command|provider|predicate|budget|isolation|trust)/,
@@ -451,7 +438,7 @@ test('the four sections show only enrolled choices and the configured limits', (
   assert.doesNotMatch(all, /<input[^>]*type="hidden"/);
 });
 
-test('one Hire sends exactly six fields to one path with the REQUEST_ID header', async () => {
+test('one Hire sends exactly four fields to one path with the REQUEST_ID header', async () => {
   subscribe();
   const net = daemon(COMPLETE);
   await hireOnce(net);
@@ -463,18 +450,18 @@ test('one Hire sends exactly six fields to one path with the REQUEST_ID header',
     headers: { 'Content-Type': 'application/json' }, body: undefined,
   });
   assert.deepEqual(Object.keys(request),
-    ['attempt_id', 'workspace_id', 'check_id', 'check_revision', 'name', 'role']);
+    ['attempt_id', 'workspace_id', 'name', 'role']);
   assert.match(request.attempt_id, hire.ATTEMPT_ID);
   assert.equal(request.attempt_id.length, 43);
   assert.deepEqual({ ...request, attempt_id: undefined }, { attempt_id: undefined, workspace_id: 'repo_1',
-    check_id: 'default', check_revision: REV_A, name: 'Kim', role: 'reviewer' });
+    name: 'Kim', role: 'reviewer' });
 });
 
 const FIRST_ATTEMPT = `AQ${'A'.repeat(41)}`;
 
 test('an uncapped Codex hire sends provider, and a Claude hire leaves it out', async () => {
   subscribe({ onboarding: UNCAPPED });
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_3', taskText: 'Ship it' });
+  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_3' });
   const unsent = daemon();
   await hire.submitHire(getFloorState(), unsent);
   assert.equal(unsent.calls.length, 0, 'a Hire with no engine chosen was sent');
@@ -488,82 +475,27 @@ test('an uncapped Codex hire sends provider, and a Claude hire leaves it out', a
   const codex = daemon(COMPLETE);
   await hire.submitHire(getFloorState(), codex);
   assert.equal(codex.calls[0].init.body, `{"attempt_id":"${FIRST_ATTEMPT}","workspace_id":"repo_3",`
-    + `"check_id":"service","check_revision":"${REV_D}","name":"Kim","role":"reviewer",`
-    + '"provider":"codex"}');
+    + '"name":"Kim","role":"reviewer","provider":"codex"}');
 
   hire.resetHire();
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_3', engine: 'claude', taskText: 'Ship it' });
+  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_3', engine: 'claude' });
   const claude = daemon(COMPLETE);
   await hire.submitHire(getFloorState(), claude);
   assert.equal(claude.calls[0].init.body, `{"attempt_id":"${FIRST_ATTEMPT}","workspace_id":"repo_3",`
-    + `"check_id":"service","check_revision":"${REV_D}","name":"Kim","role":"reviewer"}`);
+    + '"name":"Kim","role":"reviewer"}');
 });
 
-/** The Briefing step's check choice, as [data-check-id, checked, label] per radio named check_id. */
-function checkOptions(html) {
-  const group = html.match(/<fieldset class="hire-choices" data-check-choice="hire"[^>]*>([\s\S]*?)<\/fieldset>/);
-  if (group === null) return null;
-  return [...group[1].matchAll(/<input( [^>]*)\/><span class="hire-choice-label">([^<]+)<\/span>/g)]
-    .filter(([, attributes]) => / type="radio"/.test(attributes) && / name="check_id"/.test(attributes))
-    .map(([, attributes, label]) => [/ data-check-id="([^"]+)"/.exec(attributes)?.[1], / checked=""/.test(attributes),
-      label]);
-}
-
-test('Briefing offers the workspace’s checks by label, the first chosen, and says nothing about running it first', () => {
-  subscribe();
-  hire.editDraft({ workspaceId: 'repo_1' });
-  hire.showSection('briefing');
-  let html = render();
-  assert.match(html, /<fieldset class="hire-choices" data-check-choice="hire" aria-invalid="false"><legend>The task is done when<\/legend>/);
-  assert.deepEqual(checkOptions(html), [
-    ['default', true, 'Parser tests pass'],
-    ['contributing', false, 'CONTRIBUTING.md exists (may already be true)'],
-  ]);
-  assert.doesNotMatch(html, /once before hiring|no one is hired/, 'the hire runs no check');
-  assert.doesNotMatch(html, /<dt>Completion check<\/dt>/, 'the old configured-limits row is still drawn');
-
-  hire.editDraft({ checkId: 'contributing' });
-  assert.deepEqual(checkOptions(render()), [
-    ['default', false, 'Parser tests pass'],
-    ['contributing', true, 'CONTRIBUTING.md exists (may already be true)'],
-  ]);
-  assert.match(render(), /<p class="hire-note">This check might already be true before the agent starts\./);
-  // Another workspace has its own checks; a choice it does not offer falls back to its first.
-  hire.editDraft({ workspaceId: 'repo_2' });
-  html = render();
-  assert.deepEqual(checkOptions(html), [['default', true, 'Site builds']]);
-  assert.doesNotMatch(html, /CONTRIBUTING|Parser tests pass/);
-});
-
-test('the Hire body names the chosen check by its id and the revision the snapshot offered', async () => {
-  subscribe();
-  fillDraft();
-  hire.editDraft({ checkId: 'contributing' });
-  const net = daemon(COMPLETE);
-  await hire.submitHire(getFloorState(), net);
-  assert.equal(net.calls[0].init.body, `{"attempt_id":"${FIRST_ATTEMPT}","workspace_id":"repo_1",`
-    + `"check_id":"contributing","check_revision":"${REV_B}","name":"Kim","role":"reviewer"}`);
-});
-
-test('a workspace the checks sibling does not list cannot be hired, and says why', async () => {
-  const NO_CHECK = 'No completion check is offered for this project, so Hire is unavailable.';
+test('a hire needs no check: a project the checks sibling does not list is hired all the same', async () => {
   for (const checks of [{ workspaces: [CHECKS.workspaces[1]] }, null]) {
     resetFloorStore();
     hire.resetHire();
     subscribe({ checks });
-    hire.editDraft({ workspaceId: 'repo_1' });
-    hire.showSection('briefing');
-    const html = render();
-    assert.equal(checkOptions(html), null, 'a check choice was drawn with nothing to choose');
-    assert.ok(html.includes(`<p class="hire-note">${NO_CHECK}</p>`), 'the briefing does not say why');
     const net = daemon(COMPLETE);
-    fillDraft();
-    hire.showSection('identity');
-    await hire.submitHire(getFloorState(), net);
-    assert.equal(net.calls.length, 0, 'a Hire was sent that could not name a check');
-    assert.equal(hire.getHireState().section, 'briefing');
-    assert.deepEqual(hire.getHireState().problem, { field: 'check_id', section: 'briefing', message: NO_CHECK });
-    assert.ok(render().includes(`<p class="hire-problem" id="hire-problem" role="alert">${NO_CHECK}</p>`));
+    await hireOnce(net);
+    assert.equal(net.calls.length, 1);
+    assert.equal(net.calls[0].init.body, `{"attempt_id":"${FIRST_ATTEMPT}","workspace_id":"repo_1",`
+      + '"name":"Kim","role":"reviewer"}');
+    assert.equal(hire.getHireState().outcome?.kind, 'complete');
   }
 });
 
@@ -581,16 +513,16 @@ test('the Engine step states what each offered engine can touch', () => {
   ]);
 });
 
-test('an unset ceiling reads No limit, and the hop cap and the engine bound the goal', () => {
+test('an unset ceiling reads No limit, and the hop cap and the engine bound a task', () => {
   subscribe({ onboarding: { ...UNCAPPED, workspaces: [{ ...UNCAPPED.workspaces[0], goal_tokens: '9007199254740993' }] } });
   hire.editDraft({ workspaceId: 'repo_3', engine: 'pi' });
-  hire.showSection('briefing');
+  hire.showSection('engine');
   const html = render();
-  for (const [dt, dd] of [['Spending limit for this task', 'No limit'], ['Token limit for this task', '9007199254740993 tokens'],
+  for (const [dt, dd] of [['Spending limit for a task', 'No limit'], ['Token limit for a task', '9007199254740993 tokens'],
     ['Daily spending limit for this agent', 'No limit'], ['Daily token limit for this agent', 'No limit'], ['Daily spending limit for the whole Floor', 'No limit']]) {
     assert.match(html, new RegExp(`<dt>${dt}</dt><dd>${dd}</dd>`), dt);
   }
-  assert.match(html, /<p class="hire-note">This agent runs at most 8 turns for this task\. Pi&#x27;s own plan limits apply, and so does any limit shown above\.<\/p>/);
+  assert.match(html, /<p class="hire-note">This agent runs at most 8 turns for a task\. Pi&#x27;s own plan limits apply, and so does any limit shown above\.<\/p>/);
   assert.doesNotMatch(html, /ceilings are the admission limits/);
 });
 
@@ -656,13 +588,13 @@ test('a registered engine this project lacks is explained as configuration or a 
 
 test('Next is the main button on every step but the last, and Hire is offered only on the last', () => {
   subscribe();
-  for (const section of ['identity', 'workspace', 'engine']) {
+  for (const section of ['identity', 'workspace']) {
     hire.showSection(section);
     const html = render();
     assert.match(html, /class="hire-next"[^>]*>Next</, section);
     assert.doesNotMatch(html, /class="hire-submit"/, `${section} offers Hire`);
   }
-  hire.showSection('briefing');
+  hire.showSection('engine');
   const last = render();
   assert.match(last, /class="hire-submit"/);
   assert.doesNotMatch(last, /class="hire-next"|>Next</, 'the last step offers Next');
@@ -671,11 +603,10 @@ test('Next is the main button on every step but the last, and Hire is offered on
 test('closing the dialog forgets a form nobody sent and a hire that completed, and keeps one the daemon has not settled', async () => {
   subscribe();
   fillDraft();
-  hire.showSection('briefing');
+  hire.showSection('engine');
   hire.leaveHire();
   assert.equal(hire.getHireState().section, 'identity');
   assert.equal(hire.getHireState().draft.name, '');
-  assert.equal(hire.getHireState().draft.taskText, '');
 
   await hireOnce(daemon(COMPLETE));
   assert.equal(hire.getHireState().outcome?.kind, 'complete');
@@ -701,7 +632,7 @@ test('a second Hire is refused while the first is in flight', async () => {
   const first = hire.submitHire(getFloorState(), slow);
   const second = hire.submitHire(getFloorState(), slow);
   assert.equal(hire.getHireState().sending, true);
-  hire.showSection('briefing');
+  hire.showSection('engine');
   assert.match(render(), /class="hire-submit" aria-disabled="true"[^>]*aria-busy="true">Hiring…/);
   release();
   await Promise.all([first, second]);
@@ -815,7 +746,7 @@ test('a same-attempt retry sends the frozen payload byte for byte, even after ed
   subscribe();
   const net = daemon(EMPTY(503), COMPLETE);
   await hireOnce(net);
-  hire.editDraft({ name: 'Someone else', taskText: 'A different goal' });
+  hire.editDraft({ name: 'Someone else' });
   hire.releaseAttempt();
   assert.equal(hire.getHireState().draft.name, '  Kim ', 'an open attempt let the draft change');
   await hire.checkHireStatus(net);
@@ -919,7 +850,7 @@ test('a Hire sends the offered workspace revision, and a stale-workspace 409 dro
   const net = daemon(STALE, COMPLETE);
   await hireOnce(net);
   assert.deepEqual(Object.keys(net.calls[0].request),
-    ['attempt_id', 'workspace_id', 'workspace_revision', 'check_id', 'check_revision', 'name', 'role']);
+    ['attempt_id', 'workspace_id', 'workspace_revision', 'name', 'role']);
   assert.equal(net.calls[0].request.workspace_revision, '2', 'the revision is copied from the offered mark');
   assert.deepEqual(hire.getHireState().outcome, { kind: 'stale' });
   assert.equal(net.refreshes, 1, 'a stale workspace asks for a fresh snapshot');
@@ -1003,8 +934,8 @@ test('after a reload the page shows journal-backed roster and goals and never se
   // The only way to mint an attempt is the Hire button.
   const wizard = await readFile(resolve(root, 'src/renderer/onboarding/HireWizard.tsx'), 'utf8');
   const module = await readFile(resolve(root, 'src/renderer/onboarding/hire.ts'), 'utf8');
-  assert.deepEqual([...wizard.matchAll(/hireWithFirstTask\(/g)].length, 1);
-  assert.match(wizard, /onClick=\{\(\) => \{ if \(blocked === null && !frozen && !hire\.sending\) void hireWithFirstTask\(floor, browserHireDeps\); \}\}/);
+  assert.deepEqual([...wizard.matchAll(/submitHire\(/g)].length, 1);
+  assert.match(wizard, /onClick=\{\(\) => \{ if \(blocked === null && !frozen && !hire\.sending\) void submitHire\(floor, browserHireDeps\); \}\}/);
   assert.deepEqual([...module.matchAll(/mintAttemptId\(/g)].length, 2, 'minted somewhere besides the Hire');
   assert.doesNotMatch(wizard, /useEffect\([^)]*submitHire|useEffect\([^)]*checkHireStatus/);
 });

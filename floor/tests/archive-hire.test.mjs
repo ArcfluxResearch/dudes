@@ -38,11 +38,11 @@ const dependencies = (status = 200) => ({ signedIn: () => true, random: (bytes) 
 beforeEach(() => { hire.resetHire(); resetFloorStore(); });
 
 test('archive preparation copies recorded appearance and a unique current Claude label match', () => {
-  hire.editDraft({ taskText: 'Previous goal', character: 'c', accent: 'mint' });
+  hire.editDraft({ character: 'c', accent: 'mint' });
   assert.equal(hire.prepareArchiveHire(archived({ character: 'l', accent: 'rose', goal: 'Private old goal',
     workspace_id: 'private-old-id' }), floor()), true);
   assert.deepEqual(hire.getHireState().draft,
-    { name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', engine: 'claude', taskText: '',
+    { name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', engine: 'claude',
       character: 'l', accent: 'rose' });
   assert.equal(hire.getHireState().section, 'identity');
   assert.equal(hire.getHireState().attempt, null);
@@ -71,14 +71,14 @@ test('an archived Codex or Pi engine is preselected only where the matched works
     hire.resetHire();
     assert.equal(hire.prepareArchiveHire(archived({ provider }), both), true);
     assert.deepEqual(hire.getHireState().draft,
-      { name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', engine: provider, taskText: '' });
+      { name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', engine: provider });
     assert.equal(hire.getHireState().prefill.notes.engine,
       `${name}, the archived engine, is preselected. Review the engine and the current limits.`);
   }
 
   hire.resetHire();
   assert.equal(hire.prepareArchiveHire(archived({ provider: 'codex' }), floor()), true);
-  assert.deepEqual(hire.getHireState().draft, { name: 'Ada', role: 'Parser engineer', workspaceId: '', taskText: '' },
+  assert.deepEqual(hire.getHireState().draft, { name: 'Ada', role: 'Parser engineer', workspaceId: '' },
     'another engine was substituted for the archived one');
   assert.equal(hire.getHireState().prefill.notes.engine,
     'This project does not offer the archived Codex engine. No engine was preselected.');
@@ -110,7 +110,7 @@ test('a missing Claude program leaves the engine unselected while an absent repo
 });
 
 test('archive preparation preserves an unresolved attempt and a recorded hire until the existing fresh-snapshot check permits another', async () => {
-  hire.editDraft({ name: 'Current', role: 'Current role', workspaceId: 'parser', taskText: 'Current goal' });
+  hire.editDraft({ name: 'Current', role: 'Current role', workspaceId: 'parser' });
   await hire.submitHire(floor(), dependencies(202));
   const waiting = hire.getHireState();
   assert.equal(hire.prepareArchiveHire(archived(), floor({ epoch: 2, snapshotEpoch: 2 })), false);
@@ -121,7 +121,6 @@ test('archive preparation preserves an unresolved attempt and a recorded hire un
   assert.equal(hire.getHireState(), complete);
   assert.equal(hire.prepareArchiveHire(archived(), floor({ epoch: 2, snapshotEpoch: 2 })), true);
   assert.equal(hire.getHireState().attempt, null);
-  assert.equal(hire.getHireState().draft.taskText, '');
 });
 
 test('hidden archive preferences round-trip only bounded AgentIds and Show hidden restores rows', () => {
@@ -140,7 +139,7 @@ test('hidden archive preferences round-trip only bounded AgentIds and Show hidde
 });
 
 test('successful hire waits for a confirmed new live AgentId, then drives camera selection and existing Attach eligibility', async () => {
-  hire.editDraft({ name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', taskText: 'New goal' });
+  hire.editDraft({ name: 'Ada', role: 'Parser engineer', workspaceId: 'parser' });
   await hire.submitHire(floor(), dependencies());
   assert.equal(hire.agentToReveal(hire.getHireState(), floor()), null);
   assert.equal(hire.agentToReveal(hire.getHireState(), floor({ agents: [live()], snapshotEpoch: 0 })), null);
@@ -155,7 +154,7 @@ test('successful hire waits for a confirmed new live AgentId, then drives camera
 });
 
 test('a pending hire becoming complete presents its AgentId once', async () => {
-  hire.editDraft({ name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', taskText: 'New goal' });
+  hire.editDraft({ name: 'Ada', role: 'Parser engineer', workspaceId: 'parser' });
   await hire.submitHire(floor(), dependencies(202));
   assert.equal(hire.agentToReveal(hire.getHireState(), floor({ agents: [live()] })), null);
   await hire.checkHireStatus(dependencies());

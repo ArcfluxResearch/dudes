@@ -13863,9 +13863,9 @@ fn browser_onboard_binds_the_chosen_check() {
     stale["check_revision"] = json!(enrolled_revision("default"));
     let (head, refused) = post_onboard(&page, &stale);
     assert_eq!(refused_reason(&head, &refused), "profile_changed");
-    let mut nameless = hire_naming(&attempt(1), "contributing");
-    nameless["check_id"] = Value::Null;
-    let (head, _) = post_onboard(&page, &nameless);
+    let mut half = hire_naming(&attempt(1), "contributing");
+    half["check_revision"] = Value::Null;
+    let (head, _) = post_onboard(&page, &half);
     assert!(head.starts_with("HTTP/1.1 400 Bad Request"), "{head}");
     assert!(runner.ran().is_empty(), "neither ran a check");
 
@@ -13895,6 +13895,63 @@ fn browser_onboard_binds_the_chosen_check() {
     );
     assert_eq!(hire.request_digest, digest, "the digest binds the check");
     assert!(runner.ran().is_empty(), "the hire ran a check");
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// A hire that names no check is admitted: the agent is idle with no goal, no ticket and no turn,
+/// its digest is the one a request without a check has always had, and a retry is answered from
+/// the index with nothing appended.
+#[test]
+fn a_hire_that_names_no_check_is_admitted_and_idle() {
+    let fixture = Fixture::new();
+    let settings = enrolled_settings(&fixture);
+    let (_, mut running, _, page) = default_floor(&settings);
+    let mut request = hire_request('A', None);
+    request["check_id"] = Value::Null;
+    let (head, complete) = post_onboard(&page, &request);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {complete}");
+    assert_eq!(complete["state"], "complete");
+    let [hire] = <[_; 1]>::try_from(hires(&fixture)).expect("one hire");
+    assert!(hire.intended_goal.is_none());
+    assert_eq!(
+        hire.request_digest,
+        framed(
+            b"dudes.onboard.nogoal.v1\0",
+            &[
+                ("workspace_id", "repo_1"),
+                ("name", "Kim"),
+                ("role", "engineer")
+            ],
+        )
+    );
+    let counts = |records: &[Record]| {
+        [
+            records
+                .iter()
+                .filter(|r| matches!(r, Record::AgentHired { .. }))
+                .count(),
+            records
+                .iter()
+                .filter(|r| matches!(r, Record::GoalSet { .. }))
+                .count(),
+            records
+                .iter()
+                .filter(|r| matches!(r, Record::TurnIssued { .. }))
+                .count(),
+        ]
+    };
+    assert_eq!(counts(&fixture.records()), [1, 0, 0]);
+    let (frame, _) = snapshot(&page);
+    let row = &frame["projection"]["agents"][0];
+    assert_eq!(row["id"], complete["agent"]);
+    assert!(row["goal"].is_null(), "{row}");
+    let (_, retry) = post_onboard(&page, &request);
+    assert_eq!(retry, complete);
+    assert_eq!(
+        counts(&fixture.records()),
+        [1, 0, 0],
+        "the retry appends nothing"
+    );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
