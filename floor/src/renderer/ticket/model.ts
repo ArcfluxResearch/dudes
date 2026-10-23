@@ -28,7 +28,8 @@ export function noProjects(floor: FloorState): boolean {
 }
 
 export function agentChoiceSentence(floor: FloorState, project: string): string {
-  const label = floor.settings?.workspaces.find((row) => row.workspace_id === project)?.label ?? project;
+  const label = floor.settings?.workspaces.find((row) => row.workspace_id === project)?.label
+    ?? floor.onboarding?.workspaces.find((row) => row.workspaceId === project)?.label ?? 'this project';
   return floor.agents.length === 0 ? NO_AGENT_YET : noAgentInProjectSentence(label);
 }
 
@@ -168,7 +169,7 @@ export function projectOf(floor: FloorState, card: CardRow): string | null {
 
 export function agentName(floor: FloorState, id: string | null): string {
   const row = agentRow(floor, id);
-  return typeof row?.name === 'string' && row.name !== '' ? row.name : id ?? 'no agent';
+  return typeof row?.name === 'string' && row.name !== '' ? row.name : id === null ? 'no agent' : 'Unnamed agent';
 }
 
 /**

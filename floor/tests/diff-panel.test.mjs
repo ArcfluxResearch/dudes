@@ -190,6 +190,9 @@ test('binary and oversize rows say why and have no Open button', () => {
   assert.match(out, /Too large to show here\. Files over 16 KiB per side are not shown\./);
   assert.equal(out.match(/Open side by side/g).length, 1, 'only the readable row can be opened');
   assert.match(out, /dudes ticket open/);
+  assert.match(out, /<details class="diff-note"><summary>Local review details<\/summary>/);
+  assert.doesNotMatch(out.replace(/<details[^>]*>[\s\S]*?<\/details>/g, ''), /dudes ticket open/);
+
 });
 
 test('a stale, expired or limited answer clears the text and waits for an explicit Refresh', async () => {

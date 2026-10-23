@@ -113,15 +113,14 @@ function OwnCopyChoice({ copy, workspace, names, frozen }: {
 }) {
   if (copy.state === 'none') return null;
   if (copy.state === 'untrusted') {
-    // The one place the Hire flow names a terminal command: only where a copy matters, because
-    // another agent already works in the project's folder.
     if (names.length === 0) return null;
     return <div className="hire-copy" data-hire-copy="untrusted">
       <p className="hire-note">
-        This agent can work in its own copy of the project once you trust the project. {COPY_EXPLAINED}{' '}
-        {TRUST_ALLOWS} To trust it, run <code>{`dudes project trust ${workspace.workspaceId}`}</code> in a terminal,
-        then reload this page.
+        This project needs trust before an agent can use its own copy. You can continue in the shared folder or choose another project.
       </p>
+      <details><summary>Trust details</summary><p>{COPY_EXPLAINED} {TRUST_ALLOWS}</p>
+        <p>To trust it, run <code>{`dudes project trust ${workspace.workspaceId}`}</code> in a terminal, then reload this page.</p>
+      </details>
     </div>;
   }
   if (copy.state === 'engine') {
@@ -334,7 +333,6 @@ function HireForm({ hire, floor, onClose }: {
                         checked={hire.draft.workspaceId === space.workspaceId} disabled={frozen}
                         onChange={() => editDraft({ workspaceId: space.workspaceId })} />
                       <span className="hire-choice-label">{space.label}</span>
-                      <code>{space.workspaceId}</code>
                       {space.reloadMark?.kind !== 'changed' ? null : (
                         <span className="hire-note" data-reload-mark={space.reloadMark.kind}>
                           Updated while the daemon was running.
@@ -344,7 +342,11 @@ function HireForm({ hire, floor, onClose }: {
                   ))}
                 </fieldset>
               )}
-              {catalog === null ? null : <p className="hire-note">Choose the project where this agent will work.</p>}
+              {catalog === null ? null : <><p className="hire-note">Choose the project where this agent will work.</p>
+                <details className="hire-more"><summary>Project details</summary><dl className="hire-facts">
+                  {catalog.workspaces.map(space => <div key={space.workspaceId}><dt>{space.label}</dt><dd><code>{space.workspaceId}</code></dd></div>)}
+                </dl></details>
+              </>}
               {catalog === null || !projectAddOn(floor) ? null : <details className="hire-more" data-hire-add-project="true">
                 <summary>Work in another folder</summary>
                 <AddProject floor={floor} />
@@ -371,8 +373,7 @@ function HireForm({ hire, floor, onClose }: {
                 configured={row?.configuredModel ?? null} fixed={row?.modelFixed === true} invalid={invalid('model')} />}
               {workspace === null ? null
                 : <OwnCopyChoice copy={copy} workspace={workspace} names={sharing} frozen={frozen} />}
-              {withdrawn ? <p className="hire-note">{"An engine missing here is turned off in the daemon's "
-                + 'configuration, or needs a ceiling on this project because the daemon holds a billing key for it.'}</p>
+              {withdrawn ? <p className="hire-note">An engine missing here may be turned off, or this project may need a spending limit to use it. Check Settings.</p>
                 : null}
               {engine === null || row === null ? null : <p className="hire-note" data-engine-found={row.found}>
                 {row.found ? `${HIRE_ENGINES[engine]} is installed on this computer.`
@@ -381,10 +382,12 @@ function HireForm({ hire, floor, onClose }: {
               {missing === null ? null : (
                 <div className="hire-problem" role="alert">
                   <p>{missing}</p>
-                  {engine === null || row?.found !== false || INSTALL_COMMANDS[engine] === undefined ? null : <p className="hire-install">
-                    <code>{INSTALL_COMMANDS[engine]}</code>{' '}
-                    <button type="button" onClick={() => copyToClipboard(INSTALL_COMMANDS[engine]!)}>Copy</button>
-                  </p>}
+                  {engine === null || row?.found !== false || INSTALL_COMMANDS[engine] === undefined ? null : <details>
+                    <summary>Installation details</summary><p className="hire-install">
+                      <code>{INSTALL_COMMANDS[engine]}</code>{' '}
+                      <button type="button" onClick={() => copyToClipboard(INSTALL_COMMANDS[engine]!)}>Copy</button>
+                    </p>
+                  </details>}
                   <button type="button" onClick={() => refreshFloorSnapshot()}>Check again</button>
                 </div>
               )}
@@ -444,7 +447,7 @@ function TicketsOffNote({ floor }: { readonly floor: FloorState }) {
     {switches?.board === false
       ? <button type="button" onClick={() => { void changeSetting('floor.board', 'on'); }}>Turn on tickets</button>
       : null}
-    {needed.length === 0 ? null : <p>{`Tickets also need ${needed.map((key) => `floor.${key}`).join(' and ')} on, under Floor switches in Settings.`}</p>}
+    {needed.length === 0 ? null : <p>{`Tickets also need ${needed.map((key) => key === 'control' ? 'Pause, resume and rename' : 'Change goals').join(' and ')} on, under Floor switches in Settings.`}</p>}
   </div>;
 }
 
@@ -452,7 +455,7 @@ function NoHireProjectHint({ floor }: { readonly floor: FloorState }) {
   return <>
     {projectAddOn(floor)
       ? <p className="hire-note">Agents work in a project, and none is set up yet. Add the folder of your project below.</p>
-      : <p className="hire-note">Agents work in a project, and none is set up yet. In your project&apos;s folder run <code>dudes project add</code>.</p>}
+      : <p className="hire-note">Agents work in a project, and none is set up yet. Turn on Add and remove projects under Floor switches in Settings, then add your project folder.</p>}
     <AddProject floor={floor} />
   </>;
 }
@@ -603,7 +606,8 @@ function AnswerBody({ outcome, hire, floor }: {
     case 'refused': {
       const session = sessionAfterRefusal(floor, hire.askedAtEpoch);
       if (outcome.note !== undefined && !hire.uncertain) {
-        return <p className="hire-error" role="alert">{outcome.note}</p>;
+        return <><p className="hire-error" role="alert">Dudes refused these choices. No agent was hired. Review Details before trying again.</p>
+          <details className="hire-more"><summary>Details</summary><p>{outcome.note}</p></details></>;
       }
       if (hire.uncertain) {
         // This refusal answered a check. The request before it has no known
@@ -623,7 +627,7 @@ function AnswerBody({ outcome, hire, floor }: {
       const workspace = hire.attempt?.payload.workspace_id ?? '';
       const offered = floor.onboarding?.workspaces.some((space) => space.workspaceId === workspace) ?? false;
       return (
-        <p className="hire-error" role="alert" data-hire-session={session}>
+        <><p className="hire-error" role="alert" data-hire-session={session}>
           {session === 'checking'
             ? 'The daemon refused this Hire before any effect. Checking whether this Floor session is still live…'
             : session === 'ended'
@@ -634,9 +638,11 @@ function AnswerBody({ outcome, hire, floor }: {
                 ? 'Hiring is no longer available to this session. The daemon refused before any effect: the '
                   + 'session may have used its four hires, or its enrollment is no longer eligible. No agent was hired.'
                 : !offered
-                  ? `The project ${workspace} is no longer offered. No agent was hired.`
+                  ? 'This project is no longer offered. No agent was hired. Choose another project.'
                   : 'The daemon refused this Hire before any effect. No agent was hired.'}
-        </p>
+        </p>{workspace === '' ? null : <details className="hire-more"><summary>Details</summary>
+          <p>Project: <code>{workspace}</code></p>
+        </details>}</>
       );
     }
     case 'conflict':
@@ -656,9 +662,9 @@ function AnswerBody({ outcome, hire, floor }: {
       );
     case 'rejected':
       return (
-        <p className="hire-error" role="alert">
-          The daemon refused the request itself (HTTP {outcome.status}) before any effect. No agent was hired.
-        </p>
+        <><p className="hire-error" role="alert">
+          Dudes could not use this request. No agent was hired.
+        </p><details className="hire-more"><summary>Details</summary><p>HTTP status: {outcome.status}</p></details></>
       );
   }
 }

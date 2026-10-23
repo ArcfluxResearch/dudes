@@ -532,11 +532,11 @@ const SETTINGS = Object.freeze({
   providers: ['claude', 'pi'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 6 },
 });
 
-test('with no project the Workspace step gives one setup command and no jargon', () => {
+test('with no project the Workspace step names the Settings controls to use', () => {
   subscribe({ onboarding: null, checks: null, settings: SETTINGS });
   hire.showSection('workspace');
   const html = render();
-  assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes project add<\/code>\./);
+  assert.match(html, /Agents work in a project, and none is set up yet\. Turn on Add and remove projects under Floor switches in Settings, then add your project folder\./);
   assert.equal((html.match(/none is set up yet/g) ?? []).length, 1);
   assert.doesNotMatch(html, /No enrolled project|operator enrolled|Hire needs a project|by its ID/);
   assert.doesNotMatch(html, /class="hire-submit"/, 'Hire is not offered on the Project step');
@@ -561,22 +561,21 @@ test('project setup guidance keeps a stale-stream reason visible', () => {
   noteStale(true);
   const html = render();
   assert.match(html, /The view is unconfirmed, so Hire waits for the stream\./);
-  assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes project add<\/code>\./);
+  assert.match(html, /Agents work in a project, and none is set up yet\. Turn on Add and remove projects under Floor switches in Settings, then add your project folder\./);
 });
 
-test('project setup guidance keeps an explicit Hire-off command visible', () => {
+test('project setup guidance keeps the Hire-off explanation visible', () => {
   subscribe({ onboarding: null, checks: null, settings: {
     ...SETTINGS, switches: { ...SETTINGS.switches, hire: false },
   } });
   hire.showSection('workspace');
   const html = render();
   assert.match(html, /Hire is off\. Turn on Hire agents under Floor switches in Settings\./);
-  assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes project add<\/code>\./);
+  assert.match(html, /Agents work in a project, and none is set up yet\. Turn on Add and remove projects under Floor switches in Settings, then add your project folder\./);
 });
-const WITHDRAWN = '<p class="hire-note">An engine missing here is turned off in the daemon&#x27;s configuration, or '
-  + 'needs a ceiling on this project because the daemon holds a billing key for it.</p>';
+const WITHDRAWN = '<p class="hire-note">An engine missing here may be turned off, or this project may need a spending limit to use it. Check Settings.</p>';
 
-test('a registered engine this project lacks is explained as configuration or a billing-key ceiling', () => {
+test('a missing engine is explained as turned off or needing a project spending limit', () => {
   for (const [providers, shown] of [[['claude', 'pi'], true], [['claude'], false], [['claude', 'grok'], false]]) {
     resetFloorStore();
     subscribe({ settings: { ...SETTINGS, providers } });
@@ -784,7 +783,7 @@ test('403 with a live snapshot says no longer available, not session expiry', as
   assert.doesNotMatch(html, /data-hire-agent-id/);
 
   resubscribe({ onboarding: { ...structuredClone(CATALOG), workspaces: [CATALOG.workspaces[1]] } });
-  assert.match(render(), /The project repo_1 is no longer offered/);
+  assert.match(render(), /This project is no longer offered/);
 
   // A no-effect refusal lets the operator edit, keeping what was typed.
   hire.releaseAttempt();

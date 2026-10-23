@@ -113,6 +113,9 @@ test('the App step explains the copy, or says what trusting the project allows, 
     assert.doesNotMatch(untrusted, /name="own_copy"/);
     assert.match(untrusted, /environment values and helper commands/);
     assert.match(untrusted, /<code>dudes project trust parser<\/code>/);
+    assert.match(untrusted, /<details><summary>Trust details<\/summary>/);
+    assert.doesNotMatch(untrusted.replace(/<details[^>]*>[\s\S]*?<\/details>/g, ''), /dudes project trust|<code>parser<\/code>/);
+
     assert.doesNotMatch(untrusted, /dudes hire/);
   } finally { await server.close(); }
 });

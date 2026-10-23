@@ -105,7 +105,7 @@ test('Floor actions reads the real switches, the Hire switch and the Hire offer'
   assert.match(html, /dudes config set floor.terminal on/);
   assert.doesNotMatch(html, /budget\.|positive ceilings/, 'Hire no longer needs a budget');
   snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, hire: true } } });
-  assert.match(view('actions'), /<p>Hire needs a project \(add its folder in Settings\), at least one engine/);
+  assert.match(view('actions'), /<p>Hire is unavailable\. Check Engines and Projects/);
   assert.match(view('actions'), /<code>dudes config set floor.hire off<\/code>/);
   snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, control: true, terminal: true, hire: true } },
     onboarding: CATALOG });

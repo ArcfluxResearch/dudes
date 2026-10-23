@@ -99,7 +99,7 @@ test('the decoder admits only the twelve event kinds and reconstructs their disp
   assert.equal(result.rejected, 0);
   assert.deepEqual(result.rows.map(activityText), ['Ada started a turn', 'Ada ended a turn', 'Ada received a goal', 'Ada completed a goal',
     'Ada opened a question', 'Ada received an answer', 'Ada retired', 'Ada paused', 'Ada resumed',
-    'Created Build parser · todo', 'Ada claimed Build parser · claimed', 'Moved Build parser · done']);
+    'Created Build parser · To do', 'Ada claimed Build parser · To do', 'Moved Build parser · Done']);
   assert.ok(!JSON.stringify(result.rows).includes(SECRET));
   for (const kind of ['mail', 'hook_token_minted', 'attached', 'steer', 'memory_append', 'predicate_result', 'unknown']) {
     assert.deepEqual(decodeActivity([row(1, kind)]), { rows: [], rejected: 1 });
@@ -145,10 +145,10 @@ test('snapshot and delta activity renders newest journal position first with ine
   assert.match(html, /All kinds/);
   assert.match(html, /Search activity/);
   assert.doesNotMatch(html, /<script|<button|<textarea|<form|<a\b/);
-  assert.match(html, /<small>Jan 1, 1970.* · segment 0 · byte 3<\/small>/);
+  assert.match(html, /<small>Jan 1, 1970[^<]*<\/small><details><summary>Details<\/summary><p>Record position: segment 0 · byte 3<\/p>/);
   const center = await render('Control', { floor, selectedId: null, onClose() {}, onView() {}, view: 'log' });
   assert.match(center, /<section class="control-panel" id="control-panel" data-view="log" aria-labelledby="control-title"/);
   assert.match(center, /<h2 id="control-title" tabindex="-1">Log<\/h2>/);
-  assert.match(center, /Recent journal events/);
+  assert.match(center, /Recent activity, newest first/);
   assert.doesNotMatch(center, new RegExp(SECRET));
 });

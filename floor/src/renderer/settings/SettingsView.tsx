@@ -47,9 +47,7 @@ export function hireUnavailable(floor: FloorState): string | null {
     return 'Hire is off. Turn on Hire agents under Floor switches in Settings.';
   }
   if (floor.onboarding !== null) return null;
-  return 'Hire needs a project (add its folder in Settings), at least one engine offered for it, and a free Hire '
-    + 'slot in this session. An engine is withdrawn when the daemon\'s configuration turns it off, or when the '
-    + 'daemon holds a billing key for it and the project has no ceiling that key requires.';
+  return 'Hire is unavailable. Check Engines and Projects in Settings.';
 }
 
 /** The drawer's controls whose switch the daemon reports off, so the drawer says how to turn each on. */
@@ -84,25 +82,22 @@ export function SettingsView({ floor, onSetup }: {
     <ReadNotice state={state} label="Settings"
       message="Settings are not reported by this daemon, or this page could not read them." /></div>;
   return <div className="settings-view">
-    <DesktopNotificationChoice />
-    <p>Turn a switch or an engine on or off here, and set the spending limits.</p>
+    <p>Manage engines, projects and spending. Choices for this browser are below.</p>
     {floor.stale ? <p role="status">View unconfirmed. These values are from the last snapshot.</p> : null}
-    <p>After a config edit, restart with <code>dudes quickstart --restart</code>, which ends any running turn.</p>
-    <section aria-labelledby="settings-switches"><h3 id="settings-switches">Floor switches</h3>
-      <dl><div><dt>Chat messages</dt><dd>Always on, with no setting</dd></div>
-      {SWITCHES.map(([key, label, says]) => {
-        const on = report.switches[key];
-        return <div key={key}><dt>{label}</dt>
-          <dd><span className="settings-says">{says}</span>{' '}
-            {key === 'diff' && on && !report.switches.git ? 'On, but it needs Show changed files' : on ? 'On' : 'Off'}
-            {key === 'renew' && !on ? ' It needs Change goals and Hire agents.' : null}{' '}
-            <SwitchButton settingKey={`floor.${key}`} next={on ? 'off' : 'on'} />
-            <small className="settings-key"> Setting name: <code>floor.{key}</code></small></dd></div>;
-      })}</dl>
-      <p>Recovery needs both <code>floor.recovery</code> and <code>floor.control</code>. It keeps existing budgets and admission gates.
-        Receipt lookup remains read-only when recovery is off.</p>
+    <section aria-labelledby="settings-providers"><h3 id="settings-providers">Engines</h3>
+      <p>Check whether each engine is installed and signed in. <button type="button" onClick={onSetup}>Open Setup</button></p>
+      <ul className="settings-engines">{report.providers.filter((provider) => !ENGINES.some(([id]) => id === provider)).map((provider) =>
+        <li key={provider}><button type="button" onClick={onSetup} aria-label={`Check ${provider} in Setup`}>{provider === 'claude' ? 'Claude' : provider}</button>
+          <span>Available in Setup.</span></li>)}
+        {ENGINES.map(([id, label]) => {
+          const on = report.providers.includes(id);
+          return <li key={id}><button type="button" onClick={onSetup} aria-label={`Check ${id} in Setup`}>{label}</button>
+            <span> {label} is {on ? 'on' : 'off'}.</span>
+            <SwitchButton settingKey={`providers.${id}`} label={label} next={on ? 'off' : 'on'} /></li>;
+        })}</ul>
     </section>
-    <section aria-labelledby="settings-budget"><h3 id="settings-budget">Budget ceilings and per-turn reserves</h3>
+    <WorkspaceSettings report={report} floor={floor} />
+    <section aria-labelledby="settings-budget"><h3 id="settings-budget">Spending limits</h3>
       <dl>
         <div><dt>Floor daily dollars</dt><dd>{ceiling(report.budget.floor_usd_per_day_micros)}
           <LimitEditor settingKey="budget.floor_usd_per_day" unit="usd" label="Floor daily dollars"
@@ -117,20 +112,22 @@ export function SettingsView({ floor, onSetup }: {
       <p>When unset, the per-turn reserves default to $0.25 and 20000 tokens. Raising a limit, or setting one where
         there was none, asks first. This page cannot remove a limit once it is set, and a reserve has to stay above zero.</p>
     </section>
-    <section aria-labelledby="settings-providers"><h3 id="settings-providers">Registered providers</h3>
-      <p>Registration does not confirm that the program is installed. <button type="button" onClick={onSetup}>Open Setup</button></p>
-      <ul>{report.providers.filter((provider) => !ENGINES.some(([id]) => id === provider)).map((provider) =>
-        <li key={provider}><button type="button" onClick={onSetup} aria-label={`Check ${provider} in Setup`}>{provider}</button>
-          <span> Always registered.</span></li>)}
-        {ENGINES.map(([id, label]) => {
-          const on = report.providers.includes(id);
-          return <li key={id}><button type="button" onClick={onSetup} aria-label={`Check ${id} in Setup`}>{id}</button>
-            <span> {label} is {on ? 'on' : 'off'}.</span>
-            <SwitchButton settingKey={`providers.${id}`} next={on ? 'off' : 'on'} /></li>;
-        })}</ul>
-    </section>
-    <WorkspaceSettings report={report} floor={floor} />
+    <DesktopNotificationChoice />
     <DevicesSection />
+    <section aria-labelledby="settings-switches"><h3 id="settings-switches">Floor switches</h3>
+      <dl><div><dt>Chat messages</dt><dd>Always on, with no setting</dd></div>
+      {SWITCHES.map(([key, label, says]) => {
+        const on = report.switches[key];
+        return <div key={key}><dt>{label}</dt>
+          <dd><span className="settings-says">{says}</span>{' '}
+            {key === 'diff' && on && !report.switches.git ? 'On, but it needs Show changed files' : on ? 'On' : 'Off'}
+            {key === 'renew' && !on ? ' It needs Change goals and Hire agents.' : null}{' '}
+            <SwitchButton settingKey={`floor.${key}`} label={label} next={on ? 'off' : 'on'} /></dd></div>;
+      })}</dl>
+      <p>Recovery also needs Pause, resume and rename. Spending limits still apply.</p>
+      <details><summary>Configuration details</summary><dl>{SWITCHES.map(([key, label]) =>
+        <div key={key}><dt>{label}</dt><dd><code>floor.{key}</code></dd></div>)}</dl></details>
+    </section>
     <UnavailableControls floor={floor} control="hire" />
     <OfficeLayoutChoice />
     <section className="settings-about" aria-labelledby="settings-about"><h3 id="settings-about">About</h3>
@@ -138,27 +135,31 @@ export function SettingsView({ floor, onSetup }: {
         This page and daemon have different builds. The page is {__FLOOR_BUILD_VERSION__} and the daemon is {report.about.daemon_version}.
         {' '}Open Dudes to load the matching page. Keep any draft text before leaving this page.
       </p>}
-      <dl><div><dt>Daemon</dt><dd>{report.about.daemon_version}</dd></div>
+      <details><summary>Build details</summary><dl><div><dt>Daemon</dt><dd>{report.about.daemon_version}</dd></div>
         <div><dt>Floor build</dt><dd>{__FLOOR_BUILD_VERSION__}</dd></div>
-        <div><dt>Browser wire</dt><dd>browser-wire-v{report.about.browser_wire_version}</dd></div></dl>
+        <div><dt>Browser wire</dt><dd>browser-wire-v{report.about.browser_wire_version}</dd></div></dl></details>
       <ul>
         <li><a href={releaseNotesUrl(report.about.daemon_version)} target="_blank" rel="noopener noreferrer">
           {releaseNotesLabel(report.about.daemon_version)}</a></li>
         <li><a href="https://github.com/ArcfluxResearch/dudes" target="_blank" rel="noopener noreferrer">Source repository</a></li>
         <li><a href="https://github.com/ArcfluxResearch/dudes/issues" target="_blank" rel="noopener noreferrer">Issue tracker</a></li>
       </ul>
-      <p>This page never checks for updates. To look for a newer version, run <code>dudes upgrade --check</code>.</p>
+      <p>This page does not check for updates automatically.</p>
+      <details><summary>Update and restart details</summary>
+        <p>To check for a newer version, run <code>dudes upgrade --check</code>.</p>
+        <p>To restart after a configuration edit, run <code>dudes quickstart --restart</code>. A restart ends any running turn.</p>
+      </details>
     </section>
   </div>;
 }
 
 /** Turns one switch or engine on or off through the daemon, which keeps the file's start rules. */
-function SwitchButton({ settingKey, next }: { readonly settingKey: string; readonly next: 'on' | 'off' }) {
+function SwitchButton({ settingKey, label, next }: { readonly settingKey: string; readonly label: string; readonly next: 'on' | 'off' }) {
   const edit = useSyncExternalStore(subscribeToSettingsEdit, getSettingsEditState, getSettingsEditState);
   return <>
     <button type="button" aria-disabled={edit.sending !== null || undefined}
       onClick={() => { void changeSetting(settingKey, next); }}>Turn {next}</button>
-    <EditOutcome settingKey={settingKey} label={`Turn ${next} ${settingKey}`} />
+    <EditOutcome settingKey={settingKey} label={`Turn ${next} ${label}`} />
   </>;
 }
 
@@ -169,7 +170,14 @@ function EditOutcome({ settingKey, label }: { readonly settingKey: string; reado
     {edit.asking?.key === settingKey ? <span role="group" aria-label={label}> {edit.asking.question}
       {' '}<button type="button" onClick={() => { void confirmSetting(); }}>{edit.asking.confirm}</button>
       {' '}<button type="button" onClick={() => cancelSetting()}>Cancel</button></span> : null}
-    {edit.last?.key === settingKey ? <span role="status"> {editLine(edit.last.result)}</span> : null}
+    {edit.last?.key === settingKey ? <>
+      <span role="status"> {editLine(edit.last.result)}</span>
+      {edit.last.result.kind === 'refused' ? <details><summary>Details</summary>
+        <p>Reason: <code>{edit.last.result.reason}</code></p>
+        {edit.last.result.detail === null ? null : <p>{edit.last.result.detail}</p>}
+      </details> : edit.last.result.kind === 'saved' && edit.last.result.restart.length > 0
+        ? <details><summary>Details</summary><p>Restart needed for <code>{edit.last.result.restart.join(', ')}</code>.</p></details> : null}
+    </> : null}
   </>;
 }
 
@@ -240,7 +248,7 @@ export function WorkspaceSettings({ report, floor, headingId = 'settings-workspa
 }) {
   return <section aria-labelledby={headingId}><h3 id={headingId}>Projects</h3>
       {report.workspaces.length === 0 ? <p>No projects yet.</p> : <ul>{report.workspaces.map((workspace) =>
-        <li key={workspace.workspace_id}><h4>{workspace.label}</h4><p>Project <code>{workspace.workspace_id}</code></p>
+        <li key={workspace.workspace_id}><h4>{workspace.label}</h4><details><summary>Project details</summary><p>Project <code>{workspace.workspace_id}</code></p></details>
           <dl>
             <div><dt>Agent daily dollar ceiling</dt><dd>{ceiling(workspace.agent_usd_per_day_micros)}</dd></div>
             <div><dt>Agent daily token ceiling</dt><dd>{ceiling(workspace.agent_tokens_per_day, false)}</dd></div>
@@ -252,6 +260,6 @@ export function WorkspaceSettings({ report, floor, headingId = 'settings-workspa
         </li>)}</ul>}
       <RemoveNotice />
       {floor === undefined ? null : <AddProject floor={floor} off={<p>Adding a project from this page is off. Turn on the project switch under Floor switches.</p>} />}
-      <p>For a config-file edit, use <code>dudes project reload</code>, then <code>dudes project reload --apply &lt;sha256&gt;</code>.</p>
+      <details><summary>Configuration details</summary><p>For a config-file edit, use <code>dudes project reload</code>, then <code>dudes project reload --apply &lt;sha256&gt;</code>.</p></details>
     </section>;
 }

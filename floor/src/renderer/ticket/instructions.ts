@@ -194,12 +194,16 @@ export function decodeInstructionReview(value: unknown): InstructionReview | nul
 
 export function instructionContextText(scope: InstructionContext): string {
   switch (scope.kind) {
-    case 'owned_worktree': return `Owned worktree ${scope.lease}`;
+    case 'owned_worktree': return 'Agent’s own project copy';
     case 'shared_project': return 'Shared project';
     case 'unshared_project': return 'Unshared project';
     case 'shared_input': return `Shared ${scope.source.replaceAll('_', ' ')}`;
     case 'unresolved': return 'Unresolved context';
   }
+}
+
+export function instructionContextDetails(scope: InstructionContext): string {
+  return scope.kind === 'owned_worktree' ? `Owned worktree ${scope.lease}` : instructionContextText(scope);
 }
 
 const GAP_SENTENCES: Readonly<Record<InstructionGapReason, string>> = Object.freeze({
