@@ -86,7 +86,7 @@ test('the response map: each answer is worded for what it proves', async () => {
   };
   let [ok, notice] = await text(done('accepted', NEW));
   assert.equal(ok, true);
-  assert.deepEqual(notice, { card: NEW, tone: 'done', text: 'Accepted. The ticket is Done.' });
+  assert.deepEqual(notice, { card: NEW, tone: 'done', text: 'Accepted. The ticket is Done. The changes stay in the project Service. Dudes did not commit or push the changes. The Changes view lists the files.' });
 
   let deps;
   [ok, notice, deps] = await text(refused('stale_card'));
@@ -350,4 +350,25 @@ test('an unresolved create keeps its request id across reload without sending au
     assert.equal((await ticket.createTicket(FORM, lost.deps)).saved, false);
     assert.notEqual(lost.seen[1].body.request_id, id);
   } finally { globalThis.window = previousWindow; }
+});
+
+test('terminal Accept explains the recorded project or own copy without inventing a location', async () => {
+  const cases = [
+    [{ workspace: { id: 'opaque-project', label: 'Website' } }, 'The changes stay in the project Website.'],
+    [{ workspace: { id: 'opaque-project', label: 'Website' }, worktree: { branch: 'dudes/0123456789ab', state: 'active' } },
+      "The changes stay in the agent's own copy of Website."],
+    [{ workspace: null, worktree: { branch: 'dudes/0123456789ab', state: 'released' } },
+      "The changes stay in the agent's own project copy."],
+    [{ workspace: { id: 'opaque-project', label: 'Website' }, worktree: { branch: 'dudes/0123456789ab', state: 'removed' } },
+      'This page cannot confirm where the changes are.'],
+    [{ workspace: null }, 'This page cannot confirm where the changes are.'],
+  ];
+  for (const [fields, location] of cases) {
+    ticket.resetTicket();
+    subscribe(store, { agents: [agent(ADA, 'Ada', fields)], cards: [ticketCard(1, 'review', { claimed_by: ADA })] });
+    assert.equal(await ticket.changeTicket(store.getFloorState().cards[0], { verb: 'accept' }, daemon(() => done('accepted', NEW)).deps), true);
+    const expected = `Accepted. The ticket is Done. ${location} Dudes did not commit or push the changes. The Changes view lists the files.`;
+    assert.equal(ticket.getTicketState().notice.text, expected);
+    assert.doesNotMatch(ticket.getTicketState().notice.text, /opaque-project|dudes\//);
+  }
 });

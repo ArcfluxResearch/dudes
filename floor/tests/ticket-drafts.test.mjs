@@ -7,7 +7,7 @@ import { clearNewTicketDraft, clearTicketChangesDraft, EMPTY_TICKET_DRAFT, readN
 
 test('a late successful send cannot erase a newer ticket or changes draft', () => {
   const values = new Map();
-  const storage = () => ({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) });
+  const storage = () => ({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) });
   const sent = { title: 'Submitted work', note: 'A note', project: null, check: null, agent: '' };
   const newer = { ...sent, note: 'Keep this newer note' };
   writeNewTicketDraft(newer, storage);
@@ -15,12 +15,14 @@ test('a late successful send cannot erase a newer ticket or changes draft', () =
   assert.deepEqual(readNewTicketDraft(storage), newer);
   clearNewTicketDraft(newer, storage);
   assert.deepEqual(readNewTicketDraft(storage), EMPTY_TICKET_DRAFT);
+  assert.equal(values.has('dudes.floor.new-ticket-draft'), false);
   writeTicketChangesDraft('one', 'Newer request', storage);
   writeTicketChangesDraft('two', 'Another ticket', storage);
   clearTicketChangesDraft('one', 'Submitted request', storage);
   assert.equal(readTicketChangesDraft('one', storage), 'Newer request');
   clearTicketChangesDraft('one', 'Newer request', storage);
   assert.equal(readTicketChangesDraft('one', storage), '');
+  assert.equal(values.has('dudes.floor.ticket-changes-draft.one'), false);
   assert.equal(readTicketChangesDraft('two', storage), 'Another ticket');
 });
 
@@ -33,4 +35,22 @@ test('malformed stored drafts and unavailable browser storage leave usable empty
   assert.equal(readTicketChangesDraft('one', unavailable), '');
   assert.doesNotThrow(() => writeNewTicketDraft(EMPTY_TICKET_DRAFT, unavailable));
   assert.doesNotThrow(() => writeTicketChangesDraft('one', 'Keep working', unavailable));
+  assert.doesNotThrow(() => clearNewTicketDraft(EMPTY_TICKET_DRAFT, unavailable));
+  assert.doesNotThrow(() => clearTicketChangesDraft('one', '', unavailable));
+  let removed = false;
+  const unreadable = () => ({ getItem() { throw Error('unreadable'); }, removeItem() { removed = true; } });
+  clearNewTicketDraft(EMPTY_TICKET_DRAFT, unreadable);
+  clearTicketChangesDraft('one', '', unreadable);
+  assert.equal(removed, false);
+  const unremovable = () => ({ getItem: () => 'Sent', removeItem() { throw Error('unavailable'); } });
+  assert.doesNotThrow(() => clearTicketChangesDraft('one', 'Sent', unremovable));
+});
+
+test('sent draft cleanup compares normalized fields before removing the key', () => {
+  const values = new Map([['dudes.floor.new-ticket-draft', JSON.stringify({
+    agent: '', check: null, project: null, note: 'Keep the details', title: 'Review the page', ignored: 'older field',
+  })]]);
+  const storage = () => ({ getItem: (key) => values.get(key) ?? null, removeItem: (key) => values.delete(key) });
+  clearNewTicketDraft({ title: 'Review the page', note: 'Keep the details', project: null, check: null, agent: '' }, storage);
+  assert.equal(values.has('dudes.floor.new-ticket-draft'), false);
 });

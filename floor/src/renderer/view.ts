@@ -42,7 +42,9 @@ interface ViewStorage {
   setItem(key: string, value: string): void;
 }
 
-function browserStorage(): ViewStorage {
+type DraftRemovalStorage = Pick<Storage, 'getItem' | 'removeItem'>;
+
+function browserStorage(): Storage {
   return window.localStorage;
 }
 
@@ -78,7 +80,7 @@ export const EMPTY_TICKET_DRAFT: NewTicketDraft = Object.freeze({ title: '', not
 const TICKET_DRAFT_KEY = 'dudes.floor.new-ticket-draft';
 const TICKET_CREATE_KEY = 'dudes.floor.unconfirmed-ticket-create';
 
-export function readNewTicketDraft(storage: () => ViewStorage = browserStorage): NewTicketDraft {
+export function readNewTicketDraft(storage: () => Pick<ViewStorage, 'getItem'> = browserStorage): NewTicketDraft {
   try {
     const value: unknown = JSON.parse(storage().getItem(TICKET_DRAFT_KEY) ?? 'null');
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return EMPTY_TICKET_DRAFT;
@@ -95,8 +97,14 @@ export function writeNewTicketDraft(draft: NewTicketDraft, storage: () => ViewSt
   try { storage().setItem(TICKET_DRAFT_KEY, JSON.stringify(draft)); } catch {}
 }
 
-export function clearNewTicketDraft(sent: NewTicketDraft, storage: () => ViewStorage = browserStorage): void {
-  if (JSON.stringify(readNewTicketDraft(storage)) === JSON.stringify(sent)) writeNewTicketDraft(EMPTY_TICKET_DRAFT, storage);
+export function clearNewTicketDraft(sent: NewTicketDraft, storage: () => DraftRemovalStorage = browserStorage): void {
+  try {
+    const saved = storage();
+    const raw = saved.getItem(TICKET_DRAFT_KEY);
+    if (raw !== null && JSON.stringify(readNewTicketDraft(() => ({ getItem: () => raw }))) === JSON.stringify(sent)) {
+      saved.removeItem(TICKET_DRAFT_KEY);
+    }
+  } catch {}
 }
 
 export function readTicketChangesDraft(card: string, storage: () => ViewStorage = browserStorage): string {
@@ -110,8 +118,12 @@ export function writeTicketChangesDraft(card: string, text: string, storage: () 
   try { storage().setItem(`dudes.floor.ticket-changes-draft.${card}`, text); } catch {}
 }
 
-export function clearTicketChangesDraft(card: string, sent: string, storage: () => ViewStorage = browserStorage): void {
-  if (readTicketChangesDraft(card, storage) === sent) writeTicketChangesDraft(card, '', storage);
+export function clearTicketChangesDraft(card: string, sent: string, storage: () => DraftRemovalStorage = browserStorage): void {
+  try {
+    const saved = storage();
+    const key = `dudes.floor.ticket-changes-draft.${card}`;
+    if (saved.getItem(key) === sent) saved.removeItem(key);
+  } catch {}
 }
 
 export interface TicketCreateAttempt {
