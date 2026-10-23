@@ -874,3 +874,25 @@ test('Board Give retains typed work when its selected agent stops being free', a
     assert.equal(form.querySelector('button').disabled, false);
   } finally { await app.close(); }
 });
+
+test('a retained create retry keeps its id when another project is enrolled after a lost reply', async () => {
+  let app = await mount([]);
+  try {
+    await app.render({ ...app.floor, checks: { ...app.floor.checks,
+      workspaces: app.floor.checks.workspaces.filter((row) => row.workspaceId === 'service') } });
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    await act(async () => propsOf(app.page.host.querySelector('[name="title"]')).onChange({ target: { value: 'Keep one ticket across a reload' } }));
+    reply = () => { throw Error('lost create reply'); };
+    await act(async () => propsOf(app.page.host.querySelector('.ticket-composer').querySelector('form')).onSubmit({ preventDefault() {} }));
+    assert.equal(seen[0][1].project, 'service');
+    assert.equal(app.page.host.querySelector('[name="title"]').value, 'Keep one ticket across a reload');
+    await app.close();
+    ticket.resetTicket();
+    app = await mount([]);
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    reply = () => ({ status: 200, text: async () => JSON.stringify({ state: 'created', card: cardId(2), seq: 0, lsn: '4097' }) });
+    await act(async () => propsOf(app.page.host.querySelector('.ticket-composer').querySelector('form')).onSubmit({ preventDefault() {} }));
+    assert.deepEqual(seen[1], seen[0]);
+    assert.equal(seen.filter(([url]) => url === '/floor/ticket').length, 2);
+  } finally { await app.close(); }
+});

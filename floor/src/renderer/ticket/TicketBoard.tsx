@@ -177,7 +177,7 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
     if (!ready || project === null || check === null) return;
     const sent = draft;
     const made = await createTicket({
-      title, note, project: projects.length > 1 ? project : null,
+      title, note, project,
       check: { id: check.id, revision: check.revision },
       agent: agent === '' || !usable.some((row) => row.id === agent) ? null : agent,
     });
