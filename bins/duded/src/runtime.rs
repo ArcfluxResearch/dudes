@@ -6515,6 +6515,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if self.hire_wants_a_ceiling(params) {
             return Err(ceiling_required_refusal(params.provider));
         }
+        if params.model.is_some() && self.model_fixed_by_config(params.provider) {
+            return Err(error(ErrorCode::Refused, MODEL_FIXED_NOTE.to_owned()));
+        }
         self.mcp_admission(params)?;
         if let Some((field, code)) = unsupported_hire_option(params) {
             return Err(error(

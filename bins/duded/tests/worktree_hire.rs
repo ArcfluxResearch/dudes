@@ -23,6 +23,7 @@ use dudes_proto::rpc::{ErrorCode, Method, RefusalGate, RefusedData};
 use dudes_proto::{AutomaticHold, Record, WorktreeRemoval};
 use dudes_providers::adapter::Adapter;
 use dudes_providers::claude::ClaudeAdapter;
+use dudes_providers::claude::config::ClaudeConfig;
 use dudes_providers::codex::CodexAdapter;
 use dudes_providers::launch::LaunchSpec;
 use dudes_providers::registry::Adapters;
@@ -439,6 +440,43 @@ fn a_refused_worktree_hire_journals_nothing_and_creates_no_tree() {
         run(&git, &repo, &["branch", "--list", "dudes/*"]),
         "",
         "and makes no branch"
+    );
+}
+
+/// A model in the Claude configuration's extra arguments would beat a hire's model unrecorded, so
+/// a worktree hire that names one is refused before a lease is journaled or a tree made.
+#[test]
+fn a_worktree_hire_that_names_a_model_is_refused_when_the_extra_arguments_set_one() {
+    let fixture = Fixture::new();
+    let git = git(&fixture);
+    let repo = repo(&fixture, &git);
+    let claude = ClaudeConfig {
+        extra_args: ["--model=haiku"].map(std::ffi::OsString::from).to_vec(),
+        ..ClaudeConfig::default()
+    };
+    let adapters = Adapters::new([Box::new(ClaudeAdapter::new(claude)) as Box<dyn Adapter>]);
+    let (mut running, settings, _) = daemon(&fixture, adapters);
+    let mut client = connect(&settings);
+
+    let mut named = worktree_params(&repo);
+    named.model = Some(dudes_types::ModelName::parse("opus").unwrap());
+    let error = hire(&settings, &mut client, &named).expect_err("a named model is refused");
+    assert!(error.message.contains("configuration sets"), "{error:?}");
+    assert!(
+        fixture.records().is_empty(),
+        "no lease and no agent: {:?}",
+        fixture.records()
+    );
+    assert!(!fixture.state.path().join("worktrees").exists());
+    assert_eq!(run(&git, &repo, &["branch", "--list", "dudes/*"]), "");
+
+    hire(&settings, &mut client, &worktree_params(&repo)).expect("no model goes through");
+    running.stop(ExitCause::Ended);
+    assert!(
+        fixture
+            .records()
+            .iter()
+            .any(|record| matches!(record, Record::AgentHired { .. }))
     );
 }
 
