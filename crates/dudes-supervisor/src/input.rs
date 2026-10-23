@@ -859,6 +859,8 @@ pub enum Command {
         max_turns: Option<u32>,
         /// The vendor-run budget backstop, as the hire asked for it.
         max_budget: Option<Usd>,
+        /// The model every launch names, when the hire named one.
+        model: Option<dudes_types::ModelName>,
         /// The operator's trust declaration for `cwd`; `false` when none was made.
         trusted: bool,
         /// The lease `cwd` is the tree of, when the hire is into a worktree. The daemon
@@ -1196,6 +1198,8 @@ pub struct BrowserOnboardHire {
     pub worktree: Option<dudes_types::WorktreeId>,
     /// The project trust grant that admitted a hire into a copy.
     pub trust_lsn: Option<Lsn>,
+    /// The model every launch names, when the browser chose one.
+    pub model: Option<dudes_types::ModelName>,
 }
 
 impl std::fmt::Debug for BrowserOnboardHire {

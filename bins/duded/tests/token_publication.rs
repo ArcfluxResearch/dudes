@@ -78,6 +78,7 @@ fn seed_live_mint_history(fixture: &Fixture, mintings: usize) {
             isolation: None,
             max_turns: None,
             max_budget: None,
+            model: None,
             trusted: false,
             workspace: None,
             worktree: None,

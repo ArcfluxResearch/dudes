@@ -2470,6 +2470,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
     }
 
+    /// Whether the engine's configuration fixes a model that a hire's own model could not replace.
+    fn model_fixed_by_config(&self, provider: Provider) -> bool {
+        self.sup
+            .adapters()
+            .get(provider)
+            .is_some_and(|adapter| adapter.fixed_model().is_some())
+    }
+
     /// What a hire into its own copy needs before anything is made: a Claude agent on a platform
     /// that makes copies, in a project the operator trusts. The agent then works in the copy and
     /// not in the project's folder, so the shared-folder check is made on the copy later.
@@ -2522,6 +2530,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             isolation: browser_isolation(request.provider, profile),
             max_turns: None,
             max_budget: None,
+            model: request.model.clone(),
             trusted: true,
             checkout: Some(dudes_proto::rpc::agent::Checkout::Worktree),
             from: None,
@@ -2562,6 +2571,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
         if self.refuse_overlap(&profile.cwd, None).is_err() {
             return Err(OnboardRefusal::Forbidden);
+        }
+        if request.model.is_some() && self.model_fixed_by_config(request.provider) {
+            return Err(OnboardRefusal::ModelFixed);
         }
         if request.own_copy {
             self.own_copy_admission(request, &profile)?;
@@ -2631,6 +2643,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 session_digest: session.digest(),
                 worktree,
                 trust_lsn,
+                model: request.model.clone(),
             })),
         ) {
             Ok(()) => {
@@ -4497,6 +4510,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             Ask::Hire(params) if self.hire_wants_a_ceiling(&params) => {
                 Err(ceiling_required_refusal(params.provider))
             }
+            Ask::Hire(params)
+                if params.model.is_some() && self.model_fixed_by_config(params.provider) =>
+            {
+                Err(error(ErrorCode::Refused, MODEL_FIXED_NOTE.to_owned()))
+            }
             Ask::Hire(params) => {
                 self.mcp_admission(&params)?;
                 if let Some((field, code)) = unsupported_hire_option(&params) {
@@ -4543,6 +4561,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     isolation: params.isolation,
                     max_turns: params.max_turns,
                     max_budget: params.max_budget,
+                    model: params.model,
                     trusted: params.trusted,
                     worktree: None,
                     mcp_servers: sorted(params.mcp_servers),
@@ -4619,6 +4638,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     isolation: params.isolation,
                     max_turns: params.max_turns,
                     max_budget: params.max_budget,
+                    model: params.model,
                     trusted: params.trusted,
                     worktree: Some(worktree),
                     mcp_servers: sorted(params.mcp_servers),
@@ -6495,6 +6515,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if self.hire_wants_a_ceiling(params) {
             return Err(ceiling_required_refusal(params.provider));
         }
+        if params.model.is_some() && self.model_fixed_by_config(params.provider) {
+            return Err(error(ErrorCode::Refused, MODEL_FIXED_NOTE.to_owned()));
+        }
         self.mcp_admission(params)?;
         if let Some((field, code)) = unsupported_hire_option(params) {
             return Err(error(
@@ -7313,6 +7336,10 @@ fn sorted(mut names: Vec<dudes_types::McpServerName>) -> Vec<dudes_types::McpSer
     names.sort();
     names
 }
+
+/// Why a hire that names a model is refused when the engine's configuration fixes one.
+const MODEL_FIXED_NOTE: &str = "the configuration sets this engine's model in its extra arguments, \
+                                so a hire cannot choose another; remove that setting to choose";
 
 fn unsupported_hire_option(params: &HireParams) -> Option<(&'static str, ErrorCode)> {
     if !matches!(params.provider, Provider::Codex | Provider::Pi) {
@@ -9563,6 +9590,7 @@ mod mail_wake_fence_tests {
                         isolation,
                         max_turns,
                         max_budget,
+                        model: None,
                         trusted,
                         workspace,
                         worktree: None,

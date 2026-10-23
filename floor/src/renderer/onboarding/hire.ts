@@ -62,7 +62,7 @@ export function lengthNote(value: string, limit: number): string | null {
   return used >= limit * 0.9 ? 'This is almost too long.' : null;
 }
 
-export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine';
+export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine' | 'model';
 
 /** What the page offers a Hire from: the enrolled workspaces and the agents already working. */
 export type HireOffer = Pick<FloorState, 'onboarding' | 'agents'>;
@@ -74,6 +74,17 @@ export function ticketsOff(floor: FloorState): boolean {
 
 export const TICKETS_OFF_AFTER = 'Tickets are off, so nobody can give this agent a task from the Floor yet. Turn on tickets to do that.';
 
+/** The models the page suggests for an engine; any other name may be typed. */
+export const MODEL_SUGGESTIONS: Readonly<Record<HireEngine, readonly string[]>> = Object.freeze({
+  claude: Object.freeze(['opus', 'sonnet', 'haiku']),
+  codex: Object.freeze([]),
+  pi: Object.freeze([]),
+});
+
+/** The shape the daemon admits for a model name: 1 to 64 bytes, not starting with a dash. */
+export const MODEL_SHAPE = /^[A-Za-z0-9._:/@[\]][A-Za-z0-9._:/@[\]-]{0,63}$/;
+
+export const BAD_MODEL = 'A model name is 1 to 64 letters, digits, dots, dashes, underscores, colons, slashes, at signs and square brackets, and does not start with a dash.';
 export const NO_PROJECT_LIST = 'Hire cannot list your projects right now. Reload the page, and check Settings if this stays.';
 
 export interface HireDraft {
@@ -82,6 +93,8 @@ export interface HireDraft {
   readonly workspaceId: string;
   /** The engine chosen, which counts only while the chosen workspace offers it. */
   readonly engine?: HireEngine;
+  /** The model every run of the agent names. Absent, or empty, is the engine's default. */
+  readonly model?: string;
   /**
    * Whether the agent works in its own copy of the project. Absent until the person decides, so a
    * project another agent already works in can start with the box ticked and say why.
@@ -110,6 +123,8 @@ export interface HirePayload {
   readonly name: string;
   readonly role: string;
   readonly provider?: Exclude<HireEngine, 'claude'>;
+  /** Sent only when a model is chosen; absent means the engine's default. */
+  readonly model?: string;
   /** Sent only when the agent should work in its own copy of the project. */
   readonly own_copy?: true;
   readonly character?: string;
@@ -314,6 +329,10 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
   } else if (chosenEngine(draft, workspace) === null) {
     problems.push({ field: 'engine', section: 'engine', message: 'Choose an engine this project offers.' });
   }
+  const model = trimAsciiSpace(draft.model ?? '');
+  if (model !== '' && !MODEL_SHAPE.test(model)) {
+    problems.push({ field: 'model', section: 'engine', message: BAD_MODEL });
+  }
   return problems;
 }
 
@@ -336,6 +355,8 @@ export function editDraft(patch: Partial<HireDraft>): void {
   // The payload is frozen with its attempt: while one is open, nothing edits it.
   if (state.attempt !== null) return;
   const next = { ...state.draft, ...patch };
+  // A model chosen for one engine says nothing about another's.
+  if (patch.engine !== undefined && patch.engine !== state.draft.engine && !('model' in patch)) delete next.model;
   // A choice about one project's copy says nothing about another's.
   if (patch.workspaceId !== undefined && patch.workspaceId !== state.draft.workspaceId && !('ownCopy' in patch)) {
     delete next.ownCopy;
@@ -450,6 +471,7 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
     role: trimAsciiSpace(state.draft.role) || DEFAULT_ROLE,
     ...(engine === 'codex' || engine === 'pi' ? { provider: engine } : {}),
     ...(copy.state === 'available' && copy.checked ? { own_copy: true as const } : {}),
+    ...(trimAsciiSpace(state.draft.model ?? '') ? { model: trimAsciiSpace(state.draft.model!) } : {}),
     ...(state.draft.character ? { character: state.draft.character } : {}),
     ...(state.draft.accent ? { accent: state.draft.accent } : {}),
   });
@@ -599,7 +621,7 @@ export function decodeHireResponse(status: number, text: string, attemptId: stri
       const body = json(text);
       if (exactly(body, ['attempt_id', 'state', 'reason', 'note'])
         && body.attempt_id === attemptId && body.state === 'refused'
-        && (body.reason === 'shared_folder' || body.reason === 'own_copy')
+        && (body.reason === 'shared_folder' || body.reason === 'own_copy' || body.reason === 'model_fixed')
         && typeof body.note === 'string' && body.note.length > 0 && body.note.length <= 512
         && !/[\u0000-\u001f\u007f]/u.test(body.note)) {
         return Object.freeze({ kind: 'refused', note: body.note });

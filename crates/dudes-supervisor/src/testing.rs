@@ -1195,6 +1195,11 @@ impl Harness {
     /// `agent.hire`, run to quiescence. An agent without a goal is never decided for, so nothing
     /// else happens.
     pub fn hire(&mut self) -> AgentId {
+        self.hire_naming(None)
+    }
+
+    /// [`Self::hire`] for an agent hired with `model`, when there is one.
+    pub fn hire_naming(&mut self, model: Option<dudes_types::ModelName>) -> AgentId {
         self.drive(Input::Command(Command::Hire {
             character: None,
             accent: None,
@@ -1216,6 +1221,7 @@ impl Harness {
             // `Command::Hire` itself for exactly that reason.
             max_turns: None,
             max_budget: None,
+            model,
             trusted: false,
             worktree: None,
             mcp_servers: Vec::new(),
@@ -1355,6 +1361,7 @@ pub fn journal_with_issued_turn(
                 isolation: None,
                 max_turns: None,
                 max_budget: None,
+                model: None,
                 trusted: false,
                 workspace: None,
                 worktree: None,

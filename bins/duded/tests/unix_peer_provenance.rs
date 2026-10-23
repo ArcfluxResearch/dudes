@@ -105,6 +105,7 @@ fn seed_matrix_agent(fixture: &Fixture) {
             isolation: None,
             max_turns: None,
             max_budget: None,
+            model: None,
             trusted: false,
             workspace: None,
             worktree: None,

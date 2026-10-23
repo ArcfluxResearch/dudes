@@ -30,7 +30,7 @@ const REQUEST_ID: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const CANCEL_ID: &str = "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v5"
+    "/tests/fixtures/floor-release-v6"
 );
 
 struct Browser {

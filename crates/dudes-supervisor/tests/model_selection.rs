@@ -231,6 +231,84 @@ fn a_live_issue_records_the_selection_before_the_spawn_and_launches_under_it() {
     );
 }
 
+/// An agent hired with a model launches every turn under it, whatever the adapter is configured
+/// with, and the turn records it. An agent hired with none takes the adapter's, as before.
+#[test]
+fn a_hired_model_replaces_the_configured_default_for_that_agent() {
+    let cell = configured(Some("model-alpha"));
+    let mut h = harness(&cell);
+    let agent = h.hire_naming(Some(dudes_types::ModelName::parse("model-hired").unwrap()));
+    h.set_goal(agent, &["npm", "test"]);
+    let turn = h.open_turn(agent).expect("a turn was issued");
+    assert_eq!(
+        recorded(&h),
+        vec![Some(ModelSelection::named("model-hired"))]
+    );
+    assert_eq!(
+        launched_under(&h, turn),
+        vec![("model-hired".to_owned(), "model-hired".to_owned())],
+        "the argv and the install both carry the hired model"
+    );
+
+    let mut other = harness(&cell);
+    let (agent, _) = other.hire_with_goal(&["npm", "test"]);
+    let turn = other.open_turn(agent).expect("a turn was issued");
+    assert_eq!(
+        launched_under(&other, turn),
+        vec![("model-alpha".to_owned(), "model-alpha".to_owned())],
+        "a hire that named no model takes the adapter's"
+    );
+}
+
+/// The browser's hire path carries the model too: the first turn of a browser-hired agent
+/// records and launches the model its hire named.
+#[test]
+fn a_browser_hire_with_a_model_issues_its_first_turn_under_it() {
+    let cell = configured(Some("model-alpha"));
+    let mut h = harness(&cell);
+    h.drive(Input::Command(Command::BrowserOnboardHire(Box::new(
+        dudes_supervisor::input::BrowserOnboardHire {
+            name: "Kim".into(),
+            character: None,
+            accent: None,
+            role: "engineer".into(),
+            department: "infra".into(),
+            provider: Provider::Claude,
+            cwd: PathBuf::from("/repo"),
+            budget: dudes_proto::AgentBudget {
+                usd_per_day: Some(Usd::from_dollars(10)),
+                tokens_per_day: None,
+            },
+            isolation: None,
+            attempt_id: Hex32::new([1; 32]),
+            request_digest: Hex32::new([2; 32]),
+            profile_id: "repo_1".into(),
+            workspace_label: "Repo".into(),
+            session_digest: Hex32::new([3; 32]),
+            worktree: None,
+            trust_lsn: None,
+            model: Some(dudes_types::ModelName::parse("sonnet[1m]").unwrap()),
+        },
+    ))));
+    let agent = *h
+        .supervisor
+        .world()
+        .agents
+        .keys()
+        .next_back()
+        .expect("hired");
+    h.set_goal(agent, &["npm", "test"]);
+    let turn = h.open_turn(agent).expect("a turn was issued");
+    assert_eq!(
+        recorded(&h),
+        vec![Some(ModelSelection::named("sonnet[1m]"))]
+    );
+    assert_eq!(
+        launched_under(&h, turn),
+        vec![("sonnet[1m]".to_owned(), "sonnet[1m]".to_owned())]
+    );
+}
+
 /// The provider default is a **recorded choice**, not an absence: an adapter configured with no
 /// model still writes `Some`.
 ///
@@ -397,6 +475,7 @@ fn legacy_journal() -> (Vec<Entry>, TurnId) {
                 isolation: None,
                 max_turns: None,
                 max_budget: None,
+                model: None,
                 trusted: false,
                 workspace: None,
                 worktree: None,

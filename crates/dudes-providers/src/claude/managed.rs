@@ -580,6 +580,10 @@ impl Adapter for ClaudeAdapter {
         }
     }
 
+    fn fixed_model(&self) -> Option<OsString> {
+        self.config.extra_args_model()
+    }
+
     /// The task goes one of two ways and the choice is made once, here: in the argv after `--`,
     /// or on stdin with the argv ending at the last flag.
     ///

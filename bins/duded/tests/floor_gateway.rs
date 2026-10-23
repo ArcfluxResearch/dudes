@@ -18,7 +18,7 @@ use common::{Fixture, ScriptedRunner, SharedHost, TestClock, seams};
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v5"
+    "/tests/fixtures/floor-release-v6"
 );
 const EXPECTED_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
 const STATIC_CONTRACT: &str = concat!(
@@ -54,10 +54,10 @@ fn copy_fixture() -> tempfile::TempDir {
 }
 
 #[test]
-fn only_generation_five_manifests_are_admitted() {
+fn only_generation_six_manifests_are_admitted() {
     let matched = copy_fixture();
     prepare(&floor(matched.path())).expect("the matched generation prepares");
-    for wire in [1, 2, 3, 4, 6] {
+    for wire in [1, 2, 3, 4, 5, 7] {
         let root = copy_fixture();
         let path = root.path().join("release-manifest.json");
         let mut manifest: serde_json::Value =
@@ -1365,8 +1365,14 @@ fn threaded_generation_refuses_old_and_mixed_asset_manifests_before_serving() {
     ));
     let error = prepare(&floor(previous)).expect_err("generation four assets are refused");
     assert!(format!("{error:#}").contains("version mismatch"));
+    let previous = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/floor-release-v5"
+    ));
+    let error = prepare(&floor(previous)).expect_err("generation five assets are refused");
+    assert!(format!("{error:#}").contains("version mismatch"));
     let matched = copy_fixture();
-    prepare(&floor(matched.path())).expect("matching generation five fixture");
+    prepare(&floor(matched.path())).expect("matching generation six fixture");
     let mixed = copy_fixture();
     let path = mixed.path().join("release-manifest.json");
     let mut manifest: serde_json::Value =

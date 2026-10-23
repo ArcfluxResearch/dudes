@@ -75,6 +75,13 @@ pub struct HireParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option::<u64>", range(min = 1))]
     pub max_budget: Option<Usd>,
+    /// The model every launch of this agent names. It replaces the engine's configured model for
+    /// this agent. Absent means the engine's own selection: the configured model when the
+    /// configuration sets one, else the engine's default. The daemon checks the shape only; an
+    /// engine that does not know the name fails the agent's first turn with its own error. Fixed
+    /// for the agent's life: a different model needs a retire and a rehire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<dudes_types::ModelName>,
     /// The operator's declaration that they vouch for `cwd`, recorded once on
     /// `AgentHired` and never re-read from configuration. Absence means untrusted, so an omitted
     /// field and an explicit `false` are one meaning.

@@ -25,6 +25,7 @@ pub mod escaped;
 pub mod id;
 pub mod liveness;
 pub mod mcp;
+pub mod model;
 pub mod money;
 pub mod provenance;
 pub mod provider;
@@ -49,6 +50,7 @@ pub use liveness::Liveness;
 pub use mcp::{
     MAX_MCP_SERVER_NAME_CHARS, MCP_SERVER_NAME_PATTERN, McpServerName, ParseMcpServerNameError,
 };
+pub use model::{MAX_MODEL_NAME_BYTES, MODEL_NAME_PATTERN, ModelName, ParseModelNameError};
 pub use money::{NegativeUsd, Tokens, Usage, Usd};
 pub use provenance::Provenance;
 pub use provider::{IsolationMode, ModelSelection, ParseProviderError, Provider};

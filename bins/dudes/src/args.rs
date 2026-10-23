@@ -722,7 +722,7 @@ COMMANDS
 
     hire --name <name> --role <role> --department <dept> --provider <provider>
          [--cwd <path>] [--usd-per-day <n>] [--tokens-per-day <n>] [--sandbox true|false]
-         [--max-turns <n>] [--max-budget-usd <n>] [--trusted] [--mcp <server>]...
+         [--max-turns <n>] [--max-budget-usd <n>] [--model <name>] [--trusted] [--mcp <server>]...
          [--worktree [--from <worktree-id>]]
          [--character c|d|e|f|g|h|i|j|k|l] [--accent amber|coral|mint|sky|violet|rose]
         Hire an agent. A relative --cwd is resolved against the current directory.
@@ -738,6 +738,9 @@ COMMANDS
         a directory another live agent already works in prints a warning, because their
         edits and checkouts then collide. The daemon refuses --sandbox at either value until an adapter
         can carry the switch; omit it for the provider's configured default.
+        --model names the model every run of this agent uses instead of the engine's
+        default: 1 to 64 letters, digits and . _ - : / @ [ ], not starting with -. It is fixed
+        for the agent's life, and the engine reports a name it does not know at the first run.
         --max-turns and --max-budget-usd are optional positive backstops the provider
         enforces inside each run; omitting one emits no flag, and neither is a Dudes
         budget ceiling. Both are fixed for the agent's life. --trusted declares that you
@@ -2636,6 +2639,7 @@ fn hire(tail: &[OsString]) -> Result<Command, ArgError> {
         (None, None, None, None, None);
     let (mut usd_per_day, mut tokens_per_day, mut sandbox) = (None, None, None);
     let (mut max_turns, mut max_budget_usd) = (None, None);
+    let mut model = None;
     let (mut character, mut accent) = (None, None);
     let mut trusted = false;
     let (mut worktree, mut from) = (false, None);
@@ -2681,6 +2685,12 @@ fn hire(tail: &[OsString]) -> Result<Command, ArgError> {
                 tokens_per_day = Some(flags.parsed::<u64>("--tokens-per-day", "a whole number")?);
             }
             "--sandbox" => sandbox = Some(flags.parsed::<bool>("--sandbox", "true or false")?),
+            "--model" => {
+                model = Some(flags.parsed::<dudes_types::ModelName>(
+                    "--model",
+                    "1 to 64 letters, digits and . _ - : / @ [ ], not starting with -",
+                )?);
+            }
             "--max-turns" => {
                 max_turns = Some(flags.parsed::<u32>("--max-turns", "a positive whole number")?);
             }
@@ -2730,6 +2740,7 @@ fn hire(tail: &[OsString]) -> Result<Command, ArgError> {
         // this CLI has the value in hand.
         max_turns: positive("--max-turns", max_turns)?,
         max_budget: max_budget_usd.map(dollars_to_usd).transpose()?,
+        model,
         trusted,
         checkout: worktree.then_some(dudes_proto::rpc::agent::Checkout::Worktree),
         from,
@@ -3235,6 +3246,30 @@ mod tests {
             panic!("a hire")
         };
         assert_eq!(params.max_turns, Some(3));
+    }
+
+    /// `--model` reaches `HireParams` as a validated name, and a name the daemon would read as an
+    /// option or that is out of bounds is refused before anything is sent.
+    #[test]
+    fn hire_model_flag_reaches_the_params_and_a_bad_name_is_refused() {
+        let model = |extra: &[&str]| {
+            let mut line = hire_line("Ada");
+            line.extend(extra.iter().map(OsString::from));
+            parse(&line).map(|parsed| match parsed.command {
+                Command::Hire(params) => params.model.map(|name| name.to_string()),
+                _ => panic!("a hire"),
+            })
+        };
+        assert_eq!(model(&[]).unwrap(), None);
+        assert_eq!(
+            model(&["--model", "openai/gpt-4o:high"])
+                .unwrap()
+                .as_deref(),
+            Some("openai/gpt-4o:high")
+        );
+        for bad in ["-m", "a b", ""] {
+            assert!(model(&["--model", bad]).is_err(), "{bad:?}");
+        }
     }
 
     /// `--mcp` repeats in the order typed, and a malformed name is refused before anything is

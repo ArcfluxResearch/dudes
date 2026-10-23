@@ -1388,6 +1388,7 @@ mod tests {
                 isolation: None,
                 max_turns: Some(3),
                 max_budget: Some(Usd::from_micros(2_500_000)),
+                model: None,
                 trusted: false,
                 checkout: None,
                 from: None,

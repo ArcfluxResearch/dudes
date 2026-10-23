@@ -1925,6 +1925,7 @@ pub(crate) fn hire_params(cwd: &Path) -> HireParams {
         isolation: None,
         max_turns: None,
         max_budget: None,
+        model: None,
         trusted: false,
         checkout: None,
         from: None,

@@ -4464,6 +4464,17 @@
               },
               "type": "array"
             },
+            "model": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ModelName"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The model the hire named, which every launch of this agent passes to its engine.\nAbsence means the engine's own selection, as for every journal written before the field."
+            },
             "name": {
               "description": "Display name.",
               "type": "string"
@@ -9922,6 +9933,17 @@
           },
           "type": "array"
         },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The model every launch of this agent names. It replaces the engine's configured model for\nthis agent. Absent means the engine's own selection: the configured model when the\nconfiguration sets one, else the engine's default. The daemon checks the shape only; an\nengine that does not know the name fails the agent's first turn with its own error. Fixed\nfor the agent's life: a different model needs a retire and a rehire."
+        },
         "name": {
           "description": "Display name.",
           "type": "string"
@@ -14997,6 +15019,13 @@
           "type": "string"
         }
       ]
+    },
+    "ModelName": {
+      "description": "ModelName: the model an agent is hired to run.",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:/@\\[\\]][A-Za-z0-9._:/@\\[\\]-]*$",
+      "type": "string"
     },
     "ModelSelection": {
       "description": "The model a managed turn was launched under, as the adapter chose it **before** the spawn.\n\nThe selector is the provider's own spelling, kept byte-for-byte: Dudes resolves no alias, keeps\nno model catalogue, and never claims this is the model that ran. What actually consumed tokens\nis observed at the result boundary and is a different fact with a different cardinality —\n`TurnEnded.model_usage`, which may name several models where this names at most one.\n\n**The type exists so that the absent and the empty cases stay distinguishable.** Wrapped in an\n`Option` on the record, three states survive replay where a bare `Option<String>` would collapse\ntwo of them: the field absent is a journal written before model selection was recorded and recording no choice at\nall; `ModelSelection { selector: None }` is a turn that deliberately took the provider's own\ndefault; `ModelSelection { selector: Some(..) }` is a turn that named one. A re-issue replays\nthe second and third exactly, and only the first may fall back to current configuration —\nwhich is why flattening the two `Option`s is the mutation the record tests refuse.\n\nIt crosses operator configuration, the adapter seam and the journal, so it is shared vocabulary\nrather than an adapter-owned type. It carries a `String`, so `Clone + Eq + Hash` rather than\n`Copy`, per this crate's own rule.",

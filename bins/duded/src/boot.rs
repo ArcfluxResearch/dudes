@@ -438,12 +438,18 @@ where
         Provider::ALL
             .into_iter()
             .filter_map(|provider| {
-                adapters
-                    .get(provider)
-                    .map(|adapter| crate::provider_check::Configured {
+                adapters.get(provider).map(|adapter| {
+                    let (model, model_fixed) = crate::provider_check::Configured::model_fields(
+                        adapter.model_selection().selector(),
+                        adapter.fixed_model().as_deref(),
+                    );
+                    crate::provider_check::Configured {
                         provider,
                         program: adapter.program().to_os_string(),
-                    })
+                        model,
+                        model_fixed,
+                    }
+                })
             })
             .collect(),
         &settings.daemon_env,

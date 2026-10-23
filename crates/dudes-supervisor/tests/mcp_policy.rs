@@ -52,6 +52,7 @@ fn hired() -> World {
             isolation: None,
             max_turns: None,
             max_budget: None,
+            model: None,
             trusted: false,
             worktree: None,
             workspace: None,

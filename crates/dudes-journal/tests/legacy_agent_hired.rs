@@ -179,6 +179,7 @@ fn hired(trusted: bool) -> Entry {
             isolation: None,
             max_turns: None,
             max_budget: None,
+            model: None,
             trusted,
             workspace: None,
             worktree: None,

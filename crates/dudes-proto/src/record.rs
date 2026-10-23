@@ -721,6 +721,10 @@ pub enum Record {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "Option::<u64>", range(min = 1))]
         max_budget: Option<Usd>,
+        /// The model the hire named, which every launch of this agent passes to its engine.
+        /// Absence means the engine's own selection, as for every journal written before the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<dudes_types::ModelName>,
         /// Whether the operator vouched for `cwd`. An untrusted repository
         /// contributes no settings to a managed turn; a trusted one contributes only the settings the
         /// managed-turn isolation keeps.
@@ -3366,6 +3370,7 @@ pub mod samples {
                 isolation: Some(IsolationMode::Inherit),
                 max_turns: Some(7),
                 max_budget: Some(Usd::from_micros(1_500_000)),
+                model: Some(dudes_types::ModelName::parse("sonnet").unwrap()),
                 trusted: true,
                 worktree: None,
                 workspace: None,
@@ -5858,6 +5863,49 @@ mod tests {
             let value = serde_json::to_value(&record).unwrap();
             assert_eq!(serde_json::from_value::<Record>(value).unwrap(), record);
         }
+    }
+
+    #[test]
+    fn an_agent_hired_without_a_model_parses_and_writes_no_model_key() {
+        let hired = |model: Option<&str>| Record::AgentHired {
+            character: None,
+            accent: None,
+            id: agent(),
+            name: "Kim".into(),
+            role: "engineer".into(),
+            department: "engineering".into(),
+            provider: Provider::Claude,
+            cwd: PathBuf::from("/work/repo"),
+            budget: AgentBudget {
+                usd_per_day: None,
+                tokens_per_day: None,
+            },
+            sandbox: None,
+            isolation: None,
+            max_turns: None,
+            max_budget: None,
+            model: model.map(|name| dudes_types::ModelName::parse(name).unwrap()),
+            trusted: false,
+            worktree: None,
+            workspace: None,
+            mcp_servers: Vec::new(),
+            browser_onboarding: None,
+        };
+        let plain = serde_json::to_value(hired(None)).unwrap();
+        assert!(plain.to_string().find("\"model\"").is_none(), "{plain}");
+        assert_eq!(
+            serde_json::from_value::<Record>(plain).unwrap(),
+            hired(None)
+        );
+        let named = serde_json::to_value(hired(Some("openai/gpt-4o"))).unwrap();
+        assert!(
+            named.to_string().contains("\"model\":\"openai/gpt-4o\""),
+            "{named}"
+        );
+        assert_eq!(
+            serde_json::from_value::<Record>(named).unwrap(),
+            hired(Some("openai/gpt-4o"))
+        );
     }
 }
 

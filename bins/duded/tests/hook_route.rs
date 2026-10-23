@@ -30,7 +30,7 @@ use serde_json::json;
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v5"
+    "/tests/fixtures/floor-release-v6"
 );
 
 fn floor_fixture() -> tempfile::TempDir {

@@ -28,14 +28,18 @@ use dudes_proto::Record;
 use dudes_proto::rpc::agent::{Checkout, HireParams, HireResult};
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::{Method, RpcError};
+use dudes_providers::adapter::Adapter;
+use dudes_providers::claude::ClaudeAdapter;
+use dudes_providers::claude::config::ClaudeConfig;
 use dudes_providers::launch::LaunchSpec;
+use dudes_providers::registry::Adapters;
 use dudes_rpc::Client;
 use dudes_supervisor::Clock as _;
 use serde_json::{Value, json};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v5"
+    "/tests/fixtures/floor-release-v6"
 );
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -188,6 +192,10 @@ struct Floor {
 }
 
 fn floor(fixture: &Fixture) -> Floor {
+    floor_with(fixture, ClaudeConfig::default())
+}
+
+fn floor_with(fixture: &Fixture, claude: ClaudeConfig) -> Floor {
     let repo = repo(fixture.runtime.path());
     let config = fixture.state.path().join("config.toml");
     std::fs::write(&config, operator_file(Some(&repo))).expect("operator file");
@@ -200,13 +208,14 @@ fn floor(fixture: &Fixture) -> Floor {
     settings.enrollment = load_operator(&config).expect("valid file").enrollment;
     settings.operator_config = Some(config);
     let clock = Arc::new(TestClock::new());
-    let seams = common::seams(
+    let mut seams = common::seams(
         &settings,
         SharedHost::new(),
         Arc::new(Real(OneShot::new())),
         clock.clone(),
         Witness::default(),
     );
+    seams.adapters = Adapters::new([Box::new(ClaudeAdapter::new(claude)) as Box<dyn Adapter>]);
     let daemon = duded::boot(&settings, seams).expect("boot");
     let addr = daemon.floor_addr().expect("the Floor listener");
     Floor {
@@ -425,6 +434,226 @@ fn a_trusted_project_hires_into_its_own_copy_as_the_command_line_does() {
         "the tree is on a branch of its own"
     );
     assert_ne!(*tree, floor.repo, "and it is not the project's folder");
+}
+
+/// The digests of a copy hire that names no model are today's, and the model reaches the agent
+/// whether it is hired from the browser into a copy or from the command line.
+#[test]
+fn a_copy_hire_keeps_its_digest_and_every_hire_path_records_the_model() {
+    use sha2::{Digest as _, Sha256};
+    let fixture = Fixture::new();
+    let floor = floor(&fixture);
+    set_trust(&floor, true).expect("the grant");
+    let page = session(&floor);
+    let revision = common::check_revision_as(
+        "default",
+        "Checks pass",
+        &[common::true_program()],
+        10,
+        true,
+    );
+    let named = |attempt: char, model: Option<&str>| {
+        let mut body = json!({
+            "attempt_id": format!("{attempt}{}", "A".repeat(42)),
+            "workspace_id": "repo_1", "name": "Kim", "role": "engineer",
+            "check_id": "default", "check_revision": revision, "own_copy": true,
+        });
+        if let Some(model) = model {
+            body["model"] = json!(model);
+        }
+        body
+    };
+    assert_eq!(page.post("/floor/onboard", &named('A', None)).status(), 200);
+    assert_eq!(
+        page.post("/floor/onboard", &named('B', Some("opus")))
+            .status(),
+        200
+    );
+    let mut params: HireParams = common::hire_params(&floor.repo);
+    params.trusted = true;
+    params.checkout = Some(Checkout::Worktree);
+    params.model = Some(dudes_types::ModelName::parse("haiku").unwrap());
+    operator(
+        &floor,
+        Method::AgentHire,
+        serde_json::to_value(params).unwrap(),
+    )
+    .expect("the command line hire");
+
+    let framed = |domain: &[u8], fields: &[(&str, &str)]| {
+        let mut hasher = Sha256::new();
+        hasher.update(domain);
+        for (field, value) in fields {
+            hasher.update(u16::try_from(field.len()).unwrap().to_be_bytes());
+            hasher.update(field.as_bytes());
+            hasher.update(u32::try_from(value.len()).unwrap().to_be_bytes());
+            hasher.update(value.as_bytes());
+        }
+        let digest: [u8; 32] = hasher.finalize().into();
+        digest
+    };
+    let common_fields = [
+        ("workspace_id", "repo_1"),
+        ("name", "Kim"),
+        ("role", "engineer"),
+        ("provider", "claude"),
+        ("character", ""),
+        ("accent", ""),
+        ("check_id", "default"),
+        ("check_revision", revision.as_str()),
+    ];
+    let mut v5 = common_fields.to_vec();
+    v5.push(("own_copy", "true"));
+    let mut v7 = v5.clone();
+    v7.push(("model", "opus"));
+    let hired: Vec<_> = fixture
+        .records()
+        .into_iter()
+        .filter_map(|record| match record {
+            Record::AgentHired {
+                model,
+                browser_onboarding,
+                ..
+            } => Some((
+                model.map(|name| name.to_string()),
+                browser_onboarding.map(|meta| meta.request_digest.bytes()),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hired.len(), 3);
+    assert_eq!(
+        hired[0],
+        (None, Some(framed(b"dudes.onboard.nogoal.v5\0", &v5)))
+    );
+    assert_eq!(
+        hired[1],
+        (
+            Some("opus".to_owned()),
+            Some(framed(b"dudes.onboard.nogoal.v7\0", &v7))
+        )
+    );
+    assert_eq!(hired[2], (Some("haiku".to_owned()), None));
+}
+
+/// A copy hire that names a model and no check is admitted and records the model. Its digest is
+/// neither the same request's without the model nor a plain hire's with the model, and the literal
+/// digests pin the length-prefixed framing of the copy framing and the model framing.
+#[test]
+fn a_copy_hire_with_a_model_and_no_check_is_admitted_under_its_own_digest() {
+    let fixture = Fixture::new();
+    let floor = floor(&fixture);
+    set_trust(&floor, true).expect("the grant");
+    let page = session(&floor);
+    let request = |attempt: char, copy: bool, model: Option<&str>| {
+        let mut body = json!({
+            "attempt_id": format!("{attempt}{}", "A".repeat(42)),
+            "workspace_id": "repo_1", "name": "Kim", "role": "engineer",
+        });
+        if copy {
+            body["own_copy"] = json!(true);
+        }
+        if let Some(model) = model {
+            body["model"] = json!(model);
+        }
+        body
+    };
+    let with_model = page.post("/floor/onboard", &request('A', true, Some("opus")));
+    assert_eq!(with_model.status(), 200, "{}", with_model.json());
+    assert_eq!((hired_agents(&fixture), leases(&fixture)), (1, 1));
+    let hired = |fixture: &Fixture| -> Vec<(Option<String>, String)> {
+        fixture
+            .records()
+            .into_iter()
+            .filter_map(|record| match record {
+                Record::AgentHired {
+                    model,
+                    browser_onboarding: Some(meta),
+                    ..
+                } => Some((
+                    model.map(|name| name.to_string()),
+                    meta.request_digest
+                        .bytes()
+                        .iter()
+                        .fold(String::new(), |mut hex, byte| {
+                            write!(hex, "{byte:02x}").unwrap();
+                            hex
+                        }),
+                )),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        hired(&fixture),
+        [(
+            Some("opus".to_owned()),
+            "88975884fb60e51ecd9abd432a5ed5504a4ad76c1a80d6d95ee5ab1e970d0c2f".to_owned()
+        )]
+    );
+    for other in [request('A', true, None), request('A', false, Some("opus"))] {
+        assert_eq!(
+            page.post("/floor/onboard", &other).status(),
+            409,
+            "the same attempt with another framing conflicts"
+        );
+    }
+    let without = page.post("/floor/onboard", &request('B', true, None));
+    assert_eq!(without.status(), 200, "{}", without.json());
+    assert_eq!(
+        hired(&fixture)[1],
+        (
+            None,
+            "d7f8fcb9484d208b7458e9d383629515bb63445969e18b1e7d32f1e86672381c".to_owned()
+        )
+    );
+}
+
+/// A model in the Claude configuration's extra arguments is appended last and would beat a hire's
+/// model without the journal knowing, so a hire that names one is refused whole, from the browser
+/// and from the command line, while a hire that names none still goes through.
+#[test]
+fn a_claude_hire_that_names_a_model_is_refused_when_the_extra_arguments_set_one() {
+    let fixture = Fixture::new();
+    let claude = ClaudeConfig {
+        extra_args: ["--model=haiku"].map(std::ffi::OsString::from).to_vec(),
+        ..ClaudeConfig::default()
+    };
+    let floor = floor_with(&fixture, claude);
+    let page = session(&floor);
+    let request = |attempt: char, model: Option<&str>| {
+        let mut body = json!({
+            "attempt_id": format!("{attempt}{}", "A".repeat(42)),
+            "workspace_id": "repo_1", "name": "Kim", "role": "engineer",
+        });
+        if let Some(model) = model {
+            body["model"] = json!(model);
+        }
+        body
+    };
+    let refused = page.post("/floor/onboard", &request('A', Some("opus")));
+    assert_eq!(refused.status(), 409);
+    assert_eq!(refused.json()["reason"], "model_fixed");
+    assert!(
+        refused.json()["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("configuration sets this engine's model"))
+    );
+    let mut params: HireParams = common::hire_params(&floor.repo);
+    params.model = Some(dudes_types::ModelName::parse("opus").unwrap());
+    let error = operator(
+        &floor,
+        Method::AgentHire,
+        serde_json::to_value(params).unwrap(),
+    )
+    .expect_err("the command line hire is refused too");
+    assert!(error.message.contains("configuration sets"), "{error:?}");
+    assert_eq!(hired_agents(&fixture), 0, "nothing was journaled");
+    assert_eq!(
+        page.post("/floor/onboard", &request('B', None)).status(),
+        200
+    );
+    assert_eq!(hired_agents(&fixture), 1);
 }
 
 #[test]
