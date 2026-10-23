@@ -11,6 +11,35 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.95.0] - 2026-10-24
+
+### Highlights
+
+- **Review shows the files an agent created.** A ticket's Changes view now lists new files as Added, not only tracked files that differ, and opens each one side by side with an empty old side. Files Git ignores, through `.gitignore` or `.git/info/exclude`, are neither listed nor counted, so the Git tab's untracked count stops counting build output. A folder that holds its own Git repository is listed and never opened. If files were already untracked when the round began, the page says some new files may not be the agent's. (#174)
+- **The changed-file views are on after `dudes quickstart`.** A new config turns on the Git and Changes views with the other Floor actions, so Ready for you lists the changed files without a trip to Settings. A config that already chose its Floor actions is left as it is. (#169)
+- **Hire without a first task.** The Hire dialog asks who, which project and which app. The new agent waits at its desk, and the Floor's Give a task card offers it work. Hiring no longer needs tickets on; with tickets off, the last step says so and offers the switch. (#170)
+- **Choose the model when hiring.** The Hire dialog's App step offers the engine's default, suggestions for Claude Code (`opus`, `sonnet`, `haiku`) and a box for any other name, and `dudes hire --model <name>` does the same. The model is fixed for the agent's life. The daemon checks only the name's shape, so a name the engine does not know fails the agent's first turn with the engine's own error. When Claude's `extra_args` set `--model`, a hire that names a model is refused and the dialog shows the configured one. (#173)
+- **Give a task from the Board, and keep drafts.** A one-line Give a task form on the Board gives an idle agent work. New ticket and Ask for changes keep their text across closes and reloads until a send is confirmed. (#175)
+
+### Changes
+
+- The first ticket you give offers "Tell me when it's ready?" once, and one click turns on desktop notifications. (#175)
+- Settings is grouped by job, with configuration keys and support commands under Details. Ticket, Chat, Hire, Changes and Log text uses plain words instead of command lines, and record positions and identifiers move under Details. (#177)
+- Chat's **Clear all** removes an agent's queued notes after one confirmation. Notes already sent, or whose delivery is unknown, stay. (#177)
+- Trying again after a lost answer to a new ticket gives back the ticket the first try made, instead of making a second card. (#167)
+- The installer adds a Dudes launcher that runs `dudes open`: an app in `~/Applications` on macOS and an applications-menu entry on Linux. A launcher that cannot be written never fails the install, and `dudes uninstall` removes it. (#128)
+- The Changes view withholds the text of a file with more than one hard link, because its bytes may belong to a file outside the project. It also withholds more files whose names or contents look like secrets, such as `id_ed25519`, `.npmrc`, `*.tfvars` and URLs that carry a password. (#174)
+
+### Fixes
+
+- `ctutils` is updated to 0.4.4 for RUSTSEC-2026-0385. (#172)
+
+### Breaking
+
+- **Reload open Floor tabs after the upgrade.** The page and the daemon speak browser wire version 6, so a tab left open from 0.94.0 asks for a reload. (#173)
+- **`dudes hire --model` needs a 0.95.0 daemon.** An older daemon refuses the request. Upgrade the daemon and the command line together, as the installer does. (#173)
+- **Going back to 0.94.0 drops a hire's model.** Every agent is kept, but an agent hired with a model then runs on the configured or engine default model. (#173)
+
 ## [0.94.0] - 2026-10-23
 
 ### Highlights
@@ -344,7 +373,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.94.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.95.0...HEAD
+[0.95.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.94.0...v0.95.0
 [0.94.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.93.0...v0.94.0
 [0.93.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.92.0...v0.93.0
 [0.92.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.91.0...v0.92.0
