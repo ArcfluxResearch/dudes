@@ -52,7 +52,7 @@ beforeEach(() => {
 function pageForTickets() {
   const page = fakePage();
   page.document.defaultView.localStorage = { getItem: (key) => storedDrafts.get(key) ?? null,
-    setItem: (key, value) => storedDrafts.set(key, value) };
+    setItem: (key, value) => storedDrafts.set(key, value), removeItem: (key) => storedDrafts.delete(key) };
   const prototype = Object.getPrototypeOf(page.host);
   const queued = [];
   const modals = [];
@@ -783,6 +783,7 @@ test('New ticket keeps its fields after closing and a fresh mount, and clears on
     await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
     assert.equal(app.page.host.querySelector('[name="title"]').value, '');
     assert.equal(seen.filter(([url]) => url === '/floor/ticket').length, 1);
+    assert.equal(storedDrafts.has('dudes.floor.new-ticket-draft'), false);
   } finally { await app.close(); }
 });
 
@@ -809,6 +810,7 @@ test('Ask for changes keeps per-ticket text after close and reload, retains a re
     reply = (url, body) => url.endsWith('/assign') ? { status: 200, text: async () => JSON.stringify({ state: 'assigned', card: cardId(1), seq: 4, lsn: '4098', start: { state: 'started' } }) } : ordinary(url, body);
     await act(async () => propsOf(app.page.host.querySelector('.ticket-mode').querySelector('form')).onSubmit({ preventDefault() {} }));
     assert.equal(app.page.host.querySelector('.ticket-mode').querySelector('textarea'), null);
+    assert.equal(storedDrafts.has(`dudes.floor.ticket-changes-draft.${cardId(1)}`), false);
     await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
     await openChanges();
     assert.equal(propsOf(app.page.host.querySelector('.ticket-mode').querySelector('textarea')).value, '');
