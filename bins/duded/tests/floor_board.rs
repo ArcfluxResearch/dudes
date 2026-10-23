@@ -1190,7 +1190,7 @@ fn stop_and_remove_take_a_ticket_off_the_agent_and_the_board() {
 /// The page covers each daemon code, while its guidance names actions available in the browser.
 #[test]
 fn the_page_words_cover_the_daemon_codes() {
-    use dudes_proto::{TicketReason, TicketRefusal, TicketWait};
+    use dudes_proto::{TicketReason, TicketRefusal};
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../floor/src/renderer/ticket/words.ts");
     let source = std::fs::read_to_string(&path).expect("the page's table of ticket words");
@@ -1253,6 +1253,15 @@ fn the_page_words_cover_the_daemon_codes() {
     // The page has already fetched the latest when it says this, so its sentence differs from
     // the one a command line prints.
     assert!(source.contains("stale_card: \"This ticket changed while you were looking. "));
+}
+
+/// The page and command line share ticket state names and queue vocabulary.
+#[test]
+fn the_page_words_keep_shared_state_and_wait_vocabulary() {
+    use dudes_proto::{TicketRefusal, TicketWait};
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../floor/src/renderer/ticket/words.ts");
+    let source = std::fs::read_to_string(&path).expect("the page's table of ticket words");
     assert!(source.contains("`You can't do that to a ticket that is ${"));
     assert_eq!(
         TicketRefusal::WrongState.sentence(dudes_types::CardStatus::Review),
