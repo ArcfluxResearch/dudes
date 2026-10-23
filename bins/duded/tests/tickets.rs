@@ -277,6 +277,7 @@ fn ticket_created(card: CardId, title: &str) -> Record {
         project: "service".into(),
         done_when: ticket_check(),
         by: operator(),
+        request: None,
     }
 }
 

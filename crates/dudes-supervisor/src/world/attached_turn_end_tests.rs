@@ -80,6 +80,7 @@ fn prefix() -> Vec<(Lsn, Entry)> {
                 predicate: goal(1).predicate,
             },
             by: Actor::System,
+            request: None,
         },
         Record::TicketAssigned {
             card: card(),
@@ -242,6 +243,7 @@ fn other_ticket(world: &mut World) -> InstructionTicketAssociation {
                 predicate: goal(2).predicate,
             },
             by: Actor::System,
+            request: None,
         },
     );
     apply(

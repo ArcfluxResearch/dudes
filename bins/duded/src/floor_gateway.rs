@@ -2670,8 +2670,9 @@ fn memory_response<'a>(
 }
 
 /// The session and body checks, then the session's limits, then one request on the writer. A
-/// retry after success finds the card on a newer sequence and is refused `stale_card`, so no
-/// request carries an identity.
+/// retry after success finds the card on a newer sequence and is refused `stale_card`. A create
+/// carries a request id instead, so its retry is answered with the ticket the first try made,
+/// even from a session whose creates are spent, and only an appended ticket counts.
 fn ticket_response<'a>(
     route: TicketRoute,
     session: SessionIdentity,
@@ -2679,14 +2680,13 @@ fn ticket_response<'a>(
     catalog: Catalog<'_>,
     body: &[u8],
 ) -> Response<'a> {
-    // A lost answer to a create is not retried; Remove clears a duplicate.
     let Some(limits) = catalog.board() else {
         return error_response(403, "Forbidden");
     };
-    let Ok(request) = TicketRequest::parse(route, body) else {
+    let Ok(mut request) = TicketRequest::parse(route, body) else {
         return error_response(400, "Bad Request");
     };
-    let turn = match limits.begin(session.limit_key(), request.kind()) {
+    let turn = match limits.begin(session.limit_key(), request.kind(), request.may_repeat()) {
         Ok(turn) => turn,
         Err(reason) => {
             return action_json(
@@ -2696,11 +2696,15 @@ fn ticket_response<'a>(
             );
         }
     };
+    if turn.repeat_only() {
+        request = request.repeat_only();
+    }
     match handle.ticket(session, request) {
         TicketReply::Done(value) => {
             turn.succeeded();
             action_json(200, "OK", &value)
         }
+        TicketReply::Repeated(value) => action_json(200, "OK", &value),
         TicketReply::Refused(reason) => action_json(
             409,
             "Conflict",

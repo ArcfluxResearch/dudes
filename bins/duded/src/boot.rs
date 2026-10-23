@@ -516,6 +516,8 @@ where
     }
     let chat_index = crate::floor_chat::ChatIndex::replay(&Reader::new(&journal_dir))
         .context("replaying browser notes")?;
+    let ticket_creates = crate::floor_ticket::TicketCreateIndex::replay(&Reader::new(&journal_dir))
+        .context("replaying browser ticket requests")?;
     let browser_launches = crate::chat_launch::LaunchPreparations::new(&handle, preparation_pause)
         .context("starting bounded browser launch preparation")?;
     let control_index = crate::floor_control::ControlIndex::replay(&Reader::new(&journal_dir))
@@ -630,6 +632,7 @@ where
             onboarding_index,
             answer_index,
             chat_index,
+            ticket_creates,
             agents_root: settings.state_dir.join("agents"),
             running_mcp: options.mcp_servers().clone(),
             running_providers: options.into_providers(),

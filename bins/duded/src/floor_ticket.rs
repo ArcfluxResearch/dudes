@@ -13,7 +13,7 @@ use dudes_proto::instruction::{
     InstructionObservationOwner, InstructionPendingReview, InstructionReviewInterval,
     InstructionReviewWatermark,
 };
-use dudes_proto::record::Hex32;
+use dudes_proto::record::{Hex32, TicketRequestAttribution};
 use dudes_proto::rpc::ticket::{
     TicketAcceptParams, TicketAssignParams, TicketCreateParams, TicketEditParams, TicketReadParams,
     TicketReadResult, TicketRemoveParams, TicketStopParams,
@@ -23,6 +23,7 @@ use dudes_types::{AgentId, CardId, Lsn, Seq};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 
 /// The most bytes of a ticket request, and of the answer to a read.
 pub const MAX_TICKET_BODY_BYTES: usize = 24_576;
@@ -82,8 +83,10 @@ impl TicketRoute {
 /// One admitted request. Each is exactly the members of the matching `ticket.*` method.
 #[derive(Clone, Debug)]
 pub enum TicketRequest {
-    /// Make a ticket.
-    Create(TicketCreateParams),
+    /// Make a ticket. The attribution is present when the page sent a retry identity. The flag
+    /// limits the request to a retry: it answers a ticket this identity already made and
+    /// appends nothing, for a session that has spent its creates.
+    Create(TicketCreateParams, Option<TicketRequestAttribution>, bool),
     /// Change a ticket in To do.
     Edit(TicketEditParams),
     /// Give a ticket to an agent.
@@ -114,12 +117,24 @@ impl TicketRequest {
         }
         Ok(match route {
             TicketRoute::Create => {
-                let request: TicketCreateParams = decode(bytes)?;
+                let raw: FloorCreate = decode(bytes)?;
+                let request = TicketCreateParams {
+                    title: raw.title,
+                    description: raw.description,
+                    project: raw.project,
+                    done_when: raw.done_when,
+                    done_when_revision: raw.done_when_revision,
+                };
                 named_check(
                     request.done_when.is_some(),
                     request.done_when_revision.is_some(),
                 )?;
-                Self::Create(request)
+                let attribution = raw
+                    .request_id
+                    .as_deref()
+                    .map(|wire| create_attribution(wire, &request))
+                    .transpose()?;
+                Self::Create(request, attribution, false)
             }
             TicketRoute::Edit => {
                 let request: TicketEditParams = decode(bytes)?;
@@ -153,13 +168,106 @@ impl TicketRequest {
         })
     }
 
+    /// Whether the request carries a retry identity.
+    pub(crate) const fn may_repeat(&self) -> bool {
+        matches!(self, Self::Create(_, Some(_), _))
+    }
+
+    /// Limit the request to answering a ticket its identity already made.
+    pub(crate) fn repeat_only(self) -> Self {
+        match self {
+            Self::Create(request, attribution, _) => Self::Create(request, attribution, true),
+            other => other,
+        }
+    }
+
     /// Whether the request counts against the session's creations or its assignments.
     pub(crate) const fn kind(&self) -> Option<Counted> {
         match self {
-            Self::Create(_) => Some(Counted::Create),
+            Self::Create(..) => Some(Counted::Create),
             Self::Assign(_) => Some(Counted::Assign),
             _ => None,
         }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FloorCreate {
+    #[serde(default)]
+    request_id: Option<String>,
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    done_when: Option<String>,
+    #[serde(default)]
+    done_when_revision: Option<Hex32>,
+}
+
+/// The digests that let a repeat of one creation be recognised: the request id as the page minted
+/// it, and the fields it carried, so the same id with other fields is told apart from a retry.
+fn create_attribution(
+    wire: &str,
+    request: &TicketCreateParams,
+) -> Result<TicketRequestAttribution> {
+    let id = crate::floor_actions::decode_attempt(wire)?;
+    let revision = request.done_when_revision.map(Hex32::to_hex);
+    let fields = [
+        ("title", Some(request.title.as_str())),
+        ("description", request.description.as_deref()),
+        ("project", request.project.as_deref()),
+        ("done_when", request.done_when.as_deref()),
+        ("done_when_revision", revision.as_deref()),
+    ];
+    let present: Vec<(&str, &str)> = fields
+        .into_iter()
+        .filter_map(|(name, value)| value.map(|value| (name, value)))
+        .collect();
+    Ok(TicketRequestAttribution {
+        request_id_digest: Hex32::new(Sha256::digest(id.bytes()).into()),
+        request_digest: crate::floor_chat::digest_fields("dudes.ticket.create.v1", &present),
+    })
+}
+
+/// Which ticket each page-sent creation request made, rebuilt from the journal at start so a
+/// repeat after a restart is still recognised.
+#[derive(Debug, Default)]
+pub(crate) struct TicketCreateIndex {
+    made: BTreeMap<Hex32, (Hex32, CardId)>,
+}
+
+impl TicketCreateIndex {
+    pub(crate) fn replay(reader: &dudes_journal::Reader) -> Result<Self> {
+        let mut index = Self::default();
+        for item in reader.iter_from(Lsn::ZERO)? {
+            let (_, entry) = item?;
+            index.apply(&entry.record)?;
+        }
+        Ok(index)
+    }
+
+    pub(crate) fn apply(&mut self, record: &dudes_proto::Record) -> Result<()> {
+        if let dudes_proto::Record::TicketCreated {
+            card,
+            request: Some(request),
+            ..
+        } = record
+            && self
+                .made
+                .insert(request.request_id_digest, (request.request_digest, *card))
+                .is_some()
+        {
+            bail!("duplicate Floor ticket request in journal");
+        }
+        Ok(())
+    }
+
+    /// The ticket this request id made and the digest of the fields it carried.
+    pub(crate) fn get(&self, request_id_digest: Hex32) -> Option<(Hex32, CardId)> {
+        self.made.get(&request_id_digest).copied()
     }
 }
 
@@ -257,6 +365,8 @@ pub enum TicketReply {
     /// `200`: the record is durable and projected. The body names the card and the position the
     /// answer is true through.
     Done(Value),
+    /// `200`: a create already made this ticket, so nothing was appended and nothing counts.
+    Repeated(Value),
     /// `409`: refused before any append, for one of the fixed codes.
     Refused(&'static str),
     /// `400`: a malformed request.
@@ -347,10 +457,14 @@ impl TicketLimits {
 
     /// Admit one request of `session`, or the reason it is refused: `busy` while another of its
     /// requests is in flight, `limit_reached` when a count it would move is spent. A refused request changes nothing.
+    /// A create that carries a retry identity (`may_repeat`) is still admitted past a spent count, as
+    /// a turn that may only answer a ticket already made, so the retry of a create whose answer was
+    /// lost is not refused for a ticket that exists.
     pub(crate) fn begin(
         &self,
         session: [u8; 32],
         counted: Option<Counted>,
+        may_repeat: bool,
     ) -> Result<Turn<'_>, &'static str> {
         let now = Instant::now();
         let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
@@ -365,7 +479,8 @@ impl TicketLimits {
         if counts.busy {
             return Err("busy");
         }
-        if (counted == Some(Counted::Create) && counts.creates >= MOST_CREATES)
+        let spent_creates = counted == Some(Counted::Create) && counts.creates >= MOST_CREATES;
+        if (spent_creates && !may_repeat)
             || (counted == Some(Counted::Assign) && counts.assigns >= MOST_ASSIGNS)
         {
             return Err("limit_reached");
@@ -375,6 +490,7 @@ impl TicketLimits {
             limits: self,
             session,
             counted,
+            repeat_only: spent_creates,
         })
     }
 }
@@ -385,9 +501,15 @@ pub(crate) struct Turn<'a> {
     limits: &'a TicketLimits,
     session: [u8; 32],
     counted: Option<Counted>,
+    repeat_only: bool,
 }
 
 impl Turn<'_> {
+    /// The session's creates are spent: the request may only answer a ticket already made.
+    pub(crate) const fn repeat_only(&self) -> bool {
+        self.repeat_only
+    }
+
     /// The record is durable: the request counts.
     pub(crate) fn succeeded(&self) {
         let mut sessions = self
@@ -827,21 +949,32 @@ mod tests {
     fn a_session_has_one_request_in_flight_and_spends_its_counts_on_success() {
         let limits = TicketLimits::new();
         let key = [7_u8; 32];
-        let first = limits.begin(key, Some(Counted::Create)).expect("first");
-        assert_eq!(limits.begin(key, None).err(), Some("busy"), "one at a time");
-        assert!(limits.begin([8_u8; 32], None).is_ok(), "per session");
+        let first = limits
+            .begin(key, Some(Counted::Create), false)
+            .expect("first");
+        assert_eq!(
+            limits.begin(key, None, false).err(),
+            Some("busy"),
+            "one at a time"
+        );
+        assert!(limits.begin([8_u8; 32], None, false).is_ok(), "per session");
         first.succeeded();
         drop(first);
         for _ in 1..MOST_CREATES {
-            let turn = limits.begin(key, Some(Counted::Create)).expect("within");
+            let turn = limits
+                .begin(key, Some(Counted::Create), false)
+                .expect("within");
             turn.succeeded();
         }
         assert_eq!(
-            limits.begin(key, Some(Counted::Create)).err(),
+            limits.begin(key, Some(Counted::Create), false).err(),
             Some("limit_reached")
         );
-        assert!(limits.begin(key, Some(Counted::Assign)).is_ok());
-        assert!(limits.begin(key, None).is_ok(), "reads are not counted");
+        assert!(limits.begin(key, Some(Counted::Assign), false).is_ok());
+        assert!(
+            limits.begin(key, None, false).is_ok(),
+            "reads are not counted"
+        );
     }
 
     #[test]
@@ -849,7 +982,11 @@ mod tests {
         let limits = TicketLimits::new();
         let key = [1_u8; 32];
         for _ in 0..(MOST_CREATES * 2) {
-            drop(limits.begin(key, Some(Counted::Create)).expect("not spent"));
+            drop(
+                limits
+                    .begin(key, Some(Counted::Create), false)
+                    .expect("not spent"),
+            );
         }
     }
 

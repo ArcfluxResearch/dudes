@@ -207,6 +207,7 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
             project,
             done_when,
             by,
+            ..
         } => {
             let view = CardView {
                 id: *card,

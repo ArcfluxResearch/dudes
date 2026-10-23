@@ -28,8 +28,21 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let by = Actor::BrowserSession {
             session_digest: session.digest(),
         };
+        let mut repeated = false;
         let (ask, state, card) = match request {
-            TicketRequest::Create(request) => (TicketAsk::Create { request, by }, "created", None),
+            TicketRequest::Create(request, retry, repeat_only) => {
+                let made = retry.as_ref().is_some_and(|retry| {
+                    self.ctx
+                        .ticket_creates
+                        .get(retry.request_id_digest)
+                        .is_some()
+                });
+                if repeat_only && !made {
+                    return TicketReply::Refused("limit_reached");
+                }
+                repeated = made;
+                (TicketAsk::Create { request, retry, by }, "created", None)
+            }
             TicketRequest::Edit(request) => {
                 let card = request.card;
                 (TicketAsk::Edit { request, by }, "edited", Some(card))
@@ -56,7 +69,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let answer = self.ask(Ask::Ticket(ask));
         self.ctx.browser_session = None;
         match answer {
-            Ok(answered) => self.ticket_done(state, card, answered),
+            Ok(answered) => match self.ticket_done(state, card, answered) {
+                TicketReply::Done(body) if repeated => TicketReply::Repeated(body),
+                reply => reply,
+            },
             Err(error) => Self::ticket_error(session, &error),
         }
     }

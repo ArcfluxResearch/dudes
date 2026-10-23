@@ -2,11 +2,13 @@
 //
 // Ticket actions: one request at a time, and what each answer proves.
 //
-// A request carries the ticket's sequence as the page last saw it, and nothing identifies the
-// request itself. A retry after success finds the ticket on a newer sequence and is refused as
-// `stale_card`, and the page then shows the current state, which already holds the result. The
-// page never retries by itself. An answer that does not arrive leaves the form as the person typed
-// it and says the save could not be confirmed.
+// A request on a ticket carries the ticket's sequence as the page last saw it. A retry after
+// success finds the ticket on a newer sequence and is refused as `stale_card`, and the page then
+// shows the current state, which already holds the result. A create has no ticket yet, so it
+// carries a request id instead: a create tried again with the same fields reuses the id and is
+// answered with the ticket the first try made. The page never retries by itself. An answer that
+// does not arrive leaves the form as the person typed it and says the save could not be
+// confirmed.
 //
 // The request and its feedback live in module memory and nowhere else: not in the URL, not in
 // browser storage, not in a log.
@@ -16,6 +18,7 @@ import { TICKET_REASONS } from '../board.ts';
 import type { TicketReason } from '../board.ts';
 import type { ControlDeps } from '../control/control.ts';
 import { browserControlDeps } from '../control/control.ts';
+import { mintAttemptId } from '../onboarding/hire.ts';
 import { agentName, holdingTicket, requiresInstructionReview } from './model.ts';
 import { getFloorState } from '../floor/store.ts';
 import { COULD_NOT_CONFIRM, REFUSAL_CODES, WAITS, placeInLine, reasonSentence, refusalSentence, waitSentence } from './words.ts';
@@ -193,6 +196,7 @@ export function subscribeToTicket(listener: () => void): () => void {
 /** What a reload does: forget everything. For tests; the page gets a fresh module per load. */
 export function resetTicket(): void {
   latestRequest += 1;
+  unconfirmed = null;
   state = INITIAL;
   listeners.clear();
 }
@@ -261,6 +265,20 @@ export function createPayload(form: NewTicket): Record<string, string> {
   return payload;
 }
 
+/**
+ * The id of the create that was tried and not confirmed. A create with the same fields reuses it,
+ * so a lost answer never becomes a second ticket; any other create, and any create after a
+ * confirmed one, gets a new id.
+ */
+let unconfirmed: { readonly fields: string; readonly id: string } | null = null;
+
+function createId(fields: string, deps: ControlDeps): string {
+  if (unconfirmed?.fields === fields) return unconfirmed.id;
+  const id = mintAttemptId(deps.random);
+  unconfirmed = Object.freeze({ fields, id });
+  return id;
+}
+
 export interface Created {
   /** The new ticket, once it is saved. */
   readonly card: string | null;
@@ -276,7 +294,9 @@ export async function createTicket(form: NewTicket, deps: ControlDeps = browserC
   if (state.sending || form.title.trim() === '') return { card: null, saved: false };
   const request = ++latestRequest;
   commit({ sending: true, notice: null });
-  const made = await send('create', createPayload(form), deps);
+  const fields = createPayload(form);
+  const made = await send('create', { request_id: createId(JSON.stringify(fields), deps), ...fields }, deps);
+  if (made.kind !== 'unavailable' && made.kind !== 'unknown') unconfirmed = null;
   if (made.kind !== 'done' || made.card === null) {
     finishRequest(request, { card: null, tone: 'problem', text: made.kind === 'done' ? COULD_NOT_CONFIRM : problemText(made, 'todo') });
     return { card: null, saved: false };

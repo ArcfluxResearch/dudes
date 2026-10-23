@@ -119,6 +119,7 @@ fn establish_ticket(daemon: &mut TestDaemon, agent: AgentId) -> InstructionTicke
             project: "authority".into(),
             done_when: check,
             by: Actor::System,
+            request: None,
         },
     );
     let assignment_lsn = append(

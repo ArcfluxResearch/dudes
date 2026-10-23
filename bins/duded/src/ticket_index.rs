@@ -227,6 +227,7 @@ mod tests {
             project: "service".into(),
             done_when: check(),
             by: Actor::Peer { pid: 1, uid: None },
+            request: None,
         }
     }
 

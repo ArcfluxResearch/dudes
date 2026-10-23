@@ -1411,6 +1411,7 @@ fn given(project: &str, repo: &Path, budget: Option<AgentBudget>, card: CardId) 
             project: project.into(),
             done_when: default_check(),
             by: operator(),
+            request: None,
         },
         Record::TicketAssigned {
             card,
@@ -2154,6 +2155,7 @@ fn a_failed_start_does_not_stall_the_other_projects() {
         project: "docs".into(),
         done_when: default_check(),
         by: operator(),
+        request: None,
     });
     records.push(Record::TicketAssigned {
         card: docs_card,

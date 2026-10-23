@@ -2,6 +2,7 @@
 //! reads and refusals append nothing.
 
 use super::{Answered, Clock, Daemon, PredicateRunner, ProcessHost, Rng, TicketAsk, error};
+use dudes_proto::record::TicketRequestAttribution;
 use dudes_proto::rpc::ticket::{
     TicketAcceptOutcome, TicketAcceptParams, TicketAcceptResult, TicketAssignOutcome,
     TicketAssignParams, TicketAssignResult, TicketCheckoutLease, TicketCheckoutParams,
@@ -113,7 +114,7 @@ fn check_of(
 impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<H, P, C, R> {
     pub(super) fn ticket(&mut self, ask: TicketAsk) -> Result<Answered, RpcError> {
         match ask {
-            TicketAsk::Create { request, by } => self.ticket_create(&request, by),
+            TicketAsk::Create { request, retry, by } => self.ticket_create(&request, retry, by),
             TicketAsk::Edit { request, by } => self.ticket_edit(&request, by),
             TicketAsk::Assign { request, by } => self.ticket_assign(&request, by),
             TicketAsk::Remove { request, by } => self.ticket_remove(&request, by),
@@ -143,9 +144,19 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     fn ticket_create(
         &mut self,
         request: &TicketCreateParams,
+        retry: Option<TicketRequestAttribution>,
         by: Actor,
     ) -> Result<Answered, RpcError> {
         operator(by)?;
+        if let Some(retry) = &retry
+            && let Some((digest, card)) = self.ctx.ticket_creates.get(retry.request_id_digest)
+        {
+            return if digest == retry.request_digest {
+                Ok(Answered::TicketCreated(TicketCreateResult { card }))
+            } else {
+                Err(invalid("that request id was used for a different ticket"))
+            };
+        }
         let title = title_of(&request.title)?;
         let description = note_of(request.description.as_deref().unwrap_or_default())?;
         let profile = match request.project.as_deref() {
@@ -194,6 +205,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             project,
             done_when,
             by,
+            request: retry,
         })?;
         Ok(Answered::TicketCreated(TicketCreateResult { card }))
     }

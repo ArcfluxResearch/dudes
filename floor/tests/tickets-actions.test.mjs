@@ -124,6 +124,22 @@ test('a 200 for another card, with no position or with a made-up start, proves n
   assert.equal(decodeResponse('create', 200, JSON.stringify({ state: 'created', card: NEW, lsn: '-1' })).kind, 'unknown');
 });
 
+test('a create tried again with the same fields reuses its request id, and any other create gets a new one', async () => {
+  let lost = true;
+  const { deps, seen } = daemon(() => lost ? { status: 503, text: '' } : done('created', NEW, { seq: 0 }));
+  await ticket.createTicket(FORM, deps);
+  await ticket.createTicket(FORM, deps);
+  assert.equal(seen[1].body.request_id, seen[0].body.request_id, 'a retry of a lost create made a new id');
+  await ticket.createTicket({ ...FORM, title: 'Fix it differently' }, deps);
+  assert.notEqual(seen[2].body.request_id, seen[0].body.request_id, 'changed fields kept the old id');
+  lost = false;
+  await ticket.createTicket(FORM, deps);
+  const confirmed = seen[3].body.request_id;
+  await ticket.createTicket(FORM, deps);
+  assert.notEqual(seen[4].body.request_id, confirmed, 'a create after a confirmed one reused its id');
+  assert.match(seen[4].body.request_id, /^[A-Za-z0-9_-]{43}$/);
+});
+
 test('creating then giving is two requests, and a refused give keeps the new ticket', async () => {
   subscribe(store, { agents: [agent()] });
   const { deps, seen } = daemon((url) => url === '/floor/ticket'
@@ -132,7 +148,7 @@ test('creating then giving is two requests, and a refused give keeps the new tic
   const made = await ticket.createTicket({ ...FORM, agent: ADA }, deps);
   assert.deepEqual(made, { card: NEW, saved: true });
   assert.deepEqual(seen.map((s) => s.url), ['/floor/ticket', '/floor/ticket/assign']);
-  assert.deepEqual(seen[0].body, { title: 'Fix it', done_when: 'default', done_when_revision: REVISION });
+  assert.deepEqual(seen[0].body, { request_id: 'AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', title: 'Fix it', done_when: 'default', done_when_revision: REVISION });
   assert.deepEqual(seen[1].body, { card: NEW, agent: ADA, expected_seq: 0 });
   assert.deepEqual(ticket.getTicketState().notice, {
     card: NEW, tone: 'problem',

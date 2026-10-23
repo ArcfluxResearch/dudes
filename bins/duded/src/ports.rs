@@ -289,6 +289,8 @@ pub enum TicketAsk {
     Create {
         /// The new ticket's fields.
         request: dudes_proto::rpc::ticket::TicketCreateParams,
+        /// The page's retry identity, when it sent one.
+        retry: Option<dudes_proto::record::TicketRequestAttribution>,
         /// Caller identity resolved by the router.
         by: Actor,
     },
@@ -336,6 +338,21 @@ pub enum TicketAsk {
         /// Caller identity resolved by the router.
         by: Actor,
     },
+}
+
+impl TicketAsk {
+    /// A creation that carries no retry identity, as the socket and the command line make it.
+    #[must_use]
+    pub const fn command_create(
+        request: dudes_proto::rpc::ticket::TicketCreateParams,
+        by: Actor,
+    ) -> Self {
+        Self::Create {
+            request,
+            retry: None,
+            by,
+        }
+    }
 }
 
 /// A command that changes state, waiting for the loop.

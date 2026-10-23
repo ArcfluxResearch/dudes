@@ -132,6 +132,7 @@ fn lease() -> Lease {
                 },
             },
             by: Actor::Peer { pid: 1, uid: None },
+            request: None,
         },
         Record::TicketAssigned {
             card,
