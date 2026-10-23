@@ -238,7 +238,8 @@ const FLOOR_ACTIONS: [Key; 11] = [
     Key::Diff,
 ];
 
-/// The changed-file views, which stay off until the operator turns them on in the Floor.
+/// The changed-file views. A new file gets them on; a file that chose its own Floor actions may
+/// have them off, and the summary says so.
 const CHANGED_FILE_VIEWS: [Key; 2] = [Key::Git, Key::Diff];
 
 /// Turn on the engines this machine has and, on a file that turns no Floor action on yet, the
@@ -266,10 +267,7 @@ pub fn defaults(
         )?;
         return Ok(());
     }
-    for key in FLOOR_ACTIONS
-        .into_iter()
-        .filter(|key| !CHANGED_FILE_VIEWS.contains(key))
-    {
+    for key in FLOOR_ACTIONS {
         set(draft, plan, key, true)?;
     }
     Ok(())
@@ -378,7 +376,7 @@ pub fn report_engines(out: &mut dyn Write, found: &[ProviderProbe]) -> io::Resul
 pub struct Summary {
     /// One line for each setting and each enrolled project.
     changes: String,
-    /// The changed-file views that stay off, with where to turn them on.
+    /// The changed-file views that are off, with where to turn them on.
     views: Option<String>,
 }
 
@@ -446,7 +444,7 @@ impl Summary {
 mod tests {
     use super::*;
 
-    const NINE: [Key; 9] = [
+    const ELEVEN: [Key; 11] = [
         Key::Answer,
         Key::Hire,
         Key::Control,
@@ -456,6 +454,8 @@ mod tests {
         Key::Recovery,
         Key::Board,
         Key::Project,
+        Key::Git,
+        Key::Diff,
     ];
 
     fn host(found: &[Provider]) -> Host {
@@ -477,19 +477,19 @@ mod tests {
         (draft, plan, String::from_utf8(out).expect("text"))
     }
 
-    /// A new file gets the nine Floor actions that a first run needs, in an order the file's own
-    /// rules accept, and neither changed-file view nor the terminal.
+    /// A new file gets the eleven Floor actions that a first run needs, the two changed-file views
+    /// among them, in an order the file's own rules accept, and not the terminal.
     #[test]
-    fn a_new_file_turns_on_nine_floor_actions() {
+    fn a_new_file_turns_on_eleven_floor_actions() {
         let (draft, plan, _) = run_defaults(None, &host(&[Provider::Claude]));
-        let wanted: Vec<Change> = NINE
+        let wanted: Vec<Change> = ELEVEN
             .iter()
             .map(|key| Change::set(*key, "on").expect("a switch"))
             .collect();
         assert_eq!(plan.changes, wanted);
-        for key in [Key::Git, Key::Diff, Key::Terminal] {
-            assert!(!draft.settings().satisfies(key), "{key} is on");
-        }
+        assert!(draft.settings().satisfies(Key::Git));
+        assert!(draft.settings().satisfies(Key::Diff));
+        assert!(!draft.settings().satisfies(Key::Terminal));
         assert!(draft.settings().problems().is_empty());
     }
 
@@ -529,9 +529,10 @@ mod tests {
         );
     }
 
-    /// The summary names each change and says which changed-file views stay off.
+    /// The summary names each change, and names the changed-file views only for a file that
+    /// chose its own Floor actions and left them off.
     #[test]
-    fn the_summary_names_the_views_that_stay_off() {
+    fn the_summary_names_off_views_only_for_a_kept_file() {
         let (draft, plan, _) = run_defaults(None, &host(&[Provider::Claude]));
         let mut out = Vec::new();
         Summary::of(&plan, draft.settings(), None)
@@ -542,6 +543,17 @@ mod tests {
             text.contains("Wrote /c/config.toml:\n  set floor.answer on\n"),
             "{text}"
         );
+        assert!(!text.contains("changed-file views"), "{text}");
+
+        let (draft, plan, _) = run_defaults(
+            Some("[floor.answer]\nenabled = true\n"),
+            &host(&[Provider::Claude]),
+        );
+        let mut out = Vec::new();
+        Summary::of(&plan, draft.settings(), None)
+            .print(&mut out, Path::new("/c/config.toml"), false)
+            .expect("a Vec takes every write");
+        let text = String::from_utf8(out).expect("text");
         assert!(
             text.contains("The changed-file views (floor.git, floor.diff) are off."),
             "{text}"
