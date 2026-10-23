@@ -17,10 +17,12 @@ import { agentChoiceSentence, agentRow, boardColumns, cardWords, DONE_SHOWN, noP
 import type { TicketColumn } from './model.ts';
 import type { Notice } from './ticket.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
-import { titleOf } from '../setup/nextStep.ts';
+import { freeTaskAgents, titleOf } from '../setup/nextStep.ts';
 import type { FirstTaskAgent } from '../setup/nextStep.ts';
 import { agentWithoutProjectSentence, engineStopped, otherStateName, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
+import { clearNewTicketDraft, EMPTY_TICKET_DRAFT, readNewTicketDraft, writeNewTicketDraft } from '../view.ts';
+import type { NewTicketDraft } from '../view.ts';
 import { NotConnected } from '../StreamNotice.tsx';
 
 const NOTICE_SECONDS = 8;
@@ -52,9 +54,10 @@ export function ticketActionsOpen(floor: FloorState): boolean {
 
 /** The projects a ticket can be made in, as the snapshot's check list names them, each with its label. */
 export function projectsOf(floor: FloorState): readonly { readonly id: string; readonly label: string }[] {
-  return (floor.checks?.workspaces ?? []).map((entry) => ({
+  return (floor.checks?.workspaces ?? []).map((entry, index) => ({
     id: entry.workspaceId,
-    label: floor.settings?.workspaces.find((row) => row.workspace_id === entry.workspaceId)?.label ?? entry.workspaceId,
+    label: floor.settings?.workspaces.find((row) => row.workspace_id === entry.workspaceId)?.label ?? floor.agents.map((row) => decodeWorkspace(row.workspace)).find((space) => space?.id === entry.workspaceId)?.label
+      ?? `Project ${index + 1}`,
   }));
 }
 
@@ -64,7 +67,7 @@ export function agentsFor(floor: FloorState, project: string): {
   readonly unrecorded: readonly { readonly id: string; readonly name: string }[];
 } {
   const named = (row: FloorState['agents'][number]) => ({
-    id: row.id, name: typeof row.name === 'string' && row.name !== '' ? row.name : row.id,
+    id: row.id, name: typeof row.name === 'string' && row.name !== '' ? row.name : 'Unnamed agent',
   });
   return {
     usable: floor.agents.filter((row) => decodeWorkspace(row.workspace)?.id === project).map(named),
@@ -151,14 +154,20 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
   }, []);
   const ticket = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState);
   const projects = projectsOf(floor);
-  const [title, setTitle] = useState('');
-  const [note, setNote] = useState('');
-  const [chosenProject, setChosenProject] = useState<string | null>(null);
-  const [chosenCheck, setChosenCheck] = useState<string | null>(null);
-  const [agent, setAgent] = useState('');
-  const project = projects.find((entry) => entry.id === chosenProject)?.id ?? projects[0]?.id ?? null;
+  const [draft, setDraft] = useState(readNewTicketDraft);
+  const draftNow = useRef(draft);
+  draftNow.current = draft;
+  const { title, note, project: chosenProject, check: chosenCheck, agent } = draft;
+  function editDraft(patch: Partial<NewTicketDraft>): void {
+    const next = { ...draftNow.current, project: project ?? draftNow.current.project, check: check?.id ?? draftNow.current.check, ...patch };
+    draftNow.current = next;
+    writeNewTicketDraft(next);
+    setDraft(next);
+  }
+  const project = chosenProject === null ? projects[0]?.id ?? null
+    : projects.find((entry) => entry.id === chosenProject)?.id ?? null;
   const checks = project === null ? [] : checksFor(floor.checks, project) ?? [];
-  const check = checks.find((entry) => entry.id === chosenCheck) ?? checks[0] ?? null;
+  const check = chosenCheck === null ? checks[0] ?? null : checks.find((entry) => entry.id === chosenCheck) ?? null;
   const { usable, unrecorded } = agentsFor(floor, project ?? '');
   const open = ticketActionsOpen(floor);
   const ready = open && !ticket.sending && title.trim() !== '' && project !== null && check !== null;
@@ -166,14 +175,16 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
     if (!ready || project === null || check === null) return;
+    const sent = draft;
     const made = await createTicket({
       title, note, project: projects.length > 1 ? project : null,
       check: { id: check.id, revision: check.revision },
       agent: agent === '' || !usable.some((row) => row.id === agent) ? null : agent,
     });
-    if (!made.saved || !mounted.current) return;
-    setTitle('');
-    setNote('');
+    if (!made.saved) return;
+    clearNewTicketDraft(sent);
+    if (!mounted.current || draftNow.current !== sent) return;
+    setDraft(EMPTY_TICKET_DRAFT);
     if (made.card !== null) onCreated(made.card);
   }
 
@@ -181,37 +192,41 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
     <div className="ticket-field">
       <label htmlFor={`${ids}-title`}>Title</label>
       <input id={`${ids}-title`} name="title" type="text" required maxLength={256} value={title} autoFocus
-        onChange={(event) => setTitle(event.target.value)} />
+        onChange={(event) => editDraft({ title: event.target.value })} />
     </div>
     <div className="ticket-field">
       <label htmlFor={`${ids}-note`}>Note (optional)</label>
       <textarea id={`${ids}-note`} name="note" rows={3} maxLength={8192} value={note}
-        onChange={(event) => setNote(event.target.value)} />
+        onChange={(event) => editDraft({ note: event.target.value })} />
     </div>
-    {projects.length > 1 ? <div className="ticket-field">
+    {projects.length > 1 || chosenProject !== null && project === null ? <div className="ticket-field">
       <label htmlFor={`${ids}-project`}>Project</label>
       <select id={`${ids}-project`} name="project" value={project ?? ''}
-        onChange={(event) => { setChosenProject(event.target.value); setChosenCheck(null); setAgent(''); }}>
+        onChange={(event) => { editDraft({ project: event.target.value, check: null, agent: '' }); }}>
+        {project === null ? <option value="">Choose a project</option> : null}
         {projects.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
       </select>
     </div> : null}
     {checks.length > 0 ? <div className="ticket-field">
       <label htmlFor={`${ids}-check`}>Done when</label>
       <select id={`${ids}-check`} name="check" value={check?.id ?? ''}
-        onChange={(event) => setChosenCheck(event.target.value)}>
+        onChange={(event) => editDraft({ check: event.target.value })}>
+        {check === null ? <option value="">Choose a check</option> : null}
         {checks.map((entry) => <option key={entry.id} value={entry.id}>{choiceLabel(entry)}</option>)}
       </select>
     </div> : null}
+    {chosenCheck !== null && check === null && project !== null ? <p className="ticket-hint" role="status">The saved check is no longer available. Choose a check before creating this ticket.</p> : null}
+    {chosenProject !== null && project === null ? <p className="ticket-hint" role="status">The saved project is no longer available. Choose a project before creating this ticket.</p> : null}
     {noProjects(floor) ? <NoTicketProjectHint floor={floor} />
       : project === null ? <p className="ticket-hint">Project choices are unavailable. Open Setup to check the project and its completion check.</p>
       : usable.length === 0 ? <div className="ticket-field" data-no-agent="true">
       <p className="ticket-hint">{agentChoiceSentence(floor, project)}</p>
       {onHire !== undefined && hireSwitchOn(floor)
         ? <button type="button" className="ticket-hire" onClick={(event) => onHire(event.currentTarget)}>Hire an agent</button>
-        : <p className="ticket-hint">Run <code>dudes hire</code> to add one.</p>}
+        : <p className="ticket-hint">Open Settings to check whether hiring is available.</p>}
     </div> : <div className="ticket-field">
       <label htmlFor={`${ids}-agent`}>Give to agent (optional)</label>
-      <select id={`${ids}-agent`} name="agent" value={agent} onChange={(event) => setAgent(event.target.value)}>
+      <select id={`${ids}-agent`} name="agent" value={agent} onChange={(event) => editDraft({ agent: event.target.value })}>
         <option value="">Not yet</option>
         {usable.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
         {unrecorded.map((row) => <option key={row.id} value={row.id} disabled>{row.name} (hired before projects were recorded)</option>)}
@@ -220,6 +235,38 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
     {unrecorded.map((row) => <p key={row.id} className="ticket-hint">{agentWithoutProjectSentence(row.name)}</p>)}
     <button type="submit" className="ticket-create" aria-disabled={!ready || undefined} disabled={!ready}>Create ticket</button>
     {onCancel === undefined ? null : <button type="button" className="ticket-form-cancel" onClick={onCancel}>Cancel</button>}
+  </form>;
+}
+
+function BoardGive({ floor }: { readonly floor: FloorState }) {
+  const ids = useId();
+  const agents = freeTaskAgents(floor);
+  const [chosen, setChosen] = useState('');
+  const [task, setTask] = useState('');
+  const latestTask = useRef(task);
+  latestTask.current = task;
+  const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
+  const agent = chosen === '' ? agents[0] : agents.find((entry) => entry.id === chosen);
+  if (agents.length === 0 && task === '' && chosen === '') return null;
+  const ready = agent !== undefined && ticketActionsOpen(floor) && !sending && task.trim() !== '';
+  async function give(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    if (!ready || agent === undefined) return;
+    const sent = task;
+    const made = await createTicket({ title: titleOf(task), note: task.trim() === titleOf(task) ? '' : task.trim(),
+      project: agent.project, check: { id: agent.check.id, revision: agent.check.revision }, agent: agent.id });
+    if (made.saved && latestTask.current === sent) { setTask(''); setChosen(''); }
+  }
+  return <form className="ticket-form board-give" aria-label="Give a task" onSubmit={(event) => { void give(event); }}>
+    <label htmlFor={`${ids}-task`}>Give a task</label>
+    <input id={`${ids}-task`} type="text" maxLength={8192} value={task} placeholder="What should the agent do?"
+      onChange={(event) => { setTask(event.target.value); if (chosen === '') setChosen(agent?.id ?? ''); }} />
+    <select aria-label="Agent for task" value={agent?.id ?? ''} onChange={(event) => setChosen(event.target.value)}>
+      {agent === undefined ? <option value="">Choose an idle agent</option> : null}
+      {agents.map((entry) => <option key={entry.id} value={entry.id}>{entry.name === entry.id ? 'Unnamed agent' : entry.name}</option>)}
+    </select>
+    <button type="submit" disabled={!ready}>{sending ? 'Giving…' : 'Give'}</button>
+    {agent === undefined ? <p className="ticket-hint" role="status">The chosen agent is no longer free. Choose an idle agent to give this task.</p> : null}
   </form>;
 }
 
@@ -280,6 +327,7 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
       <button type="button" className="ticket-new-toggle" aria-expanded={forming} disabled={!ticketActionsOpen(floor)}
         aria-haspopup="dialog" onClick={(event) => onNewTicket(event.currentTarget)}>New ticket</button>
     </section> : <TicketOffHint floor={floor} />}
+    {floor.ticket ? <BoardGive floor={floor} /> : null}
     <div className="ticket-card-regions" onKeyDown={moveCardFocus}>
     <section className="ticket-lane task-column" data-column={COLUMN_TONE.needs}
       data-lane="needs-you" aria-label="Needs you">

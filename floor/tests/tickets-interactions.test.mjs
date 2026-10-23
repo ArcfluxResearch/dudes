@@ -11,10 +11,11 @@ import ts from 'typescript';
 
 import { restoreFocusAfterDialog } from '../src/renderer/focus.ts';
 import { fakePage, press } from './helpers/fake-page.mjs';
-import { ADA, agent, cardId, subscribe, ticketCard, TWO_PROJECTS, instructionReview, instructionSummary, INSTRUCTION_WATERMARK } from './helpers/tickets.mjs';
+import { ADA, GRACE, agent, cardId, subscribe, ticketCard, TWO_PROJECTS, instructionReview, instructionSummary, INSTRUCTION_WATERMARK } from './helpers/tickets.mjs';
 
 let server, store, ticket, detail, git, Control, browserControlDeps;
 const seen = [];
+const storedDrafts = new Map();
 let reply;
 
 before(async () => {
@@ -39,6 +40,7 @@ after(async () => { await server?.close(); });
 beforeEach(() => {
   store.resetFloorStore(); ticket.resetTicket(); detail.resetDetail(); git.resetGit();
   seen.length = 0;
+  storedDrafts.clear();
   reply = (url, body) => ({ status: 200, text: async () => JSON.stringify(url.endsWith('/read') ? {
     state: 'ok', card: { id: body.card, seq: store.getFloorState().cards.find((row) => row.id === body.card)?.seq }, ticket: {
       note: 'Keep the change small.', project: 'service', check: { id: 'default', label: 'default passes' },
@@ -49,6 +51,8 @@ beforeEach(() => {
 
 function pageForTickets() {
   const page = fakePage();
+  page.document.defaultView.localStorage = { getItem: (key) => storedDrafts.get(key) ?? null,
+    setItem: (key, value) => storedDrafts.set(key, value) };
   const prototype = Object.getPrototypeOf(page.host);
   const queued = [];
   const modals = [];
@@ -752,5 +756,121 @@ test('reviewed rework cannot edit a retained shortened note during a loading or 
     assert.equal(edits.length, 1);
     assert.equal(edits[0][1].expected_seq, 4);
     assert.equal(edits[0][1].description, fullNote);
+  } finally { await app.close(); }
+});
+
+test('New ticket keeps its fields after closing and a fresh mount, and clears only a saved draft', async () => {
+  let app = await mount([]);
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    for (const [name, value] of [['title', 'Keep this task'], ['note', 'Keep the details too'], ['agent', ADA]]) {
+      await act(async () => propsOf(app.page.host.querySelector(`[name="${name}"]`)).onChange({ target: { value } }));
+    }
+    await act(async () => press(app.page.host.querySelector('.ticket-form-cancel')));
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    assert.equal(app.page.host.querySelector('[name="title"]').value, 'Keep this task');
+    await app.close();
+    app = await mount([]);
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    assert.equal(app.page.host.querySelector('[name="title"]').value, 'Keep this task');
+    assert.equal(propsOf(app.page.host.querySelector('[name="note"]')).value, 'Keep the details too');
+    assert.equal(app.page.host.querySelector('[name="agent"]').value, ADA);
+    reply = (url) => ({ status: url.endsWith('/assign') ? 409 : 200, text: async () => JSON.stringify(url.endsWith('/assign')
+      ? { state: 'refused', reason: 'agent_unavailable' } : { state: 'created', card: cardId(2), seq: 0, lsn: '4097' }) });
+    await act(async () => propsOf(app.page.host.querySelector('.ticket-composer').querySelector('form')).onSubmit({ preventDefault() {} }));
+    await app.close();
+    app = await mount([]);
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    assert.equal(app.page.host.querySelector('[name="title"]').value, '');
+    assert.equal(seen.filter(([url]) => url === '/floor/ticket').length, 1);
+  } finally { await app.close(); }
+});
+
+test('Ask for changes keeps per-ticket text after close and reload, retains a refusal and clears after send', async () => {
+  let app = await mount([ticketCard(1, 'review', { claimed_by: ADA })]);
+  async function openChanges() {
+    await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
+    await act(async () => press(app.page.host.querySelector('[data-action="changes"]')));
+  }
+  try {
+    await openChanges();
+    await act(async () => propsOf(app.page.host.querySelector('.ticket-mode').querySelector('textarea')).onChange({ target: { value: 'Keep the keyboard shortcut' } }));
+    await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
+    await openChanges();
+    assert.equal(propsOf(app.page.host.querySelector('.ticket-mode').querySelector('textarea')).value, 'Keep the keyboard shortcut');
+    await app.close();
+    app = await mount([ticketCard(1, 'review', { claimed_by: ADA })]);
+    await openChanges();
+    assert.equal(propsOf(app.page.host.querySelector('.ticket-mode').querySelector('textarea')).value, 'Keep the keyboard shortcut');
+    const ordinary = reply;
+    reply = (url, body) => url.endsWith('/assign') ? { status: 409, text: async () => JSON.stringify({ state: 'refused', reason: 'agent_unavailable' }) } : ordinary(url, body);
+    await act(async () => propsOf(app.page.host.querySelector('.ticket-mode').querySelector('form')).onSubmit({ preventDefault() {} }));
+    assert.equal(propsOf(app.page.host.querySelector('.ticket-mode').querySelector('textarea')).value, 'Keep the keyboard shortcut');
+    reply = (url, body) => url.endsWith('/assign') ? { status: 200, text: async () => JSON.stringify({ state: 'assigned', card: cardId(1), seq: 4, lsn: '4098', start: { state: 'started' } }) } : ordinary(url, body);
+    await act(async () => propsOf(app.page.host.querySelector('.ticket-mode').querySelector('form')).onSubmit({ preventDefault() {} }));
+    assert.equal(app.page.host.querySelector('.ticket-mode').querySelector('textarea'), null);
+    await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
+    await openChanges();
+    assert.equal(propsOf(app.page.host.querySelector('.ticket-mode').querySelector('textarea')).value, '');
+  } finally { await app.close(); }
+});
+
+test('Board Give uses an idle agent and reuses the create id after a lost reply', async () => {
+  const app = await mount([ticketCard(1, 'review')], { agents: [agent(ADA, 'Ada', { status: 'running' }), agent(GRACE, 'Grace')] });
+  try {
+    const form = app.page.host.querySelector('.board-give');
+    assert.equal(form.querySelectorAll('option').length, 1);
+    await act(async () => propsOf(form.querySelector('input')).onChange({ target: { value: 'Make the toolbar clearer' } }));
+    reply = () => { throw Error('lost response'); };
+    await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));
+    assert.equal(form.querySelector('input').value, 'Make the toolbar clearer');
+    assert.equal(seen.length, 1);
+    const request = seen[0][1].request_id;
+    reply = (url) => ({ status: 200, text: async () => JSON.stringify({ state: url.endsWith('/assign') ? 'assigned' : 'created',
+      card: cardId(2), seq: 0, lsn: '4097', ...(url.endsWith('/assign') ? { start: { state: 'started' } } : {}) }) });
+    await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));
+    assert.equal(form.querySelector('input').value, '');
+    assert.deepEqual(seen.map(([url, body]) => [url, body]), [
+      ['/floor/ticket', { request_id: request, title: 'Make the toolbar clearer', project: 'service', done_when: 'default', done_when_revision: 'a'.repeat(64) }],
+      ['/floor/ticket', { request_id: request, title: 'Make the toolbar clearer', project: 'service', done_when: 'default', done_when_revision: 'a'.repeat(64) }],
+      ['/floor/ticket/assign', { card: cardId(2), agent: GRACE, expected_seq: 0 }],
+    ]);
+  } finally { await app.close(); }
+});
+
+test('a restored ticket draft requires a new project choice when its project disappears', async () => {
+  let app = await mount([]);
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    await act(async () => propsOf(app.page.host.querySelector('[name="title"]')).onChange({ target: { value: 'Keep this in its project' } }));
+    await app.close();
+    app = await mount([]);
+    const onlyWebsite = { ...app.floor, checks: { ...app.floor.checks,
+      workspaces: app.floor.checks.workspaces.filter((row) => row.workspaceId === 'website') } };
+    await app.render(onlyWebsite);
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    assert.equal(app.page.host.querySelector('[name="title"]').value, 'Keep this in its project');
+    assert.match(textOf(app.page.host), /saved project is no longer available/);
+    assert.equal(app.page.host.querySelector('.ticket-create').disabled, true);
+    await act(async () => propsOf(app.page.host.querySelector('[name="project"]')).onChange({ target: { value: 'website' } }));
+    assert.equal(app.page.host.querySelector('.ticket-create').disabled, false);
+  } finally { await app.close(); }
+});
+
+test('Board Give retains typed work when its selected agent stops being free', async () => {
+  const app = await mount([], { agents: [agent(), agent(GRACE, 'Grace')] });
+  try {
+    let form = app.page.host.querySelector('.board-give');
+    await act(async () => propsOf(form.querySelector('select')).onChange({ target: { value: ADA } }));
+    await act(async () => propsOf(form.querySelector('input')).onChange({ target: { value: 'Keep this with the chosen agent' } }));
+    await app.render({ ...app.floor, agents: [agent(ADA, 'Ada', { status: 'running' }), agent(GRACE, 'Grace')] });
+    form = app.page.host.querySelector('.board-give');
+    assert.equal(form.querySelector('input').value, 'Keep this with the chosen agent');
+    assert.equal(propsOf(form.querySelector('select')).value, '');
+    assert.equal(form.querySelector('button').disabled, true);
+    await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));
+    assert.deepEqual(seen, []);
+    await act(async () => propsOf(form.querySelector('select')).onChange({ target: { value: GRACE } }));
+    assert.equal(form.querySelector('button').disabled, false);
   } finally { await app.close(); }
 });

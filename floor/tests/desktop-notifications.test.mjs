@@ -11,7 +11,7 @@ import {
   notificationDestination, seedNotificationHistory,
 } from '../src/renderer/desktopNotifications.ts';
 import * as store from '../src/renderer/floor/store.ts';
-import { readDesktopNotificationChoice, writeDesktopNotificationChoice } from '../src/renderer/view.ts';
+import { readDesktopNotificationChoice, writeDesktopNotificationChoice, readNotificationOfferSeen, writeNotificationOfferSeen } from '../src/renderer/view.ts';
 import { ADA, GRACE, agent, cardId, plainCard, subscribe, ticketCard } from './helpers/tickets.mjs';
 
 beforeEach(() => { store.resetFloorStore(); });
@@ -102,6 +102,8 @@ function preferencePorts(permission = 'default') {
     storage: () => ({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) }),
     readChoice() { return readDesktopNotificationChoice(this.storage); },
     writeChoice(enabled) { return writeDesktopNotificationChoice(enabled, this.storage); },
+    readOfferSeen() { return readNotificationOfferSeen(this.storage); },
+    writeOfferSeen() { writeNotificationOfferSeen(this.storage); },
     permission() { return this.currentPermission; },
     async requestPermission() { this.requests += 1; this.currentPermission = 'granted'; return 'granted'; },
   };
@@ -275,5 +277,45 @@ test('delivery requires opt-in and granted permission, focuses the tab and opens
   } finally {
     globalThis.Notification = previousNotification;
     globalThis.window = previousWindow;
+  }
+});
+
+test('the first confirmed give offers once on this device and permission still needs a click', async () => {
+  const ports = preferencePorts();
+  const preference = createNotificationPreference(ports);
+  assert.equal(preference.getOffer(), false);
+  preference.offerAfterGive();
+  assert.equal(preference.getOffer(), true);
+  assert.equal(ports.requests, 0);
+  assert.equal(createNotificationPreference(ports).getOffer(), false);
+  await preference.setEnabled(true);
+  assert.equal(ports.requests, 1);
+  assert.equal(preference.getState().kind, 'on');
+  assert.equal(preference.getOffer(), false);
+  await preference.setEnabled(false);
+  preference.dismissOffer();
+  preference.offerAfterGive();
+  assert.equal(preference.getOffer(), false);
+  const reload = createNotificationPreference(ports);
+  reload.offerAfterGive();
+  assert.equal(reload.getOffer(), false);
+  const revoked = preferencePorts();
+  const cached = createNotificationPreference(revoked);
+  cached.getState();
+  revoked.currentPermission = 'denied';
+  cached.offerAfterGive();
+  assert.equal(cached.getOffer(), false);
+  for (const permission of ['granted', 'denied', 'unsupported']) {
+    const suppressed = preferencePorts(permission);
+    if (permission === 'granted') suppressed.writeChoice(true);
+    const first = createNotificationPreference(suppressed);
+    first.offerAfterGive();
+    assert.equal(first.getOffer(), false);
+    await first.setEnabled(false);
+    suppressed.currentPermission = 'default';
+    const later = createNotificationPreference(suppressed);
+    later.offerAfterGive();
+    assert.equal(later.getOffer(), false);
+    assert.equal(suppressed.requests, 0);
   }
 });

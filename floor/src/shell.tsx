@@ -23,6 +23,7 @@ import { refreshFloorSnapshot } from './renderer/floor/stream';
 import { HireWizard } from './renderer/onboarding/HireWizard';
 import { HireEntry, hireSwitchOn } from './renderer/onboarding/HireEntry';
 import { FirstRunGuide } from './renderer/setup/FirstRunGuide';
+import { NotificationOffer } from './renderer/NotificationOffer.tsx';
 import { FirstTask } from './renderer/setup/FirstTask.tsx';
 import {
   agentToReveal, getHireState, leaveHire, ticketsOff, markRevealed, prepareArchiveHire, prepareHire, subscribeToHire,
@@ -461,6 +462,7 @@ function SignedInShell() {
       <div className="notice-stack" ref={noticeStack} id={modalNotices ? 'modal-floor-notices' : undefined}
         tabIndex={modalNotices ? -1 : undefined}>
         <PastedLinkNotice />
+        <NotificationOffer />
         {signOutFailed ? <p className="link-refused" role="alert">Could not sign out, so this browser is still signed in. Try again.</p> : null}
         <JournalStoppedBanner stopped={floor.journalStopped} />
         <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />

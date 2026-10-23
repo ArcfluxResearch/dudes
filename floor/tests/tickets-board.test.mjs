@@ -355,8 +355,8 @@ test('Project is asked for only when there is more than one', () => {
   subscribe(store, { agents: [agent()], checks: TWO_PROJECTS });
   const html = form();
   assert.match(html, /<label[^>]*>Project<\/label>/);
-  assert.match(html, /<option value="service"[^>]*>service<\/option>/);
-  assert.match(html, /<option value="website"[^>]*>website<\/option>/);
+  assert.match(html, /<option value="service"[^>]*>Service<\/option>/);
+  assert.match(html, /<option value="website"[^>]*>Project 2<\/option>/);
 });
 
 test('with no agent hired the Give choice is the sentence and a link to hire', () => {
@@ -367,7 +367,7 @@ test('with no agent hired the Give choice is the sentence and a link to hire', (
   assert.ok(!/name="agent"/.test(html), 'the select is replaced');
   const withoutHire = form();
   assert.match(withoutHire, /No agent yet\. Hire one, then give this ticket to it\./);
-  assert.match(withoutHire, /Run <code>dudes hire<\/code> to add one\./);
+  assert.match(withoutHire, /Open Settings to check whether hiring is available\./);
 });
 
 test('an agent in another project is not described as no agent hired', () => {

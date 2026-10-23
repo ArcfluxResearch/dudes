@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useEffect, useId, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import type { FormEvent } from 'react';
 
 import type { CardRow } from '../board.ts';
@@ -21,6 +21,7 @@ import { RecoveredReview } from './RecoveredReview.tsx';
 import type { TicketDetail, TruncatedTicketField } from './detail.ts';
 import { ACTION_LABEL, actionsOf, agentChoiceSentence, agentRow, cardWords, noProjects, projectOf, requiresInstructionReview } from './model.ts';
 import type { TicketAction } from './model.ts';
+import { clearTicketChangesDraft, readTicketChangesDraft, writeTicketChangesDraft } from '../view.ts';
 import { agentsFor, ticketActionsOpen, TicketNotice } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
 import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, engineStopped, reasonSentence, stateName } from './words.ts';
@@ -213,7 +214,9 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
   const ids = useId();
   const { usable, unrecorded } = agentsFor(floor, project ?? '');
   const [agent, setAgent] = useState(() => usable.find((row) => row.id === card.claimed_by)?.id ?? usable[0]?.id ?? '');
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState(() => mode === 'changes' ? readTicketChangesDraft(card.id) : '');
+  const currentMessage = useRef(message);
+  currentMessage.current = message;
   const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
   const evidence = useSyncExternalStore(subscribeToDetail, getDetailState, getDetailState);
   const reviewReady = !requiresInstructionReview(card) || reviewedWatermark(evidence, card) !== null;
@@ -225,7 +228,7 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
     {unrecorded.map((row) => <p key={row.id} className="ticket-hint">{agentWithoutProjectSentence(row.name)}</p>)}
     {onHire !== undefined && hireSwitchOn(floor)
       ? <button type="button" className="ticket-hire" onClick={(event) => onHire(event.currentTarget)}>Hire an agent</button>
-      : <p className="ticket-hint">Run <code>dudes hire</code> to add one.</p>}
+      : <p className="ticket-hint">Open Settings to check whether hiring is available.</p>}
   </div>;
 
   async function submit(event: FormEvent): Promise<void> {
@@ -233,7 +236,11 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
     const allowed = actionsOf(card);
     if (chosen === null || sending || !reviewReady || !ticketActionsOpen(floor)
       || (mode === 'changes' ? !allowed.includes('changes') : !allowed.includes('give') && !allowed.includes('try_again'))) return;
-    if (await changeTicket(card, { verb: 'assign', agent: chosen, message: mode === 'changes' ? message : '' })) onDone();
+    const sent = message;
+    if (await changeTicket(card, { verb: 'assign', agent: chosen, message: mode === 'changes' ? sent : '' })) {
+      if (mode === 'changes') clearTicketChangesDraft(card.id, sent);
+      if (currentMessage.current === sent) onDone();
+    }
   }
 
   return <form className="ticket-form" aria-label={mode === 'changes' ? 'Ask for changes' : 'Give to agent'}
@@ -248,7 +255,7 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
     {mode === 'changes' ? <div className="ticket-field">
       <label htmlFor={`${ids}-message`}>What should change?</label>
       <textarea id={`${ids}-message`} rows={3} maxLength={2048} value={message}
-        onChange={(event) => setMessage(event.target.value)} />
+        onChange={(event) => { writeTicketChangesDraft(card.id, event.target.value); setMessage(event.target.value); }} />
     </div> : null}
     <button type="submit" disabled={sending || chosen === null || !reviewReady || !ticketActionsOpen(floor)}>
       {mode === 'changes' ? 'Send back' : 'Give to agent'}</button>

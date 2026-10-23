@@ -6,7 +6,7 @@ import type { FloorState } from './floor/store.ts';
 import type { ProjectionEvent } from './floor/projection.ts';
 import { agentRow, tickets, viewConfirmed, waitingTickets } from './ticket/model.ts';
 import { readable, reasonSentence } from './ticket/words.ts';
-import { readDesktopNotificationChoice, writeDesktopNotificationChoice } from './view.ts';
+import { readDesktopNotificationChoice, writeDesktopNotificationChoice, readNotificationOfferSeen, writeNotificationOfferSeen } from './view.ts';
 
 type NoticeTarget =
   | { readonly kind: 'ticket'; readonly id: string }
@@ -91,6 +91,8 @@ export interface NotificationPreferenceState {
 interface NotificationPreferencePorts {
   readChoice(): { readonly enabled: boolean; readonly remembered: boolean };
   writeChoice(enabled: boolean): boolean;
+  readOfferSeen(): boolean;
+  writeOfferSeen(): void;
   permission(): NotificationPermission | 'unsupported';
   requestPermission(): Promise<NotificationPermission>;
 }
@@ -98,6 +100,8 @@ interface NotificationPreferencePorts {
 const browserPorts: NotificationPreferencePorts = {
   readChoice: readDesktopNotificationChoice,
   writeChoice: writeDesktopNotificationChoice,
+  readOfferSeen: readNotificationOfferSeen,
+  writeOfferSeen: writeNotificationOfferSeen,
   permission: () => typeof Notification === 'undefined' ? 'unsupported' : Notification.permission,
   requestPermission: () => Notification.requestPermission(),
 };
@@ -105,6 +109,8 @@ const browserPorts: NotificationPreferencePorts = {
 export function createNotificationPreference(ports: NotificationPreferencePorts = browserPorts) {
   let state: NotificationPreferenceState | null = null;
   let request = 0;
+  let offerSeen: boolean | null = null;
+  let offerVisible = false;
   const listeners = new Set<() => void>();
 
   function getState(): NotificationPreferenceState {
@@ -141,6 +147,21 @@ export function createNotificationPreference(ports: NotificationPreferencePorts 
 
   return {
     getState, setEnabled,
+    getOffer: () => offerVisible && (getState().kind === 'off' || getState().kind === 'asking' || getState().kind === 'unavailable'),
+    offerAfterGive: () => {
+      offerSeen ??= ports.readOfferSeen();
+      if (offerSeen) return;
+      offerSeen = true;
+      ports.writeOfferSeen();
+      const permission = ports.permission();
+      offerVisible = permission !== 'denied' && permission !== 'unsupported'
+        && (getState().kind === 'off' || getState().kind === 'unavailable');
+      for (const listener of listeners) listener();
+    },
+    dismissOffer: () => {
+      offerVisible = false;
+      for (const listener of listeners) listener();
+    },
     subscribe(listener: () => void): () => void { listeners.add(listener); return () => { listeners.delete(listener); }; },
     unavailable: () => publish('unavailable'),
     permissionChanged: () => {
