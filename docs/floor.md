@@ -22,7 +22,7 @@ without a goal authorizes one turn; messages to an agent with a goal join its ne
 
 The office is a view of the daemon's state, never a source of truth. The daemon's journal, an append-only log of everything it records, is the
 only record, and the Floor changes that state only through the Floor actions you turn on. `dudes quickstart` turns on hire, pause, answer, change
-goals, retire, recover, tickets and add projects without asking. The changed-file views stay off until you turn them on in **Settings**. The terminal
+goals, retire, recover, tickets and add projects without asking. The changed-file views are on too. The terminal
 stays off until you turn it on with `dudes config set floor.terminal on` and restart.
 
 The Floor draws the smallest office that seats the whole crew. The Studio has 8 desks, the Workshop
@@ -193,7 +193,7 @@ Set a spending limit when your account bills per use.
   counted. A label says "Unchanged since the check" or "Changed since the check" by comparing the
   checkout with what Dudes sampled just after the ticket's check ran. It says "Unknown" whenever
   that sample is missing or incomplete, and "Unknown" is not a pass. Nothing is refreshed on its
-  own: Refresh makes a new listing. The view is off unless you turn it on, and each session can
+  own: Refresh makes a new listing. Quickstart turns both on in a new file; an older file may have them off, and **Settings** turns them on. Each session can
   read about one mebibyte in all. When it is shown, it replaces the Changed files list above.
 - **Actions.** Give to agent, Edit and Remove for a ticket nobody has started. Stop for one that is
   Working. Accept, Ask for changes and Remove for one that is Ready for you. Try again, Stop and

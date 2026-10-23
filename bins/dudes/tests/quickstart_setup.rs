@@ -330,7 +330,7 @@ fn built_daemon() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_dudes")).with_file_name("duded")
 }
 
-/// The nine Floor actions a first run turns on, and the three switches it leaves off.
+/// The eleven Floor actions a first run turns on, the changed-file views among them, and the terminal it leaves off.
 fn assert_first_run_floor(config: &Path) {
     let file: toml_edit::DocumentMut = std::fs::read_to_string(config)
         .expect("quickstart wrote the file")
@@ -339,12 +339,11 @@ fn assert_first_run_floor(config: &Path) {
     let enabled = |name: &str| file.get("floor")?.get(name)?.get("enabled")?.as_bool();
     for name in [
         "answer", "hire", "control", "goal", "retire", "board", "renew", "recovery", "project",
+        "git", "diff",
     ] {
         assert_eq!(enabled(name), Some(true), "floor.{name} in {file}");
     }
-    for name in ["git", "diff", "terminal"] {
-        assert_ne!(enabled(name), Some(true), "floor.{name} in {file}");
-    }
+    assert_ne!(enabled("terminal"), Some(true), "floor.terminal in {file}");
     assert!(
         file.get("floor")
             .and_then(|floor| floor.get("onboarding"))
@@ -358,7 +357,7 @@ fn stop(layout: &Layout) {
     assert_eq!(stopped.code(), dudes::exit::SUCCESS, "{stopped:?}");
 }
 
-/// A newcomer's `dudes quickstart` on a terminal asks nothing: it writes the nine Floor actions,
+/// A newcomer's `dudes quickstart` on a terminal asks nothing: it writes the eleven Floor actions,
 /// enrolls no project, hires no agent, starts the daemon and ends with the Floor link.
 #[test]
 fn quickstart_on_a_terminal_asks_nothing_and_sets_the_floor_up() {
@@ -390,10 +389,7 @@ fn quickstart_on_a_terminal_asks_nothing_and_sets_the_floor_up() {
         shown.contains(&format!("Wrote {}:", layout.config().display())),
         "{shown}"
     );
-    assert!(
-        shown.contains("The changed-file views (floor.git, floor.diff) are off."),
-        "{shown}"
-    );
+    assert!(!shown.contains("changed-file views"), "{shown}");
     assert!(
         shown.contains("no Floor link: the Floor is not configured"),
         "{shown}"
@@ -420,12 +416,12 @@ fn yes_matches_a_plain_run_and_a_rerun_applies_the_change() {
     assert_eq!(daemon.len(), 1, "{daemon:?}");
 
     let live = cli()
-        .args(["quickstart", "--yes", "--set", "floor.git", "on"])
+        .args(["quickstart", "--yes", "--set", "floor.diff", "off"])
         .run();
     assert_eq!(live.code(), dudes::exit::SUCCESS, "{live:?}");
     assert!(
         live.stdout
-            .contains("The running daemon now runs floor.git, with no restart."),
+            .contains("The running daemon now runs floor.diff, with no restart."),
         "{live:?}"
     );
     assert_eq!(

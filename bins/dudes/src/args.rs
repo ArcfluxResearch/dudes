@@ -581,9 +581,8 @@ COMMANDS
         Set up and start the daemon, and open the Floor. It asks no questions. It turns on
         the engines it finds on your PATH and, when the file turns no Floor action on yet,
         the Floor's answer, hire, control, goal, retire, board, renew, recovery and project
-        actions (the git and diff views of changed files and the terminal stay off; turn the
-        views on in the Floor's Settings). A file that already turns any Floor action on
-        keeps every Floor setting as it is. It sets no spending cap, enrolls no project and
+        actions, and the git and diff views of changed files (the terminal stays off). A file
+        that already turns any Floor action on keeps every Floor setting as it is. It sets no spending cap, enrolls no project and
         hires no agent unless an option below asks. It writes the operator file once and
         lists what it changed, starts the daemon, shows where the daemon found each engine
         and whether it is signed in, makes the hire an option asks for, prints the dudes
