@@ -144,6 +144,9 @@ pub(crate) const MORE_THAN_A_PIPE_HOLDS: usize = 1 << 20;
 /// How long the helper waits between heartbeats.
 const BEAT: Duration = Duration::from_millis(20);
 
+/// How long a freshly spawned helper gets to write its first beats before a control gives up on it.
+const STARTUP: Duration = Duration::from_secs(2);
+
 /// The environment variables a child needs to be a working process at all. The host hands a child
 /// exactly the environment the spec names, so anything not listed here is genuinely absent — which
 /// is the point, but a Windows process with no `SystemRoot` does not start.
@@ -527,6 +530,14 @@ pub(crate) fn read_number(path: &Path) -> Option<u64> {
 /// long enough for several beats so that one slow scheduler slice cannot read as death.
 pub(crate) fn beating(beat: &Path) -> bool {
     beating_within(beat, BEAT * 15)
+}
+
+/// Whether a process that was just spawned is running: waits up to `STARTUP` for its first beats,
+/// which a loaded machine can delay well past the short window [`beating`] watches. Use it for the
+/// "it is running before I act" control only; a check that something stopped keeps [`beating`], so
+/// it still fails promptly when the process is still advancing.
+pub(crate) fn beating_after_start(beat: &Path) -> bool {
+    beating_within(beat, STARTUP)
 }
 
 /// Whether the process reporting at `beat` advances within `window`.

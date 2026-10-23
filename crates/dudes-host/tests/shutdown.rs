@@ -344,7 +344,7 @@ fn verify_real_backend_shutdown() {
     );
     for beat in &beats {
         assert!(
-            common::beating(beat),
+            common::beating_after_start(beat),
             "anti-vacuity: {} was not running before shutdown",
             beat.display()
         );

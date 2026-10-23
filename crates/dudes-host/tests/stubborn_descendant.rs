@@ -97,7 +97,7 @@ fn start_tree(host: &mut RealHost, root: &Path) -> TreeCleanup {
         beat: root.join("grandchild.beat"),
     };
     assert!(
-        common::beating(&tree.beat),
+        common::beating_after_start(&tree.beat),
         "the grandchild runs before cleanup"
     );
     tree
