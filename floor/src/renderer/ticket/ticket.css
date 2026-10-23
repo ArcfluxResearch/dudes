@@ -600,3 +600,57 @@
 .ticket-dialog .ticket-notice[data-tone='done'] {
   background-color: var(--success-background);
 }
+
+.notification-offer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.8rem;
+}
+
+.notification-offer p { margin: 0; }
+.notification-offer button {
+  min-height: 2.5rem;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: var(--button-background);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.notification-offer button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+
+.board-give {
+  display: grid;
+  grid-template-columns: auto minmax(8rem, 1fr) minmax(6rem, 10rem) auto;
+  align-items: center;
+  gap: 0.6rem;
+  max-width: 52rem;
+  margin: 0 0 1.25rem;
+  font-size: 0.8rem;
+}
+.board-give :is(input, select) {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 2.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+.board-give .ticket-hint { grid-column: 1 / -1; }
+.board-give button { min-height: 2.5rem; border-radius: 0.35rem; }
+.board-give :is(input, select):focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+@media (max-width: 800px) {
+  .board-give { grid-template-columns: minmax(0, 1fr) auto; }
+  .board-give label, .board-give input { grid-column: 1 / -1; }
+}

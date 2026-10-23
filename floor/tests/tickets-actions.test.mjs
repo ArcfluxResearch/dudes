@@ -332,3 +332,22 @@ test('instruction refusal codes retain their specific next steps', () => {
     assert.equal(ticket.problemText(outcome, 'blocked'), message);
   }
 });
+
+test('an unresolved create keeps its request id across reload without sending automatically', async () => {
+  const previousWindow = globalThis.window;
+  const saved = new Map();
+  globalThis.window = { localStorage: { getItem: (key) => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value) } };
+  try {
+    const lost = daemon(() => { throw Error('reply lost'); });
+    assert.equal((await ticket.createTicket(FORM, lost.deps)).saved, false);
+    const id = lost.seen[0].body.request_id;
+    ticket.resetTicket();
+    const retry = daemon(() => done('created', NEW));
+    assert.equal(retry.seen.length, 0);
+    assert.equal((await ticket.createTicket(FORM, retry.deps)).saved, true);
+    assert.equal(retry.seen[0].body.request_id, id);
+    ticket.resetTicket();
+    assert.equal((await ticket.createTicket(FORM, lost.deps)).saved, false);
+    assert.notEqual(lost.seen[1].body.request_id, id);
+  } finally { globalThis.window = previousWindow; }
+});

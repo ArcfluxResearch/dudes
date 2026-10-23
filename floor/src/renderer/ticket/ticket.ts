@@ -10,14 +10,16 @@
 // does not arrive leaves the form as the person typed it and says the save could not be
 // confirmed.
 //
-// The request and its feedback live in module memory and nowhere else: not in the URL, not in
-// browser storage, not in a log.
+// An unresolved create id stays on this device with its fields, so an explicit retry after a
+// reload still names the same create. Feedback lives only in module memory.
 
+import { desktopNotificationPreference } from '../desktopNotifications.ts';
 import type { CardRow } from '../board.ts';
 import { TICKET_REASONS } from '../board.ts';
 import type { TicketReason } from '../board.ts';
 import type { ControlDeps } from '../control/control.ts';
 import { browserControlDeps } from '../control/control.ts';
+import { readTicketCreateAttempt, writeTicketCreateAttempt } from '../view.ts';
 import { mintAttemptId } from '../onboarding/hire.ts';
 import { agentName, holdingTicket, requiresInstructionReview } from './model.ts';
 import { getFloorState } from '../floor/store.ts';
@@ -193,7 +195,7 @@ export function subscribeToTicket(listener: () => void): () => void {
   };
 }
 
-/** What a reload does: forget everything. For tests; the page gets a fresh module per load. */
+/** Forget page state. An unresolved create stays in browser storage for an explicit retry. */
 export function resetTicket(): void {
   latestRequest += 1;
   unconfirmed = null;
@@ -273,9 +275,11 @@ export function createPayload(form: NewTicket): Record<string, string> {
 let unconfirmed: { readonly fields: string; readonly id: string } | null = null;
 
 function createId(fields: string, deps: ControlDeps): string {
+  unconfirmed ??= readTicketCreateAttempt();
   if (unconfirmed?.fields === fields) return unconfirmed.id;
   const id = mintAttemptId(deps.random);
   unconfirmed = Object.freeze({ fields, id });
+  writeTicketCreateAttempt(unconfirmed);
   return id;
 }
 
@@ -295,8 +299,12 @@ export async function createTicket(form: NewTicket, deps: ControlDeps = browserC
   const request = ++latestRequest;
   commit({ sending: true, notice: null });
   const fields = createPayload(form);
-  const made = await send('create', { request_id: createId(JSON.stringify(fields), deps), ...fields }, deps);
-  if (made.kind !== 'unavailable' && made.kind !== 'unknown') unconfirmed = null;
+  const id = createId(JSON.stringify(fields), deps);
+  const made = await send('create', { request_id: id, ...fields }, deps);
+  if (made.kind !== 'unavailable' && made.kind !== 'unknown') {
+    if (unconfirmed?.id === id) unconfirmed = null;
+    if (readTicketCreateAttempt()?.id === id) writeTicketCreateAttempt(null);
+  }
   if (made.kind !== 'done' || made.card === null) {
     finishRequest(request, { card: null, tone: 'problem', text: made.kind === 'done' ? COULD_NOT_CONFIRM : problemText(made, 'todo') });
     return { card: null, saved: false };
@@ -311,6 +319,7 @@ export async function createTicket(form: NewTicket, deps: ControlDeps = browserC
   const given = made.seq === null
     ? UNKNOWN
     : await send('assign', { card: made.card, agent: form.agent, expected_seq: made.seq }, deps);
+  if (given.kind === 'done') desktopNotificationPreference.offerAfterGive();
   const started = given.kind === 'done' && given.start !== null ? given.start : null;
   const text = started !== null
     ? `Ticket created. ${startText(started, name, holdingTicket(floor, form.agent)?.title)}`
@@ -379,6 +388,7 @@ export async function changeTicket(card: CardRow, change: Change, deps: ControlD
     finishRequest(request, { card: card.id, tone: 'problem', text: problemText(outcome, card.status) });
     return false;
   }
+  if (change.verb === 'assign') desktopNotificationPreference.offerAfterGive();
   const text = change.verb === 'accept' && outcome.body.outcome === 'instructions_acknowledged'
     ? 'Instruction review acknowledged. The ticket remains open.'
     : change.verb === 'stop' && requiresInstructionReview(card)

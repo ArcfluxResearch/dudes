@@ -275,6 +275,7 @@ const ADD_PROJECT_FORM = 'src/renderer/project/AddProject.tsx';
 const TICKET_MODULE = 'src/renderer/ticket/ticket.ts';
 const TICKET_BOARD = 'src/renderer/ticket/TicketBoard.tsx';
 const TICKET_PANEL = 'src/renderer/ticket/TicketPanel.tsx';
+const NOTIFICATION_OFFER = 'src/renderer/NotificationOffer.tsx';
 const RECOVERED_REVIEW = 'src/renderer/ticket/RecoveredReview.tsx';
 const ADMITTED_IN_TICKET_FORM = Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler', 'a submit handler']);
 const GIT_MODULE = 'src/renderer/git/git.ts';
@@ -448,7 +449,8 @@ const ADMITTED_HANDLERS = [
   { file: ANSWER_FORM, tag: 'textarea', handler: 'onKeyDown' },
   { file: ANSWER_FORM, tag: 'button', className: 'answer-send', handler: 'onKeyDown', expression: REFUSE_REPEAT },
   { file: GOAL_PANEL, tag: 'textarea', handler: 'onChange' },
-  // The ticket forms hold the draft in the page and send one typed request on submit.
+  { file: TICKET_BOARD, tag: 'form', className: 'ticket-form board-give', handler: 'onSubmit', expression: '(event) => { void give(event); }' },
+  // The ticket forms hold the draft on this device and send one typed request on submit.
   ...[TICKET_BOARD, TICKET_PANEL].flatMap((file) => [
     { file, tag: 'form', className: 'ticket-form', handler: 'onSubmit', expression: '(event) => { void submit(event); }' },
     { file, tag: 'input', handler: 'onChange' },
@@ -1122,7 +1124,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(3).fill(GOAL_PANEL),
     ...Array(2).fill('src/renderer/ticket/StuckActions.tsx'),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
-    ...Array(8).fill(TICKET_BOARD),
+    ...Array(9).fill(TICKET_BOARD),
+    ...Array(2).fill(NOTIFICATION_OFFER),
     ...Array(10).fill(TICKET_PANEL),
     ...Array(13).fill(HIRE_FORM),
     HIRE_ENTRY,
@@ -1148,6 +1151,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   const clickExpected = [...expected];
   clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
   // The ticket forms each submit with a button that has no click handler of its own.
+  clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
@@ -1253,6 +1257,9 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(center, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);
   assert.deepEqual(clicksIn(center), ['() => onSelectAgent(row.id)', 'onToggle', '() => onOpen(item.agentId)',
     '() => onOpenTicket?.(item.card)', '() => onToggle(entry.view)', 'onClose', 'closeOverlay']);
+  assert.deepEqual(clicksIn(await readFile(resolve(floor, NOTIFICATION_OFFER), 'utf8')), [
+    '() => { void desktopNotificationPreference.setEnabled(true); }', 'desktopNotificationPreference.dismissOffer',
+  ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TICKET_BOARD), 'utf8')), [
     '() => dismissNotice(notice)', '(event) => onHire(event.currentTarget)', 'onCancel',
     '(event) => onSelect(card.id, event.currentTarget)', '(event) => onNewTicket(event.currentTarget)', '() => setDoneShown(doneShown + DONE_SHOWN)',
@@ -2688,7 +2695,7 @@ const ADMITTED_LISTENERS = Object.freeze([
 ]);
 const SOCKET_LISTENER = /(socket|live)\.addEventListener\('(open|message|close)'|addEventListener\(type: '(open|close|message)'/;
 
-test('desktop notifications have one opt-in handler, one permission request and one fixed payload shape', async () => {
+test('desktop notifications have two explicit opt-in handlers, one permission request and one fixed payload shape', async () => {
   const permission = [];
   const constructors = [];
   const optIn = [];
@@ -2712,7 +2719,8 @@ test('desktop notifications have one opt-in handler, one permission request and 
   assert.deepEqual(permission, [['src/renderer/desktopNotifications.ts', 'Notification.requestPermission()']]);
   assert.deepEqual(constructors, [['src/renderer/desktopNotifications.ts',
     'new Notification(notice.title, { body: notice.body, tag: notice.key })']]);
-  assert.deepEqual(optIn, [[SETTINGS_VIEW, 'desktopNotificationPreference.setEnabled(!on)']]);
+  assert.deepEqual(optIn, [[NOTIFICATION_OFFER, 'desktopNotificationPreference.setEnabled(true)'],
+    [SETTINGS_VIEW, 'desktopNotificationPreference.setEnabled(!on)']]);
 });
 
 test('each addEventListener line under floor/src is a socket or an admitted view listener', async () => {

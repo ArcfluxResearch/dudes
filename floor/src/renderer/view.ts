@@ -58,6 +58,81 @@ export function writeDesktopNotificationChoice(enabled: boolean, storage: () => 
   catch { return false; }
 }
 
+export function readNotificationOfferSeen(storage: () => ViewStorage = browserStorage): boolean {
+  try { return storage().getItem('dudes.floor.notification-offer-seen') === 'true'; } catch { return false; }
+}
+
+export function writeNotificationOfferSeen(storage: () => ViewStorage = browserStorage): void {
+  try { storage().setItem('dudes.floor.notification-offer-seen', 'true'); } catch {}
+}
+
+export interface NewTicketDraft {
+  readonly title: string;
+  readonly note: string;
+  readonly project: string | null;
+  readonly check: string | null;
+  readonly agent: string;
+}
+
+export const EMPTY_TICKET_DRAFT: NewTicketDraft = Object.freeze({ title: '', note: '', project: null, check: null, agent: '' });
+const TICKET_DRAFT_KEY = 'dudes.floor.new-ticket-draft';
+const TICKET_CREATE_KEY = 'dudes.floor.unconfirmed-ticket-create';
+
+export function readNewTicketDraft(storage: () => ViewStorage = browserStorage): NewTicketDraft {
+  try {
+    const value: unknown = JSON.parse(storage().getItem(TICKET_DRAFT_KEY) ?? 'null');
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return EMPTY_TICKET_DRAFT;
+    const row = value as Record<string, unknown>;
+    if (typeof row.title !== 'string' || row.title.length > 256 || typeof row.note !== 'string' || row.note.length > 8192
+      || !(row.project === null || typeof row.project === 'string' && row.project.length <= 256)
+      || !(row.check === null || typeof row.check === 'string' && row.check.length <= 256)
+      || typeof row.agent !== 'string' || row.agent.length > 256) return EMPTY_TICKET_DRAFT;
+    return { title: row.title, note: row.note, project: row.project, check: row.check, agent: row.agent };
+  } catch { return EMPTY_TICKET_DRAFT; }
+}
+
+export function writeNewTicketDraft(draft: NewTicketDraft, storage: () => ViewStorage = browserStorage): void {
+  try { storage().setItem(TICKET_DRAFT_KEY, JSON.stringify(draft)); } catch {}
+}
+
+export function clearNewTicketDraft(sent: NewTicketDraft, storage: () => ViewStorage = browserStorage): void {
+  if (JSON.stringify(readNewTicketDraft(storage)) === JSON.stringify(sent)) writeNewTicketDraft(EMPTY_TICKET_DRAFT, storage);
+}
+
+export function readTicketChangesDraft(card: string, storage: () => ViewStorage = browserStorage): string {
+  try {
+    const value = storage().getItem(`dudes.floor.ticket-changes-draft.${card}`) ?? '';
+    return value.length <= 2048 ? value : '';
+  } catch { return ''; }
+}
+
+export function writeTicketChangesDraft(card: string, text: string, storage: () => ViewStorage = browserStorage): void {
+  try { storage().setItem(`dudes.floor.ticket-changes-draft.${card}`, text); } catch {}
+}
+
+export function clearTicketChangesDraft(card: string, sent: string, storage: () => ViewStorage = browserStorage): void {
+  if (readTicketChangesDraft(card, storage) === sent) writeTicketChangesDraft(card, '', storage);
+}
+
+export interface TicketCreateAttempt {
+  readonly fields: string;
+  readonly id: string;
+}
+
+export function readTicketCreateAttempt(storage: () => ViewStorage = browserStorage): TicketCreateAttempt | null {
+  try {
+    const value: unknown = JSON.parse(storage().getItem(TICKET_CREATE_KEY) ?? 'null');
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+    const row = value as Record<string, unknown>;
+    return typeof row.fields === 'string' && row.fields.length <= 65536 && typeof row.id === 'string'
+      && /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(row.id) ? { fields: row.fields, id: row.id } : null;
+  } catch { return null; }
+}
+
+export function writeTicketCreateAttempt(attempt: TicketCreateAttempt | null, storage: () => ViewStorage = browserStorage): void {
+  try { storage().setItem(TICKET_CREATE_KEY, JSON.stringify(attempt)); } catch {}
+}
+
 export function readGuideClosed(storage: () => ViewStorage = browserStorage): boolean {
   try { return storage().getItem(GUIDE_CLOSED_STORAGE_KEY) === 'true'; } catch { return false; }
 }
