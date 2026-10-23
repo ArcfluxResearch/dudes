@@ -1,20 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// One Hire: four sections of choices, one request, one truthful answer, then the first task.
+// One Hire: three sections of choices, one request, one truthful answer.
 //
-// The page names an agent, gives it a role, picks one workspace the operator
-// enrolled, one engine the daemon offers for it and one completion check the
-// operator enrolled for it, and writes its first task. Everything else that
-// decides how the agent runs — folder, command, the check's command, ceilings,
-// isolation, trust — is the daemon's configuration and never a field here. The
-// daemon validates the chosen check, hires, and writes the agent to its
-// own journal; the page only asks, and then says what the answer proves.
+// The page names an agent, gives it a role, and picks one workspace the operator
+// enrolled and one engine the daemon offers for it. Everything else that
+// decides how the agent runs — folder, command, ceilings, isolation, trust — is
+// the daemon's configuration and never a field here. The daemon hires and
+// writes the agent to its own journal; the page only asks, and then says what
+// the answer proves.
 //
-// The hire carries no task. Once the daemon answers `complete`, the page makes
-// the first task a ticket in that project with the check the hire named, and
-// gives it to the new agent, exactly as the board's own form does. A ticket that
-// could not be made leaves the typed text where it is and offers to try again; a
-// ticket that could not be given stays in To do with its Give action.
+// The hire carries no task and no check. The new agent is idle, and the Floor's
+// first-task card offers to give it work.
 //
 // What the answer proves is narrow on purpose. Only `complete` is a success.
 // `pending`, a 503 and a lost response prove nothing either way, so the page
@@ -41,27 +37,23 @@ import type { FloorState } from '../floor/store.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { HIRE_ENGINES, isHireEngine } from './catalog.ts';
 import type { EnrolledWorkspace, HireEngine, OnboardingCatalog } from './catalog.ts';
-import { checksFor } from './checks.ts';
-import type { CheckCatalog, EnrolledCheck } from './checks.ts';
 import { floorFetch } from '../../transport.ts';
-import type { ControlDeps } from '../control/control.ts';
 
-export type SectionKey = 'identity' | 'workspace' | 'engine' | 'briefing';
+export type SectionKey = 'identity' | 'workspace' | 'engine';
 
-/** The four sections, in order; one is shown at a time. */
+/** The three sections, in order; one is shown at a time. */
 export const SECTIONS: readonly { readonly key: SectionKey; readonly label: string; readonly hint: string }[] =
   Object.freeze([
     { key: 'identity', label: 'Who', hint: 'Name and look' },
     { key: 'workspace', label: 'Project', hint: 'Where they work' },
     { key: 'engine', label: 'App', hint: 'Claude, Codex or Pi' },
-    { key: 'briefing', label: 'First task', hint: 'What to do first' },
   ]);
 
 /** What an agent is called when the person gives no role. */
 export const DEFAULT_ROLE = 'engineer';
 
 /** Field limits in UTF-8 bytes, measured after trimming ASCII whitespace. */
-export const LIMITS = Object.freeze({ name: 128, role: 512, task: 2048 });
+export const LIMITS = Object.freeze({ name: 128, role: 512 });
 
 /** What to tell the person about a field's length: nothing until it is near the limit. */
 export function lengthNote(value: string, limit: number): string | null {
@@ -70,12 +62,18 @@ export function lengthNote(value: string, limit: number): string | null {
   return used >= limit * 0.9 ? 'This is almost too long.' : null;
 }
 
-export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine' | 'check_id' | 'first_task';
+export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine';
 
-/** What the page offers a Hire from: the enrolled workspaces, and the checks each offers. */
-export type HireOffer = Pick<FloorState, 'onboarding' | 'checks' | 'agents' | 'ticket'>;
+/** What the page offers a Hire from: the enrolled workspaces and the agents already working. */
+export type HireOffer = Pick<FloorState, 'onboarding' | 'agents'>;
 
-export const NO_CHECK = 'No completion check is offered for this project, so Hire is unavailable.';
+/** Whether the confirmed view says tickets are off, so nobody can give a new agent a task from the Floor. */
+export function ticketsOff(floor: FloorState): boolean {
+  return floor.phase === 'live' && !floor.stale && floor.snapshotEpoch === floor.epoch && !floor.ticket;
+}
+
+export const TICKETS_OFF_AFTER = 'Tickets are off, so nobody can give this agent a task from the Floor yet. Turn on tickets to do that.';
+
 export const NO_PROJECT_LIST = 'Hire cannot list your projects right now. Reload the page, and check Settings if this stays.';
 
 export interface HireDraft {
@@ -84,9 +82,6 @@ export interface HireDraft {
   readonly workspaceId: string;
   /** The engine chosen, which counts only while the chosen workspace offers it. */
   readonly engine?: HireEngine;
-  /** The check chosen, which counts only while the chosen workspace offers it. */
-  readonly checkId?: string;
-  readonly taskText: string;
   /**
    * Whether the agent works in its own copy of the project. Absent until the person decides, so a
    * project another agent already works in can start with the box ticked and say why.
@@ -112,8 +107,6 @@ export interface HirePayload {
   readonly attempt_id: string;
   readonly workspace_id: string;
   readonly workspace_revision?: string;
-  readonly check_id: string;
-  readonly check_revision: string;
   readonly name: string;
   readonly role: string;
   readonly provider?: Exclude<HireEngine, 'claude'>;
@@ -150,17 +143,6 @@ export type HireOutcome =
   /** 400 or 413: the request itself was refused before any effect. */
   | { readonly kind: 'rejected'; readonly status: number };
 
-/** What became of the first task once the hire was complete. */
-export type FirstTask =
-  | { readonly phase: 'none' }
-  | { readonly phase: 'making' }
-  /** The ticket was not saved; the typed text is still in the draft. `text` says why. */
-  | { readonly phase: 'not_made'; readonly text: string }
-  /** The ticket is saved. `text` says whether the agent has it; `given` is false when it stays in To do. */
-  | { readonly phase: 'made'; readonly card: string; readonly given: boolean; readonly text: string };
-
-export const TICKETS_OFF = 'Tickets are off, so the first task cannot be started. Turn on tickets, then hire.';
-
 export interface HireState {
   readonly draft: HireDraft;
   readonly section: SectionKey;
@@ -176,8 +158,6 @@ export interface HireState {
   readonly askedAtEpoch: number;
   /** The AgentId already revealed on the floor for this outcome. */
   readonly revealed: string | null;
-  /** The first task, once the hire is complete. */
-  readonly task: FirstTask;
   readonly prefill: { readonly notes: Readonly<Partial<Record<SectionKey, string>>> } | null;
   /**
    * Whether any reply to this attempt left its effect unknown: `pending`, a 503
@@ -202,8 +182,6 @@ export interface HireDeps {
   refresh(): void;
   /** The floor's current subscription epoch. */
   epoch(): number;
-  /** The requests that make and give the first task's ticket; the page's own when absent. */
-  readonly tickets?: ControlDeps;
 }
 
 export const browserHireDeps: HireDeps = {
@@ -218,11 +196,11 @@ export const browserHireDeps: HireDeps = {
   epoch: () => getFloorState().epoch,
 };
 
-const EMPTY_DRAFT: HireDraft = Object.freeze({ name: '', role: '', workspaceId: '', taskText: '' });
+const EMPTY_DRAFT: HireDraft = Object.freeze({ name: '', role: '', workspaceId: '' });
 const INITIAL: HireState = Object.freeze({
   draft: EMPTY_DRAFT, section: 'identity', problem: null, attempt: null,
   sending: false, outcome: null, askedAtEpoch: 0, revealed: null, uncertain: false,
-  prefill: null, task: Object.freeze({ phase: 'none' }),
+  prefill: null,
 });
 
 /** The canonical attempt form: 32 bytes, unpadded base64url, no stray bits. */
@@ -254,11 +232,6 @@ function commit(next: HireState): void {
   for (const listener of [...listeners]) listener();
 }
 
-/** Record what became of the first task. Only the first-task step calls this. */
-export function setFirstTask(task: FirstTask): void {
-  commit({ ...state, task: Object.freeze(task) });
-}
-
 /** Trim only ASCII space, tab, CR and LF, as the daemon does; interior bytes stay. */
 export function trimAsciiSpace(value: string): string {
   return value.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
@@ -278,12 +251,6 @@ function bounded(label: string, value: string, limit: number, empty = `${label} 
 /** The enrolled workspace a draft names, if the catalog still offers it. */
 export function chosenWorkspace(draft: HireDraft, catalog: OnboardingCatalog | null): EnrolledWorkspace | null {
   return catalog?.workspaces.find((space) => space.workspaceId === draft.workspaceId) ?? null;
-}
-
-/** The check this draft would run first: the one chosen, while its workspace offers it, or else the first. */
-export function chosenCheck(draft: HireDraft, checks: CheckCatalog | null): EnrolledCheck | null {
-  const offered = checksFor(checks, draft.workspaceId) ?? [];
-  return offered.find((check) => check.id === draft.checkId) ?? offered[0] ?? null;
 }
 
 /**
@@ -347,11 +314,6 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
   } else if (chosenEngine(draft, workspace) === null) {
     problems.push({ field: 'engine', section: 'engine', message: 'Choose an engine this project offers.' });
   }
-  if (workspace !== null && chosenCheck(draft, offer.checks) === null) {
-    problems.push({ field: 'check_id', section: 'briefing', message: NO_CHECK });
-  }
-  const task = bounded('The first task', draft.taskText, LIMITS.task, 'Say what the agent should do first.');
-  if (task !== null) problems.push({ field: 'first_task', section: 'briefing', message: task });
   return problems;
 }
 
@@ -416,13 +378,12 @@ export function prepareArchiveHire(row: RetiredAgentRow, floor: FloorState): boo
           ? `The archived engine was ${HIRE_ENGINES[archived]}. No engine was preselected; choose a project, then an engine it offers.`
           : `This project does not offer the archived ${HIRE_ENGINES[archived]} engine. No engine was preselected.`;
   commit({ ...INITIAL, draft: Object.freeze({ name: row.name, role: row.role, workspaceId,
-    ...(engine === null ? {} : { engine }), taskText: '',
+    ...(engine === null ? {} : { engine }),
     ...(row.character === undefined ? {} : { character: row.character }),
     ...(row.accent === undefined ? {} : { accent: row.accent }) }),
     prefill: Object.freeze({ notes: Object.freeze({
       identity: 'Recorded appearance choices were copied from the archive. Unrecorded choices stay Automatic.',
       workspace, engine: engineNote,
-      briefing: 'The archive does not record the previous task. Enter a new first task.',
     }) }) });
   return true;
 }
@@ -472,10 +433,6 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
     commit({ ...state, section: problem.section, problem });
     return;
   }
-  if (!offer.ticket) {
-    commit({ ...state, section: 'briefing', problem: { field: null, section: 'briefing', message: TICKETS_OFF } });
-    return;
-  }
   if (!deps.signedIn()) {
     commit({ ...state, problem: { field: null, section: state.section,
       message: 'This page has no Floor session, so nothing was sent.' } });
@@ -484,14 +441,11 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
   const workspace = chosenWorkspace(state.draft, offer.onboarding);
   const revision = workspace?.reloadMark?.revision;
   const engine = chosenEngine(state.draft, workspace);
-  const check = chosenCheck(state.draft, offer.checks)!;
   const copy = ownCopyOffer(state.draft, workspace, engine, agentsIn(offer.agents, state.draft.workspaceId).length);
   const payload: HirePayload = Object.freeze({
     attempt_id: mintAttemptId(deps.random),
     workspace_id: state.draft.workspaceId,
     ...(revision === undefined ? {} : { workspace_revision: revision }),
-    check_id: check.id,
-    check_revision: check.revision,
     name: trimAsciiSpace(state.draft.name),
     role: trimAsciiSpace(state.draft.role) || DEFAULT_ROLE,
     ...(engine === 'codex' || engine === 'pi' ? { provider: engine } : {}),
@@ -559,21 +513,19 @@ export function releaseAttempt(): void {
 
 /**
  * What closing the dialog does: a form nobody sent, and a hire that completed, are forgotten, so the
- * dialog reopens on the first step with empty fields. An attempt still waiting on an answer, or one whose
- * goal is not yet set, stays so it can be checked and never repeated.
+ * dialog reopens on the first step with empty fields. An attempt still waiting on an answer stays so it can
+ * be checked and never repeated.
  */
 export function leaveHire(): void {
   const kind = state.outcome?.kind;
-  const phase = state.task.phase;
-  if (state.sending || phase === 'making' || phase === 'not_made'
-    || (state.attempt !== null && kind !== 'complete') || state === INITIAL) return;
+  if (state.sending || (state.attempt !== null && kind !== 'complete') || state === INITIAL) return;
   commit({ ...INITIAL });
 }
 
 /** Start over after a hire the journal holds, with an empty form. */
 export function startAnotherHire(): void {
   const kind = state.outcome?.kind;
-  if (state.sending || kind !== 'complete' || state.task.phase === 'making') return;
+  if (state.sending || kind !== 'complete') return;
   commit({ ...INITIAL });
 }
 

@@ -428,6 +428,50 @@ fn a_trusted_project_hires_into_its_own_copy_as_the_command_line_does() {
 }
 
 #[test]
+fn a_hire_into_its_own_copy_needs_no_check() {
+    let fixture = Fixture::new();
+    let floor = floor(&fixture);
+    set_trust(&floor, true).expect("the grant");
+    let page = session(&floor);
+    let request = json!({
+        "attempt_id": format!("A{}", "A".repeat(42)),
+        "workspace_id": "repo_1", "name": "Kim", "role": "engineer",
+        "own_copy": true,
+    });
+    let first = page.post("/floor/onboard", &request);
+    assert_eq!(
+        (first.status(), first.json()["state"].clone()),
+        (200, json!("complete"))
+    );
+    assert_eq!((hired_agents(&fixture), leases(&fixture)), (1, 1));
+    let retry = page.post("/floor/onboard", &request);
+    assert_eq!(retry.json(), first.json());
+    assert_eq!((hired_agents(&fixture), leases(&fixture)), (1, 1));
+}
+
+#[test]
+fn an_own_copy_hire_never_answers_from_a_plain_hire_with_the_same_attempt() {
+    let fixture = Fixture::new();
+    let floor = floor(&fixture);
+    set_trust(&floor, true).expect("the grant");
+    let page = session(&floor);
+    let plain = json!({
+        "attempt_id": format!("A{}", "A".repeat(42)),
+        "workspace_id": "repo_1", "name": "Kim", "role": "engineer",
+    });
+    let mut copy = plain.clone();
+    copy["own_copy"] = json!(true);
+    assert_eq!(page.post("/floor/onboard", &plain).status(), 200);
+    let second = page.post("/floor/onboard", &copy);
+    assert_eq!(
+        second.status(),
+        409,
+        "a different request under the same attempt conflicts"
+    );
+    assert_eq!((hired_agents(&fixture), leases(&fixture)), (1, 0));
+}
+
+#[test]
 fn a_copy_is_refused_in_plain_words_and_nothing_is_made() {
     let fixture = Fixture::new();
     let floor = floor(&fixture);

@@ -25,7 +25,7 @@ import { HireEntry, hireSwitchOn } from './renderer/onboarding/HireEntry';
 import { FirstRunGuide } from './renderer/setup/FirstRunGuide';
 import { FirstTask } from './renderer/setup/FirstTask.tsx';
 import {
-  agentToReveal, getHireState, leaveHire, markRevealed, prepareArchiveHire, prepareHire, subscribeToHire,
+  agentToReveal, getHireState, leaveHire, ticketsOff, markRevealed, prepareArchiveHire, prepareHire, subscribeToHire,
 } from './renderer/onboarding/hire';
 import type { RetiredAgentRow } from './renderer/archive';
 import { AGENT_DETAIL_HEADING_ID, closesDrawer, closesPanel, focusAnswer, handFocusOnLeave, restoreFocusAfterDialog } from './renderer/focus';
@@ -230,7 +230,8 @@ function SignedInShell() {
   useEffect(() => {
     if (reveal === null) return;
     markRevealed(reveal);
-    if (hire.outcome?.kind === 'complete') {
+    // With tickets off the hire's last screen says so and offers the switch, so it stays open.
+    if (hire.outcome?.kind === 'complete' && !ticketsOff(floor)) {
       closeHire();
       setGuide('closed');
       setFocused(false);

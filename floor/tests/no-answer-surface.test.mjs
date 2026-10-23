@@ -242,10 +242,8 @@ const HIRE_FIELDS = Object.freeze([
   { tag: 'textarea', name: 'role', type: null, change: '(event) => editDraft({ role: event.target.value })' },
   { tag: 'input', name: 'workspace_id', type: 'radio', change: '() => editDraft({ workspaceId: space.workspaceId })' },
   { tag: 'input', name: 'engine', type: 'radio', change: '() => editDraft({ engine: name })' },
-  { tag: 'input', name: 'check_id', type: 'radio', change: '() => editDraft({ checkId: option.id })' },
   { tag: 'input', name: 'own_copy', type: 'checkbox',
     change: '(event) => editDraft({ ownCopy: event.target.checked })' },
-  { tag: 'textarea', name: 'first_task', type: null, change: '(event) => editDraft({ taskText: event.target.value })' },
 ]);
 const ADMITTED_IN_HIRE_FORM = Object.freeze(['an input', 'a textarea', 'a select', 'a change handler']);
 
@@ -1019,7 +1017,7 @@ function fieldsIn(text) {
 const EXECUTION_CHOICE =
   /cwd|command|argv|exec|provider|engine|model|predicate|check|budget|ceiling|usd|hop|isolat|trust|path|folder|dir|file|repo|env|shell/i;
 
-test('the Hire form has exactly eight named fields, and no field name but workspace_id, engine and check_id matches '
+test('the Hire form has exactly seven named fields, and no field name but workspace_id and engine matches '
   + 'EXECUTION_CHOICE', async () => {
   // The control first: a planted path field and a file picker are both seen.
   const planted = fieldsIn(`const x = <><input name="cwd" onChange={(event) => set(event)} />
@@ -1034,7 +1032,7 @@ test('the Hire form has exactly eight named fields, and no field name but worksp
     HIRE_FIELDS.map(({ tag, name, type }) => `${tag}:${name}:${type ?? ''}`).sort(),
     'the Hire form grew, lost or renamed a field');
   for (const field of fields) {
-    assert.ok(['workspace_id', 'engine', 'check_id'].includes(field.name) || !EXECUTION_CHOICE.test(field.name),
+    assert.ok(['workspace_id', 'engine'].includes(field.name) || !EXECUTION_CHOICE.test(field.name),
       `${field.name} is an execution choice`);
     assert.notEqual(field.type, 'file', 'the Hire form carries a file picker');
     assert.notEqual(field.type, 'hidden', 'the Hire form carries a hidden field');
@@ -1045,15 +1043,11 @@ test('the Hire form has exactly eight named fields, and no field name but worksp
     HIRE_FIELDS.map(({ name, change }) => `${name}: ${change}`).sort(),
     "a Hire field's change handler is not the one pinned for that field");
   // Each choice's value comes from what the daemon offered: a workspace from
-  // `catalog.workspaces`, an engine from that workspace's `engines`, and a
-  // check from that workspace's enrolled `checks`.
+  // `catalog.workspaces` and an engine from that workspace's `engines`.
   assert.match(form, /<input type="radio" name="workspace_id" value=\{space\.workspaceId\}/);
   assert.match(form, /catalog\.workspaces\.map\(\(space\) =>/);
   assert.match(form, /<input type="radio" name="engine" value=\{name\}/);
   assert.match(form, /workspace\.engines\.map\(\(name\) =>/);
-  assert.match(form, /<input type="radio" name="check_id" value=\{option\.id\}/);
-  assert.match(form, /checks\.map\(\(option\) =>/);
-  assert.match(form, /const checks = workspace === null \? null : checksFor\(floor\.checks, workspace\.workspaceId\);/);
 });
 
 test("the answer form has exactly one field and its field and Send key handlers are pinned by text", async () => {
@@ -1128,7 +1122,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
     ...Array(8).fill(TICKET_BOARD),
     ...Array(10).fill(TICKET_PANEL),
-    ...Array(14).fill(HIRE_FORM),
+    ...Array(13).fill(HIRE_FORM),
     HIRE_ENTRY,
     ...Array(6).fill(RETIRE_PANEL),
     ...Array(2).fill(GIT_PANEL),
@@ -1291,7 +1285,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
 
   // The Hire form's activators, each named: sections, Back, Next, the one
   // Hire, Check again for a missing engine, Check status on the same attempt,
-  // Edit after a no-effect refusal, Try again for an unsaved first task, Turn on tickets, Hire another after a durable answer, Open the
+  // Edit after a no-effect refusal, Hire another after a durable answer, Open the
   // hired agent, and Close. The shell opens it.
   assert.deepEqual(clicksIn(await readFile(resolve(floor, HIRE_FORM), 'utf8')).sort(), [
     '() => copyToClipboard(INSTALL_COMMANDS[engine]!)',
@@ -1299,10 +1293,9 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => { if (!frozen && !stuck) moveSection(1, floor); }',
     '() => { if (!stuck) showSection(entry.key); }',
     '() => refreshFloorSnapshot()',
-    '() => { if (!hire.sending) void checkHireStatusWithFirstTask(browserHireDeps); }',
-    '() => { if (blocked === null && !frozen && !hire.sending) void hireWithFirstTask(floor, browserHireDeps); }',
+    '() => { if (!hire.sending) void checkHireStatus(browserHireDeps); }',
     "() => { void changeSetting('floor.board', 'on'); }",
-    '() => { void makeFirstTask(browserHireDeps); }',
+    '() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }',
     'onClose',
     'onClose',
     'onClose',

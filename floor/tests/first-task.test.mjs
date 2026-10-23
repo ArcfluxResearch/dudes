@@ -221,8 +221,3 @@ test('Hire says nothing about length until a field is near its limit, then says 
   assert.equal(lengthNote('k'.repeat(129), 128), 'This is too long. Shorten it.');
   assert.equal(lengthNote('é'.repeat(65), 128), 'This is too long. Shorten it.');
 });
-
-test('Hire asks for the first task in plain words', () => {
-  const problems = hire.problemsIn({ name: 'Kim', role: '', workspaceId: '', taskText: '' }, { onboarding: null, checks: null });
-  assert.ok(problems.some((entry) => entry.message === 'Say what the agent should do first.'), JSON.stringify(problems));
-});

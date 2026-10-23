@@ -138,9 +138,9 @@ async function closeHireCallback(page, dialog, opener) {
   const completed = ts.transpileModule(`const complete = ${completion};`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const completeHire = new Function('reveal', 'hire', 'markRevealed', 'selectAgent', 'closeHire', 'hireDialog',
-    'setHiring', 'setGuide', 'setFocused', 'setArchiveHireKept', `${completed}\nreturn complete;`)(ADA,
+    'setHiring', 'setGuide', 'setFocused', 'setArchiveHireKept', 'ticketsOff', 'floor', `${completed}\nreturn complete;`)(ADA,
     { outcome: { kind: 'complete' } }, (id) => selections.push(['revealed', id]), (id) => selections.push(['selected', id]),
-    closeHire, { current: dialog }, () => {}, () => {}, () => {}, () => {});
+    closeHire, { current: dialog }, () => {}, () => {}, () => {}, () => {}, () => false, {});
   const cancelHire = new Function('closeHire', `return ${cancellation};`)(closeHire);
   return { closeHire, completeHire, cancelHire, selections };
 }

@@ -11,6 +11,7 @@ import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { UnavailableControls } from '../settings/SettingsView.tsx';
 import { INSTALL_COMMANDS, rowFor } from '../setup/daemon.ts';
+import { changeSetting } from '../settings/edit.ts';
 import { copyToClipboard } from '../setup/SetupView.tsx';
 import { decodeWorkspace } from '../workspace.ts';
 import { noProjects, viewConfirmed } from '../ticket/model.ts';
@@ -19,13 +20,10 @@ import { EngineSignIn } from '../login/EngineSignIn.tsx';
 import type { ProviderRow } from '../setup/daemon.ts';
 import { HIRE_ENGINES, formatUsdMicros, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
-import { checksFor, choiceLabel } from './checks.ts';
-import { changeSetting } from '../settings/edit.ts';
-import { checkHireStatusWithFirstTask, hireWithFirstTask, makeFirstTask } from './firstTask.ts';
 import {
-  LIMITS, NO_CHECK, NO_PROJECT_LIST, TICKETS_OFF, agentsIn, lengthNote, ownCopyOffer, SECTIONS, browserHireDeps, chosenCheck, chosenWorkspace,
+  LIMITS, NO_PROJECT_LIST, agentsIn, checkHireStatus, lengthNote, ownCopyOffer, SECTIONS, browserHireDeps, chosenWorkspace,
   chosenEngine, editDraft, freshSince, getHireState, moveSection, presenceOf, releasable,
-  releaseAttempt,
+  releaseAttempt, submitHire, TICKETS_OFF_AFTER, ticketsOff,
   sessionAfterRefusal, showSection, startAnotherHire, subscribeToHire,
 } from './hire.ts';
 import type { FieldName, HireAttempt, HireDraft, HireOutcome, HireState, OwnCopy } from './hire.ts';
@@ -196,16 +194,13 @@ function HireForm({ hire, floor, onClose }: {
   const at = SECTIONS.findIndex((entry) => entry.key === hire.section);
   const workspace = chosenWorkspace(hire.draft, catalog);
   const engine = chosenEngine(hire.draft, workspace);
-  const checks = workspace === null ? null : checksFor(floor.checks, workspace.workspaceId);
   const sharing = workspace === null ? [] : sharedProject(floor, workspace.workspaceId);
   const copy = ownCopyOffer(hire.draft, workspace, engine, sharing.length);
-  const check = chosenCheck(hire.draft, floor.checks);
   const row = engine === null ? null : rowFor(floor.daemon, engine);
   const missing = engineMissing(row, engine);
   const withdrawn = workspace !== null && (floor.settings?.providers
     .some((name) => isHireEngine(name) && !workspace.engines.includes(name)) ?? false);
-  const ticketsOff = viewConfirmed(floor) && !floor.ticket;
-  const blocked = unavailable(floor) ?? missing ?? (ticketsOff ? TICKETS_OFF : null);
+  const blocked = unavailable(floor) ?? missing;
   // A missing or signed-out engine holds the wizard on Engine, where its reason, Sign in and Check again are.
   const stuck = hire.section === 'engine' && missing !== null;
   const frozen = hire.attempt !== null;
@@ -215,7 +210,7 @@ function HireForm({ hire, floor, onClose }: {
   return (
     <>
       {hire.prefill === null ? null : <p className="hire-note">
-        This prepares a new agent from archived details. Review each section and enter a new first task.
+        This prepares a new agent from archived details. Review each section.
       </p>}
       <div className="hire-body">
         <nav className="hire-index" aria-label="Hire sections">
@@ -350,64 +345,22 @@ function HireForm({ hire, floor, onClose }: {
                 </div>
               )}
               {engine === null ? null : <EngineSignIn engine={engine} row={row} terminal={floor.terminal} />}
-            </>
-          )}
-          {hire.section !== 'briefing' ? null : (
-            <>
-              <div className="hire-field">
-                <label htmlFor="hire-task">What should they do first?</label>
-                <textarea id="hire-task" name="first_task" rows={4} autoComplete="off"
-                  value={hire.draft.taskText} disabled={frozen}
-                  aria-invalid={invalid('first_task')} aria-describedby={described('first_task')}
-                  onChange={(event) => editDraft({ taskText: event.target.value })} />
-                <LengthNote value={hire.draft.taskText} limit={LIMITS.task} />
-              </div>
-              {ticketsOff ? <TicketsOffNote floor={floor} /> : null}
-              {workspace === null || catalog === null ? (
-                <p className="hire-note">Choose a project to see how this task is checked.</p>
-              ) : (
-                <>
-                  {checks === null ? <p className="hire-note">{NO_CHECK}</p> : (
-                    <>
-                      <fieldset className="hire-choices" data-check-choice="hire" aria-invalid={invalid('check_id')}
-                        aria-describedby={described('check_id')}>
-                        <legend>The task is done when</legend>
-                        {checks.map((option) => (
-                          <label key={option.id} className="hire-choice">
-                            <input type="radio" name="check_id" value={option.id} data-check-id={option.id}
-                              checked={check?.id === option.id} disabled={frozen}
-                              onChange={() => editDraft({ checkId: option.id })} />
-                            <span className="hire-choice-label">{choiceLabel(option)}</span>
-                          </label>
-                        ))}
-                      </fieldset>
-                      {check?.mayAlreadyPass === true
-                        ? <p className="hire-note">This check might already be true before the agent starts. It checks again
-                          when the agent finishes, but a pass does not prove the work is right, so look at the result
-                          yourself.</p>
-                        : null}
-                    </>
-                  )}
-                  <SharedProjectNote names={sharing} copy={copy} />
-                  <details className="hire-more"><summary>Spending and turn limits</summary>
+              {engine === null || workspace === null || catalog === null ? null : (
+                <details className="hire-more"><summary>Spending and turn limits</summary>
                   <dl className="hire-facts" aria-label="Configured limits">
-                    <div><dt>Most turns for this task</dt><dd>{workspace.hopCap}</dd></div>
-                    <div><dt>Spending limit for this task</dt><dd>{cap(workspace.goalUsdMicros, 'usd')}</dd></div>
-                    <div><dt>Token limit for this task</dt><dd>{cap(workspace.goalTokens, 'tokens')}</dd></div>
+                    <div><dt>Most turns for a task</dt><dd>{workspace.hopCap}</dd></div>
+                    <div><dt>Spending limit for a task</dt><dd>{cap(workspace.goalUsdMicros, 'usd')}</dd></div>
+                    <div><dt>Token limit for a task</dt><dd>{cap(workspace.goalTokens, 'tokens')}</dd></div>
                     <div><dt>Daily spending limit for this agent</dt><dd>{cap(workspace.agentUsdPerDayMicros, 'usd', true)}</dd></div>
                     <div><dt>Daily token limit for this agent</dt><dd>{cap(workspace.agentTokensPerDay, 'tokens', true)}</dd></div>
                     <div><dt>Daily spending limit for the whole Floor</dt><dd>{cap(catalog.floorUsdPerDayMicros, 'usd', true)}</dd></div>
                   </dl>
-                  {engine === null ? null : <p className="hire-note">
-                    {`This agent runs at most ${workspace.hopCap} turns for this task. ${HIRE_ENGINES[engine]}'s own `
+                  <p className="hire-note">
+                    {`This agent runs at most ${workspace.hopCap} turns for a task. ${HIRE_ENGINES[engine]}'s own `
                       + 'plan limits apply, and so does any limit shown above.'}
-                  </p>}
-                  </details>
-                </>
+                  </p>
+                </details>
               )}
-              <p className="hire-note">
-                Dudes runs the check itself. An agent saying it is finished does not count.
-              </p>
             </>
           )}
           {hire.problem === null || (noProject && hire.problem.field === 'workspace_id') ? null : (
@@ -426,7 +379,7 @@ function HireForm({ hire, floor, onClose }: {
         {at === SECTIONS.length - 1
           ? <button type="button" className="hire-submit" aria-disabled={blocked !== null || frozen || hire.sending}
             ref={handFocusOnLeave} data-focus-on-leave="hire-title" aria-busy={hire.sending}
-            onClick={() => { if (blocked === null && !frozen && !hire.sending) void hireWithFirstTask(floor, browserHireDeps); }}>
+            onClick={() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }}>
             {hire.sending ? 'Hiring…' : 'Hire'}
           </button>
           : <button type="button" className="hire-next" aria-disabled={frozen || stuck}
@@ -438,12 +391,12 @@ function HireForm({ hire, floor, onClose }: {
   );
 }
 
-/** Tickets carry the first task, so with them off nobody is hired: say so and offer the switch. */
+/** The hire is complete, but with tickets off nobody can give the agent a task: say so and offer the switch. */
 function TicketsOffNote({ floor }: { readonly floor: FloorState }) {
   const switches = floor.settings?.switches;
   const needed = (['control', 'goal'] as const).filter((key) => switches?.[key] === false);
-  return <div className="hire-problem" role="alert" data-hire-tickets="off">
-    <p>{TICKETS_OFF}</p>
+  return <div className="hire-warning" role="status" data-hire-tickets="off">
+    <p>{TICKETS_OFF_AFTER}</p>
     {switches?.board === false
       ? <button type="button" onClick={() => { void changeSetting('floor.board', 'on'); }}>Turn on tickets</button>
       : null}
@@ -515,21 +468,17 @@ function HireAnswer({ hire, floor, onClose }: {
         {settled ? null : (
           <button type="button" aria-disabled={hire.sending} aria-busy={hire.sending}
             ref={handFocusOnLeave} data-focus-on-leave="hire-title"
-            onClick={() => { if (!hire.sending) void checkHireStatusWithFirstTask(browserHireDeps); }}>
+            onClick={() => { if (!hire.sending) void checkHireStatus(browserHireDeps); }}>
             {hire.sending ? 'Checking…' : 'Check status'}
           </button>
         )}
         {noEffect ? <button type="button" aria-disabled={hire.sending}
           ref={handFocusOnLeave} data-focus-on-leave="hire-title"
           onClick={() => { if (!hire.sending) releaseAttempt(); }}>Edit the form</button> : null}
-        {hire.task.phase === 'not_made' ? (
-          <button type="button" className="hire-next" data-hire-task-retry="true"
-            onClick={() => { void makeFirstTask(browserHireDeps); }}>Try again</button>
-        ) : null}
         {settled ? (
-          <button type="button" aria-disabled={!fresh || floor.onboarding === null || hire.task.phase === 'making'}
+          <button type="button" aria-disabled={!fresh || floor.onboarding === null}
             ref={handFocusOnLeave} data-focus-on-leave="hire-title"
-            onClick={() => { if (fresh && floor.onboarding !== null) startAnotherHire(); }}>{hire.task.phase === 'not_made' ? 'Discard the task' : 'Hire another'}</button>
+            onClick={() => { if (fresh && floor.onboarding !== null) startAnotherHire(); }}>Hire another</button>
         ) : null}
         {shown ? <button type="button" className="hire-next" ref={handFocusOnLeave} data-focus-on-leave="hire-open"
           onClick={onClose}>Open {hiredName}</button> : null}
@@ -555,24 +504,6 @@ function RecordIds({ agent }: { readonly agent: string }) {
   </details>;
 }
 
-/** Where the first task is: being made, not saved yet, or a ticket on the board. */
-function FirstTaskStatus({ hire, name }: { readonly hire: HireState; readonly name: string }) {
-  const task = hire.task;
-  if (task.phase === 'none' || task.phase === 'making') {
-    return <p className="hire-pending" role="status" data-hire-task="making">{`Making ${name}'s first task…`}</p>;
-  }
-  if (task.phase === 'not_made') {
-    return <div className="hire-warning" role="alert" data-hire-task="not_made">
-      <p>{`${name} is hired, but the first task was not saved. ${task.text}`}</p>
-      <p className="hire-note">Your text is kept below.</p>
-      <blockquote data-hire-task-text="true">{hire.draft.taskText}</blockquote>
-    </div>;
-  }
-  return <p className={task.given ? 'hire-success' : 'hire-warning'} role="status" data-hire-task={task.given ? 'given' : 'todo'}>
-    {task.given ? `The first task is on the board. ${task.text}` : task.text}
-  </p>;
-}
-
 function AnswerBody({ outcome, hire, floor }: {
   readonly outcome: HireOutcome;
   readonly hire: HireState;
@@ -592,7 +523,7 @@ function AnswerBody({ outcome, hire, floor }: {
               {`Hired ${agentName(hire, floor, outcome.agent)}.`}
             </p>
           )}
-          <FirstTaskStatus hire={hire} name={agentName(hire, floor, outcome.agent)} />
+          {ticketsOff(floor) ? <TicketsOffNote floor={floor} /> : null}
           <dl className="hire-facts">
             {hire.attempt?.payload.own_copy === true ? (
               <div><dt>Works in</dt><dd data-hire-own-copy="true">Its own copy of the project, on its own branch</dd></div>

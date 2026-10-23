@@ -127,6 +127,12 @@ engine writes its own credentials. **Settings** shows the running Floor switches
 registered providers and your projects. The Floor reads configuration without editing
 it. **About**, within Settings, shows the daemon, Floor build and browser wire versions.
 
+## Hire an agent
+
+The Hire dialog has three steps: **Who** (a name, and optionally a role and a look), **Project**, and
+**App**. A hire needs no task, and it does not need tickets to be on. The new agent waits, idle, at its
+desk. With tickets on and none open, the Floor then offers **Give a task** for it.
+
 ## Hire an agent into its own copy of the project
 
 Two agents in one folder can overwrite each other. The Hire dialog's **App** step offers **Work in
