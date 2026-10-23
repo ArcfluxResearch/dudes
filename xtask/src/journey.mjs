@@ -159,15 +159,16 @@ export class Journey {
     await this.until(`Boolean(document.querySelector('input[name="engine"][value="codex"]'))`, 'the stand-in engine was not offered');
     await this.screen('hire: app');
     await this.click('input[name="engine"][value="codex"]');
-    await this.clickButton('Next', '.hire-actions button');
-    await this.until(`Boolean(document.querySelector('#hire-task'))`, 'the first task was not asked for');
-    await this.screen('hire: first task');
-    await this.fill('#hire-task', 'Write a note file');
     await this.click('.hire-submit');
-    await this.until(`document.querySelector('[data-hire-outcome]')?.dataset.hireOutcome === 'complete'`, 'the hire did not complete');
-    await this.until(`document.querySelector('[data-hire-task]')?.dataset.hireTask === 'given'`, 'the first task was not given to the new agent');
-    await this.screen('hire: done');
     await this.until(`!document.querySelector('.hire-dialog')`, 'the hire dialog did not close');
+    await this.until(`Boolean(document.querySelector('[data-first-task="task"] .first-task-open'))`,
+      'the first-task card did not offer to give the new agent a task');
+    await this.screen('hire: done');
+    await this.click('[data-first-task="task"] .first-task-open');
+    await this.until(`Boolean(document.querySelector('[data-first-task="task"] form textarea'))`, 'the first-task form did not open');
+    await this.screen('first task: form');
+    await this.fill('[data-first-task="task"] form textarea', 'Write a note file');
+    await this.click('[data-first-task="task"] .first-task-start');
     await this.click('#view-board');
     await this.until(`Boolean(document.querySelector('[data-ticket-column="ready"] .ticket-card'))`,
       'the first task did not reach Ready for you', 60_000);

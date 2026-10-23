@@ -465,8 +465,7 @@ pub struct OnboardRequest {
     pub(crate) provider: Provider,
     pub(crate) name: String,
     pub(crate) role: String,
-    /// The enrolled check the hire names, by id and revision. Absent only on a retry of an
-    /// attempt the onboarding index already holds.
+    /// The enrolled check the hire names, by id and revision, when it names one.
     pub(crate) check: Option<(String, Hex32)>,
     /// The agent works in a git worktree of its own rather than in the project folder.
     pub(crate) own_copy: bool,
@@ -570,9 +569,6 @@ pub enum OnboardRefusal {
     Unavailable,
     /// This request appended nothing and may retry immediately in the same run.
     UnavailableNoEffect,
-    /// A new attempt's typed input failed validation before any effect. The route
-    /// answers it as it answers a request that does not parse.
-    InvalidInput,
     /// A new hire presented a workspace revision other than the running one, or
     /// a check that is not enrolled for the workspace at that revision: nothing was appended.
     ProfileChanged,
@@ -612,7 +608,8 @@ struct OnboardJson {
 /// is `dudes.onboard.nogoal.<version>`, apart from the digests of hires that framed a goal text. v1
 /// frames none, v2 adds the appearance, v3, for a request that names an engine, always frames all seven,
 /// v4, for a request that names a check, frames v3's seven and then the check, and v5, for a request
-/// that asks for its own copy, frames v4's fields and then the choice.
+/// that names a check and asks for its own copy, frames v4's fields and then the choice. v6, for a
+/// request that asks for its own copy and names no check, frames v3's seven and then the choice.
 fn request_framing<'a>(
     check: Option<(&'a str, &'a str)>,
     names_engine: bool,
@@ -631,6 +628,10 @@ fn request_framing<'a>(
                     ("own_copy", "true"),
                 ])
                 .collect(),
+        ),
+        (None, ..) if own_copy => (
+            "v6",
+            seven.into_iter().chain([("own_copy", "true")]).collect(),
         ),
         (Some((id, revision)), ..) => (
             "v4",
@@ -693,9 +694,6 @@ impl OnboardRequest {
             .as_ref()
             .map(|(id, revision)| (id.as_str(), crate::goal_replacement::hex(*revision)));
         let own_copy = raw.own_copy.unwrap_or(false);
-        if own_copy && check.is_none() {
-            bail!("a browser hire in its own copy names a check");
-        }
         let (domain, extra) = request_framing(
             revision
                 .as_ref()

@@ -2081,7 +2081,6 @@ fn onboard_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) 
             error_response(503, "Service Unavailable")
         }
         Err(OnboardRefusal::UnavailableNoEffect) => error_response(503, "Service Unavailable"),
-        Err(OnboardRefusal::InvalidInput) => error_response(400, "Bad Request"),
         Err(OnboardRefusal::ProfileChanged) => action_json(
             409,
             "Conflict",

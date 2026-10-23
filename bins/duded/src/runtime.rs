@@ -2457,18 +2457,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.onboard_new(session, request)
     }
 
-    /// A new browser hire: the new-attempt validation, the admission, then the hire. The check the
-    /// hire names is validated here and run when the first ticket starts, not before the hire.
+    /// A new browser hire: the new-attempt validation, the admission, then the hire. A check the
+    /// hire names is validated here, and none is needed.
     fn onboard_new(
         &mut self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
     ) -> OnboardStep {
-        if request.check.is_none() {
-            return OnboardStep::Answer(Err(OnboardRefusal::InvalidInput));
-        }
         match self.onboarding_admission(session, request) {
-            Ok((profile, _)) => self.hire_onboarded(session, request, &profile, None),
+            Ok(profile) => self.hire_onboarded(session, request, &profile, None),
             Err(refusal) => OnboardStep::Answer(Err(refusal)),
         }
     }
@@ -2536,13 +2533,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
     }
 
-    /// The validation of a new hire, with the check it names: enrolled for the
-    /// workspace at the revision the page was offered.
+    /// The validation of a new hire. A check the request names must be enrolled for the
+    /// workspace at the revision the page was offered; a request that names none is admitted.
     fn onboarding_admission(
         &self,
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
-    ) -> Result<(Profile, crate::floor_actions::EnrolledCheck), OnboardRefusal> {
+    ) -> Result<Profile, OnboardRefusal> {
         if !self.ctx.switches.load().hire || self.ctx.onboarding_index.count(session.digest()) >= 4
         {
             return Err(OnboardRefusal::Forbidden);
@@ -2580,21 +2577,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 )
                 .map_err(OnboardRefusal::SharedFolder)?;
         }
-        let (id, revision) = request.check.as_ref().ok_or(OnboardRefusal::InvalidInput)?;
-        let check = profile
-            .check(id)
-            .filter(|check| {
-                check
-                    .reference()
-                    .is_some_and(|named| named.revision == *revision)
-            })
-            .cloned()
-            .ok_or(OnboardRefusal::ProfileChanged)?;
-        Ok((profile, check))
+        if let Some((id, revision)) = &request.check {
+            profile
+                .check(id)
+                .filter(|check| {
+                    check
+                        .reference()
+                        .is_some_and(|named| named.revision == *revision)
+                })
+                .ok_or(OnboardRefusal::ProfileChanged)?;
+        }
+        Ok(profile)
     }
 
-    /// Append one admitted browser hire whose intended goal carries its check and what the
-    /// check's run saw, then hand the reply on to the goal's append. A hire that asks for its own
+    /// Append one admitted browser hire. A hire that asks for its own
     /// copy first answers with the copy to make; `copy` is that copy once it exists.
     fn hire_onboarded(
         &mut self,
@@ -2681,7 +2677,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         {
             return answer(Err(OnboardRefusal::Unavailable));
         }
-        let (profile, _) = match self.onboarding_admission(session, request) {
+        let profile = match self.onboarding_admission(session, request) {
             Ok(admitted) => admitted,
             Err(refusal) => return answer(Err(refusal)),
         };

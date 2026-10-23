@@ -401,18 +401,16 @@ exec /bin/sleep 120
     await next();
     await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('input[name="engine"][value="codex"]'))`), 'stand-in engine was not offered');
     await click('input[name="engine"][value="codex"]');
-    await next();
-    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-task'))`), 'Hire briefing missing');
-    await fill('#hire-task', 'Keep the smoke stand-in alive');
     await click('.hire-submit');
     this.agent = await waitFor(async () => {
-      const result = await this.cdp.evaluate(`(() => {
-        const outcome = document.querySelector('[data-hire-outcome]');
-        return outcome ? { kind: outcome.dataset.hireOutcome, agent: outcome.querySelector('[data-hire-agent-id]')?.dataset.hireAgentId } : null;
-      })()`);
-      check(!result || result.kind === 'complete', 'Hire was refused or incomplete');
-      return result?.agent;
+      const id = await this.cdp.evaluate(`document.querySelector('.crew-row[data-agent-id]')?.dataset.agentId ?? null`);
+      return id;
     }, 'Hire did not complete');
+    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('[data-first-task="task"] .first-task-open'))`), 'the first-task card was not offered to the idle agent');
+    check(await click('[data-first-task="task"] .first-task-open'), 'first-task card did not open');
+    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('[data-first-task="task"] form textarea'))`), 'first-task form missing');
+    await fill('[data-first-task="task"] form textarea', 'Keep the smoke stand-in alive');
+    await click('[data-first-task="task"] .first-task-start');
     const selector = `.crew-row[data-agent-id="${this.agent}"] [data-live-activity]`;
     await waitFor(async () => ['Working', 'Tool step'].includes(await this.cdp.evaluate(`document.querySelector(${JSON.stringify(selector)})?.textContent`)), 'hired agent has no live activity label');
     const agents = JSON.parse((await this.cli(['--json', 'agents'])).stdout);
