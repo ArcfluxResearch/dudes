@@ -23,6 +23,7 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ### Changes
 
+- After Accept, the ticket says where the changes are, in the project or in the agent's own copy, and that Dudes did not commit or push them. The Changes view stays on the Done ticket, so its files can still be opened side by side. (#178)
 - The first ticket you give offers "Tell me when it's ready?" once, and one click turns on desktop notifications. (#175)
 - Settings is grouped by job, with configuration keys and support commands under Details. Ticket, Chat, Hire, Changes and Log text uses plain words instead of command lines, and record positions and identifiers move under Details. (#177)
 - Chat's **Clear all** removes an agent's queued notes after one confirmation. Notes already sent, or whose delivery is unknown, stay. (#177)
