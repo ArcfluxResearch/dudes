@@ -139,7 +139,7 @@ fn failed_spawn_cleanup_does_not_touch_a_healthy_bystander() {
     common::await_number(&healthy_mark);
     let healthy_beat = common::beat_path(&healthy_mark);
     assert!(
-        common::beating(&healthy_beat),
+        common::beating_after_start(&healthy_beat),
         "healthy control is not live"
     );
 

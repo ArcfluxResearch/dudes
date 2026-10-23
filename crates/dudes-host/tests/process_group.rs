@@ -84,7 +84,7 @@ fn a_spawned_child_leads_its_own_process_group_so_the_sweep_reaches_a_grandchild
 
     let grandchild_beat = common::beat_path(&grandchild_mark);
     assert!(
-        common::beating(&grandchild_beat),
+        common::beating_after_start(&grandchild_beat),
         "anti-vacuity: the grandchild must be running before the kill, or it cannot be shown to \
          have been stopped by it"
     );

@@ -175,7 +175,10 @@ fn a_real_child_that_ignores_the_polite_signal_is_struck_by_the_hard_one() {
     );
     common::await_number(&mark);
     let beat = common::beat_path(&mark);
-    assert!(common::beating(&beat), "anti-vacuity: the child is running");
+    assert!(
+        common::beating_after_start(&beat),
+        "anti-vacuity: the child is running"
+    );
 
     let mut adopter = RealHost::with_grace(GRACE);
     let outcome = adopter.kill(&key);
@@ -244,7 +247,7 @@ fn run(arm: Arm) -> (KillOutcome, bool) {
     );
     let beat = common::beat_path(&live_mark);
     assert!(
-        common::beating(&beat),
+        common::beating_after_start(&beat),
         "anti-vacuity: the target must be running before the kill, or 'it survived' means nothing"
     );
 
@@ -386,7 +389,7 @@ fn a_key_from_another_boot_does_not_select_a_child_of_this_one() {
     common::await_number(&mark);
     let beat = common::beat_path(&mark);
     assert!(
-        common::beating(&beat),
+        common::beating_after_start(&beat),
         "anti-vacuity: the child must be running before the kill"
     );
 
@@ -436,7 +439,7 @@ fn a_key_with_the_wrong_start_value_does_not_kill_the_child_the_host_owns_now() 
     common::await_number(&mark);
     let beat = common::beat_path(&mark);
     assert!(
-        common::beating(&beat),
+        common::beating_after_start(&beat),
         "anti-vacuity: the child must be running"
     );
 
