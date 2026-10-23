@@ -1,6 +1,5 @@
 use rustix::fs::{AtFlags, FileType, Mode, OFlags, openat, statat};
 use rustix::io::Errno;
-use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Read as _;
 use std::os::fd::{AsFd, OwnedFd};
@@ -197,54 +196,6 @@ impl Root {
         self.verify_parents(parents, budget)?;
         Ok(None)
     }
-    pub(super) fn untracked(
-        &self,
-        tracked: &BTreeSet<Vec<u8>>,
-        budget: &Budget,
-    ) -> Result<(u32, bool), DiffRefusal> {
-        let mut count = 0_u32;
-        let mut cut = false;
-        let mut pending = vec![(
-            self.fd.try_clone().map_err(|_| DiffRefusal::Unreadable)?,
-            Vec::new(),
-        )];
-        while let Some((parent, prefix)) = pending.pop() {
-            budget.check()?;
-            let mut listing =
-                rustix::fs::Dir::read_from(&parent).map_err(|_| DiffRefusal::Unreadable)?;
-            while let Some(entry) = listing.read() {
-                budget.check()?;
-                let entry = entry.map_err(|_| DiffRefusal::Unreadable)?;
-                let name = entry.file_name().to_bytes();
-                if name == b"." || name == b".." || name.eq_ignore_ascii_case(b".git") {
-                    continue;
-                }
-                let mut path = prefix.clone();
-                if !path.is_empty() {
-                    path.push(b'/');
-                }
-                path.extend_from_slice(name);
-                let stat = statat(&parent, entry.file_name(), AtFlags::SYMLINK_NOFOLLOW)
-                    .map_err(|_| DiffRefusal::Unreadable)?;
-                if FileType::from_raw_mode(stat.st_mode) == FileType::Directory {
-                    if tracked.contains(&path) {
-                        continue;
-                    }
-                    if path.len() > dudes_proto::MAX_DIFF_PATH_BYTES {
-                        cut = true;
-                        continue;
-                    }
-                    let child = open_dir(&parent, entry.file_name())
-                        .map_err(|_| DiffRefusal::Unreadable)?;
-                    pending.push((child, path));
-                } else if !tracked.contains(&path) {
-                    count = count.saturating_add(1);
-                }
-            }
-        }
-        self.verify()?;
-        Ok((count, cut))
-    }
     #[cfg(test)]
     fn read(
         &self,
@@ -312,6 +263,9 @@ impl Root {
             let initial = Stamp::file(&file).map_err(|_| DiffOmissionReason::Unreadable)?;
             if !initial.regular {
                 return Err(DiffOmissionReason::UnsupportedKind);
+            }
+            if initial.links > 1 {
+                return Err(DiffOmissionReason::HardLinked);
             }
             if initial.size > MAX_DIFF_SIDE_BYTES as u64 {
                 return Err(DiffOmissionReason::OversizeFile);
@@ -384,6 +338,26 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn a_file_with_a_second_hard_link_is_withheld_whatever_its_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let tree = temp.path().join("tree");
+        std::fs::create_dir(&tree).unwrap();
+        std::fs::write(temp.path().join("outside"), "not the project's\n").unwrap();
+        std::fs::hard_link(temp.path().join("outside"), tree.join("linked.rs")).unwrap();
+        std::fs::write(tree.join("alone.rs"), "fn main() {}\n").unwrap();
+        let budget = budget();
+        let root = Root::open(&tree, None, &budget).unwrap();
+        assert_eq!(
+            root.read(&path("linked.rs"), &budget),
+            Err(DiffOmissionReason::HardLinked)
+        );
+        assert_eq!(
+            root.read(&path("alone.rs"), &budget),
+            Ok(Some(b"fn main() {}\n".to_vec()))
+        );
     }
 
     #[test]

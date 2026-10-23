@@ -457,9 +457,10 @@ mod tests {
             check_lsn: None,
             baseline_id: "a".repeat(64),
             target_id: "b".repeat(64),
-            sampler_version: 1,
-            policy_version: 1,
+            sampler_version: 2,
+            policy_version: 2,
             preexisting_tracked: true,
+            preexisting_untracked: false,
         }
     }
     fn candidate(n: usize) -> Candidate {
@@ -722,7 +723,7 @@ mod tests {
             path: entry.path.clone(),
             kind: entry.kind,
             old: "old\n".to_owned(),
-            current: "new\nhttps://user:pass@example.invalid/repo\n/opt/project/src\n".to_owned(),
+            current: "new\nhttps://example.invalid/repo\n/opt/project/src\n".to_owned(),
         };
         let content = manifest
             .content(&[id], vec![SampledPair::Text(file)])

@@ -6,7 +6,8 @@ export const DIFF_MANIFEST = 'a'.repeat(32);
 export const diffBinding = (fields = {}) => ({
   card: DIFF_CARD, seq: 4, round: 2, goal: '01JBQ8XK2M3N4P5Q6R7S8T9VWY',
   claimant: '01JBQ8XK2M3N4P5Q6R7S8T9VWZ', check_lsn: '42', baseline_id: 'b'.repeat(64),
-  target_id: 'c'.repeat(64), policy_version: 1, sampler_version: 1, preexisting_tracked: false, ...fields,
+  target_id: 'c'.repeat(64), policy_version: 2, sampler_version: 2, preexisting_tracked: false,
+  preexisting_untracked: false, ...fields,
 });
 export const diffEntry = (fields = {}) => ({
   entry_id: DIFF_ENTRY, old_path: null, path: 'src/example.rs', kind: 'modified',

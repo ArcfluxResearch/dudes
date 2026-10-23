@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-export const DIFF_KINDS = ['added', 'modified', 'deleted', 'renamed', 'type_changed'] as const;
+export const DIFF_KINDS = ['added', 'modified', 'deleted', 'renamed', 'type_changed',
+  'nested_repository'] as const;
 export type DiffKind = (typeof DIFF_KINDS)[number];
 export const DIFF_OMISSIONS = ['binary', 'unsupported_text', 'sensitive_path', 'sensitive_content',
-  'oversize_file', 'oversize_line', 'unsupported_kind', 'raced', 'unreadable', 'response_limit'] as const;
+  'oversize_file', 'oversize_line', 'unsupported_kind', 'raced', 'unreadable', 'response_limit', 'hard_linked'] as const;
 export type DiffOmissionReason = (typeof DIFF_OMISSIONS)[number];
 export const DIFF_REFUSALS = ['baseline_unavailable', 'stale_ticket', 'stale_manifest', 'expired', 'invalid_request',
   'disabled', 'busy', 'session_limit', 'unsupported_platform', 'worktree_mismatch', 'unsupported_storage',
@@ -24,6 +25,7 @@ export interface DiffBinding {
   readonly policy_version: number;
   readonly sampler_version: number;
   readonly preexisting_tracked: boolean;
+  readonly preexisting_untracked: boolean;
 }
 export interface DiffEntry {
   readonly entry_id: string | null;
@@ -116,18 +118,19 @@ function source(value: unknown): value is string {
 }
 function binding(value: unknown): DiffBinding | null {
   if (!exactly(value, ['card', 'seq', 'round', 'goal', 'claimant', 'check_lsn', 'baseline_id', 'target_id',
-    'policy_version', 'sampler_version', 'preexisting_tracked'])
+    'policy_version', 'sampler_version', 'preexisting_tracked', 'preexisting_untracked'])
     || typeof value.card !== 'string' || !ID.test(value.card) || !safeCount(value.seq) || !count(value.round)
     || typeof value.goal !== 'string' || !ID.test(value.goal) || typeof value.claimant !== 'string' || !ID.test(value.claimant)
     || !(value.check_lsn === null || (typeof value.check_lsn === 'string'
       && /^(?:0|[1-9][0-9]{0,19})$/.test(value.check_lsn) && BigInt(value.check_lsn) <= 18_446_744_073_709_551_615n))
     || typeof value.baseline_id !== 'string' || !DIGEST.test(value.baseline_id)
     || typeof value.target_id !== 'string' || !DIGEST.test(value.target_id) || !count(value.policy_version)
-    || !count(value.sampler_version) || typeof value.preexisting_tracked !== 'boolean') return null;
+    || !count(value.sampler_version) || typeof value.preexisting_tracked !== 'boolean'
+    || typeof value.preexisting_untracked !== 'boolean') return null;
   return Object.freeze({ card: value.card, seq: value.seq, round: value.round, goal: value.goal,
     claimant: value.claimant, check_lsn: value.check_lsn, baseline_id: value.baseline_id,
     target_id: value.target_id, policy_version: value.policy_version, sampler_version: value.sampler_version,
-    preexisting_tracked: value.preexisting_tracked });
+    preexisting_tracked: value.preexisting_tracked, preexisting_untracked: value.preexisting_untracked });
 }
 function entry(value: unknown): DiffEntry | null {
   if (!exactly(value, ['entry_id', 'old_path', 'path', 'kind', 'availability']) || !path(value.path)

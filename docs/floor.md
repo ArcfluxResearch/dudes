@@ -193,10 +193,15 @@ Set a spending limit when your account bills per use.
   files that changed. The agent's words are shown as plain text. The files come from the Git tab,
   so they need `floor.git` on.
 - **Changes.** With `floor.git` and `floor.diff` both on, a started ticket also has a Changes view.
-  It lists the tracked files that differ from where the agent's round began, and opens one file's
-  old and current text side by side. Files that are binary, too large, or look like they hold
-  secrets are listed without their text, and new files that Git does not track yet are only
-  counted. A label says "Unchanged since the check" or "Changed since the check" by comparing the
+  It lists the files that differ from where the agent's round began, including new files that Git
+  does not track yet, and opens one file's old and current text side by side. A new file shows as
+  Added with an empty old side. Files that Git ignores, in `.gitignore` or `.git/info/exclude`, are
+  neither listed nor counted. Files that are binary, too large, hard-linked, named like a
+  credential file, or that look like they hold a secret are listed without their text. A folder
+  that holds its own Git repository is listed and never opened. If more files changed than fit,
+  tracked changes take the places first, and the page counts the new files it could not list. If
+  files already existed untracked when the round began, the page warns that some new files may
+  not be the agent's. A label says "Unchanged since the check" or "Changed since the check" by comparing the
   checkout with what Dudes sampled just after the ticket's check ran. It says "Unknown" whenever
   that sample is missing or incomplete, and "Unknown" is not a pass. Nothing is refreshed on its
   own: Refresh makes a new listing. Quickstart turns both on in a new file; an older file may have them off, and **Settings** turns them on. Each session can

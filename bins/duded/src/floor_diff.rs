@@ -423,6 +423,7 @@ impl DiffReads {
             inode,
             head,
             preexisting_tracked,
+            preexisting_untracked,
         } = recorded.baseline.outcome
         else {
             return Err(DiffRefusal::BaselineUnavailable);
@@ -452,6 +453,7 @@ impl DiffReads {
             sampler_version: SAMPLER_VERSION,
             policy_version: TEXT_POLICY_VERSION,
             preexisting_tracked,
+            preexisting_untracked,
         };
         Ok(Subject {
             binding,
@@ -460,6 +462,7 @@ impl DiffReads {
                 root: RootIdentity { device, inode },
                 head,
                 preexisting_tracked,
+                preexisting_untracked,
             },
             stamp: recorded.stamp,
         })

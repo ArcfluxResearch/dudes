@@ -35,6 +35,8 @@ pub(in crate::git_read) const HEAD_MAX: u64 = 256;
 pub(in crate::git_read) const PACKED_REFS_MAX: u64 = 1024 * 1024;
 pub(in crate::git_read) const LOOSE_REF_MAX: u64 = 256;
 pub(in crate::git_read) const INDEX_MAX: u64 = 32 * 1024 * 1024;
+/// The repository's private ignore list. A larger one is left out, so more files show, never fewer.
+pub(in crate::git_read) const EXCLUDE_MAX: u64 = 64 * 1024;
 pub(in crate::git_read) const SHALLOW_MAX: u64 = 64 * 1024;
 /// A worktree's `.git` file or its `commondir`: one path and a line end.
 pub(in crate::git_read) const LINK_MAX: u64 = 4 * 1024;
@@ -267,6 +269,16 @@ impl Shadow {
                 return Err(Refusal::Unreadable);
             }
             put("shallow", &shallow).map_err(io)?;
+        }
+
+        // The list a person keeps for files they never want Git to offer. It is a plain file read
+        // without following a link; anything else about it leaves it out.
+        if let Ok(info) = open_dir(&sources.common, "info")
+            && let Ok(Some(exclude)) =
+                read_small(&info, "exclude", EXCLUDE_MAX, Refusal::Unreadable)
+        {
+            fs::create_dir(self.dir.join("info")).map_err(io)?;
+            put("info/exclude", &exclude).map_err(io)?;
         }
 
         let refs = open_dir(&sources.common, "refs").map_err(|_| Refusal::Unreadable)?;

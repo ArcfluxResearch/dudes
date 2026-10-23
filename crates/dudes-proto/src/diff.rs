@@ -87,6 +87,8 @@ pub enum DiffOmissionReason {
     Unreadable,
     /// This complete file would exceed the serialized response limit.
     ResponseLimit,
+    /// A file with more than one hard link, whose bytes may belong to a file outside the project.
+    HardLinked,
 }
 
 /// The comparison's change kind. Renames require an exact bounded identity match.
@@ -94,7 +96,7 @@ pub enum DiffOmissionReason {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DiffKind {
-    /// Absent at baseline and tracked in the current index.
+    /// Absent at baseline and present as a tracked or untracked, unignored file now.
     Added,
     /// Present on both sides with changed bytes or mode.
     Modified,
@@ -104,6 +106,8 @@ pub enum DiffKind {
     Renamed,
     /// At least one side has an unsupported file kind.
     TypeChanged,
+    /// An untracked folder that holds its own Git repository, listed and never opened.
+    NestedRepository,
 }
 
 /// Whether the bounded complete sample matches the recorded post-check sample.
@@ -146,6 +150,8 @@ pub struct DiffBinding {
     pub policy_version: u32,
     /// Tracked changes existed when the round started.
     pub preexisting_tracked: bool,
+    /// Untracked, unignored files existed when the round started.
+    pub preexisting_untracked: bool,
 }
 
 /// A metadata row's content eligibility.
@@ -196,9 +202,9 @@ pub struct DiffPage {
     pub omitted: u32,
     /// Enumeration stopped, so `omitted` is only a lower bound.
     pub omitted_lower_bound: bool,
-    /// Purely untracked names are counted without being disclosed.
+    /// New files the listing could not name: past its slots, or with a name it cannot show.
     pub untracked: u32,
-    /// Untracked counting stopped before completion.
+    /// New-file listing stopped before completion.
     pub untracked_lower_bound: bool,
     /// Enumeration or cache limits omitted candidates.
     pub truncated: bool,
@@ -327,6 +333,7 @@ mod tests {
             sampler_version: 1,
             policy_version: 1,
             preexisting_tracked: false,
+            preexisting_untracked: false,
         };
         for position in [0, 9_007_199_254_740_993, u64::MAX] {
             binding.check_lsn = Some(Lsn(position));

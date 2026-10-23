@@ -847,8 +847,8 @@ fn a_partial_clone_does_not_fetch_for_a_missing_object() {
     );
 }
 
-/// Hidden files stay hidden: the shadow reads no `info/exclude`, so an operator-excluded secret is
-/// counted and never named.
+/// The shadow reads `info/exclude`, so a file the operator excluded is not counted, and names are
+/// never in the view.
 #[test]
 fn operator_excluded_files_appear_only_in_the_untracked_count() {
     let lab = Lab::new();
@@ -863,7 +863,7 @@ fn operator_excluded_files_appear_only_in_the_untracked_count() {
         "control: {plain}"
     );
     let view = lab.read(&repo);
-    assert_eq!(view.head.clone().expect("head").untracked, 3);
+    assert_eq!(view.head.clone().expect("head").untracked, 1);
     let wire = json(&view);
     for name in [".env.production", "key.pem", "plain.txt"] {
         assert!(!wire.contains(name), "{name} in {wire}");
