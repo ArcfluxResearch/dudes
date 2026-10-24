@@ -94,6 +94,10 @@ fn managed_output_child_helper() {
         results_child(&mut out, &session, &dir);
         return;
     }
+    if label == "CODEX" || label == "PI" {
+        engine_child(&mut out, &label, &session, &dir);
+        return;
+    }
     wait_file(&dir.join("release-next"));
     assistant(&mut out, &session, &format!("{label}-second"));
     writeln!(out, r#"{{"type":"assistant","session_id":"wrong","message":{{"role":"assistant","content":[{{"type":"text","text":"{label}-wrong-session"}}]}}}}"#).expect("wrong-session line");
@@ -235,6 +239,67 @@ fn results_child(out: &mut impl std::io::Write, session: &str, dir: &Path) {
     out.flush().expect("end flush");
 }
 
+/// The lines a Codex exec run and a Pi run write for a few tool calls, in each engine's own shape.
+fn engine_child(out: &mut impl std::io::Write, label: &str, session: &str, dir: &Path) {
+    let codex = label == "CODEX";
+    let lines = if codex {
+        let item = |kind: &str, item: Value| {
+            let mut item = item;
+            item["type"] = kind.into();
+            item
+        };
+        let line = |kind: &str, value: Value| serde_json::json!({"type": kind, "item": value});
+        let files = serde_json::json!([
+            {"path": "/repo/new.rs", "kind": "add"}, {"path": "/repo/a.rs", "kind": "update"}]);
+        vec![
+            line("item.started", item("command_execution", serde_json::json!({"id": "item_1", "command": "/bin/zsh -lc 'ls'", "aggregated_output": "", "exit_code": null, "status": "in_progress"}))),
+            line("item.completed", item("command_execution", serde_json::json!({"id": "item_1", "command": "/bin/zsh -lc 'ls'", "aggregated_output": "a.txt\n", "exit_code": 0, "status": "completed"}))),
+            line("item.started", item("command_execution", serde_json::json!({"id": "item_2", "command": "/bin/zsh -lc 'cat ~/.aws/credentials'", "aggregated_output": "", "exit_code": null, "status": "in_progress"}))),
+            line("item.completed", item("command_execution", serde_json::json!({"id": "item_2", "command": "/bin/zsh -lc 'cat ~/.aws/credentials'", "aggregated_output": "PRIVATE-AWS-TEXT", "exit_code": 0, "status": "completed"}))),
+            line("item.started", item("command_execution", serde_json::json!({"id": "item_3", "command": "false", "status": "in_progress"}))),
+            line("item.completed", item("command_execution", serde_json::json!({"id": "item_3", "command": "false", "aggregated_output": "nope", "exit_code": 2, "status": "failed"}))),
+            line("item.started", item("file_change", serde_json::json!({"id": "item_4", "changes": files, "status": "in_progress"}))),
+            line("item.completed", item("file_change", serde_json::json!({"id": "item_4", "changes": files, "status": "completed"}))),
+            line("item.started", item("todo_list", serde_json::json!({"id": "item_5", "items": [{"text": "Ship it", "completed": false}]}))),
+            line("item.completed", item("todo_list", serde_json::json!({"id": "item_5", "items": [{"text": "Ship it", "completed": true}]}))),
+        ]
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+    } else {
+        let start = |id: &str, tool: &str, args: Value| serde_json::json!({"type": "tool_execution_start", "toolCallId": id, "toolName": tool, "args": args});
+        let end = |id: &str, tool: &str, text: &str, error: bool| serde_json::json!({"type": "tool_execution_end", "toolCallId": id, "toolName": tool, "result": {"content": [{"type": "text", "text": text}]}, "isError": error});
+        vec![
+            start("call_1", "bash", serde_json::json!({"command": "ls"})),
+            end("call_1", "bash", "a.txt\n", false),
+            start("call_2", "read", serde_json::json!({"path": "/work/user/.env"})),
+            end("call_2", "read", "PRIVATE-ENV-TEXT", false),
+            start("call_3", "grep", serde_json::json!({"pattern": "todo", "path": "src"})),
+            end("call_3", "grep", "no match", true),
+            start("call_4", "edit", serde_json::json!({"path": "/repo/a.rs", "edits": [{"oldText": "let a = 1;", "newText": "let a = 2;"}]})),
+            end("call_4", "edit", "ok", false),
+        ]
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+    };
+    if codex {
+        writeln!(
+            out,
+            r#"{{"type":"thread.started","thread_id":"{session}"}}"#
+        )
+        .expect("thread line");
+    } else {
+        writeln!(out, r#"{{"type":"session","version":3,"id":"{session}"}}"#).expect("header line");
+    }
+    for line in lines {
+        writeln!(out, "{line}").expect("step line");
+    }
+    out.flush().expect("step flush");
+    std::fs::write(dir.join("steps-ready"), b"ready").expect("steps marker");
+    wait_file(&dir.join("release-exit"));
+}
+
 fn assistant(out: &mut impl std::io::Write, session: &str, text: &str) {
     writeln!(out, r#"{{"type":"assistant","session_id":"{session}","message":{{"role":"assistant","content":[{{"type":"text","text":"{text}"}}]}}}}"#).expect("assistant line");
 }
@@ -270,6 +335,18 @@ impl Adapter for LocalAdapter {
     }
     fn turn_reader(&self) -> Box<dyn TurnReader> {
         Box::new(TurnStream::new())
+    }
+    fn turn_reader_for(&self, spec: &LaunchSpec) -> Box<dyn TurnReader> {
+        let label = spec
+            .env
+            .iter()
+            .find(|var| var.name() == LABEL)
+            .map(|var| var.expose_value().to_string_lossy().into_owned());
+        match label.as_deref() {
+            Some("CODEX") => Box::new(dudes_providers::codex::stream::TurnStream::new()),
+            Some("PI") => Box::new(dudes_providers::pi::stream::TurnStream::new()),
+            _ => self.turn_reader(),
+        }
     }
     fn model_selection(&self) -> ModelSelection {
         ModelSelection::provider_default()
@@ -823,6 +900,138 @@ fn steps_reach_only_the_selected_socket_scrubbed_and_others_see_a_kind() {
     std::fs::write(dir.join("release-exit"), b"go").unwrap();
     drop(selected);
     drop(bystander);
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// The last frame of each step the page heard, until every id in `ids` is no longer running.
+fn collect_by_id(selected: &mut WebSocket, ids: &[&str]) -> (String, Vec<Value>) {
+    let mut seen = String::new();
+    let mut last: Vec<Value> = Vec::new();
+    for _ in 0..64 {
+        let frame = selected.output();
+        seen.push_str(&frame.to_string());
+        if frame["type"] != "floor.output.steps" {
+            continue;
+        }
+        for step in frame["steps"].as_array().unwrap() {
+            last.retain(|old| old["id"] != step["id"]);
+            last.push(step.clone());
+        }
+        if ids.iter().all(|id| {
+            last.iter()
+                .any(|step| step["id"] == *id && step["status"] != "running")
+        }) {
+            break;
+        }
+    }
+    (seen, last)
+}
+
+fn step_of<'a>(steps: &'a [Value], id: &str) -> &'a Value {
+    steps
+        .iter()
+        .find(|step| step["id"] == id)
+        .unwrap_or_else(|| panic!("no step {id} in {steps:?}"))
+}
+
+#[test]
+fn codex_and_pi_steps_reach_the_selected_socket_scrubbed_by_the_same_rules() {
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::new());
+    let settings = settings(&fixture, free_port());
+    let captured = Arc::new(Captured::default());
+    let daemon = duded::boot::boot_with_options_and_floor_faults(
+        &settings,
+        seams(
+            &settings,
+            ChildEnds::new(),
+            Arc::clone(&captured),
+            Arc::clone(&clock),
+        ),
+        duded::settings::RunOptions::default(),
+        None,
+        FloorStreamFault::default().without_heartbeat(),
+    )
+    .expect("boot local engine steps fixture");
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let page = common::floor_session_on(&settings, addr, {
+        let clock = Arc::clone(&clock);
+        move || clock.now().unix_millis()
+    });
+    let mut dirs = Vec::new();
+    let mut sockets = Vec::new();
+    for label in ["CODEX", "PI"] {
+        let dir = fixture.state.path().join(label);
+        std::fs::create_dir(&dir).unwrap();
+        let agent = common::hire(&running.handle, &dir);
+        let mut socket = WebSocket::connect(&page);
+        socket.send(r#"{"type":"floor.subscribe"}"#);
+        assert_eq!(socket.json()["type"], "floor.snapshot");
+        socket.send(&format!(
+            r#"{{"type":"floor.output.select","agent_id":"{agent}","view":"reply"}}"#
+        ));
+        assert_eq!(socket.output()["reason"], "no_run_output");
+        common::set_goal(
+            &running.handle,
+            common::goal_params(agent, &["/usr/bin/true"]),
+        );
+        dirs.push(dir);
+        sockets.push(socket);
+    }
+    let [codex_dir, pi_dir] = &dirs[..] else {
+        unreachable!("two engines");
+    };
+    wait_file(&codex_dir.join("steps-ready"));
+    wait_file(&pi_dir.join("steps-ready"));
+
+    let (seen, steps) = collect_by_id(
+        &mut sockets[0],
+        &["item_1", "item_2", "item_3", "item_4-1", "item_5"],
+    );
+    assert!(
+        !seen.contains("PRIVATE-AWS-TEXT"),
+        "a withheld result reached the socket"
+    );
+    let ls = step_of(&steps, "item_1");
+    assert_eq!(
+        (ls["kind"].as_str(), ls["status"].as_str()),
+        (Some("command"), Some("done"))
+    );
+    assert_eq!(ls["args"][0]["value"], "/bin/zsh -lc 'ls'");
+    assert_eq!(ls["result_bytes"], 6);
+    assert!(step_of(&steps, "item_2")["withheld"].is_string());
+    let failed = step_of(&steps, "item_3");
+    assert_eq!(
+        (failed["status"].as_str(), failed["exit"].as_i64()),
+        (Some("failed"), Some(2))
+    );
+    assert_eq!(step_of(&steps, "item_4-0")["kind"], "write");
+    assert_eq!(step_of(&steps, "item_4-1")["kind"], "edit");
+    assert_eq!(
+        step_of(&steps, "item_4-1")["args"][0]["value"],
+        "/repo/a.rs"
+    );
+    assert_eq!(step_of(&steps, "item_5")["plan"][0]["text"], "Ship it");
+
+    let (seen, steps) = collect_by_id(&mut sockets[1], &["call_1", "call_2", "call_3", "call_4"]);
+    assert!(
+        !seen.contains("PRIVATE-ENV-TEXT"),
+        "a withheld result reached the socket"
+    );
+    assert_eq!(step_of(&steps, "call_1")["kind"], "command");
+    assert_eq!(step_of(&steps, "call_1")["status"], "done");
+    assert!(step_of(&steps, "call_2")["withheld"].is_string());
+    assert_eq!(step_of(&steps, "call_3")["kind"], "search");
+    assert_eq!(step_of(&steps, "call_3")["status"], "failed");
+    let edit = step_of(&steps, "call_4");
+    assert_eq!(edit["kind"], "edit");
+    assert_eq!(edit["edit"]["old"], "let a = 1;");
+    assert_eq!(edit["edit"]["new"], "let a = 2;");
+
+    std::fs::write(codex_dir.join("release-exit"), b"go").unwrap();
+    std::fs::write(pi_dir.join("release-exit"), b"go").unwrap();
+    drop(sockets);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
