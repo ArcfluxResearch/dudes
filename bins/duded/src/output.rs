@@ -6,6 +6,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dudes_supervisor::host::AdoptionKey;
+use dudes_supervisor::{Redactor, StreamScrubber};
 use dudes_types::{AgentId, SessionId, TurnId};
 
 const CHUNK_BYTES: usize = 4_096;
@@ -610,10 +611,13 @@ impl State {
 }
 
 /// A daemon-run-only registry; all mutation and snapshots are ordered by one lock.
-#[derive(Default)]
 pub struct OutputRegistry {
     state: Mutex<State>,
     changed: Condvar,
+    redactor: Redactor,
+    /// One scrubber per child, holding back the tail of its text while that tail could still
+    /// become a known secret. Taken out when the child's output ends.
+    streams: Mutex<BTreeMap<ChildKey, (StreamScrubber, String)>>,
 }
 
 impl std::fmt::Debug for OutputRegistry {
@@ -623,10 +627,45 @@ impl std::fmt::Debug for OutputRegistry {
 }
 
 impl OutputRegistry {
+    /// An empty run-local registry that scrubs nothing. Only tests build one: a daemon builds its
+    /// registry with the secret set its children share.
+    #[cfg(any(test, feature = "testing"))]
+    #[expect(
+        clippy::new_without_default,
+        reason = "a Default would let a missed wiring compile"
+    )]
     #[must_use]
-    /// Construct an empty run-local registry.
     pub fn new() -> Self {
-        Self::default()
+        Self::with_redactor(Redactor::for_run())
+    }
+
+    /// An empty registry whose text is scrubbed of `redactor`'s secrets before anything keeps it.
+    #[must_use]
+    pub fn with_redactor(redactor: Redactor) -> Self {
+        Self {
+            state: Mutex::default(),
+            changed: Condvar::new(),
+            redactor,
+            streams: Mutex::default(),
+        }
+    }
+
+    /// The child's scrubber is taken out of the map while it matches, so one large message
+    /// blocks no other child. A child has one reader thread, so nothing else touches its entry.
+    fn scrub(&self, key: &AdoptionKey, session: &str, text: &str) -> String {
+        let child = ChildKey::from(key);
+        let taken = self
+            .streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&child);
+        let mut scrubber = taken.map_or_else(|| self.redactor.stream(), |(scrubber, _)| scrubber);
+        let released = scrubber.push(text);
+        self.streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(child, (scrubber, session.to_owned()));
+        released
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -714,6 +753,14 @@ impl OutputRegistry {
 
     /// The watcher may reach this before `register`; an unregistered key cannot publish.
     pub fn capture(&self, key: &AdoptionKey, session: &str, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let released = self.scrub(key, session, text);
+        self.capture_scrubbed(key, session, &released);
+    }
+
+    fn capture_scrubbed(&self, key: &AdoptionKey, session: &str, text: &str) {
         if text.is_empty() {
             return;
         }
@@ -897,6 +944,15 @@ impl OutputRegistry {
     /// EOF refuses later callbacks but keeps bounded, full-key pending data claimable
     /// until the daemon's successful Spawn joins it to its durable turn.
     pub fn watch_finished(&self, key: &AdoptionKey) {
+        let stream = self
+            .streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&ChildKey::from(key));
+        if let Some((mut scrubber, session)) = stream {
+            let tail = scrubber.finish();
+            self.capture_scrubbed(key, &session, &tail);
+        }
         let mut state = self.state();
         state.finished = state.finished.saturating_add(1);
         let key = ChildKey::from(key);

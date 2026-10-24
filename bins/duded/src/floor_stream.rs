@@ -441,7 +441,9 @@ impl FloorPatch {
 }
 
 impl FloorStreams {
-    /// Create the stream at the post-`started()` projection cut.
+    /// Create the stream at the post-`started()` projection cut, over a registry that scrubs
+    /// nothing. Only tests build one.
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn new(initial: AgentSnapshot, fault: FloorStreamFault) -> Result<Self> {
         Self::with_output(initial, fault, Arc::new(OutputRegistry::new()))
     }

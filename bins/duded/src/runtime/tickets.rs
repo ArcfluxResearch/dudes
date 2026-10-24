@@ -632,10 +632,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     fn ticket_read(&mut self, request: TicketReadParams) -> Result<Answered, RpcError> {
         let (card, mut ticket) = self.ticket_row(request.card)?;
+        // A journal written before the daemon knew a secret may still hold it: scrub the agent's
+        // words and the note on the way out, and only then cut.
+        let redactor = self.ctx.children.redactor();
         ticket.summary = ticket
             .summary
             .as_deref()
-            .map(dudes_proto::ticket::summary_text);
+            .map(|summary| dudes_proto::ticket::summary_text(&redactor.scrub(summary)));
+        ticket.description = redactor.scrub(&ticket.description).into_owned();
         let position = match (card.status, card.claimed_by) {
             (CardStatus::Claimed, Some(agent)) => self
                 .agent_queue(agent)?

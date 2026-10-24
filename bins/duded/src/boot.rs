@@ -399,6 +399,14 @@ where
     // because the seam is `&mut` and the machine takes it at step 3. **Drawing is not minting**:
     // what happens once per daemon run is the *file*, and that is step 4's call and step 5's check.
     let credential = operator_credential(&mut rng)?;
+    let redactor = children.redactor();
+    redactor.set_source("operator", [credential.expose().to_owned()]);
+    redactor.set_source(
+        "mcp",
+        secrets
+            .iter()
+            .filter_map(|var| var.expose_value().to_str().map(str::to_owned)),
+    );
     let shutdown_run = rng.ulid().to_string();
 
     let (jobs_tx, jobs_rx) = mpsc::channel();
@@ -500,6 +508,7 @@ where
         rng,
         adapters,
         mcp,
+        redactor.clone(),
     )?;
     if let Some(missing) = crate::reserve::missing(
         sup.world(),
@@ -698,7 +707,8 @@ where
             live_ptys: BTreeMap::new(),
             cleanup_ptys: BTreeMap::new(),
             revoked_local_ptys: BTreeSet::new(),
-            ticket_capture: ticket_capture(settings, &predicates, &clock),
+            scrub_memo: crate::floor::ScrubMemo::default(),
+            ticket_capture: ticket_capture(settings, &predicates, &clock, redactor),
             predicates,
             subscribers: Arc::clone(&subscribers),
             last_lsn: Arc::clone(&last_lsn),
@@ -1027,15 +1037,17 @@ fn ticket_capture<P, C>(
     settings: &Settings,
     predicates: &Arc<P>,
     clock: &Arc<C>,
+    redactor: dudes_supervisor::Redactor,
 ) -> Arc<crate::diff_capture::DiffCapture>
 where
     P: PredicateRunner,
     C: Clock + Send + Sync + 'static,
 {
-    let reader = crate::git_read::diff::DiffReader::new(
+    let reader = crate::git_read::diff::DiffReader::with_secret_set(
         Arc::clone(predicates) as Arc<dyn PredicateRunner>,
         settings.predicate_path.clone(),
         &settings.runtime_dir.join("diff-read"),
+        redactor,
     );
     let _ = reader.reclaim_scratch(Arc::default());
     let clock = Arc::clone(clock);
@@ -1203,6 +1215,10 @@ where
 /// Split out of [`boot`] for its length alone; the order inside it is the normative one and the
 /// chain still runs it between step 1 and step 4, because it takes what step 1 produced by having
 /// been called after it and hands step 4 what it needs.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is a distinct input to the one replay; a bundle would only rename them"
+)]
 fn open_and_replay<C, R>(
     lock: StateLock,
     settings: &Settings,
@@ -1211,6 +1227,7 @@ fn open_and_replay<C, R>(
     rng: R,
     adapters: dudes_providers::registry::Adapters,
     mcp: dudes_providers::mcp::LoadedServers,
+    redactor: dudes_supervisor::Redactor,
 ) -> Result<Replayed<Shared<C>, R>>
 where
     C: Clock + Send + Sync + 'static,
@@ -1231,7 +1248,7 @@ where
     // --- 3 · replay ----------------------------------------------------------------------------
     let reader = writer.reader();
     let mut goal_index = crate::goal_replacement::GoalChanges::default();
-    let mut sup = Supervisor::new(
+    let mut sup = Supervisor::with_secret_set(
         Config {
             data_dir: settings.state_dir.clone(),
             socket: settings.socket(),
@@ -1248,6 +1265,7 @@ where
         },
         clock,
         rng,
+        redactor,
     )
     .with_adapters(adapters);
     let mut memory = MemoryProjection::new(settings.state_dir.clone())

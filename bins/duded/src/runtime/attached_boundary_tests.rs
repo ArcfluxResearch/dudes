@@ -1378,3 +1378,55 @@ fn failed_attached_open_settlement_append_retains_called_attempt_admission_refus
         Record::InstructionObservationFinished { .. } | Record::PtySpawned { .. }
     )));
 }
+
+#[test]
+fn floor_snapshot_scrubs_a_question_journaled_before_the_secret_was_known() {
+    const SECRET: &str = "tok_9fQ2LmZx81KdPvR4sWbN7hYcA3eJuT6o";
+    let fixture = common::Fixture::new();
+    let settings = fixture.settings();
+    let seams = common::seams(
+        &settings,
+        common::SharedHost::new(),
+        Arc::new(common::ScriptedRunner::default()),
+        Arc::new(common::TestClock::new()),
+        Witness::default(),
+    );
+    let mut daemon = crate::boot(&settings, seams).unwrap();
+    let Answered::Hired(hired) = daemon
+        .ask(Ask::Hire(Box::new(common::hire_params(
+            fixture.state.path(),
+        ))))
+        .unwrap()
+    else {
+        panic!("the real hire caller must return its agent");
+    };
+    let agent = hired.agent;
+    daemon
+        .pump(Input::Command(dudes_supervisor::Command::Ask {
+            agent,
+            text: format!("may I use {SECRET}?"),
+        }))
+        .unwrap();
+    let before = daemon.ctx.floor_snapshot().unwrap();
+    let asked = |snapshot: &crate::floor::AgentSnapshot| {
+        snapshot
+            .agents
+            .iter()
+            .find(|row| row.id == agent)
+            .and_then(|row| row.question.clone())
+    };
+    assert_eq!(asked(&before), Some(format!("may I use {SECRET}?")));
+    daemon
+        .ctx
+        .children
+        .redactor()
+        .set_source("learned-later", [SECRET.to_owned()]);
+    let after = daemon.ctx.floor_snapshot().unwrap();
+    assert_eq!(asked(&after), Some("may I use (redacted)?".to_owned()));
+    let again = daemon.ctx.floor_snapshot().unwrap();
+    assert_eq!(
+        asked(&again),
+        asked(&after),
+        "the cached answer is the same"
+    );
+}

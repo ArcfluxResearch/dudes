@@ -50,7 +50,7 @@ use serde_json::Value;
 
 use crate::stream::{
     FinalReply, LineRead, ScopedUsage, SessionObservation, TextBlock, TextFragment, TextLayout,
-    TextProgress, TurnEnd, TurnReader, bound, exit_name,
+    TextProgress, TurnEnd, TurnReader, exit_name,
 };
 
 /// One `pi --mode json` run's standard output, as far as it has been read.
@@ -425,7 +425,7 @@ impl TurnReader for TurnStream {
             Some(last) => outcome(last, exit),
             None => (TurnOutcome::NoResult, None),
         };
-        let last_message = final_reply.as_ref().map(|reply| bound(&reply.text));
+        let last_message = final_reply.as_ref().map(|reply| reply.text.clone());
         TurnEnd {
             final_observation: (!turn.completed_servers.is_empty()).then(|| SessionObservation {
                 servers: turn.completed_servers.into_iter().collect(),
@@ -468,12 +468,7 @@ fn outcome(last: &AssistantMessage, exit: ExitStatus) -> (TurnOutcome, Option<Fi
                 Some(message) if !message.is_empty() => format!("{signal}: {message}"),
                 _ => signal.to_owned(),
             };
-            (
-                TurnOutcome::Failed {
-                    reason: bound(&reason),
-                },
-                None,
-            )
+            (TurnOutcome::Failed { reason }, None)
         }
     }
 }
@@ -936,14 +931,13 @@ mod tests {
     }
 
     #[test]
-    fn a_long_final_message_is_cut() {
+    fn a_long_final_message_leaves_whole() {
         let long = "x".repeat(10_000);
         let mut lines = run(SESSION, "stop");
         lines[6] = assistant("message_end", "stop", &long, 40, 2);
         let (_, reader) = read(&lines);
         let message = reader.end(EXIT_0).last_message.expect("a final message");
-        assert_eq!(message.len(), crate::stream::MAX_TEXT_BYTES);
-        assert!(message.ends_with('…'));
+        assert_eq!(message, long);
     }
 
     #[test]

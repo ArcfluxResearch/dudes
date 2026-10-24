@@ -716,6 +716,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return;
         };
         let session = row.session.clone();
+        let last_message =
+            last_message.map(|text| dudes_proto::ticket::summary_text(&self.redactor.scrub(text)));
         let turn = TurnId::from_ulid(self.rng.ulid());
         self.persist(
             Record::TurnEnded {
@@ -729,7 +731,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 exit: ExitStatus::UNKNOWN,
                 usage: None,
                 model_usage: BTreeMap::new(),
-                last_message: last_message.map(dudes_proto::ticket::summary_text),
+                last_message,
                 session,
                 outcome: None,
             },

@@ -7,21 +7,22 @@
 //! a precondition for closing a turn (the vendor fires none on the ceiling exits).
 //!
 //! The two strings an outcome carries (`last_message`, `reason`) are model-controlled and
-//! journal-bound, so they are cut at [`MAX_TEXT_BYTES`] here. Stripping control bytes is the
-//! sink's job.
+//! journal-bound. They leave here whole: the supervisor scrubs known secrets out of them and only
+//! then cuts them at [`MAX_TEXT_BYTES`] with [`bound`], so a secret that straddles the limit is
+//! never half kept. Stripping control bytes is the sink's job.
 
 use dudes_proto::ExitStatus;
 use dudes_proto::providers::claude::ResultLine;
 
-pub use crate::stream::MAX_TEXT_BYTES;
-use crate::stream::{bound, exit_name};
+use crate::stream::exit_name;
+pub use crate::stream::{MAX_TEXT_BYTES, bound};
 
 /// What the adapter concludes when the child has exited.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TurnOutcome {
     /// Every signal agreed: `success`, not an error, `completed` (or unstated), exit 0.
     Completed {
-        /// The final text the vendor reported, if any, cut at [`MAX_TEXT_BYTES`].
+        /// The final text the vendor reported, if any.
         last_message: Option<String>,
     },
     /// The vendor's `--max-turns` ceiling ended the turn.
@@ -33,7 +34,7 @@ pub enum TurnOutcome {
         /// The most specific signal available — `terminal_reason`, else the first error
         /// message, else the subtype; or the exit status (`exit code N`, `signal N`,
         /// `exit status unknown`) when only that disagreed — followed by `: ` and the
-        /// vendor's `result` text when there is one. Cut at [`MAX_TEXT_BYTES`].
+        /// vendor's `result` text when there is one.
         reason: String,
     },
     /// The stream ended without a `result` line; the exit status is all there is.
@@ -49,13 +50,8 @@ impl From<TurnOutcome> for dudes_proto::TurnOutcome {
     /// own: `Completed.last_message` is that record's `last_message`, and `NoResult.exit` is
     /// its `exit`. **Take both off the provider outcome before converting** — the wire enum has
     /// nowhere to put them. `Failed.reason` has no such field, so it is the one payload that
-    /// crosses — and it is cut at [`MAX_TEXT_BYTES`] *here*, not merely assumed to have been
-    /// cut upstream. [`turn_outcome`] is the only production producer and bounds it already,
-    /// so this is a no-op on every reason the adapter derives (`bound` is idempotent); but
-    /// [`TurnOutcome`] has public fields and no `#[non_exhaustive]`, so a `Failed` can be
-    /// built from outside this module. An over-long reason is not a truncated record: the
-    /// journal writer refuses the whole record by name, `TurnEnded` never lands, and the turn
-    /// never closes. Bounding at the crossing is what keeps that impossible.
+    /// crosses, whole. The supervisor scrubs and then cuts it before it journals the end: an
+    /// over-long reason is refused by the journal writer, so the cut is not optional there.
     ///
     /// The wire's other four variants are unreachable from here and no adapter may produce them:
     /// `Killed{by}` is written when the supervisor's kill ledger holds the turn, and `Vanished`
@@ -67,9 +63,7 @@ impl From<TurnOutcome> for dudes_proto::TurnOutcome {
             TurnOutcome::Completed { .. } => Self::Completed,
             TurnOutcome::MaxTurns => Self::MaxTurns,
             TurnOutcome::BudgetExhausted => Self::BudgetExhausted,
-            TurnOutcome::Failed { reason } => Self::Failed {
-                reason: bound(&reason),
-            },
+            TurnOutcome::Failed { reason } => Self::Failed { reason },
             TurnOutcome::NoResult { .. } => Self::NoResult,
         }
     }
@@ -90,10 +84,10 @@ pub fn turn_outcome(result: Option<&ResultLine>, exit: ExitStatus) -> TurnOutcom
         return TurnOutcome::NoResult { exit };
     };
     let failed = |signal: String| TurnOutcome::Failed {
-        reason: bound(&match result.result.as_deref() {
+        reason: match result.result.as_deref() {
             Some(text) if !text.is_empty() => format!("{signal}: {text}"),
             _ => signal,
-        }),
+        },
     };
     let vendor_signal = || {
         result
@@ -108,7 +102,7 @@ pub fn turn_outcome(result: Option<&ResultLine>, exit: ExitStatus) -> TurnOutcom
         _ if result.is_error => failed(vendor_signal()),
         "success" => match result.terminal_reason.as_deref() {
             None | Some("completed") if exit.is_success() => TurnOutcome::Completed {
-                last_message: result.result.as_deref().map(bound),
+                last_message: result.result.clone(),
             },
             None | Some("completed") => failed(exit_name(exit)),
             Some(other) => failed(other.to_owned()),
@@ -250,10 +244,9 @@ mod tests {
         assert_eq!(reason(ExitStatus::UNKNOWN), "exit status unknown: text");
     }
 
-    /// Journal-bound text is cut at `MAX_TEXT_BYTES` on a char boundary with a visible marker,
-    /// for `last_message` and `reason` alike; short text is untouched.
+    /// The outcome carries the vendor's words whole; the supervisor cuts them after scrubbing.
     #[test]
-    fn text_is_bounded_on_a_char_boundary() {
+    fn text_leaves_whole() {
         let huge = "x".repeat(50 * 1024);
         let got = turn_outcome(
             Some(&ResultLine {
@@ -262,15 +255,12 @@ mod tests {
             }),
             EXIT_0,
         );
-        let TurnOutcome::Completed {
-            last_message: Some(message),
-        } = got
-        else {
-            panic!("{got:?}");
-        };
-        assert_eq!(message.len(), MAX_TEXT_BYTES);
-        assert!(message.ends_with('…'));
-
+        assert_eq!(
+            got,
+            TurnOutcome::Completed {
+                last_message: Some(huge.clone())
+            }
+        );
         let got = turn_outcome(
             Some(&ResultLine {
                 result: Some(huge.clone()),
@@ -281,17 +271,18 @@ mod tests {
         let TurnOutcome::Failed { reason } = got else {
             panic!("{got:?}");
         };
-        assert_eq!(reason.len(), MAX_TEXT_BYTES);
-        assert!(reason.starts_with("api_error: xxx"));
-        assert!(reason.ends_with('…'));
+        assert_eq!(reason, format!("api_error: {huge}"));
+    }
 
-        // The cut point (`MAX_TEXT_BYTES - 3`) lands inside a 3-byte char: back off to the
-        // boundary before it, so the result is one byte short of the limit and still valid.
+    /// `bound` cuts on a char boundary with a visible marker; short text is untouched.
+    #[test]
+    fn bound_cuts_on_a_char_boundary() {
+        let huge = "x".repeat(50 * 1024);
         let prefix = "a".repeat(MAX_TEXT_BYTES - 4);
         let mixed = format!("{prefix}{}", "€".repeat(100));
         assert_eq!(bound(&mixed), format!("{prefix}…"));
         assert_eq!(bound(&mixed).len(), MAX_TEXT_BYTES - 1);
-
+        assert_eq!(bound(&huge).len(), MAX_TEXT_BYTES);
         assert_eq!(bound("short"), "short");
         assert_eq!(bound(&huge[..MAX_TEXT_BYTES]), &huge[..MAX_TEXT_BYTES]);
     }
@@ -407,29 +398,14 @@ mod tests {
         let no_result = |exit| dudes_proto::TurnOutcome::from(TurnOutcome::NoResult { exit });
         assert_eq!(no_result(EXIT_0), no_result(ExitStatus::UNKNOWN));
 
-        // The one payload that is kept is bounded *by the crossing*, not merely assumed to have
-        // been bounded upstream — see the `From` doc for why an over-long reason costs the turn
-        // rather than the text.
+        // The one payload that is kept crosses whole; the supervisor cuts it after scrubbing.
         let crossed =
             |reason: String| match dudes_proto::TurnOutcome::from(TurnOutcome::Failed { reason }) {
                 dudes_proto::TurnOutcome::Failed { reason } => reason,
                 other => panic!("a `Failed` crossed to {other:?}"),
             };
-
-        // The witness has to be *longer* than the bound. At exactly `MAX_TEXT_BYTES` cutting
-        // and not cutting are the same answer — that length is `bound`'s fixed point — so a
-        // witness of that length cannot tell a bounding crossing from a pass-through one.
         let oversized = "x".repeat(10 * MAX_TEXT_BYTES);
-        assert!(oversized.len() > MAX_TEXT_BYTES);
-        assert_eq!(crossed(oversized).len(), MAX_TEXT_BYTES);
-
-        // And the control the bounding must not disturb: at and under the bound the reason
-        // crosses byte for byte, so the crossing neither cuts an adapter-produced reason again
-        // nor re-marks one that already carries the cut marker.
-        let longest = bound(&"x".repeat(50 * 1024));
-        assert_eq!(longest.len(), MAX_TEXT_BYTES);
-        assert!(longest.ends_with('\u{2026}'));
-        assert_eq!(crossed(longest.clone()), longest);
+        assert_eq!(crossed(oversized.clone()), oversized);
         assert_eq!(crossed("short".to_owned()), "short");
     }
 }

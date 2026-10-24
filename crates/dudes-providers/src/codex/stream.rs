@@ -18,7 +18,7 @@ use serde::Deserialize;
 
 use crate::stream::{
     FinalReply, LineRead, ScopedUsage, SessionObservation, TextBlock, TextFragment, TextLayout,
-    TextProgress, TurnEnd, TurnReader, bound, exit_name,
+    TextProgress, TurnEnd, TurnReader, exit_name,
 };
 
 /// One managed Codex turn's standard output, as far as it has been read. Pure: an equal sequence
@@ -214,16 +214,14 @@ impl TurnReader for TurnStream {
         };
         let outcome = match ending {
             None => TurnOutcome::NoResult,
-            Some(Ending::Failed(reason)) => TurnOutcome::Failed {
-                reason: bound(&reason),
-            },
+            Some(Ending::Failed(reason)) => TurnOutcome::Failed { reason },
             Some(Ending::Completed(_)) if exit.is_success() => TurnOutcome::Completed,
             Some(Ending::Completed(_)) => TurnOutcome::Failed {
                 reason: exit_name(exit),
             },
         };
         let final_reply = final_reply.filter(|_| outcome == TurnOutcome::Completed);
-        let last_message = final_reply.as_ref().map(|reply| bound(&reply.text));
+        let last_message = final_reply.as_ref().map(|reply| reply.text.clone());
         TurnEnd {
             final_observation: None,
             outcome,
@@ -535,10 +533,7 @@ mod tests {
 
         let long = "x".repeat(2 * MAX_TEXT_BYTES);
         let (_, end) = read(&[message(&long), completed([10, 0, 0, 1])], EXIT_0);
-        assert_eq!(
-            end.last_message.map(|text| text.len()),
-            Some(MAX_TEXT_BYTES)
-        );
+        assert_eq!(end.last_message, Some(long));
     }
 
     #[test]
@@ -584,7 +579,7 @@ mod tests {
         else {
             panic!("a turn.failed line ends the turn Failed");
         };
-        assert_eq!(reason.len(), MAX_TEXT_BYTES);
+        assert_eq!(reason, long);
     }
 
     /// The tokens were spent whatever the exit status, so they are still reported.

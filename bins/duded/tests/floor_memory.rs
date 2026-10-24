@@ -771,12 +771,61 @@ fn hostile_and_hidden_characters_cross_the_wire_exactly() {
     let fixture = Fixture::new();
     let daemon = Daemon::boot(&fixture, raw_only());
     let agent = daemon.hire(&fixture, "agent");
-    let hostile = "\u{1b}[31m red \u{0} nul \u{202e}evil</script><img src=x onerror=alert(1)>";
+    let hostile = "red \u{0} nul \u{202e}evil</script><img src=x onerror=alert(1)>";
     let lsn = daemon.append(agent, hostile);
     let mut page = daemon.page();
     let first = page.page(agent, None);
     assert_eq!(first["entries"][0]["text"], json!(hostile), "{first}");
     assert_eq!(page.entry(agent, lsn)["entry"]["text"], json!(hostile));
+    daemon.stop();
+}
+
+/// A secret the daemon knows never crosses in memory text, and terminal codes do not either.
+#[test]
+fn a_known_secret_and_terminal_codes_are_gone_from_memory_text() {
+    let fixture = Fixture::new();
+    let daemon = Daemon::boot(&fixture, raw_only());
+    let agent = daemon.hire(&fixture, "agent");
+    let secret = credential(&daemon.settings).expose().to_owned();
+    let lsn = daemon.append(agent, &format!("\u{1b}[31mnote: key is {secret}\u{1b}[0m."));
+    let mut page = daemon.page();
+    let first = page.page(agent, None);
+    assert_eq!(
+        first["entries"][0]["text"],
+        json!("note: key is (redacted).")
+    );
+    assert_eq!(
+        page.entry(agent, lsn)["entry"]["text"],
+        json!("note: key is (redacted).")
+    );
+    daemon.stop();
+}
+
+/// The page preview cuts at 2,048 bytes. A secret across that byte is replaced before the cut, so
+/// the preview never shows its first part.
+#[test]
+fn a_secret_across_the_preview_cut_is_replaced_before_it() {
+    let fixture = Fixture::new();
+    let daemon = Daemon::boot(&fixture, raw_only());
+    let agent = daemon.hire(&fixture, "agent");
+    let secret = credential(&daemon.settings).expose().to_owned();
+    let text = format!("{}{secret}{}", "a".repeat(2_040), "b".repeat(1_100));
+    let lsn = daemon.append(agent, &text);
+    let mut page = daemon.page();
+    let first = page.page(agent, None);
+    let preview = first["entries"][0]["text"].as_str().expect("preview text");
+    assert!(
+        !preview.contains(&secret[..6]),
+        "the preview kept part of the secret"
+    );
+    assert!(preview.starts_with(&"a".repeat(2_000)));
+    assert_eq!(first["entries"][0]["cut"], json!(true));
+    let whole = page.entry(agent, lsn);
+    let full = whole["entry"]["text"].as_str().expect("entry text");
+    assert_eq!(
+        full,
+        format!("{}(redacted){}", "a".repeat(2_040), "b".repeat(1_100))
+    );
     daemon.stop();
 }
 
