@@ -187,13 +187,83 @@ test('Settings has a button for each engine and a box for each spending limit, a
     const on = render(['claude', 'codex', 'pi']);
     assert.match(on, /Codex is on\.<\/span><button type="button">Turn off<\/button>/);
     assert.equal(on.match(/<form class="settings-limit">/g).length, 3);
-    assert.match(on, /cannot remove a limit once it is set/);
+    assert.doesNotMatch(on, /cannot remove a limit once it is set/);
+    assert.equal(on.match(/>Clear limit<\/button>/g)?.length, 1);
     assert.doesNotMatch(on, /dudes config|Register optional providers/);
     const edit = await server.ssrLoadModule('/src/renderer/settings/edit.ts');
     const change = edit.limitChange('usd', '7.5', '5000000');
     await edit.changeSetting('budget.floor_usd_per_day', change.value, change.question, 'Raise limit');
     assert.match(render(['claude']), /aria-label="Change Floor daily dollars"> This raises the limit from \$5 to \$7\.5\. <button type="button">Raise limit<\/button> <button type="button">Cancel<\/button>/);
     assert.equal(edit.getSettingsEditState().sending, null, 'nothing is written until the person confirms');
+    edit.resetSettingsEdit();
+  } finally { await server.close(); }
+});
+
+test('a saved daily ceiling clear stays beside the running value until replaced or confirmed', async () => {
+  const root = resolve(import.meta.dirname, '..');
+  const server = await createServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
+  try {
+    const { SettingsView } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
+    const edit = await server.ssrLoadModule('/src/renderer/settings/edit.ts');
+    const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
+    edit.resetSettingsEdit();
+    const report = { ...REPORT, budget: { ...REPORT.budget, floor_usd_per_day_micros: '5000000' } };
+    const render = (current = report) => renderToStaticMarkup(createElement(SettingsView, { floor: floor(current), onSetup() {} }));
+    const response = (state = 'saved', status = 200) => async () => ({ status,
+      text: async () => JSON.stringify({ state, applied: [], restart: ['budget'], reason: 'bad_value' }) });
+    const save = (key, value, fetch = response()) => edit.saveSetting(key, value, fetch, () => true);
+    await save('budget.floor_usd_per_day', 'unset');
+    assert.match(render(), /<dt>Floor daily dollars<\/dt><dd>\$5/);
+    assert.match(render(), /Saved from this page\. No daily dollar ceiling after restart/);
+    await save('floor.answer', 'on');
+    assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, true, 'another key does not replace the clear');
+    await save('budget.floor_usd_per_day', '8', response('refused', 409));
+    assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, true, 'a refusal does not replace the saved clear');
+    store.beginFloorEpoch();
+    store.noteTransport('open');
+    store.noteTransport('close');
+    store.noteTransport('open');
+    assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, true, 'reconnection does not prove a new running ceiling');
+    await save('budget.floor_usd_per_day', '8');
+    assert.doesNotMatch(render(), /No daily dollar ceiling after restart/);
+    await save('budget.floor_usd_per_day', 'unset', response('saved_not_live'));
+    assert.match(render(), /No daily dollar ceiling after restart/);
+    edit.resetSettingsEdit();
+    assert.doesNotMatch(render(), /No daily dollar ceiling after restart/, 'reload forgets unverifiable saved intent');
+    const session = await server.ssrLoadModule('/src/session.ts');
+    const signing = await server.ssrLoadModule('/src/signer.ts');
+    const signer = { device: async () => 'settings-test-device', sign: async () =>
+      ({ origin: 'http://127.0.0.1:7717', time: '1', request: 'test', signature: 'test' }) };
+    signing.installSigner(signer);
+    await session.adoptStoredFloorSession(signer);
+    const savedWindow = globalThis.window;
+    globalThis.window = { fetch: response() };
+    try {
+      await edit.changeSetting('budget.floor_usd_per_day', 'unset', 'Clear the daily ceiling?', 'Clear limit');
+      await edit.confirmSetting();
+    } finally { globalThis.window = savedWindow; signing.installSigner(null); session.resetFloorSession(); }
+    assert.equal(edit.getSettingsEditState().last?.result.kind, 'saved');
+    const epoch = store.beginFloorEpoch();
+    store.noteTransport('open');
+    const unlimited = { ...report, budget: { ...report.budget, floor_usd_per_day_micros: null } };
+    store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 1, agents: [] }, settings: unlimited }), epoch);
+    assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, false, 'a live no-ceiling snapshot confirms the clear');
+    assert.equal(edit.getSettingsEditState().last, null, 'the confirmed clear no longer asks for another restart');
+    assert.doesNotMatch(render(unlimited), />Clear limit<\/button>/);
+    assert.match(render(unlimited), /<dt>Floor daily dollars<\/dt><dd>No ceiling/);
+    store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 2, agents: [] }, settings: report }), epoch);
+    await save('budget.floor_usd_per_day', 'unset');
+    signing.installSigner(signer);
+    await session.adoptStoredFloorSession(signer);
+    globalThis.window = { fetch: response('refused', 409) };
+    try { await edit.changeSetting('budget.floor_usd_per_day', '8', null); }
+    finally { globalThis.window = savedWindow; signing.installSigner(null); session.resetFloorSession(); }
+    const refusal = edit.getSettingsEditState().last;
+    assert.equal(refusal?.result.kind, 'refused');
+    assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, true);
+    store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 3, agents: [] }, settings: unlimited }), epoch);
+    assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, false);
+    assert.equal(edit.getSettingsEditState().last, refusal, 'confirming the earlier clear keeps a later refusal visible');
     edit.resetSettingsEdit();
   } finally { await server.close(); }
 });

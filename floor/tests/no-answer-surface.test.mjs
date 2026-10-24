@@ -1138,7 +1138,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(6).fill(ADD_PROJECT_FORM),
     ...Array(4).fill(LOOK_PANEL),
     ...Array(3).fill(SETUP_VIEW),
-    ...Array(9).fill(SETTINGS_VIEW),
+    ...Array(10).fill(SETTINGS_VIEW),
     ...Array(5).fill(FIRST_RUN_GUIDE),
     ...Array(6).fill(FIRST_TASK),
     ...Array(10).fill(TERMINAL_PANEL),
@@ -1273,6 +1273,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(shell, /if \(page === null\) return;\s*setFocused\(false\);\s*setPanel\(null\);\s*setGuide\('closed'\);\s*if \(hiring\) \{\s*closeHire\('navigation'\);\s*document\.getElementById\(CONTROL_TITLE_ID\)\?\.focus\(\);\s*\}\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === page && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}, \[page\]\)/);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup', 'onSetup',
     '() => { void changeSetting(settingKey, next); }', '() => { void confirmSetting(); }', '() => cancelSetting()',
+    "() => { void changeSetting(settingKey, 'unset',\n        `This removes the Floor daily dollar ceiling of ${formatUsdMicros(current)}. After a restart, there will be no daily dollar ceiling.`, 'Clear limit'); }",
     '() => { void desktopNotificationPreference.setEnabled(!on); }', '() => setOfficePin(id)']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETUP_VIEW), 'utf8')).sort(), [
     '() => copyToClipboard(install)',

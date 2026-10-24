@@ -20,9 +20,10 @@ export interface SettingsEditState {
   /** The change the page is asking about before it writes. */
   readonly asking: { readonly key: string; readonly value: string; readonly question: string; readonly confirm: string } | null;
   readonly last: { readonly key: string; readonly result: SettingsEditResult } | null;
+  readonly pendingDailyCeilingClear: boolean;
 }
 
-const IDLE: SettingsEditState = Object.freeze({ sending: null, asking: null, last: null });
+const IDLE: SettingsEditState = Object.freeze({ sending: null, asking: null, last: null, pendingDailyCeilingClear: false });
 let state: SettingsEditState = IDLE;
 const listeners = new Set<() => void>();
 
@@ -47,7 +48,7 @@ export function resetSettingsEdit(): void { commit(IDLE); }
 function forgetPendingRestart(): void {
   if (state.sending !== null) return;
   const waiting = state.last?.result.kind === 'saved' && state.last.result.restart.length > 0;
-  if (state.asking !== null || waiting) commit(IDLE);
+  if (state.asking !== null || waiting) commit({ ...IDLE, pendingDailyCeilingClear: state.pendingDailyCeilingClear });
 }
 
 function strings(value: unknown): readonly string[] | null {
@@ -87,7 +88,11 @@ export async function saveSetting(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key, value }),
     });
-    return decodeSettingsResponse(response.status, await response.text());
+    const result = decodeSettingsResponse(response.status, await response.text());
+    if (key === 'budget.floor_usd_per_day' && (result.kind === 'saved' || result.kind === 'not_live')) {
+      commit({ ...state, pendingDailyCeilingClear: value === 'unset' });
+    }
+    return result;
   } catch {
     return { kind: 'failed' };
   }
@@ -106,9 +111,9 @@ export function confirmation(key: string, value: string): string | null {
 }
 
 async function write(key: string, value: string): Promise<void> {
-  commit({ sending: key, asking: null, last: null });
+  commit({ ...state, sending: key, asking: null, last: null });
   const result = await saveSetting(key, value);
-  commit({ sending: null, asking: null, last: { key, result } });
+  commit({ ...state, sending: null, asking: null, last: { key, result } });
   if (result.kind === 'saved') refreshFloorSnapshot();
 }
 
@@ -121,7 +126,7 @@ export async function changeSetting(
 ): Promise<void> {
   if (state.sending !== null) return;
   if (question !== null) {
-    commit({ sending: null, asking: { key, value, question, confirm }, last: null });
+    commit({ ...state, sending: null, asking: { key, value, question, confirm }, last: null });
     return;
   }
   await write(key, value);
@@ -134,12 +139,20 @@ export async function confirmSetting(): Promise<void> {
 }
 
 export function cancelSetting(): void {
-  if (state.asking !== null) commit({ sending: null, asking: null, last: null });
+  if (state.asking !== null) commit({ ...state, sending: null, asking: null, last: null });
 }
 
 let lastPhase = getFloorState().phase;
 subscribeToFloor(() => {
-  const phase = getFloorState().phase;
+  const floor = getFloorState();
+  const phase = floor.phase;
+  if (phase === 'live' && !floor.stale && floor.settings?.budget.floor_usd_per_day_micros === null
+    && state.pendingDailyCeilingClear) {
+    const saved = state.last?.key === 'budget.floor_usd_per_day'
+      && (state.last.result.kind === 'saved' || state.last.result.kind === 'not_live');
+    commit({ ...state, pendingDailyCeilingClear: false,
+      last: saved ? null : state.last });
+  }
   if (lastPhase === 'closed' && phase === 'live') forgetPendingRestart();
   lastPhase = phase;
 });

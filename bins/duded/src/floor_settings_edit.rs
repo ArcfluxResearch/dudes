@@ -130,7 +130,11 @@ impl SettingsRequest {
         let key = Key::named(&body.key)
             .filter(|key| EDITABLE.contains(key) || ENGINES.contains(key))
             .ok_or(Some(SettingsRefusal::KeyNotEditable))?;
-        let change = Change::set(key, &body.value).map_err(|_| Some(SettingsRefusal::BadValue))?;
+        let change = if key == Key::FloorUsdPerDay && body.value == "unset" {
+            Change::unset(key)
+        } else {
+            Change::set(key, &body.value).map_err(|_| Some(SettingsRefusal::BadValue))?
+        };
         Ok(Self { change })
     }
 }
@@ -200,5 +204,39 @@ mod tests {
     fn a_body_with_another_member_is_not_a_request() {
         let body = br#"{"key":"floor.answer","value":"on","command":"sh"}"#;
         assert!(matches!(SettingsRequest::parse(body), Err(None)));
+    }
+
+    #[test]
+    fn only_the_daily_dollar_ceiling_accepts_unset() {
+        assert_eq!(
+            parse("budget.floor_usd_per_day", "unset"),
+            Ok("budget.floor_usd_per_day unset".to_owned())
+        );
+        for key in Key::ALL {
+            if key == Key::FloorUsdPerDay || key == Key::CodexStreaming {
+                continue;
+            }
+            assert_eq!(
+                parse(key.name(), "unset"),
+                Err(Some(SettingsRefusal::BadValue)),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            parse("budget.floor_usd_per_day", "0"),
+            Ok("budget.floor_usd_per_day 0".to_owned())
+        );
+        for value in ["", " ", "null"] {
+            assert_eq!(
+                parse("budget.floor_usd_per_day", value),
+                Err(Some(SettingsRefusal::BadValue))
+            );
+        }
+        for body in [
+            br#"{"key":"budget.floor_usd_per_day"}"#.as_slice(),
+            br#"{"key":"budget.floor_usd_per_day","value":null}"#.as_slice(),
+        ] {
+            assert!(matches!(SettingsRequest::parse(body), Err(None)));
+        }
     }
 }
