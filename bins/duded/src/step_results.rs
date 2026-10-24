@@ -7,7 +7,6 @@ use std::collections::VecDeque;
 use dudes_supervisor::Redactor;
 use serde::Serialize;
 
-use crate::secret_patterns::contains_secret;
 use crate::steps::{self, KeptEdit, KeptResult, KeptText, Status, StepView};
 
 /// Results kept for one agent's latest turn.
@@ -52,6 +51,14 @@ impl ResultStore {
 
     pub(crate) fn get(&self, id: &str) -> Option<&Kept> {
         self.items.iter().find(|kept| kept.id == id)
+    }
+
+    /// Drops what a step kept, for an id that opens again.
+    pub(crate) fn forget(&mut self, id: &str) {
+        if let Some(at) = self.items.iter().position(|kept| kept.id == id) {
+            let kept = self.items.remove(at).expect("a position just found");
+            self.bytes -= kept.bytes();
+        }
     }
 
     /// Keeps a step's text. A step that is kept again, once for its edit and once for its
@@ -128,7 +135,7 @@ pub(crate) enum Fetch {
     },
 }
 
-const MCP_REASON: &str = "results of connected tools are not shown";
+const TOOL_REASON: &str = "results of this kind of tool are not shown";
 const SECRET_REASON: &str = "the text holds a secret";
 
 fn shown(redactor: &Redactor, kept: &KeptText) -> TextView {
@@ -144,8 +151,8 @@ fn shown(redactor: &Redactor, kept: &KeptText) -> TextView {
 /// daemon knows now, then checked for a secret-shaped value, and only then does a step's own
 /// withholding (a sensitive path, a connected tool) decide whether it is shown.
 pub(crate) fn fetch(redactor: &Redactor, view: &StepView, kept: Option<&Kept>) -> Fetch {
-    if view.kind == "mcp" {
-        return Fetch::Withheld(MCP_REASON);
+    if steps::withholds_result(view) {
+        return Fetch::Withheld(TOOL_REASON);
     }
     if view.status == Status::Running {
         return Fetch::Waiting;
@@ -167,11 +174,11 @@ pub(crate) fn fetch(redactor: &Redactor, view: &StepView, kept: Option<&Kept>) -
         .as_ref()
         .is_some_and(|result| steps::result_holds_secret(&result.text))
         || edit.as_ref().is_some_and(|edit| {
-            contains_secret(edit.new.text.as_bytes())
+            steps::edit_holds_secret(&edit.new.text)
                 || edit
                     .old
                     .as_ref()
-                    .is_some_and(|old| contains_secret(old.text.as_bytes()))
+                    .is_some_and(|old| steps::edit_holds_secret(&old.text))
         });
     if secret {
         return Fetch::Withheld(SECRET_REASON);

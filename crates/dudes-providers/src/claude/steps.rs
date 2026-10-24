@@ -10,7 +10,7 @@ use dudes_types::SessionId;
 use serde_json::Value;
 
 use super::{Line, StreamLine};
-use crate::steps::{EditText, PlanItem, PlanStatus, Step, StepEvent, StepKind};
+use crate::steps::{EditText, MAX_RESULT_BYTES, PlanItem, PlanStatus, Step, StepEvent, StepKind};
 
 /// Open calls kept at once. A call past this, or one that reuses the id of a call still open, is
 /// not shown: it could never close, and would read as running until the turn ends.
@@ -21,9 +21,6 @@ const MAX_PLAN_ITEMS: usize = 64;
 /// The most one nested argument flattens to. The rest is cut and marked, so one huge input
 /// cannot multiply into a larger text before the daemon checks it.
 const MAX_ARG_BYTES: usize = 64 * 1024;
-/// The most of a result's text that leaves the reader. It is far above what the daemon keeps, so
-/// the daemon scrubs and checks a long result before it cuts it, and never keeps half a secret.
-const MAX_RESULT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Default)]
 pub(super) struct LiveSteps {
@@ -164,6 +161,7 @@ fn kind(tool: &str) -> StepKind {
         "WebFetch" | "WebSearch" => StepKind::Web,
         "TodoWrite" => StepKind::Plan,
         "Task" | "Agent" => StepKind::Subagent,
+        "ReadMcpResourceTool" | "ListMcpResourcesTool" => StepKind::Mcp,
         _ if tool.starts_with("mcp__") => StepKind::Mcp,
         _ => StepKind::Other,
     }

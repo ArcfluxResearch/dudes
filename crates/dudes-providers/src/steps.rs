@@ -5,6 +5,10 @@
 
 use dudes_types::SessionId;
 
+/// The most of a result's text that leaves the reader. It is far above what the daemon keeps, so
+/// the daemon scrubs and checks a long result before it cuts it, and never keeps half a secret.
+pub const MAX_RESULT_BYTES: usize = 64 * 1024;
+
 /// What a step did, in the Floor's words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepKind {

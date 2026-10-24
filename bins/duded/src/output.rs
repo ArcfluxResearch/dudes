@@ -348,6 +348,7 @@ impl StepRing {
         self.seq = self.seq.saturating_add(1);
         match op {
             StepOp::Open { view, edit } => {
+                self.results.forget(&view.id);
                 self.results.keep(&view.id, arrival, None, edit);
                 let bytes = view.bytes();
                 if let Some(old) = self.items.iter_mut().find(|old| old.view.id == view.id) {
@@ -1972,6 +1973,17 @@ mod tests {
             output.step_text(agent, turn, "toolu_2"),
             Fetch::Withheld(_)
         ));
+        assert_eq!(output.state().rings[&agent].steps.results.bytes(), 0);
+    }
+
+    #[test]
+    fn a_step_id_that_opens_again_keeps_none_of_its_old_text() {
+        let (output, agent, turn, key) = bound();
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        output.capture_step(&key, open_event("toolu_1", SESSION, "ls"));
+        output.capture_step(&key, close_with("toolu_1", "old text"));
+        assert_eq!(ready_text(&output, agent, turn, "toolu_1"), "old text");
+        output.capture_step(&key, open_event("toolu_1", SESSION, "ls"));
         assert_eq!(output.state().rings[&agent].steps.results.bytes(), 0);
     }
 
