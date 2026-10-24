@@ -4,10 +4,20 @@
 //! text goes no further than the daemon's own store.
 
 use dudes_types::SessionId;
+use serde_json::{Map, Value};
 
 /// The most of a result's text that leaves the reader. It is far above what the daemon keeps, so
 /// the daemon scrubs and checks a long result before it cuts it, and never keeps half a secret.
 pub const MAX_RESULT_BYTES: usize = 64 * 1024;
+
+/// Open calls kept at once. A call past this, or one that reuses the id of a call still open, is
+/// not shown: it could never close, and would read as running until the turn ends.
+pub(crate) const MAX_OPEN: usize = 256;
+const MAX_ID_BYTES: usize = 128;
+const MAX_ARGS: usize = 16;
+/// The most one nested argument flattens to. The rest is cut and marked, so one huge input
+/// cannot multiply into a larger text before the daemon checks it.
+pub(crate) const MAX_ARG_BYTES: usize = 64 * 1024;
 
 /// What a step did, in the Floor's words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,4 +159,96 @@ impl StepEvent {
             Self::Open { session, .. } | Self::Close { session, .. } => session,
         }
     }
+}
+
+/// The arguments of a call that are text, in the order the engine sent them, minus the keys in
+/// `skip`.
+pub(crate) fn object_args(
+    input: Option<&Map<String, Value>>,
+    skip: &[&str],
+) -> Vec<(String, String)> {
+    input
+        .into_iter()
+        .flatten()
+        .filter(|(key, _)| !skip.contains(&key.as_str()))
+        .filter_map(|(key, value)| Some((key.clone(), arg(value)?)))
+        .take(MAX_ARGS)
+        .collect()
+}
+
+pub(crate) fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_ID_BYTES
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+/// An argument as text: a string as written, a list of strings one per line, and anything nested
+/// as one `name: value` line per leaf. Strings keep their real newlines, never JSON escapes, so
+/// the daemon's secret rules see the text as it was written.
+pub(crate) fn arg(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(text) => Some(text.clone()),
+        Value::Array(items) if items.iter().all(Value::is_string) => Some(
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        other => {
+            let mut lines = Vec::new();
+            let mut room = MAX_ARG_BYTES;
+            leaves(other, "", &mut lines, &mut room);
+            (!lines.is_empty()).then(|| lines.join("\n"))
+        }
+    }
+}
+
+fn leaves(value: &Value, name: &str, lines: &mut Vec<String>, room: &mut usize) {
+    if *room == 0 {
+        return;
+    }
+    let mut push = |text: &str| {
+        let line = if name.is_empty() {
+            text.to_owned()
+        } else {
+            format!("{name}: {text}")
+        };
+        if line.len() > *room {
+            lines.push(crate::stream::bound_to(&line, (*room).max(3)));
+            *room = 0;
+        } else {
+            *room -= line.len() + 1;
+            lines.push(line);
+        }
+    };
+    match value {
+        Value::Null => {}
+        Value::String(text) => push(text),
+        Value::Bool(_) | Value::Number(_) => push(&value.to_string()),
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                leaves(item, &format!("{name}[{index}]"), lines, room);
+            }
+        }
+        Value::Object(fields) => {
+            for (key, item) in fields {
+                let path = if name.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{name}.{key}")
+                };
+                leaves(item, &path, lines, room);
+            }
+        }
+    }
+}
+
+/// A result's size in bytes and its text cut to what the daemon may read. No text is no result.
+pub(crate) fn bounded_result(text: &str) -> (u64, Option<String>) {
+    let kept = (!text.is_empty()).then(|| crate::stream::bound_to(text, MAX_RESULT_BYTES));
+    (text.len() as u64, kept)
 }

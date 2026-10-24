@@ -10,17 +10,14 @@ use dudes_types::SessionId;
 use serde_json::Value;
 
 use super::{Line, StreamLine};
-use crate::steps::{EditText, MAX_RESULT_BYTES, PlanItem, PlanStatus, Step, StepEvent, StepKind};
+use crate::steps::{
+    EditText, MAX_OPEN, MAX_RESULT_BYTES, PlanItem, PlanStatus, Step, StepEvent, StepKind,
+    object_args, valid_id,
+};
 
 /// Open calls kept at once. A call past this, or one that reuses the id of a call still open, is
 /// not shown: it could never close, and would read as running until the turn ends.
-const MAX_OPEN: usize = 256;
-const MAX_ID_BYTES: usize = 128;
-const MAX_ARGS: usize = 16;
 const MAX_PLAN_ITEMS: usize = 64;
-/// The most one nested argument flattens to. The rest is cut and marked, so one huge input
-/// cannot multiply into a larger text before the daemon checks it.
-const MAX_ARG_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Default)]
 pub(super) struct LiveSteps {
@@ -125,13 +122,7 @@ fn step(block: &ContentBlock, parent: Option<&str>) -> Option<Step> {
     } else {
         Vec::new()
     };
-    let args = input
-        .into_iter()
-        .flatten()
-        .filter(|(key, _)| !skip.contains(&key.as_str()))
-        .filter_map(|(key, value)| Some((key.clone(), arg(value)?)))
-        .take(MAX_ARGS)
-        .collect();
+    let args = object_args(input, skip);
     Some(Step {
         id: id.to_owned(),
         parent: parent.filter(|parent| valid_id(parent)).map(str::to_owned),
@@ -141,14 +132,6 @@ fn step(block: &ContentBlock, parent: Option<&str>) -> Option<Step> {
         edit,
         plan,
     })
-}
-
-fn valid_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= MAX_ID_BYTES
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 fn kind(tool: &str) -> StepKind {
@@ -164,69 +147,6 @@ fn kind(tool: &str) -> StepKind {
         "ReadMcpResourceTool" | "ListMcpResourcesTool" => StepKind::Mcp,
         _ if tool.starts_with("mcp__") => StepKind::Mcp,
         _ => StepKind::Other,
-    }
-}
-
-/// An argument as text: a string as written, a list of strings one per line, and anything nested
-/// as one `name: value` line per leaf. Strings keep their real newlines, never JSON escapes, so
-/// the daemon's secret rules see the text as it was written.
-fn arg(value: &Value) -> Option<String> {
-    match value {
-        Value::Null => None,
-        Value::String(text) => Some(text.clone()),
-        Value::Array(items) if items.iter().all(Value::is_string) => Some(
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-        other => {
-            let mut lines = Vec::new();
-            let mut room = MAX_ARG_BYTES;
-            leaves(other, "", &mut lines, &mut room);
-            (!lines.is_empty()).then(|| lines.join("\n"))
-        }
-    }
-}
-
-fn leaves(value: &Value, name: &str, lines: &mut Vec<String>, room: &mut usize) {
-    if *room == 0 {
-        return;
-    }
-    let mut push = |text: &str| {
-        let line = if name.is_empty() {
-            text.to_owned()
-        } else {
-            format!("{name}: {text}")
-        };
-        if line.len() > *room {
-            lines.push(crate::stream::bound_to(&line, (*room).max(3)));
-            *room = 0;
-        } else {
-            *room -= line.len() + 1;
-            lines.push(line);
-        }
-    };
-    match value {
-        Value::Null => {}
-        Value::String(text) => push(text),
-        Value::Bool(_) | Value::Number(_) => push(&value.to_string()),
-        Value::Array(items) => {
-            for (index, item) in items.iter().enumerate() {
-                leaves(item, &format!("{name}[{index}]"), lines, room);
-            }
-        }
-        Value::Object(fields) => {
-            for (key, item) in fields {
-                let path = if name.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{name}.{key}")
-                };
-                leaves(item, &path, lines, room);
-            }
-        }
     }
 }
 
@@ -275,6 +195,7 @@ fn exit_code(head: &str) -> Option<i32> {
 mod tests {
     use super::*;
     use crate::claude::parse_line;
+    use crate::steps::MAX_ARG_BYTES;
 
     const SESSION: &str = "511d87b0-cfa9-4d55-bb92-47360e5b69d4";
 

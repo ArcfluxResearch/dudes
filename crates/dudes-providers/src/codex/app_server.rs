@@ -7,9 +7,10 @@ use dudes_proto::providers::codex_app_server as wire;
 use dudes_proto::{ExitStatus, LiveActivityKind, TurnOutcome};
 use dudes_types::{SessionId, Tokens, Usage};
 use serde::de::DeserializeOwned;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::startup::CodexStartup;
+use super::steps::{LiveSteps, is_step, plan_items};
 use crate::adapter::TurnSession;
 use crate::protocol::{ProtocolAction, StartupFrame};
 use crate::stream::{
@@ -38,6 +39,7 @@ pub struct AppServerReader {
     refused: u64,
     refusal: Option<String>,
     servers: BTreeSet<String>,
+    steps: LiveSteps,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,7 +57,10 @@ enum Event {
     Item {
         completed: bool,
         body: wire::ItemNotification,
+        /// The item as JSON, for a step. Absent for a reply, which has no step.
+        value: Option<Value>,
     },
+    Plan(wire::PlanUpdate),
     Delta(wire::AgentDelta),
     Usage(wire::TokenUsage),
     End(wire::TurnResponse),
@@ -90,6 +95,7 @@ impl AppServerReader {
             refused: 0,
             refusal: None,
             servers: BTreeSet::new(),
+            steps: LiveSteps::default(),
         }
     }
 
@@ -282,7 +288,26 @@ impl AppServerReader {
 
     fn event(&mut self, event: Event) -> LineRead {
         match event {
-            Event::Item { completed, body } => {
+            Event::Plan(body) => {
+                if !self.attributed(body.thread_id.as_deref(), body.turn_id.as_deref()) {
+                    return LineRead::default();
+                }
+                let steps = self
+                    .thread
+                    .clone()
+                    .map(|session| self.steps.plan(&session, plan_items(&body.plan)))
+                    .unwrap_or_default();
+                LineRead {
+                    activity: Some(LiveActivityKind::Working),
+                    steps,
+                    ..LineRead::default()
+                }
+            }
+            Event::Item {
+                completed,
+                body,
+                value,
+            } => {
                 if !self.attributed(body.thread_id.as_deref(), body.turn_id.as_deref()) {
                     return LineRead::default();
                 }
@@ -290,10 +315,25 @@ impl AppServerReader {
                     self.unreadable += 1;
                     return LineRead::default();
                 };
+                let steps = match (&self.thread, &value) {
+                    (Some(session), Some(value)) if completed => {
+                        self.steps.completed(session, value)
+                    }
+                    (Some(session), Some(value)) => self.steps.started(session, value),
+                    _ => Vec::new(),
+                };
                 if item.kind.as_deref() == Some("mcpToolCall") {
-                    return item
+                    let mut read = item
                         .server
                         .map_or_else(LineRead::default, |server| self.server_named(&server));
+                    read.steps = steps;
+                    return read;
+                }
+                if value.is_some() {
+                    return LineRead {
+                        steps,
+                        ..LineRead::default()
+                    };
                 }
                 if item.kind.as_deref() != Some("agentMessage") {
                     return LineRead::default();
@@ -360,6 +400,7 @@ impl AppServerReader {
                             &mut read,
                             self.event(Event::Item {
                                 completed: true,
+                                value: None,
                                 body: wire::ItemNotification {
                                     thread_id: body.thread_id.clone(),
                                     turn_id: turn.id.clone(),
@@ -422,14 +463,9 @@ impl TurnReader for AppServerReader {
                 .map_or_else(LineRead::default, |id| self.response(id, text));
         }
         let event = match envelope.method.as_deref() {
-            Some("item/started") => notification(text).map(|body| Event::Item {
-                completed: false,
-                body,
-            }),
-            Some("item/completed") => notification(text).map(|body| Event::Item {
-                completed: true,
-                body,
-            }),
+            Some("item/started") => item_event(text, false),
+            Some("item/completed") => item_event(text, true),
+            Some("turn/plan/updated") => notification(text).map(Event::Plan),
             Some("item/agentMessage/delta") => notification(text).map(Event::Delta),
             Some("thread/tokenUsage/updated") => notification(text).map(Event::Usage),
             Some("turn/completed") => notification(text).map(Event::End),
@@ -496,6 +532,23 @@ fn frame(value: &serde_json::Value, task: bool) -> Option<StartupFrame> {
 fn response<T: DeserializeOwned + Default>(text: &str) -> Option<T> {
     serde_json::from_str::<wire::Response<T>>(text).ok()?.result
 }
+/// An item notification, with the item again as JSON when it is one a step is read from.
+fn item_event(text: &str, completed: bool) -> Option<Event> {
+    let body: wire::ItemNotification = notification(text)?;
+    let value = body
+        .item
+        .as_ref()
+        .and_then(|item| item.kind.as_deref())
+        .filter(|kind| is_step(kind))
+        .and_then(|_| serde_json::from_str::<Value>(text).ok())
+        .and_then(|mut line| line.pointer_mut("/params/item").map(Value::take));
+    Some(Event::Item {
+        completed,
+        body,
+        value,
+    })
+}
+
 fn notification<T: DeserializeOwned + Default>(text: &str) -> Option<T> {
     serde_json::from_str::<wire::Notification<T>>(text)
         .ok()?

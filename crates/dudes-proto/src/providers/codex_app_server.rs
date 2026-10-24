@@ -196,3 +196,15 @@ pub struct TokenTotals {
     /// Output tokens, including reasoning output.
     pub output_tokens: Option<u64>,
 }
+
+/// turn/plan/updated notification: the plan for the turn, restated in full.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PlanUpdate {
+    /// Owning thread.
+    pub thread_id: Option<String>,
+    /// Owning turn.
+    pub turn_id: Option<String>,
+    /// Plan entries, each a `step` text with a `status` of `pending`, `inProgress` or `completed`.
+    pub plan: Vec<Value>,
+}

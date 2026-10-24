@@ -15,7 +15,10 @@ use dudes_proto::providers::codex::{
 use dudes_proto::{ExitStatus, LiveActivityKind, TurnOutcome};
 use dudes_types::{SessionId, Tokens, Usage};
 use serde::Deserialize;
+use serde_json::Value;
 
+use super::steps::{LiveSteps, is_step};
+use crate::steps::StepEvent;
 use crate::stream::{
     FinalReply, LineRead, ScopedUsage, SessionObservation, TextBlock, TextFragment, TextLayout,
     TextProgress, TurnEnd, TurnReader, exit_name,
@@ -32,6 +35,7 @@ pub struct TurnStream {
     item_text: Option<ItemText>,
     layout: TextLayout,
     servers: BTreeSet<String>,
+    steps: LiveSteps,
 }
 
 #[derive(Debug)]
@@ -66,6 +70,7 @@ enum Ending {
 enum Line {
     ThreadStarted(ThreadStarted),
     ItemStarted(CompletedItem),
+    ItemUpdated(CompletedItem),
     ItemCompleted(CompletedItem),
     TurnCompleted(TurnCompleted),
     TurnFailed(TurnFailed),
@@ -130,6 +135,48 @@ impl TurnReader for TurnStream {
             self.unreadable += 1;
             return LineRead::default();
         };
+        let steps = self.item_steps(text, &line);
+        let mut read = self.read(line);
+        read.steps = steps;
+        if !read.steps.is_empty() && read.activity.is_none() {
+            read.activity = Some(LiveActivityKind::Working);
+        }
+        read
+    }
+
+    fn end(self: Box<Self>, exit: ExitStatus) -> TurnEnd {
+        self.finish(exit)
+    }
+}
+
+impl TurnStream {
+    /// The steps an item line opens or closes. The item is read again as JSON, only for a line
+    /// that carries a tool call, so a reply's text is never built twice.
+    fn item_steps(&mut self, text: &str, line: &Line) -> Vec<StepEvent> {
+        let (Line::ItemStarted(item) | Line::ItemUpdated(item) | Line::ItemCompleted(item)) = line
+        else {
+            return Vec::new();
+        };
+        if !item.kind.as_deref().is_some_and(is_step) {
+            return Vec::new();
+        }
+        let Some(session) = self.session().cloned() else {
+            return Vec::new();
+        };
+        let Some(Value::Object(mut line)) = serde_json::from_str(text).ok() else {
+            return Vec::new();
+        };
+        let Some(item_value) = line.remove("item") else {
+            return Vec::new();
+        };
+        match line.get("type").and_then(Value::as_str) {
+            Some("item.started") => self.steps.started(&session, &item_value),
+            Some("item.updated") => self.steps.updated(&session, &item_value),
+            _ => self.steps.completed(&session, &item_value),
+        }
+    }
+
+    fn read(&mut self, line: Line) -> LineRead {
         match line {
             Line::ThreadStarted(started) if self.thread.is_none() => {
                 let observation = SessionObservation {
@@ -187,12 +234,13 @@ impl TurnReader for TurnStream {
             }
             Line::ThreadStarted(_)
             | Line::ItemStarted(_)
+            | Line::ItemUpdated(_)
             | Line::ItemCompleted(_)
             | Line::Other => LineRead::default(),
         }
     }
 
-    fn end(self: Box<Self>, exit: ExitStatus) -> TurnEnd {
+    fn finish(self: Box<Self>, exit: ExitStatus) -> TurnEnd {
         let Self {
             thread,
             final_reply,
@@ -201,6 +249,7 @@ impl TurnReader for TurnStream {
             item_text: _,
             layout: _,
             servers: _,
+            steps: _,
         } = *self;
         // The vendor writes all zeros when no token counts reached it (`usage_from_last_total` in
         // its exec event processor). That is no information, and an end with no usage keeps it off
@@ -247,6 +296,12 @@ fn parse(text: &str) -> Option<Line> {
     Some(match kind?.as_str() {
         "thread.started" => Line::ThreadStarted(serde_json::from_str(text).ok()?),
         "item.started" => Line::ItemStarted(
+            serde_json::from_str::<Completion>(text)
+                .ok()?
+                .item
+                .unwrap_or_default(),
+        ),
+        "item.updated" => Line::ItemUpdated(
             serde_json::from_str::<Completion>(text)
                 .ok()?
                 .item
