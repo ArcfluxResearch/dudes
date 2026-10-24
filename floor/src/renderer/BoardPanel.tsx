@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { RelativeTime } from './RelativeTime.tsx';
 import type { CardActor, CardRow } from './board.ts';
 import type { FloorState } from './floor/store.ts';
 import { useEffect, useSyncExternalStore } from 'react';
@@ -40,7 +41,7 @@ function agentName(floor: FloorState, id: string): string {
 function author(floor: FloorState, by: CardActor): string {
   if (by.kind === 'agent') return agentName(floor, by.agent);
   if (by.kind === 'peer') return 'Operator';
-  return by.kind === 'system' ? 'Daemon' : 'Browser session';
+  return by.kind === 'system' ? 'Dudes' : 'Browser session';
 }
 
 /** Select the card another part of the page asked the Board to open, once the snapshot holds it. */
@@ -79,18 +80,17 @@ function CardActivity({ floor, cardId }: { readonly floor: FloorState; readonly 
   return <section className="log-panel" aria-label="Recent card activity">
     <h4>Recent card activity</h4>
     <ReadNotice state={state} label="Card activity"
-      message="Card activity was not reported, or this page could not read every event. Retry to request a fresh snapshot." />
+      message="Card activity was not reported, or this page could not read every event. Retry to load the latest activity." />
     {state !== 'ready' ? null : <>
-      <p role="status">{floor.stale ? 'Activity unconfirmed. These events are from the last snapshot.'
+      <p role="status">{floor.stale ? 'Connection interrupted. This activity may be out of date.'
         : 'Events from the current recent activity window. Older events may be absent.'}</p>
       {rows.length === 0 ? <p>No events for this card in the recent activity window.</p>
         : <ol aria-label="Recent events for this card">
           {rows.map((row) => {
-            const date = new Date(row.at);
             return <li key={row.lsn} data-card-activity-lsn={row.lsn}>
               <p>{activityText(row)}</p>
-              <small><time dateTime={Number.isNaN(date.getTime()) ? undefined : date.toISOString()}>{recordedTime(row.at)}</time>
-                {' · '}{journalPosition(row.lsn)}</small>
+              <small><RelativeTime at={row.at} /></small>
+              <details><summary>Details</summary><p>{recordedTime(row.at)} · {journalPosition(row.lsn)}</p></details>
             </li>;
           })}
         </ol>}

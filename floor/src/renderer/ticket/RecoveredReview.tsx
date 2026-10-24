@@ -16,8 +16,9 @@ export function RecoveredReview({ context, fresh }: { readonly context: TicketCo
   const history = context.recovered_review;
   if (context.binding === null || (history.relations.length === 0 && history.state === 'complete')) return null;
   return <section aria-label="Recovered attempt review"><h4>Review the recovered attempt</h4>
-    <p>This is the same ticket and round {context.binding.round}.</p>
-    {fresh ? null : <p role="status">This is a retained reading. Read the current ticket before acting.</p>}
+    <p>This ticket continued after an interruption.</p>
+    <details><summary>Details</summary><p>This is the same ticket and round {context.binding.round}.</p></details>
+    {fresh ? null : <p role="status">This view may be out of date. Read the current ticket before acting.</p>}
     {history.state === 'complete' ? null : <p role="status">{history.state === 'truncated'
       ? 'Some recovery review history is omitted by the display limit.'
       : 'Some exact recovery review relationships are unavailable. No earlier review was guessed.'}</p>}

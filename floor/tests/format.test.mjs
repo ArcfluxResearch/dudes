@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { journalPosition, recordedTime } from '../src/renderer/format.ts';
+import { journalPosition, recordedTime, relativeTime } from '../src/renderer/format.ts';
 
 test('journal positions show the segment and byte offset without losing u64 precision', () => {
   assert.equal(journalPosition('2199023259734'), 'segment 2 · byte 4182');
@@ -24,4 +24,16 @@ test('recorded time uses the local clock and names its timezone', () => {
     if (previous === undefined) delete process.env.TZ;
     else process.env.TZ = previous;
   }
+});
+
+
+test('relative times stay readable while exact local times remain available', () => {
+  const now = Date.parse('2026-10-24T08:00:00Z');
+  assert.equal(relativeTime(now - 20000, now), 'just now');
+  assert.equal(relativeTime(now - 120000, now), '2 minutes ago');
+  assert.equal(relativeTime(now - 7200000, now), '2 hours ago');
+  assert.equal(relativeTime(now - 172800000, now), '2 days ago');
+  assert.equal(relativeTime(now + 120000, now), 'in 2 minutes');
+  assert.equal(relativeTime(NaN, now), 'Time unavailable');
+  assert.match(recordedTime(now - 120000), /2026/);
 });

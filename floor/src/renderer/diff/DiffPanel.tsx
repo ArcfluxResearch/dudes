@@ -39,27 +39,27 @@ const OMISSIONS: Readonly<Record<DiffOmissionReason, string>> = {
 };
 const NESTED_OMISSION = 'A folder with its own Git repository is not opened.';
 const REFUSALS: Readonly<Record<DiffRefusalReason, string>> = {
-  baseline_unavailable: 'Dudes did not record where this round started, so it cannot list the changes. '
+  baseline_unavailable: 'Dudes did not record where this attempt started, so it cannot list the changes. '
     + 'Review the files in the agent’s project folder.',
   stale_ticket: 'This ticket has moved on since the list was made. Choose Refresh to see its current changes.',
   stale_manifest: 'This list is out of date. Choose Refresh to make a new one.',
   expired: 'This list expired after a minute. Choose Refresh to make a new one.',
-  invalid_request: 'The daemon could not use that request. Choose Refresh to start again.',
-  disabled: 'The Changes view is turned off on this daemon.',
+  invalid_request: 'Dudes could not use that request. Choose Refresh to start again.',
+  disabled: 'The Changes view is turned off.',
   busy: 'Dudes is reading a checkout for someone else, or you asked again too soon. Wait a few seconds, then choose Refresh.',
   session_limit: 'This Floor session has used all the reading it is allowed (about 1 MiB), and Refresh does not renew it. '
     + 'Review the files in the agent’s project folder, or open Dudes to start a new Floor session.',
-  unsupported_platform: 'The Changes view does not work on this daemon’s operating system. Review the files in the agent’s project folder.',
+  unsupported_platform: 'The Changes view does not work on this computer. Review the files in the agent’s project folder.',
   worktree_mismatch: 'The agent was retired, or its own copy of the project is gone or no longer matches the one Dudes recorded, so nothing was read. '
     + 'Review the files in the project folder or in the agent’s own copy.',
   unsupported_storage: 'This repository uses storage the Changes view cannot read. Review the files in the agent’s project folder.',
   root_mismatch: 'The folder this ticket was recorded in has been replaced, so nothing was read.',
   timed_out: 'Reading the checkout took too long. Choose Refresh to try again.',
-  git_unavailable: 'The daemon found no usable Git program to read the checkout with.',
+  git_unavailable: 'Dudes found no usable Git program to read the checkout with.',
   unreadable: 'The checkout could not be read.',
 };
 const ABSENT_SIDE: Readonly<Record<DiffKind, { readonly old: string; readonly current: string }>> = {
-  added: { old: 'Not in the commit this round started from.', current: 'Empty.' },
+  added: { old: 'Not in the commit this attempt started from.', current: 'Empty.' },
   modified: { old: 'Empty.', current: 'Empty.' },
   deleted: { old: 'Empty.', current: 'Deleted: nothing is left in the checkout.' },
   renamed: { old: 'Empty.', current: 'Empty.' },
@@ -83,8 +83,8 @@ type PanelState = { readonly owner: { readonly key: string; readonly transport: 
 
 function failureText(reason: Failure): string {
   if (reason === 'forbidden') return 'This page has no current Floor session, so nothing was read. Open Dudes to sign in again.';
-  if (reason === 'unavailable') return 'The daemon did not answer. Choose Refresh to try again.';
-  if (reason === 'unknown') return 'The daemon sent a reply this page could not read. Choose Refresh to try again.';
+  if (reason === 'unavailable') return 'Dudes did not answer. Choose Refresh to try again.';
+  if (reason === 'unknown') return 'Dudes sent a reply this page could not read. Choose Refresh to try again.';
   return REFUSALS[reason];
 }
 
@@ -137,15 +137,15 @@ export function DiffReview({ review, loading, onOpen, onPage }: {
       <span className="diff-fresh-line">{FRESHNESS[page.freshness]}</span>
     </p>
     {page.binding.preexisting_tracked ? <p className="diff-warning">
-      Some tracked files already had changes when this round began, so the list below can include changes the agent did not make.</p> : null}
+      Some tracked files already had changes when this attempt began, so the list below can include changes the agent did not make.</p> : null}
     {page.binding.preexisting_untracked ? <p className="diff-warning">
-      Some new files already existed when this round began, so the list below can include files the agent did not create.</p> : null}
-    <p className="diff-note">Round {page.binding.round}. Files left out, files Git ignores, and changes the bounded read cannot see
-      are outside this comparison.</p>
+      Some new files already existed when this attempt began, so the list below can include files the agent did not create.</p> : null}
+    <p className="diff-note">This comparison leaves out ignored files and files Dudes could not read.</p>
+    <details><summary>Details</summary><p>Round {page.binding.round}.</p></details>
     {page.omitted > 0 || page.truncated ? <p className="diff-omission">{page.omitted_lower_bound ? 'At least ' : ''}{page.omitted} changed {page.omitted === 1 ? 'file was' : 'files were'} left out of this list.{page.truncated ? ' The list reached its limit.' : ''}</p> : null}
     {page.untracked > 0 ? <p className="diff-note">{page.untracked_lower_bound ? 'At least ' : ''}{page.untracked} new {page.untracked === 1 ? 'file is' : 'files are'} not listed because the list is full or its name cannot be shown.</p>
       : page.untracked_lower_bound ? <p className="diff-note">The list of new files was cut short, so some may be missing.</p> : null}
-    {entries.length === 0 ? <p>No file differs from where this round began.</p> : <ul className="diff-selection">
+    {entries.length === 0 ? <p>No file differs from where this attempt began.</p> : <ul className="diff-selection">
       {entries.map((entry, index) => {
         const isOpen = entry.entry_id !== null && opened === entry.entry_id;
         return <li key={index}>
@@ -247,7 +247,7 @@ export function DiffPanel({ card, expectedSeq, transport, ownCopy = false }: {
     <h4>Changes</h4>
     {ownCopy ? <p className="diff-note">{OWN_COPY}</p> : null}
     {closed ? <>
-      <p className="diff-note">Read the files this round changed or created, side by side. Nothing is read until you ask.</p>
+      <p className="diff-note">Read the files changed or created during this attempt, side by side. Nothing is read until you ask.</p>
       <button type="button" onClick={refresh}>Show changes</button>
     </> : <>
       <div className="diff-actions">

@@ -64,7 +64,7 @@ test('Overview and the drawer report only published stream and selected-agent fa
     const center = (floor, row, id) => overview(floor, id) + drawer(floor, row, id);
     const html = center(live, ada, ADA);
     for (const text of [
-      'Live — confirmed', 'Journal position', 'segment 0 · byte 42', ADA, 'Ada', 'Claude', 'backend engineer',
+      'Connected.', 'Journal position', 'segment 0 · byte 42', ADA, 'Ada', 'Claude', 'backend engineer',
       'waiting', 'managed', 'Paused', 'Breaker', 'warn', 'Turns', '7',
       'Review the full release candidate', 'in_progress', '$0.03 · 30 tok',
       'Ship now, or wait for a review?',
@@ -100,7 +100,7 @@ test('the focus roster preserves the current projection order and selects exactl
     const html = roster(live, GRACE);
     assert.ok(html.indexOf(ADA) < html.indexOf(GRACE));
     for (const text of [
-      'Ada', 'Grace', 'backend engineer', 'frontend engineer', 'claude', 'codex',
+      'Ada', 'Grace', 'backend engineer', 'frontend engineer', 'Claude', 'Codex',
       'waiting', 'running', 'Review the full release candidate', 'Polish the visible floor',
       '$0.03 · 30 tok', '$0.11 · 111 tok',
     ]) assert.ok(html.includes(text), `the focus roster omitted ${text}`);
@@ -128,8 +128,8 @@ test('retirement, wrong id, stale, resync and loss clear detail and selection to
       assert.equal(drawer(floor, selected, selected?.id ?? null), '', 'the drawer stays open without a selection');
       assert.doesNotMatch(roster(floor, selected?.id ?? null), /aria-pressed="true"/);
     }
-    assert.match(monitor({ ...live, stale: true }), /View unconfirmed/);
-    assert.match(monitor({ ...live, phase: 'resyncing', agents: [] }), /Resyncing/);
+    assert.match(monitor({ ...live, stale: true }), /Connection interrupted/);
+    assert.match(monitor({ ...live, phase: 'resyncing', agents: [] }), /Refreshing/);
     assert.match(monitor({ ...live, phase: 'closed', agents: [] }), /Disconnected/);
     assert.match(roster({ ...live, stale: true }, null), /disabled=""/);
   });

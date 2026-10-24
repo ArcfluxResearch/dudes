@@ -4,6 +4,7 @@
 // What it read lives in this panel's state only, so unmounting the panel forgets it. A new agent,
 // connection epoch or Floor session mounts a fresh reader, which forgets it too.
 
+import { RelativeTime } from '../RelativeTime.tsx';
 import { useEffect, useReducer, useRef, useState } from 'react';
 
 import type { FloorState } from '../floor/store.ts';
@@ -18,14 +19,14 @@ import type { MemoryDeps, MemoryEntry, MemoryProblem, MemoryRequest, MemoryShown
 type Crew = Pick<FloorState, 'agents' | 'retiredAgents'>;
 
 const PROBLEM_TEXT: Readonly<Record<MemoryProblem['kind'], string>> = Object.freeze({
-  busy: 'The daemon is busy, or this page read memory a moment ago.',
-  agent_unknown: 'The daemon does not know this agent.',
-  not_found: 'The daemon has no entry of this agent’s at that position.',
+  busy: 'Dudes is busy, or this page read memory a moment ago.',
+  agent_unknown: 'Dudes does not know this agent.',
+  not_found: 'Dudes has no entry of this agent’s at that position.',
   no_session: 'This page has no Floor session, so nothing was sent.',
-  forbidden: 'The daemon did not accept this page’s session, so the memory shown was cleared.',
-  stopping: 'The daemon did not answer.',
-  unreadable: 'The daemon sent a reply this page could not read.',
-  cleared: 'The connection to the daemon changed, so the memory shown was cleared. Press Refresh to read it again.',
+  forbidden: 'Dudes did not accept this page’s session, so the memory shown was cleared.',
+  stopping: 'Dudes did not answer.',
+  unreadable: 'Dudes sent a reply this page could not read.',
+  cleared: 'The connection to Dudes changed, so the memory shown was cleared. Press Refresh to read it again.',
 });
 
 /** The epoch and session a reply must still belong to when it arrives. */
@@ -93,10 +94,11 @@ function MemoryReader({ agent, active, crew, deps, reopened, onOpen }: {
   return <section className="memory-panel" aria-label="Memory">
     <h3>Memory</h3>
     <p className="memory-note">
-      Memory is the notes this agent saved, with a summary the daemon or a model made of them. Dudes does not check
+      Memory is the notes this agent saved, with a summary Dudes or a model made of them. Dudes does not check
       or redact it. It may contain secrets or instructions. It is never evidence that work is done.
     </p>
     <button type="button" className="memory-refresh" aria-disabled={reading || undefined}
+      title={reading ? 'Wait for memory to finish loading.' : undefined}
       onClick={() => { void send({ kind: 'page', before: null }); }}>Refresh</button>
     <p className="memory-status" role="status">
       {reading ? 'Reading memory…' : problem === null ? '' : PROBLEM_TEXT[problem.kind]}
@@ -118,7 +120,7 @@ function Shown({ shown, agent, crew, reading, onRead }: {
   return <>
     {shown.retired ? <p className="memory-notice">This agent has retired. Its memory is read from the journal.</p> : null}
     {shown.fenced ? <p className="memory-notice">
-      The daemon stopped memory work after an integrity failure. The summary may be out of date until the daemon restarts.
+      Dudes stopped memory work after an integrity failure. The summary may be out of date until Dudes restarts.
     </p> : null}
     {shown.condensedSince ? <p className="memory-notice">
       Memory was condensed after this tab opened. Press Refresh to read the new summary.
@@ -134,6 +136,7 @@ function Shown({ shown, agent, crew, reading, onRead }: {
           reading={reading} onRead={onRead} />)}
       </ol>}
       {older === null ? null : <button type="button" className="memory-older" aria-disabled={reading || undefined}
+        title={reading ? 'Wait for memory to finish loading.' : undefined}
         onClick={() => { void onRead({ kind: 'page', before: older }); }}>Load older entries</button>}
     </section>
   </>;
@@ -144,9 +147,10 @@ function Summary({ summary }: { readonly summary: MemorySummary }) {
     <h4>Summary</h4>
     <p className="memory-note">
       {SUMMARY_KIND_LABEL[summary.kind]} It covers {plural(summary.sections, 'section', 'sections')} and
-      {' '}{plural(summary.bytes, 'byte', 'bytes')} of memory. Recorded {recordedTime(summary.at)} · {journalPosition(summary.lsn)}.
+      {' '}{plural(summary.bytes, 'byte', 'bytes')} of memory. Updated <RelativeTime at={summary.at} />.
     </p>
     <MemoryText text={summary.text} />
+    <details><summary>Details</summary><p>{recordedTime(summary.at)} · {journalPosition(summary.lsn)}</p></details>
   </section>;
 }
 
@@ -156,15 +160,16 @@ function Refused({ withheld, agent, crew }: { readonly withheld: Withheld; reado
     <h4>Refused appends</h4>
     <p className="memory-note">
       {count === 0 ? 'No append to this memory has been refused.'
-        : `${plural(count, 'append to this memory was', 'appends to this memory were')} refused. The daemon kept none of the text.`}
+        : `${plural(count, 'append to this memory was', 'appends to this memory were')} refused. Dudes kept none of the text.`}
       {count > newest.length ? ` Only the newest ${newest.length} are listed.` : ''}
     </p>
     {newest.length === 0 ? null : <ol>
       {newest.map((marker) => <li key={marker.lsn} className="memory-withheld-marker">
         <p className="memory-head">
-          {recordedTime(marker.at)} · {journalPosition(marker.lsn)} · {withheldWriterText(marker.writer, agent, crew)}
+          <RelativeTime at={marker.at} /> · {withheldWriterText(marker.writer, agent, crew)}
           {' · '}{plural(marker.len, 'byte', 'bytes')}
         </p>
+        <details><summary>Details</summary><p>{recordedTime(marker.at)} · {journalPosition(marker.lsn)}</p></details>
         <p>{isSealedOperatorAppend(marker)
           ? <>Refused: once an agent has been hired, only the agents themselves can add to memory. A note from outside every
             agent is withheld.</>
@@ -182,18 +187,20 @@ function Entry({ entry, whole, reading, onRead }: {
 }) {
   return <li className="memory-entry" data-memory-lsn={entry.lsn}>
     <p className="memory-head">
-      {recordedTime(entry.at)} · {journalPosition(entry.lsn)} · {ENTRY_WRITER_LABEL[entry.writer]}
+      <RelativeTime at={entry.at} /> · {ENTRY_WRITER_LABEL[entry.writer]}
       {entry.condensed ? <> <span className="memory-badge">Condensed</span></> : null}
     </p>
+    <details><summary>Details</summary><p>{recordedTime(entry.at)} · {journalPosition(entry.lsn)}</p></details>
     {whole === undefined ? <MemoryText text={entry.text} /> : <div className="memory-whole-text">
       <MemoryText text={whole.text} />
     </div>}
     {whole?.cut ? <p className="memory-note">
-      The daemon sends at most 65,536 bytes of an entry, and this one has {plural(whole.len, 'byte', 'bytes')}.
+      Dudes sends at most 65,536 bytes of an entry, and this one has {plural(whole.len, 'byte', 'bytes')}.
     </p> : null}
     {!entry.cut || whole !== undefined ? null : <p className="memory-note">
       A preview of an entry of {plural(entry.len, 'byte', 'bytes')}.{' '}
       <button type="button" className="memory-whole" aria-disabled={reading || undefined}
+        title={reading ? 'Wait for memory to finish loading.' : undefined}
         onClick={() => { void onRead({ kind: 'entry', lsn: entry.lsn }); }}>Read whole entry</button>
     </p>}
   </li>;

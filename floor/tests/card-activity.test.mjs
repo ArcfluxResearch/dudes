@@ -41,14 +41,14 @@ test('card detail shows recorded card kinds and statuses, newest position first'
   assert.match(html, /Recent card activity/);
   assert.deepEqual([...html.matchAll(/data-card-activity-lsn="(\d+)"/g)].map((match) => match[1]), ['3', '2', '1']);
   assert.match(html, /Moved Recorded title · Working/);
-  assert.match(html, /Recorded Ada claimed Recorded title · To do/);
+  assert.match(html, /Recorded Ada was assigned Recorded title · To do/);
   assert.match(html, /Created Recorded title · To do/);
   assert.match(html, /Events from the current recent activity window\. Older events may be absent\./);
 });
 
 test('card detail shows each recorded time and exact journal position', async () => {
   const html = await render([event('18446744073709551614', 'card_transition', 'done', 1_000)]);
-  assert.match(html, /<time datetime="1970-01-01T00:00:01\.000Z">/i);
+  assert.match(html, /<time datetime="1970-01-01T00:00:01\.000Z" title="/i);
   assert.match(html, /segment 16777215 · byte 1099511627774/);
   assert.match(html, /data-card-activity-lsn="18446744073709551614"/);
 });
@@ -66,7 +66,7 @@ test('card activity preserves recorded claim names and keeps text inert', async 
   claimed.agent.name = '<img src=x onerror=alert(1)>';
   claimed.card.title = '<script>recorded title</script>';
   const html = await render([claimed, event(2, 'card_transition', 'done', 2_000)]);
-  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; claimed &lt;script&gt;recorded title&lt;\/script&gt; · To do/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; was assigned &lt;script&gt;recorded title&lt;\/script&gt; · To do/);
   const recent = html.slice(html.indexOf('Recent card activity'));
   assert.doesNotMatch(recent, /Current renamed Ada|Operator|<img|<script|<button|<input/);
   assert.match(recent, /Moved Recorded title · Done/);
@@ -79,9 +79,9 @@ test('card activity distinguishes missing reads, disconnection, stale and empty 
   assert.match(missing, /Card activity was not reported, or this page could not read every event/);
   assert.doesNotMatch(missing, /No events for this card/);
   const closed = await render([event(1, 'card_created', 'todo', 1_000)], { phase: 'closed' });
-  assert.match(closed, /Card activity is unavailable while the stream is disconnected/);
+  assert.match(closed, /Card activity is unavailable while disconnected/);
   assert.doesNotMatch(closed, /data-card-activity-lsn=/);
   const stale = await render([event(1, 'card_created', 'todo', 1_000)], { stale: true });
-  assert.match(stale, /Activity unconfirmed\. These events are from the last snapshot\./);
+  assert.match(stale, /Connection interrupted\. This activity may be out of date\./);
   assert.match(stale, /Created Recorded title · To do/);
 });

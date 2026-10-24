@@ -126,18 +126,18 @@ test('each freshness label says what it means and never reads as fresh or as a p
   assert.match(unknown, /leaving out any one file makes a sample incomplete/);
   assert.match(unknown, /Unknown does not mean fresh\./);
   assert.doesNotMatch(unknown, /Unchanged since|Changed since|passed the check|is unchanged/);
-  for (const page of [matches, changed, unknown]) assert.match(page, /Files left out, files Git ignores, and changes the bounded read cannot see\s+are outside this comparison/);
+  for (const page of [matches, changed, unknown]) assert.match(page, /This comparison leaves out ignored files and files Dudes could not read/);
 });
 
 test('tracked changes from before the round are warned about, and only then', () => {
   assert.match(html(diffPage({ binding: diffBinding({ preexisting_tracked: true }) })),
-    /Some tracked files already had changes when this round began, so the list below can include changes the agent did not make\./);
+    /Some tracked files already had changes when this attempt began, so the list below can include changes the agent did not make\./);
   assert.doesNotMatch(html(diffPage()), /already had changes/);
 });
 
 test('new files from before the round are warned about, and only then', () => {
   assert.match(html(diffPage({ binding: diffBinding({ preexisting_untracked: true }) })),
-    /Some new files already existed when this round began, so the list below can include files the agent did not create\./);
+    /Some new files already existed when this attempt began, so the list below can include files the agent did not create\./);
   assert.doesNotMatch(html(diffPage()), /already existed/);
 });
 
@@ -149,7 +149,7 @@ test('a page of only new files lists them and never says nothing differs or that
   assert.match(out, /Added<\/span> <span class="diff-path"[^>]*>src\/fresh\.rs/);
   assert.match(out, /Nested repository<\/span> <span class="diff-path"[^>]*>vendored/);
   assert.doesNotMatch(out, /No file differs|never shown|not listed/);
-  assert.match(html(diffPage({ entries: [], untracked: 0 })), /No file differs from where this round began\./);
+  assert.match(html(diffPage({ entries: [], untracked: 0 })), /No file differs from where this attempt began\./);
 });
 
 test('a hard-linked file says why its text is withheld', () => {
@@ -336,7 +336,7 @@ test('source text keeps tabs, CRLF, CR and an absent final newline, and numbers 
 
 test('an empty side says why it is empty', async () => {
   for (const [kind, old, current, expected] of [
-    ['added', '', 'x\n', 'Not in the commit this round started from.'],
+    ['added', '', 'x\n', 'Not in the commit this attempt started from.'],
     ['deleted', 'x\n', '', 'Deleted: nothing is left in the checkout.'],
   ]) {
     const app = await mount((request) => response(request.mode === 'content'

@@ -131,8 +131,7 @@ export function createNotificationPreference(ports: NotificationPreferencePorts 
   }
 
   async function setEnabled(enabled: boolean): Promise<void> {
-    offerStatus ??= ports.readOffer();
-    if (offerStatus === 'ready') saveOffer('seen');
+    if (getOfferStatus() === 'ready') saveOffer('seen');
     const attempt = ++request;
     if (!enabled) { publish('off', true); return; }
     const permission = ports.permission();
@@ -149,10 +148,17 @@ export function createNotificationPreference(ports: NotificationPreferencePorts 
   }
 
   function getOffer(): boolean {
-    offerStatus ??= ports.readOffer();
+    getOfferStatus();
     const permission = ports.permission();
     return (offerStatus === 'ready' || offerVisible) && permission !== 'denied' && permission !== 'unsupported'
       && (getState().kind === 'off' || getState().kind === 'asking' || getState().kind === 'unavailable');
+  }
+
+  function getOfferStatus(): NotificationOfferStatus {
+    const stored = ports.readOffer();
+    offerStatus = offerStatus === 'seen' || stored === 'seen' ? 'seen'
+      : offerStatus === 'ready' || stored === 'ready' ? 'ready' : 'unseen';
+    return offerStatus;
   }
 
   function saveOffer(status: 'ready' | 'seen'): void {
@@ -164,13 +170,12 @@ export function createNotificationPreference(ports: NotificationPreferencePorts 
   return {
     getState, setEnabled, getOffer,
     offerAfterGive: () => {
-      offerStatus ??= ports.readOffer();
-      if (offerStatus !== 'unseen') return;
+      if (getOfferStatus() !== 'unseen') return;
       const permission = ports.permission();
       saveOffer(permission === 'denied' || permission === 'unsupported' || getState().kind === 'on' ? 'seen' : 'ready');
     },
     presentOffer: () => {
-      if (offerStatus !== 'ready' || !getOffer()) return;
+      if (!getOffer() || offerStatus !== 'ready') return;
       offerVisible = true;
       saveOffer('seen');
     },

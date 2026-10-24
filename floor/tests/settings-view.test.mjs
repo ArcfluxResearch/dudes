@@ -35,7 +35,7 @@ test('Settings shows read-only running values, local commands, Setup and About',
     const { SettingsView, UnavailableControls } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
     const html = renderToStaticMarkup(createElement(SettingsView, { floor: floor(), onSetup() {} }));
     for (const expected of ['Floor switches', '$0', '$0.001234', '9007199254740993',
-      'default to $0.25 and 20000 tokens', '&lt;Service&gt;', '$10', '$5', '456',
+      'defaults are $0.25 and 20,000 tokens', '&lt;Service&gt;', '$10', '$5', '456',
       'Setup', 'About', 'Daemon', '0.12.3', 'Floor build', 'Browser wire', 'browser-wire-v6', 'restart']) {
       assert.ok(html.includes(expected), `missing ${expected}: ${html}`);
     }
@@ -68,16 +68,16 @@ test('Settings shows read-only running values, local commands, Setup and About',
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, git } }), onSetup() {} }));
     assert.match(gitRow(false), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> Off <button type="button">Turn on<\/button><\/dd>/);
     assert.match(gitRow(true), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
-    assert.match(html, /<dt>Start new goals<\/dt><dd><span class="settings-says">[^<]*<\/span> Off It needs Change goals and Hire agents\. <button type="button">Turn on<\/button><\/dd>/);
+    assert.match(html, /<dt>Start new tasks<\/dt><dd><span class="settings-says">[^<]*<\/span> Off It needs Change tasks and Hire agents\. <button type="button">Turn on<\/button><\/dd>/);
     const renewOn = renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, renew: true } }), onSetup() {} }));
-    assert.match(renewOn, /<dt>Start new goals<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
+    assert.match(renewOn, /<dt>Start new tasks<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
     const hint = (control) => renderToStaticMarkup(createElement(UnavailableControls, { floor: floor(), control }));
     assert.match(hint('retire'), /Turn on Pause, resume and rename and Retire agents under\s+Floor switches in Settings/);
     assert.match(hint('terminal'), /turn on Attach terminals under Floor switches in Settings, then restart Dudes/);
 
     assert.match(html, /Manage engines, projects and spending/);
-    assert.match(html, /Check which engines the daemon can find\. Sign in when you hire an agent\./);
+    assert.match(html, /Check which engines Dudes can find\. Sign in when you hire an agent\./);
     assert.doesNotMatch(html, /Check whether each engine is installed and signed in/);
     const diffRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, diff: true, git } }), onSetup() {} }));
@@ -85,7 +85,7 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.match(diffRow(true), /<dt>Read ticket changes<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button/);
     noteTransport('close');
     const closed = renderToStaticMarkup(createElement(SettingsView, { floor: getFloorState(), onSetup() {} }));
-    assert.match(closed, /Settings is unavailable while the stream is disconnected/);
+    assert.match(closed, /Settings is unavailable while disconnected/);
     assert.match(closed, /<button[^>]*>Retry<\/button>/);
     assert.doesNotMatch(closed, /Waiting for a snapshot/);
     assert.doesNotMatch(closed, /0.12.3/);
@@ -119,7 +119,7 @@ test('Settings offers a Remove control for every project, whatever its id, and n
         assert.equal(html.includes('>Remove project</button>'), project, `${id} with the switch ${project}`);
         assert.doesNotMatch(html, /dudes project remove/);
         assert.doesNotMatch(html, /Before enabling Control, Goal or Retire/);
-        assert.match(html, /No ceiling/);
+        assert.match(html, /No limit/);
       }
     }
   } finally { await server.close(); }
@@ -154,7 +154,7 @@ test('Settings asks on the page before the terminal goes on or retire or control
     await edit.changeSetting('floor.terminal', 'on');
     assert.equal(edit.getSettingsEditState().asking?.key, 'floor.terminal');
     assert.equal(edit.getSettingsEditState().sending, null, 'nothing was sent yet');
-    assert.match(view(), /aria-label="Turn on Attach terminals"> [^<]*takes effect after a restart of the daemon\. <button type="button">Turn on<\/button> <button type="button">Cancel<\/button>/);
+    assert.match(view(), /aria-label="Turn on Attach terminals"> [^<]*takes effect after a restart of Dudes\. <button type="button">Turn on<\/button> <button type="button">Cancel<\/button>/);
     edit.cancelSetting();
     assert.equal(edit.getSettingsEditState().asking, null);
     assert.doesNotMatch(view(), /aria-label="Turn (on|off) floor\./);
@@ -193,7 +193,7 @@ test('Settings has a button for each engine and a box for each spending limit, a
     const edit = await server.ssrLoadModule('/src/renderer/settings/edit.ts');
     const change = edit.limitChange('usd', '7.5', '5000000');
     await edit.changeSetting('budget.floor_usd_per_day', change.value, change.question, 'Raise limit');
-    assert.match(render(['claude']), /aria-label="Change Floor daily dollars"> This raises the limit from \$5 to \$7\.5\. <button type="button">Raise limit<\/button> <button type="button">Cancel<\/button>/);
+    assert.match(render(['claude']), /aria-label="Change Daily dollar limit"> This raises the limit from \$5 to \$7\.5\. <button type="button">Raise limit<\/button> <button type="button">Cancel<\/button>/);
     assert.equal(edit.getSettingsEditState().sending, null, 'nothing is written until the person confirms');
     edit.resetSettingsEdit();
   } finally { await server.close(); }
@@ -213,8 +213,8 @@ test('a saved daily ceiling clear stays beside the running value until replaced 
       text: async () => JSON.stringify({ state, applied: [], restart: ['budget'], reason: 'bad_value' }) });
     const save = (key, value, fetch = response()) => edit.saveSetting(key, value, fetch, () => true);
     await save('budget.floor_usd_per_day', 'unset');
-    assert.match(render(), /<dt>Floor daily dollars<\/dt><dd>\$5/);
-    assert.match(render(), /Saved from this page\. No daily dollar ceiling after restart/);
+    assert.match(render(), /<dt>Daily dollar limit<\/dt><dd>\$5/);
+    assert.match(render(), /Saved from this page\. No daily dollar limit after restart/);
     await save('floor.answer', 'on');
     assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, true, 'another key does not replace the clear');
     await save('budget.floor_usd_per_day', '8', response('refused', 409));
@@ -225,11 +225,11 @@ test('a saved daily ceiling clear stays beside the running value until replaced 
     store.noteTransport('open');
     assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, true, 'reconnection does not prove a new running ceiling');
     await save('budget.floor_usd_per_day', '8');
-    assert.doesNotMatch(render(), /No daily dollar ceiling after restart/);
+    assert.doesNotMatch(render(), /No daily dollar limit after restart/);
     await save('budget.floor_usd_per_day', 'unset', response('saved_not_live'));
-    assert.match(render(), /No daily dollar ceiling after restart/);
+    assert.match(render(), /No daily dollar limit after restart/);
     edit.resetSettingsEdit();
-    assert.doesNotMatch(render(), /No daily dollar ceiling after restart/, 'reload forgets unverifiable saved intent');
+    assert.doesNotMatch(render(), /No daily dollar limit after restart/, 'reload forgets unverifiable saved intent');
     const session = await server.ssrLoadModule('/src/session.ts');
     const signing = await server.ssrLoadModule('/src/signer.ts');
     const signer = { device: async () => 'settings-test-device', sign: async () =>
@@ -250,7 +250,7 @@ test('a saved daily ceiling clear stays beside the running value until replaced 
     assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, false, 'a live no-ceiling snapshot confirms the clear');
     assert.equal(edit.getSettingsEditState().last, null, 'the confirmed clear no longer asks for another restart');
     assert.doesNotMatch(render(unlimited), />Clear limit<\/button>/);
-    assert.match(render(unlimited), /<dt>Floor daily dollars<\/dt><dd>No ceiling/);
+    assert.match(render(unlimited), /<dt>Daily dollar limit<\/dt><dd>No limit/);
     store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 2, agents: [] }, settings: report }), epoch);
     await save('budget.floor_usd_per_day', 'unset');
     signing.installSigner(signer);

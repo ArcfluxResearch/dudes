@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { engineName } from './engines.ts';
 import type { ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
 
@@ -80,7 +81,7 @@ export function OverviewSummary({ floor, selectedId, onOpenQuestion, onOpenTicke
       </details>
       <p>{selectedId === null
         ? 'Select an agent in the office or in Crew to open its details.'
-        : 'The selected agent’s current projection and read-only Live work are open in its details.'}</p>
+        : 'The selected agent’s work and messages are open in its panel.'}</p>
       <WorkersList agents={floor.agents} />
       <ArchivedAgents floor={floor} onHireAgain={onHireAgain} />
     </div>
@@ -101,7 +102,7 @@ export function AgentsRoster({ floor, selectedId, onSelectAgent, onHireAgain, on
   return (
     <div className="agents-roster">
       <StreamReadStatus floor={floor} />
-      {floor.agents.length === 0 ? <p>No current agents.</p> : (
+      {floor.agents.length === 0 ? <p>No agent is available to focus on.</p> : (
         groups.map((group, at) => <section key={group.id === null ? 'unrecorded' : `workspace-${group.id}`}
           className="workspace-roster-group" aria-labelledby={`workspace-roster-${at}`}>
           <h3 id={`workspace-roster-${at}`}>{group.label}</h3>
@@ -117,9 +118,9 @@ export function AgentsRoster({ floor, selectedId, onSelectAgent, onHireAgain, on
                     aria-label={`Inspect ${value(row.name)} in focus`}
                     aria-pressed={selectedId === row.id}
                     aria-controls={selectedId === row.id ? 'selected-agent-detail' : undefined}
-                    disabled={!selectable} onClick={() => onSelectAgent(row.id)}>
+                    disabled={!selectable} title={selectable ? undefined : 'Reconnect to Dudes before selecting an agent.'} onClick={() => onSelectAgent(row.id)}>
                     <strong>{value(row.name)}</strong>
-                    <span>{value(row.role)} · {value(row.provider)}</span>
+                    <span>{value(row.role)} · {typeof row.provider === 'string' ? engineName(row.provider) : 'Unknown engine'}</span>
                     <span className="agents-roster-workspace">{workspaceLabel(row)}</span>
                     <span>{value(ticketWord(floor.cards, row, fields.status) ?? fields.status)}</span>
                     <span>{fields.goal === '' ? 'No goal' : fields.goal}</span>
@@ -170,8 +171,10 @@ export function WaitingOnYou({ items, selectable, onOpen, onOpenTicket }: {
             <p>{item.text}</p>
             {item.kind === 'question'
               ? <button type="button" className="waiting-open" disabled={!selectable}
+                title={selectable ? undefined : 'Reconnect to Dudes before answering.'}
                 onClick={() => onOpen(item.agentId)}>Answer</button>
               : <button type="button" className="waiting-open" disabled={!selectable || onOpenTicket === undefined}
+                title={!selectable ? 'Reconnect to Dudes before opening a ticket.' : onOpenTicket === undefined ? 'Open the Board to find this ticket.' : undefined}
                 onClick={() => onOpenTicket?.(item.card)}>Open ticket</button>}
           </li>
         ))}

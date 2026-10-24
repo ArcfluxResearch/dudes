@@ -219,7 +219,7 @@ async function performRead(card: CardRow, deps: ControlDeps, key: DetailReadKey)
       return;
     }
     commit({ card: card.id, seq: heldSeq, phase: 'failed', detail: same ? state.detail : null,
-      problem: 'The daemon sent a reply this page could not read.', freshness: key });
+      problem: 'Dudes sent a reply this page could not read.', freshness: key });
     return;
   }
   commit({ card: card.id, seq: heldSeq, phase: 'failed', detail: same ? state.detail : null,

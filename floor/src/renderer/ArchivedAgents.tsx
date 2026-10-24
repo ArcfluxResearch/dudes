@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { RelativeTime } from './RelativeTime.tsx';
+import { engineName } from './engines.ts';
 import { useState, useSyncExternalStore } from 'react';
 
 import type { RetiredAgentRow } from './archive.ts';
 import { accessoryOf, lookOf } from './appearance.ts';
 import { Portrait } from './Portrait.tsx';
-import { recordedTime } from './format.ts';
 import { worktreeText } from './worktree.ts';
 import { ReadNotice, snapshotReadState } from './ReadError.tsx';
 import { getReadAvailability, subscribeToReadAvailability } from './floor/reads.ts';
@@ -35,10 +36,10 @@ export function ArchivedAgents({ floor, onHireAgain }: {
   return (
     <details className="archived-agents">
       <summary>Archived ({floor.retiredAgents.length})</summary>
-      <ReadNotice state={state} label="Archived agents" message="The archive was not reported, or this page could not read every archived agent. Retry to request a fresh snapshot." />
-      {state !== 'ready' || !floor.stale ? null : <p role="status">Archive unconfirmed. These agents are from the last snapshot.</p>}
+      <ReadNotice state={state} label="Archived agents" message="The archive was not reported, or this page could not read every archived agent. Retry to load the latest archive." />
+      {state !== 'ready' || !floor.stale ? null : <p role="status">Connection interrupted. This archive may be out of date.</p>}
       <p>Recent retired agents. Up to 64 entries within the archive size limit.</p>
-      <p>Hidden entries stay in the daemon's archive. This view preference lives only in this browser.</p>
+      <p>Hidden entries stay in the archive. This view preference lives only in this browser.</p>
       {hiddenCount === 0 ? null : <button type="button" aria-pressed={showHidden}
         onClick={() => setShowHidden((value) => !value)}>{showHidden ? 'Hide hidden' : `Show hidden (${hiddenCount})`}</button>}
       {saved ? null : <p role="status">Browser storage is unavailable. This preference lasts until this view closes.</p>}
@@ -48,17 +49,18 @@ export function ArchivedAgents({ floor, onHireAgain }: {
           {[...rows].reverse().map((row) => (
             <li key={row.id} data-archived-agent-id={row.id}>
               <h3>{row.name}</h3>
-              <p>{row.role} · {row.provider}</p>
+              <p>{row.role} · {engineName(row.provider)}</p>
               <ArchiveLook row={row} />
               <p>{row.workspace_label ?? 'Project not recorded'}</p>
               {row.worktree === undefined ? null : <p>{worktreeText(row.worktree)}</p>}
               <dl>
-                <div><dt>Hired</dt><dd>{recordedTime(row.hired_at)}</dd></div>
-                <div><dt>Retired</dt><dd>{recordedTime(row.retired_at)}</dd></div>
-                <div><dt>Total recorded turns</dt><dd>{row.turns}</dd></div>
+                <div><dt>Hired</dt><dd><RelativeTime at={row.hired_at} /></dd></div>
+                <div><dt>Retired</dt><dd><RelativeTime at={row.retired_at} /></dd></div>
+                <div><dt>Work attempts</dt><dd>{row.turns}</dd></div>
                 <div><dt>Reported spend</dt><dd>{formatCost(row.spend)}</dd></div>
               </dl>
               {onHireAgain === undefined ? null : <button type="button" disabled={!ready || !hireSwitchOn(floor)}
+                title={!ready ? 'Reconnect to Dudes before hiring again.' : !hireSwitchOn(floor) ? 'Turn on Hire agents in Settings.' : undefined}
                 onClick={(event) => onHireAgain(row, event.currentTarget)}>Hire again</button>}
               <button type="button" onClick={() => hide(row.id, !hidden.includes(row.id))}>
                 {hidden.includes(row.id) ? 'Show in archive' : 'Hide in this browser'}

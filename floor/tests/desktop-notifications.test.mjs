@@ -88,7 +88,7 @@ test('ticket transitions can return after work, and notification text excludes o
   }, { reason: 'no_turns' })], agents: [agent(ADA, 'Ada\u2066', { goal: { text: 'private goal' } })] };
   let step = notificationArrivals(seedNotificationHistory(start), event(blocked));
   assert.deepEqual(step.notices.map(({ title, body }) => ({ title, body })), [{ title: '<Fix login>',
-    body: 'Needs you. The agent used all its turns on this ticket. Give to agent to try again, or Stop.' }]);
+    body: 'Needs you. The agent reached the work attempt limit for this ticket. Give to agent to try again, or Stop.' }]);
   assert.doesNotMatch(JSON.stringify(step.notices), /private/);
   step = notificationArrivals(step.history, event(start));
   step = notificationArrivals(step.history, event({ ...blocked, cards: [{ ...blocked.cards[0], status: 'review' }] }));
@@ -341,6 +341,37 @@ test('dismissed, legacy seen and suppressed offers do not repeat', async () => {
   cached.offerAfterGive();
   revoked.currentPermission = 'denied';
   assert.equal(cached.getOffer(), false);
+});
+
+test('a dismissal in one tab prevents an already open tab from repeating the offer', () => {
+  const ports = preferencePorts();
+  const first = createNotificationPreference(ports);
+  const second = createNotificationPreference(ports);
+  assert.equal(first.getOffer(), false);
+  assert.equal(second.getOffer(), false);
+  first.offerAfterGive();
+  first.presentOffer();
+  first.dismissOffer();
+  second.offerAfterGive();
+  assert.equal(second.getOffer(), false);
+  assert.equal(ports.readOffer(), 'seen');
+  assert.equal(ports.requests, 0);
+});
+
+test('an offer pending in another tab stays consumed after the first tab presents it', () => {
+  const ports = preferencePorts();
+  const first = createNotificationPreference(ports);
+  const second = createNotificationPreference(ports);
+  first.offerAfterGive();
+  assert.equal(second.getOffer(), true);
+  first.presentOffer();
+  assert.equal(first.getOffer(), true, 'the visible offer remains answerable');
+  assert.equal(second.getOffer(), false);
+  second.presentOffer();
+  second.offerAfterGive();
+  assert.equal(second.getOffer(), false);
+  assert.equal(ports.readOffer(), 'seen');
+  assert.equal(ports.requests, 0);
 });
 
 test('offer presentation survives blocked storage within this page', () => {

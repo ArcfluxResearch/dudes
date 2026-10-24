@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// The answer form against every reply the daemon can give.
+// The answer form against every reply Dudes can give.
 //
-// The daemon here is a function from the request the page sent to a status and
+// Dudes here is a function from the request the page sent to a status and
 // a body, shaped exactly like the gateway's response map: `200 answered`,
 // `202 pending`, a typed `409 refused`, an empty `409`, an empty `403`, an
 // empty `503`, a `400`, and a response that never arrives. The floor is the
@@ -90,7 +90,7 @@ function delta(agents, lsn) {
 }
 
 /**
- * The daemon's replies, one per request, each a function of what was sent.
+ * Dudes's replies, one per request, each a function of what was sent.
  * A reply that returns an Error is a response the page never received.
  */
 function daemon(...replies) {
@@ -214,7 +214,7 @@ test('the answer sibling decodes exactly, and anything else means no form', () =
   assert.deepEqual(decodeAnswerLimits({ max_text_bytes: 1 }), { maxTextBytes: 1 });
   for (const [label, value] of Object.entries({
     absent: undefined, null: null, 'a number': 42, 'a string': '4096', 'an array': [4096], 'an empty object': {},
-    zero: { max_text_bytes: 0 }, 'over the daemon bound': { max_text_bytes: 4097 },
+    zero: { max_text_bytes: 0 }, 'over Dudes bound': { max_text_bytes: 4097 },
     'a fraction': { max_text_bytes: 1.5 }, 'a numeric string': { max_text_bytes: '4096' },
     'an extra key': { max_text_bytes: 4096, extra: 1 }, 'a renamed key': { maxTextBytes: 4096 },
   })) {
@@ -334,14 +334,14 @@ test('answered shows the answer as recorded, never a running turn; continuation 
   delta([waiting({ status: 'idle', question: undefined, question_lsn: undefined, turns: 1 })], 10);
   html = status();
   assert.match(html, /data-answer-continuation="closed"/);
-  assert.match(html, /The question is closed\. The agent is idle; no new turn has appeared yet\./);
+  assert.match(html, /The question is closed\. The agent is idle; no new work attempt has appeared yet\./);
   assert.equal(form(), '', 'a closed question still offers a form');
 
   // A new turn: only now does the page say the agent moved on.
   delta([waiting({ status: 'running', question: undefined, question_lsn: undefined, turns: 2 })], 11);
   html = status();
   assert.match(html, /data-answer-continuation="continued"/);
-  assert.match(html, /its turn count went from 1 to 2, and it is running\./);
+  assert.match(html, /its work attempt count went from 1 to 2, and it is running\./);
 });
 
 test('pending shows no success, and Check status resends the same request_id and body', async () => {
@@ -391,7 +391,7 @@ test('an empty 409 is a client error, never success', async () => {
   await sendOnce(daemon(EMPTY(409)));
   assert.deepEqual(answer.getAnswerState().outcome, { kind: 'conflict' });
   const html = status();
-  assert.match(html, /class="answer-error" role="alert">\s*The daemon holds a different request under this request id/);
+  assert.match(html, /class="answer-error" role="alert">\s*Dudes holds a different request under this request id/);
   assert.match(html, /This is a page error; nothing was recorded\./);
   assert.doesNotMatch(html, /answer-success/);
 });
@@ -630,7 +630,7 @@ test('after 202 or 503 and a session end, a same-request_id Check from a new ses
     assert.match(html, /data-answer-session="ended"/);
     assert.match(html, /Open Dudes to sign in again in this browser: this page keeps the answer\. Check status then asks again with the same request/);
     assert.doesNotMatch(html, />Edit and send again</);
-    assert.match(html, /<button type="button" aria-disabled="true" aria-busy="false"[^>]*>Check status<\/button>/,
+    assert.match(html, /<button type="button" aria-disabled="true"[^>]*aria-busy="false"[^>]*>Check status<\/button>/,
       'Check status is offered with no session to send it on');
 
     // A fresh link pasted into this tab: a new session, the same page.

@@ -46,9 +46,9 @@ const ENDINGS: Readonly<Record<LoginEnding, string>> = Object.freeze({
   succeeded: 'Signed in. Checking again…',
   failed: 'The sign-in did not finish.',
   timed_out: 'The sign-in ran out of time after 10 minutes.',
-  replaced: 'Another sign-in for this app took its place.',
-  not_installed: 'Dudes could not find this app on this computer.',
-  unavailable: 'This app cannot be signed in from the Floor on this computer.',
+  replaced: 'Another sign-in for this engine took its place.',
+  not_installed: 'Dudes could not find this engine on this computer.',
+  unavailable: 'This engine cannot be signed in from the Floor on this computer.',
   could_not_start: 'The sign-in could not start.',
   needs_terminal: 'Signing in to Pi needs Attach terminals turned on under Floor switches in Settings.',
   lost: 'The connection to the sign-in was lost.',
@@ -103,6 +103,7 @@ export function EngineSignInView({ engine, row, channel, terminal, onSettings }:
         Pi cannot tell Dudes whether it is signed in. If it needs a sign-in, open it here.
       </p> : null}
       <button type="button" className="login-start" aria-disabled={busy || undefined}
+        title={busy ? 'Finish or cancel the other sign-in first.' : undefined}
         onClick={() => { if (!busy) startLogin(engine, browserLoginPorts()); }}>
         {engine === 'pi' ? 'Open Pi to sign in' : `Sign in to ${name}`}
       </button>

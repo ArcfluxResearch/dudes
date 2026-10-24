@@ -11,22 +11,10 @@
 
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import type { FloorState } from '../floor/store.ts';
+import { engineName } from '../engines.ts';
 import { INSTALL_COMMANDS } from './daemon.ts';
 import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import type { ProviderName, ProviderRow } from './daemon.ts';
-
-const NAMES: Readonly<Record<ProviderName, string>> = Object.freeze({
-  claude: 'Claude Code',
-  codex: 'Codex CLI',
-  copilot: 'GitHub Copilot CLI',
-  antigravity: 'Antigravity',
-  grok: 'Grok CLI',
-  kimi: 'Kimi CLI',
-  qwen: 'Qwen Code',
-  opencode: 'opencode',
-  pi: 'Pi',
-  crush: 'Crush',
-});
 
 /** Put `text` on the clipboard. Nothing else happens, and a refusal changes nothing. */
 export function copyToClipboard(text: string): void {
@@ -57,7 +45,7 @@ function ProviderEntry({ row }: { readonly row: ProviderRow }) {
   const install = row.detail === null ? INSTALL_COMMANDS[row.provider] : undefined;
   return (
     <li className="setup-provider" data-provider={row.provider} data-found={row.found}>
-      <h3>{NAMES[row.provider]}</h3>
+      <h3>{engineName(row.provider)}</h3>
       {row.found ? (
         <>
           <p>Found.</p>
@@ -94,10 +82,10 @@ export function SetupView({ floor, onGuide }: { readonly floor: FloorState; read
   return (
     <div className="setup-view">
       {onGuide === undefined ? null : <button type="button" id="first-run-guide-open" onClick={onGuide}>Open first-run guide</button>}
-      <ReadNotice state={state} label="Setup" message="Not reported: the daemon’s provider check did not answer in time, or this page could not read it." />
+      <ReadNotice state={state} label="Setup" message="Dudes could not check the engines. Retry to check again." />
       {report === null || state !== 'ready' ? null : (
           <>
-            {floor.stale ? <p role="status">Setup unconfirmed. These values are from the last snapshot.</p> : null}
+            {floor.stale ? <p role="status">Connection interrupted. These engine checks may be out of date.</p> : null}
             <details className="setup-where"><summary>Where Dudes keeps its data</summary>
               <dl className="setup-home">
                 <div>
@@ -106,8 +94,8 @@ export function SetupView({ floor, onGuide }: { readonly floor: FloorState; read
                 </div>
               </dl>
             </details>
-            {report.providers.length === 0 ? <p>The daemon has no provider it can hire.</p> : (
-              <ul className="setup-providers" aria-label="Providers">
+            {report.providers.length === 0 ? <p>No engines are available to hire.</p> : (
+              <ul className="setup-providers" aria-label="Engines">
                 {report.providers.map((row) => <ProviderEntry key={row.provider} row={row} />)}
               </ul>
             )}

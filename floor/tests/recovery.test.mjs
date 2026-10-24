@@ -134,7 +134,7 @@ test('inspection offers only advertised context choices, literal repeat warnings
     assert.match(html, /At this inspection, work was also waiting for/);
     assert.match(html, /Open this ticket on the Board and review its instructions/);
     assert.match(html, /Resume alone cannot release this interruption/);
-    assert.match(html, /current budget, hop cap, questions/);
+    assert.match(html, /existing limits, questions/);
     if (choices === 'repeat_issued_fresh') assert.match(html, /The engine may have run before Dudes recorded its launch\. Earlier effects may repeat/);
     else assert.match(html, /recap, which may shrink or be omitted/);
     assert.doesNotMatch(html, /<(?:textarea|input|select)\b|provider_session|\/private\/|transcript/);
@@ -250,7 +250,7 @@ test('same-epoch goal and control changes and session-only reauthentication each
   const before = store.getFloorState(); sessionNet.reauth();
   assert.equal(store.getFloorState(), before);
   assert.equal(model.draftProblem(original, before, sessionNet.deps.session()),
-    'This page has a different Floor session or snapshot. Inspect again and make a fresh choice. Nothing is sent automatically.');
+    'This page has a different sign-in or a newer update. Inspect again and make a fresh choice. Nothing is sent automatically.');
   await model.submitRecovery(original.key, sessionNet.deps); assert.equal(sessionNet.calls.length, 0);
 });
 

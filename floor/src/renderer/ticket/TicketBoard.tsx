@@ -19,7 +19,7 @@ import { agentChoiceSentence, agentRow, boardColumns, cardWords, DONE_SHOWN, noP
 import type { TicketColumn } from './model.ts';
 import type { Notice } from './ticket.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
-import { freeTaskAgents, titleOf } from '../setup/nextStep.ts';
+import { titleOf } from '../setup/nextStep.ts';
 import type { FirstTaskAgent } from '../setup/nextStep.ts';
 import { agentWithoutProjectSentence, engineStopped, otherStateName, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
@@ -33,12 +33,11 @@ const COLUMN_TONE: Readonly<Record<TicketColumn | 'needs', string>> = Object.fre
 });
 
 /** With tickets off, only the daemon's recorded states can fill a column, and nothing here can wait on the operator. */
-const EMPTY_COLUMN_CARDS: Readonly<Record<TicketColumn | 'needs', string>> = Object.freeze({
-  needs: 'Nothing is placed here while tickets are off.',
-  todo: 'No unclaimed or claimed cards.',
+const EMPTY_COLUMN_CARDS: Readonly<Record<TicketColumn, string>> = Object.freeze({
+  todo: 'No cards waiting for an agent.',
   working: 'No cards being worked on.',
   ready: 'Nothing is placed here while tickets are off.',
-  done: 'No cards marked done by you or the daemon.',
+  done: 'No cards marked done by you or Dudes.',
 });
 
 const EMPTY_COLUMN: Readonly<Record<TicketColumn, string>> = Object.freeze({
@@ -139,7 +138,8 @@ export function FirstTaskForm({ floor, agents }: { readonly floor: FloorState; r
       placeholder="For example: add a dark mode switch to the settings page"
       onChange={(event) => setTask(event.target.value)} />
     <p className="first-task-note">When {agent.name} says it is finished, Dudes checks it itself ({agent.check.label}) before you review it.</p>
-    <button type="submit" className="first-task-start" disabled={!ready}>{sending ? 'Starting…' : 'Start'}</button>
+    <button type="submit" className="first-task-start" disabled={!ready}
+      title={ready ? undefined : sending ? 'Wait for the task to be saved.' : !floor.ticket ? 'Turn on Make tickets in Settings.' : 'Describe the task first.'}>{sending ? 'Starting…' : 'Start'}</button>
   </form>;
 }
 
@@ -237,40 +237,11 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
       </select>
     </div>}
     {unrecorded.map((row) => <p key={row.id} className="ticket-hint">{agentWithoutProjectSentence(row.name)}</p>)}
-    <button type="submit" className="ticket-create" aria-disabled={!ready || undefined} disabled={!ready}>Create ticket</button>
+    <button type="submit" className="ticket-create" aria-disabled={!ready || undefined} disabled={!ready}
+      title={ready ? undefined : ticket.sending ? 'Wait for the current request to finish.' : !open
+        ? 'Reconnect to Dudes before creating a ticket.' : title.trim() === '' ? 'Enter a title.'
+          : project === null ? 'Choose a project.' : 'Choose a completion check.'}>Create ticket</button>
     {onCancel === undefined ? null : <button type="button" className="ticket-form-cancel" onClick={onCancel}>Cancel</button>}
-  </form>;
-}
-
-function BoardGive({ floor }: { readonly floor: FloorState }) {
-  const ids = useId();
-  const agents = freeTaskAgents(floor);
-  const [chosen, setChosen] = useState('');
-  const [task, setTask] = useState('');
-  const latestTask = useRef(task);
-  latestTask.current = task;
-  const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
-  const agent = chosen === '' ? agents[0] : agents.find((entry) => entry.id === chosen);
-  if (agents.length === 0 && task === '' && chosen === '') return null;
-  const ready = agent !== undefined && ticketActionsOpen(floor) && !sending && task.trim() !== '';
-  async function give(event: FormEvent): Promise<void> {
-    event.preventDefault();
-    if (!ready || agent === undefined) return;
-    const sent = task;
-    const made = await createTicket({ title: titleOf(task), note: task.trim() === titleOf(task) ? '' : task.trim(),
-      project: agent.project, check: { id: agent.check.id, revision: agent.check.revision }, agent: agent.id });
-    if (made.saved && latestTask.current === sent) { setTask(''); setChosen(''); }
-  }
-  return <form className="ticket-form board-give" aria-label="Give a task" onSubmit={(event) => { void give(event); }}>
-    <label htmlFor={`${ids}-task`}>Give a task</label>
-    <input id={`${ids}-task`} type="text" maxLength={8192} value={task} placeholder="What should the agent do?"
-      onChange={(event) => { setTask(event.target.value); if (chosen === '') setChosen(agent?.id ?? ''); }} />
-    <select aria-label="Agent for task" value={agent?.id ?? ''} onChange={(event) => setChosen(event.target.value)}>
-      {agent === undefined ? <option value="">Choose an idle agent</option> : null}
-      {agents.map((entry) => <option key={entry.id} value={entry.id}>{entry.name === entry.id ? 'Unnamed agent' : entry.name}</option>)}
-    </select>
-    <button type="submit" disabled={!ready}>{sending ? 'Giving…' : 'Give'}</button>
-    {agent === undefined ? <p className="ticket-hint" role="status">The chosen agent is no longer free. Choose an idle agent to give this task.</p> : null}
   </form>;
 }
 
@@ -287,13 +258,13 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
   return <li>
     <button type="button" className="task-card ticket-card" data-card-id={card.id} data-ticket-status={card.ticket === null && plainColumnOf(card) === null ? undefined : card.status}
       aria-pressed={selected} aria-controls="selected-card-detail" aria-haspopup="dialog" disabled={!selectable}
+      title={selectable ? undefined : 'Reconnect to Dudes before opening this ticket.'}
       onClick={(event) => onSelect(card.id, event.currentTarget)}>
       <span className="ticket-card-meta"><span className="ticket-card-state">{card.ticket?.stopping ? 'Stopping…'
           : card.ticket === null && plainColumnOf(card) === null ? otherStateName(card.status) : stateName(card.status)}</span>
-        {(card.ticket?.round ?? 0) > 1 ? <span className="ticket-round">Round {card.ticket?.round}</span> : null}
       </span>
       <strong>{card.title}</strong>
-      {failure === null ? null : <span className="ticket-note">{failure}</span>}
+      {failure === null ? null : <span className="ticket-note" title={failure}>An earlier engine attempt stopped. Open the ticket for details.</span>}
       {words.note === null ? null : <span className="ticket-note">{words.note}</span>}
       <span className="ticket-card-footer">
         {words.agent === null ? <span className="ticket-unassigned">Unassigned</span> : <span className="ticket-agent">
@@ -325,16 +296,15 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
   return <div className="board-view ticket-board">
     {floor.ticket ? <section className="ticket-new" aria-label="New ticket">
       <button type="button" className="ticket-new-toggle" aria-expanded={forming} disabled={!ticketActionsOpen(floor)}
+        title={ticketActionsOpen(floor) ? undefined : 'Reconnect to Dudes before creating a ticket.'}
         aria-haspopup="dialog" onClick={(event) => onNewTicket(event.currentTarget)}>New ticket</button>
     </section> : <TicketOffHint floor={floor} />}
-    {floor.ticket ? <BoardGive floor={floor} /> : null}
     <div className="ticket-card-regions" onKeyDown={moveCardFocus}>
-    <section className="ticket-lane task-column" data-column={COLUMN_TONE.needs}
+    {needsYou.length === 0 ? null : <section className="ticket-lane task-column" data-column={COLUMN_TONE.needs}
       data-lane="needs-you" aria-label="Needs you">
       <h3>Needs you ({needsYou.length})</h3>
       <ul>{needsYou.map(draw)}</ul>
-      {needsYou.length === 0 ? <p className="ticket-empty">{floor.ticket ? 'Tickets that need your next step appear here.' : EMPTY_COLUMN_CARDS.needs}</p> : null}
-    </section>
+    </section>}
     <div className="task-columns">
       {TICKET_COLUMNS.map((column) => {
         const cards = columns[column.key];
@@ -352,7 +322,7 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
     </div>
     {other.length === 0 ? null : <section className="ticket-plain" aria-label="Other board cards">
       <h3>Other board cards ({other.length})</h3>
-      <p className="ticket-hint">No column above is true of these, so each one says its state as recorded.</p>
+      <p className="ticket-hint">These cards need a closer look. Open one to see its status.</p>
       <ul>{other.map(draw)}</ul>
     </section>}
   </div>;

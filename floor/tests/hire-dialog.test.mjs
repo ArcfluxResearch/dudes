@@ -13,7 +13,7 @@ import { restoreFocusAfterDialog } from '../src/renderer/focus.ts';
 
 const root = resolve(import.meta.dirname, '..');
 
-test('CLOSE_BUTTON and CANCEL_BUTTON mutants offer both explicit dismissal paths', async () => {
+test('the hire form offers one explicit dismissal and no onboarding eyebrow', async () => {
   const server = await createServer({ root, cacheDir: resolve(root, 'node_modules/.vite-hire-dialog'),
     server: { middlewareMode: true, hmr: false }, appType: 'custom' });
   try {
@@ -23,8 +23,8 @@ test('CLOSE_BUTTON and CANCEL_BUTTON mutants offer both explicit dismissal paths
     const html = renderToStaticMarkup(createElement(HireWizardView, {
       hire: getHireState(), floor: getFloorState(), onClose() {},
     }));
-    assert.match(html, /<button[^>]*>Close<\/button>/);
-    assert.match(html, /<button[^>]*>Cancel<\/button>/);
+    assert.doesNotMatch(html, />Close<|Onboarding/);
+    assert.equal((html.match(/>Cancel<\/button>/g) ?? []).length, 1);
   } finally { await server.close(); }
 });
 
@@ -86,7 +86,7 @@ test('FALLBACK_FOCUS_RETURN mutant uses a surviving control when Hire availabili
   next();
   assert.equal(active, 'fallback');
   const shell = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
-  assert.match(shell, /document\.getElementById\('hire-open'\) \?\? document\.getElementById\('crew-toggle'\)/);
+  assert.match(shell, /document\.getElementById\('hire-open'\) \?\? document\.getElementById\(home\)/);
 });
 
 

@@ -9,6 +9,7 @@
 // buttons and name tags over the figures it drew. The renderer and three.js
 // load on demand, so the rest of the page never waits for them.
 
+import { engineName } from './engines.ts';
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -128,7 +129,7 @@ export function goalsPastBoard(rows: readonly AgentRow[], id: LayoutId): number 
 /** An agent's name and engine. The name is isolated, so a name written right to left cannot reorder the engine after it. */
 export function NameTag({ row, id }: { readonly row: AgentRow | undefined; readonly id: string }) {
   return <><bdi>{nameOf(row, id)}</bdi>{typeof row?.provider === 'string'
-    ? <span className="office-tag-engine"> · {row.provider}</span> : null}</>;
+    ? <span className="office-tag-engine"> · {engineName(row.provider)}</span> : null}</>;
 }
 
 export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion, onOpenTasks, onAddAgent, bar = null }: {
@@ -805,7 +806,7 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
         <p className="office-mode-heard" role="status">{modeHeard}</p>
         {floor.agents.length !== 0 || floor.phase !== 'live' || floor.stale ? null : (
           <div className="office-empty">
-            <p>No current agents.</p>
+
             {hireSwitchOn(floor) ? null : <HireEntry floor={floor} id="hire-open-office" onAddAgent={onAddAgent} />}
           </div>
         )}

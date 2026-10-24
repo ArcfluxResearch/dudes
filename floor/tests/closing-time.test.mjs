@@ -44,7 +44,7 @@ test('an announced closing snapshot publishes the observed phase', () => {
   apply(snapshot({ closing_time: announced }));
   assert.equal(getFloorState().closingTime, 'announced');
   assert.match(render(), /Closing time announced/);
-  assert.match(render(), /The daemon is coordinating closure\./);
+  assert.match(render(), /Dudes is coordinating closing\./);
 });
 
 test('the decoder returns only bounded phases and rejection accounting', () => {
@@ -261,7 +261,7 @@ test('closing coexists with journal-stopped and remains last-observed after disc
   apply(snapshot({ closing_time: announced }, { journal_stopped: { lsn: '99' } }));
   const floor = getFloorState();
   assert.match(render(), /Closing time announced/);
-  assert.match(renderToStaticMarkup(createElement(JournalBanner, { stopped: floor.journalStopped })), /journal stopped accepting writes at segment 0 · byte 99/);
+  assert.match(renderToStaticMarkup(createElement(JournalBanner, { stopped: floor.journalStopped })), /Saving stopped at segment 0 · byte 99/);
   assert.equal(renderToStaticMarkup(createElement(Notice, { floor })), '');
   noteStale(true);
   assert.match(render(), /Last observed/);

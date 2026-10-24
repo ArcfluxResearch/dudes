@@ -152,7 +152,7 @@ test('the guide shares Settings confirmations and keeps distinct headings', asyn
   try {
     await edit.changeSetting('floor.terminal', 'on');
     assert.match(view('actions'), /aria-label="Turn on Attach terminals"/);
-    assert.match(view('actions'), /takes effect after a restart of the daemon/);
+    assert.match(view('actions'), /takes effect after a restart of Dudes/);
     assert.match(view('actions'), />Cancel<\/button>/);
     const html = view('actions') + renderToStaticMarkup(createElement(SettingsView,
       { floor: getFloorState(), onSetup() {} }));
