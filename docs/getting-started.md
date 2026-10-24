@@ -5,7 +5,7 @@ This walk-through takes you from a fresh install to an agent working on a goal. 
 the Floor, where you add a project and hire.
 
 You need Dudes [installed](../README.md#install) and at least one of the `claude`, `codex` and `pi`
-CLIs. `quickstart` tells you whether each is signed in and prints the command to sign in.
+CLIs. `quickstart` reports engine readiness. The Floor offers sign-in when you choose an engine.
 Dudes reads no engine's credentials or files.
 
 1. Check that `dudes --version` runs. If the installer said that `~/.local/bin` is not on your `PATH`,
