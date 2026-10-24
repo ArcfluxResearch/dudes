@@ -27,6 +27,28 @@ history or reply limits. If the provider cannot resume a conversation, Chat asks
 a fresh conversation before sending again. An agent's structured question has its own **Answer**
 action, which quickstart turns on in a new file.
 
+## Steps
+
+For a Claude Code agent that Dudes launches, Chat lists the steps of the agent's latest turn above its
+reply: the commands it ran, the files it read, edited or wrote, its plan, and the work of any helper agent,
+nested under the step that started it. Each step is one line. Open it to see its inputs and, for an edit, the
+old and new text. A step says whether it is running, done or failed, and how many bytes of output it produced.
+The output itself is not sent to the browser. Other agents show only the kind of step they are in, such as
+"Running a command", in the Crew list.
+
+Steps are shown as plain text, live, and are never saved: they are not in the journal, and a restart
+clears them. Before a step leaves the daemon, every known secret is replaced with `(redacted)`: the
+agent tokens, the operator credential, secrets for connected servers, and secret-looking values in the
+environment of any running agent. A step that names a sensitive path (`~/.ssh`, `~/.aws`, a `.env` file, a
+key file) still shows what it ran, but its edit text stays hidden, and so does any input that looks like a
+secret. Each input is cut at 2 KiB and marked.
+
+This cannot catch everything. A command can print a secret that Dudes never learned, for example the
+contents of a file passed to `curl`, and if its shape is not one of those above it appears on screen. Anyone
+holding a Floor session can already ask an agent to print such a file, but a screen share or an unlocked
+browser shows the steps without being asked. The Attach terminal shows the agent's own terminal output and
+is not scrubbed.
+
 ## Sending files
 
 You can send an agent a screenshot, a log or a short spec three ways: paste an image or file from the
