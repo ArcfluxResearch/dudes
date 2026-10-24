@@ -90,13 +90,6 @@ test('FALLBACK_FOCUS_RETURN mutant uses a surviving control when Hire availabili
 });
 
 
-test('GUIDE_POINTER_OPENER mutant passes the clicked Guide button even if another control has focus', async () => {
-  const guide = await readFile(resolve(root, 'src/renderer/setup/FirstRunGuide.tsx'), 'utf8');
-  const shell = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
-  assert.match(guide, /onClick=\{\(event\) => onHire\(event\.currentTarget\)\}>Open Hire wizard/);
-  assert.match(shell, /onHire=\{\(opener\) => openHire\(opener\)\}/);
-});
-
 test('ARCHIVE_POINTER_OPENER mutant passes the clicked archive button even if another control has focus', async () => {
   const archive = await readFile(resolve(root, 'src/renderer/ArchivedAgents.tsx'), 'utf8');
   const shell = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');

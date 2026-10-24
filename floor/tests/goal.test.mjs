@@ -540,8 +540,7 @@ test('each admission refusal explains why nothing was recorded', async () => {
     agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
     agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
     goal_exhausted: 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-      + 'To continue, give the agent a new goal with its own limits from a terminal (dudes goal), '
-      + 'or retire it and hire a new one.',
+      + 'Give a task is available when Start new goals is on in Settings and this agent’s project is enrolled.',
     predicate_claimed: 'This goal uses a Claimed card status, which cannot prove completion, so nothing was recorded.',
     predicate_todo: 'This goal uses a Todo card status, which cannot prove completion, so nothing was recorded.',
   };
@@ -552,7 +551,7 @@ test('each admission refusal explains why nothing was recorded', async () => {
     const net = daemon(REFUSED(reason));
     await change(net);
     const html = status();
-    assert.ok(html.includes(`<p class="goal-error" role="alert" data-goal-reason="${reason}">${text}</p>`),
+    assert.ok(html.includes(`<p class="goal-error" role="alert" data-goal-reason="${reason}">${text}`),
       `${reason} is not shown as itself`);
     assert.doesNotMatch(html, /goal-success|Goal changed/);
     assert.equal(net.refreshes, 0, `${reason} asked for a snapshot it does not need`);
@@ -713,7 +712,7 @@ test('workspace_unavailable and profile_changed say nothing changed, and a chang
     goal.chooseGoalCheck(ADA, G1, { id: 'contributing' });
     const net = daemon(REFUSED(reason));
     await change(net);
-    assert.ok(status().includes(`<p class="goal-error" role="alert" data-goal-reason="${reason}">${text}</p>`),
+    assert.ok(status().includes(`<p class="goal-error" role="alert" data-goal-reason="${reason}">${text}`),
       `${reason} is not shown as itself`);
     assert.equal(net.refreshes, refreshes, `${reason} asked for ${net.refreshes} snapshots`);
   }

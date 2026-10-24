@@ -50,7 +50,7 @@ const ENDINGS: Readonly<Record<LoginEnding, string>> = Object.freeze({
   not_installed: 'Dudes could not find this app on this computer.',
   unavailable: 'This app cannot be signed in from the Floor on this computer.',
   could_not_start: 'The sign-in could not start.',
-  needs_terminal: 'Signing in to Pi needs the Floor\u2019s terminal turned on in Settings.',
+  needs_terminal: 'Signing in to Pi needs Attach terminals turned on under Floor switches in Settings.',
   lost: 'The connection to the sign-in was lost.',
   unopened: 'The sign-in did not open. The Floor session may have ended, so reload this page.',
   unloaded: 'This page could not load its terminal. Reload the page.',
@@ -65,21 +65,23 @@ export function signInOffered(engine: HireEngine, row: ProviderRow | null): bool
   return row?.found === true && (row.signIn === 'signed_out' || engine === 'pi');
 }
 
-export function EngineSignIn({ engine, row, terminal }: {
+export function EngineSignIn({ engine, row, terminal, onSettings }: {
   readonly engine: HireEngine;
   readonly row: ProviderRow | null;
   readonly terminal: boolean;
+  readonly onSettings?: () => void;
 }) {
   const channel = useSyncExternalStore(subscribeToLogin, getLoginState, getLoginState);
-  return <EngineSignInView engine={engine} row={row} channel={channel} terminal={terminal} />;
+  return <EngineSignInView engine={engine} row={row} channel={channel} terminal={terminal} onSettings={onSettings} />;
 }
 
-export function EngineSignInView({ engine, row, channel, terminal }: {
+export function EngineSignInView({ engine, row, channel, terminal, onSettings }: {
   readonly engine: HireEngine;
   readonly row: ProviderRow | null;
   readonly channel: LoginChannel;
   /** Whether the Floor's terminal is on, which Pi's sign-in needs. */
   readonly terminal: boolean;
+  readonly onSettings?: () => void;
 }) {
   const name = HIRE_ENGINES[engine];
   if (channel.phase !== 'idle' && channel.engine === engine) {
@@ -89,7 +91,7 @@ export function EngineSignInView({ engine, row, channel, terminal }: {
   if (engine === 'pi' && !terminal) {
     return (
       <div className="login-offer" data-login-offer="pi">
-        <p className="hire-note" role="status">{ENDINGS.needs_terminal}</p>
+        <p className="hire-note" role="status">{ENDINGS.needs_terminal} <a href="#/settings" onClick={onSettings}>Open Settings</a></p>
         <button type="button" className="login-recheck" onClick={() => refreshFloorSnapshot()}>Check again</button>
       </div>
     );

@@ -250,8 +250,8 @@ test('the Hire wizard holds on Engine when the enrolled engine is not found, and
   hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1' });
   hire.showSection('engine');
   let html = wizard();
-  assert.match(html, /data-engine-found="false">Claude is not installed on this computer\./);
-  assert.match(html, /role="alert"><p>Claude is not installed on this computer, so this agent could not start\./);
+  assert.match(html, /data-engine-found="false">Claude was not found on the daemon’s PATH\./);
+  assert.match(html, /role="alert"><p>Claude was not found on the daemon’s PATH, so this agent could not start\./);
   assert.match(html, /<button type="button">Check again<\/button>/);
   assert.match(html, HIRE_DISABLED);
 
@@ -268,7 +268,7 @@ test('the Hire wizard holds on Engine when the enrolled engine is not found, and
     assert.doesNotMatch(html, HIRE_DISABLED, `${name} blocked Hire`);
     assert.doesNotMatch(html, /Check again/, name);
   }
-  assert.match(html, /data-engine-found="true">Claude is installed on this computer\./);
+  assert.match(html, /data-engine-found="true">Claude was found on the daemon’s PATH\./);
 });
 
 test('the engine block follows the chosen engine', () => {
@@ -276,10 +276,10 @@ test('the engine block follows the chosen engine', () => {
   subscribe({ onboarding: both, daemon: REPORT });
   hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'codex' });
   hire.showSection('engine');
-  assert.match(wizard(), /role="alert"><p>Codex is not installed on this computer, so this agent could not start\./);
+  assert.match(wizard(), /role="alert"><p>Codex was not found on the daemon’s PATH, so this agent could not start\./);
   assert.match(wizard(), HIRE_DISABLED);
   hire.editDraft({ engine: 'claude' });
   assert.doesNotMatch(wizard(), /Check again/);
   assert.doesNotMatch(wizard(), HIRE_DISABLED);
-  assert.match(wizard(), /data-engine-found="true">Claude is installed on this computer\./);
+  assert.match(wizard(), /data-engine-found="true">Claude was found on the daemon’s PATH\./);
 });

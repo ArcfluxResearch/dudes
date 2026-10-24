@@ -338,7 +338,7 @@ test('the person is told what to do while the login runs, and in plain words how
 test('Pi\'s sign-in needs the terminal switch, and the other engines\' do not', () => {
   const idle = { phase: 'idle' };
   const off = view('pi', idle, 'unknown', false);
-  assert.match(off, /Signing in to Pi needs the Floor.s terminal turned on in Settings\./);
+  assert.match(off, /Signing in to Pi needs Attach terminals turned on under Floor switches in Settings\./);
   assert.match(off, /<button type="button" class="login-recheck">Check again<\/button>/);
   assert.doesNotMatch(off, /Open Pi to sign in|login-start/);
   assert.match(view('claude', idle, 'signed_out', false), />Sign in to Claude</);
@@ -393,7 +393,7 @@ test('a missing engine keeps its install command and Check again, and offers no 
   hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'claude' });
   hire.showSection('engine');
   const html = wizard();
-  assert.match(html, /is not installed on this computer/);
+  assert.match(html, /was not found on the daemon’s PATH/);
   assert.match(html, /<code>npm install -g @anthropic-ai\/claude-code<\/code>/);
   assert.match(html, /<button type="button">Check again<\/button>/);
   assert.doesNotMatch(html, /Sign in to/);
@@ -408,7 +408,7 @@ test('Pi is offered its own terminal only with the Floor terminal on, and never 
   subscribe(pi);
   draft();
   let html = wizard();
-  assert.match(html, /Signing in to Pi needs the Floor.s terminal turned on in Settings\./);
+  assert.match(html, /Signing in to Pi needs Attach terminals turned on under Floor switches in Settings\./);
   assert.doesNotMatch(html, /Open Pi to sign in/);
   assert.doesNotMatch(html, HIRE_DISABLED);
   assert.doesNotMatch(html, HIRE_DISABLED);

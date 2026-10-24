@@ -49,7 +49,7 @@ before(async () => {
 after(async () => { await server?.close(); });
 beforeEach(() => resetFloorStore());
 const view = (step) => renderToStaticMarkup(createElement(FirstRunGuideView, { floor: getFloorState(), step,
-  onStep() {}, onClose() {}, onHire() {} }));
+  onStep() {}, onClose() {} }));
 
 test('Welcome waits for a confirmed snapshot', () => {
   assert.equal(done('welcome'), false);
@@ -69,6 +69,7 @@ test('Engines is done only when Setup finds a hireable program and offers instal
   snapshot({ found: true });
   assert.equal(done('engines'), true);
   assert.match(view('engines'), /Found on the daemon/);
+  assert.match(view('engines'), /complete when Dudes finds an app\. Sign in when you hire an agent\./);
   assert.match(view('engines'), /offers Claude, and Codex and Pi when the daemon turns them on/);
   for (const [provider, ready] of [['codex', true], ['pi', true], ['grok', false]]) {
     const epoch = beginFloorEpoch();
@@ -95,21 +96,16 @@ test('Workspaces changes from not done to done on the enrollment resync without 
   assert.equal(done('workspaces'), false);
 });
 
-test('Floor actions reads the real switches, the Hire switch and the Hire offer', () => {
+test('Floor actions uses the Settings switches instead of config commands', () => {
   snapshot();
   const html = view('actions');
-  assert.match(html, /<dt>Hire switch<\/dt><dd>Off<\/dd>/);
-  assert.match(html, /<p>Hire is off\. Turn on Hire agents under Floor switches in Settings\.<\/p>/);
-  assert.match(html, /<code>dudes config set floor.hire on<\/code>/);
-  assert.match(html, /dudes config set floor.control on/);
-  assert.match(html, /dudes config set floor.terminal on/);
-  assert.doesNotMatch(html, /budget\.|positive ceilings/, 'Hire no longer needs a budget');
-  snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, hire: true } } });
-  assert.match(view('actions'), /<p>Hire is unavailable\. Check Engines and Projects/);
-  assert.match(view('actions'), /<code>dudes config set floor.hire off<\/code>/);
-  snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, control: true, terminal: true, hire: true } },
-    onboarding: CATALOG });
-  assert.match(view('actions'), /Hire<\/dt><dd>Available/);
+  for (const label of ['Hire agents', 'Pause, resume and rename', 'Attach terminals', 'Add and remove projects']) {
+    assert.match(html, new RegExp(`<dt>${label}</dt><dd><span class="settings-says">[^<]*</span> Off[^]*?<button type="button">Turn on</button>`));
+  }
+  assert.doesNotMatch(html, /dudes config|quickstart|>Copy</);
+  assert.doesNotMatch(html, /First hire|Open Hire wizard/);
+  snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, control: true, terminal: true, hire: true } } });
+  assert.match(view('actions'), /<dt>Hire agents<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button>/);
 });
 
 test('ACTIONS_GATED_ON_SWITCHES mutant: Floor actions is Optional until seen, never Not done, whatever is on', () => {
@@ -118,7 +114,7 @@ test('ACTIONS_GATED_ON_SWITCHES mutant: Floor actions is Optional until seen, ne
       for (const onboarding of [null, CATALOG]) {
         snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, control, terminal, hire: true } }, onboarding });
         const at = `control ${control}, terminal ${terminal}, Hire ${onboarding === null ? 'unavailable' : 'available'}`;
-        assert.equal(indexStatus(view('hire'), 'Floor actions'), 'Optional', at);
+        assert.equal(indexStatus(view('welcome'), 'Floor actions'), 'Optional', at);
         assert.equal(indexStatus(view('actions'), 'Floor actions'), 'Complete', at);
         assert.match(view('actions'), /<p class="guide-status" role="status">Complete<\/p>/, at);
         assert.equal(status('actions'), 'Optional', at);
@@ -143,28 +139,22 @@ test('ACTIONS_SEEN_UNREPORTED mutant: Floor actions is not seen until the switch
   assert.equal(status('actions', true), 'Optional');
 });
 
-test('each Floor actions switch shows its state beside its own dudes config command', () => {
-  snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, control: true } } });
-  const html = view('actions');
-  const row = (label, state, command) => new RegExp(`<dt>${label}</dt><dd>${state}</dd><dd class="guide-switch-command">`
-    + `<p class="guide-command"><code>${command}</code>`);
-  assert.match(html, row('Hire switch', 'Off', 'dudes config set floor.hire on'));
-  assert.match(html, row('Control', 'On', 'dudes config set floor.control off floor.goal off floor.retire off'));
-  assert.match(html, row('Terminal', 'Off', 'dudes config set floor.terminal on'));
-  assert.match(html, /<p>This step is done once you have seen it, whichever switches are on\.<\/p>/);
-  assert.doesNotMatch(html, /done when Hire is available/);
-});
-
-test('First hire stays not done until the live projection contains an agent and opens the existing wizard', () => {
+test('the guide shares Settings confirmations and keeps distinct headings', async () => {
   snapshot();
-  assert.equal(done('hire'), false);
-  assert.match(view('hire'), /<button type="button" disabled="">Open Hire wizard<\/button>/);
-  snapshot({ onboarding: CATALOG });
-  assert.equal(done('hire'), false);
-  assert.match(view('hire'), /<button type="button">Open Hire wizard<\/button>/);
-  snapshot({ agents: [{ id: ID }] });
-  assert.equal(done('hire'), true);
-  assert.match(view('hire'), /An agent is on the Floor/);
+  const edit = await server.ssrLoadModule('/src/renderer/settings/edit.ts');
+  edit.resetSettingsEdit();
+  try {
+    await edit.changeSetting('floor.terminal', 'on');
+    assert.match(view('actions'), /aria-label="Turn on Attach terminals"/);
+    assert.match(view('actions'), /takes effect after a restart of the daemon/);
+    assert.match(view('actions'), />Cancel<\/button>/);
+    const html = view('actions') + renderToStaticMarkup(createElement(SettingsView,
+      { floor: getFloorState(), onSetup() {} }));
+    const ids = [...html.matchAll(/ id="([^"]+)"/g)].map((match) => match[1]);
+    assert.equal(new Set(ids).size, ids.length);
+    assert.match(html, /aria-labelledby="guide-switches"/);
+    assert.match(html, /aria-labelledby="settings-switches"/);
+  } finally { edit.resetSettingsEdit(); }
 });
 
 test('Close is remembered in this browser and a storage refusal still allows this visit', () => {
@@ -185,10 +175,10 @@ test('a disconnected snapshot never claims that a setup step is done', () => {
   snapshot({ found: true, settings: { ...SETTINGS, workspaces: [WORKSPACE],
     switches: { ...SETTINGS.switches, control: true, terminal: true, hire: true } }, onboarding: CATALOG,
   agents: [{ id: ID }] });
-  const unseen = ['Complete', 'Complete', 'Complete', 'Optional', 'Complete'];
+  const unseen = ['Complete', 'Complete', 'Complete', 'Optional'];
   assert.deepEqual(guideSteps(getFloorState(), false).map((step) => step.status), unseen);
-  assert.deepEqual(guideSteps(getFloorState(), true).map((step) => step.status), ['Complete', 'Complete', 'Complete', 'Complete', 'Complete']);
-  const waiting = ['Not done', 'Not done', 'Not done', 'Optional', 'Not done'];
+  assert.deepEqual(guideSteps(getFloorState(), true).map((step) => step.status), ['Complete', 'Complete', 'Complete', 'Complete']);
+  const waiting = ['Not done', 'Not done', 'Not done', 'Optional'];
   for (const unconfirmed of [{ ...getFloorState(), stale: true },
     { ...getFloorState(), snapshotEpoch: getFloorState().epoch - 1 }]) {
     assert.deepEqual(guideSteps(unconfirmed, true).map((step) => step.status), waiting);

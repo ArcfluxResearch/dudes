@@ -3,7 +3,7 @@
 import type { FloorState } from '../floor/store.ts';
 import { isHireEngine } from '../onboarding/catalog.ts';
 
-export type GuideStep = 'welcome' | 'engines' | 'workspaces' | 'actions' | 'hire';
+export type GuideStep = 'welcome' | 'engines' | 'workspaces' | 'actions';
 export type GuideStatus = 'Complete' | 'Not done' | 'Optional';
 const STEPS: readonly { readonly key: GuideStep; readonly label: string; readonly optional?: true;
   readonly ready: (floor: FloorState, actionsSeen: boolean) => boolean }[] = [
@@ -12,7 +12,6 @@ const STEPS: readonly { readonly key: GuideStep; readonly label: string; readonl
     (row) => isHireEngine(row.provider) && row.found) ?? false },
   { key: 'workspaces', label: 'Projects', ready: (floor) => (floor.settings?.workspaces.length ?? 0) > 0 },
   { key: 'actions', label: 'Floor actions', optional: true, ready: (_floor, actionsSeen) => actionsSeen },
-  { key: 'hire', label: 'First hire', ready: (floor) => floor.agents.length > 0 },
 ];
 
 export function guideSnapshotConfirmed(floor: FloorState): boolean {

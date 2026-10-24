@@ -55,7 +55,7 @@ const SIBLING = Object.freeze({});
 const FIRST_ID = `${'AQEB'.repeat(10)}AQE`;
 const CONSEQUENCES = 'Its running turn stops now, and its terminal closes. It leaves the Floor for good. Only a new '
   + 'hire can replace it, and a new hire starts without its memory. Its history stays in the journal.';
-const HALTED_LINE = 'A halted agent is retired with the local <code>agent.retire</code> call.';
+const HALTED_LINE = 'This agent is halted. Lift the halt from the command line before retiring it from this page.';
 
 /** A Managed agent mid-turn, not paused and not halted. */
 function agent(fields = {}) {
@@ -341,7 +341,6 @@ test('Retire is offered in the detail and the terminal view only with the siblin
   delta([agent({ paused: true, control_lsn: RETIRE_LSN }), GRACE_ROW({ halted: true, paused: true })], 10);
   assert.ok(center().includes(button), 'a paused agent is not offered Retire');
 
-  // A halted agent: the local route is named where Retire would be, and there is no button.
   const halted = `<div class="retire-offer"><p class="hire-note">${HALTED_LINE}</p></div>`;
   for (const html of [center(GRACE), terminalHeader(GRACE)]) {
     assert.ok(html.includes(halted), 'a halted agent is not told how it is retired');
