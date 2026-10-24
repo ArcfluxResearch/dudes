@@ -193,22 +193,21 @@ test('a table row wider than its header keeps every word in the last cell', () =
 });
 
 test('parse time grows linearly for repeated link and image openers', () => {
+  const sized = (unit, chars) => unit.repeat(Math.ceil(chars / unit.length)).slice(0, chars);
   const parse = (text) => {
     const start = performance.now();
     for (let n = 0; n < 4; n += 1) md.parseAgentMarkdown(text);
     return performance.now() - start;
   };
-  for (const unit of ['[a](', '![a](']) {
-    const sized = (chars) => unit.repeat(Math.ceil(chars / unit.length)).slice(0, chars);
-    const [short, long] = [sized(4_096), sized(16_384)];
-    let small = Infinity;
-    let large = Infinity;
-    // Alternating the sizes lets both see the same load, and the fastest round of each is the one least disturbed.
-    for (let round = 0; round < 9; round += 1) {
-      small = Math.min(small, parse(short));
-      large = Math.min(large, parse(long));
-    }
-    assert.ok(large < 6 * small, `${unit} took ${small.toFixed(2)} ms at 4,096 characters and ${large.toFixed(2)} ms at 16,384`);
+  // A busy or small-cache machine stretches 16,384 characters more than 4,096 for any input, so each
+  // opener is compared with an input of the same shape that was never quadratic; every round takes all four.
+  for (const [unit, control] of [['[a](', '[a] '], ['![a](', '![a] ']]) {
+    const texts = [sized(unit, 4_096), sized(unit, 16_384), sized(control, 4_096), sized(control, 16_384)];
+    const fastest = [Infinity, Infinity, Infinity, Infinity];
+    for (let round = 0; round < 9; round += 1) texts.forEach((text, k) => { fastest[k] = Math.min(fastest[k], parse(text)); });
+    const [growth, controlGrowth] = [fastest[1] / fastest[0], fastest[3] / fastest[2]];
+    assert.ok(growth < 1.5 * controlGrowth, `${unit} grew ${growth.toFixed(1)} times from 4,096 to 16,384 characters, `
+      + `${control} grew ${controlGrowth.toFixed(1)} times`);
   }
 });
 
