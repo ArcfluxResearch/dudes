@@ -17,7 +17,7 @@ const CHOICES: Readonly<Record<RecoveryChoice, string>> = {
 };
 const UNAVAILABLE: Readonly<Record<InspectReason, string>> = {
   agent_unavailable: 'This agent is unavailable or Dudes does not manage its work.', goal_unavailable: 'There is no unfinished task to recover.',
-  halted: 'A halt stands on this agent. Press Resume first if you stopped it from this page; otherwise use the local operator’s action.',
+  halted: 'This agent is halted. Press Resume on the Floor if you stopped it there. Any other halt is lifted from the command line.',
   turn_open: 'A recorded physical attempt or command check is still unsettled. Recovery waits.',
   not_recoverable: 'This work does not offer recovery right now.', claimed: 'An existing authorization owns this recovery. Check its retained receipt.',
   unavailable: 'Dudes could not confirm what happened before the interruption. No choice is offered.',

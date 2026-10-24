@@ -164,7 +164,7 @@ test('a renewed session can check the same ID but cannot send fresh targets with
   assert.equal(fake.calls[0].init.body, fake.calls[1].init.body);
   assert.equal(getPauseAllState().paused, 1);
   assert.equal(getPauseAllState().phase, 'complete');
-  assert.match(getPauseAllState().problem, /session or snapshot changed/i);
+  assert.match(getPauseAllState().problem, /view of the Floor went out of date/i);
 });
 
 test('a confirmation from an older snapshot sends no fresh request', async () => {

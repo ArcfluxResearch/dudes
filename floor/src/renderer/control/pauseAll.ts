@@ -138,7 +138,7 @@ async function drain(deps: ControlDeps): Promise<void> {
       const floor = getFloorState();
       if (deps.session() !== state.session || deps.epoch() !== state.epoch || floor.phase !== 'live'
         || floor.stale || floor.snapshotEpoch !== floor.epoch || !floor.control) {
-        commit({ ...state, phase: 'complete', problem: 'The Floor session or snapshot changed. Remaining agents were not sent.' });
+        commit({ ...state, phase: 'complete', problem: 'This page’s view of the Floor went out of date. The remaining agents were not paused. Check the agents, then press Pause all again.' });
         releasePauseAllSlot();
         return;
       }
