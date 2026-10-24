@@ -584,6 +584,10 @@ impl Adapter for ClaudeAdapter {
         self.config.extra_args_model()
     }
 
+    fn resumes_under_changed_model(&self) -> bool {
+        true
+    }
+
     /// The task goes one of two ways and the choice is made once, here: in the argv after `--`,
     /// or on stdin with the argv ending at the last flag.
     ///

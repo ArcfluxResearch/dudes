@@ -20,6 +20,7 @@ import { GoalForm, GoalStatus } from './goal/GoalPanel.tsx';
 import { OverviewOutput, SelectionBar, streamStatus } from './LiveWork.tsx';
 import { MemoryPanel } from './memory/MemoryPanel.tsx';
 import { LookStatus } from './look/LookEditor.tsx';
+import { ModelStatus } from './model/ModelEditor.tsx';
 import { MessagesPanel } from './MessagesPanel.tsx';
 import { RenameStatus } from './rename/NameEditor.tsx';
 import { RetireStatus, RetireStrip } from './retire/RetirePanel.tsx';
@@ -42,6 +43,7 @@ export function Receipts({ floor, leaveFocusTo }: { readonly floor: FloorState; 
       <PauseAllReceipt leaveFocusTo={leaveFocusTo} />
       <RenameStatus />
       <LookStatus />
+      <ModelStatus />
       <AnswerStatus floor={floor} leaveFocusTo={leaveFocusTo} />
       <ControlStatus floor={floor} leaveFocusTo={leaveFocusTo} />
       <RetireStatus floor={floor} leaveFocusTo={leaveFocusTo} />

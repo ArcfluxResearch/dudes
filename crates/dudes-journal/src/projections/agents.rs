@@ -115,6 +115,10 @@ pub struct AgentRow {
     /// The lease the agent was hired into, when it was hired into a worktree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<dudes_types::WorktreeId>,
+    /// The model override: what the hire named until an operator changes it. `None` means the
+    /// engine's own selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<dudes_types::ModelName>,
 }
 
 /// A journal-derived kind and time, before a reader computes its remaining lifetime.
@@ -164,6 +168,7 @@ impl Default for AgentRow {
             max_turns: None,
             max_budget: None,
             worktree: None,
+            model: None,
         }
     }
 }
@@ -234,6 +239,7 @@ pub(crate) fn apply(
             max_turns,
             max_budget,
             worktree,
+            model,
             ..
         } => {
             let row = AgentRow {
@@ -253,6 +259,7 @@ pub(crate) fn apply(
                 max_turns: *max_turns,
                 max_budget: *max_budget,
                 worktree: *worktree,
+                model: model.clone(),
                 ..AgentRow::default()
             };
             put_row(table, &id.to_bytes(), &row)
@@ -272,6 +279,11 @@ pub(crate) fn apply(
             row.accent = *accent;
             row.look_lsn = Some(lsn);
         }),
+        Record::AgentModelChanged { agent, model, .. } => {
+            update(table, lsn, *agent, record, |row| {
+                row.model.clone_from(model);
+            })
+        }
         Record::AgentRetired { id, .. } => {
             if table.remove(&id.to_bytes())?.is_none() {
                 tracing::warn!(target: "journal", lsn = %lsn, agent = %id, "projection.unknown_agent");

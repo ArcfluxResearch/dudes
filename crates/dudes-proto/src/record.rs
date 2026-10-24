@@ -293,9 +293,9 @@ pub struct BrowserOnboardingHire {
     pub trust_lsn: Option<dudes_types::Lsn>,
 }
 
-/// The retry identity a Floor page gave a ticket creation, as digests only: the digest of the
-/// browser-generated request id and the digest of the normalized creation fields. A repeat of the
-/// same id with the same fields is answered with the ticket already made.
+/// The retry identity a Floor page gave a ticket creation or a model change, as digests only: the
+/// digest of the browser-generated request id and the digest of the normalized request fields. A
+/// repeat of the same id with the same fields is answered with the outcome already recorded.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[allow(
     clippy::struct_field_names,
@@ -1787,6 +1787,21 @@ pub enum Record {
         /// Complete canonical desired set, including an empty clear.
         mcp_servers: Vec<dudes_types::McpServerName>,
     },
+    /// An operator changed one agent's model override for its next issued turn. A required
+    /// record: a build that does not know it must stop, since replaying the journal without it
+    /// would run the agent on the model its hire named.
+    AgentModelChanged {
+        /// The unchanged agent identity.
+        agent: AgentId,
+        /// The new override, or `None` to return to the engine's own selection.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<dudes_types::ModelName>,
+        /// Who changed it: a Floor session or an operator client.
+        by: Actor,
+        /// The Floor page's retry identity; absent for a change from the command line.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<TicketRequestAttribution>,
+    },
     /// Names admitted for one physical managed attempt, before any preparation or spawn.
     McpLaunchGranted {
         /// Owning agent.
@@ -2302,6 +2317,7 @@ impl Record {
 
     /// The frame-header tag for this record.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one arm per variant; a table, not logic
     pub const fn kind(&self) -> RecordKind {
         match self {
             Self::AgentHired { .. } => RecordKind::AgentHired,
@@ -2375,6 +2391,7 @@ impl Record {
             Self::WorktreeLeased { .. } => RecordKind::WorktreeLeased,
             Self::WorktreeRemoved { .. } => RecordKind::WorktreeRemoved,
             Self::AgentMcpServersChanged { .. } => RecordKind::AgentMcpServersChanged,
+            Self::AgentModelChanged { .. } => RecordKind::AgentModelChanged,
             Self::McpLaunchGranted { .. } => RecordKind::McpLaunchGranted,
             Self::TicketCreated { .. } => RecordKind::TicketCreated,
             Self::TicketEdited { .. } => RecordKind::TicketEdited,
@@ -2613,6 +2630,8 @@ pub enum RecordKind {
     FloorDeviceUsed = 91,
     /// [`Record::FloorDeviceKeyEnrolled`].
     FloorDeviceKeyEnrolled = 92,
+    /// [`Record::AgentModelChanged`].
+    AgentModelChanged = 93,
 }
 
 impl RecordKind {
@@ -2669,8 +2688,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 92] {
-        let mut kinds = [Self::AgentHired; 92];
+    const fn known_kinds() -> [Self; 93] {
+        let mut kinds = [Self::AgentHired; 93];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2722,6 +2741,7 @@ impl RecordKind {
         kinds[89] = Self::FloorDeviceRemoved;
         kinds[90] = Self::FloorDeviceUsed;
         kinds[91] = Self::FloorDeviceKeyEnrolled;
+        kinds[92] = Self::AgentModelChanged;
         kinds
     }
 
@@ -2751,6 +2771,7 @@ impl RecordKind {
                 | Self::MailWakeTurnDecided
                 | Self::MailWakeOnlyTurnIssued
                 | Self::AgentMcpServersChanged
+                | Self::AgentModelChanged
                 | Self::WorkspaceTrustSet
                 | Self::McpLaunchGranted
                 | Self::TicketCreated
@@ -3393,6 +3414,17 @@ pub mod samples {
             RecordKind::AgentMcpServersChanged => Record::AgentMcpServersChanged {
                 agent: agent(),
                 mcp_servers: vec![dudes_types::McpServerName::parse("memory").unwrap()],
+            },
+            RecordKind::AgentModelChanged => Record::AgentModelChanged {
+                agent: agent(),
+                model: Some(dudes_types::ModelName::parse("sonnet").unwrap()),
+                by: Actor::BrowserSession {
+                    session_digest: Hex32::new([5; 32]),
+                },
+                request: Some(TicketRequestAttribution {
+                    request_id_digest: Hex32::new([6; 32]),
+                    request_digest: Hex32::new([7; 32]),
+                }),
             },
             RecordKind::McpLaunchGranted => Record::McpLaunchGranted {
                 agent: agent(),
@@ -4092,7 +4124,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 92);
+        assert_eq!(RecordKind::KNOWN.len(), 93);
         for &kind in &RecordKind::KNOWN[46..66] {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {
@@ -4595,7 +4627,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            92,
+            93,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -4632,6 +4664,31 @@ mod tests {
                 "turn": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
                 "policy_lsn": 4_294_967_396_u64,
                 "mcp_servers": []
+            }),
+        ] {
+            let record: Record = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&record).unwrap(), value);
+            assert!(record.requires_required_frame());
+        }
+    }
+
+    #[test]
+    fn a_model_change_round_trips_as_required_and_a_clear_omits_the_model() {
+        for value in [
+            serde_json::json!({
+                "t": "agent_model_changed",
+                "agent": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "model": "sonnet",
+                "by": {"kind": "browser_session", "session_digest": "05".repeat(32)},
+                "request": {
+                    "request_id_digest": "06".repeat(32),
+                    "request_digest": "07".repeat(32)
+                }
+            }),
+            serde_json::json!({
+                "t": "agent_model_changed",
+                "agent": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "by": {"kind": "peer", "pid": 7}
             }),
         ] {
             let record: Record = serde_json::from_value(value.clone()).unwrap();
@@ -5594,8 +5651,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 92);
-        assert_eq!(RecordKind::from_tag(93), None);
+        assert_eq!(RecordKind::KNOWN.len(), 93);
+        assert_eq!(RecordKind::from_tag(94), None);
     }
 
     const TICKET_KINDS: [(RecordKind, u16); 5] = [
@@ -5972,6 +6029,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(93), None);
+        assert_eq!(RecordKind::from_tag(94), None);
     }
 }

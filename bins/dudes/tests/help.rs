@@ -28,6 +28,7 @@ const COMMANDS: &[&str] = &[
     "worktree",
     "rename",
     "look",
+    "model",
     "mcp",
     "ask",
     "why",

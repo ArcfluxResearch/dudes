@@ -7,7 +7,7 @@
 /** The first word after `dudes` that makes a line a command. Kept equal to the CLI's by a test. */
 export const DUDES_COMMANDS = [
   'agents', 'ask', 'board', 'closing', 'config', 'devices', 'floor', 'goal', 'halt', 'hire', 'login', 'look',
-  'mail', 'mcp', 'memory', 'open', 'pause', 'ping', 'project', 'quickstart', 'recovery', 'rename', 'resume',
+  'mail', 'mcp', 'memory', 'model', 'open', 'pause', 'ping', 'project', 'quickstart', 'recovery', 'rename', 'resume',
   'retire', 'start', 'status', 'stop', 'tail', 'team', 'ticket', 'uninstall', 'upgrade', 'why', 'workspace',
   'worktree',
 ];

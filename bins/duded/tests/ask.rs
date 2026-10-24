@@ -1389,6 +1389,7 @@ fn every_ask_variant_preserves_publication_before_reply() {
             duded::ports::Ask::Recover { .. } => "Recover",
             duded::ports::Ask::RecoveryReceipt { .. } => "RecoveryReceipt",
             duded::ports::Ask::Mcp(_) => "Mcp",
+            duded::ports::Ask::Model { .. } => "Model",
             duded::ports::Ask::Hire(_) => "Hire",
             duded::ports::Ask::Retire(_) => "Retire",
             duded::ports::Ask::Rename(_) => "Rename",
@@ -1523,6 +1524,23 @@ fn every_ask_variant_preserves_publication_before_reply() {
         "{mcp_variant}"
     );
     assert!(mcp_added.is_empty());
+    let sonnet = dudes_types::ModelName::parse("sonnet").unwrap();
+    let (model_variant, model_answer, model_added) = run_case(duded::ports::Ask::Model {
+        params: dudes_proto::rpc::agent::ModelParams {
+            agent,
+            model: Some(sonnet.clone()),
+        },
+        by: dudes_proto::Actor::Peer { pid: 7, uid: None },
+    });
+    assert!(
+        matches!(model_answer, Ok(duded::ports::Answered::Done)),
+        "{model_variant}"
+    );
+    assert!(matches!(
+        model_added.as_slice(),
+        [(_, dudes_proto::Entry { record: Record::AgentModelChanged { model: Some(model), request: None, .. }, .. })]
+            if *model == sonnet
+    ));
     assert!(added.iter().any(|(_, entry)| matches!(
         &entry.record,
         Record::AgentHired { id, .. } if *id == agent

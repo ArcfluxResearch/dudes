@@ -669,6 +669,17 @@
           "$ref": "#/$defs/Mode",
           "description": "Managed, or attached to a human."
         },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The model override for the agent's next turn. Absence means the engine's own selection."
+        },
         "name": {
           "description": "Display name.",
           "type": "string"
@@ -727,6 +738,17 @@
         "status": {
           "$ref": "#/$defs/AgentStatus",
           "description": "Where it is in its life."
+        },
+        "turn_model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The model the agent's open turn was issued under. Absent when no turn is open, or when\nthe turn recorded none."
         },
         "turns": {
           "default": 0,
@@ -2913,6 +2935,24 @@
           ],
           "type": "object"
         },
+        "agent.model": {
+          "description": "Change the model a live managed agent uses from its next issued turn. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/ModelParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "agent.rename": {
           "description": "Change only a live agent's display name.",
           "properties": {
@@ -3915,6 +3955,7 @@
         "floor.devices.list",
         "floor.devices.remove",
         "floor.devices.keep",
+        "agent.model",
         "ticket.checkout",
         "floor.session.export",
         "floor.session.import",
@@ -7358,6 +7399,51 @@
           "type": "object"
         },
         {
+          "description": "An operator changed one agent's model override for its next issued turn. A required\nrecord: a build that does not know it must stop, since replaying the journal without it\nwould run the agent on the model its hire named.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The unchanged agent identity."
+            },
+            "by": {
+              "$ref": "#/$defs/Actor",
+              "description": "Who changed it: a Floor session or an operator client."
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ModelName"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The new override, or `None` to return to the engine's own selection."
+            },
+            "request": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TicketRequestAttribution"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The Floor page's retry identity; absent for a change from the command line."
+            },
+            "t": {
+              "const": "agent_model_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "agent",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Names admitted for one physical managed attempt, before any preparation or spawn.",
           "properties": {
             "agent": {
@@ -9942,7 +10028,7 @@
               "type": "null"
             }
           ],
-          "description": "The model every launch of this agent names. It replaces the engine's configured model for\nthis agent. Absent means the engine's own selection: the configured model when the\nconfiguration sets one, else the engine's default. The daemon checks the shape only; an\nengine that does not know the name fails the agent's first turn with its own error. Fixed\nfor the agent's life: a different model needs a retire and a rehire."
+          "description": "The model the agent's launches name. It replaces the engine's configured model for\nthis agent. Absent means the engine's own selection: the configured model when the\nconfiguration sets one, else the engine's default. The daemon checks the shape only; an\nengine that does not know the name fails the agent's first turn with its own error. The\noperator can change it for the next turn with `agent.model`."
         },
         "name": {
           "description": "Display name.",
@@ -12635,7 +12721,7 @@
     },
     "LookParams": {
       "additionalProperties": false,
-      "description": "`agent.look` params. The engine, model and structural identity remain fixed.",
+      "description": "`agent.look` params. The engine and structural identity remain fixed. The model changes through\n`agent.model`.",
       "properties": {
         "accent": {
           "anyOf": [
@@ -14108,6 +14194,24 @@
           ],
           "type": "object"
         },
+        "agent.model": {
+          "description": "Change the model a live managed agent uses from its next issued turn. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/ModelParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "agent.rename": {
           "description": "Change only a live agent's display name.",
           "properties": {
@@ -15001,7 +15105,8 @@
         "workspace.trust",
         "floor.devices.list",
         "floor.devices.remove",
-        "floor.devices.keep"
+        "floor.devices.keep",
+        "agent.model"
       ],
       "type": "object"
     },
@@ -15026,6 +15131,31 @@
       "minLength": 1,
       "pattern": "^[A-Za-z0-9._:/@\\[\\]][A-Za-z0-9._:/@\\[\\]-]*$",
       "type": "string"
+    },
+    "ModelParams": {
+      "additionalProperties": false,
+      "description": "`agent.model` params: the model the agent's next issued turn uses.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentId",
+          "description": "The live, managed agent."
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The new override. Absent clears it, so the agent returns to the engine's own selection."
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "type": "object"
     },
     "ModelSelection": {
       "description": "The model a managed turn was launched under, as the adapter chose it **before** the spawn.\n\nThe selector is the provider's own spelling, kept byte-for-byte: Dudes resolves no alias, keeps\nno model catalogue, and never claims this is the model that ran. What actually consumed tokens\nis observed at the result boundary and is a different fact with a different cardinality —\n`TurnEnded.model_usage`, which may name several models where this names at most one.\n\n**The type exists so that the absent and the empty cases stay distinguishable.** Wrapped in an\n`Option` on the record, three states survive replay where a bare `Option<String>` would collapse\ntwo of them: the field absent is a journal written before model selection was recorded and recording no choice at\nall; `ModelSelection { selector: None }` is a turn that deliberately took the provider's own\ndefault; `ModelSelection { selector: Some(..) }` is a turn that named one. A re-issue replays\nthe second and third exactly, and only the first may fall back to current configuration —\nwhich is why flattening the two `Option`s is the mutation the record tests refuse.\n\nIt crosses operator configuration, the adapter seam and the journal, so it is shared vocabulary\nrather than an adapter-owned type. It carries a `String`, so `Clone + Eq + Hash` rather than\n`Copy`, per this crate's own rule.",
@@ -19513,7 +19643,7 @@
       "type": "object"
     },
     "TicketRequestAttribution": {
-      "description": "The retry identity a Floor page gave a ticket creation, as digests only: the digest of the\nbrowser-generated request id and the digest of the normalized creation fields. A repeat of the\nsame id with the same fields is answered with the ticket already made.",
+      "description": "The retry identity a Floor page gave a ticket creation or a model change, as digests only: the\ndigest of the browser-generated request id and the digest of the normalized request fields. A\nrepeat of the same id with the same fields is answered with the outcome already recorded.",
       "properties": {
         "request_digest": {
           "description": "Digest of the normalized creation fields.",

@@ -17,7 +17,7 @@ const REPORT = {
   providers: ['claude', 'codex'],
   workspaces: [{ workspace_id: 'repo_1', label: '<Service>', agent_usd_per_day_micros: '10000000',
     agent_tokens_per_day: null, goal_usd_micros: '5000000', goal_tokens: '456' }],
-  about: { daemon_version: '0.12.3', browser_wire_version: 6 },
+  about: { daemon_version: '0.12.3', browser_wire_version: 7 },
 };
 
 function floor(report = REPORT) {
@@ -36,7 +36,7 @@ test('Settings shows read-only running values, local commands, Setup and About',
     const html = renderToStaticMarkup(createElement(SettingsView, { floor: floor(), onSetup() {} }));
     for (const expected of ['Floor switches', '$0', '$0.001234', '9007199254740993',
       'defaults are $0.25 and 20,000 tokens', '&lt;Service&gt;', '$10', '$5', '456',
-      'Setup', 'About', 'Daemon', '0.12.3', 'Floor build', 'Browser wire', 'browser-wire-v6', 'restart']) {
+      'Setup', 'About', 'Daemon', '0.12.3', 'Floor build', 'Browser wire', 'browser-wire-v7', 'restart']) {
       assert.ok(html.includes(expected), `missing ${expected}: ${html}`);
     }
     assert.doesNotMatch(html, /dudes config|dudes project (?:add|list|remove)|--completion-check-label/);

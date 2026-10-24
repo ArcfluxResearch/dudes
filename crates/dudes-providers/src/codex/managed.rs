@@ -197,6 +197,14 @@ impl Adapter for CodexAdapter {
         ModelSelection::provider_default()
     }
 
+    /// Checked with Codex 0.164.0-alpha.11 against a local stand-in for the responses API. Both
+    /// transports sent the model named for the resumed turn and carried the earlier turns: `exec
+    /// resume -m` (4, 7, then 10 input items under three models) and the app server's
+    /// `thread/resume` with `model` (4, then 7).
+    fn resumes_under_changed_model(&self) -> bool {
+        true
+    }
+
     fn managed(
         &self,
         ctx: &AgentCtx<'_>,

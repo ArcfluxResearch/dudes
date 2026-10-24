@@ -220,6 +220,9 @@ fn placement(kind: RecordKind) -> Placement {
         RecordKind::RecoveryRequired
         | RecordKind::RecoveryAuthorized
         | RecordKind::RecoveryInvalidated => RECOVERY_PREFIX_PLACEMENT,
+        RecordKind::AgentModelChanged => Placement::Out(
+            "the override is folded by the agents projection; tests/model_override.rs replays it with and without checkpoints",
+        ),
         RecordKind::AgentMcpServersChanged | RecordKind::McpLaunchGranted => Placement::Out(
             "MCP authority requires its edited policy and physical joins; required frame and cache rebuild tests cover those records separately",
         ),

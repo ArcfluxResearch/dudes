@@ -391,6 +391,13 @@ pub enum Ask {
     },
     /// Read or replace the next managed launch's desired server names.
     Mcp(McpParams),
+    /// `agent.model`: change the model a live managed agent uses from its next issued turn.
+    Model {
+        /// The agent and the new override.
+        params: dudes_proto::rpc::agent::ModelParams,
+        /// Caller identity resolved by the router.
+        by: Actor,
+    },
     /// `agent.hire`.
     Hire(Box<HireParams>),
     /// `agent.retire`.
@@ -1060,6 +1067,15 @@ pub enum Job {
         reply:
             Sender<Result<crate::floor_rename::RenameOutcome, crate::floor_rename::RenameRefusal>>,
     },
+    /// One authenticated model change admitted under Floor control.
+    Model {
+        /// Registry-derived session.
+        session: crate::floor_session::SessionIdentity,
+        /// Canonical request fields.
+        request: crate::floor_model::ModelRequest,
+        /// Durable original result or no-effect refusal.
+        reply: Sender<Result<crate::floor_model::ModelOutcome, crate::floor_model::ModelRefusal>>,
+    },
     /// One authenticated appearance edit admitted under Floor control.
     Look {
         /// Registry-derived session.
@@ -1558,6 +1574,22 @@ impl Handle {
         answers
             .recv()
             .map_err(|_| crate::floor_rename::RenameRefusal::Unavailable)?
+    }
+    pub(crate) fn model(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        request: crate::floor_model::ModelRequest,
+    ) -> Result<crate::floor_model::ModelOutcome, crate::floor_model::ModelRefusal> {
+        let (reply, answers) = mpsc::channel();
+        self.send_floor(Job::Model {
+            session,
+            request,
+            reply,
+        })
+        .map_err(|_| crate::floor_model::ModelRefusal::UnavailableNoEffect)?;
+        answers
+            .recv()
+            .map_err(|_| crate::floor_model::ModelRefusal::Unavailable)?
     }
     pub(crate) fn ticket(
         &self,
