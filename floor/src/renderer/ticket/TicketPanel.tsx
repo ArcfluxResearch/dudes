@@ -16,7 +16,7 @@ import { getGitState, loadGit, refusalText, subscribeToGit } from '../git/git.ts
 import type { GitChangeKind } from '../git/git.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
-import { checkDisplayCurrent, editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
+import { checkDisplayCurrent, currentDetail, editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
 import { RecoveredReview } from './RecoveredReview.tsx';
 import type { TicketDetail, TruncatedTicketField } from './detail.ts';
 import { ACTION_LABEL, actionsOf, agentChoiceSentence, agentRow, cardWords, noProjects, projectOf, requiresInstructionReview } from './model.ts';
@@ -172,36 +172,35 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
   const mine = detail.card === card.id ? detail : null;
   const ticket = card.ticket;
   const words = cardWords(floor, card);
-  const loaded = mine?.detail ?? null;
-  const current = mine?.seq === card.seq ? loaded : null;
+  const shown = currentDetail(detail, card);
   const failure = engineStopped(ticket?.last_turn_end);
   return <>
     <dl>
       <div><dt>State</dt><dd>{stateName(card.status)}</dd></div>
       <div><dt>Agent</dt><dd>{words.agent ?? 'Not given to an agent'}</dd></div>
-      {loaded === null ? null : <div><dt>Done when</dt><dd>{loaded.check.label}</dd></div>}
-      {ticket === null ? null : <div><dt>Round</dt><dd>{current?.round ?? ticket.round}</dd></div>}
+      {shown === null ? null : <div><dt>Done when</dt><dd>{shown.check.label}</dd></div>}
+      {ticket === null ? null : <div><dt>Round</dt><dd>{shown?.round ?? ticket.round}</dd></div>}
       {words.place === null ? null : <div><dt>Place</dt><dd>{words.place}</dd></div>}
     </dl>
     {failure === null ? null : <p className="ticket-needs" role="note">{failure}</p>}
     {card.status === 'blocked' ? <p className="ticket-needs" role="note">{reasonSentence(ticket?.reason ?? null)}</p>
-      : (current?.waiting ?? null) !== null ? <p className="ticket-wait">{current?.waiting?.note}</p>
+      : (shown?.waiting ?? null) !== null ? <p className="ticket-wait">{shown?.waiting?.note}</p>
         : words.note === null ? null : <p className="ticket-wait">{words.note}</p>}
-    {mine === null || (mine.phase === 'loading' && loaded === null) ? <p role="status">Reading the ticket…</p> : null}
+    {shown === null && mine?.phase !== 'failed' ? <p role="status">Reading the ticket…</p> : null}
     {mine?.problem == null ? null : <p className="ticket-hint" role="status">{mine.problem}</p>}
-    {loaded === null ? null : <>
-      {loaded.truncated.length === 0 ? null : <p className="ticket-hint" role="note">
-        Some details are shortened in this view: {loaded.truncated.map((field) => TRUNCATED_LABEL[field]).join(', ')}.
+    {shown === null ? null : <>
+      {shown.truncated.length === 0 ? null : <p className="ticket-hint" role="note">
+        Some details are shortened in this view: {shown.truncated.map((field) => TRUNCATED_LABEL[field]).join(', ')}.
       </p>}
       <section aria-label="Note"><h4>Note</h4>
-        {loaded.note === '' ? <p>{loaded.truncated.includes('note')
-          ? 'The note was omitted from this view.' : 'No note.'}</p> : <p className="ticket-text">{loaded.note}</p>}
+        {shown.note === '' ? <p>{shown.truncated.includes('note')
+          ? 'The note was omitted from this view.' : 'No note.'}</p> : <p className="ticket-text">{shown.note}</p>}
       </section>
       {card.status === 'todo' || card.status === 'claimed' ? null : <section aria-label="The agent's summary">
         <h4>{AGENT_SAYS}</h4>
-        {loaded.summary === null || loaded.summary === '' ? <p>{loaded.truncated.includes('summary')
+        {shown.summary === null || shown.summary === '' ? <p>{shown.truncated.includes('summary')
           ? "The agent's summary was omitted from this view." : `${NO_SUMMARY}.`}</p>
-          : <p className="ticket-summary ticket-text">{loaded.summary}</p>}
+          : <p className="ticket-summary ticket-text">{shown.summary}</p>}
       </section>}
     </>}
   </>;
@@ -333,7 +332,9 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   useEffect(() => { setMode('none'); }, [card.id, card.status, card.seq]);
   const actions = open ? actionsOf(card) : [];
   const changesView = floor.diff && (card.status === 'review' || card.status === 'blocked' || card.status === 'done');
-  const loaded = detail.card === card.id ? detail.detail : null;
+  const shown = currentDetail(detail, card);
+  // A ticket's project never changes, so an earlier reading still names it while the current one is read.
+  const project = (detail.card === card.id ? detail.detail?.project : undefined) ?? projectOf(floor, card);
   const fresh = checkDisplayCurrent(detail, card, floor);
   const editable = editableDetail(detail, card);
   const ordinary = actions.filter((action) => action !== 'remove' && action !== 'stop');
@@ -373,8 +374,8 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
     <TicketNotice card={card.id} floor={floor} />
     <Facts floor={floor} card={card} />
     <StuckActions floor={floor} card={card} onReviewRecovery={onReviewRecovery} />
-    {loaded?.context == null ? null : <RecoveredReview context={loaded.context} fresh={fresh} />}
-    {loaded?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={loaded.instruction_review}
+    {shown?.context == null ? null : <RecoveredReview context={shown.context} fresh={fresh} />}
+    {shown?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={shown.instruction_review}
       reviewing={reviewing} />}
     {(needsReview && !reviewReady) || (detail.card === card.id && detail.phase === 'failed')
       || (actions.includes('edit') && detail.phase === 'ready' && editable === null) ? <div>
@@ -384,21 +385,21 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
       <button type="button" className="ticket-look" disabled={detail.phase === 'loading'}
         onClick={() => { void loadDetail(card); }}>Read again</button>
     </div> : null}
-    {loaded?.coverage != null && loaded.coverage.limits.length > 0
+    {shown?.coverage != null && shown.coverage.limits.length > 0
       ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4>
         <p>{COVERAGE_SUMMARY}</p>
-        <details><summary>Details</summary><p>{coverageText(loaded.coverage)}</p></details></section> : null}
+        <details><summary>Details</summary><p>{coverageText(shown.coverage)}</p></details></section> : null}
     {(card.status === 'review' || card.status === 'done') && !changesView ? <ChangedFiles floor={floor} card={card} /> : null}
     {changesView
       ? <DiffPanel card={card.id} expectedSeq={card.seq} transport={browserDiffTransport}
         ownCopy={decodeWorktree(agentRow(floor, card.claimed_by)?.worktree) !== null} /> : null}
-    {loaded?.result == null ? null : <section aria-label="Check result"><h4>Last recorded check</h4>
-      <p>{loaded.result.pass ? 'The check passed' : 'The check failed'}
-        {loaded.result.exit === null ? '' : `, exit status ${loaded.result.exit}`}
-        {' '}at {recordedTime(loaded.result.at)}.</p>
+    {shown?.result == null ? null : <section aria-label="Check result"><h4>Last recorded check</h4>
+      <p>{shown.result.pass ? 'The check passed' : 'The check failed'}
+        {shown.result.exit === null ? '' : `, exit status ${shown.result.exit}`}
+        {' '}at {recordedTime(shown.result.at)}.</p>
       <p>{!fresh ? 'This retained result is history. Its applicability to the current work is unconfirmed.'
-        : loaded.context?.check.state === 'current' ? 'This result applies to the current recorded work.'
-          : loaded.context?.check.state === 'historical' ? 'Later work was admitted. This result is history and does not check that work.'
+        : shown.context?.check.state === 'current' ? 'This result applies to the current recorded work.'
+          : shown.context?.check.state === 'historical' ? 'Later work was admitted. This result is history and does not check that work.'
             : 'Dudes could not establish whether this result applies to the current work.'}</p>
     </section>}
     {!floor.ticket ? <TicketOffHint floor={floor} /> : null}
@@ -409,7 +410,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
     </div>}
     <div className="ticket-mode" hidden={!open || !modeAllowed}>
     {mode === 'give' || mode === 'changes'
-      ? <GiveForm floor={floor} card={card} project={loaded?.project ?? projectOf(floor, card)}
+      ? <GiveForm floor={floor} card={card} project={project}
         pending={detail.card === card.id ? detail.problem : null} mode={mode} onDone={() => setMode('none')} onHire={onHire} /> : null}
     {mode === 'edit' && editable !== null ? <EditForm key={`${card.id}:${card.seq}`} floor={floor} card={card}
       detail={editable} onDone={() => setMode('none')} /> : null}
