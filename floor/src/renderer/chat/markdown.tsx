@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// Agent Markdown drawn as a closed set of React elements. One linear pass per level: no regular
-// expression here depends on the input, every scan that can fail is remembered or stops at the
-// next delimiter, and nesting, table size and element count are capped. Nothing sets innerHTML,
-// and no attribute is taken from the text: a link is its words followed by the address as text,
-// never an anchor, and an image or raw HTML stays literal.
+// Agent Markdown drawn as a closed set of React elements. Each level is one linear pass: no
+// regular expression here can backtrack, link addresses are matched in one pass up front, a
+// failed search for a closing delimiter is remembered so it never runs again, and nesting, table
+// size and element count are capped. Nothing sets innerHTML, and no attribute is taken from the
+// text: a link is its words followed by the address as text, never an anchor, and an image or raw
+// HTML stays literal.
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -17,8 +18,12 @@ export const MAX_COLUMNS = 8;
 export const MAX_ELEMENTS = 2_000;
 const SOFT_ELEMENTS = MAX_ELEMENTS - 200;
 
-/** Every element the renderer can produce, written out so no tag name ever comes from the text. */
-function tag(type: string, key: number, className: string | undefined, start: number | undefined, c: ReactNode): ReactNode {
+/** Every element the renderer can produce, so no tag name ever comes from the text. */
+type Tag = 'p' | 'br' | 'strong' | 'em' | 'code' | 'pre' | 'div' | 'span' | 'ul' | 'ol' | 'li' | 'blockquote'
+  | 'table' | 'thead' | 'tbody' | 'tr' | 'th' | 'td';
+type Props = { readonly className?: string; readonly start?: number };
+
+function tag(type: Tag, key: number, { className, start }: Props, c: ReactNode): ReactNode {
   switch (type) {
     case 'p': return <p key={key} className={className}>{c}</p>;
     case 'br': return <br key={key} className={className} />;
@@ -26,6 +31,7 @@ function tag(type: string, key: number, className: string | undefined, start: nu
     case 'em': return <em key={key} className={className}>{c}</em>;
     case 'code': return <code key={key} className={className}>{c}</code>;
     case 'pre': return <pre key={key} className={className}>{c}</pre>;
+    case 'div': return <div key={key} className={className}>{c}</div>;
     case 'span': return <span key={key} className={className}>{c}</span>;
     case 'ul': return <ul key={key} className={className}>{c}</ul>;
     case 'ol': return <ol key={key} start={start} className={className}>{c}</ol>;
@@ -37,7 +43,7 @@ function tag(type: string, key: number, className: string | undefined, start: nu
     case 'tr': return <tr key={key} className={className}>{c}</tr>;
     case 'th': return <th key={key} className={className}>{c}</th>;
     case 'td': return <td key={key} className={className}>{c}</td>;
-    default: return <div key={key} className={className}>{c}</div>;
+    default: return type satisfies never;
   }
 }
 
@@ -45,11 +51,11 @@ class Context {
   count = 0;
   private key = 0;
 
-  el(type: string, props: Record<string, unknown>, children: ReactNode): ReactNode {
+  el(type: Tag, props: Props, children: ReactNode): ReactNode {
     this.key += 1;
     if (this.count >= MAX_ELEMENTS) return <Fragment key={this.key}>{children}</Fragment>;
     this.count += 1;
-    return tag(type, this.key, props.className as string | undefined, props.start as number | undefined, children);
+    return tag(type, this.key, props, children);
   }
 
   get low(): boolean {
@@ -82,9 +88,37 @@ function codeSpanEnd(text: string, from: number, to: number, run: number): numbe
   return -1;
 }
 
+/** Where the last backtick run of each length starts. */
+function tickRuns(text: string, from: number, to: number): Map<number, number> {
+  const last = new Map<number, number>();
+  for (let k = from; k < to;) {
+    if (text[k] !== '`') { k += 1; continue; }
+    let m = k;
+    while (m < to && text[m] === '`') m += 1;
+    last.set(m - k, k);
+    k = m;
+  }
+  return last;
+}
+
+/** Each `(` mapped to the `)` that balances it with no space between: every possible link address. */
+function addressEnds(text: string, from: number, to: number): Map<number, number> {
+  const ends = new Map<number, number>();
+  const open: number[] = [];
+  for (let k = from; k < to; k += 1) {
+    const ch = text[k];
+    if (ch === '(') open.push(k);
+    else if (ch === ')') {
+      const at = open.pop();
+      if (at !== undefined) ends.set(at, k);
+    } else if (isSpace(ch) || ch === '\r') open.length = 0;
+  }
+  return ends;
+}
+
 type Bracket = { readonly close: number; readonly urlEnd: number };
 
-function bracket(text: string, at: number, to: number): Bracket | 'open' | null {
+function bracket(text: string, at: number, to: number, ends: ReadonlyMap<number, number>): Bracket | 'open' | null {
   let k = at + 1;
   for (; k < to; k += 1) {
     const ch = text[k];
@@ -93,22 +127,15 @@ function bracket(text: string, at: number, to: number): Bracket | 'open' | null 
     else if (ch === ']') break;
   }
   if (k >= to) return 'open';
-  if (text[k + 1] !== '(') return null;
-  let u = k + 2;
-  let nest = 0;
-  for (; u < to; u += 1) {
-    const ch = text[u];
-    if (ch === ')' && nest === 0) return { close: k, urlEnd: u };
-    if (ch === ')') nest -= 1;
-    else if (ch === '(') nest += 1;
-    else if (isSpace(ch) || ch === '\r') return null;
-  }
-  return null;
+  const urlEnd = ends.get(k + 1);
+  return urlEnd === undefined ? null : { close: k, urlEnd };
 }
 
 function inline(ctx: Context, text: string, from: number, to: number, allowLink: boolean): ReactNode[] {
   const out: ReactNode[] = [];
   const failed = new Set<string>();
+  let ticks: Map<number, number> | null = null;
+  let ends: Map<number, number> | null = null;
   let buffer = '';
   const flush = () => {
     if (buffer !== '') out.push(...ctx.text(buffer));
@@ -131,9 +158,10 @@ function inline(ctx: Context, text: string, from: number, to: number, allowLink:
       let run = i;
       while (run < to && text[run] === '`') run += 1;
       const n = run - i;
-      const end = failed.has(`\`${n}`) ? -1 : codeSpanEnd(text, run, to, n);
+      // After one search has failed, the runs it passed tell every later opener whether a closer exists.
+      const end = ticks !== null && (ticks.get(n) ?? -1) <= i ? -1 : codeSpanEnd(text, run, to, n);
       if (end < 0) {
-        failed.add(`\`${n}`);
+        ticks ??= tickRuns(text, run, to);
         buffer += text.slice(i, run);
         i = run;
       } else {
@@ -169,7 +197,7 @@ function inline(ctx: Context, text: string, from: number, to: number, allowLink:
       }
     } else if (ch === '[' || (ch === '!' && text[i + 1] === '[')) {
       const open = ch === '!' ? i + 1 : i;
-      const found = allowLink && !failed.has('[') ? bracket(text, open, to) : null;
+      const found = allowLink && !failed.has('[') ? bracket(text, open, to, ends ??= addressEnds(text, from, to)) : null;
       if (found === 'open') failed.add('[');
       if (found !== null && found !== 'open') {
         if (ch === '!') {
@@ -184,8 +212,8 @@ function inline(ctx: Context, text: string, from: number, to: number, allowLink:
         }
         i = found.urlEnd + 1;
       } else {
-        buffer += ch;
-        i += 1;
+        buffer += text.slice(i, open + 1);
+        i = open + 1;
       }
     } else {
       let j = i + 1;
@@ -294,17 +322,18 @@ function marker(line: string): Marker | null {
   return { ordered, start, content: cols + width + spaces, rest };
 }
 
+/** At most `limit` cells; anything past them stays in the last cell, pipes and all, so no word is dropped. */
 function cells(line: string, limit: number): string[] {
   let body = line.trim();
   if (body.startsWith('|')) body = body.slice(1);
   if (body.endsWith('|') && !body.endsWith('\\|')) body = body.slice(0, -1);
   const out: string[] = [];
   let current = '';
-  for (let i = 0; i < body.length && out.length < limit; i += 1) {
+  for (let i = 0; i < body.length; i += 1) {
     const ch = body[i];
-    if (ch === '\\' && body[i + 1] === '|') { current += '|'; i += 1; } else if (ch === '|') { out.push(current.trim()); current = ''; } else current += ch;
+    if (ch === '\\' && body[i + 1] === '|') { current += '|'; i += 1; } else if (ch === '|' && out.length < limit - 1) { out.push(current.trim()); current = ''; } else current += ch;
   }
-  if (out.length < limit) out.push(current.trim());
+  out.push(current.trim());
   return out;
 }
 
@@ -398,7 +427,7 @@ function blocks(ctx: Context, lines: readonly string[], depth: number): ReactNod
     if (width > 0) {
       let end = i + 2;
       while (end < lines.length && !blank(lines[end] ?? '') && (lines[end] ?? '').includes('|')) end += 1;
-      const row = (kind: string, text: string) => {
+      const row = (kind: 'th' | 'td', text: string) => {
         const row = cells(text, width);
         while (row.length < width) row.push('');
         return ctx.el('tr', {}, row.map((cell) => ctx.el(kind, {}, inline(ctx, cell, 0, cell.length, true))));

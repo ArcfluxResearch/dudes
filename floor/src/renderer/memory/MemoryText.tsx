@@ -26,6 +26,8 @@ const ZWJ = 0x200d;
 const VARIATION_16 = 0xfe0f;
 const KEYCAP = 0x20e3;
 const BLACK_FLAG = 0x1f3f4;
+const CANCEL_TAG = 0xe007f;
+const isFlagTag = (cp: number | undefined) => cp !== undefined && ((cp >= 0xe0061 && cp <= 0xe007a) || (cp >= 0xe0030 && cp <= 0xe0039));
 
 function codePointBefore(text: string, index: number): number | null {
   if (index <= 0) return null;
@@ -41,9 +43,10 @@ const isPictograph = (cp: number | null) => cp !== null && PICTOGRAPH.test(Strin
 const isKeycapBase = (cp: number | null) => cp !== null && ((cp >= 0x30 && cp <= 0x39) || cp === 0x23 || cp === 0x2a);
 
 /**
- * The hidden runs of a text as markers. With `emoji`, a zero-width joiner or variation selector
- * between emoji and a flag's tag sequence stay unmarked so emoji draw whole; everything else
- * hidden is still marked. Entities are never decoded.
+ * The hidden runs of a text as markers. With `emoji`, one variation selector right after an emoji
+ * or a keycap's base, a zero-width joiner between two emoji, and a subdivision flag's two to six
+ * lowercase letter or digit tags stay unmarked so emoji draw whole. Everything else hidden is
+ * still marked, so tag characters cannot carry words. Entities are never decoded.
  */
 export function splitHidden(text: string, emoji = false): readonly HiddenPiece[] {
   const pieces: HiddenPiece[] = [];
@@ -56,43 +59,36 @@ export function splitHidden(text: string, emoji = false): readonly HiddenPiece[]
       continue;
     }
     const cps = Array.from(run[0], (c) => c.codePointAt(0) ?? 0);
-    const after = text.codePointAt(at) ?? null;
-    let emojiBefore = isPictograph(codePointBefore(text, run.index));
     const before = codePointBefore(text, run.index);
-    let keycapBase = isKeycapBase(before);
+    const after = text.codePointAt(at) ?? null;
+    let emojiBefore = isPictograph(before);
     let i = 0;
     let hidden = '';
     const flush = () => {
       if (hidden !== '') pieces.push({ marker: escaped(hidden) });
       hidden = '';
     };
+    if (before === BLACK_FLAG) {
+      let tags = 0;
+      while (isFlagTag(cps[tags])) tags += 1;
+      if (tags >= 2 && tags <= 6 && cps[tags] === CANCEL_TAG) {
+        pieces.push(String.fromCodePoint(...cps.slice(0, tags + 1)));
+        i = tags + 1;
+        emojiBefore = false;
+      }
+    }
     while (i < cps.length) {
       const cp = cps[i] ?? 0;
       const next = i + 1 < cps.length ? (cps[i + 1] ?? 0) : after;
-      let keep = false;
-      if (cp === VARIATION_16) keep = emojiBefore || (keycapBase && next === KEYCAP);
-      else if (cp === ZWJ) keep = emojiBefore && i + 1 === cps.length && isPictograph(after);
-      else if (cp >= 0xe0020 && cp <= 0xe007e && i === 0 && before === BLACK_FLAG) {
-        let j = i;
-        while (j < cps.length && (cps[j] ?? 0) >= 0xe0020 && (cps[j] ?? 0) <= 0xe007e) j += 1;
-        if (cps[j] === 0xe007f) {
-          flush();
-          pieces.push(String.fromCodePoint(...cps.slice(i, j + 1)));
-          i = j + 1;
-          emojiBefore = false;
-          keycapBase = false;
-          continue;
-        }
-      }
+      const keep = cp === VARIATION_16 ? i === 0 && (emojiBefore || (isKeycapBase(before) && next === KEYCAP))
+        : cp === ZWJ && emojiBefore && i + 1 === cps.length && isPictograph(after);
       if (keep) {
         flush();
         pieces.push(String.fromCodePoint(cp));
-        if (cp === ZWJ) emojiBefore = false;
       } else {
         hidden += String.fromCodePoint(cp);
         emojiBefore = false;
       }
-      keycapBase = false;
       i += 1;
     }
     flush();
