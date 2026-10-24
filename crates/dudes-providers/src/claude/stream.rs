@@ -152,6 +152,7 @@ impl TurnStream {
         {
             self.calls.insert(id.clone(), usage::call(usage));
             if message.parent_tool_use_id.is_none()
+                && message.is_synthetic != Some(true)
                 && let Some(model) = message.message.model.as_deref().filter(|m| !m.is_empty())
             {
                 self.last_call = Some((model.to_owned(), usage::prompt_tokens(usage)));
@@ -894,6 +895,36 @@ mod tests {
             })
         );
         assert_eq!(lines(""), None, "no reported window, no claim");
+    }
+
+    /// A turn can end on a synthetic assistant message: model `<synthetic>`, zero usage. It is not
+    /// a call, so the gauge keeps the previous real call, and has no claim when there is none.
+    #[test]
+    fn a_synthetic_final_message_does_not_become_the_context_call() {
+        let call = |id: &str, model: &str, synthetic: &str, input: u64| {
+            format!(
+                r#"{{"type":"assistant","session_id":"{SESSION}",{synthetic}"message":{{"id":"{id}","model":"{model}","role":"assistant","content":[],"usage":{{"input_tokens":{input},"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+            )
+        };
+        let result = format!(
+            r#"{{"type":"result","subtype":"success","is_error":false,"session_id":"{SESSION}","result":"ok","total_cost_usd":0.1,"modelUsage":{{"opus-x":{{"inputTokens":9,"outputTokens":1,"cacheReadInputTokens":1,"cacheCreationInputTokens":1,"costUSD":0.1,"contextWindow":200000}}}}}}"#
+        );
+        let context = |lines: &[String]| {
+            let mut all = vec![init(SESSION)];
+            all.extend_from_slice(lines);
+            all.push(result.clone());
+            read(&all).finish(EXIT_0).report.context
+        };
+        let synthetic = call("s", "<synthetic>", r#""isSynthetic":true,"#, 0);
+        assert_eq!(
+            context(&[call("a", "opus-x", "", 5), synthetic.clone()]),
+            Some(dudes_proto::ContextReport {
+                model: "opus-x".into(),
+                window: 200_000,
+                used: 5,
+            })
+        );
+        assert_eq!(context(&[synthetic]), None);
     }
 
     /// A streamed message repeats its id on each block's line, and the last line's figure is the
