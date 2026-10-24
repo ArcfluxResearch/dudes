@@ -63,7 +63,7 @@ import type { ChatView } from '../chat/model.ts';
 export const AGENT_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
 /**
- * The server messages browser-wire-v6 may carry, including selected output.
+ * The server messages browser-wire-v7 may carry, including selected output.
  *
  * An admission list, not an emission list: the page accepts these and refuses
  * everything else. The daemon states the same set in its own enumeration, and a
@@ -490,7 +490,7 @@ export function invalidateFloorEpoch(): void {
 }
 
 /**
- * Apply one decoded browser-wire-v6 message from the subscription `epoch`.
+ * Apply one decoded browser-wire-v7 message from the subscription `epoch`.
  *
  * A frame from any other epoch is discarded whole, **before it is read**: it is
  * not parsed, it cannot move the view, it cannot confirm anything, and it

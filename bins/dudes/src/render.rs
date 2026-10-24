@@ -1465,6 +1465,19 @@ pub fn look_changed(out: &mut dyn Write, machine: bool, result: Empty) -> io::Re
     }
 }
 
+/// A completed model change.
+///
+/// # Errors
+///
+/// Returns any output write failure.
+pub fn model_changed(out: &mut dyn Write, machine: bool, result: Empty) -> io::Result<()> {
+    if machine {
+        json(out, &result)
+    } else {
+        writeln!(out, "Model changed. It applies from the next run.")
+    }
+}
+
 /// Desired server names and whether they were newly recorded for a later launch.
 ///
 /// # Errors

@@ -790,6 +790,10 @@ fn an_agent_cannot_claim_a_ticket_or_move_its_own_to_done_and_a_plain_card_is_un
             json!({"card": held, "expected_seq": held_seq}),
         ),
         (Method::TicketRead, json!({"card": held})),
+        (
+            Method::AgentModel,
+            json!({"agent": agent, "model": "sonnet"}),
+        ),
     ] {
         let refused = as_agent.call(method, Some(params)).unwrap().error.unwrap();
         assert_eq!(refused.code, ErrorCode::Unauthorized.code(), "{method:?}");

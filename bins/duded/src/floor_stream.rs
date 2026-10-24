@@ -197,13 +197,13 @@ pub(crate) fn decode_object<T: DeserializeOwned>(text: &str) -> Result<T> {
     serde_json::from_str::<T>(text).context("decoding a finite Floor client message")
 }
 
-/// Whether a server discriminator belongs to browser-wire-v6's accepted set.
+/// Whether a server discriminator belongs to browser-wire-v7's accepted set.
 #[must_use]
 pub fn server_type_is_listed(value: &str) -> bool {
     SERVER_TYPES.contains(&value)
 }
 
-/// Whether a client discriminator belongs to browser-wire-v6's accepted set.
+/// Whether a client discriminator belongs to browser-wire-v7's accepted set.
 #[must_use]
 pub fn client_type_is_listed(value: &str) -> bool {
     CLIENT_TYPES.contains(&value)
@@ -4408,6 +4408,8 @@ mod tests {
             session: None,
             last_turn_ended_at: None,
             worktree: None,
+            model: None,
+            turn_model: None,
             shares_checkout: false,
         }
     }
