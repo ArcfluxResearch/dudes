@@ -29,6 +29,7 @@ use crate::floor_websocket::{MAX_MESSAGE_BYTES, text_frame, text_payload};
 use crate::output::{Loss, OutputRegistry, OutputSnapshot, OutputState, ReplyLoss, Unavailable};
 use crate::provider_check::ProviderCheck;
 use crate::sign_in::SignInCheck;
+use crate::step_results::{EditText as StepEditText, Fetch, TextView};
 use crate::steps::StepView;
 
 /// Accepted maximum queued messages on one Floor stream.
@@ -40,14 +41,15 @@ const LIVE: u8 = 0;
 const OVERFLOWED: u8 = 1;
 const ENDED: u8 = 2;
 
-const CLIENT_TYPES: [&str; 5] = [
+const CLIENT_TYPES: [&str; 6] = [
     "floor.subscribe",
     "floor.visibility",
     "floor.unsubscribe",
     "floor.output.select",
     "floor.output.clear",
+    "floor.output.fetch",
 ];
-const SERVER_TYPES: [&str; 16] = [
+const SERVER_TYPES: [&str; 17] = [
     "floor.snapshot",
     "floor.delta",
     "floor.resync",
@@ -60,6 +62,7 @@ const SERVER_TYPES: [&str; 16] = [
     "floor.output.ended",
     "floor.output.reply",
     "floor.output.steps",
+    "floor.output.step",
     "floor.step.labels",
     "floor.device.enrolled",
     "floor.device.acknowledged",
@@ -88,6 +91,20 @@ enum OutputFrame<'a> {
         truncated: bool,
         gap: Option<&'static str>,
         steps: &'a [StepView],
+    },
+    #[serde(rename = "floor.output.step")]
+    Step {
+        selection_epoch: u64,
+        agent_id: AgentId,
+        turn_id: TurnId,
+        step_id: &'a str,
+        state: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<&'a TextView>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        edit: Option<&'a StepEditText>,
     },
     #[serde(rename = "floor.output.unavailable")]
     Unavailable {
@@ -173,7 +190,7 @@ const RESYNC_TYPE: &str = "floor.resync";
 pub(crate) const DAY_WATCH_PERIOD: Duration = Duration::from_millis(1_000);
 
 /// The finite accepted client-originated messages.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub(crate) enum ClientMessage {
     /// Begin one stream and receive its snapshot.
@@ -195,6 +212,14 @@ pub(crate) enum ClientMessage {
     /// Release the socket's current output selection.
     #[serde(rename = "floor.output.clear")]
     OutputClear {},
+    /// Ask for the text one step of the selected agent's latest turn kept: its result, or an
+    /// edit too long to show in the step.
+    #[serde(rename = "floor.output.fetch")]
+    StepFetch {
+        agent_id: AgentId,
+        turn_id: TurnId,
+        step_id: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -719,6 +744,59 @@ impl FloorStreams {
             }
             OutputState::Unavailable(_) => unreachable!(),
         }
+    }
+
+    /// Answers one step fetch on this socket. Only the agent and turn this socket has selected
+    /// are answered, the answer counts against the socket's step budget like a step does, and
+    /// every other request is refused with no text.
+    pub(crate) fn fetch_step(
+        &self,
+        subscription: &Subscription,
+        agent: AgentId,
+        turn: TurnId,
+        step_id: &str,
+    ) -> Result<()> {
+        let _floor = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut queue = subscription
+            .queue
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let selected = queue.selection.is_some_and(|selection| {
+            selection.agent == agent
+                && selection.view == OutputView::Reply
+                && selection.turn == Some(turn)
+        });
+        let epoch = queue.selection_epoch;
+        let refused = |reason| (Fetch::Withheld(reason), "refused");
+        let (fetch, refusal) = if !selected || !valid_step_id(step_id) {
+            refused("this page has not selected that step")
+        } else if queue.step_bytes_sent > STEP_BUDGET_BYTES {
+            refused("this page has been sent too much step data")
+        } else {
+            (self.0.output.step_text(agent, turn, step_id), "withheld")
+        };
+        let (state, reason, result, edit) = match &fetch {
+            Fetch::Gone => ("gone", None, None, None),
+            Fetch::Waiting => ("waiting", None, None, None),
+            Fetch::Withheld(reason) => (refusal, Some(*reason), None, None),
+            Fetch::Ready { result, edit } => ("ready", None, result.as_ref(), edit.as_ref()),
+        };
+        let frame = serialize_frame(&OutputFrame::Step {
+            selection_epoch: epoch,
+            agent_id: agent,
+            turn_id: turn,
+            step_id,
+            state,
+            reason,
+            result,
+            edit,
+        })?;
+        let bytes = frame.len();
+        queue.enqueue_frame(Arc::from(frame), QueueKind::Output)?;
+        queue.step_bytes_sent += bytes;
+        subscription.queue.changed.notify_all();
+        Ok(())
     }
 
     pub(crate) fn clear_output(&self, subscription: &Subscription) -> Result<()> {
@@ -1510,6 +1588,14 @@ fn refresh_reply(
     }
     queue.selection = Some(selection);
     true
+}
+
+fn valid_step_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 /// The most step data one socket is sent before steps stop and say so.
@@ -4879,6 +4965,35 @@ mod tests {
         }
         assert!(client_type_is_listed("floor.output.select"));
         assert!(client_type_is_listed("floor.output.clear"));
+    }
+
+    #[test]
+    fn a_step_fetch_names_one_step_of_one_turn_and_nothing_else() {
+        let agent = AgentId::from_parts(1, 1);
+        let turn = TurnId::from_parts(2, 1);
+        assert_eq!(
+            decode_client(&format!(
+                r#"{{"type":"floor.output.fetch","agent_id":"{agent}","turn_id":"{turn}","step_id":"toolu_1"}}"#
+            ))
+            .unwrap(),
+            ClientMessage::StepFetch {
+                agent_id: agent,
+                turn_id: turn,
+                step_id: "toolu_1".to_owned()
+            }
+        );
+        for invalid in [
+            format!(r#"{{"type":"floor.output.fetch","agent_id":"{agent}","turn_id":"{turn}"}}"#),
+            format!(r#"{{"type":"floor.output.fetch","agent_id":"{agent}","step_id":"a"}}"#),
+            format!(
+                r#"{{"type":"floor.output.fetch","agent_id":"{agent}","turn_id":"{turn}","step_id":"a","path":"/"}}"#
+            ),
+        ] {
+            assert!(decode_client(&invalid).is_err(), "admitted {invalid}");
+        }
+        assert!(client_type_is_listed("floor.output.fetch"));
+        assert!(server_type_is_listed("floor.output.step"));
+        assert!(!valid_step_id("a b") && !valid_step_id("") && !valid_step_id(&"a".repeat(129)));
     }
 
     /// Each client message is one object: the derived decoder of an internally tagged enum would

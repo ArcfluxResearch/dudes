@@ -1,7 +1,9 @@
 //! A turn's steps, made safe to show. Every text field passes the daemon's secret scrub before it
 //! is cut to size or kept, so nothing past this module holds a secret the daemon knows, and a
 //! step that names a sensitive path or carries a secret-shaped value loses its edit text too.
-//! Results are not here: a step carries only how it ended and how big its result was.
+//! A step on the wire carries only how it ended and how big its result was. A result's text, and
+//! an edit's text past the input cap, are kept apart (see `step_results`) and sent only when
+//! the selected agent's page asks for them.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,6 +15,9 @@ use crate::secret_patterns::{contains_secret, sensitive_path};
 
 /// The most an input, or one side of an edit, shows. The rest is cut and marked.
 pub(crate) const INPUT_BYTES: usize = 2 * 1024;
+/// The most a kept result, or one side of a kept edit, holds. The rest is cut and marked.
+pub(crate) const KEPT_BYTES: usize = 8 * 1024;
+const _: () = assert!(KEPT_BYTES < dudes_providers::steps::MAX_RESULT_BYTES);
 const PLAN_ITEM_BYTES: usize = 512;
 const NAME_BYTES: usize = 128;
 
@@ -93,7 +98,125 @@ pub(crate) struct Closing {
     pub(crate) failed: bool,
     pub(crate) exit: Option<i32>,
     pub(crate) result_bytes: u64,
+    pub(crate) result: Option<KeptResult>,
     pub(crate) at: u64,
+}
+
+/// Text a step keeps for a fetch: scrubbed when it arrived and cut to size.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct KeptText {
+    pub(crate) text: String,
+    pub(crate) cut: bool,
+}
+
+impl std::fmt::Debug for KeptText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeptText")
+            .field("bytes", &self.text.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A result as kept. One that held a secret-shaped value keeps nothing but that fact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum KeptResult {
+    Text(KeptText),
+    Secret,
+}
+
+/// An edit's text as kept, for an edit too long to show in the step itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct KeptEdit {
+    pub(crate) old: Option<KeptText>,
+    pub(crate) new: KeptText,
+}
+
+impl KeptText {
+    pub(crate) const fn bytes(&self) -> usize {
+        self.text.len()
+    }
+}
+
+impl KeptResult {
+    pub(crate) const fn bytes(&self) -> usize {
+        match self {
+            Self::Text(text) => text.bytes(),
+            Self::Secret => 0,
+        }
+    }
+}
+
+impl KeptEdit {
+    pub(crate) fn bytes(&self) -> usize {
+        self.old.as_ref().map_or(0, KeptText::bytes) + self.new.bytes()
+    }
+}
+
+/// Whether a finished step's result text is worth keeping for a fetch. Only the kinds of step
+/// whose output is the point are kept. A withheld step never is, and neither is a background
+/// shell's output, which belongs to a command whose own text is not on this step.
+pub(crate) fn keeps_result(view: &StepView) -> bool {
+    view.withheld.is_none()
+        && matches!(
+            view.kind,
+            "command" | "read" | "search" | "web" | "subagent"
+        )
+        && !background_shell(&view.tool)
+}
+
+/// Whether a step's result is one a page may never fetch, though the step may be shown.
+pub(crate) fn withholds_result(view: &StepView) -> bool {
+    matches!(view.kind, "mcp" | "other") || background_shell(&view.tool)
+}
+
+fn background_shell(tool: &str) -> bool {
+    matches!(tool, "BashOutput" | "KillShell")
+}
+
+/// Scrubs a result's whole text, looks for a secret-shaped value in all of it, and only then cuts
+/// it, so a value on the cut line is never half kept.
+pub(crate) fn keep_result(redactor: &Redactor, text: &str) -> KeptResult {
+    let text = redactor.scrub(text);
+    if result_holds_secret(&text) {
+        KeptResult::Secret
+    } else {
+        KeptResult::Text(keep_text(&text))
+    }
+}
+
+/// Whether a result holds a secret-shaped value, in its text or in any `name: value` or
+/// `name=value` line, or leads a line with a sensitive path and a colon, as search output does.
+pub(crate) fn result_holds_secret(text: &str) -> bool {
+    holds_secret("result", text) || text.lines().any(|line| names_sensitive(line_path(line)))
+}
+
+/// The path a search line leads with, up to its colon. A drive letter's colon is not that one.
+fn line_path(line: &str) -> &str {
+    let line = line.trim();
+    let from = match line.as_bytes() {
+        [letter, b':', b'\\' | b'/', ..] if letter.is_ascii_alphabetic() => 2,
+        _ => 0,
+    };
+    line[from..]
+        .split_once(':')
+        .map_or("", |(path, _)| &line[..from + path.len()])
+}
+
+/// Whether the text of an edit holds a secret-shaped value.
+pub(crate) fn edit_holds_secret(text: &str) -> bool {
+    holds_secret("content", text)
+}
+
+fn keep_text(text: &str) -> KeptText {
+    let (text, cut) = cap(text, KEPT_BYTES);
+    KeptText { text, cut }
+}
+
+/// A text with the secrets the daemon knows now taken out, for one learned after it was kept.
+pub(crate) fn rescrub(redactor: &Redactor, text: &mut String) {
+    if let std::borrow::Cow::Owned(clean) = redactor.scrub(text) {
+        *text = clean;
+    }
 }
 
 impl StepView {
@@ -149,7 +272,18 @@ pub(crate) fn now_ms() -> u64 {
 }
 
 /// The safe form of a step the engine just started.
+#[cfg(test)]
 pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
+    open_with_text(redactor, step, now).0
+}
+
+/// The safe form of a step the engine just started, and its edit text when that is too long to
+/// show in the step and nothing about the step is withheld.
+pub(crate) fn open_with_text(
+    redactor: &Redactor,
+    step: Step,
+    now: u64,
+) -> (StepView, Option<KeptEdit>) {
     let Step {
         id,
         parent,
@@ -186,7 +320,21 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
             },
         ));
     }
-    let edit = edit.and_then(|edit| edit_view(redactor, edit, &mut withheld));
+    let edit = edit.map(|EditText { old, new }| EditText {
+        old: old.map(|old| redactor.scrub(&old).into_owned()),
+        new: redactor.scrub(&new).into_owned(),
+    });
+    let shown = edit
+        .as_ref()
+        .and_then(|edit| edit_view(edit, &mut withheld));
+    let kept = shown
+        .as_ref()
+        .filter(|shown| shown.cut)
+        .zip(edit.as_ref())
+        .map(|(_, edit)| KeptEdit {
+            old: edit.old.as_deref().map(keep_text),
+            new: keep_text(&edit.new),
+        });
     // A tool can carry its text in arguments the reader does not lift out (a list of edits, a
     // notebook cell, an MCP write's content), so a withheld edit step, and any step that names a
     // sensitive path, shows its path arguments and nothing else. A command is its own input and
@@ -216,14 +364,14 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
             }
         })
         .collect();
-    StepView {
+    let view = StepView {
         id: scrub_id(redactor, &id),
         parent: parent.map(|parent| scrub_id(redactor, &parent)),
         kind: kind.name(),
         tool: tool_name,
         status: Status::Running,
         args,
-        edit,
+        edit: shown,
         plan,
         withheld,
         exit: None,
@@ -231,26 +379,54 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
         note: None,
         started_at: now,
         ended_at: None,
-    }
+    };
+    (view, kept)
 }
 
 /// Whether an argument holds a secret: its text on its own, and each line as the `"key":"value"`
 /// pair the credential rule reads. A nested leaf reads `name: value` and a top-level argument is
 /// its value alone, so the key has to be put back in front of the value.
 fn holds_secret(key: &str, value: &str) -> bool {
+    // The credential rule reads a key only at the start of a name, so `DB_PASSWORD` is also read
+    // as `PASSWORD`.
     let pair = |key: &str, text: &str| {
-        contains_secret(format!("\"{key}\":\"{}\"", text.replace('"', "'")).as_bytes())
+        let text = text.replace('"', "'");
+        std::iter::once(key)
+            .chain(key.match_indices(['_', '-']).map(|(at, _)| &key[at + 1..]))
+            .any(|key| contains_secret(format!("\"{key}\":\"{text}\"").as_bytes()))
     };
     contains_secret(value.as_bytes())
-        || value.lines().any(|line| {
-            match line
-                .split_once(": ")
-                .filter(|(name, _)| !name.contains(' '))
-            {
+        || value
+            .lines()
+            .map(bare_line)
+            .any(|line| match split_pair(line) {
                 Some((name, text)) => pair(leaf_name(name), text),
                 None => pair(key, line),
-            }
-        })
+            })
+}
+
+/// A line without what tools put in front of it: indentation, a line number and its `→`, tab, `:`
+/// or `-`, and a shell `export `.
+fn bare_line(line: &str) -> &str {
+    let line = line.trim_start();
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    let line = match line[digits..].strip_prefix(['\u{2192}', '\t', ':', '-']) {
+        Some(rest) if digits > 0 => rest.trim_start(),
+        _ => line,
+    };
+    line.strip_prefix("export ").map_or(line, str::trim_start)
+}
+
+/// A line as `name: value`, `name=value` or `name = value`, when the name is a single word.
+fn split_pair(line: &str) -> Option<(&str, &str)> {
+    let colon = line
+        .split_once(": ")
+        .filter(|(name, _)| !name.contains(' '));
+    colon.or_else(|| {
+        line.split_once('=')
+            .map(|(name, text)| (name.trim(), text.trim()))
+            .filter(|(name, _)| !name.is_empty() && !name.contains(char::is_whitespace))
+    })
 }
 
 /// The last name on a flattened path: `opts.paths[0]` is `paths`.
@@ -283,11 +459,7 @@ impl StepView {
     /// This step with the secrets the daemon knows now taken out of every text it holds, for one
     /// learned after the step was kept.
     pub(crate) fn rescrubbed(mut self, redactor: &Redactor) -> Self {
-        let scrub = |text: &mut String| {
-            if let std::borrow::Cow::Owned(clean) = redactor.scrub(text) {
-                *text = clean;
-            }
-        };
+        let scrub = |text: &mut String| rescrub(redactor, text);
         scrub(&mut self.id);
         scrub(&mut self.tool);
         if let Some(parent) = &mut self.parent {
@@ -310,21 +482,11 @@ impl StepView {
     }
 }
 
-/// The edit text, unless the file is sensitive or the text holds a secret. The scrub runs on the
-/// whole text and the cut after it, so a secret on the cut line is never half kept.
-fn edit_view(
-    redactor: &Redactor,
-    edit: EditText,
-    withheld: &mut Option<&'static str>,
-) -> Option<EditView> {
+/// The edit text, unless the file is sensitive or the text holds a secret. The text arrives
+/// scrubbed whole and the cut comes after it, so a secret on the cut line is never half kept.
+fn edit_view(edit: &EditText, withheld: &mut Option<&'static str>) -> Option<EditView> {
     let EditText { old, new } = edit;
-    let old = old.map(|old| redactor.scrub(&old).into_owned());
-    let new = redactor.scrub(&new).into_owned();
-    if old
-        .as_deref()
-        .is_some_and(|old| contains_secret(old.as_bytes()))
-        || contains_secret(new.as_bytes())
-    {
+    if old.as_deref().is_some_and(edit_holds_secret) || edit_holds_secret(new) {
         withheld.get_or_insert("the text holds a secret");
     }
     if withheld.is_some() {
@@ -332,12 +494,12 @@ fn edit_view(
     }
     let (old, old_cut) = match old {
         Some(old) => {
-            let (old, cut) = cap(&old, INPUT_BYTES);
+            let (old, cut) = cap(old, INPUT_BYTES);
             (Some(old), cut)
         }
         None => (None, false),
     };
-    let (new, new_cut) = cap(&new, INPUT_BYTES);
+    let (new, new_cut) = cap(new, INPUT_BYTES);
     Some(EditView {
         old,
         new,
@@ -408,6 +570,31 @@ mod tests {
     use dudes_providers::steps::{PlanItem, PlanStatus};
 
     use super::*;
+
+    #[test]
+    fn name_value_lines_and_sensitive_paths_hold_secrets() {
+        for text in [
+            "password = hunter2hunter2",
+            "DB_PASSWORD=hunter2hunter2",
+            "ok\ndb.password: hunter2hunter2",
+            "     3\u{2192}password = hunter2hunter2",
+            "     3\u{2192}API_KEY=abcdefgh1234",
+            "     3\u{2192}db_password: hunter2hunter2",
+            "export API_KEY=abcdefgh1234",
+            "3:API_KEY=abcdefgh1234",
+        ] {
+            assert!(holds_secret("result", text), "{text}");
+        }
+        assert!(!holds_secret("result", "name = value\nretries=3"));
+        assert!(!holds_secret("result", "     3\u{2192}retries = 3"));
+        assert!(!holds_secret("result", "     3\u{2192}let x = y;"));
+        assert!(result_holds_secret("C:\\w\\.env:3:A=b"));
+        assert!(result_holds_secret("C:/w/.ssh/id_rsa:3:A"));
+        assert!(!result_holds_secret("C:\\w\\main.rs:3:A=b"));
+        assert!(result_holds_secret(".env:API_KEY=x"));
+        assert!(result_holds_secret("a\nconfig/.aws/credentials:3:y"));
+        assert!(!result_holds_secret("src/main.rs:3:fn main"));
+    }
 
     const SECRET: &str = "synthetic-secret-value-0123456789";
 
@@ -808,6 +995,7 @@ mod tests {
             failed: true,
             exit: Some(2),
             result_bytes: 40,
+            result: None,
             at: 20,
         });
         assert_eq!(view.status, Status::Failed);

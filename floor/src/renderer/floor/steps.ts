@@ -156,3 +156,53 @@ export function sameLabels(a: Readonly<Record<string, string>>, b: Readonly<Reco
   const keys = Object.keys(a);
   return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
 }
+
+/** What the page knows of one step's kept text. `loading` is the page's own state. */
+export type ResultState = 'loading' | 'ready' | 'withheld' | 'gone' | 'refused' | 'waiting';
+export interface ResultText { readonly text: string; readonly cut: boolean }
+export interface ResultEdit { readonly old: ResultText | null; readonly new: ResultText }
+export interface StepResult {
+  readonly state: ResultState;
+  readonly reason: string | null;
+  readonly result: ResultText | null;
+  readonly edit: ResultEdit | null;
+}
+
+export const LOADING_RESULT: StepResult = Object.freeze({ state: 'loading', reason: null, result: null, edit: null });
+export const EMPTY_RESULTS: Readonly<Record<string, StepResult>> = Object.freeze({});
+/** The most steps whose text one selection can hold at once; the oldest request goes first. */
+export const MAX_RESULTS = 64;
+
+const REPLY_STATES: readonly ResultState[] = ['ready', 'withheld', 'gone', 'refused', 'waiting'];
+const RESULT_KEYS: readonly string[] = ['type', 'selection_epoch', 'agent_id', 'turn_id', 'step_id', 'state', 'reason', 'result', 'edit'];
+
+function resultText(raw: unknown): ResultText {
+  const item = record(raw);
+  if (Object.keys(item).some((key) => key !== 'text' && key !== 'cut')) throw new TypeError('invalid step text');
+  return Object.freeze({ text: text(item.text), cut: flag(item.cut) });
+}
+
+/** One `floor.output.step` frame's answer, with the step it is for. Everything is shown as plain text. */
+export function decodeStepResult(raw: Record<string, unknown>): { readonly stepId: string; readonly result: StepResult } {
+  if (Object.keys(raw).some((key) => !RESULT_KEYS.includes(key))) throw new TypeError('invalid step result');
+  const stepId = text(raw.step_id, 128);
+  const state = raw.state;
+  if (!STEP_ID.test(stepId) || !(REPLY_STATES as readonly unknown[]).includes(state)) throw new TypeError('invalid step result');
+  const reason = optionalText(raw.reason);
+  const result = raw.result === undefined ? null : resultText(raw.result);
+  let edit: ResultEdit | null = null;
+  if (raw.edit !== undefined) {
+    const item = record(raw.edit);
+    if (Object.keys(item).some((key) => key !== 'old' && key !== 'new')) throw new TypeError('invalid step edit');
+    edit = Object.freeze({ old: item.old === undefined ? null : resultText(item.old), new: resultText(item.new) });
+  }
+  if (state !== 'ready' && (result !== null || edit !== null)) throw new TypeError('text on a step with none to show');
+  return { stepId, result: Object.freeze({ state: state as ResultState, reason, result, edit }) };
+}
+
+/** Whether a finished step has text worth asking the daemon for: a result, or an edit cut to fit. */
+export function hasKeptText(step: StepItem): boolean {
+  if (step.status === 'running' || step.kind === 'plan' || step.withheld !== null) return false;
+  if (step.kind === 'edit' || step.kind === 'write') return step.edit?.cut === true;
+  return step.kind === 'mcp' || (step.resultBytes ?? 0) > 0;
+}

@@ -121,6 +121,7 @@ mod shutdown_receipt;
 pub mod sign_in;
 pub mod socket;
 pub mod startup;
+mod step_results;
 mod step_tally;
 mod steps;
 mod ticket_recovery;

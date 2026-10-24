@@ -52,7 +52,7 @@ fn sensitive_name(name: &str) -> bool {
 }
 
 pub(crate) fn sensitive_path(path: &str) -> bool {
-    let mut parts = path.split('/').peekable();
+    let mut parts = path.split(['/', '\\']).peekable();
     while let Some(part) = parts.next() {
         if part.eq_ignore_ascii_case(".env")
             || part
