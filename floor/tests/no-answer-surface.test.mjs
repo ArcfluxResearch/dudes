@@ -292,6 +292,8 @@ const RENAME_MODULE = 'src/renderer/rename/rename.ts';
 const RENAME_PANEL = 'src/renderer/rename/NameEditor.tsx';
 const LOOK_MODULE = 'src/renderer/look/look.ts';
 const LOOK_PANEL = 'src/renderer/look/LookEditor.tsx';
+const MODEL_MODULE = 'src/renderer/model/model.ts';
+const MODEL_PANEL = 'src/renderer/model/ModelEditor.tsx';
 const ADMITTED_IN_GOAL_FORM = Object.freeze(['a textarea', 'an input', 'a change handler']);
 const SETUP_VIEW = 'src/renderer/setup/SetupView.tsx';
 const FIRST_RUN_GUIDE = 'src/renderer/setup/FirstRunGuide.tsx';
@@ -338,6 +340,7 @@ const ADMITTED = new Map([
   [SETTINGS_VIEW, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
   [LOOK_PANEL, Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler',
     'a submit handler', 'a key handler'])],
+  [MODEL_PANEL, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler', 'a key handler'])],
   [FLOOR_SHELL, Object.freeze(['a key handler', 'a pointer handler'])],
   [AGENT_ORDER, Object.freeze(['a key handler', 'a pointer handler'])],
   ['src/renderer/AgentDetail.tsx', Object.freeze(['a key handler'])],
@@ -445,6 +448,12 @@ const ADMITTED_HANDLERS = [
   { file: LOOK_PANEL, tag: 'input', handler: 'onChange', expression: '() => editLook({ accent })' },
   { file: LOOK_PANEL, tag: 'textarea', handler: 'onChange',
     expression: '(event) => editLook({ role: event.currentTarget.value })' },
+  { file: MODEL_PANEL, tag: 'form', handler: 'onSubmit',
+    expression: '(event) => { event.preventDefault(); void submitModel(row, browserModelDeps); }' },
+  { file: MODEL_PANEL, tag: 'form', handler: 'onKeyDown',
+    expression: "(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelModel(); } }" },
+  { file: MODEL_PANEL, tag: 'input', handler: 'onChange', expression: '() => editModel(choice)' },
+  { file: MODEL_PANEL, tag: 'input', handler: 'onChange', expression: '(event) => editModel(event.currentTarget.value)' },
   { file: 'src/renderer/AgentDetail.tsx', tag: 'h2', handler: 'onDoubleClick', expression: '() => beginRename(`detail:${row.id}`, row)' },
   ...HIRE_FIELDS.map(({ tag, change }) => ({ file: HIRE_FORM, tag, handler: 'onChange', expression: change })),
   { file: ANSWER_FORM, tag: 'textarea', handler: 'onChange' },
@@ -1099,7 +1108,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
   assert.match(form, /const choose = \(choice: CheckChoice\) => \{\s*if \(!blocked\) chooseGoalCheck\(gate\.agent, gate\.goal, choice\);\s*\};/);
 });
 
-test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Stop this turn, Stop and send, Pause all, resume, goal change, look edit and dismiss buttons, Overview Answer, Review work, Review ticket and Change navigation, '
+test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Stop this turn, Stop and send, Pause all, resume, goal change, look edit, model change and dismiss buttons, Overview Answer, Review work, Review ticket and Change navigation, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation, '
@@ -1146,6 +1155,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(RENAME_PANEL),
     ...Array(6).fill(ADD_PROJECT_FORM),
     ...Array(4).fill(LOOK_PANEL),
+    ...Array(5).fill(MODEL_PANEL),
     ...Array(3).fill(SETUP_VIEW),
     ...Array(10).fill(SETTINGS_VIEW),
     ...Array(5).fill(FIRST_RUN_GUIDE),
@@ -1160,6 +1170,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   expected.sort();
   const clickExpected = [...expected, LOGIN_PANEL, FLOOR_SHELL];
   clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
+  clickExpected.splice(clickExpected.indexOf(MODEL_PANEL), 1);
   // The ticket forms each submit with a button that has no click handler of its own.
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
@@ -1227,6 +1238,10 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, LOOK_PANEL), 'utf8')), [
     '() => beginLook(row)', 'cancelLook', '() => { void checkLook(browserLookDeps); }',
+  ]);
+  assert.deepEqual(clicksIn(await readFile(resolve(floor, MODEL_PANEL), 'utf8')), [
+    '() => { void removeOverride(row, browserModelDeps); }', 'cancelModel', '() => beginModel(row)',
+    '() => { void checkModel(browserModelDeps); }',
   ]);
   const archiveSyntax = parsedByExtension(archive, ARCHIVED_AGENTS);
   assert.deepEqual(archiveSyntax.statements.filter(ts.isImportDeclaration).map((node) =>
@@ -1604,6 +1619,11 @@ const REQUESTS = {
     methods: ['POST'],
     fetches: ['floorFetch', 'fetch', 'floorFetch', "deps.fetch('/floor/look')"],
   },
+  [MODEL_MODULE]: {
+    paths: ['/floor/model', 'application/json'],
+    methods: ['POST'],
+    fetches: ['floorFetch', 'fetch', 'floorFetch', "deps.fetch('/floor/model')"],
+  },
   [RENAME_MODULE]: {
     paths: ['/floor/rename', 'application/json'],
     methods: ['POST'],
@@ -1841,7 +1861,7 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
     Object.fromEntries([...reaching].sort().map(([name, files]) => [name, [...files].sort()])),
     {
       WebSocket: ['src/renderer/floor/stream.ts'],
-      fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', ADD_PROJECT_MODULE, RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE,
+      fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, MODEL_MODULE, 'src/renderer/onboarding/hire.ts', ADD_PROJECT_MODULE, RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE,
         SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
     },
     'the page reaches the network somewhere new',
@@ -1943,7 +1963,7 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
 
   const fetching = reaching.get('fetch') ?? [];
   assert.deepEqual(fetching.sort(),
-    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', ADD_PROJECT_MODULE, RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE, SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
+    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, MODEL_MODULE, 'src/renderer/onboarding/hire.ts', ADD_PROJECT_MODULE, RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE, SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
     'something other than the admitted action, read, session and transport modules fetches');
   assert.deepEqual(calling.sort(), fetching,
     'a module other than those six calls fetch with a space before the parenthesis');

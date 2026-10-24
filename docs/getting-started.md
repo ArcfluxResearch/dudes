@@ -24,7 +24,7 @@ Dudes reads no engine's credentials or files.
      see [Chat](chat.md) to opt in.
    - **Floor actions.** On a file that turns no Floor action on yet, it turns on answer, hire,
      control, goal, retire, board, renew, recovery and project, so you can hire, pause and resume,
-     answer, change goals, give tickets to agents, retire, recover and add projects from the
+     change an agent's model, answer, change goals, give tickets to agents, retire, recover and add projects from the
      Floor. A ticket given to an agent starts it, and agents then run and spend under your
      account. Anyone holding your one-time Floor link could start agents that act with your
      account's full reach. The changed-file views (`floor.git` and `floor.diff`) are on too, so
@@ -95,8 +95,14 @@ Dudes reads no engine's credentials or files.
    Left alone, the agent uses the app's own default, or the model your configuration sets for that app.
    If the configuration passes `--model` in Claude Code's extra arguments, that model wins over any other, so
    the Engine step shows it and offers no choice, and a hire that names a model is refused.
-   The model is fixed for the agent's life; Dudes checks only its spelling, and the app reports a
-   name it does not know when the agent first runs. From the command line, hire an agent, then give it a goal with the id that `hire`
+   Dudes checks only a model's spelling, and the app reports a name it does not know when the agent
+   first runs. You can change an agent's model later from its panel on the Floor (it needs `floor.control`)
+   or with `dudes model <agent> <name>`; the agent keeps its session and history, a run already under way
+   keeps its model, and the next run uses the new one. `dudes model <agent> --clear` returns the agent to the
+   app's own model. This works for Claude Code, Codex and Pi, each checked to keep the session's earlier
+   messages under a new model; an app that has not been checked refuses the change. A change is refused while
+   a person holds the agent's terminal, and while the configuration passes `--model` in Claude Code's extra
+   arguments (removing your own override is still allowed). From the command line, hire an agent, then give it a goal with the id that `hire`
    prints. This one gets a folder of its own. Dudes cannot check another agent's engine settings
    for a ticket, so in a repository two agents share it holds tickets in **Needs you** for review:
 

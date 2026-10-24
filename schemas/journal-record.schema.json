@@ -6586,7 +6586,7 @@
       ]
     },
     "TicketRequestAttribution": {
-      "description": "The retry identity a Floor page gave a ticket creation, as digests only: the digest of the\nbrowser-generated request id and the digest of the normalized creation fields. A repeat of the\nsame id with the same fields is answered with the ticket already made.",
+      "description": "The retry identity a Floor page gave a ticket creation or a model change, as digests only: the\ndigest of the browser-generated request id and the digest of the normalized request fields. A\nrepeat of the same id with the same fields is answered with the outcome already recorded.",
       "properties": {
         "request_digest": {
           "description": "Digest of the normalized creation fields.",
@@ -9910,6 +9910,51 @@
         "t",
         "agent",
         "mcp_servers"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "An operator changed one agent's model override for its next issued turn. A required\nrecord: a build that does not know it must stop, since replaying the journal without it\nwould run the agent on the model its hire named.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentId",
+          "description": "The unchanged agent identity."
+        },
+        "by": {
+          "$ref": "#/$defs/Actor",
+          "description": "Who changed it: a Floor session or an operator client."
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The new override, or `None` to return to the engine's own selection."
+        },
+        "request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketRequestAttribution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The Floor page's retry identity; absent for a change from the command line."
+        },
+        "t": {
+          "const": "agent_model_changed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "agent",
+        "by"
       ],
       "type": "object"
     },

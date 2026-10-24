@@ -217,6 +217,13 @@ pub struct AgentView {
     /// The agent's own git worktree, when it was hired into one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeView>,
+    /// The model override for the agent's next turn. Absence means the engine's own selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<dudes_types::ModelName>,
+    /// The model the agent's open turn was issued under. Absent when no turn is open, or when
+    /// the turn recorded none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_model: Option<dudes_types::ModelName>,
     /// Another live agent records this agent's working directory too. A display hint computed from
     /// recorded directory equality, not a guard.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

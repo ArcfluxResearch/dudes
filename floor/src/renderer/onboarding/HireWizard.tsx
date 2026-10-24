@@ -176,7 +176,7 @@ function ModelChoice({ engine, draft, frozen, configured, fixed, invalid }: {
         onChange={(event) => editDraft({ model: event.target.value })} />
       <p className="hire-count">{configured === null
         ? `Leave empty and ${HIRE_ENGINES[engine]} chooses its default model.`
-        : `Leave empty to use the configured model, ${configured}.`} The engine checks the name when the agent first runs.</p>
+        : `Leave empty to use the configured model, ${configured}.`} The engine checks the name when the agent first runs. You can change it later from the agent panel.</p>
     </div>
   </div>;
 }

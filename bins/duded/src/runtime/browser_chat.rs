@@ -681,6 +681,10 @@ pub(super) fn attribution_session(
             browser_retire: Some(meta),
             ..
         } => Some(meta.session_digest),
+        Record::AgentModelChanged {
+            by: dudes_proto::Actor::BrowserSession { session_digest },
+            ..
+        } => Some(*session_digest),
         record => ticket_session(record),
     }
 }

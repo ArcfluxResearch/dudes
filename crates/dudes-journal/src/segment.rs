@@ -523,6 +523,7 @@ mod tests {
             | Record::AgentRenamed { .. }
             | Record::AgentLookChanged { .. }
             | Record::AgentMcpServersChanged { .. }
+            | Record::AgentModelChanged { .. }
             | Record::AgentHired { .. }
             | Record::AgentHeld { .. }
             | Record::AgentRetired { .. }

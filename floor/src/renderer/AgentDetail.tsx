@@ -14,6 +14,7 @@ import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
 import { HIRE_ENGINES } from './onboarding/catalog.ts';
 import { NameEditor } from './rename/NameEditor.tsx';
 import { LookEditor } from './look/LookEditor.tsx';
+import { ModelEditor } from './model/ModelEditor.tsx';
 import { beginRename } from './rename/rename.ts';
 import { automaticHoldOf } from './automaticHold.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from './focus.ts';
@@ -133,6 +134,7 @@ export function AgentDetail({
         {selection}
         <div className="agent-detail-actions">{resumeInOverview ? null : control}{retire}{terminal}{enable}</div>
         <LookEditor row={row} />
+        <ModelEditor row={row} />
         {fields.question === '' ? null : (
           <section className="agent-detail-question" aria-label="Waiting question" tabIndex={-1}>
             <h3>Waiting question</h3>

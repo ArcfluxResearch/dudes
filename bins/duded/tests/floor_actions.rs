@@ -9398,7 +9398,8 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     assert_eq!(
         frame["daemon"],
         json!({"state_dir":"~/state","providers":[
-            {"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown"}
+            {"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown",
+             "model_change_unsupported":true}
         ]})
     );
     one_launch(&running.handle, &fixture, &home.path().join("work-a"));
@@ -9417,7 +9418,7 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     assert_eq!(
         frame["daemon"]["providers"],
         json!([{"provider":"claude","program":"prog","found":true,"path":outside_prog,
-            "sign_in":"unknown"}]),
+            "sign_in":"unknown","model_change_unsupported":true}]),
         "a path outside the home is shown in full, with no restart"
     );
     one_launch(&running.handle, &fixture, &home.path().join("work-b"));
@@ -9432,7 +9433,7 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     let (frame, _) = snapshot(&page);
     assert_eq!(
         frame["daemon"]["providers"],
-        json!([{"provider":"claude","program":"prog","found":false}])
+        json!([{"provider":"claude","program":"prog","found":false,"model_change_unsupported":true}])
     );
     let outcome = one_launch(&running.handle, &fixture, &home.path().join("work-c"));
     assert!(
@@ -16133,4 +16134,266 @@ fn a_goal_change_restarts_after_its_fsync_before_its_fold() {
     );
     assert_eq!(host.spawned().len() + restarted.spawned().len(), 0);
     running.stop(ExitCause::ShutdownRpc);
+}
+
+fn model_body(id: &str, agent: AgentId, expected: Option<&str>, model: Option<&str>) -> Value {
+    json!({"request_id": id, "agent": agent, "expected": expected, "model": model})
+}
+
+fn post_model(page: &Page, body: &Value) -> (String, Value) {
+    post_bytes(
+        page,
+        "/floor/model",
+        &serde_json::to_vec(body).unwrap(),
+        None,
+    )
+}
+
+fn model_changes(fixture: &Fixture) -> Vec<Record> {
+    fixture
+        .records()
+        .into_iter()
+        .filter(|record| matches!(record, Record::AgentModelChanged { .. }))
+        .collect()
+}
+
+/// The Floor changes an agent's model, the next turn is issued under it, a retry or a restart
+/// answers the first outcome without a second record, and a request that read an older override
+/// is refused after a command-line change.
+#[test]
+fn browser_model_change_applies_to_the_next_turn_and_refuses_stale_requests() {
+    let fixture = Fixture::new();
+    let settings = goal_settings(&fixture, true);
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (view, _) = snapshot(&page);
+    assert!(view["projection"]["agents"][0].get("model").is_none());
+
+    let first = model_body(&request_id(1), agent, None, Some("sonnet"));
+    let (head, original) = post_model(&page, &first);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(
+        original,
+        json!({"request_id": request_id(1), "state": "changed", "agent": agent, "model": "sonnet"})
+    );
+    let changes = model_changes(&fixture);
+    assert!(matches!(
+        changes.as_slice(),
+        [Record::AgentModelChanged {
+            by: dudes_proto::Actor::BrowserSession { .. },
+            request: Some(_),
+            model: Some(model),
+            ..
+        }] if model.as_str() == "sonnet"
+    ));
+    let (view, _) = snapshot(&page);
+    assert_eq!(view["projection"]["agents"][0]["model"], "sonnet");
+
+    assert_eq!(post_model(&page, &first).1, original, "a retry is answered");
+    let mut conflicting = first.clone();
+    conflicting["model"] = json!("opus");
+    let (head, refusal) = post_model(&page, &conflicting);
+    empty_refusal(&head, &refusal, "HTTP/1.1 409 Conflict");
+    let (head, refusal) = post_model(
+        &page,
+        &model_body(&request_id(2), agent, Some("sonnet"), Some("-flag")),
+    );
+    empty_refusal(&head, &refusal, "HTTP/1.1 400 Bad Request");
+    assert_eq!(model_changes(&fixture), changes);
+
+    running
+        .handle
+        .ask(Ask::Model {
+            params: dudes_proto::rpc::agent::ModelParams {
+                agent,
+                model: Some(dudes_types::ModelName::parse("opus").unwrap()),
+            },
+            by: dudes_proto::Actor::Peer { pid: 7, uid: None },
+        })
+        .unwrap();
+    let after_command_line = model_changes(&fixture);
+    assert_eq!(after_command_line.len(), 2);
+    let (head, stale) = post_model(
+        &page,
+        &model_body(&request_id(3), agent, Some("sonnet"), Some("haiku")),
+    );
+    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+    assert_eq!(stale["reason"], "stale_model");
+    assert_eq!(
+        post_model(&page, &first).1,
+        original,
+        "a delayed first request is answered by the index, not applied over the newer choice"
+    );
+    assert_eq!(model_changes(&fixture), after_command_line);
+
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &["/usr/bin/true"]),
+    );
+    let selection = fixture.await_record("TurnIssued", |record| match record {
+        Record::TurnIssued {
+            model_selection, ..
+        } => Some(model_selection.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        selection,
+        Some(dudes_types::ModelSelection::named("opus")),
+        "the next issued turn runs on the newest override"
+    );
+
+    let (head, cleared) = post_model(
+        &page,
+        &model_body(&request_id(4), agent, Some("opus"), None),
+    );
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(cleared["model"], Value::Null);
+    let (view, _) = snapshot(&page);
+    assert!(view["projection"]["agents"][0].get("model").is_none());
+    assert_eq!(
+        view["projection"]["agents"][0]["turn_model"], "opus",
+        "the open turn keeps the model it was issued under"
+    );
+
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let before = model_changes(&fixture);
+    assert_eq!(post_model(&page, &first).1, original);
+    assert_eq!(model_changes(&fixture), before);
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// A request answered because the override already held writes no record, and its retry after
+/// a command-line change still gets the first answer instead of a refusal that contradicts it.
+#[test]
+fn a_model_change_that_found_the_override_already_set_is_answered_alike_on_retry() {
+    let fixture = Fixture::new();
+    let settings = goal_settings(&fixture, true);
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    let page = exchange(addr, &issue(&settings).bootstrap);
+
+    let first = model_body(&request_id(1), agent, None, None);
+    let (head, original) = post_model(&page, &first);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(original["model"], Value::Null);
+    assert!(model_changes(&fixture).is_empty(), "nothing needed writing");
+
+    running
+        .handle
+        .ask(Ask::Model {
+            params: dudes_proto::rpc::agent::ModelParams {
+                agent,
+                model: Some(dudes_types::ModelName::parse("opus").unwrap()),
+            },
+            by: dudes_proto::Actor::Peer { pid: 7, uid: None },
+        })
+        .unwrap();
+    let (head, retried) = post_model(&page, &first);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(retried, original, "the retry repeats the first answer");
+    assert_eq!(model_changes(&fixture).len(), 1, "and appends nothing");
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// A configuration that pins the engine's model, an agent a person holds, and an engine that
+/// cannot continue a session under another model each refuse a change by name, and clearing the
+/// override stays allowed under a pin.
+#[test]
+fn a_model_change_is_refused_by_name_when_it_cannot_apply() {
+    let fixture = Fixture::new();
+    let settings = goal_settings(&fixture, true);
+    let mut pinned = fake_seams(&settings);
+    pinned.adapters = Adapters::new([Box::new(dudes_providers::claude::ClaudeAdapter::new(
+        dudes_providers::claude::config::ClaudeConfig {
+            extra_args: vec![OsString::from("--model=haiku")],
+            ..dudes_providers::claude::config::ClaudeConfig::default()
+        },
+    )) as Box<dyn Adapter>]);
+    let daemon = boot(&settings, pinned).unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let before = fixture.records();
+    let (head, refused) = post_model(
+        &page,
+        &model_body(&request_id(1), agent, None, Some("sonnet")),
+    );
+    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+    assert_eq!(refused["reason"], "model_fixed");
+    let local = running
+        .handle
+        .ask(Ask::Model {
+            params: dudes_proto::rpc::agent::ModelParams {
+                agent,
+                model: Some(dudes_types::ModelName::parse("sonnet").unwrap()),
+            },
+            by: dudes_proto::Actor::Peer { pid: 7, uid: None },
+        })
+        .unwrap_err();
+    assert_eq!(local.code, dudes_proto::rpc::ErrorCode::Refused.code());
+    assert_eq!(fixture.records(), before);
+    let (head, cleared) = post_model(&page, &model_body(&request_id(2), agent, None, None));
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(cleared["state"], "changed");
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+
+    let fixture = Fixture::new();
+    let settings = goal_settings(&fixture, true);
+    let mut unchecked = fake_seams(&settings);
+    unchecked.adapters = [Box::new(StubAdapter) as Box<dyn Adapter>]
+        .into_iter()
+        .collect();
+    let daemon = boot(&settings, unchecked).unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let before = fixture.records();
+    let (head, refused) = post_model(
+        &page,
+        &model_body(&request_id(3), agent, None, Some("sonnet")),
+    );
+    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+    assert_eq!(refused["reason"], "model_unsupported");
+    assert_eq!(fixture.records(), before);
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+
+    let fixture = Fixture::new();
+    let settings = goal_settings(&fixture, true);
+    let agent = AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    seed(
+        &fixture,
+        [
+            seeded_look_hire(agent),
+            Record::Attached {
+                agent,
+                by: dudes_proto::Actor::System,
+                hook_port: None,
+                provenance: None,
+            },
+        ],
+    );
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let before = fixture.records();
+    let (head, refused) = post_model(
+        &page,
+        &model_body(&request_id(4), agent, None, Some("sonnet")),
+    );
+    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+    assert_eq!(refused["reason"], "agent_attached");
+    assert_eq!(fixture.records(), before);
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }

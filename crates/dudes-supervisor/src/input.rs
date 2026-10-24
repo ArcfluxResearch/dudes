@@ -1112,6 +1112,17 @@ pub enum Command {
         /// Attribution of a browser edit, absent for a local operator.
         browser_look: Option<dudes_proto::record::BrowserLook>,
     },
+    /// Record a new model override for the agent's next issued turn, without scheduling work.
+    ChangeModel {
+        /// The live agent.
+        agent: AgentId,
+        /// The new override, or `None` to return to the engine's own selection.
+        model: Option<dudes_types::ModelName>,
+        /// Who asked.
+        by: dudes_proto::Actor,
+        /// The Floor page's retry identity, absent for a change from the command line.
+        request: Option<dudes_proto::record::TicketRequestAttribution>,
+    },
     /// Record an admitted complete desired-server replacement without scheduling work.
     ReplaceMcp {
         /// The unchanged agent identity.

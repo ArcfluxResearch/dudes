@@ -672,6 +672,7 @@ pub(crate) enum ActionKind {
     Renew,
     Rename,
     Look,
+    Model,
     Retire,
     Chat,
     Project,

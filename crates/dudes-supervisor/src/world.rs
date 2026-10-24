@@ -95,7 +95,8 @@ pub struct AgentRow {
     /// The vendor-run budget backstop recorded at hire, or `None` for none. Not a
     /// spend ceiling and no part of gate 5's admission — see `Record::AgentHired::max_budget`.
     pub max_budget: Option<Usd>,
-    /// The model the hire named, or `None` for the engine's own selection.
+    /// The agent's model override: what the hire named until an operator changes it, or `None`
+    /// for the engine's own selection.
     pub model: Option<dudes_types::ModelName>,
     /// Whether the operator vouched for the repository at hire.
     pub trusted: bool,
@@ -1275,6 +1276,11 @@ impl World {
             Record::AgentMcpServersChanged { agent, mcp_servers } => {
                 if let Some(row) = self.agents.get_mut(agent) {
                     row.mcp.replace(lsn, mcp_servers);
+                }
+            }
+            Record::AgentModelChanged { agent, model, .. } => {
+                if let Some(row) = self.agents.get_mut(agent) {
+                    row.model.clone_from(model);
                 }
             }
             Record::McpLaunchGranted {

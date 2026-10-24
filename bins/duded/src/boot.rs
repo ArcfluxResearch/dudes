@@ -448,6 +448,7 @@ where
                         program: adapter.program().to_os_string(),
                         model,
                         model_fixed,
+                        model_change: adapter.resumes_under_changed_model(),
                     }
                 })
             })
@@ -532,6 +533,8 @@ where
         .context("replaying browser renames")?;
     let look_index = crate::floor_look::DurableLookIndex::replay(&Reader::new(&journal_dir))
         .context("replaying browser appearance edits")?;
+    let model_index = crate::floor_model::DurableModelIndex::replay(&Reader::new(&journal_dir))
+        .context("replaying browser model changes")?;
     let retire_index = crate::floor_retire::RetireIndex::replay(&Reader::new(&journal_dir))
         .context("replaying browser retirements")?;
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -660,6 +663,7 @@ where
             goal_index,
             rename_index,
             look_index,
+            model_index,
             retire_index,
             browser_grants: settings.floor_terminal_enabled.then(BTreeMap::new),
             #[cfg(feature = "testing")]
@@ -1699,6 +1703,7 @@ where
     dudes_rpc::methods::register_recovery(&mut dispatcher, &Arc::new(handle.clone()));
     crate::board::register(&mut dispatcher, &handle);
     crate::ticket::register(&mut dispatcher, &handle);
+    crate::agent_model::register(&mut dispatcher, &handle);
     register_agent_effects(&mut dispatcher, &control);
     register_agent_attach(&mut dispatcher, &control);
     register_agent_detach(&mut dispatcher, &control);

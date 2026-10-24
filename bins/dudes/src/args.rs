@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use dudes_proto::budget::{AgentBudget, GoalBudget};
 use dudes_proto::goal::Predicate;
 use dudes_proto::record::{DeviceId, Hex32};
-use dudes_proto::rpc::agent::{HireParams, LookParams, McpParams, RenameParams};
+use dudes_proto::rpc::agent::{HireParams, LookParams, McpParams, ModelParams, RenameParams};
 use dudes_proto::rpc::board::{CardCreateParams, CardListParams};
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, GoalSetParams};
 use dudes_proto::rpc::journal::JournalTailParams;
@@ -149,6 +149,8 @@ pub enum Command {
     Rename(RenameParams),
     /// `agent.look`.
     Look(LookParams),
+    /// `agent.model`.
+    Model(ModelParams),
     /// Read or replace desired servers for the next managed launch.
     Mcp(McpParams),
     /// `worktree list|remove`: the git worktrees the daemon created for agents.
@@ -601,6 +603,7 @@ COMMANDS
     mail        Send, read or acknowledge agent mail.
     rename      Change an agent's display name.
     look        Change an agent's role and appearance.
+    model       Change the model an agent uses from its next run.
     mcp         Read or replace an agent's desired MCP servers.
     worktree    List agent worktrees or record their removal.
     config      Show or edit the operator configuration.
@@ -881,8 +884,8 @@ USAGE
         edits and checkouts then collide. The daemon refuses --sandbox at either value until an adapter
         can carry the switch; omit it for the provider's configured default.
         --model names the model every run of this agent uses instead of the engine's
-        default: 1 to 64 letters, digits and . _ - : / @ [ ], not starting with -. It is fixed
-        for the agent's life, and the engine reports a name it does not know at the first run.
+        default: 1 to 64 letters, digits and . _ - : / @ [ ], not starting with -. dudes model
+        changes it for the next run, and the engine reports a name it does not know at that run.
         --max-turns and --max-budget-usd are optional positive backstops the provider
         enforces inside each run; omitting one emits no flag, and neither is a Dudes
         budget ceiling. Both are fixed for the agent's life. --trusted declares that you
@@ -946,6 +949,19 @@ USAGE
     dudes look <agent> --role <role> --character <c-l|automatic> --accent <colour|automatic>
         Change a live agent's display role and appearance. All fields are explicit;
         its engine and model stay fixed. A role holding a control character is refused.
+";
+
+const MODEL_HELP: &str = "\
+USAGE
+    dudes model <agent> <model>
+    dudes model <agent> --clear
+        Change the model a live agent uses from its next run. A run already under way keeps
+        the model it started with. The name is 1 to 64 letters, digits and . _ - : / @ [ ],
+        not starting with -; the engine reports a name it does not know at the next run.
+        --clear returns the agent to the engine's own model. Refused while a person holds the
+        agent's terminal, for an engine that cannot continue a session under another model,
+        and for an engine whose configuration sets its model in its extra arguments.
+        Operator-only. The Floor can make the same change when floor.control is on.
 ";
 
 const MCP_HELP: &str = "\
@@ -1214,6 +1230,7 @@ fn command_help(word: &OsStr) -> Option<&'static str> {
         "worktree" => WORKTREE_HELP,
         "rename" => RENAME_HELP,
         "look" => LOOK_HELP,
+        "model" => MODEL_HELP,
         "mcp" => MCP_HELP,
         "ask" => ASK_HELP,
         "why" => WHY_HELP,
@@ -1268,6 +1285,7 @@ fn without_arguments(tail: &[OsString], command: Command) -> Result<Command, Arg
     Ok(command)
 }
 
+#[allow(clippy::too_many_lines, reason = "one arm per command")]
 fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
     // **Split at the first `--` before anything else looks at a flag.** Everything after it is a
     // command's own payload — today, a predicate's argv — and is never inspected for this CLI's
@@ -1357,6 +1375,7 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
             })
         }
         "look" => Command::Look(look(tail)?),
+        "model" => Command::Model(model(tail)?),
         "mcp" => Command::Mcp(mcp(tail, payload)?),
         "goal" => goal_command(tail, payload)?,
         "recovery" => Command::Recovery(recovery(tail, payload)?),
@@ -2752,6 +2771,41 @@ fn look(tail: &[OsString]) -> Result<LookParams, ArgError> {
         character: required(character, "--character")?,
         accent: required(accent, "--accent")?,
     })
+}
+
+/// `model <agent> <model>` and `model <agent> --clear`.
+fn model(tail: &[OsString]) -> Result<ModelParams, ArgError> {
+    let Some(first) = tail.first() else {
+        return Err(ArgError::Missing("agent"));
+    };
+    if asks_for_help(first) {
+        return Err(ArgError::HelpRequested);
+    }
+    let agent_text = first.to_str().ok_or(ArgError::NotUtf8("agent"))?;
+    let agent = agent_text.parse().map_err(|_| ArgError::BadValue {
+        flag: "agent",
+        value: agent_text.to_owned(),
+        what: "an agent id",
+    })?;
+    let rest = &tail[1..];
+    match rest {
+        [flag] if flag == "--clear" => Ok(ModelParams { agent, model: None }),
+        [flag] if asks_for_help(flag) => Err(ArgError::HelpRequested),
+        [name] => {
+            let text = name.to_str().ok_or(ArgError::NotUtf8("model"))?;
+            let model = text.parse().map_err(|_| ArgError::BadValue {
+                flag: "model",
+                value: text.to_owned(),
+                what: "1 to 64 letters, digits and . _ - : / @ [ ], not starting with -",
+            })?;
+            Ok(ModelParams {
+                agent,
+                model: Some(model),
+            })
+        }
+        [] => Err(ArgError::Missing("model, or --clear")),
+        [_, extra, ..] => Err(ArgError::UnknownFlag(extra.to_string_lossy().into_owned())),
+    }
 }
 
 /// `devices`, `devices list`, `devices remove <id>` and `devices keep <id>`.
@@ -4316,6 +4370,42 @@ mod rename_tests {
             vec!["rename", "bad", "Name"],
         ] {
             assert!(parse(&args.into_iter().map(OsString::from).collect::<Vec<_>>()).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+
+    const ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+    fn line(args: &[&str]) -> Result<Invocation, ArgError> {
+        parse(&args.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn model_takes_a_name_or_clear_and_nothing_else() {
+        let Command::Model(set) = line(&["model", ID, "sonnet[1m]"]).unwrap().command else {
+            panic!("a model change")
+        };
+        assert_eq!(
+            set.model.as_ref().map(dudes_types::ModelName::as_str),
+            Some("sonnet[1m]")
+        );
+        let Command::Model(clear) = line(&["model", ID, "--clear"]).unwrap().command else {
+            panic!("a model clear")
+        };
+        assert!(clear.model.is_none());
+        for bad in [
+            vec!["model"],
+            vec!["model", ID],
+            vec!["model", "bad", "sonnet"],
+            vec!["model", ID, "-flag"],
+            vec!["model", ID, "two words"],
+            vec!["model", ID, "sonnet", "extra"],
+        ] {
+            assert!(line(&bad).is_err(), "{bad:?}");
         }
     }
 }
