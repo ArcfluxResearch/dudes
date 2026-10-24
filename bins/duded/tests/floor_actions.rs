@@ -5819,7 +5819,10 @@ fn stop_and_send_resend_after_the_control_switch_goes_off_answers_from_the_index
 
     let fresh = stop_and_send_body(&request_id(3), agent, "another", stop);
     let (head, refused) = post_bytes(&page, CHAT_SEND, &fresh, None);
-    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {refused}");
+    assert!(
+        head.starts_with("HTTP/1.1 409 Conflict"),
+        "{head} {refused}"
+    );
     assert_eq!(refused["reason"], "action_off", "{refused}");
     let notes = fixture
         .records()

@@ -394,7 +394,10 @@ fn a_reissue_under_a_breaker_stop_launches_and_the_kill_settles_the_turn() {
         "the breaker does not stop the launch"
     );
     deliver_spawn(&mut harness, source);
-    assert!(killed(&harness, source), "the breaker's kill follows the spawn");
+    assert!(
+        killed(&harness, source),
+        "the breaker's kill follows the spawn"
+    );
     harness.drive(Input::ChildExited {
         final_reply: None,
         elapsed_ms: None,
@@ -499,7 +502,9 @@ fn a_stop_over_a_consented_turn_the_launch_has_not_claimed_abandons_nothing() {
         let unfinished: Vec<Entry> = harness
             .journal
             .iter()
-            .take_while(|entry| !matches!(entry.record, Record::InstructionObservationFinished { .. }))
+            .take_while(|entry| {
+                !matches!(entry.record, Record::InstructionObservationFinished { .. })
+            })
             .cloned()
             .collect();
         let mut harness = Harness::from_prefix(unfinished);
