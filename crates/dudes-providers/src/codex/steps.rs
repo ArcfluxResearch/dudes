@@ -20,7 +20,7 @@
 //! that arrives only as completed opens and closes at once. Codex gives an exit code only for a
 //! command, and no parent for any item.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dudes_types::SessionId;
 use serde_json::Value;
@@ -59,6 +59,7 @@ struct Open {
 #[derive(Debug, Default)]
 pub(super) struct LiveSteps {
     open: BTreeMap<String, Open>,
+    closed: BTreeSet<String>,
     plan_updates: u32,
     last_plan: Vec<PlanItem>,
 }
@@ -121,6 +122,9 @@ impl LiveSteps {
         let Some(id) = item_id(item) else {
             return Vec::new();
         };
+        if self.closed.contains(&id) {
+            return Vec::new();
+        }
         let (mut events, ids) = if self.open.contains_key(&id) {
             let events = self.updated(session, item);
             let open = self.open.remove(&id);
@@ -130,6 +134,9 @@ impl LiveSteps {
             let ids = steps.iter().map(|step| step.id.clone()).collect();
             (opens(session, steps), ids)
         };
+        if self.closed.len() < MAX_OPEN {
+            self.closed.insert(id);
+        }
         let (exit, bytes, result) = outcome(item);
         events.extend(closes(
             session,
@@ -342,7 +349,7 @@ fn file_steps(id: &str, item: &Value) -> Vec<Step> {
             };
             let mut args = vec![("file_path".to_owned(), path.to_owned())];
             if let Some(target) = move_target(change) {
-                args.push(("paths".to_owned(), target.to_owned()));
+                args.push(("move_path".to_owned(), target.to_owned()));
             }
             Step {
                 id: if single {
@@ -371,7 +378,7 @@ fn change_kind(change: &Value) -> &str {
     }
 }
 
-/// Where a change moves the file to. The daemon reads `paths` as a path, so a move into a
+/// Where a change moves the file to. The daemon reads `move_path` as a path, so a move into a
 /// sensitive folder is withheld like an edit of a file there.
 fn move_target(change: &Value) -> Option<&str> {
     let kind = change.get("kind")?;
@@ -732,6 +739,13 @@ mod tests {
     }
 
     #[test]
+    fn a_repeated_completion_is_not_a_second_step() {
+        let item = r#"{"id":"item_16","type":"web_search","query":"rust"}"#;
+        let events = run(&[started(item), completed(item), completed(item)]);
+        assert_eq!(events.len(), 2, "one open and one close, got {events:?}");
+    }
+
+    #[test]
     fn a_move_target_rides_with_the_step_under_a_path_key() {
         let events = run(&[started(
             r#"{"id":"item_13","type":"file_change","changes":[{"path":"/repo/a.rs","kind":{"type":"update","move_path":"/work/me/.ssh/a.rs"}}]}"#,
@@ -740,7 +754,7 @@ mod tests {
             open(&events[0]).args,
             [
                 ("file_path".to_owned(), "/repo/a.rs".to_owned()),
-                ("paths".to_owned(), "/work/me/.ssh/a.rs".to_owned()),
+                ("move_path".to_owned(), "/work/me/.ssh/a.rs".to_owned()),
             ]
         );
     }

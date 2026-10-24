@@ -542,7 +542,7 @@ fn names_sensitive_path(kind: StepKind, tool: &str, key: &str, value: &str) -> b
 fn is_path_key(tool: &str, key: &str) -> bool {
     matches!(
         key,
-        "path" | "file_path" | "paths" | "directory" | "cwd" | "notebook_path"
+        "path" | "file_path" | "paths" | "move_path" | "directory" | "cwd" | "notebook_path"
     ) || (tool == "Glob" && key == "pattern")
 }
 

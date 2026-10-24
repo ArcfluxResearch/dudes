@@ -12,7 +12,7 @@ const MAX_DEPTH = 8;
 const OPEN_UP_TO = 8;
 const KEY_WORDS: Readonly<Record<string, string>> = {
   command: 'Command', file_path: 'File', path: 'Folder', notebook_path: 'Notebook', pattern: 'Search for', query: 'Search for',
-  cwd: 'Working folder', paths: 'Moved to', url: 'Address', description: 'Task', prompt: 'Instructions', subagent_type: 'Helper type',
+  cwd: 'Working folder', move_path: 'Moved to', url: 'Address', description: 'Task', prompt: 'Instructions', subagent_type: 'Helper type',
 };
 
 function firstLine(value: string): string {
