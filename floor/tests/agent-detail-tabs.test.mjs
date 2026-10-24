@@ -354,8 +354,8 @@ test('the stream status is one live region in the header, outside every tab pane
   const { center, output } = await drawer();
   for (const [patch, text] of [
     [{ status: 'live', chunks: ['Actual assistant output'] }, 'Turn in progress'],
-    [{ status: 'gap' }, 'Gap — output incomplete; retry to get a fresh snapshot'],
-    [{ status: 'waiting', reason: 'unbound' }, 'Waiting — no Managed turn bound yet'],
+    [{ status: 'gap' }, 'Gap — output incomplete; retry to load it again'],
+    [{ status: 'waiting', reason: 'unbound' }, 'Waiting — this agent has no work running yet'],
   ]) {
     const html = center({ output: { ...output, ...patch } });
     const detail = html.slice(html.indexOf('id="selected-agent-detail"'));

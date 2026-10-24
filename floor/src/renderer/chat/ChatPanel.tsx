@@ -33,7 +33,7 @@ export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
   open_question: 'Delivery waits for the open question to close. A note does not answer it.',
   budget: 'Delivery waits until the spending limit allows more work.',
   ceiling_required: 'This account needs a spending limit. Review the project limits in Settings before sending.',
-  hops: 'This task has used all its turns. Open Overview to review what happens next.',
+  hops: 'This task has used all its work attempts. Open Overview to review what happens next.',
   provenance: 'Delivery waits while Dudes checks how the previous work ended.',
   goal_changed: 'The task changed. This note still belongs to the earlier task.',
   context_changed: 'The conversation context changed. This message needs a new send after you review the context loss.',
@@ -297,7 +297,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
             onClick={() => void retryChat(browserChatDeps)}>Check status</button>}
       </section>}
       <details className="chat-guidance"><summary>Conversation details</summary>
-        <p>Only a limited history is retained; individual turns may be unavailable.</p>
+        <p>Only recent history is kept, so some earlier work may be missing.</p>
         {row.mode === 'attached' ? <p>Messages wait for a supported hook before they are sent as context.</p>
           : <p>Messages during active goal work join an admitted goal turn. Otherwise, each message can start one conversation turn.
             Queuing does not confirm delivery, and a reply does not confirm the goal is complete.</p>}

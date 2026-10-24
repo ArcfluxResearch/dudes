@@ -393,7 +393,7 @@ test('a missing engine keeps its install command and Check again, and offers no 
   hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'claude' });
   hire.showSection('engine');
   const html = wizard();
-  assert.match(html, /was not found on the daemon’s PATH/);
+  assert.match(html, /was not found on this computer/);
   assert.match(html, /<code>npm install -g @anthropic-ai\/claude-code<\/code>/);
   assert.match(html, /<button type="button">Check again<\/button>/);
   assert.doesNotMatch(html, /Sign in to/);
