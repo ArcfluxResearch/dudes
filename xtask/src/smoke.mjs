@@ -341,6 +341,7 @@ exec /bin/sleep 120
       } catch (error) {
         const hung = error.message === 'Chrome Browser.getVersion timed out';
         if (!hung || attempt === 3) throw error;
+        console.error(`smoke: Chrome did not answer, relaunching (attempt ${attempt + 1} of 3)`);
         this.cdp.close();
         this.signalUnanchoredChrome('SIGKILL');
         await waitFor(() => this.chrome.exitCode !== null || this.chrome.signalCode !== null,
