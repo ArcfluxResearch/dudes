@@ -646,8 +646,8 @@ fn bad_arguments_exit_1_and_send_nothing() {
 
 #[test]
 fn help_lists_the_ticket_commands_with_one_worked_example() {
-    let run = Cli::bare().arg("--help").run();
-    assert_eq!(run.code(), 0, "{}", run.output());
+    let run = Cli::bare().args(["ticket", "--help"]).run();
+    assert_eq!(run.code(), 1, "{}", run.output());
     for command in [
         "ticket add --title",
         "ticket edit <card>",
@@ -926,7 +926,7 @@ fn opening_a_ticket_cannot_print_and_launch_an_editor() {
     assert_eq!(
         run.stderr,
         "dudes: `--print` cannot be combined with `--editor`\n\
-         Run `dudes --help` for every command and its options.\n"
+         Run `dudes --help` for commands or `dudes <command> --help` for options.\n"
     );
 }
 
@@ -970,7 +970,7 @@ fn machine_checkout_output_cannot_be_combined_with_an_explicit_editor() {
         assert_eq!(run.stdout, "");
         assert_eq!(
             run.stderr,
-            "dudes: `--json` cannot be combined with `--editor`\nRun `dudes --help` for every command and its options.\n"
+            "dudes: `--json` cannot be combined with `--editor`\nRun `dudes --help` for commands or `dudes <command> --help` for options.\n"
         );
     }
 }

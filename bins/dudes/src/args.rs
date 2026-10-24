@@ -562,17 +562,94 @@ pub enum ArgError {
 }
 
 /// The line after an [`ArgError`]'s message, pointing at [`USAGE`].
-pub const HINT: &str = "Run `dudes --help` for every command and its options.";
+pub const HINT: &str = "Run `dudes --help` for commands or `dudes <command> --help` for options.";
 
-/// The usage text, printed on `--help`.
+/// The command index, printed on `--help`.
 pub const USAGE: &str = "\
-dudes — the Dudes control CLI.
+dudes - the Dudes control CLI.
 
 USAGE
     dudes [--json] <command> [options]
 
+GET STARTED
+    dudes quickstart    Set up Dudes and open the Floor.
+    dudes open          Open the Floor again.
+
 COMMANDS
-    quickstart [--yes] [--restart] [--set <key> <value> ...]
+    quickstart  Set up Dudes and open the Floor.
+    open        Start the daemon if needed and open the Floor.
+    start       Start the daemon without setup.
+    login       Sign in to Claude Code, Codex or Pi.
+    project     Add, inspect or remove projects and their checks.
+    hire        Hire an agent.
+    agents      List hired agents.
+    ticket      Give tasks, review results and accept work.
+    goal        Set or replace an agent's checked goal.
+    status      Show daemon status and recovery guidance.
+    stop        Stop Dudes with closing time, or immediately with --hard.
+    pause       Hold future turns for one agent or --all.
+    resume      Clear an agent's pause, halt and automatic hold.
+    halt        Halt an agent and request teardown.
+    retire      Retire an agent permanently.
+    recovery    Inspect and submit a reviewed recovery choice.
+    why         Show an agent's last loop decision.
+    tail        Read or follow the journal.
+    board       Create, list, claim or move board cards.
+    team        List colleagues and their current work.
+    ask         Ask the human from an agent process.
+    memory      Append, read or search agent memory.
+    mail        Send, read or acknowledge agent mail.
+    rename      Change an agent's display name.
+    look        Change an agent's role and appearance.
+    mcp         Read or replace an agent's desired MCP servers.
+    worktree    List agent worktrees or record their removal.
+    config      Show or edit the operator configuration.
+    devices     List, keep or sign out browsers.
+    floor       Print a one-time Floor sign-in link.
+    ping        Ask the daemon for its version and journal position.
+    closing     Acknowledge closing time from an agent process.
+    upgrade     Check for or install the latest release.
+    uninstall   Remove Dudes and its data.
+
+    Run dudes <command> --help for that command's options and examples.
+
+OPTIONS
+    --json      Emit the contract's own types instead of a human summary. The summary
+                writes each control or bidirectional formatting character in text
+                from the daemon as \\u{...}; --json keeps that text exact.
+    --help, -h  This command index.
+    --version, -V
+                Print the version.
+
+ENVIRONMENT
+    DUDES_MAILBOX       Your agent mailbox directory, required only by mail commands.
+    DUDES_CONFIG        The operator file, as an absolute path; a relative one is refused.
+                        Wins over the platform default on every system.
+    DUDES_DAEMON        The daemon executable. Default: a `duded` sibling of this binary.
+    DUDES_OPENER        The program `open` hands the link to, as an absolute path.
+                        Default: /usr/bin/open on macOS, xdg-open on Linux.
+    DUDES_SOCK          The control socket. Default: <runtime dir>/duded.sock
+    DUDES_RUNTIME_DIR   Where the daemon put its socket and operator credential.
+                        Default: <storage root>/.local/state/dudes
+    DUDES_STATE_DIR     Where the daemon keeps its journal and projections.
+                        Default: <storage root>/.local/share/dudes
+                        The storage root is absolute HOME, or on Windows with HOME
+                        unset, absolute USERPROFILE. Directory overrides still win.
+    DUDES_TOKEN         A per-agent token, when this process is an agent's child.
+
+EXIT STATUS
+    0  the requested local command completed or the daemon ran the method and answered
+    1  nothing was sent: the arguments were wrong, or this text was asked for with
+       other arguments
+    2  no conversation happened: the socket was absent, unconnectable, or closed
+       without answering
+    3  the daemon understood the call and declined it
+    4  anything else: another daemon error, or a local failure
+";
+
+const QUICKSTART_HELP: &str = "\
+USAGE
+    dudes quickstart [--yes] [--restart] [--set <key> <value> ...]
                [--enroll [--check-label <text>] [--department <dept>]
                 [--agent-usd-per-day <usd>] [--goal-usd <usd>]]
                [--hire <name> [--provider <provider>] [--role <role>] [--goal <text>]
@@ -586,9 +663,9 @@ COMMANDS
         spending cap, enrolls no project and hires no agent unless an option below asks. It
         writes the operator file once and lists what it changed, starts the daemon, shows
         where the daemon found each engine and whether it is signed in, makes the hire an
-        option asks for, prints the dudes login command for each engine that is signed out,
-        and last opens the Floor in your browser, or prints its one-time link when no browser
-        can be opened. It reads no engine's files.
+        option asks for, and opens the Floor in your browser, or prints its one-time link
+        when no browser can be opened. You can sign in to an engine on the Floor.
+        It reads no engine's files.
         A running daemon takes the Floor switches and project changes at once. Settings it
         reads only at start need a restart: quickstart restarts the daemon when no agent is
         running a turn, waiting on an answer or attached to a person, and otherwise stops
@@ -603,27 +680,41 @@ COMMANDS
         Without a terminal and without options it only starts the daemon when absent
         and prints its version, socket and journal position. Without a project it
         also says to run `dudes project add` in your project's folder, except with --json.
+";
 
-    start
+const START_HELP: &str = "\
+USAGE
+    dudes start
         Start the daemon if it is not running, then print what ping prints. Use it
         after dudes stop, for example to run a newer version after an upgrade. It asks
         no questions, writes no configuration, prints no Floor link and hires nobody.
         If a daemon is already running it says so and leaves it alone, and when that
         daemon is not this version it says how to restart it.
+";
 
-    open
+const OPEN_HELP: &str = "\
+USAGE
+    dudes open
         Open Dudes: start the daemon if it is not running, mint a one-time Floor sign-in
         link and open it in your default browser. The link works once, for 60 seconds.
         It stays signed in for up to 30 days, or until a day passes without use. Over
         SSH, or where no opener is found, it prints the link instead. The Dudes launcher
         that install.sh adds runs this command.
+";
 
-    ping
+const PING_HELP: &str = "\
+USAGE
+    dudes ping
         Ask the daemon for its version, socket and journal position.
+";
 
-    recovery inspect <agent>
-    recovery submit <inspection.json> --choice try-recorded|fresh-with-recap|repeat-issued-fresh
-    recovery receipt <request-id>
+const RECOVERY_HELP: &str = "\
+USAGE
+    dudes recovery inspect <agent>
+
+    dudes recovery submit <inspection.json> --choice try-recorded|fresh-with-recap|repeat-issued-fresh
+
+    dudes recovery receipt <request-id>
         Save an inspection with --json, review it, then submit one offered choice.
         Submit preserves that inspection exactly and never refreshes it automatically.
         Try recorded conversation does not guarantee restored provider history.
@@ -632,11 +723,17 @@ COMMANDS
         Submit prints and flushes its request ID to stderr before sending, including
         with --json. Keep that ID. If the reply is lost, use recovery receipt with
         that ID; do not resend the submission. Authorization does not promise launch.
+";
 
-    status
+const STATUS_HELP: &str = "\
+USAGE
+    dudes status
         Show current daemon status and any stopped-journal recovery guidance.
+";
 
-    stop [--hard]
+const STOP_HELP: &str = "\
+USAGE
+    dudes stop [--hard]
         Announce closing time, wait for the bounded saving interval and teardown,
         then report the final acknowledgement census. Missing acknowledgements
         are named in a warning. An acknowledgement is not a verdict that work was saved.
@@ -646,8 +743,11 @@ COMMANDS
         a managed turn it warns that it cannot prove nothing an agent process
         started left its process group or job; that warning alone is success.
         Any other teardown failure is an error.
+";
 
-    uninstall [--dry-run] [--yes] [--now]
+const UNINSTALL_HELP: &str = "\
+USAGE
+    dudes uninstall [--dry-run] [--yes] [--now]
         Remove Dudes from this machine: the state and runtime directories, the operator
         file, and, for a copy that install.sh installed, the duded, dudes and dudes-hook
         programs and the Floor and licence notices in <prefix>/share/dudes. It prints every
@@ -666,8 +766,11 @@ COMMANDS
         install it leaves the programs and prints how to remove them. It prints the cleanup it
         cannot do for you: engine history, Codex shell snapshots and the browser's site data for
         the Floor. Not supported on Windows yet.
+";
 
-    upgrade [--check] [--now]
+const UPGRADE_HELP: &str = "\
+USAGE
+    dudes upgrade [--check] [--now]
         Install the latest release over this copy, then restart the daemon. It asks
         GitHub which release is latest, downloads that release's install.sh, and runs it
         with --version and this copy's prefix, so the installer's checksum check and
@@ -679,35 +782,64 @@ COMMANDS
         such as a source build. A running daemon is stopped the way dudes stop does it and
         started the way dudes start does it; one with an agent mid-turn is refused unless
         --now, which ends those turns at once. Not supported on Windows yet.
+";
 
-    closing ack --announcement-lsn <lsn>
+const CLOSING_HELP: &str = "\
+USAGE
+    dudes closing ack --announcement-lsn <lsn>
         Acknowledge your own participation using DUDES_TOKEN. The daemon derives
         the agent from that token and the connecting process.
+";
 
-    agents
+const AGENTS_HELP: &str = "\
+USAGE
+    dudes agents
         Every hired agent that is not retired: id, name, role, provider and status.
+";
 
-    team
+const TEAM_HELP: &str = "\
+USAGE
+    dudes team
         Colleagues: id, name, role, department, public status and first unfinished card.
         Uses DUDES_TOKEN when inherited, otherwise the operator credential.
+";
 
-    pause <agent>
+const PAUSE_HELP: &str = "\
+USAGE
+    dudes pause <agent>
         Hold future ordinary turns for this agent. Running turns and checks continue,
         and already-issued replay work is not canceled. Acknowledgement is not quiescence.
 
-    resume <agent>
-        Clear pause, halt and automatic hold for this agent. Review its controls first.
+    dudes pause --all
+        Pause every current agent that is not already paused or halted. Each agent
+        is admitted separately; a refusal is named and does not cancel later pauses.
+        A running turn continues to its end. There is no resume-all command.
+";
 
-    halt --agent <id>
+const RESUME_HELP: &str = "\
+USAGE
+    dudes resume <agent>
+        Clear pause, halt and automatic hold for this agent. Review its controls first.
+";
+
+const HALT_HELP: &str = "\
+USAGE
+    dudes halt --agent <id>
         Record a halt and request owned-child teardown. Use resume to clear the halt.
         Acknowledgement does not promise that teardown has finished.
+";
 
-    retire --agent <id> [--yes]
+const RETIRE_HELP: &str = "\
+USAGE
+    dudes retire --agent <id> [--yes]
         Retire this agent. Resume cannot undo retirement. Without --yes, ask on an
         interactive terminal with default no. Scripts and --json require --yes.
         Acknowledgement does not promise that owned-child teardown has finished.
+";
 
-    goal replace --request <path>
+const GOAL_HELP: &str = "\
+USAGE
+    dudes goal replace --request <path>
         Submit one reviewed JSON request that binds text and a literal command check.
         The expected goal must still be current and all target work must have settled.
         Remaining optional budgets and hops are preserved. Retry the same file after
@@ -715,12 +847,22 @@ COMMANDS
         The Floor shows only the safe check summary. Review the actual command locally.
         Exit 0 means changed, 3 means refused, and 4 means pending or a local error.
 
-    pause --all
-        Pause every current agent that is not already paused or halted. Each agent
-        is admitted separately; a refusal is named and does not cancel later pauses.
-        A running turn continues to its end. There is no resume-all command.
+    dudes goal --agent <id> --text <text> --hop-cap <n> [--usd <n>] [--tokens <n>]
+         [--timeout-s <n>] [--check-id <id> --check-label <text>]
+         [--check-may-already-pass] -- <program> [args...]
+        Give an agent a goal. Everything after `--` is the predicate's argv: a typed
+        list carried over the socket and resolved by the daemon, never a shell string.
+        --check-id and --check-label name the check; the goal records the name and a
+        revision of the check, and the Floor shows them in place of the command.
+        The daemon runs the check once before the first turn and refuses it if it
+        already passes, so Done shows that the agent's work made it pass. Add
+        --check-may-already-pass for a check that may already pass, such as a test
+        suite that must keep passing; it is then not run first.
+";
 
-    hire --name <name> --role <role> --department <dept> --provider <provider>
+const HIRE_HELP: &str = "\
+USAGE
+    dudes hire --name <name> --role <role> --department <dept> --provider <provider>
          [--cwd <path>] [--usd-per-day <n>] [--tokens-per-day <n>] [--sandbox true|false]
          [--max-turns <n>] [--max-budget-usd <n>] [--model <name>] [--trusted] [--mcp <server>]...
          [--worktree [--from <worktree-id>]]
@@ -754,72 +896,86 @@ COMMANDS
         can be replaced for later launches with dudes mcp. Codex and Pi take http servers only; a program
         server needs Claude and --trusted. Pi agents with servers need a tested release,
         currently 1.0.4; plain Pi agents need no version probe. A name or role holding a control character is refused. A role over 512 UTF-8 bytes is refused.
+";
 
-    devices
+const DEVICES_HELP: &str = "\
+USAGE
+    dudes devices
         The browsers signed in to the Floor: id, name, when each signed in, when it first
         and last made a request, and a new mark on one nobody has kept yet. A browser
         stays signed in for 30 days without use and 90 days in all, and the daemon keeps at
         most eight.
 
-    devices remove <id>
+    dudes devices remove <id>
         Sign one browser out. The id is the whole id or the start of it, as long as it
         names one browser. Ids use both upper and lower case letters, digits, - and _, and
         the start must match exactly. A start that names more than one is refused with the
         matches. An id that starts with - needs -- before it.
 
-    devices keep <id>
+    dudes devices keep <id>
         Mark a new browser as kept, which clears its new mark and puts it behind the browsers
         still unkept when the daemon has to drop one. The Floor's Keep does the same from another
         browser; this is for when you have no second one. The id works as for remove.
+";
 
-    worktree list
+const WORKTREE_HELP: &str = "\
+USAGE
+    dudes worktree list
         Every worktree the daemon created that is not removed: id, state, agent, branch
         and path. A tree is pending until its agent is hired, active while the agent is
         live or has a recorded child, and released after that.
 
-    worktree remove <worktree-id>
+    dudes worktree remove <worktree-id>
         Record that you removed one released worktree. While the tree exists this prints
         the git command to run, which is yours to run and review: git refuses a tree with
         modified or untracked files unless you add --force, and plain removal deletes
         ignored files too. Run this command again afterwards to record it. Refused while
         its agent is live or a recorded child remains. The branch is kept, so its commits
         stay. Dudes never removes a tree an agent ran in.
+";
 
-    rename <agent> <name>
+const RENAME_HELP: &str = "\
+USAGE
+    dudes rename <agent> <name>
         Change a live agent's display name. Its AgentId stays unchanged. A name holding
         a control character is refused.
+";
 
-    look <agent> --role <role> --character <c-l|automatic> --accent <colour|automatic>
+const LOOK_HELP: &str = "\
+USAGE
+    dudes look <agent> --role <role> --character <c-l|automatic> --accent <colour|automatic>
         Change a live agent's display role and appearance. All fields are explicit;
         its engine and model stay fixed. A role holding a control character is refused.
+";
 
-    mcp <agent> [--mcp <server> ... | --clear]
+const MCP_HELP: &str = "\
+USAGE
+    dudes mcp <agent> [--mcp <server> ... | --clear]
         With no flags, read the desired MCP names. Repeat --mcp to replace the whole set,
         or use --clear to remove every name. A changed set is recorded for the next managed
         launch, preserving the agent's identity, memory and mail. Operator-only.
+";
 
-    goal --agent <id> --text <text> --hop-cap <n> [--usd <n>] [--tokens <n>]
-         [--timeout-s <n>] [--check-id <id> --check-label <text>]
-         [--check-may-already-pass] -- <program> [args...]
-        Give an agent a goal. Everything after `--` is the predicate's argv: a typed
-        list carried over the socket and resolved by the daemon, never a shell string.
-        --check-id and --check-label name the check; the goal records the name and a
-        revision of the check, and the Floor shows them in place of the command.
-        The daemon runs the check once before the first turn and refuses it if it
-        already passes, so Done shows that the agent's work made it pass. Add
-        --check-may-already-pass for a check that may already pass, such as a test
-        suite that must keep passing; it is then not run first.
-
-    ask --text <text>
+const ASK_HELP: &str = "\
+USAGE
+    dudes ask --text <text>
         Ask the human. Requires the per-agent token in DUDES_TOKEN; the daemon derives
         the asking agent from that token and the connecting process.
+";
 
-    why --agent <id>
+const WHY_HELP: &str = "\
+USAGE
+    dudes why --agent <id>
         The last loop decision for an agent, with the gates it consulted.
+";
 
-    memory append --text <text> [--agent <id>]
-    memory read [--since-lsn <position>] [--agent <id>]
-    memory search <query> [--since-lsn <position>] [--limit <count>] [--agent <id>]
+const MEMORY_HELP: &str = "\
+USAGE
+    dudes memory append --text <text> [--agent <id>]
+
+    dudes memory read [--since-lsn <position>] [--agent <id>]
+
+    dudes memory search <query> [--since-lsn <position>] [--limit <count>] [--agent <id>]
         Append to or read your own memory with DUDES_TOKEN. An operator supplies
         --agent instead. Read returns whole entries, at most 65536 text bytes,
         and the last included append's LSN. Use it with --since-lsn to read the
@@ -830,37 +986,63 @@ COMMANDS
         Byte bounds can return fewer hits. A non-null next_since_lsn continues
         the live search; it does not freeze history. Search --agent requires the
         operator credential. A summary's read cursor starts its original range.
+";
 
-    mail send --to <agent[,agent...]|@department|@all> --act message|request
+const MAIL_HELP: &str = "\
+USAGE
+    dudes mail send --to <agent[,agent...]|@department|@all> --act message|request
               --subject <text> [--body <text>]
-    mail send --reply-to <mail> --act message|request --subject <text> [--body <text>]
-    mail read [--unread]
-    mail done <mail>
+
+    dudes mail send --reply-to <mail> --act message|request --subject <text> [--body <text>]
+
+    dudes mail read [--unread]
+
+    dudes mail done <mail>
         Send, read or acknowledge mail in DUDES_MAILBOX without connecting to the
         daemon. Reply with a delivered mail id. These commands print text only.
+";
 
-    tail [--from <position>] [--follow]
+const TAIL_HELP: &str = "\
+USAGE
+    dudes tail [--from <position>] [--follow]
         Journal entries from segment:byte or a raw LSN from --json (default: the tail).
         With --follow, keep reading.
+";
 
-    board create --title <title> --department <dept> [--depends-on <card> ...]
-    board list [--department <dept>] [--status <status>] [--agent <id>]
-    board claim --card <id> --agent <id> --expected-seq <n>
-    board move --card <id> --to doing|review|blocked|done --expected-seq <n>
+const BOARD_HELP: &str = "\
+USAGE
+    dudes board create --title <title> --department <dept> [--depends-on <card> ...]
+
+    dudes board list [--department <dept>] [--status <status>] [--agent <id>]
+
+    dudes board claim --card <id> --agent <id> --expected-seq <n>
+
+    dudes board move --card <id> --to doing|review|blocked|done --expected-seq <n>
         Create, inspect, claim or move a journal-backed board card. Use the sequence
         from board list when claiming or moving; stale sequences are refused.
+";
 
-    ticket add --title <text> [--note <text>] [--project <id>] [--done-when <check id>]
+const TICKET_HELP: &str = "\
+USAGE
+    dudes ticket add --title <text> [--note <text>] [--project <id>] [--done-when <check id>]
                [--give-to <agent>]
-    ticket edit <card> [--title <text>] [--note <text>] [--done-when <check id>]
+
+    dudes ticket edit <card> [--title <text>] [--note <text>] [--done-when <check id>]
                 [--expected-seq <n>]
-    ticket give <card> --agent <name or id> [--message <text>] [--expected-seq <n>]
-    ticket accept <card> [--expected-seq <n>]
-    ticket changes <card> --message <text> [--agent <name or id>] [--expected-seq <n>]
-    ticket stop <card> [--expected-seq <n>]
-    ticket remove <card> [--expected-seq <n>]
-    ticket list [--status todo|working|ready|done|needs-you]
-    ticket show <card>
+
+    dudes ticket give <card> --agent <name or id> [--message <text>] [--expected-seq <n>]
+
+    dudes ticket accept <card> [--expected-seq <n>]
+
+    dudes ticket changes <card> --message <text> [--agent <name or id>] [--expected-seq <n>]
+
+    dudes ticket stop <card> [--expected-seq <n>]
+
+    dudes ticket remove <card> [--expected-seq <n>]
+
+    dudes ticket list [--status todo|working|ready|done|needs-you]
+
+    dudes ticket show <card>
         A ticket is a board card with a title, a note, a project and a \"Done when\"
         check. Add makes one and prints its card id. Project defaults to the only
         enrolled project, and Done when to that project's own check. Give starts the
@@ -889,7 +1071,7 @@ COMMANDS
             dudes ticket changes <card> --message \"Also cover the empty form.\"
             dudes ticket stop <card>
 
-    ticket open <card> [--editor <absolute-program> | --print]
+    dudes ticket open <card> [--editor <absolute-program> | --print]
         Review the current agent's recorded directory without changing the ticket.
         --editor selects one absolute executable, with the directory as its only argument.
         Otherwise use the first nonblank VISUAL, then EDITOR, on the operator's PATH.
@@ -900,8 +1082,11 @@ COMMANDS
         Neither can be combined with --editor. Without configuration, print the directory
         and the explicit launch command. Windows and SSH sessions only print the directory.
         Lease verification requires macOS or Linux; other platforms refuse leased checkouts.
+";
 
-    project add [<path>] [--id <id>] [--completion-check-label <text>] [--department <dept>]
+const PROJECT_HELP: &str = "\
+USAGE
+    dudes project add [<path>] [--id <id>] [--completion-check-label <text>] [--department <dept>]
                   [--hop-cap <n>] [--timeout-s <n>] [--label <text>]
                   [--agent-usd-per-day <usd>] [--goal-usd <usd>]
                   [--tokens-per-day <n>] [--goal-tokens <n>]
@@ -913,19 +1098,20 @@ COMMANDS
         label, department engineering, 5 turns a goal and 600 seconds a check.
         If no check is suggested, the files-changed check is used. Every option, including a check after --, overrides its default.
 
-    project remove <id>
+    dudes project remove <id>
         Remove one enrolled project from the configuration and the running daemon.
         No folder is touched.
 
-    project reload [--apply <sha256>]
+    dudes project reload [--apply <sha256>]
         Show how the configuration differs from what the daemon runs, with the file's
         SHA-256. With --apply, adopt that change only if the file still has that hash.
 
-    project list
+    dudes project list
         The configuration's projects beside the ones the daemon runs.
 
-    project trust <id>
-    project untrust <id>
+    dudes project trust <id>
+
+    dudes project untrust <id>
         Trust an enrolled project, or stop trusting it. While a project is trusted the Floor
         may hire a Claude agent into its own copy of it (a git worktree on a new branch). The
         daemon records what you vouch for: the project's folder, the repository's .claude
@@ -937,19 +1123,25 @@ COMMANDS
         filter, or whose .claude or .mcp.json is a symbolic link. Agents already hired keep
         working after an untrust. Needs the daemon running.
 
-    project check add <project> --id <id> --label <text> [--timeout-s <n>]
+    dudes project check add <project> --id <id> --label <text> [--timeout-s <n>]
                         [--may-already-pass] -- <program> [args...]
-    project check remove <project> <id>
+
+    dudes project check remove <project> <id>
         Add or remove one named completion check for an enrolled project, then have a
         running daemon adopt the change. The Floor offers a project's checks when it
         hires an agent or changes a goal there. A goal's check runs once before the first
         turn and must not already pass, unless --may-already-pass says Done may mean only
         that the check still passes after the agent's work. The check in the project's
         own entry changes through dudes project add.
+";
 
-    config
-    config set <key> <value> [<key> <value> ...]
-    config unset <key> [<key> ...]
+const CONFIG_HELP: &str = "\
+USAGE
+    dudes config
+
+    dudes config set <key> <value> [<key> <value> ...]
+
+    dudes config unset <key> [<key> ...]
         Show or edit the settings the daemon reads from its operator file when it
         starts. The engines: providers.codex and providers.pi, on or off.
         providers.codex.streaming opts in to streaming with a separate sign-in home;
@@ -965,55 +1157,78 @@ COMMANDS
         a warning, because the daemon refuses to start while an agent it has hired has
         a ceiling in that unit. With a daemon running, an edit names the settings it
         runs differently, which a restart applies: dudes stop, then dudes start.
+";
 
-    floor open
+const FLOOR_HELP: &str = "\
+USAGE
+    dudes floor open
         Mint a Floor session and print its one-time sign-in link; `dudes open` opens it
         for you instead. The session can view
         the Floor, and it can also act on agents (hire, answer, pause, retire and the
         rest) for each floor.* action that is on. Paste the link into any browser. It
         expires in 60 seconds and works once, in one browser; run the command again for
         a new one. Nothing is opened for you.
+";
 
-    login claude|codex|pi
+const LOGIN_HELP: &str = "\
+USAGE
+    dudes login claude|codex|pi
         Sign in to an engine with its own login command: `claude auth login` or
         `codex login`, run from the path the daemon found, in this terminal. It runs
         nothing when the daemon reports the engine signed in, and without a terminal
         or on Windows it prints the command instead. Codex streaming signs in to
         Dudes' separate home. Windows instructions use PowerShell. Pi signs in inside its own
         session: run pi, then type /login.
-
-OPTIONS
-    --json      Emit the contract's own types instead of a human summary. The summary
-                writes each control or bidirectional formatting character in text
-                from the daemon as \\u{...}; --json keeps that text exact.
-    --help      This text.
-    --version   Print the version.
-
-ENVIRONMENT
-    DUDES_MAILBOX       Your agent mailbox directory, required only by mail commands.
-    DUDES_CONFIG        The operator file, as an absolute path; a relative one is refused.
-                        Wins over the platform default on every system.
-    DUDES_DAEMON        The daemon executable. Default: a `duded` sibling of this binary.
-    DUDES_OPENER        The program `open` hands the link to, as an absolute path.
-                        Default: /usr/bin/open on macOS, xdg-open on Linux.
-    DUDES_SOCK          The control socket. Default: <runtime dir>/duded.sock
-    DUDES_RUNTIME_DIR   Where the daemon put its socket and operator credential.
-                        Default: <storage root>/.local/state/dudes
-    DUDES_STATE_DIR     Where the daemon keeps its journal and projections.
-                        Default: <storage root>/.local/share/dudes
-                        The storage root is absolute HOME, or on Windows with HOME
-                        unset, absolute USERPROFILE. Directory overrides still win.
-    DUDES_TOKEN         A per-agent token, when this process is an agent's child.
-
-EXIT STATUS
-    0  the requested local command completed or the daemon ran the method and answered
-    1  nothing was sent: the arguments were wrong, or this text was asked for with
-       other arguments
-    2  no conversation happened: the socket was absent, unconnectable, or closed
-       without answering
-    3  the daemon understood the call and declined it
-    4  anything else: another daemon error, or a local failure
 ";
+
+/// Select command help after the parser has recognized a help request.
+#[must_use]
+pub fn help_for(argv: &[OsString]) -> &'static str {
+    argv.iter()
+        .find(|word| *word != "--json")
+        .and_then(|word| command_help(word))
+        .unwrap_or(USAGE)
+}
+
+fn command_help(word: &OsStr) -> Option<&'static str> {
+    Some(match word.to_str()? {
+        "quickstart" => QUICKSTART_HELP,
+        "start" => START_HELP,
+        "open" => OPEN_HELP,
+        "ping" => PING_HELP,
+        "recovery" => RECOVERY_HELP,
+        "status" => STATUS_HELP,
+        "stop" => STOP_HELP,
+        "uninstall" => UNINSTALL_HELP,
+        "upgrade" => UPGRADE_HELP,
+        "closing" => CLOSING_HELP,
+        "agents" => AGENTS_HELP,
+        "team" => TEAM_HELP,
+        "pause" => PAUSE_HELP,
+        "resume" => RESUME_HELP,
+        "halt" => HALT_HELP,
+        "retire" => RETIRE_HELP,
+        "goal" => GOAL_HELP,
+        "hire" => HIRE_HELP,
+        "devices" => DEVICES_HELP,
+        "worktree" => WORKTREE_HELP,
+        "rename" => RENAME_HELP,
+        "look" => LOOK_HELP,
+        "mcp" => MCP_HELP,
+        "ask" => ASK_HELP,
+        "why" => WHY_HELP,
+        "memory" => MEMORY_HELP,
+        "mail" => MAIL_HELP,
+        "tail" => TAIL_HELP,
+        "board" => BOARD_HELP,
+        "ticket" => TICKET_HELP,
+        "project" => PROJECT_HELP,
+        "config" => CONFIG_HELP,
+        "floor" => FLOOR_HELP,
+        "login" => LOGIN_HELP,
+        _ => return None,
+    })
+}
 
 /// Whether this token, **in a flag position**, asks for [`USAGE`].
 ///
@@ -1081,7 +1296,12 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
     // The command word itself may be a help request — `dudes --help`, `dudes -h`, `dudes help`.
     // This is the **only** position where the bare word `help` means anything, which is what keeps
     // `hire --name help` a name and `--text help` a goal's text.
-    if asks_for_help(command_word) || command_word == "help" {
+    if asks_for_help(command_word)
+        || command_word == "help"
+        || (matches!(tail, [flag] if asks_for_help(flag))
+            && payload.is_none()
+            && command_help(command_word).is_some())
+    {
         return Err(ArgError::HelpRequested);
     }
 
