@@ -15,8 +15,8 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ### Highlights
 
-- **Set up the Floor from the page.** The first-run guide offers the existing Floor switches directly and no longer repeats the first-task step. When adding a project, hiring, or Pi sign-in needs a switch, the page points to the matching setting. An exhausted goal offers Give a task. (#182)
-- **Clear the daily dollar ceiling in Settings.** Clear asks for confirmation and removes the Floor's daily dollar ceiling after a restart. Until then, Settings keeps the current amount visible beside "No daily dollar ceiling after restart". Per-turn reserves cannot be cleared and must stay above zero. (#183)
+- **Set up the Floor from the page.** The first-run guide offers the existing Floor switches directly and no longer repeats the first-task step. When adding a project, hiring, or Pi sign-in needs a switch, the page points to the matching setting. An exhausted goal offers Start a new goal, distinct from giving an agent a ticket. (#182)
+- **Clear the daily dollar ceiling in Settings.** Clear asks for confirmation and removes the Floor's daily dollar ceiling after a restart. Until then, the page that cleared it shows "No daily dollar ceiling after restart" beside the running amount. Reloaded pages and other tabs show the running amount without the note. Per-turn reserves cannot be cleared and must stay above zero. (#183)
 - **Find command help without scrolling through every command.** `dudes --help` is a short command index, with detailed usage and flags under each command's own `--help`. Quickstart help describes engine sign-in status and the Floor's sign-in offer. (#180)
 
 ### Fixes

@@ -179,7 +179,7 @@ pub(crate) fn run_if_helper() {
     let mark = PathBuf::from(std::env::var(MARK).expect("a helper is always given a mark path"));
     let _watchdog = std::thread::spawn(|| {
         sleep(HELPER_LIFETIME);
-        std::process::exit(0);
+        std::process::exit(124);
     });
     match role.as_str() {
         PARK => {

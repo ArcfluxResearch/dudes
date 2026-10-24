@@ -540,7 +540,7 @@ test('each admission refusal explains why nothing was recorded', async () => {
     agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
     agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
     goal_exhausted: 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-      + 'Give a task is available when Start new goals is on in Settings and this agent’s project is enrolled.',
+      + 'Start a new goal is available when Start new goals is on in Settings and this agent’s project is enrolled.',
     predicate_claimed: 'This goal uses a Claimed card status, which cannot prove completion, so nothing was recorded.',
     predicate_todo: 'This goal uses a Todo card status, which cannot prove completion, so nothing was recorded.',
   };
@@ -685,8 +685,9 @@ test('each check refusal reads as the Hire’s with Nothing changed, names the c
 });
 
 test('an agent no enrolled project offers checks to can only keep its check, and an already-passing one says why', async () => {
-  const NOT_ENROLLED = 'This agent’s check already passes, and no enrolled project offers this agent another check. '
-    + 'Nothing changed. Set a new goal from a terminal (dudes goal) with a check that fails until the goal is met.';
+  const NOT_ENROLLED = 'This agent’s check already passes, and the page has no other check to offer for its project. '
+    + 'Nothing changed. This page cannot define a completion check. '
+    + 'Set a new goal from a terminal (dudes goal) with a check that fails until the goal is met.';
   subscribe({ agents: [enrolled({ workspace: { id: 'repo_9', label: 'Elsewhere' } })], checks: CHECKS });
   await change(daemon(REFUSED('check_already_passes')));
   assert.ok(status().includes('<p class="goal-error" role="alert" data-goal-reason="check_already_passes" '

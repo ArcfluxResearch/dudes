@@ -210,7 +210,7 @@ test('the renewal form replaces the change form exactly when every offer conditi
     assert.equal(gate().open, true, `${label} closed the change form too`);
     assert.equal(offered(), undefined, `${label} offered a renewal`);
     assert.match(form(), /data-goal-form="change"/);
-    assert.doesNotMatch(form(), /Give a task/);
+    assert.doesNotMatch(form(), /Start a new goal/);
   }
 
   const never = {
@@ -261,7 +261,7 @@ test('the renewal form replaces the change form exactly when every offer conditi
 test('the renewal form states what a new goal gets, in the specified words, and starts with the current text', () => {
   subscribe();
   const html = form();
-  assert.match(html, /<h3[^>]*>Give a task<\/h3>/);
+  assert.match(html, /<h3[^>]*>Start a new goal<\/h3>/);
   const lines = [...html.matchAll(/<(?:p|li)[^>]*>([^<]*)<\/(?:p|li)>/g)].map((match) => match[1]);
   assert.deepEqual(lines.slice(0, 7), [
     'This goal has no turns left.',
@@ -273,8 +273,9 @@ test('the renewal form states what a new goal gets, in the specified words, and 
     '15 of 2048 bytes',
   ]);
   assert.doesNotMatch(html, /stays unchanged/);
+  assert.match(html, /<label[^>]*>New goal<\/label>/);
   assert.match(html, /<textarea[^>]*name="goal"[^>]*>ship the parser<\/textarea>/);
-  assert.match(html, /<button type="button" class="goal-send"[^>]*>Give a task<\/button>/);
+  assert.match(html, /<button type="button" class="goal-send"[^>]*>Start a new goal<\/button>/);
   assert.match(html, /data-renew-turns="3"/);
   assert.match(html, /data-renew-usd="1000000"/);
   assert.doesNotMatch(html, /Turns: exactly|Change goal|data-renew-tokens/);
@@ -409,8 +410,9 @@ test('the response map reads renewed on the renewal and changed on the change, a
 test('the renewal outcomes read the specified words, and a 200 says only that the goal is recorded until the projection moves', async () => {
   const said = {
     goal_not_exhausted: 'This goal still has turns or dollars left, so nothing was recorded. Change its text instead.',
-    workspace_unavailable: 'This agent’s project is not set up at its folder now, or sets no ceiling that the '
-      + 'daemon’s billing key requires, so nothing was recorded. Give it a new goal from a terminal (dudes goal), '
+    workspace_unavailable: 'This agent’s project or spending setup does not allow a new goal, so nothing was recorded. '
+      + 'This form cannot change the agent’s project or choose a different goal allowance. '
+      + 'Give it a new goal from a terminal (dudes goal), '
       + 'or retire it and hire a new one.',
     profile_changed: 'The project’s allowance or checks changed since this page read it, so nothing was '
       + 'recorded. The floor is being refreshed.',
@@ -461,11 +463,11 @@ test('profile_changed refreshes the snapshot, releases the form, and the next pr
   assert.equal(second.text, 'ship the lexer');
 });
 
-test('an exhausted goal offers Give a task with renewal and points to Settings when unavailable', async () => {
+test('an exhausted goal offers Start a new goal with renewal and points to Settings when unavailable', async () => {
   const offeredCopy = 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-    + 'Choose Give a task to start a new goal with this project’s allowance.';
+    + 'Choose Start a new goal to use this project’s allowance.';
   const settingsCopy = 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-    + 'Give a task is available when Start new goals is on in Settings and this agent’s project is enrolled.';
+    + 'Start a new goal is available when Start new goals is on in Settings and this agent’s project is enrolled.';
   subscribe({ agents: [agent({ goal: goalView({ turns: 3 }) })] });
   await send(daemon(REFUSED('goal_exhausted')), 'ship the lexer');
   assert.ok(status().includes(`data-goal-reason="goal_exhausted">${offeredCopy}</p>`), status());
