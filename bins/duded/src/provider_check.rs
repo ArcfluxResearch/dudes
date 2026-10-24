@@ -23,7 +23,8 @@ use serde::Serialize;
 use crate::program;
 
 /// How long a reader waits after the running check started.
-const DEADLINE: Duration = Duration::from_secs(1);
+#[doc(hidden)]
+pub const DEADLINE: Duration = Duration::from_secs(1);
 /// How long after it completes a result answers a new reader.
 const REUSE: Duration = Duration::from_secs(1);
 
