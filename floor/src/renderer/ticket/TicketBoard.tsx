@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
+import { createContext, useContext, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, FormEvent, KeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
+import { handFocusAfterLeave } from '../focus.ts';
 
 import type { CardRow } from '../board.ts';
 import { accentOf } from '../appearance.ts';
@@ -23,7 +25,6 @@ import { agentWithoutProjectSentence, engineStopped, otherStateName, stateName }
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 import { clearNewTicketDraft, EMPTY_TICKET_DRAFT, readNewTicketDraft, writeNewTicketDraft } from '../view.ts';
 import type { NewTicketDraft } from '../view.ts';
-import { NotConnected } from '../StreamNotice.tsx';
 
 const NOTICE_SECONDS = 8;
 
@@ -75,7 +76,10 @@ export function agentsFor(floor: FloorState, project: string): {
   };
 }
 
+export const TicketNoticeHost = createContext<HTMLElement | null>(null);
+
 export function TicketNotice({ card, floor }: { readonly card?: string | null; readonly floor: FloorState }) {
+  const host = useContext(TicketNoticeHost);
   const ticket = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState);
   const said = card === undefined || ticket.notice?.card === card ? ticket.notice : null;
   const status = said?.whileWorking === true ? floor.cards.find((row) => row.id === said.card)?.status : undefined;
@@ -91,11 +95,12 @@ export function TicketNotice({ card, floor }: { readonly card?: string | null; r
     return () => clearTimeout(timer);
   }, [notice]);
   if (notice === null) return null;
-  // The slot takes no room in the sheet; the notice hangs from its top edge, so it never moves what is below.
-  return <div className="ticket-notice-slot"><p className="ticket-notice" data-tone={notice.tone} role="status">
+  const content = <p className="ticket-notice" data-tone={notice.tone} role="status" ref={handFocusAfterLeave}
+    data-focus-on-leave={host?.id}>
     {notice.text}{' '}
     <button type="button" className="ticket-dismiss" onClick={() => dismissNotice(notice)}>Dismiss</button>
-  </p></div>;
+  </p>;
+  return host === null ? null : createPortal(content, host);
 }
 
 /** The first task: a sentence, one Start, and the ticket is made and given in the same step. */
@@ -134,7 +139,6 @@ export function FirstTaskForm({ floor, agents }: { readonly floor: FloorState; r
       placeholder="For example: add a dark mode switch to the settings page"
       onChange={(event) => setTask(event.target.value)} />
     <p className="first-task-note">When {agent.name} says it is finished, Dudes checks it itself ({agent.check.label}) before you review it.</p>
-    <TicketNotice floor={floor} />
     <button type="submit" className="first-task-start" disabled={!ready}>{sending ? 'Starting…' : 'Start'}</button>
   </form>;
 }
@@ -315,14 +319,10 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
   useRequestedCard(floor, selectable, onSelect);
   const [doneShown, setDoneShown] = useState(DONE_SHOWN);
   const { columns, needsYou, doneHidden } = boardColumns(floor.cards, doneShown);
-  // The panel of the selected ticket says what happened; the board says it when none is open.
-  const opened = forming || floor.cards.some((card) => card.id === selectedId && card.ticket !== null);
   const other = otherCards(floor.cards);
   const draw = (card: CardRow) => <TicketCard key={card.id} floor={floor} card={card} selected={card.id === selectedId}
     selectable={selectable} onSelect={onSelect} />;
   return <div className="board-view ticket-board">
-    {selectable ? null : <NotConnected />}
-    {opened ? null : <TicketNotice floor={floor} />}
     {floor.ticket ? <section className="ticket-new" aria-label="New ticket">
       <button type="button" className="ticket-new-toggle" aria-expanded={forming} disabled={!ticketActionsOpen(floor)}
         aria-haspopup="dialog" onClick={(event) => onNewTicket(event.currentTarget)}>New ticket</button>

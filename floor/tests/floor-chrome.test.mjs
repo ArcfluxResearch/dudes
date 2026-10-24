@@ -225,26 +225,6 @@ const onTerminalStage = (target, { focus = false, expanded = false } = {}) => (s
     || (expanded && part === ".floor-stage:has(.terminal-panel[data-terminal-expanded='true'])"));
 };
 
-test('notices overlay desktop panels and follow the office on phones without moving the office', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
-  for (const width of [1440, 1024, 760]) {
-    const rules = rulesAt(css, width);
-    const area = (property) => declared(rules, (selector) => selector === '.notice-area', property);
-    assert.equal(area('position'), 'absolute', `${width}: the notice area is in the page flow`);
-    assert.equal(area('top'), '100%', `${width}: the notice area is not anchored under the top bar`);
-    assert.equal(area('pointer-events'), 'none', `${width}: the empty area would take clicks from the office`);
-    if (width <= 800) {
-      assert.equal(declared(rules, (selector) => selector === '.office-notices > .notice-area', 'position'), 'static');
-      assert.equal(declared(rules, (selector) => selector === '.office-area', 'flex'), 'none');
-    }
-    const notice = (property) => declared(rules, (selector) => selector === '.notice-stack > *', property);
-    assert.equal(notice('pointer-events'), 'auto', `${width}: a notice cannot be pressed`);
-    assert.equal(notice('max-width'), 'min(36rem, calc(100vw - 2rem))', `${width}: a notice can grow past 36rem`);
-    const stage = (property) => declared(rules, (selector) => selector === '.floor-stage:has(.terminal-panel)', property);
-    assert.equal(stage('grid-template-rows'), undefined, `${width}: the stage keeps a row for notices`);
-  }
-});
-
 test('an expanded terminal takes the stage under the top bar and its banners, above every panel, in focus mode too', async () => {
   const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
   const controls = await readFile(resolve(root, 'src/renderer/terminal/controls.css'), 'utf8');

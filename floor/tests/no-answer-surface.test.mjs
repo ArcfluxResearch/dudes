@@ -3133,10 +3133,14 @@ const APPEND_ELSEWHERE = ' (URLSearchParams, Headers and FormData have an append
  * whether the page may draw in 3D. The whole expression is pinned, so the
  * canvas element itself is never bound to a name. Its context can be, though,
  * and that context's `canvas` property still reaches the element; this scan
- * does not follow a bound context's `canvas` read back to it.
+ * does not follow a bound context's `canvas` read back to it. The shell
+ * creates one empty notice container and moves it into native dialogs;
+ * React renders its children through a portal.
  */
 const ADMITTED_BUILDS = [
   { file: 'src/renderer/figurePortrait.ts', expression: "document.createElement('canvas').getContext('webgl2')" },
+  { file: 'src/shell.tsx', expression: "document.createElement('div')" },
+  { file: 'src/shell.tsx', expression: 'host.append(noticeArea)' },
 ];
 /**
  * Names that turn an HTML string into elements. `setHTML` and `parseHTML`
@@ -3377,8 +3381,10 @@ test('no control is built without JSX', async () => {
   }
   assert.ok(files >= 10 && tags >= 100, `the scan read ${files} files and ${tags} JSX tags, so it measured nothing`);
   assert.deepEqual(carrying, [], 'a control is built without JSX');
-  assert.deepEqual(admitted, ["src/renderer/figurePortrait.ts: document.createElement('canvas').getContext('webgl2')"],
-    'the admitted build is not made exactly once');
+  assert.deepEqual(admitted, [
+    "src/renderer/figurePortrait.ts: document.createElement('canvas').getContext('webgl2')",
+    "src/shell.tsx: document.createElement('div')", 'src/shell.tsx: host.append(noticeArea)',
+  ], 'each admitted build must occur exactly once');
   assert.equal(terminals, 2, 'the floor does not build its two grids, so the fontFamily check measured nothing');
 });
 
@@ -3489,4 +3495,15 @@ test('the session module reads the served index with no credentials and sends ea
     'the pin does not see the served-index read take credentials');
   assert.equal(credentialsByPath(text.replace("credentials: 'omit',", ''))['/floor/'], null,
     'the pin does not see the served-index read lose its credentials mode');
+});
+
+test('the notice portal admits only its empty container and exact relocation', () => {
+  const file = 'src/shell.tsx';
+  const admitted = builtWithoutJsx("const area = document.createElement('div'); host.append(noticeArea);", file);
+  assert.deepEqual(admitted.found, []);
+  assert.deepEqual(admitted.admitted, ["document.createElement('div')", 'host.append(noticeArea)']);
+  for (const source of ["document.createElement('input');", 'host.append(field);', 'host.append(noticeArea, field);']) {
+    assert.ok(builtWithoutJsx(source, file).found.length > 0, source);
+  }
+  assert.ok(builtWithoutJsx("document.createElement('div'); host.append(noticeArea);", 'other.tsx').found.length > 0);
 });

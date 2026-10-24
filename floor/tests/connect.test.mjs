@@ -208,8 +208,8 @@ test('a refused pasted link is said, names no secret, and keeps what the page ho
   const hire = await server.ssrLoadModule('/src/renderer/onboarding/hire.ts');
   const answer = await server.ssrLoadModule('/src/renderer/answer/answer.ts');
   const control = await server.ssrLoadModule('/src/renderer/control/control.ts');
-  const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
-  const page = () => renderToStaticMarkup(createElement(WebFloorShell));
+  const { PastedLinkNotice } = await server.ssrLoadModule('/src/shell.tsx');
+  const page = () => renderToStaticMarkup(createElement(PastedLinkNotice));
   const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), signer: STUB_SIGNER };
 
   // The page holds a session, a live floor with one Waiting agent, and one of each attempt.
@@ -268,8 +268,8 @@ test('a refused pasted link is said, names no secret, and keeps what the page ho
 test('a link refused for a different build says so, keeps the page, and a matching link clears it', async () => {
   const session = await server.ssrLoadModule('/src/session.ts');
   const entry = await server.ssrLoadModule('/src/connect.ts');
-  const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
-  const page = () => renderToStaticMarkup(createElement(WebFloorShell));
+  const { PastedLinkNotice } = await server.ssrLoadModule('/src/shell.tsx');
+  const page = () => renderToStaticMarkup(createElement(PastedLinkNotice));
   const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), signer: STUB_SIGNER };
   session.resetFloorSession();
   entry.resetPastedLink();
