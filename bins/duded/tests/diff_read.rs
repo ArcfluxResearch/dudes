@@ -153,6 +153,12 @@ impl Lab {
         lab.git(&["commit", "--quiet", "-m", "initial"]);
         lab
     }
+    fn redacting(self, redactor: dudes_supervisor::Redactor) -> Self {
+        Self {
+            reader: self.reader.with_redactor(redactor),
+            ..self
+        }
+    }
     fn head(&self) -> String {
         self.git(&["rev-parse", "HEAD"]).trim().to_owned()
     }
@@ -1293,4 +1299,21 @@ fn git_that_cannot_run_with_budget_to_spare_is_still_a_missing_git() {
         DiffRefusal::GitUnavailable
     );
     assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn a_known_secret_in_a_changed_file_is_replaced_before_the_text_is_sent() {
+    let redactor = dudes_supervisor::Redactor::new();
+    redactor.set_source("test", ["plainvaluesecret".to_owned()]);
+    let lab = Lab::new().redacting(redactor);
+    let baseline = lab.baseline();
+    lab.write("a.txt", "token = plainvaluesecret\nkeep this\n");
+    let content = lab.files(&baseline);
+    let file = content
+        .files
+        .iter()
+        .find(|file| file.path.as_str() == "a.txt")
+        .expect("the changed file");
+    assert_eq!(file.current, "token = (redacted)\nkeep this\n");
+    assert_eq!(file.old, "old a\n");
 }

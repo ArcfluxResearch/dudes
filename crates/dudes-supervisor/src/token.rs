@@ -15,12 +15,13 @@
 //! [`Mint::confirm`] — driven by the acknowledgement — moves it to `live`, which is the only map
 //! [`Mint::live`] reads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dudes_proto::rpc::hook::HookToken;
 use dudes_types::AgentId;
 
 use crate::host::{Rng, blake3_hex};
+use crate::redact::Redactor;
 
 /// The tokens this daemon run has drawn.
 ///
@@ -29,6 +30,10 @@ use crate::host::{Rng, blake3_hex};
 /// and the derive is one edit away from a struct that does. Nothing here needs either.
 #[derive(Default)]
 pub(crate) struct Mint {
+    /// Every plaintext drawn for an agent this run, live or not, until the agent retires: a child
+    /// may still hold a token a later draw replaced, so it stays a secret for as long.
+    drawn: BTreeMap<AgentId, BTreeSet<String>>,
+    redactor: Redactor,
     /// Tokens whose `HookTokenMinted` is on the disk, by agent. The only ones a child may be
     /// handed, and one per agent: a later confirmed draw replaces an earlier one here while both
     /// hashes stay journaled and both stay valid (set membership, never recency).
@@ -53,6 +58,26 @@ pub(crate) struct Mint {
 }
 
 impl Mint {
+    pub(crate) fn with_redactor(redactor: Redactor) -> Self {
+        Self {
+            redactor,
+            ..Self::default()
+        }
+    }
+
+    fn source(agent: AgentId) -> String {
+        format!("agent-token:{agent}")
+    }
+
+    /// The agent retired: its tokens are no longer anything a child can be armed with, and they
+    /// stop being a secret to hide.
+    pub(crate) fn retire(&mut self, agent: AgentId) {
+        self.live.remove(&agent);
+        self.pending.retain(|_, (owner, _)| *owner != agent);
+        self.drawn.remove(&agent);
+        self.redactor.clear_source(&Self::source(agent));
+    }
+
     /// This run's token for `agent`, when the record carrying its hash has been acknowledged.
     ///
     /// `None` covers both "never drawn" and "drawn, not yet durable", because the caller does the
@@ -70,6 +95,10 @@ impl Mint {
     pub(crate) fn draw<R: Rng>(&mut self, agent: AgentId, rng: &mut R) -> String {
         let token = rng.agent_token();
         let hash = blake3_hex(token.expose().as_bytes());
+        let drawn = self.drawn.entry(agent).or_default();
+        drawn.insert(token.expose().to_owned());
+        self.redactor
+            .set_source(&Self::source(agent), drawn.iter().cloned());
         self.pending.insert(hash.clone(), (agent, token));
         hash
     }

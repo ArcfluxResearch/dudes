@@ -284,6 +284,7 @@ pub struct DiffReader {
     git: super::super::GitReader,
     scratch: PathBuf,
     deadline: std::time::Duration,
+    redactor: dudes_supervisor::Redactor,
 }
 
 // Off Unix every public method is a refusal stub that ignores its arguments.
@@ -296,7 +297,15 @@ impl DiffReader {
             git: super::super::GitReader::new(runner, path, scratch.join("metadata")),
             scratch: scratch.join("content"),
             deadline: super::super::READ_DEADLINE,
+            redactor: dudes_supervisor::Redactor::new(),
         }
+    }
+
+    /// The same reader, scrubbing every file's text of `redactor`'s secrets before it is sent.
+    #[must_use]
+    pub fn with_redactor(mut self, redactor: dudes_supervisor::Redactor) -> Self {
+        self.redactor = redactor;
+        self
     }
 
     /// The same reader with another whole-read deadline, for tests that would otherwise wait out
@@ -429,9 +438,20 @@ impl DiffReader {
                         old_path: candidate.entry.old_path.clone(),
                         path: candidate.entry.path.clone(),
                         kind: candidate.entry.kind,
-                        old: String::from_utf8(sample.old).map_err(|_| DiffRefusal::Unreadable)?,
-                        current: String::from_utf8(sample.current)
-                            .map_err(|_| DiffRefusal::Unreadable)?,
+                        old: self
+                            .redactor
+                            .scrub(
+                                &String::from_utf8(sample.old)
+                                    .map_err(|_| DiffRefusal::Unreadable)?,
+                            )
+                            .into_owned(),
+                        current: self
+                            .redactor
+                            .scrub(
+                                &String::from_utf8(sample.current)
+                                    .map_err(|_| DiffRefusal::Unreadable)?,
+                            )
+                            .into_owned(),
                     }),
                 });
             }

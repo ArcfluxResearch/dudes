@@ -1576,6 +1576,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         self.sup.world(),
                         &self.ctx.memory,
                         self.ctx.memory_integrity == MemoryIntegrity::Failed,
+                        &self.ctx.children.redactor(),
                         request,
                     ));
                 }
@@ -7672,6 +7673,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     /// read at the same position.
     pub(crate) fn floor_snapshot(&mut self) -> Result<crate::floor::AgentSnapshot> {
         let mut snapshot = crate::floor::snapshot(&mut self.projections, self.clock.now())?;
+        snapshot.scrub(&self.children.redactor());
         snapshot.finished_today = Some(crate::floor::finished_today(
             &self.projections,
             &self.local_days,
@@ -8129,6 +8131,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             self.start_attached_boundary(sup, agent, &spec.cwd, queue, waiting)?;
         self.pending_attached_calls
             .insert(instruction_started, instruction_owner);
+        self.children
+            .redactor()
+            .hold_env(dudes_supervisor::Holder::Pty(agent), &spec.env);
         match self.pty_host.open(spec, cols, rows) {
             Ok((pty, key)) => {
                 self.remember_attached_boundary(

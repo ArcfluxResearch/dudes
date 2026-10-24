@@ -71,6 +71,7 @@ pub struct ChildEnds {
     pending_activity: Mutex<BTreeMap<ActivityKey, LiveActivityKind>>,
     pending_end: Mutex<PendingEnds>,
     output: Arc<OutputRegistry>,
+    redactor: dudes_supervisor::Redactor,
 }
 
 #[derive(Debug, Default)]
@@ -114,7 +115,18 @@ impl ChildEnds {
     /// A sink with no way back into the loop yet.
     #[must_use]
     pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
+        let redactor = dudes_supervisor::Redactor::new();
+        Arc::new(Self {
+            output: Arc::new(OutputRegistry::with_redactor(redactor.clone())),
+            redactor,
+            ..Self::default()
+        })
+    }
+
+    /// The daemon-wide secret set this run's text is scrubbed with. The supervisor shares it.
+    #[must_use]
+    pub fn redactor(&self) -> dudes_supervisor::Redactor {
+        self.redactor.clone()
     }
 
     /// This daemon run's typed, bounded output read seam.

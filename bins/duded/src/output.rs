@@ -6,6 +6,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dudes_supervisor::host::AdoptionKey;
+use dudes_supervisor::{Redactor, StreamScrubber};
 use dudes_types::{AgentId, SessionId, TurnId};
 
 const CHUNK_BYTES: usize = 4_096;
@@ -614,6 +615,10 @@ impl State {
 pub struct OutputRegistry {
     state: Mutex<State>,
     changed: Condvar,
+    redactor: Redactor,
+    /// One scrubber per child, holding back the tail of its text while that tail could still
+    /// become a known secret. Taken out when the child's output ends.
+    streams: Mutex<BTreeMap<ChildKey, (StreamScrubber, String)>>,
 }
 
 impl std::fmt::Debug for OutputRegistry {
@@ -627,6 +632,24 @@ impl OutputRegistry {
     /// Construct an empty run-local registry.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty registry whose text is scrubbed of `redactor`'s secrets before anything keeps it.
+    #[must_use]
+    pub fn with_redactor(redactor: Redactor) -> Self {
+        Self {
+            redactor,
+            ..Self::default()
+        }
+    }
+
+    fn scrub(&self, key: &AdoptionKey, session: &str, text: &str) -> String {
+        let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
+        let (scrubber, last) = streams
+            .entry(ChildKey::from(key))
+            .or_insert_with(|| (self.redactor.stream(), String::new()));
+        session.clone_into(last);
+        scrubber.push(text)
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -714,6 +737,14 @@ impl OutputRegistry {
 
     /// The watcher may reach this before `register`; an unregistered key cannot publish.
     pub fn capture(&self, key: &AdoptionKey, session: &str, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let released = self.scrub(key, session, text);
+        self.capture_scrubbed(key, session, &released);
+    }
+
+    fn capture_scrubbed(&self, key: &AdoptionKey, session: &str, text: &str) {
         if text.is_empty() {
             return;
         }
@@ -897,6 +928,15 @@ impl OutputRegistry {
     /// EOF refuses later callbacks but keeps bounded, full-key pending data claimable
     /// until the daemon's successful Spawn joins it to its durable turn.
     pub fn watch_finished(&self, key: &AdoptionKey) {
+        let stream = self
+            .streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&ChildKey::from(key));
+        if let Some((mut scrubber, session)) = stream {
+            let tail = scrubber.finish();
+            self.capture_scrubbed(key, &session, &tail);
+        }
         let mut state = self.state();
         state.finished = state.finished.saturating_add(1);
         let key = ChildKey::from(key);

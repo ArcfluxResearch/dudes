@@ -467,3 +467,43 @@ fn live_durable_overcap_session_has_acknowledged_empty_view_before_end() {
         "late old-turn confirmation cannot bind replacement"
     );
 }
+
+#[test]
+fn a_known_secret_split_across_pieces_never_reaches_the_ring_or_the_reply() {
+    const SECRET: &str = "tok_9fQ2LmZx81KdPvR4sWbN7hYcA3eJuT6o";
+    let redactor = dudes_supervisor::Redactor::new();
+    redactor.set_source("test", [SECRET.to_owned()]);
+    let output = OutputRegistry::with_redactor(redactor);
+    let agent: AgentId = id(1);
+    let turn: TurnId = id(2);
+    let key = AdoptionKey {
+        pid: 42,
+        start_time: 10,
+        boot: Some("boot-a".into()),
+    };
+    output.replace(agent, turn);
+    output.register(agent, turn, &key);
+    output.confirm(agent, turn, &SessionId::new("s"));
+    let (head, tail) = SECRET.split_at(11);
+    for piece in ["the token is ", head, tail, " ok, and ", &SECRET[..6]] {
+        output.capture(&key, "s", piece);
+        let snapshot = output.snapshot(agent);
+        let shown = format!("{:?}", chunks_of(&snapshot));
+        assert!(
+            !shown.contains(&SECRET[..8]),
+            "released part of the secret: {shown}"
+        );
+    }
+    output.watch_finished(&key);
+    let snapshot = output.snapshot(agent);
+    let text: String = chunks_of(&snapshot).join("");
+    assert_eq!(text, "the token is (redacted) ok, and tok_9f");
+    assert_eq!(snapshot.reply.unwrap().text, text);
+}
+
+fn chunks_of(snapshot: &duded::output::OutputSnapshot) -> Vec<String> {
+    match &snapshot.state {
+        OutputState::Ready { chunks, .. } => chunks.iter().map(|c| c.text.clone()).collect(),
+        other => panic!("not ready: {other:?}"),
+    }
+}

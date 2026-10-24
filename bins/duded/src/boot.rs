@@ -399,6 +399,14 @@ where
     // because the seam is `&mut` and the machine takes it at step 3. **Drawing is not minting**:
     // what happens once per daemon run is the *file*, and that is step 4's call and step 5's check.
     let credential = operator_credential(&mut rng)?;
+    let redactor = children.redactor();
+    redactor.set_source("operator", [credential.expose().to_owned()]);
+    redactor.set_source(
+        "mcp",
+        secrets
+            .iter()
+            .filter_map(|var| var.expose_value().to_str().map(str::to_owned)),
+    );
     let shutdown_run = rng.ulid().to_string();
 
     let (jobs_tx, jobs_rx) = mpsc::channel();
@@ -488,7 +496,7 @@ where
         writer,
         projections,
         memory,
-        mut sup,
+        sup,
         goal_index,
         journal_dir,
     } = open_and_replay(
@@ -500,6 +508,7 @@ where
         adapters,
         mcp,
     )?;
+    let mut sup = sup.with_redactor(redactor.clone());
     if let Some(missing) = crate::reserve::missing(
         sup.world(),
         settings.floor_usd_per_day,
@@ -694,7 +703,7 @@ where
             live_ptys: BTreeMap::new(),
             cleanup_ptys: BTreeMap::new(),
             revoked_local_ptys: BTreeSet::new(),
-            ticket_capture: ticket_capture(settings, &predicates, &clock),
+            ticket_capture: ticket_capture(settings, &predicates, &clock, redactor),
             predicates,
             subscribers: Arc::clone(&subscribers),
             last_lsn: Arc::clone(&last_lsn),
@@ -1023,6 +1032,7 @@ fn ticket_capture<P, C>(
     settings: &Settings,
     predicates: &Arc<P>,
     clock: &Arc<C>,
+    redactor: dudes_supervisor::Redactor,
 ) -> Arc<crate::diff_capture::DiffCapture>
 where
     P: PredicateRunner,
@@ -1032,7 +1042,8 @@ where
         Arc::clone(predicates) as Arc<dyn PredicateRunner>,
         settings.predicate_path.clone(),
         &settings.runtime_dir.join("diff-read"),
-    );
+    )
+    .with_redactor(redactor);
     let _ = reader.reclaim_scratch(Arc::default());
     let clock = Arc::clone(clock);
     Arc::new(crate::diff_capture::DiffCapture::new(

@@ -47,6 +47,7 @@ use crate::input::{
     BrowserAnswerCommand, ClientId, Command, DurableInputError, Handled, HookId, Input,
     PersistToken, RecordedAppend, RuntimeSignal, SpendView,
 };
+use crate::redact::Redactor;
 use crate::token::Mint;
 use crate::world::{AgentRow, MAX_PENDING_STEERS, World};
 
@@ -674,6 +675,7 @@ pub struct Supervisor<C: Clock, R: Rng> {
     /// journaled, so a restart starts empty and mints again, and every hash already journaled for
     /// a live agent stays valid (set membership, not recency).
     tokens: Mint,
+    redactor: Redactor,
     next_token: u64,
     instructions: instruction_observations::Observations,
     pending: Vec<Effect>,
@@ -708,6 +710,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     /// A machine that has folded nothing.
     pub fn new(config: Config, clock: C, rng: R) -> Self {
+        let redactor = Redactor::new();
         Self {
             config,
             adapters: Adapters::default(),
@@ -751,13 +754,28 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             ending: BTreeSet::new(),
             signals: BTreeMap::new(),
             clients: BTreeSet::new(),
-            tokens: Mint::default(),
+            tokens: Mint::with_redactor(redactor.clone()),
+            redactor,
             next_token: 0,
             instructions: instruction_observations::Observations::default(),
             pending: Vec::new(),
             #[cfg(any(test, feature = "testing"))]
             fold_failure: None,
         }
+    }
+
+    /// Share `redactor` as this run's secret set. Called once, before any token is drawn.
+    #[must_use]
+    pub fn with_redactor(mut self, redactor: Redactor) -> Self {
+        self.tokens = Mint::with_redactor(redactor.clone());
+        self.redactor = redactor;
+        self
+    }
+
+    /// The secret set every reader of agent text scrubs with. Clones share one set.
+    #[must_use]
+    pub fn redactor(&self) -> Redactor {
+        self.redactor.clone()
     }
 
     /// The registry this run launches from, built once from the operator's `[providers]` table.
@@ -1653,6 +1671,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.browser_launches.remove(turn);
             }
             Record::TurnEnded { agent, turn, .. } => {
+                self.redactor.release(crate::Holder::Turn(*turn));
                 // The hand-over: from here on `TurnRow::has_ended` is what refuses a second end,
                 // so the run-local set does not have to grow for the life of the daemon.
                 self.ending.remove(turn);
@@ -1668,6 +1687,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.move_status(*agent, FsmEvent::TurnEnded);
             }
             Record::AgentRetired { id, .. } => {
+                self.redactor.release(crate::Holder::Pty(*id));
+                self.tokens.retire(*id);
                 self.compaction.remove(id);
                 // The latch is bounded by the same record as the compaction entry: `on_tick`
                 // skips a retired agent, so a value left here could never be read again and
@@ -1701,7 +1722,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.move_status(*agent, FsmEvent::Answered);
             }
             Record::Attached { agent, .. } => self.move_status(*agent, FsmEvent::Attached),
-            Record::Detached { agent, .. } => self.move_status(*agent, FsmEvent::Detached),
+            Record::Detached { agent, .. } => {
+                self.redactor.release(crate::Holder::Pty(*agent));
+                self.move_status(*agent, FsmEvent::Detached);
+            }
             _ => {}
         }
     }
@@ -3480,11 +3504,16 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Some(ScopedUsage::Turn(_)) | None => None,
         };
         let usage = usage.map(|reported| reported.charge(recorded));
-        let final_reply = final_reply.filter(|_| self.world.browser_issue(turn).is_some());
+        let final_reply = final_reply
+            .filter(|_| self.world.browser_issue(turn).is_some())
+            .map(|mut reply| {
+                reply.text = self.redactor.scrub(&reply.text).into_owned();
+                reply
+            });
         let last_message = if final_reply.is_some() {
             None
         } else {
-            last_message
+            last_message.map(|text| self.redactor.scrub(&text).into_owned())
         };
         self.persist(
             Record::TurnEnded {
@@ -4583,6 +4612,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             // `Then::Question` notifies every subscriber and re-decides, which is
             // what puts this agent — and only this agent — into `Waiting`.
             Command::Ask { agent, text } => {
+                let text = self.redactor.scrub(&text).into_owned();
                 let origin = self
                     .world
                     .agents
@@ -5454,6 +5484,55 @@ mod tests {
         assert_eq!(format!("{:?}", harness.supervisor.world()), before);
         assert_eq!(harness.supervisor.ledger[&token].entry, original);
         assert!(harness.supervisor.effects().is_empty());
+    }
+
+    #[test]
+    fn a_browser_final_reply_is_scrubbed_before_the_turn_end_is_journaled() {
+        let mut harness = Harness::new();
+        let (agent, _) = harness.hire_with_goal(&["npm", "test"]);
+        let turn = harness.open_turn(agent).expect("a turn was issued");
+        let token = harness
+            .supervisor
+            .tokens
+            .live(agent)
+            .unwrap()
+            .expose()
+            .to_owned();
+        harness.supervisor.world.test_browser_issue(turn, agent);
+        harness.drive(Input::ChildExited {
+            final_reply: Some(dudes_proto::ChatReply {
+                text: format!("here: {token}"),
+                completeness: dudes_proto::ChatReplyCompleteness::Complete,
+            }),
+            elapsed_ms: None,
+            turn,
+            exit: dudes_proto::ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: None,
+            model_usage: std::collections::BTreeMap::new(),
+            outcome: dudes_proto::TurnOutcome::Completed,
+            last_message: Some(format!("also {token}")),
+        });
+        let ended: Vec<_> = harness
+            .journal
+            .iter()
+            .filter_map(|entry| match &entry.record {
+                Record::TurnEnded {
+                    final_reply,
+                    last_message,
+                    ..
+                } => Some((final_reply.clone(), last_message.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ended.len(), 1);
+        assert_eq!(ended[0].0.as_ref().unwrap().text, "here: (redacted)");
+        assert_eq!(
+            ended[0].1, None,
+            "a browser turn keeps the reply, not the message"
+        );
     }
 
     #[test]

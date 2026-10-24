@@ -44,6 +44,22 @@ pub struct AgentSnapshot {
     pub finished_today: Option<FloorFinishedToday>,
 }
 
+impl AgentSnapshot {
+    /// Replace every secret the daemon knows in the agents' own words, which a journal written
+    /// before the daemon learned the secret may still hold.
+    #[doc(hidden)]
+    pub fn scrub(&mut self, redactor: &dudes_supervisor::Redactor) {
+        for agent in &mut self.agents {
+            if let Some(question) = &mut agent.question {
+                *question = redactor.scrub(question).into_owned();
+            }
+        }
+        for answered in &mut self.question_history {
+            answered.question = redactor.scrub(&answered.question).into_owned();
+        }
+    }
+}
+
 /// Build the Floor rows at the projection's current journal position.
 ///
 /// `now` comes from the daemon's clock and bounds the activity display lifetime.

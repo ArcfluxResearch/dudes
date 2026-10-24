@@ -2,7 +2,8 @@
 //! operator asks. The loop answers from the journal-derived memory projection and writes nothing;
 //! the connection thread cuts the page to its byte bounds and serializes it.
 //!
-//! Memory text crosses here exactly as written, unredacted. The browser draws it as inert text.
+//! Memory text crosses here as written, except that every secret the daemon knows is replaced
+//! before it is sent. The browser draws it as inert text.
 //! Nothing here is evidence, and none of it reaches the stream.
 
 use std::collections::BTreeMap;
@@ -16,7 +17,7 @@ use dudes_journal::{
 };
 use dudes_proto::PeerProvenance;
 use dudes_rpc::conditioned;
-use dudes_supervisor::World;
+use dudes_supervisor::{Redactor, World};
 use dudes_types::{AgentId, Lsn};
 use serde::{Deserialize, Serialize, Serializer};
 
@@ -146,6 +147,7 @@ pub fn answer(
     world: &World,
     memory: &MemoryProjection,
     fenced: bool,
+    redactor: &Redactor,
     request: MemoryRequest,
 ) -> MemoryAnswer {
     let agent = request.agent;
@@ -155,16 +157,34 @@ pub fn answer(
     match request.read {
         Read::Page { before } => {
             let first = before.is_none();
+            let mut page = memory.page(agent, before, PAGE_ENTRIES, PREVIEW_BYTES);
+            for entry in &mut page.entries {
+                scrub_entry(redactor, entry);
+            }
+            let mut summary = first.then(|| memory.summary(agent)).flatten();
+            if let Some(summary) = &mut summary {
+                summary.text = redactor.scrub(&summary.text).into_owned();
+            }
             MemoryAnswer::Page {
                 retired: row.retired,
                 fenced,
-                page: memory.page(agent, before, PAGE_ENTRIES, PREVIEW_BYTES),
-                summary: first.then(|| memory.summary(agent)).flatten(),
+                page,
+                summary,
                 withheld: first.then(|| memory.withheld(agent)),
             }
         }
-        Read::Entry { lsn } => MemoryAnswer::Entry(memory.entry(agent, lsn, ENTRY_TEXT_BYTES)),
+        Read::Entry { lsn } => {
+            let mut entry = memory.entry(agent, lsn, ENTRY_TEXT_BYTES);
+            if let Some(entry) = &mut entry {
+                scrub_entry(redactor, entry);
+            }
+            MemoryAnswer::Entry(entry)
+        }
     }
+}
+
+fn scrub_entry(redactor: &Redactor, entry: &mut MemoryEntry) {
+    entry.text = redactor.scrub(&entry.text).into_owned();
 }
 
 /// The per-session interval between the starts of two page or entry reads.
