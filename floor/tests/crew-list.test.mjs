@@ -136,7 +136,7 @@ test('Crew uses native scroll and focus, and selection calls back with its own i
   assert.match(strip, /scrollIntoView\(\{ block: 'nearest', inline: 'nearest' \}\)/);
   assert.match(style, /\.crew-list,\n\.control-panel,\n\.agent-drawer \{[^}]*overflow: auto/);
   assert.match(style, /\.crew-row:focus-visible/);
-  assert.match(shell, /<CrewList agents=\{floor\.agents\} cards=\{floor\.cards\} selectedId=\{currentSelectedId\}/);
+  assert.match(shell, /<CrewList agents=\{floor\.agents\} cards=\{floor\.cards\} stepLabels=\{floor\.stepLabels\} selectedId=\{currentSelectedId\}/);
 });
 
 test('Crew says which agents write in their own worktree and which share a directory', async () => {

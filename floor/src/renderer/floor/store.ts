@@ -53,6 +53,8 @@ import { decodeWorkspace } from '../workspace.ts';
 import type { CardRow } from '../board.ts';
 import { applyDeviceFrame } from '../devices/devices.ts';
 import { decodeChat, exactObject } from '../chat/model.ts';
+import { decodeLabels, decodeStep, EMPTY_LABELS, EMPTY_STEPS, MAX_STEPS_PER_FRAME, mergeSteps, sameLabels } from './steps.ts';
+import type { StepItem } from './steps.ts';
 import type { ChatView } from '../chat/model.ts';
 
 /**
@@ -81,6 +83,8 @@ export const SERVER_MESSAGES = Object.freeze([
   'floor.output.unavailable',
   'floor.output.ended',
   'floor.output.reply',
+  'floor.output.steps',
+  'floor.step.labels',
   'floor.device.enrolled',
   'floor.device.acknowledged',
   'floor.device.removed',
@@ -116,6 +120,12 @@ export interface OutputView {
   readonly reason: string | null;
   /** Accepted turn identities for this one socket selection. Never evicted in-place. */
   readonly seenTurnIds: readonly string[];
+  /** The latest turn's steps, scrubbed and cut by the daemon; replaced with the turn. */
+  readonly steps: readonly StepItem[];
+  /** Earlier steps are missing from `steps`. */
+  readonly stepsTruncated: boolean;
+  /** The daemon stopped sending steps to this page for this selection. */
+  readonly stepsStopped: boolean;
 }
 
 const EMPTY_OUTPUT: OutputView = Object.freeze({
@@ -123,6 +133,7 @@ const EMPTY_OUTPUT: OutputView = Object.freeze({
   targetId: null, localEpoch: 0, status: 'idle', agentId: null, turnId: null,
   selectionEpoch: null, nextSeq: 0, chunks: Object.freeze([]), truncated: false, reason: null,
   seenTurnIds: Object.freeze([]),
+  steps: EMPTY_STEPS, stepsTruncated: false, stepsStopped: false,
 });
 
 /**
@@ -203,6 +214,8 @@ export interface FloorState {
   readonly discarded: number;
   /** Ephemeral, selected Managed assistant text; never part of projection truth. */
   readonly output: OutputView;
+  /** The words for the kind of step each running agent is in, by agent id. Run-local, and no more than a kind. */
+  readonly stepLabels: Readonly<Record<string, string>>;
   /**
    * The subscription whose snapshot the rows came from; `epoch` when the view
    * has been confirmed by a snapshot in this subscription, lower while a fresh
@@ -313,6 +326,7 @@ const EMPTY: FloorState = Object.freeze({
   rejected: 0,
   discarded: 0,
   output: EMPTY_OUTPUT,
+  stepLabels: EMPTY_LABELS,
   snapshotEpoch: 0,
   onboarding: null,
   checks: null,
@@ -469,6 +483,7 @@ export function invalidateFloorEpoch(): void {
   threads: Object.freeze([]),
     messagesLsn: null,
     output: emptyOutput(state.output, 'reconnecting'),
+    stepLabels: EMPTY_LABELS,
     onboarding: null,
     checks: null,
     answering: null,
@@ -524,7 +539,7 @@ export function applyServerFrame(
       return;
     case 'disconnected':
       commit({ ...state, phase: 'closed', epoch: state.epoch + 1, activity: Object.freeze([]),
-        chat: null, output: emptyOutput(state.output, 'unavailable'),
+        chat: null, output: emptyOutput(state.output, 'unavailable'), stepLabels: EMPTY_LABELS,
         retiredAgents: Object.freeze([]),
         messages: Object.freeze([]),
         threads: Object.freeze([]), messagesLsn: null, onboarding: null, checks: null, answering: null, control: false, recovery: false,
@@ -550,9 +565,16 @@ export function applyServerFrame(
     case 'floor.output.unavailable':
     case 'floor.output.ended':
     case 'floor.output.reply':
+    case 'floor.output.steps':
       if (outputContext === undefined) throw new TypeError('output frame has no selection context');
       applyOutputFrame(message, outputContext);
       return;
+    case 'floor.step.labels': {
+      if (!exactObject(message, ['type', 'labels'])) throw new TypeError('invalid step labels frame');
+      const labels = decodeLabels(message.labels, (value) => typeof value === 'string' && AGENT_ID.test(value));
+      if (!sameLabels(labels, state.stepLabels)) commit({ ...state, stepLabels: labels });
+      return;
+    }
   }
 }
 
@@ -626,6 +648,11 @@ function applyOutputFrame(message: ServerMessage, context: { readonly localEpoch
     applyReplyFrame(message, target, agentId, turnId, wireEpoch);
     return;
   }
+  if (message.type === 'floor.output.steps') {
+    if (target.view !== 'reply') throw new TypeError('steps received for an output selection');
+    applyStepsFrame(message, target, turnId);
+    return;
+  }
   if (target.view !== 'output') throw new TypeError('output received for a reply selection');
   if (message.type === 'floor.output.snapshot') {
     if (target.seenTurnIds.includes(turnId)) {
@@ -657,7 +684,8 @@ function applyOutputFrame(message: ServerMessage, context: { readonly localEpoch
     commit({ ...state, output: Object.freeze({ view: 'output', reply: null, targetId: agentId, localEpoch: target.localEpoch,
       status: message.ended ? 'ended' : 'live', agentId, turnId, selectionEpoch: wireEpoch,
       nextSeq, chunks: Object.freeze(chunks), truncated: message.truncated, reason: null,
-      seenTurnIds: Object.freeze([...target.seenTurnIds, turnId]) }) });
+      seenTurnIds: Object.freeze([...target.seenTurnIds, turnId]),
+      steps: EMPTY_STEPS, stepsTruncated: false, stepsStopped: false }) });
     return;
   }
   if (target.selectionEpoch !== wireEpoch || target.turnId !== turnId || target.agentId !== agentId) {
@@ -695,6 +723,22 @@ function applyOutputFrame(message: ServerMessage, context: { readonly localEpoch
   commit({ ...state, output: Object.freeze({ ...target, status: 'ended' }) });
 }
 
+function applyStepsFrame(message: ServerMessage, target: OutputView, turnId: string): void {
+  if (!exactObject(message, ['type', 'selection_epoch', 'agent_id', 'turn_id', 'truncated', 'gap', 'steps'])
+    || typeof message.truncated !== 'boolean' || !Array.isArray(message.steps)
+    || message.steps.length > MAX_STEPS_PER_FRAME || (message.gap !== null && message.gap !== 'budget')) {
+    throw new TypeError('invalid steps frame');
+  }
+  // A turn's steps follow the reply that introduced it, so steps for any other turn are stale.
+  if (target.turnId !== turnId || target.stepsStopped) {
+    commit({ ...state, discarded: state.discarded + 1 });
+    return;
+  }
+  const steps = mergeSteps(target.steps, message.steps.map(decodeStep));
+  commit({ ...state, output: Object.freeze({ ...target, steps, stepsTruncated: message.truncated,
+    stepsStopped: message.gap === 'budget' }) });
+}
+
 function applyReplyFrame(message: ServerMessage, target: OutputView, agentId: string, turnId: string, wireEpoch: number): void {
   if (!exactObject(message, ['type', 'selection_epoch', 'agent_id', 'turn_id', 'revision', 'text', 'truncated', 'gap', 'ended'])
     || typeof message.revision !== 'string' || !/^(0|[1-9][0-9]{0,38})$/.test(message.revision)
@@ -718,6 +762,7 @@ function applyReplyFrame(message: ServerMessage, target: OutputView, agentId: st
     reply: Object.freeze({ revision: message.revision, text: message.text, gap: message.gap as ReplyGap | null }),
     truncated: message.truncated, reason: message.gap as ReplyGap | null,
     seenTurnIds: sameTurn ? target.seenTurnIds : Object.freeze([...target.seenTurnIds, turnId]),
+    ...(sameTurn ? {} : { steps: EMPTY_STEPS, stepsTruncated: false, stepsStopped: false }),
   }) });
 }
 
@@ -958,6 +1003,7 @@ function unchanged(current: FloorState, next: FloorState): boolean {
     && current.rejected === next.rejected
     && current.discarded === next.discarded
     && current.output === next.output
+    && current.stepLabels === next.stepLabels
     && current.snapshotEpoch === next.snapshotEpoch
     && current.onboarding === next.onboarding
     && current.checks === next.checks

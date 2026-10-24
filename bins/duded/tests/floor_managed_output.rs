@@ -35,6 +35,8 @@ const HELPER: &str = "DUDES_FLOOR_OUTPUT_HELPER";
 const LABEL: &str = "DUDES_FLOOR_OUTPUT_LABEL";
 const SESSION: &str = "DUDES_FLOOR_OUTPUT_SESSION";
 const DIR: &str = "DUDES_FLOOR_OUTPUT_DIR";
+const STEP_SECRET: &str = "STEPS_API_TOKEN";
+const SECRET_VALUE: &str = "synthetic-steps-token-0123456789abcdef";
 const ASSETS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/floor-release-v7"
@@ -66,6 +68,26 @@ fn managed_output_child_helper() {
                 .expect("flood marker");
         }
         wait_file(&dir.join("release-exit"));
+        return;
+    }
+    if label == "STEPS" {
+        let token = std::env::var(STEP_SECRET).expect("planted secret");
+        let lines = [
+            format!(
+                r#"{{"type":"assistant","session_id":"{session}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_curl","name":"Bash","input":{{"command":"curl -H 'Authorization: Bearer {token}' https://example.test"}}}},{{"type":"tool_use","id":"toolu_aws","name":"Read","input":{{"file_path":"/work/user/.aws/credentials"}}}},{{"type":"tool_use","id":"toolu_edit","name":"Edit","input":{{"file_path":"/repo/src/a.rs","old_string":"let key = \"{token}\";","new_string":"let key = env();"}}}},{{"type":"tool_use","id":"toolu_plan","name":"TodoWrite","input":{{"todos":[{{"content":"Rotate {token}","status":"in_progress","activeForm":"Rotating"}}]}}}}]}}}}"#
+            ),
+            format!(
+                r#"{{"type":"user","session_id":"{session}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_curl","content":"ok","is_error":false}}]}}}}"#
+            ),
+        ];
+        for line in lines {
+            writeln!(out, "{line}").expect("step line");
+        }
+        out.flush().expect("step flush");
+        std::fs::write(dir.join("steps-ready"), b"ready").expect("steps marker");
+        wait_file(&dir.join("release-exit"));
+        writeln!(out, r#"{{"type":"result","session_id":"{session}","subtype":"success","is_error":false,"result":"done"}}"#).expect("result line");
+        out.flush().expect("end flush");
         return;
     }
     wait_file(&dir.join("release-next"));
@@ -147,6 +169,7 @@ impl Adapter for LocalAdapter {
                 EnvVar::new(LABEL, ctx.cwd.file_name().expect("child label")),
                 EnvVar::new(SESSION, session.as_str()),
                 EnvVar::new(DIR, ctx.cwd.as_os_str()),
+                EnvVar::new(STEP_SECRET, SECRET_VALUE),
             ]
             .into(),
             cwd: ctx.cwd.to_path_buf(),
@@ -329,6 +352,26 @@ impl WebSocket {
         let mut body = vec![0; len];
         self.0.read_exact(&mut body).expect("WebSocket body");
         serde_json::from_slice(&body).expect("server JSON")
+    }
+    fn try_json(&mut self) -> Option<Value> {
+        let mut head = [0_u8; 2];
+        self.0.read_exact(&mut head).ok()?;
+        let len = match head[1] & 0x7f {
+            n @ 0..=125 => usize::from(n),
+            126 => {
+                let mut bytes = [0; 2];
+                self.0.read_exact(&mut bytes).ok()?;
+                usize::from(u16::from_be_bytes(bytes))
+            }
+            _ => {
+                let mut bytes = [0; 8];
+                self.0.read_exact(&mut bytes).ok()?;
+                usize::try_from(u64::from_be_bytes(bytes)).ok()?
+            }
+        };
+        let mut body = vec![0; len];
+        self.0.read_exact(&mut body).ok()?;
+        serde_json::from_slice(&body).ok()
     }
     fn output(&mut self) -> Value {
         loop {
@@ -523,5 +566,134 @@ fn selected_reply_arrives_before_child_completion_and_reconnects() {
     assert_eq!(ended["agent_id"], serde_json::json!(agent));
     drop(socket);
     drop(reconnect);
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+fn collect_steps(selected: &mut WebSocket) -> (String, Vec<Value>) {
+    let mut seen = String::new();
+    let mut steps = Vec::new();
+    for _ in 0..16 {
+        let frame = selected.output();
+        seen.push_str(&frame.to_string());
+        if frame["type"] == "floor.output.steps" {
+            steps.extend(frame["steps"].as_array().unwrap().clone());
+            if steps.len() >= 4 && steps.iter().any(|step| step["status"] == "done") {
+                break;
+            }
+        }
+    }
+    (seen, steps)
+}
+
+/// What a socket that selected nothing hears for a moment: the step kind label and every frame.
+fn listen_as_bystander(bystander: &mut WebSocket) -> (Option<String>, String) {
+    bystander
+        .0
+        .set_read_timeout(Some(Duration::from_millis(1_200)))
+        .unwrap();
+    let mut label = None;
+    let mut heard = String::new();
+    let until = Instant::now() + Duration::from_millis(1_500);
+    while Instant::now() < until
+        && let Some(frame) = bystander.try_json()
+    {
+        heard.push_str(&frame.to_string());
+        if frame["type"] == "floor.step.labels" {
+            label = frame["labels"][0]["label"].as_str().map(str::to_owned);
+        }
+        assert!(
+            !frame["type"].as_str().unwrap().starts_with("floor.output."),
+            "an unselected socket received output: {frame}"
+        );
+    }
+    (label, heard)
+}
+
+#[test]
+fn steps_reach_only_the_selected_socket_scrubbed_and_others_see_a_kind() {
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::new());
+    let settings = settings(&fixture, free_port());
+    let captured = Arc::new(Captured::default());
+    let daemon = duded::boot::boot_with_options_and_floor_faults(
+        &settings,
+        seams(
+            &settings,
+            ChildEnds::new(),
+            Arc::clone(&captured),
+            Arc::clone(&clock),
+        ),
+        duded::settings::RunOptions::default(),
+        None,
+        FloorStreamFault::default().without_heartbeat(),
+    )
+    .expect("boot local steps fixture");
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let dir = fixture.state.path().join("STEPS");
+    std::fs::create_dir(&dir).unwrap();
+    let agent = common::hire(&running.handle, &dir);
+    let page = common::floor_session_on(&settings, addr, {
+        let clock = Arc::clone(&clock);
+        move || clock.now().unix_millis()
+    });
+    let mut selected = WebSocket::connect(&page);
+    selected.send(r#"{"type":"floor.subscribe"}"#);
+    assert_eq!(selected.json()["type"], "floor.snapshot");
+    let mut bystander = WebSocket::connect(&page);
+    bystander.send(r#"{"type":"floor.subscribe"}"#);
+    assert_eq!(bystander.json()["type"], "floor.snapshot");
+    selected.send(&format!(
+        r#"{{"type":"floor.output.select","agent_id":"{agent}","view":"reply"}}"#
+    ));
+    assert_eq!(selected.output()["reason"], "no_run_output");
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &["/usr/bin/true"]),
+    );
+    wait_file(&dir.join("steps-ready"));
+    captured.wait_for("toolu_plan");
+    let (seen, steps) = collect_steps(&mut selected);
+    assert!(
+        !seen.contains(SECRET_VALUE),
+        "the secret reached the selected socket"
+    );
+    assert!(seen.contains("(redacted)"));
+    let by_id = |id: &str| {
+        steps
+            .iter()
+            .rev()
+            .find(|step| step["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by_id("toolu_curl")["status"], "done");
+    assert_eq!(by_id("toolu_curl")["result_bytes"], 2);
+    assert!(
+        by_id("toolu_curl")["args"][0]["value"]
+            .as_str()
+            .unwrap()
+            .contains("Bearer (redacted)")
+    );
+    assert_eq!(by_id("toolu_aws")["kind"], "read");
+    assert!(by_id("toolu_aws")["withheld"].is_string());
+    assert_eq!(by_id("toolu_edit")["edit"]["new"], "let key = env();");
+    assert_eq!(
+        by_id("toolu_edit")["edit"]["old"],
+        "let key = \"(redacted)\";"
+    );
+    assert_eq!(by_id("toolu_plan")["plan"][0]["text"], "Rotate (redacted)");
+
+    let (label, heard) = listen_as_bystander(&mut bystander);
+    assert_eq!(label.as_deref(), Some("plan"));
+    for private in [SECRET_VALUE, "curl", "toolu_", ".aws", "a.rs", "Rotate"] {
+        assert!(
+            !heard.contains(private),
+            "an unselected socket heard {private}"
+        );
+    }
+    std::fs::write(dir.join("release-exit"), b"go").unwrap();
+    drop(selected);
+    drop(bystander);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }

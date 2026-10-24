@@ -29,6 +29,7 @@ use crate::floor_websocket::{MAX_MESSAGE_BYTES, text_frame, text_payload};
 use crate::output::{Loss, OutputRegistry, OutputSnapshot, OutputState, ReplyLoss, Unavailable};
 use crate::provider_check::ProviderCheck;
 use crate::sign_in::SignInCheck;
+use crate::steps::StepView;
 
 /// Accepted maximum queued messages on one Floor stream.
 pub const MAX_QUEUE_MESSAGES: usize = 256;
@@ -46,7 +47,7 @@ const CLIENT_TYPES: [&str; 5] = [
     "floor.output.select",
     "floor.output.clear",
 ];
-const SERVER_TYPES: [&str; 14] = [
+const SERVER_TYPES: [&str; 16] = [
     "floor.snapshot",
     "floor.delta",
     "floor.resync",
@@ -58,6 +59,8 @@ const SERVER_TYPES: [&str; 14] = [
     "floor.output.unavailable",
     "floor.output.ended",
     "floor.output.reply",
+    "floor.output.steps",
+    "floor.step.labels",
     "floor.device.enrolled",
     "floor.device.acknowledged",
     "floor.device.removed",
@@ -76,6 +79,15 @@ enum OutputFrame<'a> {
         truncated: bool,
         gap: Option<&'static str>,
         ended: bool,
+    },
+    #[serde(rename = "floor.output.steps")]
+    Steps {
+        selection_epoch: u64,
+        agent_id: AgentId,
+        turn_id: TurnId,
+        truncated: bool,
+        gap: Option<&'static str>,
+        steps: &'a [StepView],
     },
     #[serde(rename = "floor.output.unavailable")]
     Unavailable {
@@ -134,6 +146,24 @@ pub(crate) const HEARTBEAT_PERIOD: Duration = Duration::from_millis(2_000);
 
 /// The one discriminator a heartbeat carries, and the whole frame beside it.
 const HEARTBEAT_TYPE: &str = "floor.heartbeat";
+
+/// How often every open stream is told which step kind each running agent is in.
+pub(crate) const STEP_LABEL_PERIOD: Duration = Duration::from_millis(500);
+
+const LABELS_TYPE: &str = "floor.step.labels";
+
+#[derive(Serialize)]
+struct LabelsFrame {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    labels: Vec<LabelWire>,
+}
+
+#[derive(Serialize)]
+struct LabelWire {
+    agent_id: AgentId,
+    label: &'static str,
+}
 
 /// The discriminator of the contentless message that tells a page to subscribe again.
 const RESYNC_TYPE: &str = "floor.resync";
@@ -553,8 +583,9 @@ impl FloorStreams {
                     ended: false,
                     unavailable: None,
                     loss: None,
+                    steps: StepsCursor::default(),
                 };
-                let sent = refresh_reply(&mut queue, selection, &snapshot);
+                let sent = refresh_reply(&mut queue, selection, &snapshot, &self.0.output);
                 subscription.queue.changed.notify_all();
                 if !sent {
                     bail!("Floor reply selection queue has ended");
@@ -576,6 +607,7 @@ impl FloorStreams {
                             ended: false,
                             unavailable: Some(reason),
                             loss: None,
+                            steps: StepsCursor::default(),
                         });
                     }
                     OutputFrame::Unavailable {
@@ -642,6 +674,7 @@ impl FloorStreams {
                     ended,
                     unavailable: None,
                     loss,
+                    steps: StepsCursor::default(),
                 });
                 Ok(())
             }
@@ -1179,6 +1212,31 @@ impl FloorStreams {
         })
     }
 
+    /// Start the timer that tells every open stream which kind of step each running agent is in:
+    /// only the kind, with no name, input or result. Agents that are not selected get nothing
+    /// more. The list is repeated while any agent has a kind, so a page that subscribes late
+    /// learns it within one period, and one empty list follows the last.
+    pub(crate) fn start_label_watch(&self, period: Duration) -> HeartbeatTask {
+        let mut announced = false;
+        self.start_timer("dudes-floor-step-labels", period, true, move |inner| {
+            let labels = inner.output.step_labels();
+            if labels.is_empty() && !announced {
+                return;
+            }
+            announced = !labels.is_empty();
+            let frame = serialize_frame(&LabelsFrame {
+                kind: LABELS_TYPE,
+                labels: labels
+                    .into_iter()
+                    .map(|(agent_id, label)| LabelWire { agent_id, label })
+                    .collect(),
+            });
+            if let Ok(frame) = frame {
+                broadcast_frame(inner, &Arc::from(frame));
+            }
+        })
+    }
+
     fn start_timer(
         &self,
         name: &str,
@@ -1383,14 +1441,17 @@ fn refresh_reply(
     queue: &mut QueueState,
     mut selection: OutputSelection,
     snapshot: &OutputSnapshot,
+    output: &OutputRegistry,
 ) -> bool {
     selection.revision = snapshot.revision;
     if let Some(reply) = &snapshot.reply {
         if selection.turn != Some(reply.turn) {
             queue.purge_output();
+            selection.steps = StepsCursor::default();
         } else if selection.reply_revision == Some(reply.revision) {
+            let sent = refresh_steps(queue, &mut selection, snapshot, output);
             queue.selection = Some(selection);
-            return true;
+            return sent;
         }
         let gap = reply.loss.map(|loss| match loss {
             ReplyLoss::ProviderLimit => "provider_limit",
@@ -1418,6 +1479,9 @@ fn refresh_reply(
         selection.reply_revision = Some(reply.revision);
         selection.ended = reply.ended;
         selection.unavailable = None;
+        if !refresh_steps(queue, &mut selection, snapshot, output) {
+            return false;
+        }
     } else {
         let reason = match snapshot.state {
             OutputState::Unavailable(reason) => reason,
@@ -1445,6 +1509,80 @@ fn refresh_reply(
         selection.unavailable = Some(reason);
     }
     queue.selection = Some(selection);
+    true
+}
+
+/// The most step data one socket is sent before steps stop and say so.
+const STEP_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+/// One steps frame carries at most this much step data, so escaping cannot push it past the
+/// frame limit.
+const STEP_FRAME_BYTES: usize = 64 * 1024;
+
+/// Send the steps that changed since this socket last heard of them. Returns false when the
+/// socket's queue has ended.
+fn refresh_steps(
+    queue: &mut QueueState,
+    selection: &mut OutputSelection,
+    snapshot: &OutputSnapshot,
+    output: &OutputRegistry,
+) -> bool {
+    let Some(mark) = snapshot.steps else {
+        return true;
+    };
+    let cursor = selection.steps;
+    let same_turn = cursor.turn == Some(mark.turn);
+    if cursor.stopped || (same_turn && cursor.seq == mark.seq) {
+        return true;
+    }
+    let Some(delta) = output.steps_since(selection.agent, if same_turn { cursor.seq } else { 0 })
+    else {
+        return true;
+    };
+    let send = |queue: &mut QueueState, steps: &[StepView], gap: Option<&'static str>| {
+        let frame = serialize_frame(&OutputFrame::Steps {
+            selection_epoch: selection.epoch,
+            agent_id: selection.agent,
+            turn_id: delta.turn,
+            truncated: delta.truncated,
+            gap,
+            steps,
+        });
+        let Ok(frame) = frame else {
+            terminate(queue, ENDED);
+            return None;
+        };
+        let bytes = frame.len();
+        queue
+            .enqueue_frame(Arc::from(frame), QueueKind::Output)
+            .ok()
+            .map(|()| bytes)
+    };
+    if queue.step_bytes_sent > STEP_BUDGET_BYTES {
+        selection.steps.stopped = true;
+        return send(queue, &[], Some("budget")).is_some();
+    }
+    selection.steps.turn = Some(delta.turn);
+    let mut start = 0;
+    while start < delta.items.len() {
+        let mut end = start;
+        let mut bytes = 0;
+        while end < delta.items.len()
+            && (end == start || bytes + delta.items[end].bytes() <= STEP_FRAME_BYTES)
+        {
+            bytes += delta.items[end].bytes();
+            end += 1;
+        }
+        let Some(wrote) = send(queue, &delta.items[start..end], None) else {
+            return false;
+        };
+        queue.step_bytes_sent += wrote;
+        if queue.step_bytes_sent > STEP_BUDGET_BYTES {
+            selection.steps.stopped = true;
+            return send(queue, &[], Some("budget")).is_some();
+        }
+        start = end;
+    }
+    selection.steps.seq = delta.seq;
     true
 }
 
@@ -1484,7 +1622,7 @@ fn refresh_output(inner: &Inner, queue: &Queue, agent: AgentId, epoch: u64) -> b
     // This read is the authoritative one. A prior wait_changed snapshot is only a hint.
     let snapshot = inner.output.snapshot(agent);
     if selection.view == OutputView::Reply {
-        let sent = refresh_reply(&mut state, selection, &snapshot);
+        let sent = refresh_reply(&mut state, selection, &snapshot, &inner.output);
         queue.changed.notify_all();
         return sent;
     }
@@ -1873,6 +2011,8 @@ struct QueueState {
     terminal: u8,
     selection_epoch: u64,
     selection: Option<OutputSelection>,
+    /// Step data sent on this socket so far, over every selection, against the step budget.
+    step_bytes_sent: usize,
 }
 
 #[derive(Debug)]
@@ -1900,6 +2040,15 @@ struct OutputSelection {
     ended: bool,
     unavailable: Option<Unavailable>,
     loss: Option<Loss>,
+    steps: StepsCursor,
+}
+
+/// What this socket has been sent of the selected agent's steps.
+#[derive(Clone, Copy, Debug, Default)]
+struct StepsCursor {
+    turn: Option<TurnId>,
+    seq: u64,
+    stopped: bool,
 }
 
 impl QueueState {
@@ -6557,5 +6706,197 @@ mod tests {
             .iter()
             .filter(|subscription| subscription.strong_count() > 0)
             .count()
+    }
+
+    mod steps_refresh {
+        use dudes_providers::steps::{Step, StepEvent, StepKind};
+        use dudes_types::SessionId;
+
+        use super::*;
+
+        const SESSION: &str = "session";
+
+        fn key(pid: u32) -> dudes_supervisor::host::AdoptionKey {
+            dudes_supervisor::host::AdoptionKey {
+                pid,
+                start_time: 20,
+                boot: None,
+            }
+        }
+
+        fn event(id: &str, args: usize) -> StepEvent {
+            StepEvent::Open {
+                session: SessionId::new(SESSION),
+                step: Step {
+                    id: id.to_owned(),
+                    parent: None,
+                    kind: StepKind::Other,
+                    tool: "Custom".to_owned(),
+                    args: (0..args)
+                        .map(|n| (format!("body{n}"), "y".repeat(2_000)))
+                        .collect(),
+                    edit: None,
+                    plan: Vec::new(),
+                },
+            }
+        }
+
+        fn turn_with(output: &OutputRegistry, agent: AgentId, turn: TurnId, pid: u32) {
+            output.replace(agent, turn);
+            assert!(output.register(agent, turn, &key(pid)));
+            output.confirm(agent, turn, &SessionId::new(SESSION));
+        }
+
+        fn selection(agent: AgentId) -> OutputSelection {
+            OutputSelection {
+                agent,
+                epoch: 1,
+                view: OutputView::Reply,
+                revision: 0,
+                reply_revision: None,
+                turn: None,
+                first_seq: 0,
+                next_seq: 0,
+                ended: false,
+                unavailable: None,
+                loss: None,
+                steps: StepsCursor::default(),
+            }
+        }
+
+        fn refresh(
+            queue: &mut QueueState,
+            selection: &mut OutputSelection,
+            output: &OutputRegistry,
+        ) -> bool {
+            let snapshot = output.snapshot(selection.agent);
+            refresh_steps(queue, selection, &snapshot, output)
+        }
+
+        /// What reached the socket's queue, frame by frame: the turn, the gap and the step ids.
+        fn sent(queue: &mut QueueState) -> Vec<(String, Option<String>, Vec<String>)> {
+            queue
+                .frames
+                .drain(..)
+                .map(|frame| {
+                    let wire: serde_json::Value =
+                        serde_json::from_slice(text_payload(&frame.bytes).unwrap()).unwrap();
+                    assert_eq!(wire["type"], "floor.output.steps");
+                    (
+                        wire["turn_id"].as_str().unwrap().to_owned(),
+                        wire["gap"].as_str().map(str::to_owned),
+                        wire["steps"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|step| step["id"].as_str().unwrap().to_owned())
+                            .collect(),
+                    )
+                })
+                .collect()
+        }
+
+        fn ids(frames: &[(String, Option<String>, Vec<String>)]) -> Vec<&str> {
+            frames
+                .iter()
+                .flat_map(|(_, _, ids)| ids.iter().map(String::as_str))
+                .collect()
+        }
+
+        #[test]
+        fn a_long_run_of_steps_goes_out_in_several_frames_and_resumes_from_the_cursor() {
+            let output = OutputRegistry::new();
+            let (agent, turn) = (AgentId::from_parts(1, 1), TurnId::from_parts(2, 1));
+            turn_with(&output, agent, turn, 10);
+            for index in 0..12 {
+                output.capture_step(&key(10), event(&format!("toolu_{index:02}"), 8));
+            }
+            let (mut queue, mut selection) = (QueueState::default(), selection(agent));
+            assert!(refresh(&mut queue, &mut selection, &output));
+            let frames = sent(&mut queue);
+            assert!(frames.len() >= 2, "{} frames", frames.len());
+            assert!(
+                frames
+                    .iter()
+                    .all(|(_, gap, ids)| gap.is_none() && !ids.is_empty())
+            );
+            let expected: Vec<String> = (0..12).map(|index| format!("toolu_{index:02}")).collect();
+            assert_eq!(ids(&frames), expected);
+            assert!(queue.step_bytes_sent > 0);
+            assert!(refresh(&mut queue, &mut selection, &output));
+            assert!(queue.frames.is_empty(), "nothing changed since the cursor");
+            output.capture_step(&key(10), event("toolu_next", 1));
+            assert!(refresh(&mut queue, &mut selection, &output));
+            assert_eq!(ids(&sent(&mut queue)), ["toolu_next"]);
+        }
+
+        #[test]
+        fn past_the_socket_budget_steps_stop_with_one_gap_frame_and_stay_stopped() {
+            let output = OutputRegistry::new();
+            let (agent, turn) = (AgentId::from_parts(1, 1), TurnId::from_parts(2, 1));
+            turn_with(&output, agent, turn, 10);
+            output.capture_step(&key(10), event("toolu_1", 1));
+            let (mut queue, mut selection) = (QueueState::default(), selection(agent));
+            queue.step_bytes_sent = STEP_BUDGET_BYTES - 10;
+            assert!(refresh(&mut queue, &mut selection, &output));
+            let frames = sent(&mut queue);
+            assert_eq!(
+                ids(&frames),
+                ["toolu_1"],
+                "the frame that crosses the budget is sent"
+            );
+            assert_eq!(frames.last().unwrap().1.as_deref(), Some("budget"));
+            assert!(selection.steps.stopped);
+            output.capture_step(&key(10), event("toolu_2", 1));
+            assert!(refresh(&mut queue, &mut selection, &output));
+            assert!(
+                queue.frames.is_empty(),
+                "a stopped selection sends nothing more"
+            );
+        }
+
+        #[test]
+        fn the_budget_belongs_to_the_socket_so_selecting_again_does_not_reset_it() {
+            let output = OutputRegistry::new();
+            let (agent, turn) = (AgentId::from_parts(1, 1), TurnId::from_parts(2, 1));
+            turn_with(&output, agent, turn, 10);
+            output.capture_step(&key(10), event("toolu_1", 1));
+            let mut queue = QueueState {
+                step_bytes_sent: STEP_BUDGET_BYTES + 1,
+                ..QueueState::default()
+            };
+            let mut again = selection(agent);
+            assert!(refresh(&mut queue, &mut again, &output));
+            let frames = sent(&mut queue);
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].1.as_deref(), Some("budget"));
+            assert!(frames[0].2.is_empty(), "no step data past the budget");
+            let (mut other_queue, mut fresh) = (QueueState::default(), selection(agent));
+            assert!(refresh(&mut other_queue, &mut fresh, &output));
+            assert_eq!(
+                ids(&sent(&mut other_queue)),
+                ["toolu_1"],
+                "another socket is unaffected"
+            );
+        }
+
+        #[test]
+        fn a_new_turn_sends_its_own_steps_from_the_start() {
+            let output = OutputRegistry::new();
+            let agent = AgentId::from_parts(1, 1);
+            let (first, second) = (TurnId::from_parts(2, 1), TurnId::from_parts(3, 1));
+            turn_with(&output, agent, first, 10);
+            output.capture_step(&key(10), event("toolu_old", 1));
+            let (mut queue, mut selection) = (QueueState::default(), selection(agent));
+            assert!(refresh(&mut queue, &mut selection, &output));
+            let old = sent(&mut queue);
+            assert_eq!(old[0].0, first.to_string());
+            turn_with(&output, agent, second, 11);
+            output.capture_step(&key(11), event("toolu_new", 1));
+            assert!(refresh(&mut queue, &mut selection, &output));
+            let new = sent(&mut queue);
+            assert_eq!(ids(&new), ["toolu_new"]);
+            assert_eq!(new[0].0, second.to_string());
+        }
     }
 }

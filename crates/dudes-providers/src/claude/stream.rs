@@ -51,14 +51,16 @@
 
 use std::collections::BTreeMap;
 
-use dudes_proto::ExitStatus;
 use dudes_proto::providers::claude::{ResultLine, SystemInit};
+use dudes_proto::{ExitStatus, LiveActivityKind};
 use dudes_types::{SessionId, Usage};
 
 use crate::claude::outcome::{TurnOutcome, turn_outcome};
+use crate::claude::steps::LiveSteps;
 use crate::claude::text::LiveText;
 use crate::claude::usage;
 use crate::claude::{Line, StreamLine, parse_line};
+use crate::steps::StepEvent;
 use crate::stream::{
     Credential, FinalReply, LineRead, ScopedUsage, SessionObservation, TurnEnd, TurnReader,
 };
@@ -80,6 +82,7 @@ pub struct TurnStream {
     attribution_refused: u64,
     unreadable: u64,
     text: LiveText,
+    steps: LiveSteps,
 }
 
 /// A `result` line as it was read, beside the non-empty session **its own** envelope named —
@@ -203,6 +206,7 @@ impl TurnStream {
             attribution_refused,
             unreadable,
             text: _,
+            steps: _,
         } = self;
         // Anything still provisional never received a non-empty session announcement and is
         // refused now. `result` contains only candidates already bound to the announced session,
@@ -255,6 +259,8 @@ impl TurnStream {
 impl TurnReader for TurnStream {
     fn line(&mut self, text: &str) -> LineRead {
         let Some(line) = self.push_parsed(text) else {
+            // The host cannot tell a blank line from one it would not keep, so neither may end
+            // a step. The end of the turn settles any that stay open.
             return LineRead::default();
         };
         let text = self
@@ -264,6 +270,8 @@ impl TurnReader for TurnStream {
                 self.unreadable += 1;
                 Vec::new()
             });
+        let steps = self.steps.read(&line, self.session.as_ref());
+        let activity = activity(&line, &steps, !text.is_empty());
         let session = match line.body {
             StreamLine::Init(init) if !self.init_read => {
                 self.init_read = true;
@@ -280,12 +288,33 @@ impl TurnReader for TurnStream {
                 .flatten(),
             text,
             session,
-            activity: None,
+            activity,
+            steps,
         }
     }
 
     fn end(self: Box<Self>, exit: ExitStatus) -> TurnEnd {
         self.finish(exit)
+    }
+}
+
+/// The fixed kind a line shows to viewers who may not see its content.
+fn activity(line: &Line, steps: &[StepEvent], text: bool) -> Option<LiveActivityKind> {
+    if steps
+        .iter()
+        .any(|step| matches!(step, StepEvent::Open { .. }))
+    {
+        return Some(LiveActivityKind::UsingTool);
+    }
+    match &line.body {
+        StreamLine::Init(_) => Some(LiveActivityKind::Working),
+        StreamLine::System { raw, .. }
+            if raw.get("status").and_then(serde_json::Value::as_str) == Some("compacting") =>
+        {
+            Some(LiveActivityKind::Compacting)
+        }
+        _ if text || !steps.is_empty() => Some(LiveActivityKind::Working),
+        _ => None,
     }
 }
 
@@ -533,7 +562,8 @@ mod tests {
                     text: "visible".to_owned(),
                 }],
                 session: None,
-                activity: None,
+                activity: Some(LiveActivityKind::Working),
+                steps: Vec::new(),
             }
         );
     }
@@ -785,6 +815,30 @@ mod tests {
         let end = read(&lines).finish(EXIT_0);
         assert_eq!(end.unreadable, 2);
         assert!(end.usage.is_some(), "the turn still ends with usage");
+    }
+
+    /// A blank line is also what the host delivers for a line it would not keep, so it cannot
+    /// close a step: only the call's own result does.
+    #[test]
+    fn a_blank_line_leaves_an_open_step_open() {
+        let mut stream = TurnStream::default();
+        let call = format!(
+            r#"{{"type":"assistant","session_id":"{SESSION}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_1","name":"Bash","input":{{"command":"ls"}}}}]}}}}"#
+        );
+        let result = format!(
+            r#"{{"type":"user","session_id":"{SESSION}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}}]}}}}"#
+        );
+        assert!(stream.line(&init(SESSION)).steps.is_empty());
+        assert_eq!(stream.line(&call).steps.len(), 1);
+        assert!(
+            stream.line("").steps.is_empty(),
+            "a blank line closes nothing"
+        );
+        let closed = stream.line(&result).steps;
+        assert!(matches!(
+            &closed[..],
+            [StepEvent::Close { failed: false, .. }]
+        ));
     }
 
     /// A streamed message repeats its id on each block's line, and the last line's figure is the

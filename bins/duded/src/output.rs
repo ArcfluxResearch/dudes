@@ -5,15 +5,20 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use dudes_providers::steps::StepEvent;
 use dudes_supervisor::host::AdoptionKey;
 use dudes_supervisor::{Redactor, StreamScrubber};
 use dudes_types::{AgentId, SessionId, TurnId};
+
+use crate::steps::{self, Closing, StepView};
 
 const CHUNK_BYTES: usize = 4_096;
 const RING_CHUNKS: usize = 128;
 const RING_BYTES: usize = 65_536;
 const REPLY_BYTES: usize = 65_536;
 const MAX_RINGS: usize = 128;
+const STEP_RING_ENTRIES: usize = 256;
+const STEP_RING_BYTES: usize = 256 * 1_024;
 const MAX_BYTES: usize = 8 * 1_024 * 1_024;
 // A session is an untrusted exact identity, not an output chunk. Capping it before
 // retention also bounds 256 pending key/ring slots × 128 pieces × 256 bytes to 8 MiB.
@@ -171,6 +176,22 @@ pub enum OutputState {
     },
 }
 
+/// Where a turn's steps stand, for a reader that wants to know whether to fetch them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StepsMark {
+    pub(crate) turn: TurnId,
+    pub(crate) seq: u64,
+}
+
+/// The steps that changed after a cursor.
+#[derive(Debug)]
+pub(crate) struct StepsDelta {
+    pub(crate) turn: TurnId,
+    pub(crate) seq: u64,
+    pub(crate) truncated: bool,
+    pub(crate) items: Vec<StepView>,
+}
+
 /// Atomic read plus notification cursor; revisions are not journal positions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputSnapshot {
@@ -180,6 +201,8 @@ pub struct OutputSnapshot {
     pub state: OutputState,
     /// Independently bounded reply, available after durable session attribution.
     pub reply: Option<OutputReply>,
+    /// Where the turn's steps stand, available after durable session attribution.
+    pub(crate) steps: Option<StepsMark>,
 }
 
 /// Safe counters for asserting the run-local bound without exposing text.
@@ -238,9 +261,142 @@ impl std::fmt::Debug for Pending {
     }
 }
 
+/// A step change that arrived before its turn's session was confirmed.
+#[derive(Clone)]
+struct PendingStep {
+    session: Arc<str>,
+    op: StepOp,
+    arrival: u128,
+}
+
+#[derive(Clone)]
+enum StepOp {
+    Open(Box<StepView>),
+    Close(Closing),
+}
+
+impl StepOp {
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Open(view) => view.bytes(),
+            Self::Close(_) => 64,
+        }
+    }
+}
+
+/// Step changes waiting for a session, bounded like the ring they will join.
+#[derive(Default)]
+struct StepQueue {
+    items: VecDeque<PendingStep>,
+    bytes: usize,
+    lost: bool,
+}
+
+impl StepQueue {
+    fn push(&mut self, item: PendingStep) {
+        self.bytes += item.op.bytes();
+        self.items.push_back(item);
+        while self.items.len() > STEP_RING_ENTRIES || self.bytes > STEP_RING_BYTES {
+            self.drop_oldest();
+        }
+    }
+
+    fn drop_oldest(&mut self) {
+        if let Some(old) = self.items.pop_front() {
+            self.bytes -= old.op.bytes();
+            self.lost = true;
+        }
+    }
+}
+
+impl std::fmt::Debug for StepQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StepQueue")
+            .field("steps", &self.items.len())
+            .field("bytes", &self.bytes)
+            .field("lost", &self.lost)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+struct StoredStep {
+    view: StepView,
+    seq: u64,
+    arrival: u128,
+}
+
+/// The latest state of each step of a turn, oldest first, under its own bounds so steps never
+/// push text out of the output ring.
+#[derive(Debug, Default)]
+struct StepRing {
+    items: VecDeque<StoredStep>,
+    bytes: usize,
+    seq: u64,
+    lost: bool,
+}
+
+impl StepRing {
+    fn apply(&mut self, op: StepOp, arrival: u128) {
+        self.seq = self.seq.saturating_add(1);
+        match op {
+            StepOp::Open(view) => {
+                let bytes = view.bytes();
+                if let Some(old) = self.items.iter_mut().find(|old| old.view.id == view.id) {
+                    self.bytes = self.bytes - old.view.bytes() + bytes;
+                    old.view = *view;
+                    old.seq = self.seq;
+                } else {
+                    self.bytes += bytes;
+                    self.items.push_back(StoredStep {
+                        view: *view,
+                        seq: self.seq,
+                        arrival,
+                    });
+                }
+                self.trim();
+            }
+            StepOp::Close(closing) => {
+                if let Some(step) = self
+                    .items
+                    .iter_mut()
+                    .find(|step| step.view.id == closing.id)
+                {
+                    step.view.close(&closing);
+                    step.seq = self.seq;
+                }
+            }
+        }
+    }
+
+    fn trim(&mut self) {
+        while self.items.len() > STEP_RING_ENTRIES || self.bytes > STEP_RING_BYTES {
+            self.drop_oldest();
+        }
+    }
+
+    fn drop_oldest(&mut self) {
+        if let Some(old) = self.items.pop_front() {
+            self.bytes -= old.view.bytes();
+            self.lost = true;
+        }
+    }
+
+    fn abandon(&mut self, at: u64) {
+        for step in &mut self.items {
+            if step.view.status == steps::Status::Running {
+                step.view.abandon(at);
+                self.seq = self.seq.saturating_add(1);
+                step.seq = self.seq;
+            }
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 struct Orphan {
     chunks: VecDeque<Pending>,
+    steps: StepQueue,
     bytes: usize,
     lost: bool,
     finished: bool,
@@ -277,6 +433,8 @@ struct Ring {
     chunks: VecDeque<Stored>,
     pending: VecDeque<Pending>,
     pending_bytes: usize,
+    pending_steps: StepQueue,
+    steps: StepRing,
     bytes: usize,
     first_seq: u64,
     next_seq: u64,
@@ -306,6 +464,8 @@ impl Ring {
             chunks: VecDeque::new(),
             pending: VecDeque::new(),
             pending_bytes: 0,
+            pending_steps: StepQueue::default(),
+            steps: StepRing::default(),
             bytes: 0,
             first_seq: 0,
             next_seq: 0,
@@ -392,6 +552,12 @@ impl Ring {
             self.loss = Some(reason);
         }
     }
+}
+
+enum Admission {
+    Refused,
+    Unbound,
+    Bound(Binding),
 }
 
 #[derive(Clone, Debug)]
@@ -500,10 +666,12 @@ impl State {
                 .orphan
                 .iter()
                 .filter_map(|(key, value)| {
-                    value
-                        .chunks
-                        .front()
-                        .map(|front| (key.clone(), front.arrival))
+                    let text = value.chunks.front().map(|front| front.arrival);
+                    let step = value.steps.items.front().map(|front| front.arrival);
+                    text.into_iter()
+                        .chain(step)
+                        .min()
+                        .map(|at| (key.clone(), at))
                 })
                 .min_by_key(|(_, at)| *at)
                 .map(|(key, _)| key)
@@ -513,7 +681,10 @@ impl State {
                 self.close(key);
             }
         }
-        while self.text_bytes() > MAX_BYTES {
+        while self.text_bytes() + self.step_bytes() > MAX_BYTES {
+            if self.drop_oldest_step() {
+                continue;
+            }
             let ring_oldest = self
                 .rings
                 .iter()
@@ -568,6 +739,66 @@ impl State {
                 (None, None) => break,
             }
         }
+    }
+
+    /// Every byte the steps hold, kept, waiting for a session or waiting for a turn.
+    fn step_bytes(&self) -> usize {
+        self.rings
+            .values()
+            .map(|ring| ring.steps.bytes + ring.pending_steps.bytes)
+            .sum::<usize>()
+            + self
+                .orphan
+                .values()
+                .map(|orphan| orphan.steps.bytes)
+                .sum::<usize>()
+    }
+
+    /// Drops the oldest step change anywhere, so steps give way before any text does. False when
+    /// no step is held.
+    fn drop_oldest_step(&mut self) -> bool {
+        enum Held {
+            Kept(AgentId),
+            Waiting(AgentId),
+            Unbound(ChildKey),
+        }
+        let kept = self.rings.iter().filter_map(|(agent, ring)| {
+            let front = ring.steps.items.front()?;
+            Some((front.arrival, Held::Kept(*agent)))
+        });
+        let waiting = self.rings.iter().filter_map(|(agent, ring)| {
+            let front = ring.pending_steps.items.front()?;
+            Some((front.arrival, Held::Waiting(*agent)))
+        });
+        let unbound = self.orphan.iter().filter_map(|(key, orphan)| {
+            let front = orphan.steps.items.front()?;
+            Some((front.arrival, Held::Unbound(key.clone())))
+        });
+        let Some((_, held)) = kept
+            .chain(waiting)
+            .chain(unbound)
+            .min_by_key(|(arrival, _)| *arrival)
+        else {
+            return false;
+        };
+        match held {
+            Held::Kept(agent) => {
+                if let Some(ring) = self.rings.get_mut(&agent) {
+                    ring.steps.drop_oldest();
+                }
+            }
+            Held::Waiting(agent) => {
+                if let Some(ring) = self.rings.get_mut(&agent) {
+                    ring.pending_steps.drop_oldest();
+                }
+            }
+            Held::Unbound(key) => {
+                if let Some(orphan) = self.orphan.get_mut(&key) {
+                    orphan.steps.drop_oldest();
+                }
+            }
+        }
+        true
     }
 
     fn drop_orphan(&mut self, key: &ChildKey) {
@@ -729,6 +960,7 @@ impl OutputRegistry {
         if let Some(orphan) = orphan {
             ring.pending = orphan.chunks;
             ring.pending_bytes = orphan.bytes;
+            ring.pending_steps = orphan.steps;
             if orphan.lost {
                 ring.truncated = true;
                 ring.loss = Some(Loss::PendingOverflow);
@@ -776,34 +1008,25 @@ impl OutputRegistry {
         self.capture_items(key, session, std::iter::once(CapturedText::Omitted));
     }
 
-    fn capture_items(
-        &self,
-        key: &AdoptionKey,
-        session: &str,
-        items: impl Iterator<Item = CapturedText>,
-    ) {
+    /// Whether a child's output may be kept for `session`, and the turn binding it joins when it
+    /// has one. A refusal is counted.
+    fn admit(state: &mut State, key: &ChildKey, session: &str) -> Admission {
         if session.is_empty() {
-            return;
+            return Admission::Refused;
         }
-        let key = ChildKey::from(key);
-        let mut state = self.state();
-        if session.len() > MAX_SESSION_BYTES {
+        if session.len() > MAX_SESSION_BYTES || state.closed.contains(key) {
             state.refuse();
-            return;
+            return Admission::Refused;
         }
-        if state.closed.contains(&key) {
-            state.refuse();
-            return;
-        }
-        let binding = state.bindings.get(&key).cloned();
+        let binding = state.bindings.get(key).cloned();
         if let Some(binding) = &binding {
             if binding.finished
                 || state.rings.get(&binding.agent).is_none_or(|r| {
-                    r.turn != binding.turn || r.key.as_ref() != Some(&key) || r.ended || r.overflow
+                    r.turn != binding.turn || r.key.as_ref() != Some(key) || r.ended || r.overflow
                 })
             {
                 state.refuse();
-                return;
+                return Admission::Refused;
             }
             match &state
                 .rings
@@ -813,19 +1036,35 @@ impl OutputRegistry {
             {
                 SessionGate::Admitted(accepted) if accepted.as_str() != session => {
                     state.refuse();
-                    return;
+                    return Admission::Refused;
                 }
                 SessionGate::RefusedOvercap => {
                     state.refuse();
-                    return;
+                    return Admission::Refused;
                 }
                 SessionGate::Unconfirmed | SessionGate::Admitted(_) => {}
             }
         }
-        if state.orphan.get(&key).is_some_and(|orphan| orphan.finished) {
+        if state.orphan.get(key).is_some_and(|orphan| orphan.finished) {
             state.refuse();
-            return;
+            return Admission::Refused;
         }
+        binding.map_or(Admission::Unbound, Admission::Bound)
+    }
+
+    fn capture_items(
+        &self,
+        key: &AdoptionKey,
+        session: &str,
+        items: impl Iterator<Item = CapturedText>,
+    ) {
+        let key = ChildKey::from(key);
+        let mut state = self.state();
+        let binding = match Self::admit(&mut state, &key, session) {
+            Admission::Refused => return,
+            Admission::Unbound => None,
+            Admission::Bound(binding) => Some(binding),
+        };
         let session: Arc<str> = Arc::from(session);
         for piece in items {
             if matches!(&piece, CapturedText::Omitted)
@@ -870,6 +1109,59 @@ impl OutputRegistry {
         self.notify(&mut state);
     }
 
+    /// A tool call the child's reader opened or closed. The text is scrubbed here, before anything
+    /// keeps it, and it joins the turn's step ring only once the session is confirmed.
+    pub fn capture_step(&self, key: &AdoptionKey, event: StepEvent) {
+        let now = steps::now_ms();
+        let session = event.session().as_str().to_owned();
+        let op = match event {
+            StepEvent::Open { step, .. } => {
+                StepOp::Open(Box::new(steps::open(&self.redactor, step, now)))
+            }
+            StepEvent::Close {
+                id,
+                failed,
+                exit,
+                result_bytes,
+                ..
+            } => StepOp::Close(Closing {
+                id: steps::scrub_id(&self.redactor, &id),
+                failed,
+                exit,
+                result_bytes,
+                at: now,
+            }),
+        };
+        let key = ChildKey::from(key);
+        let mut state = self.state();
+        let binding = match Self::admit(&mut state, &key, &session) {
+            Admission::Refused => return,
+            Admission::Unbound => None,
+            Admission::Bound(binding) => Some(binding),
+        };
+        let arrival = state.next_arrival();
+        let item = PendingStep {
+            session: Arc::from(session),
+            op,
+            arrival,
+        };
+        if let Some(binding) = binding {
+            let ring = state
+                .rings
+                .get_mut(&binding.agent)
+                .expect("checked binding");
+            if matches!(ring.gate, SessionGate::Admitted(_)) {
+                ring.steps.apply(item.op, arrival);
+            } else {
+                ring.pending_steps.push(item);
+            }
+        } else {
+            state.orphan.entry(key).or_default().steps.push(item);
+        }
+        state.make_room();
+        self.notify(&mut state);
+    }
+
     /// Called only after the accepted `SessionLearned` append and projection fold.
     pub fn confirm(&self, agent: AgentId, turn: TurnId, session: &SessionId) {
         let mut state = self.state();
@@ -886,9 +1178,10 @@ impl OutputRegistry {
             return;
         }
         if session.as_str().len() > MAX_SESSION_BYTES {
-            let pending_refused = ring.pending.len();
+            let pending_refused = ring.pending.len() + ring.pending_steps.items.len();
             ring.pending.clear();
             ring.pending_bytes = 0;
+            ring.pending_steps = StepQueue::default();
             ring.gate = SessionGate::RefusedOvercap;
             state.refused = state.refused.saturating_add(pending_refused as u64 + 1);
             self.notify(&mut state);
@@ -902,6 +1195,15 @@ impl OutputRegistry {
         for chunk in pending {
             if chunk.session.as_ref() == session.as_str() {
                 ring.capture(chunk.body, chunk.arrival);
+            } else {
+                refused += 1;
+            }
+        }
+        let waiting = std::mem::take(&mut ring.pending_steps);
+        ring.steps.lost |= waiting.lost;
+        for step in waiting.items {
+            if step.session.as_ref() == session.as_str() {
+                ring.steps.apply(step.op, step.arrival);
             } else {
                 refused += 1;
             }
@@ -920,12 +1222,14 @@ impl OutputRegistry {
             }
             ring.ended = true;
             let refused = if matches!(ring.gate, SessionGate::Unconfirmed) {
-                ring.pending.len()
+                ring.pending.len() + ring.pending_steps.items.len()
             } else {
                 0
             };
             ring.pending.clear();
             ring.pending_bytes = 0;
+            ring.pending_steps = StepQueue::default();
+            ring.steps.abandon(steps::now_ms());
             state.refused = state.refused.saturating_add(refused as u64);
             state.revoke(agent);
             self.notify(&mut state);
@@ -1039,7 +1343,54 @@ impl OutputRegistry {
                     loss: ring.reply_loss,
                     ended: ring.ended,
                 }),
+            steps: state
+                .rings
+                .get(&agent)
+                .filter(|ring| matches!(ring.gate, SessionGate::Admitted(_)))
+                .map(|ring| StepsMark {
+                    turn: ring.turn,
+                    seq: ring.steps.seq,
+                }),
         }
+    }
+
+    /// The kind of the step each running agent is in now, newest running step first.
+    pub(crate) fn step_labels(&self) -> BTreeMap<AgentId, &'static str> {
+        self.state()
+            .rings
+            .iter()
+            .filter(|(_, ring)| matches!(ring.gate, SessionGate::Admitted(_)) && !ring.ended)
+            .filter_map(|(agent, ring)| {
+                ring.steps
+                    .items
+                    .iter()
+                    .rev()
+                    .find(|step| step.view.status == steps::Status::Running)
+                    .map(|step| (*agent, step.view.kind))
+            })
+            .collect()
+    }
+
+    /// The steps of `agent`'s latest turn that changed after `since`, once the turn's session is
+    /// confirmed. `since` is zero for everything the ring holds.
+    pub(crate) fn steps_since(&self, agent: AgentId, since: u64) -> Option<StepsDelta> {
+        let state = self.state();
+        let ring = state
+            .rings
+            .get(&agent)
+            .filter(|ring| matches!(ring.gate, SessionGate::Admitted(_)))?;
+        Some(StepsDelta {
+            turn: ring.turn,
+            seq: ring.steps.seq,
+            truncated: ring.steps.lost,
+            items: ring
+                .steps
+                .items
+                .iter()
+                .filter(|step| step.seq > since)
+                .map(|step| step.view.clone().rescrubbed(&self.redactor))
+                .collect(),
+        })
     }
 
     #[must_use]
@@ -1229,5 +1580,215 @@ mod tests {
         assert!(ring.overflow);
         assert_eq!(ring.loss, Some(Loss::SequenceOverflow));
         assert!(ring.chunks.is_empty());
+    }
+
+    use dudes_providers::steps::{Step, StepKind};
+
+    const SESSION: &str = "session";
+
+    fn open_event(id: &str, session: &str, command: &str) -> StepEvent {
+        StepEvent::Open {
+            session: SessionId::new(session),
+            step: Step {
+                id: id.to_owned(),
+                parent: None,
+                kind: StepKind::Command,
+                tool: "Bash".to_owned(),
+                args: vec![("command".to_owned(), command.to_owned())],
+                edit: None,
+                plan: Vec::new(),
+            },
+        }
+    }
+
+    fn close_event(id: &str) -> StepEvent {
+        StepEvent::Close {
+            session: SessionId::new(SESSION),
+            id: id.to_owned(),
+            failed: false,
+            exit: None,
+            result_bytes: 7,
+        }
+    }
+
+    fn bound() -> (OutputRegistry, AgentId, TurnId, AdoptionKey) {
+        let output = OutputRegistry::new();
+        let agent = AgentId::from_parts(1, 1);
+        let turn = TurnId::from_parts(2, 1);
+        let key = AdoptionKey {
+            pid: 10,
+            start_time: 20,
+            boot: None,
+        };
+        output.replace(agent, turn);
+        assert!(output.register(agent, turn, &key));
+        (output, agent, turn, key)
+    }
+
+    #[test]
+    fn steps_wait_for_the_confirmed_session_and_then_appear_once() {
+        let (output, agent, turn, key) = bound();
+        output.capture_step(&key, open_event("toolu_1", SESSION, "ls"));
+        output.capture_step(&key, close_event("toolu_1"));
+        output.capture_step(&key, open_event("toolu_2", "another", "pwd"));
+        assert!(output.snapshot(agent).steps.is_none());
+        assert!(output.steps_since(agent, 0).is_none());
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        let delta = output.steps_since(agent, 0).expect("steps once confirmed");
+        let ids: Vec<_> = delta.items.iter().map(|step| step.id.as_str()).collect();
+        assert_eq!(ids, ["toolu_1"], "a line of another session is refused");
+        assert_eq!(delta.items[0].result_bytes, Some(7));
+        assert_eq!(output.snapshot(agent).steps.unwrap().seq, delta.seq);
+        assert!(
+            output
+                .steps_since(agent, delta.seq)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn steps_that_arrive_before_the_turn_is_registered_join_it_later() {
+        let output = OutputRegistry::new();
+        let agent = AgentId::from_parts(1, 1);
+        let turn = TurnId::from_parts(2, 1);
+        let key = AdoptionKey {
+            pid: 10,
+            start_time: 20,
+            boot: None,
+        };
+        output.capture_step(&key, open_event("toolu_1", SESSION, "ls"));
+        output.replace(agent, turn);
+        assert!(output.register(agent, turn, &key));
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        assert_eq!(output.steps_since(agent, 0).unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn a_flood_of_steps_never_evicts_the_reply_text() {
+        let (output, agent, turn, key) = bound();
+        output.capture(&key, SESSION, "the answer");
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        for index in 0..600 {
+            output.capture_step(&key, open_event(&format!("toolu_{index}"), SESSION, "ls"));
+        }
+        let delta = output.steps_since(agent, 0).unwrap();
+        assert_eq!(delta.items.len(), STEP_RING_ENTRIES);
+        assert!(delta.truncated);
+        assert_eq!(delta.items[0].id, "toolu_344", "the oldest steps go first");
+        assert_eq!(output.snapshot(agent).reply.unwrap().text, "the answer");
+    }
+
+    #[test]
+    fn the_end_of_a_turn_settles_the_steps_still_running() {
+        let (output, agent, turn, key) = bound();
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        output.capture_step(&key, open_event("toolu_1", SESSION, "sleep 60"));
+        output.end(agent, turn);
+        let step = &output.steps_since(agent, 0).unwrap().items[0];
+        assert_eq!(step.status, steps::Status::Failed);
+        assert_eq!(step.note, Some("the turn ended first"));
+    }
+
+    fn heavy_event(id: &str) -> StepEvent {
+        StepEvent::Open {
+            session: SessionId::new(SESSION),
+            step: Step {
+                id: id.to_owned(),
+                parent: None,
+                kind: StepKind::Other,
+                tool: "Custom".to_owned(),
+                args: (0..8)
+                    .map(|n| (format!("arg{n}"), "y".repeat(steps::INPUT_BYTES)))
+                    .collect(),
+                edit: None,
+                plan: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn steps_of_every_kind_share_the_run_cap_and_the_oldest_orphan_goes_first() {
+        let output = OutputRegistry::new();
+        let key_at = |pid: u32| AdoptionKey {
+            pid,
+            start_time: 20,
+            boot: None,
+        };
+        for pid in 1..=48_u32 {
+            for step in 0..20 {
+                output.capture_step(&key_at(pid), heavy_event(&format!("toolu_{pid}_{step}")));
+            }
+        }
+        let (agent, turn) = (AgentId::from_parts(1, 1), TurnId::from_parts(2, 1));
+        output.replace(agent, turn);
+        assert!(output.register(agent, turn, &key_at(100)));
+        for step in 0..20 {
+            output.capture_step(&key_at(100), heavy_event(&format!("toolu_w_{step}")));
+        }
+        let state = output.state();
+        assert!(
+            state.step_bytes() + state.text_bytes() <= MAX_BYTES,
+            "{} bytes held",
+            state.step_bytes()
+        );
+        let held = |pid: u32| {
+            state
+                .orphan
+                .get(&ChildKey::from(&key_at(pid)))
+                .map_or(0, |orphan| orphan.steps.items.len())
+        };
+        assert_eq!(held(1), 0, "the oldest steps-only orphan is evicted first");
+        assert!(held(48) > 0, "the newest orphan keeps its steps");
+        assert!(
+            !state.rings[&agent].pending_steps.items.is_empty(),
+            "the waiting steps of a bound turn are counted and kept while newest"
+        );
+    }
+
+    #[test]
+    fn a_secret_learned_after_capture_is_taken_out_when_steps_are_read() {
+        let redactor = Redactor::for_run();
+        let output = OutputRegistry::with_redactor(redactor.clone());
+        let (agent, turn) = (AgentId::from_parts(1, 1), TurnId::from_parts(2, 1));
+        let key = AdoptionKey {
+            pid: 10,
+            start_time: 20,
+            boot: None,
+        };
+        output.replace(agent, turn);
+        assert!(output.register(agent, turn, &key));
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        output.capture_step(
+            &key,
+            open_event("toolu_1", SESSION, "echo late-secret-0123456789"),
+        );
+        redactor.set_source("test", ["late-secret-0123456789".to_owned()]);
+        let step = &output.steps_since(agent, 0).unwrap().items[0];
+        assert_eq!(step.args[0].value, "echo (redacted)");
+    }
+
+    #[test]
+    fn a_secret_the_daemon_knows_never_enters_the_step_ring() {
+        let redactor = Redactor::for_run();
+        redactor.set_source("test", ["synthetic-secret-value-0123456789".to_owned()]);
+        let output = OutputRegistry::with_redactor(redactor);
+        let agent = AgentId::from_parts(1, 1);
+        let turn = TurnId::from_parts(2, 1);
+        let key = AdoptionKey {
+            pid: 10,
+            start_time: 20,
+            boot: None,
+        };
+        output.replace(agent, turn);
+        assert!(output.register(agent, turn, &key));
+        output.capture_step(
+            &key,
+            open_event("toolu_1", SESSION, "echo synthetic-secret-value-0123456789"),
+        );
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        let step = &output.steps_since(agent, 0).unwrap().items[0];
+        assert_eq!(step.args[0].value, "echo (redacted)");
     }
 }

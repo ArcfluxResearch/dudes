@@ -287,6 +287,7 @@ impl TurnStream {
             text,
             session: None,
             activity: Some(LiveActivityKind::Working),
+            steps: Vec::new(),
         }
     }
 
@@ -335,6 +336,7 @@ impl TurnReader for TurnStream {
                         ..SessionObservation::default()
                     }),
                     activity: Some(LiveActivityKind::Working),
+                    steps: Vec::new(),
                 };
             }
             Event::Start(message) => {

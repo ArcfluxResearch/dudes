@@ -170,6 +170,8 @@ pub struct Daemon<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R:
     /// The timer that resyncs open Floor streams when the local day changes, held and stopped the
     /// way the heartbeat is.
     pub(crate) floor_day_watch: Option<crate::floor_stream::HeartbeatTask>,
+    /// The timer that tells every open Floor stream what step kind each running agent is in.
+    pub(crate) floor_step_labels: Option<crate::floor_stream::HeartbeatTask>,
     /// A share of the bound transport. Held for the daemon's life rather than lent only to the
     /// accept thread: the last `Arc` closes the listener, and a listener closed while the loop is
     /// still running is a daemon with no door and no way to say so.
@@ -7162,6 +7164,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             // joins it (`HeartbeatTask::drop`), and stopping the timer does not end the registry.
             drop(self.floor_heartbeat.take());
             drop(self.floor_day_watch.take());
+            drop(self.floor_step_labels.take());
             self.witness.teardown.record(TeardownStep::FloorStopped);
         }
 

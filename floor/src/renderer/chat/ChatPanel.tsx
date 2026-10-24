@@ -18,6 +18,7 @@ import type { ChatReason, ChatTurn, PendingNote } from './model.ts';
 import { conversationEntries } from './thread.ts';
 import type { ChatEntry } from './thread.ts';
 import { ChatText } from './ChatText.tsx';
+import { Steps } from './Steps.tsx';
 import { FullOutput } from '../LiveWork.tsx';
 
 export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
@@ -247,6 +248,8 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
                 : <p>Cancellation is unavailable for this message.</p>}
             </div>}
           {status === null ? null : <p className="chat-message-state" role="status">{status}</p>}
+          {turn !== null && stepsMatch(floor, row, turn)
+            ? <Steps steps={floor.output.steps} truncated={floor.output.stepsTruncated} stopped={floor.output.stepsStopped} /> : null}
           {turn?.reply == null ? null : <div className="chat-message chat-assistant">
             <p className="chat-speaker">{name}</p>
             <ChatText text={turn.reply} final mode="agent" />
@@ -367,6 +370,12 @@ function turnText(turn: ChatTurn, output: OutputStatus | null): string | null {
 function previewMatches(floor: FloorState, row: AgentRow, turn: ChatTurn): boolean {
   return row.mode === 'managed' && turn.state === 'running' && floor.output.view === 'reply' && floor.output.reply !== null
     && ['live', 'ended', 'gap'].includes(floor.output.status)
+    && floor.output.targetId === row.id && floor.output.agentId === row.id && floor.output.turnId === turn.turn_id
+    && floor.output.selectionEpoch !== null;
+}
+
+function stepsMatch(floor: FloorState, row: AgentRow, turn: ChatTurn): boolean {
+  return row.mode === 'managed' && floor.output.view === 'reply' && floor.output.steps.length > 0
     && floor.output.targetId === row.id && floor.output.agentId === row.id && floor.output.turnId === turn.turn_id
     && floor.output.selectionEpoch !== null;
 }

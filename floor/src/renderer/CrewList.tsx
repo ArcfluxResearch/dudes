@@ -35,8 +35,9 @@ export function drawerHandBack(state: {
  * own. It reads only the projection, never the office, so it also stands in
  * for the office when the office cannot draw.
  */
-export function CrewList({ agents, cards = [], selectedId, selectable, stale, onSelectAgent, onOpenCard, addAgent }: {
+export function CrewList({ agents, cards = [], stepLabels = {}, selectedId, selectable, stale, onSelectAgent, onOpenCard, addAgent }: {
   readonly agents: readonly AgentRow[];
+  readonly stepLabels?: Readonly<Record<string, string>>;
   readonly cards?: readonly CardRow[];
   readonly selectedId: string | null;
   readonly selectable: boolean;
@@ -103,6 +104,7 @@ export function CrewList({ agents, cards = [], selectedId, selectable, stale, on
                     title={crew.activity.text}>{crew.activity.line}</small>
                   {crew.liveActivity === null ? null : <small className="crew-live-activity"
                     data-live-activity={crew.liveActivity}>{crew.liveActivity}</small>}
+                  {stepLabels[row.id] === undefined ? null : <small className="crew-step-label">{stepLabels[row.id]}</small>}
                 </span>
                 <span className="crew-state">
                   <span className="crew-chip" data-status={crew.status}>{crew.status}</span>

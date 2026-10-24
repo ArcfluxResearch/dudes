@@ -12,6 +12,7 @@ pub mod config;
 mod hooks;
 pub mod managed;
 pub mod outcome;
+mod steps;
 pub mod stream;
 mod text;
 pub mod usage;

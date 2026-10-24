@@ -735,6 +735,9 @@ impl ChildTurn {
         if let Some(session) = read.omitted_text {
             self.ends.output.omit(key, session.as_str());
         }
+        for step in read.steps {
+            self.ends.output.capture_step(key, step);
+        }
         if let Some(observation) = read.session {
             self.ends.observed_session(key, self.mcp_grant, observation);
         }
@@ -1005,6 +1008,7 @@ mod tests {
                 text: Vec::new(),
                 session: (text == OPEN).then(observation),
                 activity: None,
+                steps: Vec::new(),
             }
         }
 
