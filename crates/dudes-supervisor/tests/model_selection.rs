@@ -56,6 +56,7 @@ type Configured = Arc<Mutex<Option<String>>>;
 #[derive(Clone)]
 struct Selecting {
     configured: Configured,
+    pin: Option<&'static str>,
 }
 
 /// How a selection appears in a launch: the selector, or this word for the provider default. The
@@ -91,6 +92,10 @@ impl Adapter for Selecting {
 
     fn turn_reader(&self) -> Box<dyn TurnReader> {
         Box::new(TurnStream::new())
+    }
+
+    fn fixed_model(&self) -> Option<OsString> {
+        self.pin.map(OsString::from)
     }
 
     /// The one place configuration is read. Everything else takes what it is handed.
@@ -138,6 +143,11 @@ impl Adapter for Selecting {
 
 /// A harness whose floor runs on [`Selecting`], sharing one configuration cell across the restart.
 fn harness(configured: &Configured) -> Harness {
+    pinned_harness(configured, None)
+}
+
+/// The same floor under an adapter whose configuration pins a model for every agent.
+fn pinned_harness(configured: &Configured, pin: Option<&'static str>) -> Harness {
     let cell = Arc::clone(configured);
     Harness::with_adapter(
         FakeClock::ticking(1_787_394_600_000, 1),
@@ -145,6 +155,7 @@ fn harness(configured: &Configured) -> Harness {
         move || {
             Box::new(Selecting {
                 configured: Arc::clone(&cell),
+                pin,
             })
         },
     )
@@ -393,6 +404,126 @@ fn a_reissue_uses_the_recorded_selection_not_the_new_configuration() {
     assert!(
         recorded(&h).is_empty(),
         "and writes no second TurnIssued: the first is already fsynced (invariant 2)"
+    );
+}
+
+fn change_model(h: &mut Harness, agent: AgentId, model: Option<&str>) {
+    h.drive(Input::Command(Command::ChangeModel {
+        agent,
+        model: model.map(|name| dudes_types::ModelName::parse(name).unwrap()),
+        by: dudes_proto::Actor::Peer { pid: 7, uid: None },
+        request: None,
+    }));
+}
+
+/// A change applies from the next issued turn, a clear returns to the adapter's own selection,
+/// and the turn that was already issued keeps the model it was issued under.
+#[test]
+fn a_model_change_applies_from_the_next_issue_and_a_clear_returns_to_the_default() {
+    let cell = configured(Some("model-alpha"));
+    let mut h = harness(&cell);
+    let agent = h.hire_naming(Some(dudes_types::ModelName::parse("model-hired").unwrap()));
+    change_model(&mut h, agent, Some("model-changed"));
+    h.set_goal(agent, &["npm", "test"]);
+    let first = h.open_turn(agent).expect("a turn was issued");
+    assert_eq!(
+        launched_under(&h, first),
+        vec![("model-changed".to_owned(), "model-changed".to_owned())],
+        "the change replaced the hire's model"
+    );
+
+    change_model(&mut h, agent, Some("model-later"));
+    assert_eq!(
+        launched_under(&h, first),
+        vec![("model-changed".to_owned(), "model-changed".to_owned())],
+        "the open turn keeps the model it was issued under"
+    );
+
+    let mut cleared = harness(&cell);
+    let agent = cleared.hire_naming(Some(dudes_types::ModelName::parse("model-hired").unwrap()));
+    change_model(&mut cleared, agent, None);
+    cleared.set_goal(agent, &["npm", "test"]);
+    let turn = cleared.open_turn(agent).expect("a turn was issued");
+    assert_eq!(
+        launched_under(&cleared, turn),
+        vec![("model-alpha".to_owned(), "model-alpha".to_owned())],
+        "a clear leaves the adapter's own selection"
+    );
+}
+
+/// The override is a journal fact: a daemon that restarts before the next issue launches under it.
+#[test]
+fn a_model_change_survives_a_restart_before_the_next_issue() {
+    let cell = configured(Some("model-alpha"));
+    let mut h = harness(&cell);
+    let agent = h.hire_naming(None);
+    change_model(&mut h, agent, Some("model-changed"));
+    h.restart();
+    h.set_goal(agent, &["npm", "test"]);
+    let turn = h.open_turn(agent).expect("a turn was issued");
+    assert_eq!(
+        launched_under(&h, turn),
+        vec![("model-changed".to_owned(), "model-changed".to_owned())]
+    );
+}
+
+/// A turn issued before the change and not yet spawned is re-issued with the selection it
+/// recorded, so a re-issue never changes model.
+#[test]
+fn a_change_between_an_issue_and_its_reissue_does_not_move_the_turn() {
+    let cell = configured(Some("model-alpha"));
+    let mut h = harness(&cell);
+    h.launch = false;
+    let (agent, _) = h.hire_with_goal(&["npm", "test"]);
+    let turn = h.open_turn(agent).expect("a turn was issued");
+    change_model(&mut h, agent, Some("model-changed"));
+    h.trace.clear();
+    h.launch = true;
+    h.restart();
+    h.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    let expected = h.supervisor.recovery_opportunity(agent).unwrap().expected;
+    h.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(
+        launched_under(&h, turn),
+        vec![("model-alpha".to_owned(), "model-alpha".to_owned())],
+        "the re-issue launches under the recorded selection, not the new override"
+    );
+}
+
+/// A model the configuration pins is the model the launch passes, so it is the one the turn
+/// records, whatever the override says.
+#[test]
+fn a_pinned_model_is_what_the_turn_records() {
+    let cell = configured(Some("model-alpha"));
+    let mut h = pinned_harness(&cell, Some("model-pinned"));
+    let agent = h.hire_naming(Some(dudes_types::ModelName::parse("model-hired").unwrap()));
+    h.set_goal(agent, &["npm", "test"]);
+    let turn = h.open_turn(agent).expect("a turn was issued");
+    assert_eq!(
+        recorded(&h),
+        vec![Some(ModelSelection::named("model-pinned"))]
+    );
+    assert_eq!(
+        launched_under(&h, turn),
+        vec![("model-pinned".to_owned(), "model-pinned".to_owned())]
+    );
+
+    let mut empty = pinned_harness(&cell, Some(""));
+    let (agent, _) = empty.hire_with_goal(&["npm", "test"]);
+    let turn = empty.open_turn(agent).expect("a turn was issued");
+    assert_eq!(
+        launched_under(&empty, turn),
+        vec![("model-alpha".to_owned(), "model-alpha".to_owned())],
+        "a pin with no value pins nothing the turn could record"
     );
 }
 

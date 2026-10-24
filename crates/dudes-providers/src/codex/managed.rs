@@ -197,6 +197,11 @@ impl Adapter for CodexAdapter {
         ModelSelection::provider_default()
     }
 
+    /// Codex takes `-m` on `exec resume` and a `model` field on the app server's `thread/resume`.
+    fn resumes_under_changed_model(&self) -> bool {
+        true
+    }
+
     fn managed(
         &self,
         ctx: &AgentCtx<'_>,

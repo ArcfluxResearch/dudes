@@ -851,6 +851,8 @@ fn snapshot_is_rebuilt_from_journal() {
         session: None,
         last_turn_ended_at: None,
         worktree: None,
+        model: None,
+        turn_model: None,
         shares_checkout: false,
         question_lsn: None,
         control_lsn: None,

@@ -39,6 +39,7 @@ use crate::floor_git::{GitReads, GitRequest, MAX_GIT_BODY_BYTES};
 use crate::floor_goal::{GoalOutcome, GoalRefusal, GoalRequest, MAX_GOAL_BODY_BYTES};
 use crate::floor_look::{LookOutcome, LookRefusal, LookRequest, MAX_LOOK_BODY_BYTES};
 use crate::floor_memory::{MAX_MEMORY_BODY_BYTES, MemoryReads, MemoryRequest, MemoryRoute};
+use crate::floor_model::{MAX_MODEL_BODY_BYTES, ModelOutcome, ModelRefusal, ModelRequest};
 use crate::floor_peer::{AgentRoots, PeerGate};
 use crate::floor_project::{
     MAX_PROJECT_BODY_BYTES, ProjectAnswer, ProjectRequest, Refusal as ProjectRefusal,
@@ -113,6 +114,7 @@ const GOAL_PATH: &str = "/floor/goal";
 const RENEW_PATH: &str = "/floor/renew";
 const RENAME_PATH: &str = "/floor/rename";
 const LOOK_PATH: &str = "/floor/look";
+const MODEL_PATH: &str = "/floor/model";
 /// Routed only when the operator enabled retiring; otherwise a POST here is any
 /// unrouted POST.
 const RETIRE_PATH: &str = "/floor/retire";
@@ -1197,6 +1199,7 @@ enum ActionRoute {
     Renew,
     Rename,
     Look,
+    Model,
     Retire,
     Settings,
     Project(ProjectVerb),
@@ -1239,6 +1242,7 @@ impl ActionRoute {
             RENEW_PATH if live.control.renew() => Some(Self::Renew),
             RENAME_PATH if live.control.pause_resume() => Some(Self::Rename),
             LOOK_PATH if live.control.pause_resume() => Some(Self::Look),
+            MODEL_PATH if live.control.pause_resume() => Some(Self::Model),
             RETIRE_PATH if live.control.retire() => Some(Self::Retire),
             SETTINGS_PATH => Some(Self::Settings),
             PROJECT_PREVIEW_PATH if live.project => Some(Self::Project(ProjectVerb::Preview)),
@@ -1263,6 +1267,7 @@ impl ActionRoute {
             Self::Goal | Self::Renew => MAX_GOAL_BODY_BYTES,
             Self::Rename => MAX_RENAME_BODY_BYTES,
             Self::Look => MAX_LOOK_BODY_BYTES,
+            Self::Model => MAX_MODEL_BODY_BYTES,
             Self::Retire => MAX_RETIRE_BODY_BYTES,
             Self::Settings => MAX_SETTINGS_BODY_BYTES,
             Self::Project(_) | Self::ChooseFolder => MAX_PROJECT_BODY_BYTES,
@@ -1558,6 +1563,9 @@ fn dispatch<'a>(
                 }
                 (ActionRoute::Look, Admitted::Session(session)) => {
                     look_response(session, handle, body)
+                }
+                (ActionRoute::Model, Admitted::Session(session)) => {
+                    model_response(session, handle, body)
                 }
                 (ActionRoute::Retire, Admitted::Session(session)) => {
                     retire_response(session, handle, body)
@@ -2322,6 +2330,54 @@ fn look_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -> 
             error_response(503, "Service Unavailable")
         }
         Err(LookRefusal::UnavailableNoEffect) => error_response(503, "Service Unavailable"),
+    }
+}
+
+fn model_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -> Response<'a> {
+    let Ok(request) = ModelRequest::parse(body) else {
+        return error_response(400, "Bad Request");
+    };
+    let request_wire = request.request_wire.clone();
+    let mut reservation = match session.reserve(
+        ActionKind::Model,
+        request.request_id,
+        request.request_digest,
+    ) {
+        ReserveResult::Owner(reservation) => reservation,
+        ReserveResult::Pending => {
+            return action_json(
+                202,
+                "Accepted",
+                &serde_json::json!({ "request_id": request_wire, "state": "pending" }),
+            );
+        }
+        ReserveResult::Conflict => return error_response(409, "Conflict"),
+        ReserveResult::Forbidden => return error_response(403, "Forbidden"),
+    };
+    match handle.model(session, request) {
+        Ok(ModelOutcome::Changed {
+            request_id,
+            agent,
+            model,
+        }) => action_json(
+            200,
+            "OK",
+            &serde_json::json!({
+                "request_id": request_id, "state": "changed", "agent": agent, "model": model
+            }),
+        ),
+        Ok(ModelOutcome::Refused { request_id, reason }) => action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({ "request_id": request_id, "state": "refused", "reason": reason }),
+        ),
+        Err(ModelRefusal::Forbidden) => error_response(403, "Forbidden"),
+        Err(ModelRefusal::Conflict) => error_response(409, "Conflict"),
+        Err(ModelRefusal::Unavailable) => {
+            reservation.retain_pending();
+            error_response(503, "Service Unavailable")
+        }
+        Err(ModelRefusal::UnavailableNoEffect) => error_response(503, "Service Unavailable"),
     }
 }
 

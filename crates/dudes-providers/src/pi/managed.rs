@@ -175,6 +175,11 @@ impl Adapter for PiAdapter {
         ModelSelection::provider_default()
     }
 
+    /// Pi takes `--model` beside `--session`, and records a model change inside the session it continues.
+    fn resumes_under_changed_model(&self) -> bool {
+        true
+    }
+
     fn mcp_support(&self) -> McpSupport {
         McpSupport::Http
     }

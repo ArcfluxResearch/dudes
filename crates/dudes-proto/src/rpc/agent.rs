@@ -75,11 +75,11 @@ pub struct HireParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option::<u64>", range(min = 1))]
     pub max_budget: Option<Usd>,
-    /// The model every launch of this agent names. It replaces the engine's configured model for
+    /// The model the agent's launches name. It replaces the engine's configured model for
     /// this agent. Absent means the engine's own selection: the configured model when the
     /// configuration sets one, else the engine's default. The daemon checks the shape only; an
-    /// engine that does not know the name fails the agent's first turn with its own error. Fixed
-    /// for the agent's life: a different model needs a retire and a rehire.
+    /// engine that does not know the name fails the agent's first turn with its own error. The
+    /// operator can change it for the next turn with `agent.model`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<dudes_types::ModelName>,
     /// The operator's declaration that they vouch for `cwd`, recorded once on
@@ -208,6 +208,17 @@ where
     T: Deserialize<'de>,
 {
     Option::<T>::deserialize(deserializer)
+}
+
+/// `agent.model` params: the model the agent's next issued turn uses.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ModelParams {
+    /// The live, managed agent.
+    pub agent: AgentId,
+    /// The new override. Absent clears it, so the agent returns to the engine's own selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<dudes_types::ModelName>,
 }
 
 /// `agent.retire` params.

@@ -697,6 +697,8 @@ names! {
     "floor.devices.remove" => FloorDevicesRemove / floor_devices_remove : floor::DeviceRemoveParams => floor::DeviceRemoveResult;
     /// Answer a browser's "new browser" notice from the terminal: keep it. Operator-only.
     "floor.devices.keep" => FloorDevicesKeep / floor_devices_keep : floor::DeviceKeepParams => floor::DeviceKeepResult;
+    /// Change the model a live managed agent uses from its next issued turn. Operator-only.
+    "agent.model" => AgentModel / agent_model : agent::ModelParams => Empty;
 }
 
 impl From<crate::record::ConditionedMethod> for Method {
@@ -888,9 +890,10 @@ mod tests {
     fn the_method_table_keeps_old_rows_and_appends_tickets() {
         assert_eq!(
             Method::ALL.len(),
-            55,
-            "agent.mcp stays at row 44; the ticket methods append rows 45 to 51, workspace.trust row 52, the device methods rows 53 to 55"
+            56,
+            "agent.mcp stays at row 44; the ticket methods append rows 45 to 51, workspace.trust row 52, the device methods rows 53 to 55, agent.model row 56"
         );
+        assert_eq!(Method::ALL[55], Method::AgentModel);
         assert_eq!(Method::ALL[51], Method::WorkspaceTrust);
         assert_eq!(Method::ALL[52], Method::FloorDevicesList);
         assert_eq!(Method::ALL[53], Method::FloorDevicesRemove);

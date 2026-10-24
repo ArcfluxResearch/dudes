@@ -48,6 +48,7 @@
 extern crate self as duded;
 
 mod agent_bin;
+mod agent_model;
 pub mod baseline;
 mod board;
 pub mod boot;
@@ -80,6 +81,7 @@ pub mod floor_git;
 pub mod floor_goal;
 pub mod floor_look;
 pub mod floor_memory;
+pub mod floor_model;
 mod floor_peer;
 mod floor_port;
 pub mod floor_project;

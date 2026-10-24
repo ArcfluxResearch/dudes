@@ -2974,10 +2974,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// agent's provider has no adapter on this floor, which is the same condition that already
     /// stops [`Self::launch`].
     ///
-    /// The model the agent was hired with replaces the adapter's configured default for this
-    /// agent; a hire that names none takes the adapter's.
+    /// The agent's model override replaces the adapter's configured default for this agent; an
+    /// agent with none takes the adapter's. A model the operator's configuration pins for the
+    /// engine wins over both, so the selection a turn records is the model its launch passes.
     fn model_selection(&self, row: &AgentRow) -> Option<ModelSelection> {
         let adapter = self.adapters.get(row.provider)?;
+        if let Some(pin) = adapter
+            .fixed_model()
+            .and_then(|pin| pin.into_string().ok())
+            .filter(|pin| !pin.is_empty())
+        {
+            return Some(ModelSelection::named(pin));
+        }
         Some(row.model.as_ref().map_or_else(
             || adapter.model_selection(),
             |model| ModelSelection::named(model.as_str()),
@@ -4431,6 +4439,20 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     character,
                     accent,
                     browser_look,
+                },
+                Then::Fold,
+            ),
+            Command::ChangeModel {
+                agent,
+                model,
+                by,
+                request,
+            } => self.persist(
+                Record::AgentModelChanged {
+                    agent,
+                    model,
+                    by,
+                    request,
                 },
                 Then::Fold,
             ),

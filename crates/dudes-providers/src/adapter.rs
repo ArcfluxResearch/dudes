@@ -274,6 +274,13 @@ pub trait Adapter: Send + Sync {
     fn fixed_model(&self) -> Option<std::ffi::OsString> {
         None
     }
+    /// Whether this engine continues a confirmed session when the model named for the next turn
+    /// differs from the one the session last ran under. An engine is checked against its own
+    /// flags or protocol before it answers yes. An engine nobody has checked answers no, and a
+    /// model change is refused for it: the daemon never starts a fresh context in its place.
+    fn resumes_under_changed_model(&self) -> bool {
+        false
+    }
     /// The launch of one managed turn. Invariant 7: typed parts, the task text is one argv
     /// element or stdin, nothing is interpolated into a shell.
     ///

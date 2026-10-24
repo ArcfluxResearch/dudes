@@ -2134,6 +2134,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         Command::Hire(params) => (Method::AgentHire, Some(encode(&**params)?)),
         Command::Rename(params) => (Method::AgentRename, Some(encode(params)?)),
         Command::Look(params) => (Method::AgentLook, Some(encode(params)?)),
+        Command::Model(params) => (Method::AgentModel, Some(encode(params)?)),
         Command::Mcp(params) => (Method::AgentMcp, Some(encode(params)?)),
         Command::Goal(_) => unreachable!("dispatch sets a goal through set_goal"),
         Command::Pause(agent) => (
@@ -2731,6 +2732,7 @@ fn render_answer(
         Method::AgentRetire => render::retired(out, machine, typed::<Empty>(result)?),
         Method::AgentRename => render::renamed(out, machine, typed::<Empty>(result)?),
         Method::AgentLook => render::look_changed(out, machine, typed::<Empty>(result)?),
+        Method::AgentModel => render::model_changed(out, machine, typed::<Empty>(result)?),
         Method::AgentMcp => render::mcp_servers(out, machine, &typed::<McpResult>(result)?),
         Method::AgentAsk => render::asked(out, machine, typed::<Empty>(result)?),
         Method::MemoryAppend => render::memory_appended(

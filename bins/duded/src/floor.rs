@@ -253,6 +253,19 @@ fn agent_view(projections: &Projections, row: AgentRow, now: Timestamp) -> Resul
         .unread_by_agent(row.id)
         .with_context(|| format!("could not read unread mail for projected agent {}", row.id))?;
 
+    let turn_model = row
+        .open_turn
+        .map(|turn| projections.turn(turn))
+        .transpose()
+        .with_context(|| format!("could not read the open turn of projected agent {}", row.id))?
+        .flatten()
+        .and_then(|turn| turn.model_selection)
+        .and_then(|selection| {
+            selection
+                .selector()
+                .and_then(|name| dudes_types::ModelName::parse(name).ok())
+        });
+
     Ok(AgentView {
         character: row.character,
         accent: row.accent,
@@ -286,6 +299,8 @@ fn agent_view(projections: &Projections, row: AgentRow, now: Timestamp) -> Resul
         session: row.session,
         last_turn_ended_at: row.last_turn_ended_at,
         worktree: None,
+        model: row.model,
+        turn_model,
         shares_checkout: false,
     })
 }

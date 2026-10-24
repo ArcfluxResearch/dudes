@@ -88,6 +88,7 @@ use crate::floor_answer::{AnswerOutcome, AnswerRefusal, AnswerRequest};
 use crate::floor_control::{ControlOutcome, ControlRefusal, ControlRequest, ControlVerb};
 use crate::floor_goal::{GoalOutcome, GoalRefusal, GoalRequest, GoalStep};
 use crate::floor_look::{LookOutcome, LookRefusal, LookRequest};
+use crate::floor_model::{ModelOutcome, ModelRefusal, ModelRequest};
 use crate::floor_rename::{RenameOutcome, RenameRefusal, RenameRequest};
 use crate::floor_retire::{RetireOutcome, RetireRefusal, RetireRequest};
 use crate::floor_switches::ACTION_OFF;
@@ -98,6 +99,7 @@ use crate::ports::{
 };
 
 mod agent_mcp;
+mod agent_model;
 mod browser_project;
 mod browser_ticket;
 mod ticket_run;
@@ -937,6 +939,7 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) goal_index: crate::goal_replacement::GoalChanges,
     pub(crate) rename_index: crate::floor_rename::DurableRenameIndex,
     pub(crate) look_index: crate::floor_look::DurableLookIndex,
+    pub(crate) model_index: crate::floor_model::DurableModelIndex,
     /// Only attributed durable retirements populate this replayable request index.
     pub(crate) retire_index: crate::floor_retire::RetireIndex,
     /// `None` once `[floor.terminal]` is off: it is off from the start, or a reload turned it off
@@ -1556,6 +1559,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     reply,
                 } => {
                     let answer = self.browser_look(&session, &request);
+                    let _ = reply.send(answer);
+                }
+                Job::Model {
+                    session,
+                    request,
+                    reply,
+                } => {
+                    let answer = self.browser_model(&session, &request);
                     let _ = reply.send(answer);
                 }
                 Job::GitTarget { agent, reply } => {
@@ -4485,6 +4496,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 unreachable!("recovery routes precede the mutation fence")
             }
             Ask::Mcp(params) => self.agent_mcp(params).map(Answered::Mcp),
+            Ask::Model { params, by } => self.agent_model(params, by).map(|()| Answered::Done),
             Ask::ReplaceGoal(_) => unreachable!("replacement was handled before the writer fence"),
             // The gate that keeps `agent.hire` and the launch reading one registry. Both ask
             // `Supervisor::adapters`; without this arm a hire on a provider with no adapter is
@@ -6751,6 +6763,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Job::Look { reply, .. } => {
                     let _ = reply.send(Err(LookRefusal::UnavailableNoEffect));
                 }
+                Job::Model { reply, .. } => {
+                    let _ = reply.send(Err(ModelRefusal::UnavailableNoEffect));
+                }
                 Job::Goal { reply, .. } | Job::GoalChecked { reply, .. } => {
                     let _ = reply.send(GoalStep::Answer(Err(GoalRefusal::UnavailableNoEffect)));
                 }
@@ -7222,6 +7237,12 @@ pub(crate) fn refuse_action_off(live: crate::floor_switches::Switches, job: Job)
         }
         Job::Look { request, reply, .. } if !live.control.pause_resume() => {
             let _ = reply.send(Ok(LookOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            }));
+        }
+        Job::Model { request, reply, .. } if !live.control.pause_resume() => {
+            let _ = reply.send(Ok(ModelOutcome::Refused {
                 request_id: request.request_wire.clone(),
                 reason: ACTION_OFF,
             }));
@@ -8444,6 +8465,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         self.look_index
             .apply(record)
             .context("indexing durable browser look record")?;
+        self.model_index
+            .apply(record)
+            .context("indexing durable browser model record")?;
         self.retire_index
             .apply(lsn, record)
             .context("indexing durable browser retire record")

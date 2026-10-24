@@ -4406,6 +4406,8 @@ mod tests {
             session: None,
             last_turn_ended_at: None,
             worktree: None,
+            model: None,
+            turn_model: None,
             shares_checkout: false,
         }
     }
