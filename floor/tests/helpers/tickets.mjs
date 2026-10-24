@@ -67,6 +67,12 @@ export function subscribe(store, { agents = [], cards = [], ticket = {}, checks 
   return epoch;
 }
 
+/** A delta that moves the message cursor to `cursor` and changes only the `agents` it names, as a turn ending does. */
+export function advance(store, cursor, { agents = [] } = {}) {
+  store.applyServerFrame(JSON.stringify({ type: 'floor.delta', delta: { lsn: Number(cursor), agents, cards: [] },
+    messages_lsn: cursor, threads_lsn: cursor }), store.getFloorState().epoch);
+}
+
 /** A daemon that answers each request from `reply(url, body)`, and the requests it saw. */
 export function daemon(reply) {
   const seen = [];

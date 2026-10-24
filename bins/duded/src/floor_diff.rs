@@ -219,7 +219,6 @@ pub fn recorded(
     ticket: &TicketRow,
 ) -> Result<Recorded, DiffRefusal> {
     let goal = ticket.goal.ok_or(DiffRefusal::BaselineUnavailable)?;
-    let claimant = view.claimed_by.ok_or(DiffRefusal::StaleTicket)?;
     if world.ticket_goal(goal) != Some((view.id, ticket.round)) {
         return Err(DiffRefusal::StaleTicket);
     }
@@ -227,6 +226,12 @@ pub fn recorded(
         .ticket_review(goal)
         .ok_or(DiffRefusal::BaselineUnavailable)?;
     let binding = &review.baseline.binding;
+    // Retirement releases a Done ticket's claim, so the round's record names the agent that did it.
+    let claimant = match view.claimed_by {
+        Some(agent) => agent,
+        None if retired(world, binding.claimant) => binding.claimant,
+        None => return Err(DiffRefusal::StaleTicket),
+    };
     if (binding.card, binding.round, binding.goal, binding.claimant)
         != (view.id, ticket.round, goal, claimant)
     {
@@ -253,11 +258,13 @@ fn readable_tree(world: &World, claimant: AgentId) -> Result<Tree, DiffRefusal> 
     match GitTarget::of(world, claimant) {
         Some(GitTarget::Read(tree)) => Ok(tree),
         Some(GitTarget::Released | GitTarget::Removed) => Err(DiffRefusal::WorktreeMismatch),
-        None if world.agents.get(&claimant).is_some_and(|row| row.retired) => {
-            Err(DiffRefusal::WorktreeMismatch)
-        }
+        None if retired(world, claimant) => Err(DiffRefusal::WorktreeMismatch),
         None => Err(DiffRefusal::StaleTicket),
     }
+}
+
+fn retired(world: &World, agent: AgentId) -> bool {
+    world.agents.get(&agent).is_some_and(|row| row.retired)
 }
 
 /// A recorded review turned into the values a read needs, and the binding every reply carries.
@@ -846,12 +853,19 @@ mod tests {
             instruction_review: None,
             coverage: None,
         };
-        let read = |records: &[Record]| {
-            recorded(&world(records), &view, &ticket).map(|recorded| recorded.tree)
+        // What the board holds once the agent retires: a Done ticket's claim is released.
+        let done = CardView {
+            status: CardStatus::Done,
+            seq: Seq(4),
+            claimed_by: None,
+            ..view.clone()
+        };
+        let read = |records: &[Record], view: &CardView| {
+            recorded(&world(records), view, &ticket).map(|recorded| recorded.tree)
         };
 
         assert_eq!(
-            read(&[plain.clone(), started.clone(), baseline.clone()]),
+            read(&[plain.clone(), started.clone(), baseline.clone()], &view),
             Ok(Tree::Checkout(PathBuf::from("/work/repo")))
         );
         for (hire, copy) in [(&plain, "the project folder"), (&leased, "its own copy")] {
@@ -862,14 +876,21 @@ mod tests {
                 baseline.clone(),
                 retired.clone(),
             ];
-            assert_eq!(
-                read(&records),
-                Err(DiffRefusal::WorktreeMismatch),
-                "an agent retired from {copy}"
-            );
+            for (shown, status) in [(&view, "ready for review"), (&done, "done")] {
+                assert_eq!(
+                    read(&records, shown),
+                    Err(DiffRefusal::WorktreeMismatch),
+                    "a {status} ticket whose agent retired from {copy}"
+                );
+            }
         }
         assert_eq!(
-            read(&[started, baseline]),
+            read(&[plain, started.clone(), baseline.clone()], &done),
+            Err(DiffRefusal::StaleTicket),
+            "a released ticket whose agent still works"
+        );
+        assert_eq!(
+            read(&[started, baseline], &view),
             Err(DiffRefusal::StaleTicket),
             "an agent the journal never hired"
         );
