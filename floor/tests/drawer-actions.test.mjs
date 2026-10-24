@@ -82,10 +82,11 @@ test('the Attach explanation is the button’s description and tooltip, and a wa
   assert.match(running, /id="terminal-hint">Wait for this agent’s current work to finish before opening its CLI\./);
 });
 
-test('a switched-off action is not drawn and Enable more controls closes the row', () => {
+test('a switched-off terminal explains how to open the real CLI without a disclosure', () => {
   const block = actionsOf(drawer({ off: ['terminal'] }));
-  assert.doesNotMatch(block, /terminal-attach/);
-  assert.ok(block.indexOf('class="control-pause"') < block.indexOf('class="enable-controls"'));
+  assert.doesNotMatch(block, /terminal-attach|enable-controls/);
+  assert.match(block, /<p class="settings-guidance">To open the real CLI, turn on Attach terminals under Floor switches in Settings, then restart Dudes\.<\/p>/);
+  assert.equal((block.match(/Attach terminals/g) ?? []).length, 1);
 });
 
 test('the Pause explanation is the button’s description and tooltip, not a paragraph', () => {
