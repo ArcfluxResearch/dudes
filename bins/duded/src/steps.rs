@@ -542,7 +542,7 @@ fn names_sensitive_path(kind: StepKind, tool: &str, key: &str, value: &str) -> b
 fn is_path_key(tool: &str, key: &str) -> bool {
     matches!(
         key,
-        "path" | "file_path" | "paths" | "directory" | "cwd" | "notebook_path"
+        "path" | "file_path" | "paths" | "move_path" | "directory" | "cwd" | "notebook_path"
     ) || (tool == "Glob" && key == "pattern")
 }
 
@@ -650,6 +650,32 @@ mod tests {
         let wire = json(&open(&redactor(), edit, 1));
         assert!(!wire.contains(SECRET), "{wire}");
         assert!(wire.contains("(redacted)"), "{wire}");
+    }
+
+    #[test]
+    fn a_command_run_in_a_sensitive_folder_is_withheld_and_a_plain_folder_is_not() {
+        let sensitive = open(
+            &redactor(),
+            step(
+                StepKind::Command,
+                "shell",
+                &[("command", "cat *"), ("cwd", "/work/me/.ssh")],
+            ),
+            1,
+        );
+        assert_eq!(sensitive.withheld, Some("the step names a sensitive path"));
+        assert!(!keeps_result(&sensitive));
+        let plain = open(
+            &redactor(),
+            step(
+                StepKind::Command,
+                "shell",
+                &[("command", "cat *"), ("cwd", "/work/me/project")],
+            ),
+            1,
+        );
+        assert_eq!(plain.withheld, None);
+        assert!(keeps_result(&plain));
     }
 
     #[test]

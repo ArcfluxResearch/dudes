@@ -48,6 +48,7 @@ use dudes_types::{SessionId, Tokens, Usage};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::steps::LiveSteps;
 use crate::stream::{
     FinalReply, LineRead, ScopedUsage, SessionObservation, TextBlock, TextFragment, TextLayout,
     TextProgress, TurnEnd, TurnReader, exit_name,
@@ -68,6 +69,7 @@ pub struct TurnStream {
     layout: TextLayout,
     pending_tools: BTreeMap<String, PendingTool>,
     completed_servers: BTreeSet<String>,
+    steps: LiveSteps,
 }
 
 #[derive(Debug)]
@@ -104,11 +106,14 @@ enum Event {
         id: Option<String>,
         name: Option<String>,
         server: Option<String>,
+        args: Option<Value>,
     },
     ToolEnd {
         id: Option<String>,
         name: Option<String>,
         succeeded: bool,
+        failed: bool,
+        result: String,
     },
     Settled,
     RunEnd,
@@ -194,12 +199,15 @@ impl Event {
                     id: string("toolCallId"),
                     name,
                     server,
+                    args: value.get("args").cloned(),
                 }
             }
             "tool_execution_end" => Self::ToolEnd {
                 id: string("toolCallId"),
                 name: string("toolName"),
                 succeeded: value.get("isError").and_then(Value::as_bool) == Some(false),
+                failed: value.get("isError").and_then(Value::as_bool) == Some(true),
+                result: result_text(value.pointer("/result/content")),
             },
             "agent_settled" => Self::Settled,
             "agent_end" | "auto_retry_start" => Self::RunEnd,
@@ -221,6 +229,56 @@ impl TurnStream {
             && name == Some(pending.name.as_str())
         {
             self.completed_servers.insert(pending.server);
+        }
+    }
+
+    fn tool_start(
+        &mut self,
+        id: Option<String>,
+        name: Option<String>,
+        server: Option<String>,
+        args: Option<&Value>,
+    ) -> LineRead {
+        let steps = self
+            .session
+            .as_ref()
+            .zip(id.as_deref().zip(name.as_deref()))
+            .and_then(|(session, (id, name))| self.steps.start(session, id, name, args))
+            .into_iter()
+            .collect();
+        if let Some(id) = id {
+            self.pending_tools.remove(&id);
+            if let Some((name, server)) = name.zip(server) {
+                self.pending_tools.insert(id, PendingTool { name, server });
+            }
+        }
+        LineRead {
+            activity: Some(LiveActivityKind::UsingTool),
+            steps,
+            ..LineRead::default()
+        }
+    }
+
+    fn tool_end(
+        &mut self,
+        id: Option<&str>,
+        name: Option<&str>,
+        succeeded: bool,
+        failed: bool,
+        result: &str,
+    ) -> LineRead {
+        self.complete_tool(id, name, succeeded);
+        let steps = self
+            .session
+            .as_ref()
+            .zip(id)
+            .and_then(|(session, id)| self.steps.end(session, id, failed, result))
+            .into_iter()
+            .collect();
+        LineRead {
+            activity: Some(LiveActivityKind::Working),
+            steps,
+            ..LineRead::default()
         }
     }
 
@@ -382,29 +440,19 @@ impl TurnReader for TurnStream {
                     ..LineRead::default()
                 };
             }
-            Event::ToolStart { id, name, server } => {
-                if let Some(id) = id {
-                    self.pending_tools.remove(&id);
-                    if let Some((name, server)) = name.zip(server) {
-                        self.pending_tools.insert(id, PendingTool { name, server });
-                    }
-                }
-                return LineRead {
-                    activity: Some(LiveActivityKind::UsingTool),
-                    ..LineRead::default()
-                };
-            }
+            Event::ToolStart {
+                id,
+                name,
+                server,
+                args,
+            } => return self.tool_start(id, name, server, args.as_ref()),
             Event::ToolEnd {
                 id,
                 name,
                 succeeded,
-            } => {
-                self.complete_tool(id.as_deref(), name.as_deref(), succeeded);
-                return LineRead {
-                    activity: Some(LiveActivityKind::Working),
-                    ..LineRead::default()
-                };
-            }
+                failed,
+                result,
+            } => return self.tool_end(id.as_deref(), name.as_deref(), succeeded, failed, &result),
             Event::Settled => self.phase = Phase::Settled,
             Event::RunEnd => {
                 if let Some(call) = self.in_flight.as_mut() {
@@ -448,6 +496,17 @@ impl TurnReader for TurnStream {
             unreadable: turn.unreadable,
         }
     }
+}
+
+/// The text blocks of a tool's result, one per line.
+fn result_text(content: Option<&Value>) -> String {
+    content
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn outcome(last: &AssistantMessage, exit: ExitStatus) -> (TurnOutcome, Option<FinalReply>) {

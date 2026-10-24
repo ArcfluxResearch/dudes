@@ -7,9 +7,10 @@ use dudes_proto::providers::codex_app_server as wire;
 use dudes_proto::{ExitStatus, LiveActivityKind, TurnOutcome};
 use dudes_types::{SessionId, Tokens, Usage};
 use serde::de::DeserializeOwned;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::startup::CodexStartup;
+use super::steps::{LiveSteps, is_step, plan_items};
 use crate::adapter::TurnSession;
 use crate::protocol::{ProtocolAction, StartupFrame};
 use crate::stream::{
@@ -38,6 +39,7 @@ pub struct AppServerReader {
     refused: u64,
     refusal: Option<String>,
     servers: BTreeSet<String>,
+    steps: LiveSteps,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,7 +57,10 @@ enum Event {
     Item {
         completed: bool,
         body: wire::ItemNotification,
+        /// The item as JSON, for a step. Absent for a reply, which has no step.
+        value: Option<Value>,
     },
+    Plan(wire::PlanUpdate),
     Delta(wire::AgentDelta),
     Usage(wire::TokenUsage),
     End(wire::TurnResponse),
@@ -90,6 +95,7 @@ impl AppServerReader {
             refused: 0,
             refusal: None,
             servers: BTreeSet::new(),
+            steps: LiveSteps::default(),
         }
     }
 
@@ -282,46 +288,26 @@ impl AppServerReader {
 
     fn event(&mut self, event: Event) -> LineRead {
         match event {
-            Event::Item { completed, body } => {
+            Event::Plan(body) => {
                 if !self.attributed(body.thread_id.as_deref(), body.turn_id.as_deref()) {
                     return LineRead::default();
                 }
-                let Some(item) = body.item else {
-                    self.unreadable += 1;
-                    return LineRead::default();
-                };
-                if item.kind.as_deref() == Some("mcpToolCall") {
-                    return item
-                        .server
-                        .map_or_else(LineRead::default, |server| self.server_named(&server));
+                let steps = self
+                    .thread
+                    .clone()
+                    .map(|session| self.steps.plan(&session, plan_items(&body.plan)))
+                    .unwrap_or_default();
+                LineRead {
+                    activity: Some(LiveActivityKind::Working),
+                    steps,
+                    ..LineRead::default()
                 }
-                if item.kind.as_deref() != Some("agentMessage") {
-                    return LineRead::default();
-                }
-                let Some(id) = item.id.filter(|id| valid_id(id)) else {
-                    self.unreadable += 1;
-                    return LineRead::default();
-                };
-                if !self.items.contains_key(&id) && self.items.len() >= MAX_ITEMS {
-                    return self.fail();
-                }
-                let progress = self.items.entry(id).or_default();
-                if !completed {
-                    progress.start(0, true);
-                    return LineRead::default();
-                }
-                let Some(text) = item.text else {
-                    self.unreadable += 1;
-                    return LineRead::default();
-                };
-                if !text.is_empty() {
-                    self.final_reply = Some(FinalReply::new(&text));
-                }
-                let fragment = progress
-                    .complete(0, &text)
-                    .map(|fragment| self.layout.render(fragment));
-                self.text(fragment)
             }
+            Event::Item {
+                completed,
+                body,
+                value,
+            } => self.item(completed, body, value.as_ref()),
             Event::Delta(body) => {
                 if !self.attributed(body.thread_id.as_deref(), body.turn_id.as_deref()) {
                     return LineRead::default();
@@ -360,6 +346,7 @@ impl AppServerReader {
                             &mut read,
                             self.event(Event::Item {
                                 completed: true,
+                                value: None,
                                 body: wire::ItemNotification {
                                     thread_id: body.thread_id.clone(),
                                     turn_id: turn.id.clone(),
@@ -379,6 +366,65 @@ impl AppServerReader {
                 }
             }
         }
+    }
+
+    fn item(
+        &mut self,
+        completed: bool,
+        body: wire::ItemNotification,
+        value: Option<&Value>,
+    ) -> LineRead {
+        if !self.attributed(body.thread_id.as_deref(), body.turn_id.as_deref()) {
+            return LineRead::default();
+        }
+        let Some(item) = body.item else {
+            self.unreadable += 1;
+            return LineRead::default();
+        };
+        let steps = match (&self.thread, &value) {
+            (Some(session), Some(value)) if completed => self.steps.completed(session, value),
+            (Some(session), Some(value)) => self.steps.started(session, value),
+            _ => Vec::new(),
+        };
+        if item.kind.as_deref() == Some("mcpToolCall") {
+            let mut read = item
+                .server
+                .map_or_else(LineRead::default, |server| self.server_named(&server));
+            read.steps = steps;
+            return read;
+        }
+        if value.is_some() {
+            return LineRead {
+                steps,
+                ..LineRead::default()
+            };
+        }
+        if item.kind.as_deref() != Some("agentMessage") {
+            return LineRead::default();
+        }
+        let Some(id) = item.id.filter(|id| valid_id(id)) else {
+            self.unreadable += 1;
+            return LineRead::default();
+        };
+        if !self.items.contains_key(&id) && self.items.len() >= MAX_ITEMS {
+            return self.fail();
+        }
+        let progress = self.items.entry(id).or_default();
+        if !completed {
+            progress.start(0, true);
+            return LineRead::default();
+        }
+        let Some(text) = item.text else {
+            self.unreadable += 1;
+            return LineRead::default();
+        };
+        if !text.is_empty() {
+            self.final_reply = Some(FinalReply::new(&text));
+        }
+        let fragment = progress
+            .complete(0, &text)
+            .map(|fragment| self.layout.render(fragment));
+        self.text(fragment)
     }
 
     fn text(&self, fragment: Option<String>) -> LineRead {
@@ -422,14 +468,9 @@ impl TurnReader for AppServerReader {
                 .map_or_else(LineRead::default, |id| self.response(id, text));
         }
         let event = match envelope.method.as_deref() {
-            Some("item/started") => notification(text).map(|body| Event::Item {
-                completed: false,
-                body,
-            }),
-            Some("item/completed") => notification(text).map(|body| Event::Item {
-                completed: true,
-                body,
-            }),
+            Some("item/started") => item_event(text, false),
+            Some("item/completed") => item_event(text, true),
+            Some("turn/plan/updated") => notification(text).map(Event::Plan),
             Some("item/agentMessage/delta") => notification(text).map(Event::Delta),
             Some("thread/tokenUsage/updated") => notification(text).map(Event::Usage),
             Some("turn/completed") => notification(text).map(Event::End),
@@ -497,6 +538,23 @@ fn frame(value: &serde_json::Value, task: bool) -> Option<StartupFrame> {
 fn response<T: DeserializeOwned + Default>(text: &str) -> Option<T> {
     serde_json::from_str::<wire::Response<T>>(text).ok()?.result
 }
+/// An item notification, with the item again as JSON when it is one a step is read from.
+fn item_event(text: &str, completed: bool) -> Option<Event> {
+    let body: wire::ItemNotification = notification(text)?;
+    let value = body
+        .item
+        .as_ref()
+        .and_then(|item| item.kind.as_deref())
+        .filter(|kind| is_step(kind))
+        .and_then(|_| serde_json::from_str::<Value>(text).ok())
+        .and_then(|mut line| line.pointer_mut("/params/item").map(Value::take));
+    Some(Event::Item {
+        completed,
+        body,
+        value,
+    })
+}
+
 fn notification<T: DeserializeOwned + Default>(text: &str) -> Option<T> {
     serde_json::from_str::<wire::Notification<T>>(text)
         .ok()?
@@ -541,6 +599,7 @@ mod tests {
     use super::*;
     use crate::adapter::TurnSession;
     use crate::protocol::ProtocolAction;
+    use crate::steps::{StepEvent, StepKind};
     use dudes_types::ModelSelection;
     use serde_json::{Value, json};
 
@@ -1042,5 +1101,124 @@ mod tests {
         assert!(matches!(end.outcome, TurnOutcome::Failed { .. }));
         assert!(end.session.is_none());
         assert!(end.final_reply.is_none());
+    }
+
+    fn tool(method: &str, item: &Value) -> Value {
+        json!({"method":method,"params":{"threadId":THREAD,"turnId":TURN,"item":item}})
+    }
+
+    #[test]
+    fn app_server_items_open_and_close_as_steps_in_the_same_shape_as_exec() {
+        let mut reader = reader();
+        ready(&mut reader);
+        let command = json!({"type":"commandExecution","id":"call-1","command":["bash","-lc","cat ~/.aws/credentials"],"status":"inProgress","aggregatedOutput":null,"exitCode":null});
+        let opened = read(&mut reader, tool("item/started", &command)).steps;
+        let [StepEvent::Open { step, .. }] = &opened[..] else {
+            panic!("one open step expected, got {opened:?}");
+        };
+        assert_eq!(step.kind, StepKind::Command);
+        assert_eq!(
+            step.args,
+            [("command".to_owned(), "cat ~/.aws/credentials".to_owned())]
+        );
+        let done = json!({"type":"commandExecution","id":"call-1","command":"x","status":"failed","aggregatedOutput":"denied","exitCode":126});
+        let closed = read(&mut reader, tool("item/completed", &done)).steps;
+        assert_eq!(
+            closed,
+            [StepEvent::Close {
+                session: SessionId::new(THREAD),
+                id: "call-1".to_owned(),
+                failed: true,
+                exit: Some(126),
+                result_bytes: 6,
+                result: Some("denied".to_owned()),
+            }]
+        );
+
+        let patch = json!({"type":"fileChange","id":"call-2","status":"inProgress","changes":[{"path":"/repo/a.rs","kind":{"type":"update","move_path":null},"diff":"@@"},{"path":"/repo/b.rs","kind":{"type":"add"},"diff":"+x"}]});
+        let opened = read(&mut reader, tool("item/started", &patch)).steps;
+        let kinds: Vec<_> = opened
+            .iter()
+            .map(|event| match event {
+                StepEvent::Open { step, .. } => (step.id.as_str(), step.kind),
+                StepEvent::Close { .. } => panic!("an open expected"),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [("call-2-0", StepKind::Edit), ("call-2-1", StepKind::Write)]
+        );
+        let web = json!({"type":"webSearch","id":"call-3","query":"rust lifetimes","action":null});
+        assert_eq!(read(&mut reader, tool("item/started", &web)).steps.len(), 1);
+    }
+
+    #[test]
+    fn a_plan_update_opens_and_closes_at_once_and_a_repeat_is_not_a_step() {
+        let mut reader = reader();
+        ready(&mut reader);
+        let update = |statuses: [&str; 2]| json!({"method":"turn/plan/updated","params":{"threadId":THREAD,"turnId":TURN,"explanation":null,"plan":[{"step":"Write it","status":statuses[0]},{"step":"Test it","status":statuses[1]}]}});
+        let first = read(&mut reader, update(["inProgress", "pending"])).steps;
+        let repeat = read(&mut reader, update(["inProgress", "pending"])).steps;
+        let second = read(&mut reader, update(["completed", "inProgress"])).steps;
+        let [
+            StepEvent::Open { step, .. },
+            StepEvent::Close { id, failed, .. },
+        ] = &first[..]
+        else {
+            panic!("an open and a close expected, got {first:?}");
+        };
+        assert_eq!((step.id.as_str(), step.kind), ("plan-1", StepKind::Plan));
+        assert_eq!((id.as_str(), *failed), ("plan-1", false));
+        assert_eq!(step.plan[0].status, crate::steps::PlanStatus::InProgress);
+        assert!(repeat.is_empty());
+        let [StepEvent::Open { step, .. }, StepEvent::Close { id, .. }] = &second[..] else {
+            panic!("an open and a close expected, got {second:?}");
+        };
+        assert_eq!((id.as_str(), step.id.as_str()), ("plan-2", "plan-2"));
+        assert_eq!(step.plan[0].status, crate::steps::PlanStatus::Completed);
+    }
+
+    #[test]
+    fn a_command_carries_its_working_directory_and_a_poll_keeps_no_output() {
+        let mut reader = reader();
+        ready(&mut reader);
+        let command = json!({"type":"commandExecution","id":"call-9","command":"cat *","cwd":"/work/me/.ssh","source":"agent","status":"inProgress"});
+        let opened = read(&mut reader, tool("item/started", &command)).steps;
+        let [StepEvent::Open { step, .. }] = &opened[..] else {
+            panic!("one open step expected, got {opened:?}");
+        };
+        assert_eq!(
+            step.args,
+            [
+                ("command".to_owned(), "cat *".to_owned()),
+                ("cwd".to_owned(), "/work/me/.ssh".to_owned()),
+            ]
+        );
+        let poll = json!({"type":"commandExecution","id":"call-9","command":"cat *","cwd":"/work/me/.ssh","source":"unifiedExecInteraction","processId":"77","status":"completed","aggregatedOutput":"PRIVATE","exitCode":0});
+        let closed = read(&mut reader, tool("item/completed", &poll)).steps;
+        assert_eq!(
+            closed,
+            [StepEvent::Close {
+                session: SessionId::new(THREAD),
+                id: "call-9".to_owned(),
+                failed: false,
+                exit: None,
+                result_bytes: 0,
+                result: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn another_turns_items_and_replies_open_no_steps() {
+        let mut reader = reader();
+        ready(&mut reader);
+        let foreign = json!({"method":"item/started","params":{"threadId":THREAD,"turnId":"other","item":{"type":"commandExecution","id":"x","command":"ls"}}});
+        assert!(read(&mut reader, foreign).steps.is_empty());
+        assert!(
+            read(&mut reader, item("item/started", "a", None))
+                .steps
+                .is_empty()
+        );
     }
 }

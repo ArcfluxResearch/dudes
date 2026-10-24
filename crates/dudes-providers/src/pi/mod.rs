@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod managed;
+mod steps;
 pub mod stream;
 
 pub use managed::PiAdapter;
