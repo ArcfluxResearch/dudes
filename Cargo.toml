@@ -25,6 +25,8 @@ keywords = ["agents", "supervisor", "coding-agent", "cli"]
 categories = ["development-tools", "command-line-utilities"]
 
 [workspace.dependencies]
+# One automaton over every form of every secret the daemon knows. MIT OR Unlicense.
+aho-corasick = "1.1.5"
 # Core vocabulary; versions verified on crates.io on 2026-08-22.
 anyhow = "1.0.104"
 # `default-features = false` here so a `no_std` member can opt out; std members add `features = ["std"]`.

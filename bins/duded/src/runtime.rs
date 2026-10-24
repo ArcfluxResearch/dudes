@@ -992,6 +992,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// close, because the connection's own binding outlives it, and a `PtyId` is not reused
     /// within a run.
     pub(crate) revoked_local_ptys: BTreeSet<PtyId>,
+    /// What the Floor snapshot has already scrubbed, kept while the secret set is unchanged.
+    pub(crate) scrub_memo: crate::floor::ScrubMemo,
     pub(crate) predicates: Arc<P>,
     pub(crate) subscribers: Arc<Subscribers>,
     /// The lsn `system.ping` reports, bumped after every append.
@@ -1589,6 +1591,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         self.sup.world(),
                         &self.ctx.memory,
                         self.ctx.memory_integrity == MemoryIntegrity::Failed,
+                        &self.ctx.children.redactor(),
                         request,
                     ));
                 }
@@ -7721,6 +7724,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     /// read at the same position.
     pub(crate) fn floor_snapshot(&mut self) -> Result<crate::floor::AgentSnapshot> {
         let mut snapshot = crate::floor::snapshot(&mut self.projections, self.clock.now())?;
+        snapshot.scrub(&self.children.redactor(), &mut self.scrub_memo);
         snapshot.finished_today = Some(crate::floor::finished_today(
             &self.projections,
             &self.local_days,
@@ -8178,6 +8182,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             self.start_attached_boundary(sup, agent, &spec.cwd, queue, waiting)?;
         self.pending_attached_calls
             .insert(instruction_started, instruction_owner);
+        self.children
+            .redactor()
+            .hold_env(dudes_supervisor::Holder::Pty(agent), &spec.env);
         match self.pty_host.open(spec, cols, rows) {
             Ok((pty, key)) => {
                 self.remember_attached_boundary(
@@ -8214,6 +8221,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     ) -> Result<()> {
         match failure {
             PtyOpenFailure::Failed(error) => {
+                self.children
+                    .redactor()
+                    .release(dudes_supervisor::Holder::Pty(agent));
                 queue.push_back(Input::InstructionAttachedOpenFailed {
                     started_lsn: instruction_started,
                     cleanup_unconfirmed: false,
@@ -8241,6 +8251,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 match self.pty_host.close(pty) {
                     PtyCloseOutcome::Closed | PtyCloseOutcome::AlreadyClosed => {
                         self.cleanup_ptys.remove(&pty);
+                        self.children
+                            .redactor()
+                            .release(dudes_supervisor::Holder::Pty(agent));
                         queue.push_back(Input::PtyExited { agent });
                     }
                     PtyCloseOutcome::Failed(error) => {

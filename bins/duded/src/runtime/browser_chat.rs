@@ -516,6 +516,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 if !self.recovery_dispatch_allowed(sup, turn) {
                     return Ok(());
                 }
+                self.children
+                    .redactor()
+                    .hold_env(dudes_supervisor::Holder::Turn(turn), &spec.env);
                 self.host.spawn(&spec, install)
             }
             Err(reason) => super::SpawnResult::NotLaunched { reason },
@@ -547,6 +550,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 });
             }
             super::SpawnResult::NotLaunched { reason } => {
+                self.children
+                    .redactor()
+                    .release(dudes_supervisor::Holder::Turn(turn));
                 if actual_host_call
                     && self.confirmed_launch_failures.len()
                         < dudes_supervisor::host::MAX_OWNED_TARGET_QUERY_ROWS

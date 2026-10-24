@@ -604,7 +604,9 @@ impl PreparedAssets {
         }
     }
 
-    /// Bind and start the listener, publishing ownership only after the ready handshake.
+    /// Bind and start the listener over an empty Floor stream, publishing ownership only after the
+    /// ready handshake. Only tests build one.
+    #[cfg(any(test, feature = "testing"))]
     pub fn start<C>(self, handle: Handle, clock: Arc<C>) -> Result<FloorGateway>
     where
         C: Clock + Send + Sync + 'static,
@@ -650,6 +652,7 @@ impl PreparedAssets {
 
     /// The same constructor with a release-unreachable ordering controller.
     #[doc(hidden)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn start_with_fault<C>(
         self,
         handle: Handle,

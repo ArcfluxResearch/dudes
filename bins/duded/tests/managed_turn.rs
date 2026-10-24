@@ -67,6 +67,11 @@ const NO_RESULT: &str = "no-result";
 /// The same limitation, and what would settle it, is written out at
 /// `dudes-providers`' `src/claude/usage.rs::a_two_key_result_keeps_both_models_and_invents_no_cost`.
 const TWO_MODELS: &str = "two-models";
+/// A `result` line whose text carries the daemon environment's planted secret across the 4 KiB
+/// limit the journal keeps a last message to.
+const SECRET_ACROSS_LIMIT: &str = "secret-across-limit";
+/// A synthetic credential the daemon's environment holds for that role.
+const PLANTED_SECRET: &str = "tok_9fQ2LmZx81KdPvR4sWbN7hYcA3eJuT6o";
 /// The session the vendor announces.
 const SESSION: &str = "3f9a1c2e-0000-4000-8000-0000000012ab";
 
@@ -91,6 +96,14 @@ fn the_helper_entry_point() {
         let _ = writeln!(
             out,
             r#"{{"type":"result","subtype":"success","is_error":false,"session_id":"{SESSION}","result":"both models ran","total_cost_usd":0.9,"modelUsage":{{"claude-haiku-4-5":{{"inputTokens":5,"outputTokens":9,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.4}},"claude-opus-4-1-20250805":{{"inputTokens":7,"outputTokens":3,"cacheReadInputTokens":2,"cacheCreationInputTokens":0}}}}}}"#
+        );
+    }
+    if role == SECRET_ACROSS_LIMIT {
+        let secret = std::env::var("PLANTED_API_TOKEN").unwrap_or_default();
+        let text = format!("{}{secret}{}", "a".repeat(4_096 - 10), "b".repeat(200));
+        let _ = writeln!(
+            out,
+            r#"{{"type":"result","subtype":"success","is_error":false,"session_id":"{SESSION}","result":"{text}","total_cost_usd":0.75,"modelUsage":{{"claude-opus-4":{{"inputTokens":5,"outputTokens":9,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}}}}"#
         );
     }
     if role == COMPLETE {
@@ -192,6 +205,9 @@ fn daemon_env(role: &str) -> Vec<EnvVar> {
         .filter_map(|name| std::env::var_os(name).map(|value| EnvVar::new(*name, value)))
         .collect();
     env.push(EnvVar::new(ROLE, role));
+    if role == SECRET_ACROSS_LIMIT {
+        env.push(EnvVar::new("PLANTED_API_TOKEN", PLANTED_SECRET));
+    }
     env
 }
 
@@ -443,6 +459,22 @@ fn a_managed_turn_ends_with_the_usage_its_stream_reported() {
         provenance,
         dudes_types::Provenance::Observed,
         "invariant 3: a turn's end is what the daemon saw"
+    );
+}
+
+/// The engine's last message is read whole, scrubbed and only then cut, so a secret that sits
+/// across the 4 KiB limit never reaches the journal in part.
+#[test]
+fn a_secret_across_the_last_message_limit_never_reaches_the_journal() {
+    let Record::TurnEnded { last_message, .. } = one_managed_turn(SECRET_ACROSS_LIMIT) else {
+        unreachable!("await_record matched on the variant")
+    };
+    let last_message = last_message.expect("a last message");
+    assert!(last_message.len() <= 4_096, "{}", last_message.len());
+    assert!(last_message.starts_with(&"a".repeat(4_000)));
+    assert!(
+        !last_message.contains(&PLANTED_SECRET[..6]),
+        "the journal kept the first part of the secret"
     );
 }
 
