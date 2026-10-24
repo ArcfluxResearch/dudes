@@ -21,7 +21,7 @@ use dudes_types::SessionId;
 use serde_json::Value;
 
 use crate::steps::{
-    EditText, MAX_OPEN, Step, StepEvent, StepKind, bounded_result, object_args, valid_id,
+    EditText, MAX_OPEN, Step, StepEvent, StepKind, bounded_result, object_args, step_id,
 };
 
 #[derive(Debug, Default)]
@@ -37,16 +37,13 @@ impl LiveSteps {
         name: &str,
         args: Option<&Value>,
     ) -> Option<StepEvent> {
-        if !valid_id(id)
-            || name.is_empty()
-            || self.open.len() >= MAX_OPEN
-            || !self.open.insert(id.to_owned())
-        {
+        let id = step_id(id)?;
+        if name.is_empty() || self.open.len() >= MAX_OPEN || !self.open.insert(id.clone()) {
             return None;
         }
         Some(StepEvent::Open {
             session: session.clone(),
-            step: step(id, name, args),
+            step: step(&id, name, args),
         })
     }
 
@@ -57,11 +54,12 @@ impl LiveSteps {
         failed: bool,
         result: &str,
     ) -> Option<StepEvent> {
-        self.open.remove(id).then(|| {
+        let id = step_id(id)?;
+        self.open.remove(&id).then(|| {
             let (result_bytes, result) = bounded_result(result);
             StepEvent::Close {
                 session: session.clone(),
-                id: id.to_owned(),
+                id,
                 failed,
                 exit: None,
                 result_bytes,
@@ -212,6 +210,40 @@ mod tests {
                 result: Some("The code word is PLUM.\n".to_owned()),
             }
         );
+    }
+
+    #[test]
+    fn a_captured_openai_call_id_with_a_bar_still_opens_and_closes() {
+        let fixture = include_str!("../../tests/fixtures/pi/l2-tool.jsonl");
+        let mut stream = TurnStream::new();
+        let events: Vec<StepEvent> = fixture
+            .lines()
+            .flat_map(|line| stream.line(line).steps)
+            .collect();
+        let [opened, closed] = &events[..] else {
+            panic!("an open and a close expected, got {events:?}");
+        };
+        let step = open(opened);
+        assert_eq!(
+            step.id,
+            "call_5XdE5cm1aq0EnGkTNocIlMsy-fc_ac9afe7f349c2e6b037cc014ec0fefbdb790b6d948162e3228-4fc0c57fb7934811"
+        );
+        assert_eq!((step.kind, step.tool.as_str()), (StepKind::Read, "read"));
+        assert_eq!(step.args, [("file_path".to_owned(), "note.txt".to_owned())]);
+        let StepEvent::Close {
+            id,
+            failed,
+            result_bytes,
+            result,
+            ..
+        } = closed
+        else {
+            panic!("a close expected");
+        };
+        assert_eq!(id, &step.id);
+        assert!(!failed);
+        assert_eq!(*result_bytes, 28);
+        assert_eq!(result.as_deref(), Some("The code word is TANGERINE.\n"));
     }
 
     #[test]
