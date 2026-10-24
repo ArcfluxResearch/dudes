@@ -6,7 +6,7 @@ import test, { after, before, beforeEach } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { applyServerFrame, beginFloorEpoch, getFloorState, noteTransport, resetFloorStore } from '../src/renderer/floor/store.ts';
+import { applyServerFrame, beginFloorEpoch, getFloorState, noteStale, noteTransport, resetFloorStore } from '../src/renderer/floor/store.ts';
 import { guideSteps } from '../src/renderer/setup/guide.ts';
 import { readGuideClosed, rememberGuideClosed } from '../src/renderer/view.ts';
 
@@ -132,10 +132,16 @@ test('ACTIONS_SEEN_UNREPORTED mutant: Floor actions is not seen until the switch
   assert.match(unreported, /Settings are not reported/);
   assert.equal(indexStatus(unreported, 'Floor actions'), 'Optional');
   snapshot();
+  noteStale(true);
+  const stale = view('actions');
+  assert.notEqual(getFloorState().settings, null, 'a stale view retains its settings report');
+  assert.equal(indexStatus(stale, 'Floor actions'), 'Optional');
+  assert.doesNotMatch(stale, /class="settings-view"|>Turn on<|>Turn off</, 'the guide waits for a confirmed snapshot before editing retained values');
   noteTransport('close');
   const disconnected = view('actions');
   assert.equal(indexStatus(disconnected, 'Floor actions'), 'Optional');
   assert.match(disconnected, /<p class="guide-status" role="status">Optional<\/p>/);
+  assert.doesNotMatch(disconnected, /class="settings-view"|>Turn on<|>Turn off</, 'old switch values cannot be edited while disconnected');
   assert.equal(status('actions', true), 'Optional');
 });
 

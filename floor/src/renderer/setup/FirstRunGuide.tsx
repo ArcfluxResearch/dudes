@@ -11,6 +11,7 @@ import { refreshFloorSnapshot } from '../floor/stream.ts';
 function FloorActions({ floor }: { readonly floor: FloorState }) {
   const report = floor.settings;
   if (report === null) return <p role="status">Settings are not reported. Recheck to ask for a fresh snapshot.</p>;
+  if (!guideSnapshotConfirmed(floor)) return null;
   return <>
     <p>These actions are optional. Turn on the ones you want to use from this page.</p>
     <p>This step is done once you have seen it, whichever switches are on.</p>
