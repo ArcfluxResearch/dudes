@@ -762,6 +762,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             })
     }
 
+    /// A Floor stop that closes a browser turn before its launch began claims it the way a note
+    /// cancel does, so a prepare or intent answer arriving before the stop is durable launches
+    /// nothing.
+    pub(super) fn claim_browser_halt_cancel(&mut self, turn: TurnId) {
+        if self.browser_launches.contains_key(&turn) {
+            self.claim_browser_cancel(turn);
+        }
+    }
+
     fn claim_browser_cancel(&mut self, turn: TurnId) {
         let previous = self.browser_launches.remove(&turn).map(Box::new);
         self.browser_launches
@@ -774,16 +783,19 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             .ledger
             .iter()
             .filter_map(|(token, parked)| {
-                let (Record::ConversationContextResetQueued { browser, .. }
-                | Record::ConversationMessageQueued { browser, .. }
-                | Record::BrowserNoteQueued { browser, .. }
-                | Record::BrowserNoteCancelled { browser, .. }
-                | Record::BrowserNoteIssuedCancelled { browser, .. }
-                | Record::BrowserNoteReissueCancelled { browser, .. }) = &parked.entry.record
-                else {
-                    return None;
+                let digest = match &parked.entry.record {
+                    Record::ConversationContextResetQueued { browser, .. }
+                    | Record::ConversationMessageQueued { browser, .. }
+                    | Record::BrowserNoteQueued { browser, .. }
+                    | Record::BrowserNoteCancelled { browser, .. }
+                    | Record::BrowserNoteIssuedCancelled { browser, .. }
+                    | Record::BrowserNoteReissueCancelled { browser, .. } => {
+                        browser.request_id_digest
+                    }
+                    Record::BrowserHalt { browser, .. } => browser.request_id,
+                    _ => return None,
                 };
-                (browser.request_id_digest == request_id).then_some(*token)
+                (digest == request_id).then_some(*token)
             })
             .collect();
         for token in tokens {
@@ -791,7 +803,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 continue;
             };
             let (Record::BrowserNoteIssuedCancelled { turn, .. }
-            | Record::BrowserNoteReissueCancelled { turn, .. }) = parked.entry.record
+            | Record::BrowserNoteReissueCancelled { turn, .. }
+            | Record::BrowserHalt {
+                abandons: Some(turn),
+                ..
+            }) = parked.entry.record
             else {
                 continue;
             };

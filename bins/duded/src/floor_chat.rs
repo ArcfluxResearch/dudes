@@ -141,6 +141,17 @@ struct CancelJson {
 }
 
 impl ChatRequest {
+    /// Whether this is the second step of stop and send, which lifts a halt the Floor made.
+    pub(crate) const fn follows_stop(&self) -> bool {
+        matches!(
+            self.action,
+            ChatAction::Send {
+                after_stop: Some(_),
+                ..
+            }
+        )
+    }
+
     /// Parse one bounded, canonical browser-note body without admitting a journal effect.
     ///
     /// The resulting command still requires an authenticated session and writer admission.

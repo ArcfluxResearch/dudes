@@ -113,6 +113,8 @@ pub enum ChatReason {
     StaleControl,
     /// The stopped turn is still open, so the note cannot follow its stop yet.
     TurnOpen,
+    /// The control switch is off, so a note cannot follow a stop.
+    ActionOff,
 }
 
 /// The state of one retained pending browser note.

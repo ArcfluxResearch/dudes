@@ -159,10 +159,11 @@ With `floor.control` on, an agent's drawer offers **Pause**, **Stop this turn** 
 running turn finish and starts no new one. **Stop this turn** ends the running turn at once and keeps
 the agent: the page says "Stopping" while the turn's process ends and "Stopped" when no turn is open,
 and nothing new starts until you press **Resume**. Stopping ends the turn's whole process tree, so it can
-leave partial edits in the working tree and a stale git lock file. The Floor refuses a stop while a
-person has the agent's terminal open. **Resume** lifts a stop made here, a pause and an automatic hold; a halt
+leave partial edits in the working tree and a stale git lock file. A stop also cancels a queued note
+whose turn had not started, and clears that note's text; send it again after you press **Resume**. The
+Floor refuses a stop while a person has the agent's terminal open. **Resume** lifts a stop made here, a pause and an automatic hold; a halt
 made with `dudes halt` stays until `dudes resume`. In Chat, **Stop and send** stops the turn, sends your
-message as a note once the turn has ended and then lifts the stop. This is not the ticket board's
+message as a note once the turn has ended and then lifts the stop; it needs `floor.control` on too. This is not the ticket board's
 **Stop**, which ends a ticket. See [Pause, resume, halt and retire](goals-and-stopping.md#pause-resume-halt-and-retire).
 
 ## Recover an interrupted goal

@@ -2185,6 +2185,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             || row.halted
             || row.paused
             || row.open_question.is_some()
+            || row.rung == BreakerRung::Stop
             || self.launch_held(agent, operation)
         {
             return;
@@ -2595,13 +2596,29 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     /// The agent's open turn when this run issued it and no launch for it has begun, so closing
-    /// it cannot leave a started process unrecorded.
+    /// it cannot leave a started process unrecorded. A browser turn still preparing its launch or
+    /// waiting on its dispatch intent has begun none. Closing time and a mail wake settle through
+    /// their own records, so neither is closed here, and neither is a turn whose unfinished
+    /// instruction attempt cannot be settled as having left no process.
     fn unlaunched_turn(&self, agent: AgentId) -> Option<TurnId> {
+        if self.closing_active || self.closing_recovery {
+            return None;
+        }
         let turn = self.world.agents.get(&agent)?.open_turn?;
         let row = self.world.turns.get(&turn)?;
+        let launch_begun = match self.browser_launches.get(&turn) {
+            Some(
+                BrowserLaunchPhase::Preparing { .. } | BrowserLaunchPhase::IntentPending { .. },
+            ) => false,
+            Some(_) => true,
+            None => self.spawning.contains(&turn),
+        };
         (row.is_issued_not_spawned()
             && self.live_issues.contains(&turn)
-            && !self.spawning.contains(&turn)
+            && !launch_begun
+            && !self.world.mail_wake_origin(turn)
+            && (self.world.instructions.current_for_turn(turn).is_none()
+                || self.no_host_attempt(agent, Some(turn)).is_some())
             && self.world.browser_issue(turn).is_none_or(|issue| {
                 issue.dispatch_intents.is_empty() && issue.cancellation.is_none()
             }))
@@ -4591,14 +4608,30 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             // would make its spawn acknowledgement return early, and the started process would
             // run on unrecorded. That turn is killed when its spawn arrives, as for any halt.
             Command::BrowserHalt { agent, browser } => {
+                if self.world.agents.get(&agent).is_none_or(|row| row.attached) {
+                    return;
+                }
                 let abandons = self.unlaunched_turn(agent);
+                if let Some(turn) = abandons {
+                    self.claim_browser_halt_cancel(turn);
+                }
+                // The closed turn's instruction attempt never reached a host call, so it is
+                // settled the way a refused launch settles it.
+                let then = abandons
+                    .and_then(|turn| self.no_host_attempt(agent, Some(turn)))
+                    .map_or(Then::KillStandingCause { agent }, |attempt| {
+                        Then::InstructionPreHostEnded {
+                            attempt,
+                            then: Box::new(Then::KillStandingCause { agent }),
+                        }
+                    });
                 self.persist(
                     Record::BrowserHalt {
                         agent,
                         browser,
                         abandons,
                     },
-                    Then::KillStandingCause { agent },
+                    then,
                 );
             }
             // A browser pause or resume is the same record with its attribution beside it, and

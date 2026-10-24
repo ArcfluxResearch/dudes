@@ -43,6 +43,7 @@ export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
   note_cancelled: 'This note was already cancelled.',
   stale_control: 'This agent changed after the stop, so the note was not sent. It is still in the box.',
   turn_open: 'The stopped turn has not ended yet, so the note was not sent. It is still in the box.',
+  action_off: 'Stopping and sending is switched off, so the note was not sent. It is still in the box.',
 };
 
 export function ChatPanel({ floor, row, fullOutput = false, onFullOutput }: {
@@ -357,7 +358,7 @@ function turnText(turn: ChatTurn, output: OutputStatus | null): string | null {
     case 'running': return output === 'ended' ? 'Waiting for reply status' : 'Replying…';
     case 'ended': return turn.reply === null ? 'No final reply was reported' : null;
     case 'failed': return turn.reply === null ? 'Turn failed. No final reply was reported' : 'Turn failed.';
-    case 'cancelled': return 'Cancelled before delivery.';
+    case 'cancelled': return 'Cancelled before delivery. Stopping the agent cancels a note whose delivery had not started and clears its text.';
     case 'delivery_uncertain': return 'Delivery before restart is unknown.';
     case 'reissue_cancelled': return 'Future reissue stopped. Delivery before restart is unknown.';
   }

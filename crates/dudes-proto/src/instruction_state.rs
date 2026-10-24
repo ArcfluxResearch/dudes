@@ -186,6 +186,24 @@ enum ReviewAuthority {
     Validated,
 }
 
+/// The agent a record proves left no launch behind it: an observed refusal to launch, or a Floor
+/// stop that closed a turn before any launch began.
+fn no_host_agent(record: &Record) -> Option<AgentId> {
+    match record {
+        Record::AgentHeld {
+            agent,
+            provenance,
+            cause: crate::AutomaticHold::LaunchRefused { .. },
+        } if provenance.is_observed() => Some(*agent),
+        Record::BrowserHalt {
+            agent,
+            abandons: Some(_),
+            ..
+        } => Some(*agent),
+        _ => None,
+    }
+}
+
 impl InstructionState {
     /// Validate admission against the committed prefix without previewing a rotated journal LSN
     /// or changing state. Actual positions are folded only after append has synced.
@@ -1218,14 +1236,10 @@ impl InstructionState {
                 self.note_unresolved(attempt.owner, key);
             }
         }
+        if let Some(agent) = no_host_agent(record) {
+            self.no_host_holds.insert(lsn, agent);
+        }
         match record {
-            Record::AgentHeld {
-                agent,
-                provenance,
-                cause: crate::AutomaticHold::LaunchRefused { .. },
-            } if provenance.is_observed() => {
-                self.no_host_holds.insert(lsn, *agent);
-            }
             Record::TurnEnded {
                 agent,
                 turn,
