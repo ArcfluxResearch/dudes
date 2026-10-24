@@ -218,9 +218,19 @@ test('expanding a finished step asks the daemon once and shows the answer as pla
     assert.match(shown(), /Loading…/);
     live.emit('message', answer('toolu_1', { state: 'ready', result: { text: 'line one\n<b>two</b> **x**' } }));
     const html = shown();
-    assert.match(html, /<pre class="step-text">line one\n&lt;b&gt;two&lt;\/b&gt; \*\*x\*\*<\/pre>/);
+    assert.match(html, /<pre class="step-text" tabindex="0">line one\n&lt;b&gt;two&lt;\/b&gt; \*\*x\*\*<\/pre>/);
     assert.doesNotMatch(html, /<b>two|<strong>|Loading/);
     assert.equal(live.closed, 0);
+  } finally { stop(); }
+});
+
+test('a ready answer with no text says there was no output', () => {
+  const { live, stop } = open();
+  try {
+    live.emit('message', steps([done('toolu_1')]));
+    store.requestStepResult('toolu_1');
+    live.emit('message', answer('toolu_1', { state: 'ready' }));
+    assert.match(shown(), /<p class="step-result">No output\.<\/p>/);
   } finally { stop(); }
 });
 

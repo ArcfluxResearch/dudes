@@ -114,8 +114,8 @@ function Kept({ step, kept }: { readonly step: StepItem; readonly kept: StepResu
         return <Diff old={kept.edit.old?.text ?? null} next={kept.edit.new.text}
           cut={kept.edit.new.cut || kept.edit.old?.cut === true} note="Cut to fit. The whole change is in the Changes view." />;
       }
-      return kept.result === null ? null : <div className="step-output">
-        <pre className="step-text">{kept.result.text}</pre><CutNote text={kept.result} /></div>;
+      return kept.result === null ? <p className="step-result">No output.</p> : <div className="step-output">
+        <pre className="step-text" tabIndex={0}>{kept.result.text}</pre><CutNote text={kept.result} /></div>;
   }
 }
 
