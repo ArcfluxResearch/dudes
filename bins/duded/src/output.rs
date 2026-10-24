@@ -272,7 +272,7 @@ struct PendingStep {
 
 #[derive(Clone)]
 enum StepOp {
-    Open(StepView),
+    Open(Box<StepView>),
     Close(Closing),
 }
 
@@ -311,6 +311,7 @@ impl std::fmt::Debug for StepQueue {
         f.debug_struct("StepQueue")
             .field("steps", &self.items.len())
             .field("bytes", &self.bytes)
+            .field("lost", &self.lost)
             .finish()
     }
 }
@@ -340,12 +341,12 @@ impl StepRing {
                 let bytes = view.bytes();
                 if let Some(old) = self.items.iter_mut().find(|old| old.view.id == view.id) {
                     self.bytes = self.bytes - old.view.bytes() + bytes;
-                    old.view = view;
+                    old.view = *view;
                     old.seq = self.seq;
                 } else {
                     self.bytes += bytes;
                     self.items.push_back(StoredStep {
-                        view,
+                        view: *view,
                         seq: self.seq,
                         arrival,
                     });
@@ -548,6 +549,12 @@ impl Ring {
             self.loss = Some(reason);
         }
     }
+}
+
+enum Admission {
+    Refused,
+    Unbound,
+    Bound(Binding),
 }
 
 #[derive(Clone, Debug)]
@@ -951,14 +958,14 @@ impl OutputRegistry {
     }
 
     /// Whether a child's output may be kept for `session`, and the turn binding it joins when it
-    /// has one. `None` refuses it and counts the refusal.
-    fn admit(state: &mut State, key: &ChildKey, session: &str) -> Option<Option<Binding>> {
+    /// has one. A refusal is counted.
+    fn admit(state: &mut State, key: &ChildKey, session: &str) -> Admission {
         if session.is_empty() {
-            return None;
+            return Admission::Refused;
         }
         if session.len() > MAX_SESSION_BYTES || state.closed.contains(key) {
             state.refuse();
-            return None;
+            return Admission::Refused;
         }
         let binding = state.bindings.get(key).cloned();
         if let Some(binding) = &binding {
@@ -968,7 +975,7 @@ impl OutputRegistry {
                 })
             {
                 state.refuse();
-                return None;
+                return Admission::Refused;
             }
             match &state
                 .rings
@@ -978,20 +985,20 @@ impl OutputRegistry {
             {
                 SessionGate::Admitted(accepted) if accepted.as_str() != session => {
                     state.refuse();
-                    return None;
+                    return Admission::Refused;
                 }
                 SessionGate::RefusedOvercap => {
                     state.refuse();
-                    return None;
+                    return Admission::Refused;
                 }
                 SessionGate::Unconfirmed | SessionGate::Admitted(_) => {}
             }
         }
         if state.orphan.get(key).is_some_and(|orphan| orphan.finished) {
             state.refuse();
-            return None;
+            return Admission::Refused;
         }
-        Some(binding)
+        binding.map_or(Admission::Unbound, Admission::Bound)
     }
 
     fn capture_items(
@@ -1002,8 +1009,10 @@ impl OutputRegistry {
     ) {
         let key = ChildKey::from(key);
         let mut state = self.state();
-        let Some(binding) = Self::admit(&mut state, &key, session) else {
-            return;
+        let binding = match Self::admit(&mut state, &key, session) {
+            Admission::Refused => return,
+            Admission::Unbound => None,
+            Admission::Bound(binding) => Some(binding),
         };
         let session: Arc<str> = Arc::from(session);
         for piece in items {
@@ -1055,7 +1064,9 @@ impl OutputRegistry {
         let now = steps::now_ms();
         let session = event.session().as_str().to_owned();
         let op = match event {
-            StepEvent::Open { step, .. } => StepOp::Open(steps::open(&self.redactor, step, now)),
+            StepEvent::Open { step, .. } => {
+                StepOp::Open(Box::new(steps::open(&self.redactor, step, now)))
+            }
             StepEvent::Close {
                 id,
                 failed,
@@ -1074,8 +1085,10 @@ impl OutputRegistry {
         };
         let key = ChildKey::from(key);
         let mut state = self.state();
-        let Some(binding) = Self::admit(&mut state, &key, &session) else {
-            return;
+        let binding = match Self::admit(&mut state, &key, &session) {
+            Admission::Refused => return,
+            Admission::Unbound => None,
+            Admission::Bound(binding) => Some(binding),
         };
         let arrival = state.next_arrival();
         let item = PendingStep {

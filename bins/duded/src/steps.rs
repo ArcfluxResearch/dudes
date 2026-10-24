@@ -307,7 +307,7 @@ mod tests {
     const SECRET: &str = "synthetic-secret-value-0123456789";
 
     fn redactor() -> Redactor {
-        let redactor = Redactor::for_run();
+        let redactor = Redactor::new();
         redactor.set_source("test", [SECRET.to_owned()]);
         redactor
     }
@@ -368,14 +368,14 @@ mod tests {
                 "Bash",
                 ("command", "cat ~/.aws/credentials"),
             ),
-            (StepKind::Read, "Read", ("file_path", "/home/me/.env")),
+            (StepKind::Read, "Read", ("file_path", "/work/me/.env")),
             (StepKind::Search, "Grep", ("path", "~/.ssh")),
             (
                 StepKind::Mcp,
                 "mcp__files__read",
-                ("path", "/home/me/.aws/config"),
+                ("path", "/work/me/.aws/config"),
             ),
-            (StepKind::Search, "Glob", ("pattern", "/home/me/.ssh/id_*")),
+            (StepKind::Search, "Glob", ("pattern", "/work/me/.ssh/id_*")),
         ] {
             let mut sensitive = step(kind, tool, &[args]);
             sensitive.edit = Some(EditText {
@@ -433,7 +433,7 @@ mod tests {
     fn a_long_input_is_cut_with_a_mark_and_a_short_one_is_not() {
         let long = "x".repeat(INPUT_BYTES + 500);
         let view = open(
-            &Redactor::for_run(),
+            &Redactor::new(),
             step(
                 StepKind::Command,
                 "Bash",
@@ -478,11 +478,7 @@ mod tests {
 
     #[test]
     fn closing_and_abandoning_a_step() {
-        let mut view = open(
-            &Redactor::for_run(),
-            step(StepKind::Command, "Bash", &[]),
-            10,
-        );
+        let mut view = open(&Redactor::new(), step(StepKind::Command, "Bash", &[]), 10);
         view.close(&Closing {
             id: "toolu_1".to_owned(),
             failed: true,
@@ -496,7 +492,7 @@ mod tests {
             (view.exit, view.result_bytes, view.ended_at),
             (Some(2), Some(40), Some(20))
         );
-        let mut open_one = open(&Redactor::for_run(), step(StepKind::Read, "Read", &[]), 10);
+        let mut open_one = open(&Redactor::new(), step(StepKind::Read, "Read", &[]), 10);
         open_one.abandon(30);
         assert_eq!(open_one.note, Some("the turn ended first"));
         view.abandon(99);

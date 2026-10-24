@@ -74,7 +74,7 @@ fn managed_output_child_helper() {
         let token = std::env::var(STEP_SECRET).expect("planted secret");
         let lines = [
             format!(
-                r#"{{"type":"assistant","session_id":"{session}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_curl","name":"Bash","input":{{"command":"curl -H 'Authorization: Bearer {token}' https://example.test"}}}},{{"type":"tool_use","id":"toolu_aws","name":"Read","input":{{"file_path":"/home/user/.aws/credentials"}}}},{{"type":"tool_use","id":"toolu_edit","name":"Edit","input":{{"file_path":"/repo/src/a.rs","old_string":"let key = \"{token}\";","new_string":"let key = env();"}}}},{{"type":"tool_use","id":"toolu_plan","name":"TodoWrite","input":{{"todos":[{{"content":"Rotate {token}","status":"in_progress","activeForm":"Rotating"}}]}}}}]}}}}"#
+                r#"{{"type":"assistant","session_id":"{session}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_curl","name":"Bash","input":{{"command":"curl -H 'Authorization: Bearer {token}' https://example.test"}}}},{{"type":"tool_use","id":"toolu_aws","name":"Read","input":{{"file_path":"/work/user/.aws/credentials"}}}},{{"type":"tool_use","id":"toolu_edit","name":"Edit","input":{{"file_path":"/repo/src/a.rs","old_string":"let key = \"{token}\";","new_string":"let key = env();"}}}},{{"type":"tool_use","id":"toolu_plan","name":"TodoWrite","input":{{"todos":[{{"content":"Rotate {token}","status":"in_progress","activeForm":"Rotating"}}]}}}}]}}}}"#
             ),
             format!(
                 r#"{{"type":"user","session_id":"{session}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_curl","content":"ok","is_error":false}}]}}}}"#
@@ -569,6 +569,46 @@ fn selected_reply_arrives_before_child_completion_and_reconnects() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
+fn collect_steps(selected: &mut WebSocket) -> (String, Vec<Value>) {
+    let mut seen = String::new();
+    let mut steps = Vec::new();
+    for _ in 0..16 {
+        let frame = selected.output();
+        seen.push_str(&frame.to_string());
+        if frame["type"] == "floor.output.steps" {
+            steps.extend(frame["steps"].as_array().unwrap().clone());
+            if steps.len() >= 4 && steps.iter().any(|step| step["status"] == "done") {
+                break;
+            }
+        }
+    }
+    (seen, steps)
+}
+
+/// What a socket that selected nothing hears for a moment: the step kind label and every frame.
+fn listen_as_bystander(bystander: &mut WebSocket) -> (Option<String>, String) {
+    bystander
+        .0
+        .set_read_timeout(Some(Duration::from_millis(1_200)))
+        .unwrap();
+    let mut label = None;
+    let mut heard = String::new();
+    let until = Instant::now() + Duration::from_millis(1_500);
+    while Instant::now() < until
+        && let Some(frame) = bystander.try_json()
+    {
+        heard.push_str(&frame.to_string());
+        if frame["type"] == "floor.step.labels" {
+            label = frame["labels"][0]["label"].as_str().map(str::to_owned);
+        }
+        assert!(
+            !frame["type"].as_str().unwrap().starts_with("floor.output."),
+            "an unselected socket received output: {frame}"
+        );
+    }
+    (label, heard)
+}
+
 #[test]
 fn steps_reach_only_the_selected_socket_scrubbed_and_others_see_a_kind() {
     let fixture = Fixture::new();
@@ -613,18 +653,7 @@ fn steps_reach_only_the_selected_socket_scrubbed_and_others_see_a_kind() {
     );
     wait_file(&dir.join("steps-ready"));
     captured.wait_for("toolu_plan");
-    let mut seen = String::new();
-    let mut steps = Vec::new();
-    for _ in 0..16 {
-        let frame = selected.output();
-        seen.push_str(&frame.to_string());
-        if frame["type"] == "floor.output.steps" {
-            steps.extend(frame["steps"].as_array().unwrap().clone());
-            if steps.len() >= 4 && steps.iter().any(|step| step["status"] == "done") {
-                break;
-            }
-        }
-    }
+    let (seen, steps) = collect_steps(&mut selected);
     assert!(
         !seen.contains(SECRET_VALUE),
         "the secret reached the selected socket"
@@ -655,25 +684,7 @@ fn steps_reach_only_the_selected_socket_scrubbed_and_others_see_a_kind() {
     );
     assert_eq!(by_id("toolu_plan")["plan"][0]["text"], "Rotate (redacted)");
 
-    bystander
-        .0
-        .set_read_timeout(Some(Duration::from_millis(1_200)))
-        .unwrap();
-    let mut label = None;
-    let mut heard = String::new();
-    let until = Instant::now() + Duration::from_millis(1_500);
-    while Instant::now() < until
-        && let Some(frame) = bystander.try_json()
-    {
-        heard.push_str(&frame.to_string());
-        if frame["type"] == "floor.step.labels" {
-            label = frame["labels"][0]["label"].as_str().map(str::to_owned);
-        }
-        assert!(
-            !frame["type"].as_str().unwrap().starts_with("floor.output."),
-            "an unselected socket received output: {frame}"
-        );
-    }
+    let (label, heard) = listen_as_bystander(&mut bystander);
     assert_eq!(label.as_deref(), Some("plan"));
     for private in [SECRET_VALUE, "curl", "toolu_", ".aws", "a.rs", "Rotate"] {
         assert!(

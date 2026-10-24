@@ -1529,7 +1529,7 @@ fn refresh_steps(
     let Some(mark) = snapshot.steps else {
         return true;
     };
-    let cursor = &mut selection.steps;
+    let cursor = selection.steps;
     let same_turn = cursor.turn == Some(mark.turn);
     if cursor.stopped || (same_turn && cursor.seq == mark.seq) {
         return true;
@@ -1557,32 +1557,26 @@ fn refresh_steps(
             .ok()
             .map(|()| bytes)
     };
-    let cursor = &mut selection.steps;
-    cursor.turn = Some(delta.turn);
-    let mut batch: Vec<&StepView> = Vec::new();
-    let mut batch_bytes = 0;
-    let mut frames: Vec<Vec<StepView>> = Vec::new();
-    for step in &delta.items {
-        let bytes = step.bytes();
-        if batch_bytes + bytes > STEP_FRAME_BYTES && !batch.is_empty() {
-            frames.push(batch.drain(..).cloned().collect());
-            batch_bytes = 0;
+    selection.steps.turn = Some(delta.turn);
+    let mut start = 0;
+    while start < delta.items.len() {
+        let mut end = start;
+        let mut bytes = 0;
+        while end < delta.items.len()
+            && (end == start || bytes + delta.items[end].bytes() <= STEP_FRAME_BYTES)
+        {
+            bytes += delta.items[end].bytes();
+            end += 1;
         }
-        batch.push(step);
-        batch_bytes += bytes;
-    }
-    if !batch.is_empty() {
-        frames.push(batch.into_iter().cloned().collect());
-    }
-    for steps in frames {
-        let Some(bytes) = send(&steps, None) else {
+        let Some(wrote) = send(&delta.items[start..end], None) else {
             return false;
         };
-        selection.steps.sent_bytes += bytes;
+        selection.steps.sent_bytes += wrote;
         if selection.steps.sent_bytes > STEP_BUDGET_BYTES {
             selection.steps.stopped = true;
             return send(&[], Some("budget")).is_some();
         }
+        start = end;
     }
     selection.steps.seq = delta.seq;
     true

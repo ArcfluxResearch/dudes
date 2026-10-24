@@ -171,7 +171,7 @@ test('a plan is a checklist and a helper agent steps nest under the step that st
 
 test('a step whose text is hidden says why and shows no text', () => {
   const html = view([item('toolu_1', { kind: 'write', tool: 'Write', withheld: 'the step names a sensitive path',
-    args: [{ key: 'file_path', value: '/home/me/.env', cut: false }] })]);
+    args: [{ key: 'file_path', value: '/work/me/.env', cut: false }] })]);
   assert.match(html, /Text is hidden: the step names a sensitive path\./);
   assert.doesNotMatch(html, /step-diff/);
 });
