@@ -153,8 +153,10 @@ fn failed_spawn_cleanup_does_not_touch_a_healthy_bystander() {
 
     assert_eq!(host.owned(), 2, "both ownership rows remain represented");
     assert_eq!(host.alive(&healthy), dudes_supervisor::Liveness::Alive);
+    // A signalled helper can never beat again, so a wider window cannot hide a signal; it only
+    // stops a descheduled live helper from reading as dead.
     assert!(
-        common::beating(&healthy_beat),
+        common::beating_after_start(&healthy_beat),
         "single-child cleanup signalled the healthy bystander"
     );
 
