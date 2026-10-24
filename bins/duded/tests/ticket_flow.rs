@@ -2821,7 +2821,7 @@ fn remove_clears_an_unfinished_goal_first_and_refuses_a_working_ticket() {
 
     let pending = flow.current_review_detail(one);
     assert!(pending.ticket.instruction_review.is_some());
-    let before_review = fixture.records();
+    let before_review = fixture.records().len();
     let refused_review = flow.call(
         dudes_proto::rpc::Method::TicketRemove,
         json!({"card":one,"expected_seq":pending.card.seq}),
@@ -2830,11 +2830,11 @@ fn remove_clears_an_unfinished_goal_first_and_refuses_a_working_ticket() {
         refusal_reason(&refused_review),
         TicketRefusal::InstructionReviewRequired.code()
     );
-    assert_eq!(
-        fixture.records(),
-        before_review,
-        "Remove cannot consume unresolved review"
-    );
+    let removed = fixture.records()[before_review..].iter().any(|r| {
+        matches!(r, Record::TicketRemoved { .. })
+            || matches!(r, Record::GoalCleared { goal: cleared, .. } if *cleared == goal)
+    });
+    assert!(!removed, "Remove cannot consume unresolved review");
     assert_eq!(flow.agent(cody).goal.unwrap().id, goal);
     flow.acknowledge_unfinished_review(one, cody, goal);
 

@@ -199,14 +199,16 @@ test('parse time grows linearly for repeated link and image openers', () => {
     for (let n = 0; n < 4; n += 1) md.parseAgentMarkdown(text);
     return performance.now() - start;
   };
-  // A busy or small-cache machine stretches 16,384 characters more than 4,096 for any input, so each
-  // opener is compared with an input of the same shape that was never quadratic; every round takes all four.
+  // A busy or small-cache machine stretches a larger input more than a smaller one for any input, so
+  // each opener is compared with an input of the same shape that was never quadratic; every round
+  // takes all four. An eightfold size makes linear growth 8 times and quadratic growth 64 times, so
+  // the bound of 3 times the control sits between them with room for scheduling noise.
   for (const [unit, control] of [['[a](', '[a] '], ['![a](', '![a] ']]) {
-    const texts = [sized(unit, 4_096), sized(unit, 16_384), sized(control, 4_096), sized(control, 16_384)];
+    const texts = [sized(unit, 4_096), sized(unit, 32_768), sized(control, 4_096), sized(control, 32_768)];
     const fastest = [Infinity, Infinity, Infinity, Infinity];
     for (let round = 0; round < 9; round += 1) texts.forEach((text, k) => { fastest[k] = Math.min(fastest[k], parse(text)); });
     const [growth, controlGrowth] = [fastest[1] / fastest[0], fastest[3] / fastest[2]];
-    assert.ok(growth < 1.5 * controlGrowth, `${unit} grew ${growth.toFixed(1)} times from 4,096 to 16,384 characters, `
+    assert.ok(growth < 3 * controlGrowth, `${unit} grew ${growth.toFixed(1)} times from 4,096 to 32,768 characters, `
       + `${control} grew ${controlGrowth.toFixed(1)} times`);
   }
 });
