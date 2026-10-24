@@ -373,6 +373,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     .cloned()
                 {
                     self.live_issues.insert(work.turn);
+                    self.consented_issues.insert(work.turn);
                     self.reissue_turn(
                         work.turn,
                         work.agent,

@@ -354,16 +354,20 @@ fn a_stop_during_closing_time_does_not_close_the_saving_turn() {
     assert_eq!(harness.open_turn(agent), Some(turn));
 }
 
-/// A reissue that a breaker at Stop forbids launches nothing, so the kill has no process to end
-/// the moment it starts.
+/// A consented re-issue under a breaker at Stop still launches, and the kill that follows the
+/// spawn settles the turn, so nothing is left issued with no retry once the rung decays.
 #[test]
-fn a_reissue_under_a_breaker_stop_launches_nothing() {
+fn a_reissue_under_a_breaker_stop_launches_and_the_kill_settles_the_turn() {
     let mut harness = Harness::new();
     harness.launch = false;
     let (agent, _) = harness.hire_with_goal(&["npm", "test"]);
-    let turn = harness.open_turn(agent).expect("a turn was issued");
-    harness.supervisor.spawning.clear();
-    let before = harness.spawns_of(turn).len();
+    let source = harness.open_turn(agent).expect("a turn was issued");
+    harness.restart();
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .expect("the interrupted turn offers explicit recovery")
+        .expected;
     harness
         .supervisor
         .world
@@ -371,11 +375,52 @@ fn a_reissue_under_a_breaker_stop_launches_nothing() {
         .get_mut(&agent)
         .expect("the agent exists")
         .rung = dudes_types::BreakerRung::Stop;
-    let task = harness.supervisor.world().turns[&turn].task.clone();
-    harness
-        .supervisor
-        .reissue_turn(turn, agent, &task, None, &crate::RecoveryOperation::empty());
-    assert_eq!(harness.spawns_of(turn).len(), before);
+    harness.recover(RecoveryCommand {
+        request_id: Hex32::new([40; 32]),
+        digest: Hex32::new([41; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator {
+            pid: 7,
+            uid: Some(42),
+        },
+    });
+    assert!(
+        harness.supervisor.consented_issues.contains(&source),
+        "the consent marks the turn"
+    );
+    assert!(
+        !harness.spawns_of(source).is_empty(),
+        "the breaker does not stop the launch"
+    );
+    deliver_spawn(&mut harness, source);
+    assert!(killed(&harness, source), "the breaker's kill follows the spawn");
+    harness.drive(Input::ChildExited {
+        final_reply: None,
+        elapsed_ms: None,
+        turn: source,
+        exit: dudes_proto::ExitStatus {
+            code: None,
+            signal: Some(9),
+        },
+        usage: None,
+        model_usage: std::collections::BTreeMap::new(),
+        outcome: TurnOutcome::Completed,
+        last_message: None,
+    });
+    assert!(
+        harness.records().any(|record| matches!(
+            record,
+            Record::TurnEnded {
+                turn: t,
+                outcome: Some(TurnOutcome::Killed {
+                    by: dudes_proto::KillReason::BreakerStop
+                }),
+                ..
+            } if *t == source
+        )),
+        "the turn ends as killed by the breaker"
+    );
 }
 
 /// After a crash inside the dispatch window an ordinary resume relaunches nothing, and the
@@ -439,6 +484,95 @@ fn a_consented_repeat_after_a_stop_is_killed_by_a_second_stop() {
     deliver_spawn(&mut harness, turn);
     assert!(spawn_recorded(&harness, turn));
     assert!(killed(&harness, turn), "the repeated launch is killed");
+}
+
+/// A turn a recovery consent re-issued may belong to a prior run whose instruction attempt already
+/// made the host call. While the consent has not claimed the launch, a stop does not abandon the
+/// turn and journals no proof that no host call happened. A turn this run issued is the control.
+#[test]
+fn a_stop_over_a_consented_turn_the_launch_has_not_claimed_abandons_nothing() {
+    for consented in [true, false] {
+        let mut harness = Harness::new();
+        harness.launch = false;
+        let (agent, _) = harness.hire_with_goal(&["npm", "test"]);
+        let turn = harness.open_turn(agent).expect("a turn was issued");
+        let unfinished: Vec<Entry> = harness
+            .journal
+            .iter()
+            .take_while(|entry| !matches!(entry.record, Record::InstructionObservationFinished { .. }))
+            .cloned()
+            .collect();
+        let mut harness = Harness::from_prefix(unfinished);
+        harness.launch = false;
+        assert!(
+            harness
+                .supervisor
+                .world()
+                .instructions
+                .current_for_turn(turn)
+                .is_some(),
+            "a control: the prior run left an unfinished instruction attempt"
+        );
+        harness.supervisor.live_issues.insert(turn);
+        if consented {
+            harness.supervisor.consented_issues.insert(turn);
+        }
+
+        stop(&mut harness, agent);
+        let no_process = harness.records().any(|record| {
+            matches!(
+                record,
+                Record::InstructionObservationFinished {
+                    settlement: dudes_proto::InstructionSettlement::NoProcess { .. },
+                    ..
+                }
+            )
+        });
+        if consented {
+            assert_eq!(halts(&harness), [None], "the turn is not abandoned");
+            assert!(!no_process, "no proof of a missing host call is journaled");
+        } else {
+            assert_eq!(halts(&harness), [Some(turn)]);
+            assert!(no_process, "a control: this run's own turn is settled");
+        }
+    }
+}
+
+/// When a stop does abandon an unlaunched turn that had an instruction attempt, the attempt is
+/// settled by the halt's own proof and no later observation is left owing.
+#[test]
+fn an_abandoning_stop_is_followed_by_the_instruction_attempts_no_process_settlement() {
+    let mut harness = Harness::new();
+    harness.launch = false;
+    let (agent, _) = harness.hire_with_goal(&["npm", "test"]);
+    let turn = harness.open_turn(agent).expect("a turn was issued");
+    harness.supervisor.spawning.clear();
+    assert!(
+        harness
+            .supervisor
+            .world()
+            .instructions
+            .current_for_turn(turn)
+            .is_some(),
+        "a control: an instruction attempt exists"
+    );
+    stop(&mut harness, agent);
+    assert_eq!(halts(&harness), [Some(turn)]);
+    let records: Vec<&Record> = harness.records().collect();
+    let halt = records
+        .iter()
+        .position(|record| matches!(record, Record::BrowserHalt { .. }))
+        .expect("the halt is journaled");
+    assert!(
+        records[halt + 1..].iter().any(|record| matches!(
+            record,
+            Record::InstructionObservationFinished {
+                settlement: dudes_proto::InstructionSettlement::NoProcess { .. },
+                ..
+            }
+        )),
+        "the attempt is finished with a no-process settlement after the halt"
+    );
 }
 
 /// The attached agent's keyboard belongs to a person, so the machine refuses the stop itself.

@@ -4896,6 +4896,9 @@ fn browser_pause_resume_is_finite_and_observed() {
     let capture = tempfile::tempdir().expect("task capture directory");
     let hold = capture.path().join("release-first-turn");
     let mut settings = control_settings(&fixture, true);
+    let config = fixture.state.path().join("config.toml");
+    std::fs::write(&config, "[floor.control]\nenabled = true\n").expect("operator file");
+    settings.operator_config = Some(config);
     settings.daemon_env.push(EnvVar::new(HELPER_ROLE, "1"));
     settings
         .daemon_env
@@ -5660,6 +5663,9 @@ fn stopped_goal_agent() -> Stopped {
     let capture = tempfile::tempdir().expect("task capture directory");
     let hold = capture.path().join("release-turns");
     let mut settings = control_settings(&fixture, true);
+    let config = fixture.state.path().join("config.toml");
+    std::fs::write(&config, "[floor.control]\nenabled = true\n").expect("operator file");
+    settings.operator_config = Some(config);
     settings.daemon_env.push(EnvVar::new(HELPER_ROLE, "1"));
     settings
         .daemon_env
@@ -5784,6 +5790,43 @@ fn stop_and_send_queues_the_note_and_then_lifts_the_floors_halt() {
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(again, receipt, "a resend answers from the index");
     assert_eq!(own(&fixture.records()), before, "a resend appends nothing");
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// A resend of a stop and send whose note is already durable answers from the index even after the
+/// control switch goes off: the person is told the note was sent. A new request is refused.
+#[test]
+fn stop_and_send_resend_after_the_control_switch_goes_off_answers_from_the_index() {
+    let Stopped {
+        mut running,
+        page,
+        fixture,
+        agent,
+        stop,
+        ..
+    } = stopped_goal_agent();
+    let body = stop_and_send_body(&request_id(2), agent, "use the other approach", stop);
+    let (head, receipt) = post_bytes(&page, CHAT_SEND, &body, None);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {receipt}");
+
+    let off = serde_json::to_vec(&json!({"key": "floor.control", "value": "off"})).expect("JSON");
+    let (head, applied) = post_bytes(&page, "/floor/settings", &off, None);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {applied}");
+
+    let (head, again) = post_bytes(&page, CHAT_SEND, &body, None);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {again}");
+    assert_eq!(again, receipt, "the resend is answered from the index");
+
+    let fresh = stop_and_send_body(&request_id(3), agent, "another", stop);
+    let (head, refused) = post_bytes(&page, CHAT_SEND, &fresh, None);
+    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {refused}");
+    assert_eq!(refused["reason"], "action_off", "{refused}");
+    let notes = fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::BrowserNoteQueued { .. }))
+        .count();
+    assert_eq!(notes, 1, "only the first request queued a note");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 

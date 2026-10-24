@@ -335,6 +335,8 @@ enum Cell {
     NoHostHold {
         lsn: Lsn,
         agent: AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn: Option<TurnId>,
     },
     NoHostClaim {
         lsn: Lsn,
@@ -454,8 +456,8 @@ impl Cell {
             Self::GoalOutstanding { goal, lsn } => {
                 state.by_goal.entry(goal).or_default().insert(lsn);
             }
-            Self::NoHostHold { lsn, agent } => {
-                state.no_host_holds.insert(lsn, agent);
+            Self::NoHostHold { lsn, agent, turn } => {
+                state.no_host_holds.insert(lsn, (agent, turn));
             }
             Self::NoHostClaim { lsn, started } => {
                 state.no_host_claims.insert(lsn, started);
@@ -584,8 +586,8 @@ fn cells(state: &InstructionState) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, Instruc
             add(Cell::GoalOutstanding { goal, lsn })?;
         }
     }
-    for (&lsn, &agent) in &state.no_host_holds {
-        add(Cell::NoHostHold { lsn, agent })?;
+    for (&lsn, &(agent, turn)) in &state.no_host_holds {
+        add(Cell::NoHostHold { lsn, agent, turn })?;
     }
     for (&lsn, &started) in &state.no_host_claims {
         add(Cell::NoHostClaim { lsn, started })?;

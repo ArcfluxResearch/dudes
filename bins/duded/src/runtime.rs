@@ -7257,14 +7257,6 @@ pub(crate) fn refuse_action_off(live: crate::floor_switches::Switches, job: Job)
                 reason: ACTION_OFF,
             }));
         }
-        Job::Chat { request, reply, .. }
-            if request.follows_stop() && !live.control.pause_resume() =>
-        {
-            let _ = reply.send(Ok(crate::floor_chat::ChatOutcome::Refused {
-                request_id: request.request_wire.clone(),
-                reason: dudes_proto::ChatReason::ActionOff,
-            }));
-        }
         Job::Rename { request, reply, .. } if !live.control.pause_resume() => {
             let _ = reply.send(Ok(RenameOutcome::Refused {
                 request_id: request.request_wire.clone(),

@@ -930,8 +930,9 @@ pub struct InstructionComparison {
 #[serde(rename_all = "snake_case")]
 pub enum InstructionNoProcessProof {
     /// The live continuation asserts that this exact Managed attempt never called the host.
-    /// An observed refusal hold or exact observed `NotLaunched` end corroborates the assertion;
-    /// recovery cannot infer it from either.
+    /// An observed refusal hold, an exact observed `NotLaunched` end, or a Floor halt that
+    /// abandoned this very turn before any launch began corroborates the assertion; recovery
+    /// cannot infer it from any of them.
     NoHostCall,
 }
 

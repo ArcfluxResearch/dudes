@@ -534,6 +534,10 @@ pub struct Supervisor<C: Clock, R: Rng> {
     status: BTreeMap<AgentId, AgentStatus>,
     ledger: Ledger,
     live_issues: BTreeSet<TurnId>,
+    /// Turns a recovery consent put in [`Self::live_issues`]. A prior run may already have made
+    /// the host call for such a turn's instruction attempt, so a Floor stop never closes one as
+    /// unlaunched.
+    consented_issues: BTreeSet<TurnId>,
     recovery_discovery: recovery::Discovery,
     spend: BTreeMap<AgentId, SpendView>,
     mail_refreshes: BTreeMap<AgentId, MailRefresh>,
@@ -722,6 +726,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             status: BTreeMap::new(),
             ledger: Ledger::new(),
             live_issues: BTreeSet::new(),
+            consented_issues: BTreeSet::new(),
             recovery_discovery: recovery::Discovery::default(),
             spend: BTreeMap::new(),
             mail_refreshes: BTreeMap::new(),
@@ -1654,6 +1659,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.reissued.remove(turn);
                 self.reissue_confirmations.remove(turn);
                 self.live_issues.remove(turn);
+                self.consented_issues.remove(turn);
                 self.status
                     .insert(*agent, self.world.settled_status(*agent));
             }
@@ -2185,7 +2191,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             || row.halted
             || row.paused
             || row.open_question.is_some()
-            || row.rung == BreakerRung::Stop
             || self.launch_held(agent, operation)
         {
             return;
@@ -2615,6 +2620,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         };
         (row.is_issued_not_spawned()
             && self.live_issues.contains(&turn)
+            && !(self.consented_issues.contains(&turn)
+                && self.world.instructions.current_for_turn(turn).is_some())
             && !launch_begun
             && !self.world.mail_wake_origin(turn)
             && (self.world.instructions.current_for_turn(turn).is_none()

@@ -358,7 +358,7 @@ function turnText(turn: ChatTurn, output: OutputStatus | null): string | null {
     case 'running': return output === 'ended' ? 'Waiting for reply status' : 'Replying…';
     case 'ended': return turn.reply === null ? 'No final reply was reported' : null;
     case 'failed': return turn.reply === null ? 'Turn failed. No final reply was reported' : 'Turn failed.';
-    case 'cancelled': return 'Cancelled before delivery. Stopping the agent cancels a note whose delivery had not started and clears its text.';
+    case 'cancelled': return 'Cancelled before delivery. The agent did not receive this note.';
     case 'delivery_uncertain': return 'Delivery before restart is unknown.';
     case 'reissue_cancelled': return 'Future reissue stopped. Delivery before restart is unknown.';
   }

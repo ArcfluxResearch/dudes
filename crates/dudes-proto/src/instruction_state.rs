@@ -124,7 +124,7 @@ pub struct InstructionState {
     pty_attachments: BTreeMap<crate::rpc::pty::PtyId, Lsn>,
     close_requests: BTreeMap<Lsn, Lsn>,
     latest_attachments: BTreeMap<AgentId, Lsn>,
-    no_host_holds: BTreeMap<Lsn, AgentId>,
+    no_host_holds: BTreeMap<Lsn, (AgentId, Option<TurnId>)>,
     no_host_claims: BTreeMap<Lsn, Lsn>,
     observed_turns: BTreeSet<TurnId>,
     last_applied: Lsn,
@@ -186,20 +186,21 @@ enum ReviewAuthority {
     Validated,
 }
 
-/// The agent a record proves left no launch behind it: an observed refusal to launch, or a Floor
-/// stop that closed a turn before any launch began.
-fn no_host_agent(record: &Record) -> Option<AgentId> {
+/// The agent a record proves left no launch behind it, with the one turn it is bound to when it
+/// names one: an observed refusal to launch, or a Floor stop that closed that turn before any
+/// launch began.
+fn no_host_agent(record: &Record) -> Option<(AgentId, Option<TurnId>)> {
     match record {
         Record::AgentHeld {
             agent,
             provenance,
             cause: crate::AutomaticHold::LaunchRefused { .. },
-        } if provenance.is_observed() => Some(*agent),
+        } if provenance.is_observed() => Some((*agent, None)),
         Record::BrowserHalt {
             agent,
-            abandons: Some(_),
+            abandons: Some(turn),
             ..
-        } => Some(*agent),
+        } => Some((*agent, Some(*turn))),
         _ => None,
     }
 }
@@ -1132,7 +1133,10 @@ impl InstructionState {
         else {
             return Err(InstructionStateError::Boundary);
         };
-        let corroborated = self.no_host_holds.get(&proof_lsn) == Some(&agent)
+        let corroborated = self
+            .no_host_holds
+            .get(&proof_lsn)
+            .is_some_and(|(held, bound)| *held == agent && bound.is_none_or(|bound| bound == turn))
             || (self.managed_end_lsn(agent, turn) == Some(proof_lsn)
                 && self.native_receipts.get(&proof_lsn).is_some_and(|native| {
                     native.started == started
@@ -1236,8 +1240,8 @@ impl InstructionState {
                 self.note_unresolved(attempt.owner, key);
             }
         }
-        if let Some(agent) = no_host_agent(record) {
-            self.no_host_holds.insert(lsn, agent);
+        if let Some(proof) = no_host_agent(record) {
+            self.no_host_holds.insert(lsn, proof);
         }
         match record {
             Record::TurnEnded {
@@ -2361,6 +2365,60 @@ mod tests {
                 assert_eq!(
                     state.attempts[&Lsn(4)].finished.as_ref().unwrap().lsn,
                     Lsn(8)
+                );
+            } else {
+                assert_eq!(result, Err(InstructionStateError::Boundary));
+                assert_eq!(state, before);
+            }
+        }
+    }
+
+    fn browser_halt(abandons: Option<TurnId>) -> Record {
+        let Record::BrowserHalt { agent, browser, .. } = samples::record(RecordKind::BrowserHalt)
+        else {
+            unreachable!()
+        };
+        Record::BrowserHalt {
+            agent,
+            browser,
+            abandons,
+        }
+    }
+
+    #[test]
+    fn a_floor_halt_proves_no_host_call_only_for_the_turn_it_abandoned_before_any_spawn() {
+        let other = TurnId::from_parts(1, 991);
+        for (halt, spawn, valid) in [
+            (browser_halt(Some(samples::turn())), false, true),
+            (browser_halt(Some(other)), false, false),
+            (browser_halt(None), false, false),
+            (browser_halt(Some(samples::turn())), true, false),
+        ] {
+            let mut state = seeded();
+            for (lsn, record) in [
+                (4, start(InstructionIssueAssociation::Prospective)),
+                (5, samples::record(RecordKind::TurnIssued)),
+                (6, halt),
+            ] {
+                state.apply(Lsn(lsn), &stamp(record), None, hash).unwrap();
+            }
+            if spawn {
+                state
+                    .apply(
+                        Lsn(7),
+                        &stamp(samples::record(RecordKind::TurnSpawned)),
+                        None,
+                        hash,
+                    )
+                    .unwrap();
+            }
+            let before = state.clone();
+            let result = state.apply(Lsn(8), &stamp(no_host_finished(4, 6)), None, hash);
+            if valid {
+                assert!(result.is_ok());
+                assert_eq!(
+                    state.unresolved_launch_attempts(samples::agent()).count(),
+                    0
                 );
             } else {
                 assert_eq!(result, Err(InstructionStateError::Boundary));

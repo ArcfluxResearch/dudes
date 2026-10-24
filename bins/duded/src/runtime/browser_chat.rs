@@ -66,8 +66,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             if indexed.request_digest != request.request_digest {
                 return Err(ChatRefusal::Conflict);
             }
-            self.lift_floor_halt_after_note(session, request)?;
+            if self.ctx.switches.load().control.pause_resume() {
+                self.lift_floor_halt_after_note(session, request)?;
+            }
             return Ok(indexed.outcome(request.request_wire.clone()));
+        }
+        // The second step of stop and send lifts a halt, so it needs the control switch. A resend
+        // of a note that is already durable was answered above.
+        if request.follows_stop() && !self.ctx.switches.load().control.pause_resume() {
+            return refused(ChatReason::ActionOff);
         }
         if self.ctx.journal_writes_stopped() {
             return Err(ChatRefusal::UnavailableNoEffect);
