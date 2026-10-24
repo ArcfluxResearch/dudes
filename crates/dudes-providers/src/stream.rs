@@ -38,6 +38,8 @@ pub struct LineRead {
     pub session: Option<SessionObservation>,
     /// One fixed activity kind from a structured provider event, with no vendor content.
     pub activity: Option<LiveActivityKind>,
+    /// Tool calls this line opened or closed. They hold the vendor's content, unchecked.
+    pub steps: Vec<crate::steps::StepEvent>,
 }
 
 /// An assistant text fragment or completed block, beside the session its line named.

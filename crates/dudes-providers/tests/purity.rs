@@ -133,6 +133,7 @@ fn provider_sources_perform_no_io_and_read_no_environment() {
             "claude/managed.rs",
             "claude/mod.rs",
             "claude/outcome.rs",
+            "claude/steps.rs",
             "claude/stream.rs",
             "claude/text.rs",
             "claude/usage.rs",
@@ -154,6 +155,7 @@ fn provider_sources_perform_no_io_and_read_no_environment() {
             "pi/stream.rs",
             "protocol.rs",
             "registry.rs",
+            "steps.rs",
             "stream.rs",
         ],
         "the scanned file set changed; add the module and check nothing outside src/ entered"

@@ -143,6 +143,7 @@ impl TurnReader for TurnStream {
                     text: Vec::new(),
                     session: Some(observation),
                     activity: Some(LiveActivityKind::Working),
+                    steps: Vec::new(),
                 }
             }
             Line::ItemStarted(item) if tool_item(item.kind.as_deref().unwrap_or_default()) => {
@@ -169,6 +170,7 @@ impl TurnReader for TurnStream {
                     text: self.completed_text(item).into_iter().collect(),
                     session: None,
                     activity: Some(LiveActivityKind::Working),
+                    steps: Vec::new(),
                 }
             }
             Line::TurnCompleted(TurnCompleted { usage }) => {

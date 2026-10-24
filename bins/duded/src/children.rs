@@ -1005,6 +1005,7 @@ mod tests {
                 text: Vec::new(),
                 session: (text == OPEN).then(observation),
                 activity: None,
+                steps: Vec::new(),
             }
         }
 
