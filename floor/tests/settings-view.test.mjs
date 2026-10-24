@@ -228,12 +228,25 @@ test('a saved daily ceiling clear stays beside the running value until replaced 
     assert.match(render(), /No daily dollar ceiling after restart/);
     edit.resetSettingsEdit();
     assert.doesNotMatch(render(), /No daily dollar ceiling after restart/, 'reload forgets unverifiable saved intent');
-    await save('budget.floor_usd_per_day', 'unset');
+    const session = await server.ssrLoadModule('/src/session.ts');
+    const signing = await server.ssrLoadModule('/src/signer.ts');
+    const signer = { device: async () => 'settings-test-device', sign: async () =>
+      ({ origin: 'http://127.0.0.1:7717', time: '1', request: 'test', signature: 'test' }) };
+    signing.installSigner(signer);
+    await session.adoptStoredFloorSession(signer);
+    const savedWindow = globalThis.window;
+    globalThis.window = { fetch: response() };
+    try {
+      await edit.changeSetting('budget.floor_usd_per_day', 'unset', 'Clear the daily ceiling?', 'Clear limit');
+      await edit.confirmSetting();
+    } finally { globalThis.window = savedWindow; signing.installSigner(null); session.resetFloorSession(); }
+    assert.equal(edit.getSettingsEditState().last?.result.kind, 'saved');
     const epoch = store.beginFloorEpoch();
     store.noteTransport('open');
     const unlimited = { ...report, budget: { ...report.budget, floor_usd_per_day_micros: null } };
     store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 1, agents: [] }, settings: unlimited }), epoch);
     assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, false, 'a live no-ceiling snapshot confirms the clear');
+    assert.equal(edit.getSettingsEditState().last, null, 'the confirmed clear no longer asks for another restart');
     assert.doesNotMatch(render(unlimited), />Clear limit<\/button>/);
     assert.match(render(unlimited), /<dt>Floor daily dollars<\/dt><dd>No ceiling/);
     edit.resetSettingsEdit();

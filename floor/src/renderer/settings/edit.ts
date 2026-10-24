@@ -147,7 +147,10 @@ subscribeToFloor(() => {
   const floor = getFloorState();
   const phase = floor.phase;
   if (phase === 'live' && !floor.stale && floor.settings?.budget.floor_usd_per_day_micros === null
-    && state.pendingDailyCeilingClear) commit({ ...state, pendingDailyCeilingClear: false });
+    && state.pendingDailyCeilingClear) {
+    commit({ ...state, pendingDailyCeilingClear: false,
+      last: state.last?.key === 'budget.floor_usd_per_day' ? null : state.last });
+  }
   if (lastPhase === 'closed' && phase === 'live') forgetPendingRestart();
   lastPhase = phase;
 });
