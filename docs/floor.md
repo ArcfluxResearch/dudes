@@ -207,8 +207,9 @@ Set a spending limit when your account bills per use.
   so they need `floor.git` on.
 - **Engine-reported steps.** Under the check result, a ticket counts the steps its newest turn took,
   such as commands, file reads and edits, and how many files its edits and writes named. These are
-  counts only, with no commands, paths or results. They come from the engine's own step list, so a
-  change made through a shell command is not counted as an edit. They never decide whether a
+  counts only, with no commands, paths or results. They are what the engine reported, for Claude Code,
+  Codex and Pi alike. A change made through a shell command is not counted as an edit, and an engine
+  that gives no edit text or parent, such as Codex, may count less than the agent did. They never decide whether a
   ticket passes.
 - **Changes.** With `floor.git` and `floor.diff` both on, a started ticket also has a Changes view.
   It lists the files that differ from where the agent's round began, including new files that Git
@@ -239,8 +240,9 @@ Set a spending limit when your account bills per use.
 ## What the last turn used
 
 A selected agent's card and its Overview show what its newest ended turn reported: tokens, dollars
-and, for Claude, how much of the model's context window the turn's last call filled. A number the
-engine does not report reads "not reported by" that engine and is never shown as zero. The context
+and, for Claude Code, how much of the model's context window the turn's last call filled. The context
+figure reads "not reported by" Codex or Pi. Any other number an engine does not report reads the same
+way and is never shown as zero. The context
 figure is as of the last turn. After you change an agent's model, the Floor says the new model's
 window is not known until it runs, instead of showing the old model's figure. These numbers are
 shown for you to read. They do not stop an agent, finish a goal or move a ticket.

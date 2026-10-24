@@ -11,6 +11,37 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.97.0] - 2026-10-25
+
+### Highlights
+
+- **See what an agent is doing.** Chat shows a Steps list for an agent's latest turn, one collapsed line per command, read, edit, search, plan, web request or helper, with its status and how long it took. Claude Code, Codex and Pi agents all show steps. Open a finished step to see its output as plain text, with known secrets redacted and long output cut to fit. (#198, #199, #202)
+- **Stop one turn without losing the agent.** With Floor control on, an agent's drawer offers Stop this turn next to Pause. It ends the running turn and keeps the agent. In Chat, Stop and send stops the turn, then sends your message once the agent is idle. (#196)
+- **Change an agent's model without hiring it again.** `dudes model <agent> <name>` sets the model for the agent's next turn, and `dudes model <agent> --clear` returns it to the engine's own model. The agent keeps its session and history, and the Floor shows the current and next model. (#195)
+- **See what the last turn used.** A selected agent shows the tokens and dollars of its last turn and, for Claude, how much of the model's context window it filled. A ticket shows the steps its newest turn took. (#200)
+- **Secrets stay out of agent text.** Dudes now removes the secrets it knows about from an agent's replies, final replies, questions and ticket summaries before it saves them, and the Floor shows `(redacted)` in their place. Memory entries and the text in the Changes view are saved as written, and the Floor scrubs them only when it shows them, using the secrets Dudes holds at that moment. An agent's own environment secrets are held only while the agent runs. Mail is saved as written and the Floor never shows it. (#194)
+- **Read agent replies as formatted text.** Agent summaries and chat replies show headings, lists, quotes, tables, code and emphasis. Links appear as text with their full address and are never clickable, and raw HTML and images stay as plain text. (#190)
+
+### Floor
+
+- Notices sit in one fixed area, so they no longer move the agent drawer or dialogs. Desktop notifications are offered once on the Board. (#187)
+- The real CLI is easy to find: the selected agent shows Open the real CLI, or explains how to turn it on. (#191)
+- The hire flow is simpler. The first-agent card is centered, a name is required, an engine is picked automatically when only one is available, and there is one way to dismiss. (#192)
+- Actions and status read in plain language. The Board has one create action and each ticket one Give to agent action, times stay current while the page is idle, and the header is reduced to Hire, Pause all and More. (#193)
+- Pause, stop, live work and hire messages use plain words instead of internal terms. (#201)
+- A ticket drawer shows the ticket's current round and waiting line, and marks a reading that may be out of date. (#186, #189)
+- Show changes gives the real reason when it cannot show a diff, and no longer offers Refresh when Refresh cannot help. A Done ticket whose agent was retired is explained. (#186, #188, #189)
+
+### Fixes
+
+- Five timing-dependent tests no longer fail at random on a busy machine. (#197, #204)
+
+### Breaking
+
+- **Reload open Floor tabs after the upgrade.** The page and the daemon speak a new browser wire version, so a tab left open from 0.96.0 asks for a reload. (#195)
+- **Going back to 0.96.0 is refused once the journal holds a new record.** A Floor Stop (#196) and a model change from `dudes model` or the Floor (#195) each write a record that 0.96.0 cannot read. Until one of them is written, you can still go back.
+- **The first start after the upgrade rebuilds the saved view once.** Dudes rebuilds the saved view of agents, tickets and turns from the journal. Nothing is lost. (#196, #200)
+
 ## [0.96.0] - 2026-10-24
 
 ### Highlights
@@ -387,7 +418,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.96.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.97.0...HEAD
+[0.97.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.96.0...v0.97.0
 [0.96.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.95.0...v0.96.0
 [0.95.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.94.0...v0.95.0
 [0.94.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.93.0...v0.94.0
