@@ -241,7 +241,7 @@ test('a refused pasted link is said, names no secret, and keeps what the page ho
   await entry.takePastedLink(exchange(async () => reply(403), session), ports);
   const html = page();
   assert.match(html,
-    /<p class="link-refused" role="alert">The Floor link pasted into this tab was refused, or the daemon could not be reached to take it\. This page is as it was and keeps what it holds\./);
+    /<p class="link-refused" role="alert">The Floor link pasted into this tab was refused, or Dudes could not be reached to take it\. This page is as it was and keeps what it holds\./);
   assert.equal(html.includes(BOOTSTRAP), false, 'the refusal line carries the bootstrap');
   assert.equal(html.includes(held.device), false, 'the page carries the browser’s device id');
   assert.equal(session.currentFloorSession(), held, 'a refused link replaced the session');
@@ -280,7 +280,7 @@ test('a link refused for a different build says so, keeps the page, and a matchi
   const spend = async (url, init) => { posted.push(url); return accept(url, init); };
   await entry.takePastedLink(exchange(spend, session, ['/floor/assets/index-cccc3333.js']), ports);
   const html = page();
-  assert.match(html, /<p class="link-refused" role="alert">The daemon now serves a different Floor build from this page, so the link pasted into this tab was not used\./);
+  assert.match(html, /<p class="link-refused" role="alert">Dudes now serves a different Floor build from this page, so the link pasted into this tab was not used\./);
   assert.equal(html.includes(BOOTSTRAP), false, 'the build line carries the bootstrap');
   assert.deepEqual(posted, [], 'a link was spent on a different build');
   assert.equal(session.currentFloorSession(), held, 'a build mismatch replaced the session');

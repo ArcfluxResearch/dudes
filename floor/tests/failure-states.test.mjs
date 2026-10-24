@@ -48,7 +48,7 @@ for (const name of ['Setup', 'Settings']) {
     const rendered = html(name === 'Setup' ? SetupView : SettingsView,
       floor({ phase: 'live', epoch: 1, snapshotEpoch: 1 }));
     assert.match(rendered, /role="alert"/);
-    assert.match(rendered, /not reported|could not read/i);
+    assert.match(rendered, /not reported|could not read|could not check/i);
     assert.match(rendered, /<button[^>]*>Retry<\/button>/);
   });
 }
@@ -69,7 +69,7 @@ test('About explains a page and daemon build mismatch in plain text', () => {
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '0', per_turn_tokens: '0' },
     providers: [], workspaces: [], about: { daemon_version: '99.0.0', browser_wire_version: 7 } };
   const rendered = html(SettingsView, floor({ phase: 'live', epoch: 1, snapshotEpoch: 1, settings }));
-  assert.match(rendered, /page and daemon.*different builds/i);
+  assert.match(rendered, /page is version .*Dudes is version/i);
   assert.match(rendered, /99\.0\.0/);
   assert.match(rendered, /Open Dudes to load the matching page/);
 });
@@ -77,7 +77,7 @@ test('About explains a page and daemon build mismatch in plain text', () => {
 for (const [name, component] of [['Setup', () => SetupView], ['Settings', () => SettingsView], ['Archived', () => ArchivedAgents]]) {
   test(`${name} reports unavailable and Retry after a stream closes`, () => {
     const rendered = html(component(), floor({ phase: 'closed' }));
-    assert.match(rendered, /unavailable while the stream is disconnected/);
+    assert.match(rendered, /unavailable while disconnected/);
     assert.match(rendered, /<button[^>]*>Retry<\/button>/);
     assert.doesNotMatch(rendered, /Waiting for a snapshot|No archived agents/);
   });
@@ -135,13 +135,13 @@ test('a socket that never opens cannot claim an open connection after silence', 
     now = 6_000;
     tick();
     const rendered = html(StreamNotice, streamStore.getFloorState());
-    assert.match(rendered, /Connecting.*Waiting for the first snapshot/);
+    assert.match(rendered, /Connecting.*Waiting for the latest agents and tickets/);
     assert.doesNotMatch(rendered, /connection is still open/);
   } finally { dispose(); }
 });
 
 test('an opened transport is still loading until its first snapshot confirms the view', () => {
   const rendered = html(OverviewSummary, floor({ phase: 'live', epoch: 1, snapshotEpoch: 0 }));
-  assert.match(rendered, /Connecting.*waiting for a snapshot/i);
+  assert.match(rendered, /Connecting to Dudes/i);
   assert.doesNotMatch(rendered, /Live.*confirmed/);
 });

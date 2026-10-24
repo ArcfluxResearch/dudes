@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { RelativeTime } from './RelativeTime.tsx';
 import { ACTIVITY_LABELS, activityText } from './activity.ts';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { filterActivity } from './activityFilters.ts';
@@ -26,8 +27,8 @@ export function LogPanel({ floor }: { readonly floor: FloorState }) {
 
   return (
     <section className="log-panel" aria-label="Recent activity">
-      <ReadNotice state={state} label="Activity" message="Activity was not reported, or this page could not read every event. Retry to request a fresh snapshot." />
-      {state !== 'ready' ? null : <p role="status">{floor.stale ? 'Activity unconfirmed. These events are from the last snapshot.' : 'Recent activity, newest first.'}</p>}
+      <ReadNotice state={state} label="Activity" message="Activity was not reported, or this page could not read every event. Retry to load the latest activity." />
+      {state !== 'ready' ? null : <p role="status">{floor.stale ? 'Connection interrupted. This activity may be out of date.' : 'Recent activity, newest first.'}</p>}
       <div className="activity-filters" role="group" aria-label="Filter recent activity">
         <label>Agent
           <select value={filters.agentId} onChange={(event) => setFilters({ ...filters, agentId: event.currentTarget.value })}>
@@ -35,9 +36,9 @@ export function LogPanel({ floor }: { readonly floor: FloorState }) {
             {[...agents].map(([id, name]) => <option value={id} key={id}>{name}</option>)}
           </select>
         </label>
-        <label>Event kind
+        <label>Event
           <select value={filters.kind} onChange={(event) => setFilters({ ...filters, kind: event.currentTarget.value })}>
-            <option value="">All kinds</option>
+            <option value="">All events</option>
             {[...kinds].sort().map((kind) => <option value={kind} key={kind}>{ACTIVITY_LABELS[kind as keyof typeof ACTIVITY_LABELS] ?? 'Unavailable event'}</option>)}
           </select>
         </label>
@@ -47,12 +48,12 @@ export function LogPanel({ floor }: { readonly floor: FloorState }) {
         </label>
       </div>
       {rows.length === 0 ? state === 'ready' ? <p>{floor.activity.length === 0 ? 'No recent activity.' : 'No matching activity.'}</p> : null : (
-        <ol aria-label="Recent journal events">
+        <ol aria-label="Recent events">
           {rows.map((row) => (
             <li key={row.lsn} data-activity-lsn={row.lsn}>
               <p>{activityText(row)}</p>
-              <small>{recordedTime(row.at)}</small>
-              <details><summary>Details</summary><p>Record position: {journalPosition(row.lsn)}</p>
+              <small><RelativeTime at={row.at} /></small>
+              <details><summary>Details</summary><p>{recordedTime(row.at)}</p><p>Record position: {journalPosition(row.lsn)}</p>
                 <p>Event: <code>{row.kind}</code></p>
                 {'agent' in row ? <p>Agent: <code>{row.agent.id}</code></p> : null}
                 {'card' in row ? <p>Ticket: <code>{row.card.id}</code></p> : null}

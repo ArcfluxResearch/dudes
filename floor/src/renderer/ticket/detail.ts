@@ -11,7 +11,7 @@ import { TICKET_REASONS } from '../board.ts';
 import type { ControlDeps } from '../control/control.ts';
 import { browserControlDeps } from '../control/control.ts';
 import { problemText, readTicket } from './ticket.ts';
-import { WAITS, readable } from './words.ts';
+import { COULD_NOT_READ, WAITS, readable } from './words.ts';
 import type { Wait } from './words.ts';
 
 import { decodeCoverageNote, decodeInstructionReview, sameInstructionWatermark } from './instructions.ts';
@@ -219,10 +219,11 @@ async function performRead(card: CardRow, deps: ControlDeps, key: DetailReadKey)
       return;
     }
     commit({ card: card.id, seq: heldSeq, phase: 'failed', detail: same ? state.detail : null,
-      problem: 'The daemon sent a reply this page could not read.', freshness: key });
+      problem: 'Dudes sent a reply this page could not read.', freshness: key });
     return;
   }
   commit({ card: card.id, seq: heldSeq, phase: 'failed', detail: same ? state.detail : null,
-    problem: problemText(outcome, card.status), freshness: key });
+    problem: outcome.kind === 'unavailable' || outcome.kind === 'unknown' ? COULD_NOT_READ : problemText(outcome, card.status),
+    freshness: key });
 }
 

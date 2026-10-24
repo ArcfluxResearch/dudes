@@ -181,7 +181,7 @@ test('NAME_UNISOLATED mutant: a name written right to left cannot reorder the en
   await withOffice(({ NameTag }) => {
     const id = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
     assert.equal(renderToStaticMarkup(createElement(NameTag, { id, row: { id, name: '\u202eAda', provider: 'claude' } })),
-      '<bdi>\u202eAda</bdi><span class="office-tag-engine"> · claude</span>');
+      '<bdi>\u202eAda</bdi><span class="office-tag-engine"> · Claude</span>');
     assert.equal(renderToStaticMarkup(createElement(NameTag, { id, row: { id, name: '' } })), `<bdi>${id}</bdi>`);
   });
 });
@@ -191,7 +191,7 @@ test('NAME_UNCAPPED mutant: a very long name is cut by the stylesheet, while the
   await withOffice(({ NameTag }) => {
     const id = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
     assert.equal(renderToStaticMarkup(createElement(NameTag, { id, row: { id, name, provider: 'claude' } })),
-      `<bdi>${name}</bdi><span class="office-tag-engine"> · claude</span>`);
+      `<bdi>${name}</bdi><span class="office-tag-engine"> · Claude</span>`);
   });
   const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
   const rule = /\.office-tag bdi\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';

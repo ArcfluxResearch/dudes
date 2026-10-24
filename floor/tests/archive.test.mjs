@@ -130,11 +130,11 @@ test('the archive starts collapsed and renders permitted details with only brows
   assert.match(html, /<details class="archived-agents"><summary>Archived \(2\)<\/summary>/);
   assert.match(html, /&lt;script&gt;Ada&lt;\/script&gt;/);
   assert.ok(html.indexOf(`data-archived-agent-id="${OTHER}"`) < html.indexOf(`data-archived-agent-id="${ID}"`));
-  assert.match(html, /Parser engineer.*codex/);
+  assert.match(html, /Parser engineer.*Codex/);
   assert.match(html, /Parser<\/p>/);
   assert.match(html, /Jan 1, 1970, 12:00:02 PM GMT\+12/);
   assert.match(html, /Jan 1, 1970, 12:00:01 PM GMT\+12/);
-  assert.match(html, /Total recorded turns<\/dt><dd>3/);
+  assert.match(html, /Work attempts<\/dt><dd>3/);
   assert.match(html, /Reported spend<\/dt><dd>\$0.10 · 77 tok/);
   assert.match(html, /Hide in this browser/);
   assert.doesNotMatch(html, /<form|<input|<a\b|<script|\bopen=|restore|remove|rehire/i);

@@ -138,7 +138,7 @@ test('an unconfirmed view keeps each question on the list and takes every answer
   subscribe([ada(), grace()]);
   store.noteStale(true);
   const html = overview();
-  assert.match(html, /View unconfirmed — waiting for the stream/);
+  assert.match(html, /Connection interrupted\. This view may be out of date\./);
   assert.deepEqual(entries(html).map(({ agent }) => agent), [GRACE, ADA]);
   assert.doesNotMatch(html, /<textarea/);
 });

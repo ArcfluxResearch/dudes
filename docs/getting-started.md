@@ -90,11 +90,11 @@ Dudes reads no engine's credentials or files.
    message. See [Tickets](tickets.md).
 
 5. Hire more agents. The Floor offers Claude Code, and Codex or Pi once they are
-   turned on. The App step also lets you choose the model the agent runs (`dudes hire --model <name>`
+   turned on. The Engine step also lets you choose the model the agent runs (`dudes hire --model <name>`
    does the same): Claude Code suggests `opus`, `sonnet` and `haiku`, and any other name may be typed.
    Left alone, the agent uses the app's own default, or the model your configuration sets for that app.
    If the configuration passes `--model` in Claude Code's extra arguments, that model wins over any other, so
-   the App step shows it and offers no choice, and a hire that names a model is refused.
+   the Engine step shows it and offers no choice, and a hire that names a model is refused.
    Dudes checks only a model's spelling, and the app reports a name it does not know when the agent
    first runs. You can change an agent's model later from its panel on the Floor (it needs `floor.control`)
    or with `dudes model <agent> <name>`; the agent keeps its session and history, a run already under way

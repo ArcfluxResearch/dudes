@@ -86,7 +86,7 @@ test('the change control needs the Floor control switch and a managed agent', ()
   assert.match(html(base), /Change model/);
   model.beginModel(base);
   const markup = html(base);
-  assert.match(markup, /Engine default/);
+  assert.match(markup, /Default model/);
   assert.match(markup, /opus/);
   assert.match(markup, /Another model name/);
 });

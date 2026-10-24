@@ -20,7 +20,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
-import { ADA, GRACE, agent, cardId, daemon, json, subscribe, ticketCard, instructionReview, instructionSummary, INSTRUCTION_WATERMARK } from './helpers/tickets.mjs';
+import { ADA, GRACE, advance as advanceStore, agent, cardId, daemon, json, subscribe, ticketCard, instructionReview, instructionSummary, INSTRUCTION_WATERMARK } from './helpers/tickets.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const NEW = cardId(1);
@@ -70,8 +70,11 @@ const panel = () => {
   return renderToStaticMarkup(createElement(TicketPanel, { floor, card: floor.cards.find((c) => c.id === NEW) }));
 };
 
+const advance = (cursor, changes) => advanceStore(store, cursor, changes);
+
 async function open(fields, { git = false, status = 'review', cardFields = {} } = {}) {
   subscribe(store, { agents: [agent()], cards: [ticketCard(1, status, { claimed_by: ADA, ...cardFields })], git });
+  advance('20');
   const { deps, seen } = daemon((url) => url === '/floor/ticket/read' ? json(200, reply(fields, { status })) : json(503, {}));
   await detail.loadDetail(store.getFloorState().cards[0], deps);
   return { deps, seen };
@@ -113,10 +116,11 @@ test('with no summary the panel says so', async () => {
 
 test('the check result says pass or fail, its exit status and when', async () => {
   await open({ check_result: { pass: false, exit: 2, at: 1_787_394_600_000 } });
-  assert.match(panel(), /<h4>Last recorded check<\/h4><p>The check failed, exit status 2 at [^<]+\.<\/p>/);
+  assert.match(panel(), /<h4>Last check<\/h4><p>The check failed <time[^>]*>[^<]+<\/time>\.<\/p>/);
+  assert.match(panel(), /<details><summary>Details<\/summary><p>Checked at [^<]+<\/p><p>Exit status: 2\.<\/p><\/details>/);
   detail.resetDetail();
   await open({ check_result: { pass: true, at: 1_787_394_600_000 } });
-  assert.match(panel(), /The check passed at /);
+  assert.match(panel(), /The check passed <time/);
   detail.resetDetail();
   await open({ check_result: null });
   assert.ok(!/Check result/.test(panel()));
@@ -125,6 +129,8 @@ test('the check result says pass or fail, its exit status and when', async () =>
 test('the facts around it: state, agent, check, round and the note', async () => {
   await open();
   const html = panel();
+  assert.match(html, /<p class="ticket-status">Ada&#x27;s work is ready for you to review\.<\/p>/);
+  assert.match(html, /<details class="ticket-facts"><summary>Details<\/summary><dl>/);
   assert.match(html, /<dt>State<\/dt><dd>Ready for you<\/dd>/);
   assert.match(html, /<dt>Agent<\/dt><dd>Ada<\/dd>/);
   assert.match(html, /<dt>Done when<\/dt><dd>default passes<\/dd>/);
@@ -171,7 +177,7 @@ const EARLIER = {
       turn: cardId(11), authorization_lsn: '42', issue_lsn: '44', earlier: { kind: 'started', lsn: '10' },
       boundary: { state: 'unsettled' }, acknowledgment: { state: 'none' } }] } },
 };
-const EARLIER_WORDS = [/The earlier note/, /The earlier summary/, /the earlier check/, /Last recorded check/, /exit status 7/,
+const EARLIER_WORDS = [/The earlier note/, /The earlier summary/, /the earlier check/, /Last check/, /Exit status: 7/,
   /shortened in this view/, /What Dudes could not see/, /<h4>Instruction review<\/h4>/, /Review the recovered attempt/];
 
 test('a ticket that moved on shows nothing from its earlier reading until the next read answers', async () => {
@@ -204,9 +210,55 @@ test('a ticket that moved on shows nothing from its earlier reading until the ne
   assert.equal(detail.getDetailState().phase, 'failed');
   const failed = drawn(moved);
   for (const words of EARLIER_WORDS) assert.doesNotMatch(failed, words, 'after the next read failed');
-  assert.match(failed, /We could not confirm that saved\./);
+  assert.match(failed, /Dudes could not read this ticket\. Choose Read again\./);
+  assert.doesNotMatch(failed, /could not confirm that saved/, 'a read saves nothing');
+  assert.match(failed, />Read again<\/button>/);
+  assert.doesNotMatch(failed, /before editing this ticket/, 'a ticket in review cannot be edited');
   assert.doesNotMatch(failed, /Reading the ticket…/);
   assert.equal(detail.editableDetail(detail.getDetailState(), moved), null);
+});
+
+test('a failed read of a ticket that can be edited also asks for the complete note', async () => {
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'todo')] });
+  await detail.loadDetail(store.getFloorState().cards[0], daemon(() => json(503, {})).deps);
+  assert.equal(detail.getDetailState().phase, 'failed');
+  const html = panel();
+  assert.match(html, /Dudes could not read this ticket\. Choose Read again\./);
+  assert.match(html, /Read the complete current note before editing this ticket\./);
+  assert.match(html, />Read again<\/button>/);
+});
+
+test('a reading of the same version that is not confirmed current marks the summary and drops the daemon\'s waiting words', async () => {
+  await open({ summary: 'I fixed the test.' });
+  const current = panel();
+  assert.match(current, /I fixed the test\./);
+  assert.doesNotMatch(current, /from the last reading/, 'a confirmed reading needs no label');
+
+  advance('21');
+  let answer;
+  const rereading = detail.loadDetail(store.getFloorState().cards[0], daemon(() => new Promise((resolve) => { answer = resolve; })).deps);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(detail.getDetailState().phase, 'loading');
+  const windows = { 'while the re-read runs': panel() };
+  answer(json(503, {}));
+  await rereading;
+  windows['after the re-read failed'] = panel();
+  for (const [when, html] of Object.entries(windows)) {
+    assert.match(html, /<p class="ticket-summary ticket-text">I fixed the test\.<\/p><p class="ticket-hint" role="note">This is from the last reading of the ticket\. It may have changed since\.<\/p>/, when);
+  }
+  assert.match(windows['after the re-read failed'], /Dudes could not read this ticket\./);
+
+  detail.resetDetail();
+  store.resetFloorStore();
+  await open({ waiting: { wait: { kind: 'agent_busy' }, note: 'Waiting for Ada to finish its current work.' }, summary: null },
+    { status: 'claimed' });
+  assert.match(panel(), /Waiting for Ada to finish its current work\./, 'the daemon\'s words while the reading is current');
+  advance('21');
+  await detail.loadDetail(store.getFloorState().cards[0], daemon(() => json(503, {})).deps);
+  const stale = panel();
+  assert.doesNotMatch(stale, /Waiting for Ada to finish/, 'Ada is idle on the board, so the old waiting line is not repeated');
+  advance('22', { agents: [agent(ADA, 'Ada', { paused: true })] });
+  assert.match(panel(), /Waiting for Ada to be resumed\./, 'the card\'s own words stand in');
 });
 
 const GOAL = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
@@ -239,12 +291,12 @@ test('with the control switch off the held ticket names the switch and offers no
 test('an interrupted ticket opens the recovery view, or names the switches that are off', async () => {
   const html = await stuck('recovery_required', { row: { paused: false } });
   assert.match(html, /data-action="review_recovery">Review recovery<\/button>/);
-  assert.match(html, /Recovery keeps the same goal and ticket round\./);
+  assert.match(html, /Recovery continues the same task\./);
   assert.doesNotMatch(html, /`dudes|recovery inspect/);
   store.resetFloorStore();
   const off = await stuck('recovery_required', { control: false, recovery: false });
   assert.doesNotMatch(off, /data-action="review_recovery"/);
-  assert.match(off, /Turn on Pause, resume and rename and Recover interrupted goals under Floor switches in Settings/);
+  assert.match(off, /Turn on Pause, resume and rename and Recover interrupted tasks under Floor switches in Settings/);
 });
 
 test('the decoder keeps exactly the daemon\'s members and refuses the rest', async () => {
@@ -272,7 +324,9 @@ test('a ready or held ticket names what Dudes could not see', async () => {
   const coverage = { provider: 'codex', limits: ['configuration_unknown', 'fallback_unknown', 'root_marker_unknown'], saw_no_change: true };
   await open({ coverage });
   const html = panel();
-  assert.match(html, /<h4>What Dudes could not see<\/h4>\s*<p>Dudes could not check every file this agent may have followed\. Look at the result yourself before you accept it\.<\/p><details><summary>Details<\/summary><p>Dudes cannot see Codex&#x27;s settings in its home folder, fallback file names or root markers\. It saw no change to the instruction and settings files it can read\.<\/p><\/details>/);
+  const defaultView = html.replace(/<details[^>]*>[^]*?<\/details>/g, '');
+  assert.doesNotMatch(defaultView, /What Dudes could not see/);
+  assert.match(html, /<h4>What Dudes could not see<\/h4>\s*<p>Dudes could not check every file this agent may have followed\. Look at the result yourself before you accept it\.<\/p><p>Dudes cannot see Codex&#x27;s settings in its home folder, fallback file names or root markers\. It saw no change to the instruction and settings files it can read\.<\/p>/);
   detail.resetDetail();
   store.resetFloorStore();
   await open({ coverage: { ...coverage, provider: 'claude', limits: ['plugin_unknown'], saw_no_change: false } });
@@ -282,7 +336,7 @@ test('a ready or held ticket names what Dudes could not see', async () => {
   detail.resetDetail();
   store.resetFloorStore();
   await open({ coverage }, { status: 'blocked' });
-  assert.match(panel(), /<details><summary>Details<\/summary><p>Dudes cannot see Codex&#x27;s settings in its home folder, fallback file names or root markers\./, 'Needs you shows the standing limits too');
+  assert.match(panel(), /<details class="ticket-facts">[^]*<p>Dudes cannot see Codex&#x27;s settings in its home folder, fallback file names or root markers\./, 'Needs you shows the standing limits too');
 });
 
 test('a Pi note reads in plain words and an unknown limit falls back instead of dropping the note', async () => {
@@ -468,7 +522,7 @@ test('instruction paths and gaps precede an accessible disclosure of protocol de
   const html = panel();
   const known = html.indexOf('<h5>Known changed paths</h5>');
   const gaps = html.indexOf('<h5>Why this needs your review</h5>');
-  const trace = html.indexOf('<details');
+  const trace = html.indexOf('<details><summary>Observation details');
   assert.ok(known >= 0 && gaps > known && trace > gaps, html);
   assert.match(html, /<summary>Observation details<\/summary>/);
   const visible = html.slice(0, trace);
@@ -555,7 +609,7 @@ test('every gap kind reads as a plain sentence and the review says what to do ne
     unrecorded_launch_boundary: 'Dudes cannot tell whether the agent started before the starting copy was recorded.',
     cleanup_unconfirmed: 'Dudes could not confirm that the agent&#x27;s process had fully stopped.',
     attached_turn_start_missing: 'Dudes did not see this attached turn begin.',
-    ending_boundary_missing: 'Dudes did not see the agent&#x27;s process end after the daemon restarted.',
+    ending_boundary_missing: 'Dudes did not see the agent&#x27;s process end after Dudes restarted.',
   };
   const gaps = Object.keys(kinds).map((reason) => ({ reason, context: { kind: 'unresolved' }, agent: null,
     path: null, display: null, display_truncated: false, origin: 'observed', holds: true }));
@@ -591,7 +645,7 @@ test('only gaps that hold the ticket are reasons, standing limits are named as w
   const trace = html.slice(disclosure, html.indexOf('</details>', disclosure));
   assert.match(trace, /Coverage gap 2\. fallback unknown\. Unresolved context\.[^<]*Standing engine limit\./);
   assert.match(trace, /Coverage gap 3\. import cycle\. Unshared project\.[^<]*Found during this ticket\./);
-  assert.match(html, /<details><summary>Details<\/summary><p>Dudes cannot see Codex&#x27;s fallback file names\.<\/p>/);
+  assert.match(html, /<details class="ticket-facts">[^]*<p>Dudes cannot see Codex&#x27;s fallback file names\.<\/p>[^]*<\/details>/);
 });
 
 test('an issued turn with a missing sampled start shows launch uncertainty without an invented baseline or end', async () => {
@@ -638,7 +692,7 @@ test('an unobserved recovered ending boundary preserves the recorded baseline an
   });
   assert.equal(detail.getDetailState().phase, 'ready');
   const html = panel();
-  assert.match(html, /Dudes did not see the agent&#x27;s process end after the daemon restarted\./);
+  assert.match(html, /Dudes did not see the agent&#x27;s process end after Dudes restarted\./);
   assert.match(html, /Baseline record 11/);
   assert.match(html, /No recorded end boundary/);
   assert.match(html, /No ending sample/);

@@ -37,7 +37,7 @@ export function ModelEditor({ row }: { readonly row: AgentRow }) {
         {['', ...suggestions].map((choice) => <label key={choice} className="hire-choice">
           <input type="radio" name="agent-model" value={choice} checked={state.draft === choice}
             onChange={() => editModel(choice)} />
-          <span className="hire-choice-label">{choice === '' ? 'Engine default' : choice}</span>
+          <span className="hire-choice-label">{choice === '' ? 'Default model' : choice}</span>
         </label>)}
       </fieldset>
       <label htmlFor="agent-model-name">Another model name</label>

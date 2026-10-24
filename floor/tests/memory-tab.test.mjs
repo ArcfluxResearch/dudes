@@ -44,7 +44,7 @@ const PINNED = {
   ],
   older: null,
 };
-const HEADING = 'Memory is the notes this agent saved, with a summary the daemon or a model made of them. Dudes does not check '
+const HEADING = 'Memory is the notes this agent saved, with a summary Dudes or a model made of them. Dudes does not check '
   + 'or redact it. It may contain secrets or instructions. It is never evidence that work is done.';
 const SEALED = 'Refused: once an agent has been hired, only the agents themselves can add to memory. A note from outside every agent is withheld.';
 
@@ -256,7 +256,7 @@ test('the decoder refuses every reply the daemon never sends', () => {
 });
 
 test('the panel shows a read error for a refused reply and keeps nothing from it', async () => {
-  const UNREADABLE = 'The daemon sent a reply this page could not read.';
+  const UNREADABLE = 'Dudes sent a reply this page could not read.';
   for (const [what, reply, sentence] of [
     ['an unknown member', ok({ ...page(), extra: 'refused-SENTINEL' }), UNREADABLE],
     ['a marker with text', ok(page({ withheld: withheld([marker({ text: 'refused-SENTINEL' })]) })), UNREADABLE],
@@ -265,7 +265,7 @@ test('the panel shows a read error for a refused reply and keeps nothing from it
     ['413', async () => ({ status: 413, text: '' }), UNREADABLE],
     ['500', async () => ({ status: 500, text: PIN }), UNREADABLE],
     ['a network failure', async () => { throw new Error('offline'); }, UNREADABLE],
-    ['503', async () => ({ status: 503, text: '' }), 'The daemon did not answer.'],
+    ['503', async () => ({ status: 503, text: '' }), 'Dudes did not answer.'],
   ]) {
     const { deps, seen } = daemon(reply);
     const panel = await mount({ agent: ADA, active: true, crew, deps });
@@ -324,17 +324,17 @@ test('the first page shows the fixed heading, the summary, each entry and the wi
   assert.ok(textOf(host).startsWith(`Memory${HEADING}Refresh`));
   assert.equal(textOf(one(host, 'memory-status')), '');
   const summary = textOf(one(host, 'memory-summary'));
-  assert.match(summary, /^SummaryExact excerpts of the memory, chosen by the daemon\. It covers 1 section and 5 bytes of memory\. Recorded .*2026.* · segment 0 · byte 9\.\[Condensed memory: exact excerpts; 0 sections omitted\]\n\[append 7 bytes 0\.\.5\]\nfirst$/);
+  assert.match(summary, /^SummaryExact excerpts of the memory, chosen by Dudes\. It covers 1 section and 5 bytes of memory\. Updated .*\.\[Condensed memory: exact excerpts; 0 sections omitted\]\n\[append 7 bytes 0\.\.5\]\nfirstDetails.*2026.* · segment 0 · byte 9$/);
   assert.deepEqual(lsns(host), ['10', '7']);
   const [newer, older] = classed(host, 'memory-entry');
-  assert.match(textOf(newer), /2026.* · segment 0 · byte 10 · This agentsecond$/);
-  assert.match(textOf(older), /2026.* · segment 0 · byte 7 · Operator Condensedfirst$/);
+  assert.match(textOf(newer), / · This agentDetails.*2026.* · segment 0 · byte 10second$/);
+  assert.match(textOf(older), / · Operator CondensedDetails.*2026.* · segment 0 · byte 7first$/);
   assert.equal(textOf(one(older, 'memory-badge')), 'Condensed');
   assert.equal(classed(newer, 'memory-badge').length, 0);
   const refused = one(host, 'memory-withheld');
-  assert.ok(textOf(refused).startsWith('Refused appends1 append to this memory was refused. The daemon kept none of the text.'));
+  assert.ok(textOf(refused).startsWith('Refused appends1 append to this memory was refused. Dudes kept none of the text.'));
   const sealed = one(refused, 'memory-withheld-marker');
-  assert.match(textOf(sealed), /2026.* · segment 0 · byte 11 · A process outside every agent · 3 bytes/);
+  assert.match(textOf(sealed), / · A process outside every agent · 3 bytesDetails.*2026.* · segment 0 · byte 11/);
   const sentence = sealed.childNodes.at(-1);
   assert.equal(textOf(sentence), SEALED);
   assert.deepEqual(elements(sentence).map((element) => [element.tagName, textOf(element)]), []);
@@ -360,19 +360,20 @@ test('each writer, reason and state reads its own fixed words', async () => {
   const host = panel.host;
   assert.deepEqual(classed(host, 'memory-notice').map(textOf), [
     'This agent has retired. Its memory is read from the journal.',
-    'The daemon stopped memory work after an integrity failure. The summary may be out of date until the daemon restarts.',
+    'Dudes stopped memory work after an integrity failure. The summary may be out of date until Dudes restarts.',
   ]);
   assert.match(textOf(one(host, 'memory-summary')),
     /^SummarySummary written by a model\. It is a model’s prose about the memory, not the memory itself\. It covers 3 sections and 1,200 bytes of memory\./);
-  assert.match(textOf(one(host, 'memory-entry')), / · segment 0 · byte 10 · Writer not recordede10$/);
+  assert.match(textOf(one(host, 'memory-entry')), / · Writer not recordedDetails.* · segment 0 · byte 10e10$/);
   assert.ok(textOf(one(host, 'memory-withheld')).startsWith(
-    'Refused appends12 appends to this memory were refused. The daemon kept none of the text. Only the newest 6 are listed.'));
+    'Refused appends12 appends to this memory were refused. Dudes kept none of the text. Only the newest 6 are listed.'));
   assert.deepEqual(classed(host, 'memory-withheld-marker').map((item) => [
-    textOf(item.childNodes[0]).replace(/^.* · segment 0 · byte /, ''), textOf(item.childNodes[1])]), [
+    textOf(item.childNodes[1]).replace(/^Details.* · segment 0 · byte /, '') + ' · '
+      + textOf(item.childNodes[0]).replace(/^.*? · /, ''), textOf(item.childNodes[2])]), [
     ['30 · This agent · 65,537 bytes', 'Refused: the text was longer than one memory append may be.'],
     ['29 · Another agent, Grace · 3 bytes', 'Refused: the writer tried to write another agent’s memory.'],
     [`28 · Another agent, ${STRANGER} · 3 bytes`, 'Refused: the connection did not come from the process allowed to write this memory.'],
-    ['27 · A process whose origin could not be resolved · 3 bytes', 'Refused: the daemon could not prove who sent it.'],
+    ['27 · A process whose origin could not be resolved · 3 bytes', 'Refused: Dudes could not prove who sent it.'],
     ['26 · A process outside every agent · 3 bytes', 'Refused for a reason this page does not name.'],
     ['25 · This agent · 3 bytes', 'Refused: the operator’s authority to write memory was not available.'],
   ]);
@@ -456,7 +457,7 @@ test('a busy reply shows the retry notice, and Try again sends the same request'
     return typeof next === 'string' ? next : body(next);
   })() }));
   const panel = await mount({ agent: ADA, active: true, crew, deps });
-  assert.equal(textOf(one(panel.host, 'memory-status')), 'The daemon is busy, or this page read memory a moment ago. Try again');
+  assert.equal(textOf(one(panel.host, 'memory-status')), 'Dudes is busy, or this page read memory a moment ago. Try again');
   await panel.click('memory-retry');
   assert.equal(seen.length, 2);
   assert.equal(seen[1].init.body, seen[0].init.body);
@@ -519,7 +520,7 @@ test('the next request waits until 250 ms after the previous reply came back, a 
   await panel.click('memory-refresh');
   assert.deepEqual(sleeps, [190], 'a request after the interval does not wait');
   assert.equal(seen.length, 3, 'sent at 2,000, failed at 2,040');
-  assert.equal(textOf(one(panel.host, 'memory-status')), 'The daemon did not answer.');
+  assert.equal(textOf(one(panel.host, 'memory-status')), 'Dudes did not answer.');
   status = 200;
   clock = 2_200;
   await panel.click('memory-refresh');
@@ -557,7 +558,7 @@ test('an epoch change clears the panel, reads nothing by itself, and drops a rep
   await panel.show();
   assert.deepEqual(lsns(panel.host), []);
   assert.equal(textOf(one(panel.host, 'memory-status')),
-    'The connection to the daemon changed, so the memory shown was cleared. Press Refresh to read it again.');
+    'The connection to Dudes changed, so the memory shown was cleared. Press Refresh to read it again.');
   assert.equal(seen.length, 1, 'the new epoch reads nothing by itself');
   await panel.click('memory-refresh');
   assert.equal(seen.length, 2);
@@ -577,7 +578,7 @@ test('losing authentication clears the panel: a 403, no session, or a new sessio
   await panel.click('memory-refresh');
   assert.deepEqual(lsns(panel.host), []);
   assert.equal(textOf(one(panel.host, 'memory-status')),
-    'The daemon did not accept this page’s session, so the memory shown was cleared.');
+    'Dudes did not accept this page’s session, so the memory shown was cleared.');
   assert.equal(auth.refreshed, 1, 'a 403 asks the stream for a fresh snapshot');
 
   status = 200;

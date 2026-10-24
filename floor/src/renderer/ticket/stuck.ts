@@ -30,7 +30,7 @@ const NONE: StuckOffer = Object.freeze({ resume: null, recovery: null, switchOff
 /** The Settings label of the switch behind Resume. */
 export const RESUME_SWITCH = 'Pause, resume and rename';
 /** The Settings label of the switch behind recovery. */
-export const RECOVERY_SWITCH = 'Recover interrupted goals';
+export const RECOVERY_SWITCH = 'Recover interrupted tasks';
 
 export function stuckOffer(floor: FloorState, card: CardRow): StuckOffer {
   const reason = card.ticket?.reason ?? null;

@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // Renewing a goal that has nothing left, against the snapshot and every reply
-// the daemon can give. The floor is the real store fed real `floor.snapshot`
-// frames; the views are the real components rendered to markup; the daemon is
+// Dudes can give. The floor is the real store fed real `floor.snapshot`
+// frames; the views are the real components rendered to markup; Dudes is
 // a function from the request the page sent to a status and a body.
 //
 // Mutation controls, each named by the test it turns red:
-//   - the sibling decoder taking a malformed `renew` ........ "the goal sibling decodes…"
+//   - the sibling decoder taking a malformed `renew` ........ "the task sibling decodes…"
 //   - the offer ignoring a condition ........................ "the renewal form replaces the change form…"
 //   - a renewal line reworded or dropped ......................... "the renewal form states…"
 //   - the body built from anything but the snapshot ......... "one press posts exactly seven members…"
 //   - the route or the state mixed up between the two ....... "the response map reads renewed…"
 //   - no refresh on profile_changed ......................... "profile_changed refreshes…"
-//   - the goal_exhausted memory dropped ..................... "a goal_exhausted answer…"
+//   - the task_exhausted memory dropped ..................... "a goal_exhausted answer…"
 //   - the id or the memory put in the markup or storage ..... "the draft, the request id…"
 
 import assert from 'node:assert/strict';
@@ -148,7 +148,7 @@ async function send(net, text) {
   await goal.submitGoal(open, net);
 }
 
-test('the goal sibling decodes `renew` exactly, and a malformed `renew` fails the whole sibling', () => {
+test('the task sibling decodes `renew` exactly, and a malformed `renew` fails the whole sibling', () => {
   assert.deepEqual(decodeGoalLimits({ max_text_bytes: 2048 }), { maxTextBytes: 2048 });
   assert.deepEqual(decodeGoalLimits(RENEW), { maxTextBytes: 2048, renew: [
     { workspaceId: 'repo_1', hopCap: '3', usd: '1000000', tokens: null },
@@ -210,7 +210,7 @@ test('the renewal form replaces the change form exactly when every offer conditi
     assert.equal(gate().open, true, `${label} closed the change form too`);
     assert.equal(offered(), undefined, `${label} offered a renewal`);
     assert.match(form(), /data-goal-form="change"/);
-    assert.doesNotMatch(form(), /Start a new goal/);
+    assert.doesNotMatch(form(), /Start a new task/);
   }
 
   const never = {
@@ -235,7 +235,7 @@ test('the renewal form replaces the change form exactly when every offer conditi
   subscribe({ agents: [agent({ goal: goalView({ turns: 3, budget: {} }) })] });
   assert.equal(offered(), undefined);
 
-  // The daemon's goal_exhausted answer to a change of this agent and goal opens it, and no other goal's does.
+  // Dudes's goal_exhausted answer to a change of this agent and goal opens it, and no other goal's does.
   resetFloorStore();
   goal.resetGoal();
   subscribe({ agents: [agent({ goal: goalView({ turns: 3 }) }), agent({ id: GRACE, name: 'Grace',
@@ -246,7 +246,7 @@ test('the renewal form replaces the change form exactly when every offer conditi
   assert.equal(net.calls[0].url, '/floor/goal');
   assert.equal(offered().workspaceId, 'repo_1');
   assert.equal(offered().spent, 'cap', 'turns and dollars left: the refusal names a cap the view does not show');
-  assert.match(form(), /<p data-renew-spent="cap">This goal has nothing left in one of its caps\.<\/p>/);
+  assert.match(form(), /<p data-renew-spent="cap">This task reached one of its limits\.<\/p>/);
   assert.equal(offered(GRACE), undefined, 'one agent’s refusal offered another’s renewal');
   subscribe({ agents: [agent({ goal: goalView({ id: G2, turns: 3 }) })] });
   assert.equal(offered(), undefined, 'a refusal for the replaced goal offered a renewal for the new one');
@@ -258,35 +258,35 @@ test('the renewal form replaces the change form exactly when every offer conditi
   assert.equal(offered(), undefined);
 });
 
-test('the renewal form states what a new goal gets, in the specified words, and starts with the current text', () => {
+test('the renewal form states what a new task gets, in the specified words, and starts with the current text', () => {
   subscribe();
   const html = form();
-  assert.match(html, /<h3[^>]*>Start a new goal<\/h3>/);
+  assert.match(html, /<h3[^>]*>Start a new task<\/h3>/);
   const lines = [...html.matchAll(/<(?:p|li)[^>]*>([^<]*)<\/(?:p|li)>/g)].map((match) => match[1]);
   assert.deepEqual(lines.slice(0, 7), [
-    'This goal has no turns left.',
-    'A new goal gets this project’s allowance: 3 turns.',
-    'a cap of $1',
-    'Daily ceilings still apply. If one is reached, the first turn waits for the next UTC day.',
-    'Notes waiting for the current goal are not delivered to the new one.',
-    'Starting the new goal runs the check once first. If it already passes, nothing changes.',
+    'This task has no work attempts left.',
+    'A new task gets this project’s allowance: 3 work attempts.',
+    'a limit of $1',
+    'Daily limits still apply. If one is reached, work waits for the next day in UTC.',
+    'Notes waiting for the current task are not delivered to the new one.',
+    'Starting the new task runs the check once first. If it already passes, nothing changes.',
     '15 of 2048 bytes',
   ]);
   assert.doesNotMatch(html, /stays unchanged/);
-  assert.match(html, /<label[^>]*>New goal<\/label>/);
+  assert.match(html, /<label[^>]*>New task<\/label>/);
   assert.match(html, /<textarea[^>]*name="goal"[^>]*>ship the parser<\/textarea>/);
-  assert.match(html, /<button type="button" class="goal-send"[^>]*>Start a new goal<\/button>/);
+  assert.match(html, /<button type="button" class="goal-send"[^>]*>Start a new task<\/button>/);
   assert.match(html, /data-renew-turns="3"/);
   assert.match(html, /data-renew-usd="1000000"/);
-  assert.doesNotMatch(html, /Turns: exactly|Change goal|data-renew-tokens/);
+  assert.doesNotMatch(html, /Turns: exactly|Change task|data-renew-tokens/);
 
-  // The first line names what ran out. The goal above spent its turns with $4 of its cap left, so it does
+  // The first line names what ran out. The task above spent its turns with $4 of its cap left, so it does
   // not say its dollars are gone.
   assert.doesNotMatch(html, /capped dollars left/);
   for (const [label, view, line] of [
-    ['dollars spent, turns left', { turns: 3, spent: { usd: 5_000_000 } }, 'This goal has no capped dollars left.'],
-    ['both spent', { turns: 20, spent: { usd: 5_000_000 } }, 'This goal has no turns or capped dollars left.'],
-    ['turns spent, no dollar cap', { turns: 20, budget: {} }, 'This goal has no turns left.'],
+    ['dollars spent, turns left', { turns: 3, spent: { usd: 5_000_000 } }, 'This task has no spending allowance left.'],
+    ['both spent', { turns: 20, spent: { usd: 5_000_000 } }, 'This task has no work attempts or spending allowance left.'],
+    ['turns spent, no dollar limit', { turns: 20, budget: {} }, 'This task has no work attempts left.'],
   ]) {
     resetFloorStore();
     subscribe({ agents: [agent({ goal: goalView(view) })] });
@@ -298,11 +298,11 @@ test('the renewal form states what a new goal gets, in the specified words, and 
   resetFloorStore();
   subscribe({ agents: [agent({ workspace: { id: 'repo_2', label: 'Other' } })] });
   const capped = form();
-  assert.match(capped, /<li data-renew-usd="none">no dollar cap<\/li>/);
-  assert.match(capped, /<li data-renew-tokens="0">a cap of 0 tokens<\/li>/);
-  assert.match(capped, /allowance: 4294967295 turns\./);
+  assert.match(capped, /<li data-renew-usd="none">no dollar limit<\/li>/);
+  assert.match(capped, /<li data-renew-tokens="0">a limit of 0 tokens<\/li>/);
+  assert.match(capped, /allowance: 4294967295 work attempts\./);
   subscribe({ goal: { max_text_bytes: 2048, renew: { workspaces: [{ ...ENTRY, hop_cap: '1' }] } } });
-  assert.match(form(), /allowance: 1 turn\./);
+  assert.match(form(), /allowance: 1 work attempt\./);
 });
 
 test('a renewal offers the workspace’s checks, and a check it names joins the seven members', async () => {
@@ -315,7 +315,7 @@ test('a renewal offers the workspace’s checks, and a check it names joins the 
   assert.match(html, /data-check-choice="goal"/);
   assert.match(html, /Keep the current check/);
   assert.match(html, /data-check-id="contributing"/);
-  assert.match(html, /Starting the new goal runs the check once first\. If it already passes, nothing changes\./);
+  assert.match(html, /Starting the new task runs the check once first\. If it already passes, nothing changes\./);
   goal.chooseGoalCheck(ADA, G1, { id: 'contributing' });
   const net = daemon(RENEWED);
   await send(net, 'ship the lexer');
@@ -407,16 +407,16 @@ test('the response map reads renewed on the renewal and changed on the change, a
   }
 });
 
-test('the renewal outcomes read the specified words, and a 200 says only that the goal is recorded until the projection moves', async () => {
+test('the renewal outcomes read the specified words, and a 200 says only that the task is recorded until the projection moves', async () => {
   const said = {
-    goal_not_exhausted: 'This goal still has turns or dollars left, so nothing was recorded. Change its text instead.',
-    workspace_unavailable: 'This agent’s project or spending setup does not allow a new goal, so nothing was recorded. '
-      + 'This form cannot change the agent’s project or choose a different goal allowance. '
-      + 'Give it a new goal from a terminal (dudes goal), '
+    goal_not_exhausted: 'This task still has work attempts or spending allowance, so nothing was recorded. Change its text instead.',
+    workspace_unavailable: 'This agent’s project or spending setup does not allow a new task, so nothing was recorded. '
+      + 'This form cannot change the agent’s project or choose a different task allowance. '
+      + 'Give it a new task from a terminal (dudes goal), '
       + 'or retire it and hire a new one.',
     profile_changed: 'The project’s allowance or checks changed since this page read it, so nothing was '
       + 'recorded. The floor is being refreshed.',
-    stale_goal: 'This agent’s goal changed since this page read it, so nothing was recorded. '
+    stale_goal: 'This agent’s task changed since this page read it, so nothing was recorded. '
       + 'The floor is being refreshed.',
     agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
   };
@@ -436,15 +436,15 @@ test('the renewal outcomes read the specified words, and a 200 says only that th
   subscribe();
   await send(daemon(RENEWED), 'ship the lexer');
   assert.match(status(), /data-goal-outcome="changed"/);
-  assert.match(status(), /<p class="goal-success" role="status">New goal started\.<\/p>/);
+  assert.match(status(), /<p class="goal-success" role="status">New task saved\.<\/p>/);
   assert.match(status(), /<blockquote class="goal-text">ship the lexer<\/blockquote>/);
-  assert.match(status(), /data-goal-continuation="unchanged">The floor has not shown the new goal yet\.<\/p>/);
-  assert.doesNotMatch(status(), /Goal change recorded/);
+  assert.match(status(), /data-goal-continuation="unchanged">The floor has not shown the new task yet\.<\/p>/);
+  assert.doesNotMatch(status(), /Task change recorded/);
   // The projection then says what holds the agent.
   subscribe({ agents: [agent({ goal: goalView({ id: G2, turns: 0 }), paused: true })] });
   assert.match(status(), /data-goal-continuation="paused">Paused until you resume\.<\/p>/);
   subscribe({ agents: [agent({ goal: goalView({ id: G2, turns: 0 }), turns: 21, status: 'running' })] });
-  assert.match(status(), /data-goal-continuation="continued">A new turn started: its turn count went from 20 to 21, and it is running\.<\/p>/);
+  assert.match(status(), /data-goal-continuation="continued">A new work attempt started: its work attempt count went from 20 to 21, and it is running\.<\/p>/);
 });
 
 test('profile_changed refreshes the snapshot, releases the form, and the next press sends the new numbers', async () => {
@@ -453,7 +453,7 @@ test('profile_changed refreshes the snapshot, releases the form, and the next pr
   await send(net, 'ship the lexer');
   assert.equal(net.refreshes, 1, 'a profile_changed did not ask for a fresh snapshot');
   subscribe({ goal: { max_text_bytes: 2048, renew: { workspaces: [{ ...ENTRY, hop_cap: '5' }] } } });
-  assert.match(form(), /allowance: 5 turns\./);
+  assert.match(form(), /allowance: 5 work attempts\./);
   await send(net);
   assert.equal(net.calls.length, 2);
   const [first, second] = net.calls.map((call) => JSON.parse(call.init.body));
@@ -463,11 +463,11 @@ test('profile_changed refreshes the snapshot, releases the form, and the next pr
   assert.equal(second.text, 'ship the lexer');
 });
 
-test('an exhausted goal offers Start a new goal with renewal and points to Settings when unavailable', async () => {
-  const offeredCopy = 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-    + 'Choose Start a new goal to use this project’s allowance.';
-  const settingsCopy = 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-    + 'Start a new goal is available when Start new goals is on in Settings and this agent’s project is enrolled.';
+test('an exhausted goal offers Start a new task with renewal and points to Settings when unavailable', async () => {
+  const offeredCopy = 'This task reached a work attempt or spending limit, so nothing was recorded. '
+    + 'Choose Start a new task to use this project’s allowance.';
+  const settingsCopy = 'This task reached a work attempt or spending limit, so nothing was recorded. '
+    + 'Start a new task is available when Start new tasks is on in Settings and this agent’s project is enrolled.';
   subscribe({ agents: [agent({ goal: goalView({ turns: 3 }) })] });
   await send(daemon(REFUSED('goal_exhausted')), 'ship the lexer');
   assert.ok(status().includes(`data-goal-reason="goal_exhausted">${offeredCopy}</p>`), status());

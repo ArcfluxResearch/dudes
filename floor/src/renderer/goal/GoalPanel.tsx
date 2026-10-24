@@ -40,31 +40,31 @@ function atMost(micros: number): string {
 function CarryList({ carry }: { readonly carry: CarryOver }) {
   return (
     <ul className="goal-carry">
-      <li>{`Turns: exactly ${carry.turns} left.`}</li>
-      <li>{carry.usdAtMost === null ? 'Dollars: this goal sets no dollar cap.'
+      <li>{`Work attempts: exactly ${carry.turns} left.`}</li>
+      <li>{carry.usdAtMost === null ? 'Dollars: this task sets no dollar limit.'
         : `Dollars: at most ${atMost(carry.usdAtMost)} left.`}</li>
     </ul>
   );
 }
 
 const SPENT: Readonly<Record<Spent, string>> = Object.freeze({
-  both: 'This goal has no turns or capped dollars left.',
-  turns: 'This goal has no turns left.',
-  dollars: 'This goal has no capped dollars left.',
-  cap: 'This goal has nothing left in one of its caps.',
+  both: 'This task has no work attempts or spending allowance left.',
+  turns: 'This task has no work attempts left.',
+  dollars: 'This task has no spending allowance left.',
+  cap: 'This task reached one of its limits.',
 });
 
 function RenewList({ offer }: { readonly offer: RenewOffer }) {
   return (
     <>
       <p data-renew-spent={offer.spent}>{SPENT[offer.spent]}</p>
-      <p data-renew-turns={offer.hopCap}>{`A new goal gets this project’s allowance: ${offer.hopCap} ${offer.hopCap === '1' ? 'turn' : 'turns'}.`}</p>
+      <p data-renew-turns={offer.hopCap}>{`A new task gets this project’s allowance: ${offer.hopCap} ${offer.hopCap === '1' ? 'work attempt' : 'work attempts'}.`}</p>
       <ul className="goal-carry">
-        <li data-renew-usd={offer.usd ?? 'none'}>{offer.usd === null ? 'no dollar cap'
-          : `a cap of ${formatUsdMicros(offer.usd)}`}</li>
-        {offer.tokens === null ? null : <li data-renew-tokens={offer.tokens}>{`a cap of ${offer.tokens} tokens`}</li>}
-        <li>Daily ceilings still apply. If one is reached, the first turn waits for the next UTC day.</li>
-        <li>Notes waiting for the current goal are not delivered to the new one.</li>
+        <li data-renew-usd={offer.usd ?? 'none'}>{offer.usd === null ? 'no dollar limit'
+          : `a limit of ${formatUsdMicros(offer.usd)}`}</li>
+        {offer.tokens === null ? null : <li data-renew-tokens={offer.tokens}>{`a limit of ${offer.tokens} tokens`}</li>}
+        <li>Daily limits still apply. If one is reached, work waits for the next day in UTC.</li>
+        <li>Notes waiting for the current task are not delivered to the new one.</li>
       </ul>
     </>
   );
@@ -73,13 +73,13 @@ function RenewList({ offer }: { readonly offer: RenewOffer }) {
 /** Why the form waits, when no request is out. */
 function heldBecause(goal: GoalState, mine: boolean): string {
   if (mine && goal.outcome?.kind === 'changed') {
-    return 'This goal change is in the journal; the floor has not shown the new goal yet.';
+    return 'Dudes saved this task change. The page has not shown the new task yet.';
   }
   if (goal.outcome?.kind === 'forbidden' && !goal.uncertain) {
-    return 'The daemon refused this page’s Floor session, which can no longer change goals. Its status is shown '
+    return 'Dudes refused this page’s Floor session, which can no longer change tasks. Its status is shown '
       + 'in the request receipt.';
   }
-  return 'An earlier goal change is not settled yet. Its status is shown in the request receipt.';
+  return 'An earlier task change is not confirmed yet. Its status is shown in the request receipt.';
 }
 
 export function GoalForm({ floor, row }: { readonly floor: FloorState; readonly row: AgentRow }) {
@@ -110,8 +110,8 @@ export function GoalFormView({ goal, floor, row, session }: {
   return (
     <section className="agent-detail-goal" aria-labelledby={`${field}-title`} data-goal-agent-id={gate.agent}
       data-goal-id={gate.goal} data-goal-form={offer === undefined ? 'change' : 'renew'}>
-      <h3 id={`${field}-title`}>{offer === undefined ? 'Change this agent’s goal' : 'Start a new goal'}</h3>
-      {offer === undefined ? <><p>The new goal keeps what this one has left:</p><CarryList carry={gate.carry} /></>
+      <h3 id={`${field}-title`}>{offer === undefined ? 'Change this agent’s task' : 'Start a new task'}</h3>
+      {offer === undefined ? <><p>The new task keeps what this one has left:</p><CarryList carry={gate.carry} /></>
         : <RenewList offer={offer} />}
       <fieldset className="hire-choices" data-check-choice="goal">
         <legend>Completion check</legend>
@@ -132,9 +132,9 @@ export function GoalFormView({ goal, floor, row, session }: {
         ))}
       </fieldset>
       <p className="hire-note">{offer === undefined
-        ? 'Changing the goal runs the check once first. If it already passes, nothing changes.'
-        : 'Starting the new goal runs the check once first. If it already passes, nothing changes.'}</p>
-      <label htmlFor={field}>New goal</label>
+        ? 'Changing the task runs the check once first. If it already passes, nothing changes.'
+        : 'Starting the new task runs the check once first. If it already passes, nothing changes.'}</p>
+      <label htmlFor={field}>New task</label>
       {/* The field is read-only and Send aria-disabled while they wait, never
           disabled: a disabled element drops the keyboard focus it holds. A
           running turn holds only Send, so the new text can be written while
@@ -153,13 +153,14 @@ export function GoalFormView({ goal, floor, row, session }: {
       <div className="goal-actions">
         <button type="button" className="goal-send"
           aria-disabled={blocked || gate.turnRunning || draft === '' || problem !== null || check === null || undefined}
+          title={problem ?? (blocked ? 'Wait for the current task request or check its status.' : gate.turnRunning ? 'Wait for the current work attempt to finish.' : draft === '' ? 'Enter a task first.' : check === null ? 'Choose a completion check.' : undefined)}
           ref={handFocusOnLeave} data-focus-on-leave={focusOnLeave}
           aria-busy={goal.sending && mine} onClick={() => void submitGoal(gate, browserGoalDeps)}>
-          {goal.sending && mine ? 'Sending…' : offer === undefined ? 'Change goal' : 'Start a new goal'}
+          {goal.sending && mine ? 'Sending…' : offer === undefined ? 'Change task' : 'Start a new task'}
         </button>
       </div>
       <p className="hire-note">
-        This page keeps a goal change only in memory. After a reload it shows only what the journal says, and it
+        This page keeps a task change only in memory. After a reload it shows only what the journal says, and it
         never sends anything by itself.
       </p>
     </section>
@@ -194,11 +195,11 @@ export function GoalStatusView({ goal, floor, session, leaveFocusTo = 'crew-togg
       data-goal-outcome={outcome?.kind ?? 'sending'} data-goal-agent-id={agent} data-goal-id={replaced}
       data-goal-kind={renewing ? 'renew' : 'change'}>
       <h3 id="goal-status-title" tabIndex={-1}>
-        <span className="agent-detail-kicker">{renewing ? 'New goal' : 'Goal change'}</span> {name}
+        <span className="agent-detail-kicker">{renewing ? 'New task' : 'Task change'}</span> {name}
       </h3>
       <dl className="hire-facts">
         <div><dt>AgentId</dt><dd>{agent}</dd></div>
-        <div><dt>Replaced goal</dt><dd>{replaced}</dd></div>
+        <div><dt>Previous task</dt><dd>{replaced}</dd></div>
       </dl>
       {outcome === null ? <p className="goal-pending" role="status">Sending…</p>
         : <OutcomeBody outcome={outcome} attempt={attempt} goal={goal} floor={floor} session={session} />}
@@ -206,6 +207,7 @@ export function GoalStatusView({ goal, floor, session, leaveFocusTo = 'crew-togg
       {asking ? (
         <footer className="goal-actions">
           <button type="button" aria-disabled={goal.sending || !floor.goalChange}
+            title={goal.sending ? 'Wait for the current task request to finish.' : !floor.goalChange ? 'Reconnect to Dudes with Change tasks turned on in Settings.' : undefined}
             aria-busy={goal.sending} ref={handFocusOnLeave} data-focus-on-leave="goal-status-title"
             onClick={() => { if (!goal.sending && floor.goalChange) void checkGoalStatus(browserGoalDeps); }}>
             {goal.sending ? 'Checking…' : 'Check status'}
@@ -217,7 +219,7 @@ export function GoalStatusView({ goal, floor, session, leaveFocusTo = 'crew-togg
           onClick={dismissReceipt}>Dismiss receipt</button>
       </footer> : null}
       {!asking || goal.sending || floor.goalChange ? null : (
-        <p className="hire-note">Check status waits for a live Floor session that offers goal change.</p>
+        <p className="hire-note">Check status waits for a live Floor session that offers task change.</p>
       )}
     </section>
   );
@@ -225,7 +227,7 @@ export function GoalStatusView({ goal, floor, session, leaveFocusTo = 'crew-togg
 
 function continuationText(next: Continuation, renewing: boolean): string {
   const text = changeContinuation(next);
-  return renewing ? text.replace(/^Goal changed\. /, '') : text;
+  return renewing ? text.replace(/^Task changed\. /, '') : text;
 }
 
 function changeContinuation(next: Continuation): string {
@@ -235,15 +237,15 @@ function changeContinuation(next: Continuation): string {
     case 'absent':
       return 'The agent is no longer on the floor.';
     case 'unchanged':
-      return 'The floor has not shown the new goal yet.';
+      return 'The floor has not shown the new task yet.';
     case 'paused':
-      return 'Goal changed. Paused until you resume.';
+      return 'Task changed. Paused until you resume.';
     case 'attached':
-      return 'Goal changed. It takes effect after you detach.';
+      return 'Task changed. It takes effect after you detach.';
     case 'waiting':
-      return `Goal changed. No new turn has appeared yet; the agent is ${next.status || 'idle'}.`;
+      return `Task changed. No new work attempt has appeared yet; the agent is ${next.status || 'idle'}.`;
     case 'continued':
-      return `Goal changed. A new turn started: its turn count went from ${next.from} to ${next.to}, and it is `
+      return `Task changed. A new work attempt started: its work attempt count went from ${next.from} to ${next.to}, and it is `
         + `${next.status || 'idle'}.`;
   }
 }
@@ -255,13 +257,13 @@ function renewalOffered(floor: FloorState, goal: GoalState, attempt: GoalAttempt
   return gate.open && gate.renew !== undefined;
 }
 
-const PENDING = 'Not confirmed yet. The daemon has this request in progress, or cannot confirm it yet. Check status '
+const PENDING = 'Not confirmed yet. Dudes has this request in progress, or cannot confirm it yet. Check status '
   + 'asks again with the same request, which never applies twice.';
-const UNAVAILABLE = 'The daemon could not confirm this request. Check status later asks again with the same request; '
-  + 'this page does not retry by itself. If this keeps happening, the operator may need to restart the daemon.';
-const UNKNOWN = 'The page lost the daemon’s reply, so it cannot say whether this request was recorded. Check status '
+const UNAVAILABLE = 'Dudes could not confirm this request. Check status later asks again with the same request; '
+  + 'this page does not retry by itself. If this keeps happening, the operator may need to restart Dudes.';
+const UNKNOWN = 'The page lost Dudes’ reply, so it cannot say whether this request was recorded. Check status '
   + 'asks again with the same request, which never applies twice.';
-const CONFLICT = 'The daemon holds a different request under this request id, so it refused this one before any '
+const CONFLICT = 'Dudes holds a different request under this request id, so it refused this one before any '
   + 'effect. This is a page error; nothing was recorded.';
 
 function OutcomeBody({ outcome, attempt, goal, floor, session }: {
@@ -278,8 +280,8 @@ function OutcomeBody({ outcome, attempt, goal, floor, session }: {
       return (
         <>
           <p className="goal-success" role="status">
-            {renewing ? 'New goal started.'
-              : 'Goal change recorded. The daemon holds the new goal in its journal, which is not the same as a new turn.'}
+            {renewing ? 'New task saved.'
+              : 'Dudes saved the new task. This does not mean the agent has started work.'}
           </p>
           <blockquote className="goal-text">{attempt.payload.text}</blockquote>
           <p className="goal-continuation" data-goal-continuation={next.kind}>
@@ -309,31 +311,31 @@ function OutcomeBody({ outcome, attempt, goal, floor, session }: {
     case 'rejected':
       return (
         <p className="goal-error" role="alert">
-          {`The daemon refused the request itself (HTTP ${outcome.status}) before any effect. Nothing was recorded.`}
+          {`Dudes refused the request itself (HTTP ${outcome.status}) before any effect. Nothing was recorded.`}
         </p>
       );
     case 'forbidden': {
       const now = afterRefusal(goal, floor, session);
       const next = goal.uncertain
         ? 'Check status then asks again with the same request, which never applies twice.'
-        : 'You can then send the goal again.';
+        : 'You can then send the task again.';
       return (
         <p className="goal-error" role="alert" data-goal-session={now}>
           {now === 'checking'
-            ? 'The daemon refused this request before any effect. Checking whether this Floor session is still live…'
+            ? 'Dudes refused this request before any effect. Checking whether this Floor session is still live…'
             : now === 'ended'
               ? 'Your Floor session has ended or was revoked. Open Dudes to sign in again '
                 + (goal.uncertain
                   // Only a request whose effect is unknown is kept; a press after a settled one mints a new request.
                   ? `in this browser: this page keeps the request. ${next}`
-                  : 'in this browser, then send the goal again.')
+                  : 'in this browser, then send the task again.')
               : now === 'renewed'
-                ? 'The daemon refused an earlier request before any effect, under a Floor session this page no '
+                ? 'Dudes refused an earlier request before any effect, under a Floor session this page no '
                   + 'longer uses. This page has signed in again and can act now: '
                   + (goal.uncertain
                     ? 'Check status asks again with the same request, which never applies twice.'
-                    : 'send the goal again.')
-                : 'The daemon refused this request before any effect, and this page can no longer change goals '
+                    : 'send the task again.')
+                : 'Dudes refused this request before any effect, and this page can no longer change tasks '
                   + `with its session. Open Dudes to sign in again, then act again. ${next}`}
         </p>
       );

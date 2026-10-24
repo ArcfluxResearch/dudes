@@ -6,7 +6,7 @@ import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { fakePage, press } from './helpers/fake-page.mjs';
-import { ADA, cardId, daemon, json, subscribe, ticketCard } from './helpers/tickets.mjs';
+import { ADA, advance as advanceStore, cardId, daemon, json, subscribe, ticketCard } from './helpers/tickets.mjs';
 
 let server, context, detail, store, RecoveredReview, TicketPanel;
 const CARD = cardId(1);
@@ -27,10 +27,7 @@ function snapshot(cursor = CURSOR) {
     messages_lsn: cursor, threads_lsn: cursor }), epoch);
   return store.getFloorState().cards[0];
 }
-function advance(cursor) {
-  store.applyServerFrame(JSON.stringify({ type: 'floor.delta', delta: { lsn: Number(cursor), agents: [], cards: [] },
-    messages_lsn: cursor, threads_lsn: cursor }), store.getFloorState().epoch);
-}
+const advance = (cursor) => advanceStore(store, cursor);
 before(async () => {
   server = await createServer({ root: resolve(import.meta.dirname, '..'), cacheDir: 'node_modules/.vite-ticket-context',
     server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
@@ -131,7 +128,7 @@ test('unavailable none and truncated history remain explicit without a guessed l
     const decoded = context.decodeTicketContext(data); assert.ok(decoded);
     const html = renderToStaticMarkup(createElement(RecoveredReview, { context: decoded, fresh: false }));
     assert.ok(!html.includes('href='));
-    assert.match(html, /retained reading/);
+    assert.match(html, /view may be out of date/);
     assert.match(html, state === 'none' ? /no acknowledged review/ : state === 'truncated' ? /omitted by the display limit/ : /acknowledged review is unavailable/);
   }
   const bad = historyValue(); bad.recovered_review.relations[0].acknowledgment.lsn = '99';
@@ -148,9 +145,9 @@ test('current applicability is suppressed during failed stale off fenced and mis
     const floor = { ...current, ...changed };
     assert.equal(detail.checkDisplayCurrent(detail.getDetailState(), card, floor), false);
     const html = renderToStaticMarkup(createElement(TicketPanel, { floor, card }));
-    assert.match(html, /Last recorded check/);
-    assert.match(html, /applicability to the current work is unconfirmed/);
-    assert.ok(!html.includes('This result applies to the current recorded work.'));
+    assert.match(html, /Last check/);
+    assert.match(html, /Dudes cannot confirm that it checks the current work/);
+    assert.ok(!html.includes('This check covers the current work.'));
   }
   advance(NEXT);
   await detail.loadDetail(card, daemon(() => json(503, {})).deps);

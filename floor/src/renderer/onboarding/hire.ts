@@ -46,7 +46,7 @@ export const SECTIONS: readonly { readonly key: SectionKey; readonly label: stri
   Object.freeze([
     { key: 'identity', label: 'Who', hint: 'Name and look' },
     { key: 'workspace', label: 'Project', hint: 'Where they work' },
-    { key: 'engine', label: 'App', hint: 'Claude, Codex or Pi' },
+    { key: 'engine', label: 'Engine', hint: 'Claude, Codex or Pi' },
   ]);
 
 /** What an agent is called when the person gives no role. */
@@ -64,8 +64,7 @@ export function lengthNote(value: string, limit: number): string | null {
 
 export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine' | 'model';
 
-/** What the page offers a Hire from: the enrolled workspaces and the agents already working. */
-export type HireOffer = Pick<FloorState, 'onboarding' | 'agents'>;
+export type HireOffer = Pick<FloorState, 'onboarding' | 'agents' | 'daemon'>;
 
 /** Whether the confirmed view says tickets are off, so nobody can give a new agent a task from the Floor. */
 export function ticketsOff(floor: FloorState): boolean {
@@ -146,7 +145,6 @@ export type HireOutcome =
   | { readonly kind: 'unavailable' }
   /** A lost response, an unexpected status or an unreadable body. No agent. */
   | { readonly kind: 'unknown' }
-  /** Empty 403 or a structured 409 shared-folder or own-copy refusal, before any effect. */
   | { readonly kind: 'refused'; readonly note?: string }
   /** Empty 409: this attempt names a different request. Refused before any effect. */
   | { readonly kind: 'conflict' }
@@ -270,12 +268,16 @@ export function chosenWorkspace(draft: HireDraft, catalog: OnboardingCatalog | n
 
 /**
  * The engine this draft would hire: the one chosen, when the workspace offers
- * it, or else the workspace's only engine. `null` while there is no choice.
+ * it, or else the workspace's only offered or found engine. `null` while there is no choice.
  */
-export function chosenEngine(draft: HireDraft, workspace: EnrolledWorkspace | null): HireEngine | null {
+export function chosenEngine(
+  draft: HireDraft, workspace: EnrolledWorkspace | null, daemon: FloorState['daemon'] = null,
+): HireEngine | null {
   if (workspace === null) return null;
   if (draft.engine !== undefined && workspace.engines.includes(draft.engine)) return draft.engine;
-  return workspace.engines.length === 1 ? workspace.engines[0]! : null;
+  if (workspace.engines.length === 1) return workspace.engines[0]!;
+  const found = workspace.engines.filter((name) => rowFor(daemon, name)?.found === true);
+  return found.length === 1 ? found[0]! : null;
 }
 
 /** The agents the projection shows working in the project `workspaceId`. */
@@ -326,7 +328,7 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
   } else if (workspace === null) {
     problems.push({ field: 'workspace_id', section: 'workspace',
       message: 'That project is no longer offered. Choose another.' });
-  } else if (chosenEngine(draft, workspace) === null) {
+  } else if (chosenEngine(draft, workspace, offer.daemon) === null) {
     problems.push({ field: 'engine', section: 'engine', message: 'Choose an engine this project offers.' });
   }
   const model = trimAsciiSpace(draft.model ?? '');
@@ -394,7 +396,7 @@ export function prepareArchiveHire(row: RetiredAgentRow, floor: FloorState): boo
     : missingEngine
       ? `${HIRE_ENGINES[archived]} was not found on the daemon’s PATH when this form was prepared. No engine was preselected; install it and check again.`
       : engine !== null
-        ? `${HIRE_ENGINES[archived]}, the archived engine, is preselected. Review the engine and the current limits.`
+        ? `${HIRE_ENGINES[archived]}, the archived engine, is preselected. Review the engine choice.`
         : match === null
           ? `The archived engine was ${HIRE_ENGINES[archived]}. No engine was preselected; choose a project, then an engine it offers.`
           : `This project does not offer the archived ${HIRE_ENGINES[archived]} engine. No engine was preselected.`;
@@ -409,37 +411,35 @@ export function prepareArchiveHire(row: RetiredAgentRow, floor: FloorState): boo
   return true;
 }
 
-/**
- * Choices a person should not have to make: the project when the offer has only one, and the first
- * engine the daemon found. Applied once, when the dialog opens on a draft with nothing chosen.
- */
 export function prepareHire(floor: FloorState): void {
   if (state.attempt !== null || state.sending || state.draft.workspaceId !== '') return;
   const spaces = floor.onboarding?.workspaces ?? [];
   const space = spaces.length === 1 ? spaces[0]! : null;
   if (space === null) return;
-  const engine = space.engines.find((name) => rowFor(floor.daemon, name)?.found === true);
+  const engine = chosenEngine(state.draft, space, floor.daemon);
   commit({ ...state, draft: Object.freeze({ ...state.draft, workspaceId: space.workspaceId,
-    ...(engine === undefined ? {} : { engine }) }) });
+    ...(engine === null ? {} : { engine }) }) });
 }
 
-export function showSection(section: SectionKey): void {
-  commit({ ...state, section });
+export function showSection(section: SectionKey, offer: HireOffer = getFloorState()): void {
+  const at = SECTIONS.findIndex((entry) => entry.key === state.section);
+  const next = SECTIONS.findIndex((entry) => entry.key === section);
+  if (next > at) {
+    const earlier = SECTIONS.slice(0, next).map((entry) => entry.key);
+    const problem = problemsIn(state.draft, offer).find((entry) => earlier.includes(entry.section));
+    if (problem !== undefined) {
+      commit({ ...state, section: problem.section, problem });
+      return;
+    }
+  }
+  commit({ ...state, section, problem: null });
 }
 
 /** Back or forward one section; forward only past a section with no problem. */
 export function moveSection(step: -1 | 1, offer: HireOffer): void {
   const at = SECTIONS.findIndex((entry) => entry.key === state.section);
   const next = SECTIONS[at + step];
-  if (next === undefined) return;
-  if (step === 1) {
-    const problem = problemsIn(state.draft, offer).find((entry) => entry.section === state.section);
-    if (problem !== undefined) {
-      commit({ ...state, problem });
-      return;
-    }
-  }
-  commit({ ...state, section: next.key, problem: null });
+  if (next !== undefined) showSection(next.key, offer);
 }
 
 /**
@@ -461,7 +461,7 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
   }
   const workspace = chosenWorkspace(state.draft, offer.onboarding);
   const revision = workspace?.reloadMark?.revision;
-  const engine = chosenEngine(state.draft, workspace);
+  const engine = chosenEngine(state.draft, workspace, offer.daemon);
   const copy = ownCopyOffer(state.draft, workspace, engine, agentsIn(offer.agents, state.draft.workspaceId).length);
   const payload: HirePayload = Object.freeze({
     attempt_id: mintAttemptId(deps.random),
@@ -626,9 +626,13 @@ export function decodeHireResponse(status: number, text: string, attemptId: stri
         && !/[\u0000-\u001f\u007f]/u.test(body.note)) {
         return Object.freeze({ kind: 'refused', note: body.note });
       }
-      return exactly(body, ['attempt_id', 'state', 'reason']) && body.attempt_id === attemptId
-        && body.state === 'refused' && body.reason === 'profile_changed'
-        ? Object.freeze({ kind: 'stale' }) : unknown;
+      if (exactly(body, ['attempt_id', 'state', 'reason']) && body.attempt_id === attemptId
+        && body.state === 'refused') {
+        if (body.reason === 'profile_changed') return Object.freeze({ kind: 'stale' });
+        if (body.reason === 'action_off') return Object.freeze({ kind: 'refused',
+          note: 'Hiring was turned off. Turn on Hire agents under Floor switches in Settings, then try again.' });
+      }
+      return unknown;
     }
     case 503:
       return Object.freeze({ kind: 'unavailable' });

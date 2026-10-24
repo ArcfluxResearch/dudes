@@ -260,7 +260,7 @@ test('each refusal is a sentence and shows no repository data', async () => {
     ['worktree_released', /retired, and the Git tab does not read the worktree it left behind/],
     ['worktree_removed', /retired, and its worktree has been removed/],
     ['unsupported_storage', /storage the Git tab does not read/],
-    ['unsupported_platform', /platform/],
+    ['unsupported_platform', /this computer/],
     ['git_unavailable', /no usable git/],
     ['busy', /Try again in a few seconds/],
     ['timed_out', /did not finish in time/],
@@ -321,7 +321,7 @@ test('a cut section and a dropped entry are said, and a cut path cannot be copie
   assert.match(html, /At least 9/);
   assert.match(html, /No remote default branch is recorded here/);
   assert.match(html, /long\/pa…/);
-  assert.match(html, /<button type="button" class="git-copy" aria-describedby="git-committed-0" disabled="">/);
+  assert.match(html, /<button type="button" class="git-copy" aria-describedby="git-committed-0" disabled="" title="The path is shortened[^"]*">/);
 });
 
 test('no repository string reaches an attribute, a title or an ARIA label', async () => {
@@ -338,7 +338,8 @@ test('no repository string reaches an attribute, a title or an ARIA label', asyn
   const attributes = [...html.matchAll(/\s[a-z-]+="([^"]*)"/g)].map((match) => match[1]);
   assert.ok(attributes.length > 5);
   assert.deepEqual(attributes.filter((value) => value.includes(SECRET)), []);
-  assert.doesNotMatch(html, /title=|data-/);
+  assert.doesNotMatch(html, /data-/);
+  assert.match(html, /<time[^>]*title="[^"]*1970[^"]*">[^<]*ago<\/time>/);
   assert.ok(!html.includes('<script') && !html.includes('<img'), 'text is never markup');
 });
 

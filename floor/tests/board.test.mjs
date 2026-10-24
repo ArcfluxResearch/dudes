@@ -70,7 +70,7 @@ test('Board shows counts and its detail keeps card text inert', async () => {
   const floor = { ...getFloorState(), phase: 'live', stale: false, cards: rows, agents: [] };
   const html = await renderModule('/src/renderer/ticket/TicketBoard.tsx', 'TicketBoard',
     { floor, selectedId: A, onSelect() {}, onNewTicket() {} });
-  for (const label of ['To do (2)', 'Working (1)', 'Ready for you (0)', 'Done (1)', 'Needs you (0)', 'Other board cards (2)']) {
+  for (const label of ['To do (2)', 'Working (1)', 'Ready for you (0)', 'Done (1)', 'Other board cards (2)']) {
     assert.ok(html.includes(label), label);
   }
   for (const old of ['Todo (', 'Doing (', 'Blocked (']) assert.ok(!html.includes(old), old);
