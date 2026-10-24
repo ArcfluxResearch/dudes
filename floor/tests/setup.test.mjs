@@ -138,7 +138,7 @@ test('the Setup view renders text, offers Retry for missing reads, and holds no 
     resetFloorStore();
     subscribe({ daemon: report });
     const absent = setup();
-    assert.match(absent, /Not reported: the daemon’s provider check did not answer in time/);
+    assert.match(absent, /Dudes could not check the engines/);
     assert.match(absent, /role="alert"/);
     assert.match(absent, /<button type="button">Retry<\/button>/);
   }

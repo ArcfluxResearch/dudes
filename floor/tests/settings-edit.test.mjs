@@ -21,7 +21,7 @@ test('the daemon answer to a switch edit is read exactly, and anything else is a
     assert.match(editLine(notLive), /not running yet[^]*next restart/);
     assert.doesNotMatch(editLine(notLive), /runs it now/);
     const zeroed = editLine(decodeSettingsResponse(409, JSON.stringify({ state: 'refused', reason: 'zeroes_reserve', detail: null })));
-    assert.match(zeroed, /per-turn reserve of zero[^]*has to stay above zero/);
+    assert.match(zeroed, /minimum of zero for a work attempt[^]*has to stay above zero/);
     assert.doesNotMatch(zeroed, /dudes config/);
     assert.deepEqual(decodeSettingsResponse(200, 'not json'), { kind: 'failed' });
     assert.deepEqual(decodeSettingsResponse(500, '{}'), { kind: 'failed' });
@@ -68,7 +68,7 @@ test('a restart question and a "takes a restart" line go once the daemon has com
     store.beginFloorEpoch();
     store.noteTransport('open');
     await edit.changeSetting('floor.terminal', 'on');
-    assert.match(edit.getSettingsEditState().asking.question, /restart of the daemon/);
+    assert.match(edit.getSettingsEditState().asking.question, /restart of Dudes/);
     store.noteTransport('open');
     assert.notEqual(edit.getSettingsEditState().asking, null, 'a stream that never dropped is not a restart');
     store.noteTransport('close');

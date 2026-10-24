@@ -7,11 +7,12 @@
 // The page reads the checkout when the tab opens and when the operator presses Refresh, and
 // at no other time.
 
+import { RelativeTime } from '../RelativeTime.tsx';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import { browserControlDeps } from '../control/control.ts';
 import type { ControlDeps } from '../control/control.ts';
-import { plural, recordedTime } from '../format.ts';
+import { plural } from '../format.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { getGitState, loadGit, needsRead, copyablePath, refusalText, subscribeToGit } from './git.ts';
 import type { GitAgainst, GitChangeKind, GitHead, GitView } from './git.ts';
@@ -62,6 +63,7 @@ function Path({ id, path, cut, onCopy }: {
     <span className="git-path data" id={id}>{path}{cut ? '…' : ''}</span>
     {/* The path is the description, never the label: the label would put repository text in an attribute. */}
     <button type="button" className="git-copy" aria-describedby={id} disabled={cut}
+      title={cut ? 'The path is shortened. Copy the complete path from your editor.' : undefined}
       onClick={() => onCopy(path)}>Copy path</button>
   </>;
 }
@@ -102,7 +104,7 @@ function Commits({ view, against }: { readonly view: GitView; readonly against: 
       {items.map((commit, index) => <li key={index}>
         <span>{commit.subject}</span>{' '}
         <span className="data">{commit.id}</span>{' '}
-        <span className="git-note">{recordedTime(commit.at)}</span>
+        <RelativeTime className="git-note" at={commit.at} />
       </li>)}
     </ol>}
     <Cut shown={items.length} truncated={truncated} dropped={dropped} />
@@ -171,13 +173,13 @@ export function GitPanel({ row, active, deps = browserControlDeps }: {
     <h3>Git</h3>
     <p className="git-note">
       A read of this agent&rsquo;s checkout, taken when you open this tab or press Refresh. It names tracked
-      files and local branches, never untracked files, authors or where the checkout is. You read it. The
-      daemon never acts on it.
+      files and local branches, never untracked files, authors or where the checkout is. You read it. Dudes never acts on it.
     </p>
     <button type="button" className="git-refresh" aria-disabled={loading || undefined}
+      title={loading ? 'Wait for the checkout to finish loading.' : undefined}
       onClick={() => { if (!loading) { setCopied(null); void loadGit(row.id, deps); } }}>Refresh</button>
     <p className="git-status" role="status">
-      {loading ? 'Reading the checkout…' : problem ?? (view === null ? '' : `Read ${recordedTime(view.read_at)}.`)}
+      {loading ? 'Reading the checkout…' : problem ?? (view === null ? '' : <>Read <RelativeTime at={view.read_at} />.</>)}
       {copied === null ? null : <span> {copied}</span>}
     </p>
     {view === null || view.head === null ? null : <>

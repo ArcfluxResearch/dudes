@@ -63,7 +63,7 @@ test('banner shows fixed CLI guidance without actions or raw errors, separately 
   const floor = getFloorState();
   const html = renderToStaticMarkup(createElement(Banner, { stopped: floor.journalStopped }));
   assert.match(html, /role="alert"/);
-  assert.match(html, /The journal stopped accepting writes at segment 0 · byte 99; likely a full disk or an I\/O error; free space and restart the daemon\./);
+  assert.match(html, /Dudes cannot save changes\.[^]*Saving stopped at segment 0 · byte 99\./);
   assert.match(html, /class="journal-stopped-banner"/);
   assert.doesNotMatch(html, /button|href|sentinel|private|office-closed/);
   for (const [lsn, position] of [
@@ -72,7 +72,7 @@ test('banner shows fixed CLI guidance without actions or raw errors, separately 
     ['18446744073709551615', 'segment 16777215 · byte 1099511627775'],
   ]) {
     const precise = renderToStaticMarkup(createElement(Banner, { stopped: { lsn } }));
-    assert.ok(precise.includes(`at ${position};`), precise);
+    assert.ok(precise.includes(`at ${position}.`), precise);
   }
   assert.equal(renderToStaticMarkup(createElement(Notice, { floor })), '');
   noteTransport('close');

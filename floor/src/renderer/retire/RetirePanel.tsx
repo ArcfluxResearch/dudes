@@ -54,6 +54,7 @@ export function RetireStripView({ retire, floor, row, session }: {
       <button ref={handFocusOnLeave} type="button" className="retire-open" data-retire-offer={offer.agent}
         data-focus-on-leave={pressedHere ? STATUS_TITLE : undefined} aria-haspopup="dialog"
         aria-disabled={blocksRetire(retire, offer, session) || undefined}
+        title={blocksRetire(retire, offer, session) ? 'Wait for the current retirement request or check its status.' : undefined}
         onClick={() => confirmRetire(offer, session)}>Retire</button>
       {retire.problem === null || retire.attempt !== null ? null : (
         <p className="retire-problem" role="alert">{retire.problem}</p>
@@ -143,6 +144,7 @@ export function RetireStatusView({ retire, floor, session, leaveFocusTo = 'crew-
       {asking ? (
         <footer className="retire-actions">
           <button type="button" aria-disabled={retire.sending || !floor.retire} aria-busy={retire.sending}
+            title={retire.sending ? 'Wait for the current retirement request to finish.' : !floor.retire ? 'Reconnect to Dudes with Retire agents turned on in Settings.' : undefined}
             ref={handFocusOnLeave} data-focus-on-leave={STATUS_TITLE}
             onClick={() => { if (!retire.sending && floor.retire) void checkRetireStatus(browserControlDeps); }}>
             {retire.sending ? 'Checking…' : 'Check status'}
@@ -163,7 +165,7 @@ export function RetireStatusView({ retire, floor, session, leaveFocusTo = 'crew-
 const REFUSALS: Readonly<Record<RetireRefusalReason, ReactNode>> = Object.freeze({
   agent_absent: 'That agent is already retired.',
   agent_halted: HALTED_LINE,
-  liveness_unknown: 'The daemon cannot yet tell whether this agent’s process is running. Try again in a moment.',
+  liveness_unknown: 'Dudes cannot yet tell whether this agent’s process is running. Try again in a moment.',
 });
 
 const ASK_AGAIN = 'Check status asks again with the same request, which never applies twice.';
@@ -183,18 +185,18 @@ function OutcomeBody({ attempt, retire, floor, session }: {
         ? <p className="retire-success" role="status">{`Retired ${attempt.name}.`}</p>
         : retiring;
     case 'pending':
-      return <>{retiring}<p className="hire-note">{`The daemon has not confirmed this request yet. ${ASK_AGAIN}`}</p></>;
+      return <>{retiring}<p className="hire-note">{`Dudes has not confirmed this request yet. ${ASK_AGAIN}`}</p></>;
     case 'unavailable':
       return (
         <p className="retire-pending" role="status">
-          The daemon could not confirm this request. Check status asks again with the same request; this page does
+          Dudes could not confirm this request. Check status asks again with the same request; this page does
           not retry by itself.
         </p>
       );
     case 'unknown':
       return (
         <p className="retire-pending" role="status">
-          {`The page lost the daemon’s reply, so it cannot say whether this request was recorded. ${ASK_AGAIN}`}
+          {`The page lost Dudes’ reply, so it cannot say whether this request was recorded. ${ASK_AGAIN}`}
         </p>
       );
     case 'refused':
@@ -204,14 +206,14 @@ function OutcomeBody({ attempt, retire, floor, session }: {
     case 'conflict':
       return (
         <p className="retire-error" role="alert">
-          The daemon holds a different request under this request id, so it refused this one before any effect. This
+          Dudes holds a different request under this request id, so it refused this one before any effect. This
           is a page error; nothing was recorded.
         </p>
       );
     case 'rejected':
       return (
         <p className="retire-error" role="alert">
-          {`The daemon refused the request itself (HTTP ${outcome.status}) before any effect. Nothing was recorded.`}
+          {`Dudes refused the request itself (HTTP ${outcome.status}) before any effect. Nothing was recorded.`}
         </p>
       );
     case 'forbidden': {
@@ -220,14 +222,14 @@ function OutcomeBody({ attempt, retire, floor, session }: {
       return (
         <p className="retire-error" role="alert" data-retire-session={now}>
           {now === 'checking'
-            ? 'The daemon refused this request before any effect. Checking whether this Floor session is still live…'
+            ? 'Dudes refused this request before any effect. Checking whether this Floor session is still live…'
             : now === 'ended'
               ? 'Your Floor session has ended or was revoked. Open Dudes to sign in again '
                 + `in this browser to act again. ${next}`
               : now === 'renewed'
-                ? 'The daemon refused an earlier request before any effect, under a Floor session this page no '
+                ? 'Dudes refused an earlier request before any effect, under a Floor session this page no '
                   + `longer uses. This page has signed in again. ${next}`
-                : 'The daemon refused this request before any effect, and this page can no longer retire with its '
+                : 'Dudes refused this request before any effect, and this page can no longer retire with its '
                   + `session. Open Dudes to sign in again, then act again. ${next}`}
         </p>
       );

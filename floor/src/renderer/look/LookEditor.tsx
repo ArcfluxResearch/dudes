@@ -19,7 +19,7 @@ export function LookEditor({ row }: { readonly row: AgentRow }) {
   const name = typeof row.name === 'string' ? row.name : row.id;
   const draft = state.editor === row.id && !blocked ? state.draft : null;
   return <section className="agent-look-editor" aria-label={`Appearance and role for ${name}`}>
-    {draft === null ? <button type="button" disabled={blocked} onClick={() => beginLook(row)}>
+    {draft === null ? <button type="button" disabled={blocked} title={blocked ? 'Wait for the current look change to finish or check its status.' : undefined} onClick={() => beginLook(row)}>
       Edit look
     </button> : <form onSubmit={(event) => { event.preventDefault(); void submitLook(row, browserLookDeps); }}
       onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelLook(); } }}>
@@ -46,7 +46,7 @@ export function LookEditor({ row }: { readonly row: AgentRow }) {
       <label htmlFor="agent-look-role">Role</label>
       <textarea id="agent-look-role" rows={2} value={draft.role}
         onChange={(event) => editLook({ role: event.currentTarget.value })} />
-      <button type="submit" disabled={lookProblem(draft) !== null}>Save</button>
+      <button type="submit" disabled={lookProblem(draft) !== null} title={lookProblem(draft) ?? undefined}>Save</button>
       <button type="button" onClick={cancelLook}>Cancel</button>
       {lookProblem(draft) === null ? null : <small role="status">{lookProblem(draft)}</small>}
     </form>}
@@ -75,6 +75,7 @@ export function LookStatus() {
     <p>{state.sending ? 'Saving look…' : state.uncertain ? 'Look change is not settled.'
       : 'This Floor session cannot edit the agent. Open a fresh session.'}</p>
     {state.uncertain ? <button type="button" disabled={state.sending}
+      title={state.sending ? 'Wait for the current look request to finish.' : undefined}
       onClick={() => { void checkLook(browserLookDeps); }}>Check look status</button> : null}
   </section>;
 }

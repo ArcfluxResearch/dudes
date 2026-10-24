@@ -86,7 +86,7 @@ test('FALLBACK_FOCUS_RETURN mutant uses a surviving control when Hire availabili
   next();
   assert.equal(active, 'fallback');
   const shell = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
-  assert.match(shell, /document\.getElementById\('hire-open'\) \?\? document\.getElementById\('crew-toggle'\)/);
+  assert.match(shell, /document\.getElementById\('hire-open'\) \?\? document\.getElementById\(home\)/);
 });
 
 

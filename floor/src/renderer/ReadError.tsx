@@ -25,17 +25,17 @@ export function ReadNotice({ state, label, message }: {
   readonly message: string;
 }) {
   if (state === 'ready') return null;
-  if (state === 'loading') return <p role="status">Waiting for a snapshot from the daemon. Loading {label}.</p>;
+  if (state === 'loading') return <p role="status">Loading {label}. Waiting for Dudes to connect.</p>;
   return <ReadError message={state === 'unavailable'
-    ? `${label} is unavailable while the stream is disconnected. Retry requests a snapshot with this session.`
+    ? `${label} is unavailable while disconnected. Retry to reconnect.`
     : message} />;
 }
 
 export function StreamReadStatus({ floor }: { readonly floor: FloorState }) {
   const state = snapshotReadState(floor);
-  const label = state === 'unavailable' ? 'Disconnected — no current view'
-    : floor.phase === 'resyncing' ? 'Resyncing — waiting for a snapshot'
-      : state === 'loading' ? 'Connecting — waiting for a snapshot'
-        : floor.stale ? 'View unconfirmed — waiting for the stream' : 'Live — confirmed';
+  const label = state === 'unavailable' ? 'Disconnected. Reconnect to see updates.'
+    : floor.phase === 'resyncing' ? 'Refreshing. Waiting for Dudes.'
+      : state === 'loading' ? 'Connecting to Dudes.'
+        : floor.stale ? 'Connection interrupted. This view may be out of date.' : 'Connected.';
   return <p className="stream-state" role="status">{label}</p>;
 }

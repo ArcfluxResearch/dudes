@@ -118,14 +118,13 @@ test('with the ticket switch off, board cards use the same columns and only true
   assert.deepEqual(titles(column(html, 'working')), ['Plain 3']);
   assert.deepEqual(titles(column(html, 'ready')), [], 'nothing waits for the operator in Ready for you on a plain card');
   assert.deepEqual(titles(column(html, 'done')), ['Plain 6'], 'an agent saying done is not a recorded result');
-  const lane = html.match(/<section[^>]*data-lane="needs-you"[\s\S]*?<\/section>/)[0];
-  assert.deepEqual(titles(lane), []);
+  assert.doesNotMatch(html, /data-lane="needs-you"/);
   const other = html.match(/<section[^>]*aria-label="Other board cards"[\s\S]*?<\/section>/)[0];
   assert.deepEqual(titles(other), ['Plain 4', 'Plain 5', 'Plain 7']);
   for (const text of ['Waiting on a review', 'Blocked', 'Marked done by an agent, not checked']) assert.ok(other.includes(text), text);
   assert.doesNotMatch(other, /Ready for you|Needs you|ticket-review-link/);
   for (const old of ['Todo (', 'Doing (']) assert.ok(!html.includes(old), old);
-  assert.match(html, /Needs you \(0\)/);
+  assert.doesNotMatch(html, /Needs you \(0\)/);
 });
 
 test('Done shows the newest twenty and Show more adds the next page', () => {
@@ -141,13 +140,13 @@ test('Done shows the newest twenty and Show more adds the next page', () => {
   assert.deepEqual([more.columns.done.length, more.doneHidden], [25, 0]);
 });
 
-test('an empty ticket board gives one next step in every labelled lane', () => {
+test('an empty ticket board offers one creator and hides an empty Needs you lane', () => {
   subscribe(store);
   const html = board();
   const lane = html.match(/<section[^>]*data-lane="needs-you"[\s\S]*?<\/section>/)?.[0];
-  assert.ok(lane, 'Needs you remains visible while empty');
-  assert.match(lane, /aria-label="Needs you"/);
-  assert.match(lane, /Tickets that need your next step appear here\./);
+  assert.equal(lane, undefined);
+  assert.equal((html.match(/class="ticket-new-toggle"/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /board-give/);
   const expected = [
     ['todo', 'To do', 'Create a ticket, then give it to an agent.'],
     ['working', 'Working', 'Tickets appear here when an agent starts.'],
@@ -161,26 +160,27 @@ test('an empty ticket board gives one next step in every labelled lane', () => {
   }
 });
 
-test('cards show the recorded agent colour, later rounds and a stopping ticket', () => {
+test('cards show the agent colour and stopping state without internal attempt counts', () => {
   subscribe(store, { agents: [agent(ADA, 'Ada', { accent: 'mint' })], cards: [
     ticketCard(1, 'doing', { claimed_by: ADA }, { round: 2 }),
     ticketCard(2, 'todo', {}, { stopping: true }),
   ] });
   const html = board();
   assert.match(html, /class="ticket-avatar" aria-hidden="true" style="--agent:#27846f">A<\/span>/);
-  assert.match(html, /Round 2/);
+  assert.doesNotMatch(html, /Round 2/);
   assert.match(html, /Stopping…/);
   assert.match(html, /Stopping: the agent is finishing its current step\./);
   assert.match(html, /aria-haspopup="dialog"/);
 });
 
-test('Needs-you cards carry their later round and stopping metadata', () => {
+test('Needs-you cards show stopping without internal attempt counts', () => {
   subscribe(store, { agents: [agent()], cards: [
     ticketCard(1, 'blocked', { claimed_by: ADA }, { round: 2, stopping: true, reason: 'held_unsure' }),
   ] });
   const lane = board().match(/<section[^>]*data-lane="needs-you"[\s\S]*?<\/section>/)?.[0];
   assert.ok(lane);
-  assert.match(lane, /class="ticket-card-meta"[\s\S]*?Stopping…[\s\S]*?Round 2/);
+  assert.match(lane, /class="ticket-card-meta"[\s\S]*?Stopping…/);
+  assert.doesNotMatch(lane, /Round 2/);
 });
 
 test('a card says its title, its agent, its place in line and why it waits', () => {
@@ -264,13 +264,13 @@ test('an empty board with tickets off says how to turn them on', () => {
     onClose() {}, onView() {}, onOpenQuestion() {},
   }));
   assert.match(html, /Tickets are off\. Turn on Make tickets under Floor switches in Settings\./);
-  for (const name of ['Needs you', 'To do', 'Working', 'Ready for you', 'Done']) assert.ok(html.includes(`>${name} (0)<`), name);
+  for (const name of ['To do', 'Working', 'Ready for you', 'Done']) assert.ok(html.includes(`>${name} (0)<`), name);
   assert.doesNotMatch(html, /ticket-new-toggle/);
-  for (const text of ['Nothing is placed here while tickets are off.', 'No unclaimed or claimed cards.',
-    'No cards being worked on.', 'No cards marked done by you or the daemon.']) {
+  for (const text of ['Nothing is placed here while tickets are off.', 'No cards waiting for an agent.',
+    'No cards being worked on.', 'No cards marked done by you or Dudes.']) {
     assert.ok(html.includes(`<p class="ticket-empty">${text}</p>`), text);
   }
-  assert.equal(html.split('Nothing is placed here while tickets are off.').length - 1, 2);
+  assert.equal(html.split('Nothing is placed here while tickets are off.').length - 1, 1);
   assert.doesNotMatch(html, /Create a ticket|Tickets appear here|Tickets that need your next step|Accepted tickets|Review finished work/);
 });
 
@@ -285,9 +285,9 @@ test('ticket switches are not called off before a snapshot or after the stream c
 test('tickets-off guidance names only companion controls reported off', () => {
   subscribe(store, { ticket: null });
   for (const [control, goal, command] of [
-    [false, false, ' Also turn on Pause, resume and rename and Change goals.'],
+    [false, false, ' Also turn on Pause, resume and rename and Change tasks.'],
     [false, true, ' Also turn on Pause, resume and rename.'],
-    [true, false, ' Also turn on Change goals.'],
+    [true, false, ' Also turn on Change tasks.'],
     [true, true, ''],
   ]) {
     const floor = { ...store.getFloorState(), settings: { switches: { control, goal } } };

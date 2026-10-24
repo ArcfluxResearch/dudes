@@ -11,7 +11,7 @@ export function GoalResult({ result }: { readonly result: GoalResultView | null 
       : result.kind === 'unavailable' ? <p>Completion check result unavailable</p>
         : <>
           <p>{result.kind === 'not_run'
-            ? 'Latest check could not run. Its program did not start, so this result says nothing about the goal. The journal shows why (dudes tail).'
+            ? 'Latest check could not run. Its program did not start, so this result says nothing about the task. The journal shows why (dudes tail).'
             : result.outcome === 'passed' ? 'Latest check passed' : 'Latest check failed'}</p>
           <dl>
             {result.kind === 'not_run' ? null : <div><dt>Who ran it</dt><dd>{result.kind === 'observed'

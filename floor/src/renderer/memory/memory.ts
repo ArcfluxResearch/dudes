@@ -409,7 +409,7 @@ export const ENTRY_WRITER_LABEL: Readonly<Record<EntryWriter, string>> = Object.
 
 export const SUMMARY_KIND_LABEL: Readonly<Record<SummaryKind, string>> = Object.freeze({
   model: 'Summary written by a model. It is a model’s prose about the memory, not the memory itself.',
-  excerpts: 'Exact excerpts of the memory, chosen by the daemon.',
+  excerpts: 'Exact excerpts of the memory, chosen by Dudes.',
 });
 
 export const WITHHELD_REASON_TEXT: Readonly<Record<WithheldReason, string>> = Object.freeze({
@@ -417,7 +417,7 @@ export const WITHHELD_REASON_TEXT: Readonly<Record<WithheldReason, string>> = Ob
   provenance_mismatch: 'Refused: the connection did not come from the process allowed to write this memory.',
   target_mismatch: 'Refused: the writer tried to write another agent’s memory.',
   authority_unavailable: 'Refused: the operator’s authority to write memory was not available.',
-  role_mismatch: 'Refused: the daemon could not prove who sent it.',
+  role_mismatch: 'Refused: Dudes could not prove who sent it.',
   other: 'Refused for a reason this page does not name.',
 });
 

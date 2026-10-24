@@ -319,8 +319,8 @@ test('the person is told what to do while the login runs, and in plain words how
   const failures = {
     failed: /The sign-in did not finish\./,
     timed_out: /ran out of time after 10 minutes\./,
-    replaced: /Another sign-in for this app took its place\./,
-    not_installed: /could not find this app/,
+    replaced: /Another sign-in for this engine took its place\./,
+    not_installed: /could not find this engine/,
     could_not_start: /could not start\./,
     lost: /connection to the sign-in was lost\./,
     unopened: /reload this page/,

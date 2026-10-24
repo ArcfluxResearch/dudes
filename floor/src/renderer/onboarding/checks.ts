@@ -111,13 +111,13 @@ export function checkRefusalText(reason: CheckRefusal, label: string | null, rou
   const nothing = route === 'hire' ? 'was hired' : 'changed';
   switch (reason) {
     case 'check_already_passes':
-      return `${check} already passes in this project, so it cannot show when this goal is done. Nothing ${nothing}. `
-        + 'Choose another check, or ask the operator to add one for this goal with dudes project check add.';
+      return `${check} already passes in this project, so it cannot show when this task is done. Nothing ${nothing}. `
+        + 'Choose another check, or ask the operator to add one for this task with dudes project check add.';
     case 'check_did_not_finish':
       return `${check} did not finish, so it cannot show whether it already passes. Nothing ${nothing}. `
         + 'Try again, or ask the operator to raise its timeout.';
     case 'check_cannot_run':
-      return `${check} could not run, so nothing ${nothing}. The daemon log says why.`;
+      return `${check} could not run, so nothing ${nothing}. Dudes’ log says why.`;
     case 'check_running':
       return 'A check is still running for this Floor session. Try again when it ends.';
     case 'check_limit':

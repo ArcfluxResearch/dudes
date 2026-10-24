@@ -16,27 +16,27 @@ const CHOICES: Readonly<Record<RecoveryChoice, string>> = {
   try_recorded: 'Try recorded conversation', fresh_with_recap: 'Start fresh with recorded recap', repeat_issued_fresh: 'Repeat the same task in fresh context',
 };
 const UNAVAILABLE: Readonly<Record<InspectReason, string>> = {
-  agent_unavailable: 'This agent is unavailable or is not Managed.', goal_unavailable: 'There is no unfinished current goal to recover.',
+  agent_unavailable: 'This agent is unavailable or Dudes does not manage its work.', goal_unavailable: 'There is no unfinished task to recover.',
   halted: 'A halt stands on this agent. Use its existing local operator action first.',
   turn_open: 'A recorded physical attempt or command check is still unsettled. Recovery waits.',
-  not_recoverable: 'The current boundary does not offer recovery.', claimed: 'An existing authorization owns this recovery. Check its retained receipt.',
-  unavailable: 'The daemon cannot check the recovery facts coherently. No choice is offered.',
+  not_recoverable: 'This work does not offer recovery right now.', claimed: 'An existing authorization owns this recovery. Check its retained receipt.',
+  unavailable: 'Dudes could not confirm what happened before the interruption. No choice is offered.',
 };
 const REFUSALS: Readonly<Record<RefusalReason, string>> = {
-  request_conflict: 'This request identity already names different intent.', stale_work: 'The agent, goal or issue changed.',
+  request_conflict: 'This request identity already names different intent.', stale_work: 'The agent or its task changed.',
   stale_source: 'The inspected recovery source changed.', stale_episode: 'The recovery episode changed.',
   stale_predecessor: 'The claim to supersede changed.', stale_control: 'The inspected control identity changed.',
-  stale_ticket: 'The ticket or round changed.', claimed: 'Another authorization already owns this opportunity.',
+  stale_ticket: 'The ticket or its assignment changed.', claimed: 'Another authorization already owns this opportunity.',
   choice_unavailable: 'This context choice is no longer offered.', not_recoverable: 'The current work cannot be recovered.',
-  authority_unavailable: 'The original live recovery authority could not be revalidated.', unavailable: 'The daemon could not check the required facts.',
+  authority_unavailable: 'Dudes could not confirm that this recovery is still allowed.', unavailable: 'Dudes could not check the required facts.',
 };
 const INVALIDATIONS: Readonly<Record<InvalidationReason, string>> = {
-  goal_changed: 'The goal changed.', goal_completed: 'The goal completed.', ticket_changed: 'The ticket association changed.',
+  goal_changed: 'The task changed.', goal_completed: 'The task completed.', ticket_changed: 'The ticket association changed.',
   lease_changed: 'The recorded checkout lease changed.', control_changed: 'The reviewed control changed.',
   agent_unavailable: 'The agent became unavailable.', authority_unavailable: 'The original browser authority became unavailable.',
 };
-const WAIT_LABELS: Readonly<Record<keyof Waits, string>> = { open_question: 'An open question needs an answer.', budget: 'The admission budget is waiting.',
-  hops: 'The goal has no remaining hops.', instruction_review: 'Open this ticket on the Board and review its instructions before work can continue.', instruction_comparison: "Dudes is still comparing this ticket's instructions." };
+const WAIT_LABELS: Readonly<Record<keyof Waits, string>> = { open_question: 'An open question needs an answer.', budget: 'A budget limit is holding this work.',
+  hops: 'The task has no work attempts left.', instruction_review: 'Open this ticket on the Board and review its instructions before work can continue.', instruction_comparison: "Dudes is still comparing this ticket's instructions." };
 
 export function RecoveryPanel({ floor, row, onReadReceipt }: {
   readonly floor: FloorState; readonly row: AgentRow; readonly onReadReceipt?: (request: string) => void;
@@ -57,15 +57,16 @@ export function RecoveryPanelView({ floor, row, memory, session, onReadReceipt }
   const goal = row.goal;
   const goalText = typeof goal === 'object' && goal !== null && 'text' in goal && typeof goal.text === 'string' ? goal.text : null;
   return <section className="recovery-panel" aria-labelledby="recovery-title">
-    <h3 id="recovery-title" tabIndex={-1}>Recover interrupted goal</h3>
-    {goalText === null ? null : <p className="recovery-goal"><strong>Current goal</strong> {goalText}</p>}
-    <p>Keep the same agent and goal. A ticket keeps its current round. Inspect what Dudes recorded, then choose how to continue.</p>
+    <h3 id="recovery-title" tabIndex={-1}>Recover interrupted task</h3>
+    {goalText === null ? null : <p className="recovery-goal"><strong>Current task</strong> {goalText}</p>}
+    <p>Keep the same agent and task. Inspect what Dudes recorded, then choose how to continue.</p>
     <p>Resume alone cannot release this interruption.</p>
-    <button type="button" aria-disabled={!enabled || busy} aria-busy={busy} ref={handFocusOnLeave}
+    <button type="button" aria-disabled={!enabled || busy} aria-busy={busy}
+      title={busy ? 'Wait for the recovery inspection to finish.' : !enabled ? 'Reconnect to Dudes with recovery and agent controls turned on in Settings.' : undefined} ref={handFocusOnLeave}
       data-focus-on-leave={AGENT_DETAIL_HEADING_ID} onClick={(event) => { if (event.detail < 2) void inspectRecovery(row.id, browserRecoveryDeps); }}>
       {busy ? 'Inspecting…' : 'Inspect recovery'}
     </button>
-    {!enabled && draft === undefined ? <p role="status">Recovery waits for a live confirmed view with floor.recovery and floor.control enabled. Your receipts are kept.</p> : null}
+    {!enabled && draft === undefined ? <p role="status">Recovery waits for a connection to Dudes with Recover interrupted tasks and Pause, resume and rename turned on in Settings. Your saved results are kept.</p> : null}
     {inspection?.kind === 'problem' ? <p role="alert">{inspection.text}</p> : null}
     {inspection?.kind === 'unavailable' ? <p role="status">{UNAVAILABLE[inspection.reason]}</p> : null}
     {draft === undefined ? null : <RecoveryDraft draft={draft} memory={memory} floor={floor} session={session} />}
@@ -91,20 +92,22 @@ function RecoveryDraft({ draft, memory, floor, session }: {
       : inspection.prior_effects_unknown ? <p className="recovery-warning">Earlier effects are unknown and may repeat.</p> : null}
     {inspection.choices === 'recorded_or_fresh' ? <p>Trying the recorded conversation attempts its recorded identifier. It does not promise restored history.
       A context failure never automatically falls back to fresh work.</p> : null}
-    {inspection.choices === 'repeat_issued_fresh' ? null : <p>Fresh context does not restore old conversation history. The daemon supplies a recorded recap,
+    {inspection.choices === 'repeat_issued_fresh' ? null : <p>Fresh context does not restore old conversation history. Dudes supplies a recorded recap,
       which may shrink or be omitted so mandatory task content and answers fit.</p>}
     <div className="recovery-actions" role="group" aria-label="Recovery context choice">
       {advertisedChoices(inspection.choices).map(choice => <button key={choice} type="button" aria-pressed={draft.choice === choice}
-        aria-disabled={problem !== null || blocked} ref={handFocusOnLeave} data-focus-on-leave="recovery-title"
+        aria-disabled={problem !== null || blocked}
+        title={problem ?? (blocked ? 'Check the saved recovery request first.' : undefined)} ref={handFocusOnLeave} data-focus-on-leave="recovery-title"
         onClick={() => { if (problem === null && !blocked) chooseRecovery(draft.key, choice); }}>{CHOICES[choice]}</button>)}
     </div>
-    <p>Recovery keeps the current budget, hop cap, questions, instruction review and other limits. Authorization does not guarantee a launch.</p>
+    <p>Recovery keeps the existing limits, questions, and instruction review. Allowing recovery does not guarantee that work will start.</p>
     {waiting.length === 0 ? null : <div className="recovery-waits"><p>At this inspection, work was also waiting for:</p>
       <ul aria-label="Waits at inspection">{waiting.map(key => <li key={key}>{WAIT_LABELS[key]}</li>)}</ul></div>}
     {problem === null ? null : <p role="status">{problem}</p>}
     {blocked ? <p role="status">This page keeps a recovery request for this work. Read its receipt with the button below.
       A later interruption needs a fresh inspection and choice.</p> : null}
-    <button type="button" aria-disabled={problem !== null || blocked || draft.choice === null} ref={handFocusOnLeave}
+    <button type="button" aria-disabled={problem !== null || blocked || draft.choice === null}
+      title={problem ?? (blocked ? 'Check the saved recovery request first.' : draft.choice === null ? 'Choose how to continue first.' : undefined)} ref={handFocusOnLeave}
       data-focus-on-leave={draft.requestId === null ? 'recovery-title' : `recovery-receipt-${draft.requestId}`}
       onClick={(event) => { if (event.detail < 2) void submitRecovery(draft.key, browserRecoveryDeps); }}>Authorize one recovery</button>
     <details className="recovery-details"><summary>Recorded identifiers</summary>
@@ -145,6 +148,7 @@ export function RecoveryReceiptsView({ floor, memory }: { readonly floor: FloorS
     {request.read?.state === 'forbidden' ? <p>This reader cannot check the receipt. Open Dudes to sign in again in this browser,
       then press Check receipt explicitly. The earlier request is kept and is never resubmitted.</p> : null}
     <button type="button" aria-disabled={request.submitting || request.checking || !liveReader(floor)} aria-busy={request.checking}
+      title={request.submitting || request.checking ? 'Wait for the current recovery request to finish.' : !liveReader(floor) ? 'Reconnect to Dudes before checking this result.' : undefined}
       ref={handFocusOnLeave} data-focus-on-leave={`recovery-receipt-${id}`}
       onClick={(event) => { if (event.detail < 2) void checkRecoveryReceipt(id, browserRecoveryDeps); }}>{request.checking ? 'Checking…' : 'Check receipt'}</button>
     <p>Check receipt reads only this request. It never retries recovery. You can check it after recovery is switched off, while this browser stays signed in and connected.</p>
@@ -162,7 +166,7 @@ function RequestOutcome({ request }: { readonly request: RecoveryRequest }) {
   const recorded = requestReceipt(request) !== null;
   return <>
     {recorded ? <><p>Authorization recorded. This alone does not prove the task was issued or launched. It does not prove success or restored conversation history.</p>
-      <p>Check {request.payload.expected.ticket === null ? "the agent's goal" : 'the ticket'} for any remaining reviews, questions or limits.</p></> : null}
+      <p>Check {request.payload.expected.ticket === null ? "the agent's task" : 'the ticket'} for any remaining reviews, questions or limits.</p></> : null}
     {outcome?.state === 'accepted' ? null : <SubmissionOutcome request={request} historical={recorded} />}
   </>;
 }
@@ -175,7 +179,7 @@ function SubmissionOutcome({ request, historical }: { readonly request: Recovery
   if (outcome?.state === 'forbidden') return <p role="alert">This Floor session could not authorize recovery. The frozen request is kept.
     Open Dudes to sign in again in this browser, then inspect explicitly. Nothing is resent automatically.</p>;
   if (historical) return <p>Original submission outcome was unknown. A later matching receipt established authorization. The original outcome is kept in this request's history.</p>;
-  return <p role="status">Authorization is unknown. The daemon may have recorded this choice, but the submission response did not establish it.
+  return <p role="status">Authorization is unknown. Dudes may have recorded this choice, but the submission response did not establish it.
     Keep this request identity and check its receipt. This page never resubmits it.</p>;
 }
 function ReceiptFacts({ receipt }: { readonly receipt: Receipt }) {

@@ -158,8 +158,8 @@ samp,
 }
 
 .top-bar {
-  --bar-space: 1.2rem;
-  --tab-space: 0.75rem;
+  --bar-space: 0.6rem;
+  --tab-space: 0.5rem;
   --chip-space: 0.6rem;
   --chip-gap: 0.4rem;
   --chip-size: 0.76rem;
@@ -172,19 +172,12 @@ samp,
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem var(--bar-space);
-  padding: 0.6rem var(--bar-space);
+  padding: 0.4rem var(--bar-space);
   border-bottom: 1px solid var(--line);
   background-color: var(--surface);
   box-shadow: 0 6px 14px -10px var(--panel-shadow);
 }
 
-/*
- * Under 1440 pixels, beside Hire an agent or Pause all, or with six status
- * chips, the bar tightens. Under 1440 pixels it also says the crew count only
- * to screen readers; Crew's heading shows it. Measured with a waiting agent: one
- * line from 1248 pixels with Hire and five chips, from 1326 with both buttons
- * and five chips, and at 1440 with both buttons, six chips and the crew count.
- */
 @media (max-width: 1439px) {
   .top-bar {
     --bar-space: 0.6rem;
@@ -210,7 +203,7 @@ samp,
 .wordmark {
   margin: 0;
   font-family: var(--font-head);
-  font-size: 1.45rem;
+  font-size: 1.3rem;
   font-style: italic;
   font-weight: 600;
 }
@@ -272,6 +265,12 @@ samp,
   align-items: flex-start;
   margin-left: auto;
 }
+
+.header-more { position: relative; }
+.header-more > summary { padding: .3rem .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--card-background); font-size: .86rem; cursor: pointer; }
+.header-more > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+.header-menu { position: absolute; top: calc(100% + .4rem); right: 0; display: grid; gap: .35rem; width: max-content; min-width: 11rem; max-width: calc(100vw - 2rem); padding: .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 4px 16px var(--panel-shadow); }
+.header-menu button { padding: .3rem .6rem; border: 1px solid var(--line); background: var(--card-background); color: var(--ink); font: inherit; font-size: .86rem; text-align: left; cursor: pointer; }
 
 .shell-signed-out .top-bar > .link-refused {
   flex: 0 0 100%;
@@ -3967,8 +3966,7 @@ samp,
     min-height: 2.75rem;
   }
 
-  .floor-stage:has(.needs-strip) > .crew-list,
-  .shell:has(.needs-strip) .crew-toggle {
+  .floor-stage:has(> .crew-list) .needs-strip {
     display: none;
   }
 
@@ -4075,4 +4073,13 @@ samp,
   padding: 1.5rem max(1rem, calc((100% - 52rem) / 2));
   border: 0;
   border-radius: 0;
+}
+
+.floor-stage > .control-panel[data-page] {
+  overflow-y: auto;
+}
+
+.control-panel[data-page] > .control-view {
+  flex: 0 0 auto;
+  overflow: visible;
 }
