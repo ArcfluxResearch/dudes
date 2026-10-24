@@ -432,6 +432,7 @@ impl ChildEnds {
             input: None,
             failed: false,
             mcp_grant: None,
+            tally: crate::step_tally::StepTally::default(),
         }
     }
 
@@ -657,6 +658,7 @@ impl ChildEnds {
             exit,
             usage: end.usage,
             model_usage: end.model_usage,
+            report: end.report,
             outcome: end.outcome,
             last_message: end.last_message,
         });
@@ -718,6 +720,7 @@ pub struct ChildTurn {
     input: Option<Box<dyn ChildInput>>,
     failed: bool,
     mcp_grant: Option<Lsn>,
+    tally: crate::step_tally::StepTally,
 }
 
 impl ChildTurn {
@@ -736,6 +739,7 @@ impl ChildTurn {
             self.ends.output.omit(key, session.as_str());
         }
         for step in read.steps {
+            self.tally.count(&step);
             self.ends.output.capture_step(key, step);
         }
         if let Some(observation) = read.session {
@@ -800,6 +804,7 @@ impl ChildTurn {
             reader,
             failed,
             mcp_grant,
+            tally,
             ..
         } = self;
         let Some(key) = key else {
@@ -818,6 +823,7 @@ impl ChildTurn {
             .remove(&protocol_key(&key))
             .unwrap_or(false);
         let mut end = reader.end(exit);
+        end.report.step_digest = tally.digest();
         if failed || protocol_failed {
             if !matches!(end.outcome, dudes_proto::TurnOutcome::Failed { .. }) {
                 end.outcome = dudes_proto::TurnOutcome::Failed {
@@ -846,6 +852,7 @@ impl TurnReader for Unread {
 
     fn end(self: Box<Self>, _exit: ExitStatus) -> TurnEnd {
         TurnEnd {
+            report: dudes_proto::TurnReport::default(),
             final_observation: None,
             final_reply: None,
             outcome: dudes_proto::TurnOutcome::NoResult,
@@ -1014,6 +1021,7 @@ mod tests {
 
         fn end(self: Box<Self>, _exit: ExitStatus) -> TurnEnd {
             TurnEnd {
+                report: dudes_proto::TurnReport::default(),
                 final_observation: None,
                 final_reply: None,
                 outcome: dudes_proto::TurnOutcome::Completed,

@@ -3828,6 +3828,8 @@ mod tests {
         secret: &str,
     ) -> dudes_proto::Record {
         dudes_proto::Record::TurnEnded {
+            step_digest: None,
+            context: None,
             final_reply: None,
             agent,
             turn,
@@ -4303,6 +4305,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one story, from the failed end to the later success, reads best in one place"
+    )]
     fn a_failed_ticket_turn_reaches_the_floor_and_a_later_success_replaces_it() {
         use dudes_proto::record::samples;
         use dudes_proto::{ExitStatus, Record, RecordKind, TicketTurnEnd};
@@ -4331,12 +4337,20 @@ mod tests {
             code: Some(1),
             signal: None,
         };
-        if let Record::TurnEnded { exit, .. } = &mut ended {
+        if let Record::TurnEnded {
+            exit, step_digest, ..
+        } = &mut ended
+        {
             *exit = failed;
+            *step_digest = None;
         }
         let at = apply(&mut projected, ended);
         let before = crate::floor::snapshot(&mut projected, at).unwrap();
-        let expected = Some(TicketTurnEnd { exit: failed, at });
+        let expected = Some(TicketTurnEnd {
+            step_digest: None,
+            exit: failed,
+            at,
+        });
         assert_eq!(
             before.cards[0].ticket.as_ref().unwrap().last_turn_end,
             expected
@@ -4617,6 +4631,7 @@ mod tests {
 
     fn agent(role: String) -> AgentView {
         AgentView {
+            last_turn: None,
             character: None,
             accent: None,
             id: AgentId::from_parts(1, 1),

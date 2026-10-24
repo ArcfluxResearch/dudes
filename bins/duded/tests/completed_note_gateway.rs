@@ -55,6 +55,7 @@ fn end_turn(fixture: &Fixture, host: &SharedHost, turn: TurnId) {
         fixture,
         host,
         Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             elapsed_ms: Some(6_000),
             turn,

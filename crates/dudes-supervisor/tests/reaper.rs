@@ -584,6 +584,7 @@ fn a_late_child_exited_does_not_append_a_second_turn_ended() {
 
     // The adapter's report arrives after the fact.
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -649,6 +650,7 @@ fn a_late_spawned_does_not_reopen_an_ended_turn() {
     );
 
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -707,6 +709,7 @@ fn a_late_spawned_does_not_reopen_an_ended_turn() {
     let turn = harness.open_turn(agent).expect("a turn was issued");
 
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -765,6 +768,7 @@ fn assert_late_liveness_is_inert(answer: Liveness) {
     let turn = harness.open_turn(agent).expect("a turn was issued");
 
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -849,6 +853,7 @@ fn a_refused_end_keeps_the_deferral_it_already_journaled() {
 
     // The adapter's report arrives for a turn whose end is already in flight: refused.
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -912,6 +917,7 @@ fn a_run_whose_liveness_never_resolves(answer_probes: bool) -> (Harness, AgentId
 /// acknowledged.
 fn an_end_held_in_the_fsync_window(harness: &mut Harness, turn: TurnId) {
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -1082,6 +1088,7 @@ fn a_folded_end_drains_only_the_turn_it_folds() {
     // The one thing that separates the two turns: this end is acknowledged, so it folds, and the
     // fold is what drains. The other agent does nothing at all.
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn: ending_turn,
@@ -1443,6 +1450,7 @@ fn an_outstanding_launch_is_not_cleared_by_a_child_exited_that_never_saw_it() {
 
     // The adapter reports an exit for a turn this run never saw `Input::Spawned` for.
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -1715,6 +1723,7 @@ fn apply(
         Op::ChildExited(clean) => {
             if let Some(turn) = children.pop_first() {
                 harness.drive(Input::ChildExited {
+                    report: dudes_proto::TurnReport::default(),
                     final_reply: None,
                     elapsed_ms: None,
                     turn,

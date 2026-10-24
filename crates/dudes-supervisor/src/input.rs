@@ -687,6 +687,8 @@ pub enum Input {
         /// Evidence carried to `TurnEnded` and read by no gate: empty is "not reported", and a
         /// partial cost that `usage` refused still arrives here in full.
         model_usage: BTreeMap<String, Usage>,
+        /// Step counts and context size for display. Read by no gate.
+        report: dudes_proto::TurnReport,
         /// How the turn ended, as the adapter read it.
         outcome: TurnOutcome,
         /// The model's final message, when the stream carried one.

@@ -202,6 +202,7 @@ fn attachable(floor: &Floor, fixture: &Fixture) -> AgentId {
         fixture,
         &floor.host,
         Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             elapsed_ms: None,
             turn,

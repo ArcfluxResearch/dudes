@@ -62,6 +62,7 @@ fn acknowledgement_needs_separate_observed_finish_and_never_expands_snapshot() {
     );
 
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -204,6 +205,7 @@ fn completed_cleanup_does_not_capture_a_later_normal_turn() {
     );
     assert!(world.closing.as_ref().unwrap().needs_recovery());
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn: original,

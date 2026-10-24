@@ -462,6 +462,7 @@ impl TurnReader for TurnStream {
         };
         let last_message = final_reply.as_ref().map(|reply| reply.text.clone());
         TurnEnd {
+            report: dudes_proto::TurnReport::default(),
             final_observation: (!turn.completed_servers.is_empty()).then(|| SessionObservation {
                 servers: turn.completed_servers.into_iter().collect(),
                 ..SessionObservation::default()

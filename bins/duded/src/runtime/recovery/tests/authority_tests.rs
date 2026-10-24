@@ -71,6 +71,8 @@ fn failed_source_at(daemon: &mut TestDaemon, fixture: &common::Fixture, base: u6
     append_history(
         daemon,
         Record::TurnEnded {
+            step_digest: None,
+            context: None,
             agent,
             turn,
             mode: Mode::Managed,
@@ -119,6 +121,8 @@ fn vanished_source(daemon: &mut TestDaemon, fixture: &common::Fixture) -> AgentI
     append_history(
         daemon,
         Record::TurnEnded {
+            step_digest: None,
+            context: None,
             agent,
             turn,
             mode: Mode::Managed,

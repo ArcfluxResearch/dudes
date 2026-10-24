@@ -21,9 +21,15 @@ export const TICKET_REASONS: readonly TicketReason[] = Object.freeze([
   'shared_instructions_changed', 'shared_instructions_unknown', 'recovery_required',
 ]);
 
+export const STEP_DIGEST_KEYS = Object.freeze(['command', 'read', 'edit', 'write', 'search', 'web', 'plan', 'subagent',
+  'mcp', 'other', 'files_edited'] as const);
+export type StepDigest = { readonly [key in typeof STEP_DIGEST_KEYS[number]]: number };
+
 export interface TicketTurnEnd {
   readonly exit: { readonly code: number | null; readonly signal: number | null };
   readonly at: number;
+  /** What the engine reported it did in the turn: counts only. Absent when it reported no steps. */
+  readonly step_digest?: StepDigest;
 }
 
 /**
@@ -111,7 +117,14 @@ function ticketOf(value: unknown): CardTicketRow | null | undefined {
       && value >= -2_147_483_648 && value <= 2_147_483_647;
     if (exit === null || (code !== null && !signed(code)) || (signal !== null && !signed(signal))
       || typeof ended.at !== 'number' || !Number.isSafeInteger(ended.at) || Math.abs(ended.at) > 8_640_000_000_000_000) return undefined;
-    lastTurnEnd = Object.freeze({ exit: Object.freeze({ code, signal }), at: ended.at });
+    let digest: StepDigest | null = null;
+    if (ended.step_digest != null) {
+      const raw = object(ended.step_digest);
+      if (raw === null || !STEP_DIGEST_KEYS.every((key) => count(raw[key]))) return undefined;
+      digest = Object.freeze(Object.fromEntries(STEP_DIGEST_KEYS.map((key) => [key, raw[key] as number])) as StepDigest);
+    }
+    lastTurnEnd = Object.freeze({ exit: Object.freeze({ code, signal }), at: ended.at,
+      ...(digest === null ? {} : { step_digest: digest }) });
   }
   return Object.freeze({ position: place, round: rounds, reason: why as TicketReason | null, stopping: stop,
     ...(goal === null ? {} : { goal }),

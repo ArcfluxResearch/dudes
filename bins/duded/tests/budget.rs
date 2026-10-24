@@ -440,6 +440,7 @@ fn costing(usd: Usd) -> Usage {
 
 fn end_payload(turn: dudes_types::TurnId, usage: Option<Usage>, outcome: TurnOutcome) -> Input {
     Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -501,6 +502,7 @@ fn spend_against(ceiling: Usd, spent: Usd) -> Vec<Record> {
     );
 
     running.handle.input(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -1352,6 +1354,7 @@ fn an_absent_floor_ceiling_issues_a_turn_the_old_default_would_have_refused() {
     assert_eq!(host.spawned().len(), 1, "control: the first turn spawned");
 
     running.handle.input(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn: first,
@@ -1590,6 +1593,7 @@ fn tokens_against_inner(budget: GoalBudget, tokens: u64, expect_a_turn: bool) ->
     if expect_a_turn {
         let turn = await_spawned_turn(&fixture);
         running.handle.input(Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             elapsed_ms: None,
             turn,

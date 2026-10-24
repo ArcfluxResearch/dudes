@@ -108,6 +108,9 @@ pub struct AgentRow {
     /// How that end was known: the provenance of the highest-lsn `TurnEnded` for this agent.
     /// Gate 2's input — an `Inferred` end may not yield `Done` (invariant 3).
     pub last_turn_end: Option<Provenance>,
+    /// The agent's newest ended turn, for the usage the Floor shows beside the card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn: Option<TurnId>,
     /// The vendor-run turn cap recorded at hire, or `None` for no cap. Written once
     /// by the `AgentHired` arm and never updated: v1 has no method that changes it, and a row
     /// projected from a journal written before the field reads `None` under `#[serde(default)]`.
@@ -170,6 +173,7 @@ impl Default for AgentRow {
             open_turn: None,
             last_turn_ended_at: None,
             last_turn_end: None,
+            last_turn: None,
             max_turns: None,
             max_budget: None,
             worktree: None,
@@ -452,6 +456,7 @@ fn apply_flow(
                 // Written unconditionally, so "the highest-lsn `TurnEnded` for this agent" falls
                 // out of the lsn order `apply_batch` enforces.
                 a.last_turn_ended_at = Some(entry.at);
+                a.last_turn = Some(*turn);
                 a.live_activity = Some(LiveActivityRow {
                     kind: if a.question.is_some() {
                         LiveActivityKind::Waiting

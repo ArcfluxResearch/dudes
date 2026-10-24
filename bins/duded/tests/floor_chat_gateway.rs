@@ -1083,6 +1083,7 @@ fn conversation_refuses_a_zero_agent_budget_before_issuance() {
 
 fn conversation_answer_end(first: dudes_types::TurnId) -> dudes_supervisor::Input {
     dudes_supervisor::Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         turn: first,
         elapsed_ms: Some(100),
         exit: dudes_proto::ExitStatus {
@@ -1234,6 +1235,7 @@ fn end_conversation(
         fixture,
         browser.host.as_ref().expect("owned mock child host"),
         dudes_supervisor::Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             turn,
             elapsed_ms: Some(6_000),
             exit: dudes_proto::ExitStatus {
@@ -1503,6 +1505,7 @@ fn conversation_daily_budget_refresh_reconsiders_a_pending_message() {
         &fixture,
         browser.host.as_ref().expect("owned mock child host"),
         dudes_supervisor::Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             turn,
             elapsed_ms: Some(6_000),
             exit: dudes_proto::ExitStatus {
@@ -1555,6 +1558,7 @@ fn conversation_repeated_fast_failure_keeps_the_existing_hold_guard() {
             &fixture,
             browser.host.as_ref().expect("owned mock child host"),
             dudes_supervisor::Input::ChildExited {
+                report: dudes_proto::TurnReport::default(),
                 turn,
                 elapsed_ms: Some(100),
                 exit: dudes_proto::ExitStatus {

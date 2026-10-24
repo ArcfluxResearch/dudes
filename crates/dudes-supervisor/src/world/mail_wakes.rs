@@ -341,6 +341,8 @@ mod tests {
 
         fn end(&self, turn: TurnId) -> Record {
             Record::TurnEnded {
+                step_digest: None,
+                context: None,
                 final_reply: None,
                 agent: self.agent,
                 turn,
@@ -959,6 +961,7 @@ mod tests {
 
     fn exit(turn: TurnId, code: i32, usage: Usage) -> Input {
         Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             turn,
             elapsed_ms: Some(1_000),

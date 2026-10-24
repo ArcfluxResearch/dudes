@@ -123,6 +123,8 @@ fn replay(entries: &[(Lsn, Entry)]) -> World {
 
 fn ended(turn: TurnId) -> Record {
     Record::TurnEnded {
+        step_digest: None,
+        context: None,
         agent: agent(),
         turn,
         mode: Mode::Attached,

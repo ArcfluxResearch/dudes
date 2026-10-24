@@ -224,10 +224,32 @@ pub struct AgentView {
     /// the turn recorded none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_model: Option<dudes_types::ModelName>,
+    /// What the agent's newest ended turn consumed and how full its context was. Absent until a
+    /// turn has ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn: Option<LastTurnView>,
     /// Another live agent records this agent's working directory too. A display hint computed from
     /// recorded directory equality, not a guard.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shares_checkout: bool,
+}
+
+/// What an agent's newest ended turn reported about its own cost and context. Evidence for
+/// display: a number the engine did not report is absent, never zero, and nothing here is read
+/// by a gate, a check or the breaker.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LastTurnView {
+    /// What the turn consumed, when the engine reported it. Its dollars are absent when the
+    /// engine reports tokens only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<dudes_types::Usage>,
+    /// The context window and how much of it the turn's last call filled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::turn_report::ContextReport>,
+    /// The model the turn was issued under, as it was selected. Absent when the turn ran on the
+    /// engine's own choice. The gauge compares it with the agent's model for the next turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<dudes_types::ModelName>,
 }
 
 /// One fixed kind observed by the daemon, without vendor text or tool detail.

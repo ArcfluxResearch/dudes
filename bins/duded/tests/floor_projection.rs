@@ -127,6 +127,7 @@ fn completed_agent() -> (Harness, AgentId, GoalId) {
         session: SessionId::from("550e8400-e29b-41d4-a716-446655440000"),
     });
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         turn,
         elapsed_ms: None,
@@ -333,6 +334,8 @@ fn ended(agent: AgentId, turn: TurnId, goal: GoalId, usage: Usage) -> [Entry; 2]
         entry(
             0,
             Record::TurnEnded {
+                step_digest: None,
+                context: None,
                 final_reply: None,
                 elapsed_ms: None,
                 session_usage: None,
@@ -664,6 +667,8 @@ fn snapshot_is_rebuilt_from_journal() {
         entry(
             5,
             Record::TurnEnded {
+                step_digest: None,
+                context: None,
                 final_reply: None,
                 elapsed_ms: None,
                 session_usage: None,
@@ -827,6 +832,7 @@ fn snapshot_is_rebuilt_from_journal() {
     );
 
     let fabricated = AgentView {
+        last_turn: None,
         character: None,
         accent: None,
         id: fake,
@@ -1077,5 +1083,52 @@ fn a_question_in_an_old_journal_is_scrubbed_of_a_secret_learned_since() {
     assert_eq!(
         snap.agents[0].question.as_deref(),
         Some("may I use (redacted) here?")
+    );
+}
+
+#[test]
+fn an_agents_last_turn_carries_its_usage_context_and_model() {
+    let agent = AgentId::from_parts(14, 1);
+    let goal_id = GoalId::from_parts(14, 2);
+    let usage = Usage {
+        input: Tokens::new(10),
+        output: Tokens::new(20),
+        cache_read: Tokens::new(30),
+        cache_creation: Tokens::new(0),
+        usd: Some(Usd::from_micros(31_575)),
+    };
+    let context = dudes_proto::ContextReport {
+        model: "claude-sonnet-4-5".into(),
+        window: 200_000,
+        used: 40,
+    };
+    let mut projections = Projections::in_memory().expect("in-memory daemon projection");
+    let mut lsn = 1;
+    let mut items = vec![
+        hired(agent, "Kim", "ROLE", "engineering"),
+        goal(agent, goal_id, "GOAL", 3),
+    ];
+    items.extend(ended(agent, TurnId::from_parts(14, 3), goal_id, usage));
+    for item in &mut items {
+        match &mut item.record {
+            Record::TurnIssued {
+                model_selection, ..
+            } => {
+                *model_selection = Some(dudes_types::ModelSelection::named("sonnet"));
+            }
+            Record::TurnEnded { context: slot, .. } => *slot = Some(context.clone()),
+            _ => {}
+        }
+    }
+    for item in &items {
+        apply(&mut projections, &mut lsn, item);
+    }
+    let view = snapshot(&mut projections, Timestamp::from_unix_millis(AT)).expect("snapshot");
+    let last = view.agents[0].last_turn.clone().expect("a turn ended");
+    assert_eq!(last.usage, Some(usage));
+    assert_eq!(last.context, Some(context));
+    assert_eq!(
+        last.model.map(|name| name.to_string()),
+        Some("sonnet".into())
     );
 }

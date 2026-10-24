@@ -65,6 +65,10 @@ pub struct TurnRow {
     /// folds this — the two live side by side so an audit can see both without either becoming
     /// the other.
     pub model_usage: BTreeMap<String, Usage>,
+    /// The engine's step counts for the turn, as `TurnEnded` recorded them. Display only.
+    pub step_digest: Option<dudes_proto::StepDigest>,
+    /// The context size the engine reported for the turn, as `TurnEnded` recorded it.
+    pub context: Option<dudes_proto::ContextReport>,
     /// When it ended, from the `TurnEnded` entry's `at`.
     pub ended_at: Option<Timestamp>,
     /// How it ended; `None` where the emitter wrote none.
@@ -95,6 +99,8 @@ impl Default for TurnRow {
             exit: None,
             usage: None,
             model_usage: BTreeMap::new(),
+            step_digest: None,
+            context: None,
             ended_at: None,
             outcome: None,
         }
@@ -323,6 +329,8 @@ pub(crate) fn apply(
             session,
             session_usage,
             outcome,
+            step_digest,
+            context,
             ..
         } => {
             let key = turn.to_bytes();
@@ -352,6 +360,8 @@ pub(crate) fn apply(
             row.exit = Some(*exit);
             row.usage = *usage;
             row.model_usage.clone_from(model_usage);
+            row.step_digest = *step_digest;
+            row.context.clone_from(context);
             row.ended_at = Some(entry.at);
             row.end_lsn = Some(lsn);
             row.outcome.clone_from(outcome);
