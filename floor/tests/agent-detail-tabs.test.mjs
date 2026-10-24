@@ -388,7 +388,7 @@ test('with the terminal switch off, the header says how to turn it on', async ()
   const settings = {
     folder_picker: false, switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
-    providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 6 },
+    providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 7 },
   };
   const hint = /<p class="settings-guidance">To open the real CLI, turn on Attach terminals under Floor switches in Settings, then restart Dudes\.<\/p>/;
   assert.match(header(center({ settings, terminal: false })), hint);
@@ -402,7 +402,7 @@ test('terminal guidance stays visible while other switched-off controls fold int
   const settings = {
     folder_picker: false, switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
-    providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 6 },
+    providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 7 },
   };
   const DISCLOSURE = /<details class="enable-controls"><summary>Enable more controls <span class="enable-controls-count">(\d)<\/span><\/summary>([\s\S]*?)<\/details>/;
   const hints = (html) => [...html.matchAll(/<p class="settings-guidance">([\s\S]*?)<\/p>/g)]

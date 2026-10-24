@@ -884,8 +884,8 @@ USAGE
         edits and checkouts then collide. The daemon refuses --sandbox at either value until an adapter
         can carry the switch; omit it for the provider's configured default.
         --model names the model every run of this agent uses instead of the engine's
-        default: 1 to 64 letters, digits and . _ - : / @ [ ], not starting with -. It is fixed
-        for the agent's life, and the engine reports a name it does not know at the first run.
+        default: 1 to 64 letters, digits and . _ - : / @ [ ], not starting with -. dudes model
+        changes it for the next run, and the engine reports a name it does not know at that run.
         --max-turns and --max-budget-usd are optional positive backstops the provider
         enforces inside each run; omitting one emits no flag, and neither is a Dudes
         budget ceiling. Both are fixed for the agent's life. --trusted declares that you

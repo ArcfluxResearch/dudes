@@ -1013,7 +1013,7 @@ samp,
 .agent-detail-head .portrait-figure { background-color: var(--card-background); }
 .agent-detail-identity p { margin: 0.3rem 0; overflow-wrap: anywhere; }
 .agent-detail-actions, .agent-detail-head > .selection-bar,
-.agent-detail-head > .agent-detail-question, .agent-detail-head > .agent-look-editor { grid-column: 1 / -1; }
+.agent-detail-head > .agent-detail-question, .agent-detail-head > .agent-look-editor, .agent-detail-head > .agent-model { grid-column: 1 / -1; }
 .selection-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .selection-bar .stream-state { margin: 0; overflow-wrap: anywhere; }
 /* Seven tabs pass the drawer's default width, so the row scrolls sideways rather than wrapping or showing a scrollbar. */
@@ -1101,8 +1101,10 @@ samp,
 .agent-overview-details { padding-top: .8rem; border-top: 1px solid var(--line); }
 .agent-overview-details[open] > summary, .agent-overview-check[open] > summary { margin-bottom: .6rem; }
 .agent-overview-shared { padding: .6rem .75rem; border-left: 3px solid var(--accent-ink); font-size: .85rem; }
-.agent-detail-head > .agent-look-editor { padding: 0; border: 0; }
-.agent-detail-head > .agent-look-editor > button { padding: .25rem 0; border: 0; background: none; color: var(--muted-ink); font: inherit; font-size: .8rem; cursor: pointer; }
+.agent-detail-head > .agent-look-editor, .agent-detail-head > .agent-model { padding: 0; border: 0; }
+.agent-detail-head > .agent-model { color: var(--muted-ink); font-size: .8rem; }
+.agent-detail-head > .agent-model .agent-model-line { margin: 0; }
+.agent-detail-head > .agent-look-editor > button, .agent-detail-head > .agent-model > button { padding: .25rem 0; border: 0; background: none; color: var(--muted-ink); font: inherit; font-size: .8rem; cursor: pointer; }
 
 .messages-panel section { margin-top: 1rem; }
 .messages-panel h3 { overflow-wrap: anywhere; }
@@ -4071,3 +4073,6 @@ samp,
   border: 0;
   border-radius: 0;
 }
+
+.agent-model form { display: grid; gap: .4rem; margin-top: .4rem; }
+.agent-model form > input[type='text'] { box-sizing: border-box; width: 100%; font: inherit; }

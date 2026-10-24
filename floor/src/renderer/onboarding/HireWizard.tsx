@@ -180,7 +180,7 @@ function ModelChoice({ engine, draft, frozen, configured, fixed, invalid }: {
         value={typed} disabled={frozen} aria-invalid={invalid}
         aria-describedby={invalid ? 'hire-problem' : undefined}
         onChange={(event) => editDraft({ model: event.target.value })} />
-      <p className="hire-count">Fixed for this agent. Dudes checks only the spelling; the app reports a name it does not know when the agent first runs.</p>
+      <p className="hire-count">You can change it later from the agent panel. Dudes checks only the spelling; the app reports a name it does not know when the agent first runs.</p>
     </div>
   </div>;
 }
