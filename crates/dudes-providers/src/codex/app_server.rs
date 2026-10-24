@@ -14,7 +14,7 @@ use crate::adapter::TurnSession;
 use crate::protocol::{ProtocolAction, StartupFrame};
 use crate::stream::{
     FinalReply, LineRead, ScopedUsage, SessionObservation, TextBlock, TextLayout, TextProgress,
-    TurnEnd, TurnReader, bound, exit_name,
+    TurnEnd, TurnReader, exit_name,
 };
 
 const MAX_EARLY_EVENTS: usize = 128;
@@ -471,7 +471,7 @@ impl TurnReader for AppServerReader {
             .filter(|_| outcome == TurnOutcome::Completed);
         TurnEnd {
             final_observation: None,
-            last_message: final_reply.as_ref().map(|reply| bound(&reply.text)),
+            last_message: final_reply.as_ref().map(|reply| reply.text.clone()),
             final_reply,
             outcome,
             usage: self.usage.map(|total| ScopedUsage::Session {

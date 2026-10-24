@@ -1047,3 +1047,34 @@ fn workspace_labels_come_from_the_hire_and_survive_fresh_replay() {
     let legacy_wire = serde_json::to_value(&expected.agents[2]).unwrap();
     assert!(legacy_wire.get("workspace").is_none());
 }
+
+#[test]
+fn a_question_in_an_old_journal_is_scrubbed_of_a_secret_learned_since() {
+    let a = AgentId::from_parts(9, 1);
+    let mut projections = Projections::in_memory().expect("in-memory daemon projection");
+    let mut lsn = 1;
+    apply(
+        &mut projections,
+        &mut lsn,
+        &hired(a, "Kim", "ROLE-A", "engineering"),
+    );
+    apply(
+        &mut projections,
+        &mut lsn,
+        &entry(
+            0,
+            Record::HumanQuestion {
+                agent: a,
+                text: "may I use hunter2hunter2 here?".into(),
+            },
+        ),
+    );
+    let mut snap = snapshot(&mut projections, Timestamp::from_unix_millis(AT)).unwrap();
+    let redactor = dudes_supervisor::Redactor::new();
+    redactor.set_source("test", ["hunter2hunter2".to_owned()]);
+    snap.scrub(&redactor, &mut duded::floor::ScrubMemo::default());
+    assert_eq!(
+        snap.agents[0].question.as_deref(),
+        Some("may I use (redacted) here?")
+    );
+}

@@ -2157,6 +2157,28 @@ impl World {
             .map(|(lsn, note)| (*lsn, note))
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_browser_issue(&mut self, turn: TurnId, agent: AgentId) {
+        self.browser_issues.insert(
+            turn,
+            BrowserIssueRow {
+                agent,
+                note_lsn: Lsn(0),
+                issue_lsn: Lsn(0),
+                goal: None,
+                note_only: false,
+                completion_lsn: None,
+                contract: None,
+                dispatch_intents: Vec::new(),
+                uncertain_dispatches: Vec::new(),
+                spawn_lsn: None,
+                reissued: false,
+                end_lsn: None,
+                cancellation: None,
+            },
+        );
+    }
+
     /// All durable dispatch attempts and dispositions of a note-bearing turn.
     #[must_use]
     pub fn browser_issue(&self, turn: TurnId) -> Option<&BrowserIssueRow> {
