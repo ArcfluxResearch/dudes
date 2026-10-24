@@ -343,6 +343,37 @@ test('dismissed, legacy seen and suppressed offers do not repeat', async () => {
   assert.equal(cached.getOffer(), false);
 });
 
+test('a dismissal in one tab prevents an already open tab from repeating the offer', () => {
+  const ports = preferencePorts();
+  const first = createNotificationPreference(ports);
+  const second = createNotificationPreference(ports);
+  assert.equal(first.getOffer(), false);
+  assert.equal(second.getOffer(), false);
+  first.offerAfterGive();
+  first.presentOffer();
+  first.dismissOffer();
+  second.offerAfterGive();
+  assert.equal(second.getOffer(), false);
+  assert.equal(ports.readOffer(), 'seen');
+  assert.equal(ports.requests, 0);
+});
+
+test('an offer pending in another tab stays consumed after the first tab presents it', () => {
+  const ports = preferencePorts();
+  const first = createNotificationPreference(ports);
+  const second = createNotificationPreference(ports);
+  first.offerAfterGive();
+  assert.equal(second.getOffer(), true);
+  first.presentOffer();
+  assert.equal(first.getOffer(), true, 'the visible offer remains answerable');
+  assert.equal(second.getOffer(), false);
+  second.presentOffer();
+  second.offerAfterGive();
+  assert.equal(second.getOffer(), false);
+  assert.equal(ports.readOffer(), 'seen');
+  assert.equal(ports.requests, 0);
+});
+
 test('offer presentation survives blocked storage within this page', () => {
   const ports = preferencePorts();
   ports.storage = () => { throw Error('storage unavailable'); };
