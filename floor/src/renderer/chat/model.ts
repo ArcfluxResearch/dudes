@@ -6,7 +6,8 @@ import { utf8Bytes } from '../onboarding/hire.ts';
 const ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 export const CHAT_REASONS = ['agent_absent', 'agent_retired', 'halted', 'unsupported_delivery',
   'goal_absent', 'queue_full', 'paused', 'hold', 'open_question', 'budget', 'ceiling_required', 'hops', 'provenance',
-  'goal_changed', 'context_changed', 'mode_changed', 'delivery_uncertain', 'delivery_started', 'note_unknown', 'note_cancelled'] as const;
+  'goal_changed', 'context_changed', 'mode_changed', 'delivery_uncertain', 'delivery_started', 'note_unknown', 'note_cancelled',
+  'stale_control', 'turn_open', 'action_off'] as const;
 export type ChatReason = (typeof CHAT_REASONS)[number];
 export type PendingState = 'queued' | 'reserved' | 'delivery_uncertain';
 export type TurnState = 'reserved' | 'running' | 'ended' | 'failed' | 'cancelled' | 'delivery_uncertain' | 'reissue_cancelled';

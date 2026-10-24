@@ -435,7 +435,7 @@ impl RecoveryWitness {
             && (self.reference.owner != O::Agent(previous.agent)
                 || !matches!(
                     self.reference.kind,
-                    K::Pause | K::Resume | K::Halt | K::AgentHeld
+                    K::Pause | K::Resume | K::Halt | K::BrowserHalt | K::AgentHeld
                 )
                 || previous
                     .lsn
@@ -480,6 +480,7 @@ impl RecoveryWitness {
             (E::Control { browser }, O::Agent(_)) => {
                 matches!(self.reference.kind, K::Pause | K::Resume)
                     || (self.reference.kind == K::Halt && browser.is_none())
+                    || (self.reference.kind == K::BrowserHalt && browser.is_some())
             }
             (E::Hold { .. }, O::Agent(_)) => self.reference.kind == K::AgentHeld,
             (E::Text { .. }, owner) => text_owner(self.reference.kind, owner),
@@ -969,6 +970,12 @@ fn attempt_evidence(record: &Record) -> Option<(RecoveryWitnessOwner, RecoveryEv
             },
         )),
         Record::Halt { agent, .. } => Some((O::Agent(*agent), E::Control { browser: None })),
+        Record::BrowserHalt { agent, browser, .. } => Some((
+            O::Agent(*agent),
+            E::Control {
+                browser: Some(browser.clone()),
+            },
+        )),
         _ => None,
     }
 }

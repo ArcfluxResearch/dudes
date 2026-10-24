@@ -4653,6 +4653,7 @@ fn operator_answer_switch_is_off_unless_enabled() {
 // --- Pause and resume one agent ---------------------------------------------------
 
 const PAUSE: &str = "/floor/pause";
+const HALT: &str = "/floor/halt";
 const RESUME: &str = "/floor/resume";
 
 /// Floor settings with pause and resume on or off. Nothing else differs from the fixture's.
@@ -4715,6 +4716,7 @@ fn disk_control_lsn(fixture: &Fixture, agent: AgentId) -> Option<Lsn> {
             Record::Pause { agent: who, .. }
             | Record::Resume { agent: who, .. }
             | Record::Halt { agent: who, .. }
+            | Record::BrowserHalt { agent: who, .. }
                 if who == agent =>
             {
                 Some(lsn)
@@ -4759,10 +4761,10 @@ fn refused(head: &str, response: &Value, reason: &str) {
 fn expected_control_digest(path: &str, agent: AgentId, control_lsn: Option<Lsn>) -> [u8; 32] {
     use sha2::{Digest as _, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(if path == PAUSE {
-        b"dudes.pause.v1\0".as_slice()
-    } else {
-        b"dudes.resume.v1\0".as_slice()
+    hasher.update(match path {
+        PAUSE => b"dudes.pause.v1\0".as_slice(),
+        HALT => b"dudes.halt.v1\0".as_slice(),
+        _ => b"dudes.resume.v1\0".as_slice(),
     });
     for (field, value) in [
         ("agent", agent.to_string()),
@@ -4894,6 +4896,9 @@ fn browser_pause_resume_is_finite_and_observed() {
     let capture = tempfile::tempdir().expect("task capture directory");
     let hold = capture.path().join("release-first-turn");
     let mut settings = control_settings(&fixture, true);
+    let config = fixture.state.path().join("config.toml");
+    std::fs::write(&config, "[floor.control]\nenabled = true\n").expect("operator file");
+    settings.operator_config = Some(config);
     settings.daemon_env.push(EnvVar::new(HELPER_ROLE, "1"));
     settings
         .daemon_env
@@ -5416,11 +5421,10 @@ fn browser_pause_resume_refuses_unknown_retired_and_foreign_control_lsn() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// Halt is unreachable from the browser. After a local halt, a browser resume is
-/// `agent_halted` with no record; a browser pause applies, and a resume presenting its position
-/// is still `agent_halted`. No path names halt: `POST /floor/halt` is byte for byte an unrouted
-/// POST, and a `halt` or `action` member is an unknown member. Positive control: a local
-/// `loop.resume` lifts the halt.
+/// An operator's halt is not the Floor's to lift. After a local halt, a browser resume is
+/// `agent_halted` with no record, and so is a browser stop; a browser pause applies, and a resume
+/// presenting its position is still `agent_halted`. A `halt` or `action` member is an unknown
+/// member. Positive control: a local `loop.resume` lifts the halt.
 #[test]
 fn browser_resume_cannot_lift_a_halt() {
     let fixture = Fixture::new();
@@ -5460,16 +5464,8 @@ fn browser_resume_cannot_lift_a_halt() {
         "no turn"
     );
 
-    let body = serde_json::to_vec(&control_body(&request_id(4), agent, Some(p))).unwrap();
-    let halted = raw_post(&page, "/floor/halt", &body);
-    let unrouted = raw_post(&page, "/floor/unrouted", &body);
-    assert!(!unrouted.is_empty());
-    assert_eq!(
-        halted,
-        unrouted,
-        "no halt route: {}",
-        String::from_utf8_lossy(&halted)
-    );
+    let (head, response) = post_control(&page, HALT, &control_body(&request_id(4), agent, Some(p)));
+    refused(&head, &response, "agent_halted");
     for member in ["halt", "action"] {
         let mut body = control_body(&request_id(5), agent, Some(p));
         body[member] = json!(if member == "halt" {
@@ -5477,7 +5473,7 @@ fn browser_resume_cannot_lift_a_halt() {
         } else {
             json!("halt")
         });
-        for path in [PAUSE, RESUME] {
+        for path in [PAUSE, HALT, RESUME] {
             let (head, response) = post_control(&page, path, &body);
             assert!(
                 head.starts_with("HTTP/1.1 400 Bad Request"),
@@ -5498,6 +5494,512 @@ fn browser_resume_cannot_lift_a_halt() {
         !row.halted && !row.paused,
         "positive control: the local resume lifts the halt"
     );
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// The Floor's stop ends the running turn, marks the halt as its own and holds the agent. Only
+/// the Floor's own resume lifts it, and the goal then takes a fresh turn. The page is told what
+/// is true each time: refusals append nothing, and a repeated request answers from the index.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one stub scenario asserts the stop, its refusals, the resume and the replay in order"
+)]
+fn browser_stop_ends_the_running_turn_and_only_its_own_resume_lifts_the_halt() {
+    let fixture = Fixture::new();
+    let capture = tempfile::tempdir().expect("task capture directory");
+    let hold = capture.path().join("release-turns");
+    let mut settings = control_settings(&fixture, true);
+    settings.daemon_env.push(EnvVar::new(HELPER_ROLE, "1"));
+    settings
+        .daemon_env
+        .push(EnvVar::new(TASK_CAPTURE, capture.path().as_os_str()));
+    settings
+        .daemon_env
+        .push(EnvVar::new(STUB_HOLD, hold.as_os_str()));
+    let daemon = boot(
+        &settings,
+        real_stub_seams_with(
+            &settings,
+            ScriptedRunner::scripted([common::fails(), common::passes()]),
+        ),
+    )
+    .expect("boot Floor");
+    let addr = daemon.floor_addr().expect("Floor address");
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &[true_program()]),
+    );
+    let t1 = fixture.await_record("T1 spawned", |record| match record {
+        Record::TurnSpawned {
+            agent: who, turn, ..
+        } if *who == agent => Some(*turn),
+        _ => None,
+    });
+    let page = exchange(addr, &issue(&settings).bootstrap);
+
+    let stop_wire = request_id(1);
+    let (head, response) = post_control(&page, HALT, &control_body(&stop_wire, agent, None));
+    let h = applied(&head, &response, "halted");
+    let Some(Record::BrowserHalt {
+        agent: halted,
+        abandons,
+        browser,
+    }) = fixture
+        .entries()
+        .into_iter()
+        .find(|(at, _)| *at == h)
+        .map(|(_, e)| e.record)
+    else {
+        panic!("a BrowserHalt at H");
+    };
+    assert_eq!(
+        (halted, abandons),
+        (agent, None),
+        "T1 is running, not abandoned"
+    );
+    assert_eq!(browser.control_lsn, None);
+    assert_eq!(
+        browser.request_digest.bytes(),
+        expected_control_digest(HALT, agent, None)
+    );
+
+    let killed = fixture.await_record("T1 killed by the halt", |record| match record {
+        Record::TurnEnded {
+            turn,
+            outcome: Some(dudes_proto::TurnOutcome::Killed { by }),
+            ..
+        } if *turn == t1 => Some(*by),
+        _ => None,
+    });
+    assert_eq!(killed, dudes_proto::KillReason::Halt);
+    let _ = snapshot(&page);
+    let (view, _) = snapshot(&page);
+    let row = view["projection"]["agents"]
+        .as_array()
+        .expect("agents")
+        .iter()
+        .find(|row| row["id"] == json!(agent))
+        .expect("the agent")
+        .clone();
+    assert_eq!(row["halted"], json!(true), "{row}");
+    assert_eq!(row["halted_by_floor"], json!(true), "{row}");
+    assert_eq!(row["control_lsn"], json!(h.0.to_string()), "{row}");
+
+    let controls = |records: &[Record]| {
+        records
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record,
+                    Record::Pause { .. } | Record::Resume { .. } | Record::BrowserHalt { .. }
+                )
+            })
+            .count()
+    };
+    let before = controls(&fixture.records());
+    for (k, path, lsn, reason) in [
+        (2, HALT, Some(h), "agent_halted"),
+        (3, RESUME, None, "stale_control"),
+    ] {
+        let (head, response) = post_control(&page, path, &control_body(&request_id(k), agent, lsn));
+        refused(&head, &response, reason);
+    }
+    assert_eq!(
+        controls(&fixture.records()),
+        before,
+        "the refusals appended no control record"
+    );
+
+    std::fs::write(&hold, b"").expect("release later turns");
+    let (head, response) =
+        post_control(&page, RESUME, &control_body(&request_id(5), agent, Some(h)));
+    let r = applied(&head, &response, "resumed");
+    let t2 = fixture.await_record("a fresh turn after the resume", |record| match record {
+        Record::TurnIssued {
+            agent: who, turn, ..
+        } if *who == agent && *turn != t1 => Some(*turn),
+        _ => None,
+    });
+    assert_ne!(t2, t1);
+    assert!(
+        !after(&fixture, r).iter().any(|(_, e)| matches!(
+            &e.record,
+            Record::TurnSpawned { turn, .. } if *turn == t1
+        )),
+        "the stopped turn is not brought back"
+    );
+
+    let (head, response) = post_control(&page, HALT, &control_body(&stop_wire, agent, None));
+    assert_eq!(
+        applied(&head, &response, "halted"),
+        h,
+        "a repeat answers from the index"
+    );
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+const CHAT_SEND: &str = "/floor/chat/send";
+
+/// A goal agent whose first turn the stub holds, stopped from the page. Returns the daemon, the
+/// page, the agent and the control identity the stop returned once the turn has ended.
+struct Stopped {
+    running: common::Running,
+    page: Arc<Page>,
+    settings: duded::Settings,
+    fixture: Fixture,
+    agent: AgentId,
+    stop: Lsn,
+    turn: dudes_types::TurnId,
+    addr: SocketAddr,
+    pause: duded::runtime::OnboardingPause,
+    authorizer: duded::floor_session::FloorSessionAuthorizer,
+}
+
+fn stopped_goal_agent() -> Stopped {
+    let fixture = Fixture::new();
+    let capture = tempfile::tempdir().expect("task capture directory");
+    let hold = capture.path().join("release-turns");
+    let mut settings = control_settings(&fixture, true);
+    let config = fixture.state.path().join("config.toml");
+    std::fs::write(&config, "[floor.control]\nenabled = true\n").expect("operator file");
+    settings.operator_config = Some(config);
+    settings.daemon_env.push(EnvVar::new(HELPER_ROLE, "1"));
+    settings
+        .daemon_env
+        .push(EnvVar::new(TASK_CAPTURE, capture.path().as_os_str()));
+    settings
+        .daemon_env
+        .push(EnvVar::new(STUB_HOLD, hold.as_os_str()));
+    std::mem::forget(capture);
+    let daemon = boot(
+        &settings,
+        real_stub_seams_with(
+            &settings,
+            ScriptedRunner::scripted([common::fails(), common::fails(), common::passes()]),
+        ),
+    )
+    .expect("boot Floor");
+    let pause = daemon.onboarding_pause();
+    let authorizer = daemon.floor_session_authorizer().expect("Floor sessions");
+    let addr = daemon.floor_addr().expect("Floor address");
+    let running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &[true_program()]),
+    );
+    let turn = fixture.await_record("the first turn spawned", |record| match record {
+        Record::TurnSpawned {
+            agent: who, turn, ..
+        } if *who == agent => Some(*turn),
+        _ => None,
+    });
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_control(&page, HALT, &control_body(&request_id(1), agent, None));
+    let stop = applied(&head, &response, "halted");
+    fixture.await_record("the stopped turn ended", |record| match record {
+        Record::TurnEnded { turn: ended, .. } if *ended == turn => Some(()),
+        _ => None,
+    });
+    let _ = snapshot(&page);
+    std::fs::write(&hold, b"").expect("release later turns");
+    Stopped {
+        running,
+        page,
+        settings,
+        fixture,
+        agent,
+        stop,
+        turn,
+        addr,
+        pause,
+        authorizer,
+    }
+}
+
+fn stop_and_send_body(request_id: &str, agent: AgentId, text: &str, stop: Lsn) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "request_id": request_id,
+        "agent": agent,
+        "text": text,
+        "after_stop": stop.0.to_string(),
+    }))
+    .expect("chat JSON")
+}
+
+/// Stop and send, the second step: once the stopped turn has ended, the note is queued and then the
+/// Floor's own halt is lifted, in that order, and the stopped task is not brought back. A resent
+/// request answers from the index and appends nothing.
+#[test]
+fn stop_and_send_queues_the_note_and_then_lifts_the_floors_halt() {
+    let Stopped {
+        mut running,
+        page,
+        fixture,
+        agent,
+        stop,
+        turn,
+        ..
+    } = stopped_goal_agent();
+    let body = stop_and_send_body(&request_id(2), agent, "use the other approach", stop);
+    let (head, receipt) = post_bytes(&page, CHAT_SEND, &body, None);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {receipt}");
+    assert_eq!(receipt["state"], "queued", "{receipt}");
+
+    let records = fixture.records();
+    let note = records
+        .iter()
+        .position(|record| matches!(record, Record::BrowserNoteQueued { text, .. } if text == "use the other approach"))
+        .expect("the note is durable");
+    let resume = records
+        .iter()
+        .position(|record| {
+            matches!(record, Record::Resume { agent: who, browser: Some(b), .. }
+            if *who == agent && b.control_lsn == Some(stop))
+        })
+        .expect("the Floor's halt was lifted");
+    assert!(
+        note < resume,
+        "the note is durable before the halt is lifted"
+    );
+    assert!(
+        !records[resume..].iter().any(|record| matches!(
+            record,
+            Record::TurnSpawned { turn: reissued, .. } if *reissued == turn
+        )),
+        "the stopped task is not brought back"
+    );
+
+    let own = |records: &[Record]| {
+        records
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record,
+                    Record::BrowserNoteQueued { .. } | Record::Resume { .. }
+                )
+            })
+            .count()
+    };
+    let before = own(&fixture.records());
+    assert_eq!(before, 2, "one note and one resume");
+    let (head, again) = post_bytes(&page, CHAT_SEND, &body, None);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(again, receipt, "a resend answers from the index");
+    assert_eq!(own(&fixture.records()), before, "a resend appends nothing");
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// A resend of a stop and send whose note is already durable answers from the index even after the
+/// control switch goes off: the person is told the note was sent. A new request is refused.
+#[test]
+fn stop_and_send_resend_after_the_control_switch_goes_off_answers_from_the_index() {
+    let Stopped {
+        mut running,
+        page,
+        fixture,
+        agent,
+        stop,
+        ..
+    } = stopped_goal_agent();
+    let body = stop_and_send_body(&request_id(2), agent, "use the other approach", stop);
+    let (head, receipt) = post_bytes(&page, CHAT_SEND, &body, None);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {receipt}");
+
+    let off = serde_json::to_vec(&json!({"key": "floor.control", "value": "off"})).expect("JSON");
+    let (head, applied) = post_bytes(&page, "/floor/settings", &off, None);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {applied}");
+
+    let (head, again) = post_bytes(&page, CHAT_SEND, &body, None);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {again}");
+    assert_eq!(again, receipt, "the resend is answered from the index");
+
+    let fresh = stop_and_send_body(&request_id(3), agent, "another", stop);
+    let (head, refused) = post_bytes(&page, CHAT_SEND, &fresh, None);
+    assert!(
+        head.starts_with("HTTP/1.1 409 Conflict"),
+        "{head} {refused}"
+    );
+    assert_eq!(refused["reason"], "action_off", "{refused}");
+    let notes = fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::BrowserNoteQueued { .. }))
+        .count();
+    assert_eq!(notes, 1, "only the first request queued a note");
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// The note is durable, the session is revoked before the halt is lifted, an operator halts the
+/// agent, and the page resends from a new session. The resend appends no second note and no
+/// resume, so the operator's halt stands.
+#[test]
+fn stop_and_send_note_crash_operator_halt_resend_lifts_nothing() {
+    let Stopped {
+        mut running,
+        page,
+        fixture,
+        settings,
+        agent,
+        stop,
+        addr,
+        pause,
+        authorizer,
+        ..
+    } = stopped_goal_agent();
+    let body = stop_and_send_body(&request_id(2), agent, "try again", stop);
+    pause.arm(OnboardingPausePoint::BeforeControlPermit);
+    let first = {
+        let (page, body) = (Arc::clone(&page), body.clone());
+        std::thread::spawn(move || post_bytes(&page, CHAT_SEND, &body, None))
+    };
+    assert!(
+        pause.wait_reached(Duration::from_secs(5)),
+        "the note is durable and the halt is about to be lifted"
+    );
+    assert!(authorizer.revoke_for_test(&page.cookie), "the session ends");
+    pause.release();
+    let (head, response) = first.join().expect("first request");
+    assert!(
+        head.starts_with("HTTP/1.1 403 Forbidden"),
+        "{head} {response}"
+    );
+    let notes = |records: &[Record]| {
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::BrowserNoteQueued { .. }))
+            .count()
+    };
+    let resumes = |records: &[Record]| {
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::Resume { .. }))
+            .count()
+    };
+    let records = fixture.records();
+    assert_eq!(
+        (notes(&records), resumes(&records)),
+        (1, 0),
+        "note, no resume"
+    );
+
+    running.handle.ask(Ask::Halt(agent)).expect("operator halt");
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, receipt) = post_bytes(&page, CHAT_SEND, &body, None);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {receipt}");
+    let records = fixture.records();
+    assert_eq!(
+        (notes(&records), resumes(&records)),
+        (1, 0),
+        "the resend added no note and lifted no halt"
+    );
+    let world = folded(&fixture);
+    let row = &world.agents[&agent];
+    assert!(
+        row.halted && !row.halted_by_floor,
+        "the operator's halt stands"
+    );
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// The second step refuses with nothing appended: a stale control identity, a halt that is the
+/// operator's, and a turn still open.
+#[test]
+fn stop_and_send_refusals_append_nothing() {
+    let fixture = Fixture::new();
+    let settings = control_settings(&fixture, true);
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
+    let addr = daemon.floor_addr().expect("Floor address");
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &[true_program()]),
+    );
+    fixture.await_record("a turn spawned", |record| match record {
+        Record::TurnSpawned { agent: who, .. } if *who == agent => Some(()),
+        _ => None,
+    });
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_control(&page, HALT, &control_body(&request_id(1), agent, None));
+    let stop = applied(&head, &response, "halted");
+
+    let before = fixture.records();
+    let send = |k: usize, lsn: Lsn| {
+        let body = stop_and_send_body(&request_id(k), agent, "note", lsn);
+        post_bytes(&page, CHAT_SEND, &body, None)
+    };
+    let (head, response) = send(2, stop);
+    assert!(
+        head.starts_with("HTTP/1.1 409 Conflict"),
+        "{head} {response}"
+    );
+    assert_eq!(response["reason"], "turn_open", "{response}");
+    let (head, response) = send(3, Lsn(stop.0 + 1));
+    assert!(
+        head.starts_with("HTTP/1.1 409 Conflict"),
+        "{head} {response}"
+    );
+    assert_eq!(response["reason"], "stale_control", "{response}");
+    assert_eq!(fixture.records(), before, "no refusal appended");
+
+    running.handle.ask(Ask::Halt(agent)).expect("operator halt");
+    let after_halt = fixture.records();
+    let operator = disk_control_lsn(&fixture, agent).expect("the halt");
+    let (head, response) = send(4, operator);
+    assert!(
+        head.starts_with("HTTP/1.1 409 Conflict"),
+        "{head} {response}"
+    );
+    assert_eq!(response["reason"], "halted", "{response}");
+    assert_eq!(fixture.records(), after_halt);
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// Every refusal of a stop appends nothing: an unknown agent, a human at the keyboard, a halt
+/// already standing, a stale control identity and an agent with no turn to end.
+#[test]
+fn browser_stop_refusals_append_nothing() {
+    let fixture = Fixture::new();
+    let settings = control_settings(&fixture, true);
+    let mut running =
+        common::start(boot(&settings, fake_seams(&settings)).expect("boot the setup run"));
+    let idle = common::hire(&running.handle, fixture.state.path());
+    let attached = common::hire(&running.handle, fixture.state.path());
+    let halted = common::hire(&running.handle, fixture.state.path());
+    let paused = common::hire(&running.handle, fixture.state.path());
+    running.handle.ask(Ask::Halt(halted)).expect("local halt");
+    running.handle.ask(Ask::Pause(paused)).expect("local pause");
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    let mut record = dudes_proto::record::samples::record(dudes_proto::RecordKind::Attached);
+    let Record::Attached { agent, .. } = &mut record else {
+        unreachable!()
+    };
+    *agent = attached;
+    seed(&fixture, [record]);
+    let paused_lsn = disk_control_lsn(&fixture, paused).expect("the pause");
+
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
+    let addr = daemon.floor_addr().expect("Floor address");
+    let mut running = common::start(daemon);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let unknown = AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("an agent id");
+    let before = fixture.records();
+    for (k, agent, lsn, reason) in [
+        (1, unknown, None, "agent_absent"),
+        (2, attached, None, "agent_attached"),
+        (3, halted, None, "agent_halted"),
+        (4, paused, None, "stale_control"),
+        (5, paused, Some(paused_lsn), "no_running_turn"),
+        (6, idle, None, "no_running_turn"),
+    ] {
+        let (head, response) = post_control(&page, HALT, &control_body(&request_id(k), agent, lsn));
+        refused(&head, &response, reason);
+    }
+    assert_eq!(fixture.records(), before, "no refusal moved the journal");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 

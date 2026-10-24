@@ -1389,6 +1389,100 @@ fn conversation_context_loss_after(outcome: dudes_proto::TurnOutcome) {
     running.stop(duded::ExitCause::Signal);
 }
 
+/// A no-goal agent whose second conversation turn runs on a resumed session, and the control
+/// identity the Floor's stop of that turn returned.
+fn stopped_conversation(
+    fixture: &Fixture,
+) -> (
+    common::Running,
+    Browser,
+    dudes_types::AgentId,
+    dudes_types::TurnId,
+    String,
+) {
+    let mut settings = fixture.settings();
+    settings.floor = Some(FloorSettings {
+        assets_dir: PathBuf::from(FLOOR_FIXTURE),
+        port: Some(0),
+    });
+    settings.floor_control = duded::settings::FloorControl::On {
+        goal: false,
+        retire: false,
+        renew: false,
+    };
+    let (_, running, browser) = start_configured(RunOptions::default(), None, settings, None);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    assert_eq!(conversation_request(&browser, agent, 0, "first").0, 200);
+    let (first, session) = conversation_issued(fixture, "first");
+    running
+        .handle
+        .input(dudes_supervisor::Input::SessionLearned {
+            turn: first,
+            session: session.unwrap(),
+        });
+    end_conversation(
+        &browser,
+        fixture,
+        first,
+        dudes_proto::TurnOutcome::Completed,
+    );
+    assert_eq!(conversation_request(&browser, agent, 1, "second").0, 200);
+    let (second, _) = conversation_issued(fixture, "second");
+    let (status, stop) = browser.post(
+        "/floor/halt",
+        &serde_json::to_vec(&json!({"request_id":request_id(2),"agent":agent,"control_lsn":null}))
+            .unwrap(),
+    );
+    assert_eq!(status, 200, "{stop}");
+    let control = stop["control_lsn"].as_str().expect("a control identity");
+    end_conversation(
+        &browser,
+        fixture,
+        second,
+        dudes_proto::TurnOutcome::Completed,
+    );
+    (running, browser, agent, second, control.to_owned())
+}
+
+fn stop_and_send(
+    browser: &Browser,
+    agent: dudes_types::AgentId,
+    number: usize,
+    text: &str,
+    stop: &str,
+) -> (u16, Value) {
+    browser.post(
+        "/floor/chat/send",
+        &serde_json::to_vec(
+            &json!({"request_id":request_id(number),"agent":agent,"text":text,"after_stop":stop}),
+        )
+        .unwrap(),
+    )
+}
+
+/// The second step of stop and send for a no-goal agent queues one finite message under the
+/// Floor's halt, lifts the halt after it is durable, and the message then takes its own turn.
+#[test]
+fn stop_and_send_for_a_no_goal_agent_queues_a_message_and_lifts_the_halt() {
+    let fixture = Fixture::new();
+    let (mut running, browser, agent, second, stop) = stopped_conversation(&fixture);
+    let (status, receipt) = stop_and_send(&browser, agent, 3, "go another way", &stop);
+    assert_eq!(status, 200, "{receipt}");
+    let records = fixture.records();
+    let queued = records
+        .iter()
+        .position(|record| matches!(record, Record::ConversationMessageQueued { .. }))
+        .expect("the message is durable");
+    let resume = records
+        .iter()
+        .position(|record| matches!(record, Record::Resume { agent: who, .. } if *who == agent))
+        .expect("the Floor's halt was lifted");
+    assert!(queued < resume, "the message is durable before the lift");
+    let (turn, _) = conversation_issued(&fixture, "go another way");
+    assert_ne!(turn, second, "the stopped task is not brought back");
+    running.stop(duded::ExitCause::Signal);
+}
+
 #[test]
 fn conversation_daily_budget_refresh_reconsiders_a_pending_message() {
     let fixture = Fixture::new();

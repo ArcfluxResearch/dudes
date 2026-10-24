@@ -538,7 +538,7 @@ test('stale_goal says the task changed since the page read it, and refreshes the
 test('each admission refusal explains why nothing was recorded', async () => {
   const said = {
     agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
-    agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
+    agent_halted: 'A halt stands on this agent, so nothing was recorded. Press Resume first if you stopped it from this page; a halt from the command line only the local operator can lift.',
     goal_exhausted: 'This task reached a work attempt or spending limit, so nothing was recorded. '
       + 'Start a new task is available when Start new tasks is on in Settings and this agent’s project is enrolled.',
     predicate_claimed: 'This task checks whether a card is assigned, which cannot prove that work finished. Nothing changed.',

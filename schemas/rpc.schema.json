@@ -632,6 +632,10 @@
           "description": "`loop.halt` is standing.",
           "type": "boolean"
         },
+        "halted_by_floor": {
+          "description": "The standing halt is the Floor's own stop, which the Floor may lift. Absent when no halt\nstands or the newest one is an operator's.",
+          "type": "boolean"
+        },
         "id": {
           "$ref": "#/$defs/AgentId",
           "description": "The agent."
@@ -5740,6 +5744,40 @@
           "required": [
             "t",
             "agent"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The Floor's stop of one agent's turn: a halt the Floor made, and, in the same append, the\nopen turn it closes when no launch for that turn had begun.",
+          "properties": {
+            "abandons": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TurnId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The open turn this halt closes unlaunched, so nothing relaunches it; absent when the\nagent had no such turn and a running or launching one is killed instead."
+            },
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The agent."
+            },
+            "browser": {
+              "$ref": "#/$defs/BrowserControl",
+              "description": "The admitting request and session."
+            },
+            "t": {
+              "const": "browser_halt",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "agent",
+            "browser"
           ],
           "type": "object"
         },
@@ -11445,7 +11483,7 @@
       "oneOf": [
         {
           "const": "no_host_call",
-          "description": "The live continuation asserts that this exact Managed attempt never called the host.\nAn observed refusal hold or exact observed `NotLaunched` end corroborates the assertion;\nrecovery cannot infer it from either.",
+          "description": "The live continuation asserts that this exact Managed attempt never called the host.\nAn observed refusal hold, an exact observed `NotLaunched` end, or a Floor halt that\nabandoned this very turn before any launch began corroborates the assertion; recovery\ncannot infer it from any of them.",
           "type": "string"
         }
       ]

@@ -447,6 +447,11 @@ mod tests {
                 .iter()
                 .filter_map(|attribution| attribution.control_lsn)
                 .collect(),
+            Record::BrowserHalt {
+                agent: _,
+                browser,
+                abandons: _,
+            } => browser.control_lsn.into_iter().collect(),
             Record::MemoryCondense {
                 agent: _,
                 from_lsn,

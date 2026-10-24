@@ -385,7 +385,7 @@ fn validate_change(
             reference.owner == O::Agent(work.agent)
                 && matches!(
                     reference.kind,
-                    K::Pause | K::Resume | K::Halt | K::AgentHeld
+                    K::Pause | K::Resume | K::Halt | K::BrowserHalt | K::AgentHeld
                 )
         }
         R::AgentUnavailable => {

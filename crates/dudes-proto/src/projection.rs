@@ -132,6 +132,10 @@ pub struct WorktreeView {
 /// One agent as the floor shows it. Status is projected from `TurnIssued` / `TurnEnded` /
 /// `HumanQuestion`, never from PTY bytes or silence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact the projection row reports"
+)]
 pub struct AgentView {
     /// The agent.
     pub id: AgentId,
@@ -168,6 +172,10 @@ pub struct AgentView {
     /// `loop.halt` is standing.
     #[serde(default)]
     pub halted: bool,
+    /// The standing halt is the Floor's own stop, which the Floor may lift. Absent when no halt
+    /// stands or the newest one is an operator's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub halted_by_floor: bool,
     /// An automatic hold requiring Resume or a new goal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automatic_hold: Option<crate::AutomaticHold>,
