@@ -567,51 +567,34 @@
   }
 }
 
-/* Inside the ticket sheet a notice hangs from the sheet's top edge, over the content, and takes no room. */
-.ticket-notice-slot {
-  display: contents;
-}
-
-.ticket-dialog .ticket-notice-slot {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  display: block;
-  height: 0;
-  overflow: visible;
-}
-
-.ticket-dialog .ticket-notice {
-  position: absolute;
-  top: 0.5rem;
-  right: 0.75rem;
-  left: 0.75rem;
-  box-sizing: border-box;
+.notice-stack > .ticket-notice {
+  width: fit-content;
   margin: 0;
   border-radius: 0.4rem;
-  background-color: var(--surface);
   box-shadow: 0 8px 28px var(--panel-shadow);
-}
-
-.ticket-dialog .ticket-notice[data-tone='problem'] {
-  background-color: var(--danger-background);
-}
-
-.ticket-dialog .ticket-notice[data-tone='done'] {
-  background-color: var(--success-background);
+  overflow-wrap: anywhere;
 }
 
 .notification-offer {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.65rem 0.8rem;
+  padding: 0.35rem 0.5rem;
   border: 1px solid var(--line);
   border-radius: 0.4rem;
   background: var(--surface);
   color: var(--ink);
   font-size: 0.8rem;
+  line-height: 1.25;
+}
+
+.notice-stack > .notification-offer { width: min(64rem, 100%); max-width: 100%; }
+.notification-offer p[role='status'] { grid-column: 1 / -1; }
+
+@media (max-width: 800px) {
+  .notification-offer { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+  .notification-offer p { flex-basis: 100%; }
 }
 
 .notification-offer p { margin: 0; }

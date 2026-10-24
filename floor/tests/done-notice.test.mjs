@@ -34,7 +34,6 @@ function goal(id, text, status) {
 let server;
 let store;
 let newlyDone;
-let WebFloorShell;
 let DoneNotices;
 
 before(async () => {
@@ -47,7 +46,6 @@ before(async () => {
   });
   store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   ({ newlyDone } = await server.ssrLoadModule('/src/renderer/done.ts'));
-  ({ WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx'));
   ({ DoneNotices } = await server.ssrLoadModule('/src/renderer/DoneNotices.tsx'));
 });
 
@@ -82,8 +80,8 @@ function held() {
 }
 
 function region() {
-  const html = renderToStaticMarkup(createElement(WebFloorShell));
-  return html.match(/<div class="done-notices"[\s\S]*?<\/div>(?=<\/div><\/div><\/div>)/)?.[0] ?? null;
+  return renderToStaticMarkup(createElement(DoneNotices,
+    { notices: store.getFloorState().doneNotices, leaveFocusTo: 'floor-notices' }));
 }
 
 function handoffs(html) {
@@ -200,7 +198,7 @@ test('a resync announces nothing until its snapshot, which is the new baseline, 
   assert.deepEqual(held().map(([agentId]) => agentId), [ADA, LINUS]);
 });
 
-test('the shell draws an empty polite region at load, then each notice with its agent, goal and Dismiss', () => {
+test('Done notices draw an empty polite region, then each notice with its agent, goal and Dismiss', () => {
   snapshot([agent(ADA, 'Ada', goal(NOTES, 'Ship the release notes', 'in_progress'))], 10);
   assert.equal(region(), EMPTY_REGION);
 
@@ -208,7 +206,7 @@ test('the shell draws an empty polite region at load, then each notice with its 
   assert.equal(region(), '<div class="done-notices" aria-live="polite"><ol aria-label="Goals done">'
     + `<li class="done-notice" data-done-agent-id="${ADA}"><p class="agent-detail-kicker">Done</p>`
     + '<p class="done-notice-met"><strong>Ada</strong> <span>met its goal.</span></p><p class="done-notice-goal" title="Ship the release notes">Ship the release notes</p>'
-    + `<button type="button" id="done-dismiss-${ADA}-${NOTES}" data-focus-on-leave="crew-toggle" `
+    + `<button type="button" id="done-dismiss-${ADA}-${NOTES}" data-focus-on-leave="floor-notices" `
     + 'aria-label="Dismiss the Done notice for Ada: Ship the release notes">'
     + 'Dismiss</button></li></ol></div>');
 

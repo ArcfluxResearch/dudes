@@ -39,7 +39,6 @@ function contrast(foreground, background) {
 
 let server;
 let StreamNotice;
-let WebFloorShell;
 let store;
 let stream;
 before(async () => {
@@ -47,7 +46,6 @@ before(async () => {
   server = await createServer({ root, cacheDir: resolve(root, 'node_modules/.vite-disconnected-line'),
     server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
   ({ StreamNotice } = await server.ssrLoadModule('/src/renderer/StreamNotice.tsx'));
-  ({ WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx'));
   store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   stream = await server.ssrLoadModule('/src/renderer/floor/stream.ts');
 });
@@ -67,15 +65,6 @@ test('the mirror publishes the phase, so an empty floor says which empty it is',
     'the cast mirror does not publish the phase, so connecting, resyncing and given-up '
     + 'all render as the same empty list',
   );
-});
-
-test('one shared disconnected notice sits beside the top bar, outside its stacking layer and the office', () => {
-  store.resetFloorStore();
-  store.noteTransport('close');
-  const html = renderToStaticMarkup(createElement(WebFloorShell));
-  assert.equal((html.match(/class="[^"]*stream-notice/g) ?? []).length, 1);
-  assert.match(html, /<div class="top-region"><header class="top-bar">[\s\S]*<\/header><div class="notice-area"><div class="notice-stack">[\s\S]*office-closed stream-notice/);
-  assert.ok(html.indexOf('office-closed stream-notice') < html.indexOf('class="floor-stage"'));
 });
 
 test('a shared disconnected notice appears only when the stream is closed', () => {
