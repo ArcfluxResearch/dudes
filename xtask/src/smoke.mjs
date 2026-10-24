@@ -330,7 +330,38 @@ exec /bin/sleep 120
     await this.rememberManaged();
   }
 
+  // A healthy Chrome answers its first call in about a second. One that is silent after this long
+  // never answers (a 30 second wait on a cold CI runner failed the same way), so the launch is
+  // abandoned and tried again instead of waiting out the whole timeout on a hung process.
   async launchChrome() {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await this.startChrome();
+        break;
+      } catch (error) {
+        const hung = error.message === 'Chrome Browser.getVersion timed out';
+        if (!hung || attempt === 3) throw error;
+        this.cdp.close();
+        this.signalUnanchoredChrome('SIGKILL');
+        await waitFor(() => this.chrome.exitCode !== null || this.chrome.signalCode !== null,
+          'silent Chrome survived kill', 5000, true);
+        await rm(join(this.root, 'chrome'), { recursive: true, force: true });
+      }
+    }
+    check(this.chrome.exitCode === null && this.chrome.signalCode === null, 'Chrome exited before ownership was recorded');
+    const identity = await this.processInfo(this.chrome.pid);
+    check(identity && identity.parent === process.pid && identity.group === this.chrome.pid
+      && this.chrome.exitCode === null && this.chrome.signalCode === null, 'Chrome process identity is unproven');
+    this.chromeIdentity = identity;
+    await this.rememberChromeChildren();
+    const { targetId } = await this.cdp.send('Target.createTarget', { url: 'about:blank', forTab: false });
+    const { sessionId } = await this.cdp.send('Target.attachToTarget', { targetId, flatten: true });
+    this.cdp.session = sessionId;
+    await this.cdp.send('Page.enable', {}, sessionId);
+    await this.cdp.send('Runtime.enable', {}, sessionId);
+  }
+
+  async startChrome() {
     const profile = join(this.root, 'chrome');
     this.chrome = spawn(this.chromeProgram, [
       ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : ['--password-store=basic']),
@@ -346,18 +377,7 @@ exec /bin/sleep 120
     this.chrome.on('exit', () => cdp?.close());
     cdp = new DevTools(this.chrome.stdio[4], this.chrome.stdio[3]);
     this.cdp = cdp;
-    await this.cdp.send('Browser.getVersion');
-    check(this.chrome.exitCode === null && this.chrome.signalCode === null, 'Chrome exited before ownership was recorded');
-    const identity = await this.processInfo(this.chrome.pid);
-    check(identity && identity.parent === process.pid && identity.group === this.chrome.pid
-      && this.chrome.exitCode === null && this.chrome.signalCode === null, 'Chrome process identity is unproven');
-    this.chromeIdentity = identity;
-    await this.rememberChromeChildren();
-    const { targetId } = await this.cdp.send('Target.createTarget', { url: 'about:blank', forTab: false });
-    const { sessionId } = await this.cdp.send('Target.attachToTarget', { targetId, flatten: true });
-    this.cdp.session = sessionId;
-    await this.cdp.send('Page.enable', {}, sessionId);
-    await this.cdp.send('Runtime.enable', {}, sessionId);
+    await this.cdp.send('Browser.getVersion', {}, undefined, 10_000);
   }
 
   async openFloor(link) {
