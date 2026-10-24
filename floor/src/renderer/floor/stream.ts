@@ -33,6 +33,7 @@ import {
   noteStale,
   noteTransport,
   subscribeToFloor,
+  takeStepAsks,
 } from './store.ts';
 import type { OutputMode } from './store.ts';
 import { loadedAssetRefs } from '../../session.ts';
@@ -356,7 +357,18 @@ export function openFloorStream(
     let pending: { readonly kind: 'select' | 'clear'; readonly agentId: string;
       readonly localEpoch: number; readonly expectedEpoch: number; readonly view: OutputMode } | null = null;
 
+    // Asks for the text of steps the page wants, once the selection they belong to is confirmed.
+    const sendStepAsks = () => {
+      if (pending !== null || serverSelected === null) return;
+      for (const ask of takeStepAsks()) {
+        if (ask.agentId !== serverSelected) continue;
+        live.send(JSON.stringify({ type: 'floor.output.fetch', agent_id: ask.agentId, turn_id: ask.turnId,
+          step_id: ask.stepId }));
+      }
+    };
+
     reconcileSelection = () => {
+      if (!disposed && socket === live && ready) sendStepAsks();
       if (disposed || socket !== live || !ready || pending !== null) return;
       const floor = getFloorState();
       if (floor.snapshotEpoch !== floor.epoch) return;

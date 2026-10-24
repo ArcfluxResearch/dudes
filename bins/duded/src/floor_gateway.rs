@@ -3219,6 +3219,26 @@ fn handle_messages(
                             )
                             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                     }
+                    (
+                        true,
+                        ClientMessage::StepFetch {
+                            agent_id,
+                            turn_id,
+                            step_id,
+                        },
+                    ) => {
+                        if !session.is_valid() {
+                            return Ok(false);
+                        }
+                        streams
+                            .fetch_step(
+                                subscription.as_ref().expect("active subscription"),
+                                agent_id,
+                                turn_id,
+                                &step_id,
+                            )
+                            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                    }
                     (true, ClientMessage::OutputClear {}) => {
                         if !session.is_valid() {
                             return Ok(false);

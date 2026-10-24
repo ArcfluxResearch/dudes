@@ -53,8 +53,8 @@ import { decodeWorkspace } from '../workspace.ts';
 import type { CardRow } from '../board.ts';
 import { applyDeviceFrame } from '../devices/devices.ts';
 import { decodeChat, exactObject } from '../chat/model.ts';
-import { decodeLabels, decodeStep, EMPTY_LABELS, EMPTY_STEPS, MAX_STEPS_PER_FRAME, mergeSteps, sameLabels } from './steps.ts';
-import type { StepItem } from './steps.ts';
+import { decodeLabels, decodeStep, decodeStepResult, EMPTY_LABELS, EMPTY_RESULTS, EMPTY_STEPS, LOADING_RESULT, MAX_RESULTS, MAX_STEPS_PER_FRAME, mergeSteps, sameLabels } from './steps.ts';
+import type { StepItem, StepResult } from './steps.ts';
 import type { ChatView } from '../chat/model.ts';
 
 /**
@@ -84,6 +84,7 @@ export const SERVER_MESSAGES = Object.freeze([
   'floor.output.ended',
   'floor.output.reply',
   'floor.output.steps',
+  'floor.output.step',
   'floor.step.labels',
   'floor.device.enrolled',
   'floor.device.acknowledged',
@@ -126,6 +127,8 @@ export interface OutputView {
   readonly stepsTruncated: boolean;
   /** The daemon stopped sending steps to this page for this selection. */
   readonly stepsStopped: boolean;
+  /** What the daemon answered when this page asked for a step's text, by step id. */
+  readonly stepResults: Readonly<Record<string, StepResult>>;
 }
 
 const EMPTY_OUTPUT: OutputView = Object.freeze({
@@ -133,7 +136,7 @@ const EMPTY_OUTPUT: OutputView = Object.freeze({
   targetId: null, localEpoch: 0, status: 'idle', agentId: null, turnId: null,
   selectionEpoch: null, nextSeq: 0, chunks: Object.freeze([]), truncated: false, reason: null,
   seenTurnIds: Object.freeze([]),
-  steps: EMPTY_STEPS, stepsTruncated: false, stepsStopped: false,
+  steps: EMPTY_STEPS, stepsTruncated: false, stepsStopped: false, stepResults: EMPTY_RESULTS,
 });
 
 /**
@@ -365,6 +368,7 @@ export function subscribeToFloor(listener: () => void): () => void {
 /** Start over. For tests; the page gets a fresh module per load. */
 export function resetFloorStore(): void {
   state = EMPTY;
+  stepAsks = [];
   listeners.clear();
 }
 
@@ -376,6 +380,7 @@ export function resetFloorStore(): void {
  * `applyServerFrame` stays the single way a row reaches the floor.
  */
 export function noteTransport(event: 'open' | 'close'): void {
+  if (event === 'close') stepAsks = [];
   commit({ ...state, phase: event === 'open' ? 'live' : 'closed',
     chat: event === 'close' ? null : state.chat,
     epoch: event === 'close' ? state.epoch + 1 : state.epoch,
@@ -566,6 +571,7 @@ export function applyServerFrame(
     case 'floor.output.ended':
     case 'floor.output.reply':
     case 'floor.output.steps':
+    case 'floor.output.step':
       if (outputContext === undefined) throw new TypeError('output frame has no selection context');
       applyOutputFrame(message, outputContext);
       return;
@@ -653,6 +659,11 @@ function applyOutputFrame(message: ServerMessage, context: { readonly localEpoch
     applyStepsFrame(message, target, turnId);
     return;
   }
+  if (message.type === 'floor.output.step') {
+    if (target.view !== 'reply') throw new TypeError('step text received for an output selection');
+    applyStepResult(message, target, turnId);
+    return;
+  }
   if (target.view !== 'output') throw new TypeError('output received for a reply selection');
   if (message.type === 'floor.output.snapshot') {
     if (target.seenTurnIds.includes(turnId)) {
@@ -685,7 +696,7 @@ function applyOutputFrame(message: ServerMessage, context: { readonly localEpoch
       status: message.ended ? 'ended' : 'live', agentId, turnId, selectionEpoch: wireEpoch,
       nextSeq, chunks: Object.freeze(chunks), truncated: message.truncated, reason: null,
       seenTurnIds: Object.freeze([...target.seenTurnIds, turnId]),
-      steps: EMPTY_STEPS, stepsTruncated: false, stepsStopped: false }) });
+      steps: EMPTY_STEPS, stepsTruncated: false, stepsStopped: false, stepResults: EMPTY_RESULTS }) });
     return;
   }
   if (target.selectionEpoch !== wireEpoch || target.turnId !== turnId || target.agentId !== agentId) {
@@ -721,6 +732,45 @@ function applyOutputFrame(message: ServerMessage, context: { readonly localEpoch
   }
   if (target.status !== 'live') throw new TypeError('unexpected output end');
   commit({ ...state, output: Object.freeze({ ...target, status: 'ended' }) });
+}
+
+function applyStepResult(message: ServerMessage, target: OutputView, turnId: string): void {
+  const { stepId, result } = decodeStepResult(message);
+  // Only text this page asked for, for the turn it is showing, is taken.
+  if (target.turnId !== turnId || target.stepResults[stepId]?.state !== 'loading') {
+    commit({ ...state, discarded: state.discarded + 1 });
+    return;
+  }
+  commit({ ...state, output: Object.freeze({ ...target,
+    stepResults: Object.freeze({ ...target.stepResults, [stepId]: result }) }) });
+}
+
+interface StepAsk { readonly agentId: string; readonly turnId: string; readonly stepId: string }
+let stepAsks: readonly StepAsk[] = [];
+
+/**
+ * Ask the daemon for the text one finished step of the shown turn kept. The request goes out on
+ * the stream once, and the answer lands in `output.stepResults`. Asking again for a step that is
+ * loading or answered does nothing. The commit wakes the stream, which sends what is queued.
+ */
+export function requestStepResult(stepId: string): void {
+  const output = state.output;
+  const current = output.stepResults[stepId];
+  if (output.view !== 'reply' || output.agentId === null || output.turnId === null
+    || current !== undefined
+    || !output.steps.some((step) => step.id === stepId && step.status !== 'running')) return;
+  const kept = Object.entries(output.stepResults);
+  const stepResults = Object.freeze({ ...Object.fromEntries(kept.slice(Math.max(0, kept.length - MAX_RESULTS + 1))),
+    [stepId]: LOADING_RESULT });
+  stepAsks = [...stepAsks, { agentId: output.agentId, turnId: output.turnId, stepId }];
+  commit({ ...state, output: Object.freeze({ ...output, stepResults }) });
+}
+
+/** The requests the stream has yet to send. Taking them empties the list. */
+export function takeStepAsks(): readonly StepAsk[] {
+  const taken = stepAsks;
+  stepAsks = [];
+  return taken;
 }
 
 function applyStepsFrame(message: ServerMessage, target: OutputView, turnId: string): void {
@@ -762,7 +812,7 @@ function applyReplyFrame(message: ServerMessage, target: OutputView, agentId: st
     reply: Object.freeze({ revision: message.revision, text: message.text, gap: message.gap as ReplyGap | null }),
     truncated: message.truncated, reason: message.gap as ReplyGap | null,
     seenTurnIds: sameTurn ? target.seenTurnIds : Object.freeze([...target.seenTurnIds, turnId]),
-    ...(sameTurn ? {} : { steps: EMPTY_STEPS, stepsTruncated: false, stepsStopped: false }),
+    ...(sameTurn ? {} : { steps: EMPTY_STEPS, stepsTruncated: false, stepsStopped: false, stepResults: EMPTY_RESULTS }),
   }) });
 }
 

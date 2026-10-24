@@ -3098,6 +3098,9 @@ samp,
 .step-diff-line[data-sign='+'] { background: var(--success-background); }
 .step-diff-sign { display: inline-block; width: 1.2ch; margin-inline-end: .5ch; color: var(--muted-ink); user-select: none; }
 .step-cut, .step-withheld, .step-result { display: block; margin: .25rem 0 0; color: var(--muted-ink); font-size: .8rem; }
+.step-output .step-text, .step-diff .step-text { max-height: 18rem; overflow-y: auto; }
+.step-show { margin-top: .35rem; padding: .3rem .6rem; border: 1px solid var(--line); border-radius: .3rem; background: var(--button-background); color: var(--ink); font: inherit; font-size: .8rem; cursor: pointer; }
+.step-show:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 .step-plan { margin: 0 0 .35rem; padding: 0; list-style: none; }
 .step-plan li[data-plan-status='completed'] > span:not(.step-plan-mark) { text-decoration: line-through; color: var(--muted-ink); }
 .step-plan li { margin: .15rem 0; }

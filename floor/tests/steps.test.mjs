@@ -196,3 +196,104 @@ test('a long list starts closed and names the latest step, so the reply stays in
   assert.match(view(many), /<details><summary class="chat-steps-title">Steps <small>\(9\) · latest: Ran echo 8<\/small>/);
   assert.match(view(many.slice(0, 8)), /<details open="">/);
 });
+
+const answer = (stepId, extra) => ({ type: 'floor.output.step', selection_epoch: 1, agent_id: A, turn_id: TURN,
+  step_id: stepId, ...extra });
+const fetches = (live) => live.sent.filter((message) => message.type === 'floor.output.fetch');
+const done = (id, extra = {}) => wire(id, { status: 'done', result_bytes: 40, ended_at: 1200, ...extra });
+const shown = () => view(store.getFloorState().output.steps.map((step) => item(step.id, { ...step,
+  resultBytes: step.resultBytes, startedAt: step.startedAt, endedAt: step.endedAt })));
+
+test('expanding a finished step asks the daemon once and shows the answer as plain text', () => {
+  const { live, stop } = open();
+  try {
+    live.emit('message', steps([done('toolu_1'), wire('toolu_2')]));
+    assert.match(shown(), /Show the output/, 'the box offers the text before it is asked for');
+    store.requestStepResult('toolu_1');
+    store.requestStepResult('toolu_1');
+    store.requestStepResult('toolu_2');
+    store.requestStepResult('toolu_missing');
+    assert.deepEqual(fetches(live), [{ type: 'floor.output.fetch', agent_id: A, turn_id: TURN, step_id: 'toolu_1' }],
+      'one request, and none for a step still running or unknown');
+    assert.match(shown(), /Loading…/);
+    live.emit('message', answer('toolu_1', { state: 'ready', result: { text: 'line one\n<b>two</b> **x**' } }));
+    const html = shown();
+    assert.match(html, /<pre class="step-text" tabindex="0">line one\n&lt;b&gt;two&lt;\/b&gt; \*\*x\*\*<\/pre>/);
+    assert.doesNotMatch(html, /<b>two|<strong>|Loading/);
+    assert.equal(live.closed, 0);
+  } finally { stop(); }
+});
+
+test('a ready answer with no text says there was no output', () => {
+  const { live, stop } = open();
+  try {
+    live.emit('message', steps([done('toolu_1')]));
+    store.requestStepResult('toolu_1');
+    live.emit('message', answer('toolu_1', { state: 'ready' }));
+    assert.match(shown(), /<p class="step-result">No output\.<\/p>/);
+  } finally { stop(); }
+});
+
+test('a cut result says so, and a long edit comes whole with a pointer to the Changes view past the cap', () => {
+  const { live, stop } = open();
+  try {
+    live.emit('message', steps([done('toolu_1'), done('toolu_2', { kind: 'edit', tool: 'Edit',
+      args: [{ key: 'file_path', value: '/repo/a.rs' }], edit: { new: 'short', cut: true } })]));
+    store.requestStepResult('toolu_1');
+    store.requestStepResult('toolu_2');
+    live.emit('message', answer('toolu_1', { state: 'ready', result: { text: 'start of it', cut: true } }));
+    live.emit('message', answer('toolu_2', { state: 'ready',
+      edit: { old: { text: 'was' }, new: { text: 'the whole new text', cut: true } } }));
+    const html = shown();
+    assert.match(html, /start of it<\/pre><small class="step-cut">Cut to fit\. Only the start of the output is kept\./);
+    assert.match(html, /data-sign="\+"[^>]*>.*the whole new text/s);
+    assert.match(html, /The whole change is in the Changes view/);
+    assert.doesNotMatch(html, /short/, 'the fetched text replaces the shortened one');
+  } finally { stop(); }
+});
+
+test('a withheld, refused, evicted or waiting answer says what happened and shows no text', () => {
+  const { live, stop } = open();
+  try {
+    live.emit('message', steps([done('toolu_1'), done('toolu_2'), done('toolu_3'), done('toolu_4')]));
+    for (const id of ['toolu_1', 'toolu_2', 'toolu_3', 'toolu_4']) store.requestStepResult(id);
+    live.emit('message', answer('toolu_1', { state: 'withheld', reason: 'the step names a sensitive path' }));
+    live.emit('message', answer('toolu_2', { state: 'refused', reason: 'this page has not selected that step' }));
+    live.emit('message', answer('toolu_3', { state: 'gone' }));
+    live.emit('message', answer('toolu_4', { state: 'waiting' }));
+    const html = shown();
+    assert.match(html, /Output is hidden: the step names a sensitive path\./);
+    assert.match(html, /The daemon would not send this: this page has not selected that step\./);
+    assert.match(html, /This text is no longer kept\./);
+    assert.match(html, /This step is still running\./);
+    assert.doesNotMatch(html, /step-output|Loading/);
+  } finally { stop(); }
+});
+
+test('an answer nobody asked for, or for another turn, is dropped, and a malformed one closes the stream', () => {
+  const { live, stop } = open();
+  try {
+    live.emit('message', steps([done('toolu_1')]));
+    live.emit('message', answer('toolu_1', { state: 'ready', result: { text: 'unasked' } }));
+    assert.deepEqual(store.getFloorState().output.stepResults, {});
+    store.requestStepResult('toolu_1');
+    live.emit('message', answer('toolu_1', { state: 'ready', result: { text: 'late' }, turn_id: OTHER_TURN }));
+    assert.equal(store.getFloorState().output.stepResults.toolu_1.state, 'loading');
+    live.emit('message', answer('toolu_1', { state: 'withheld', reason: 'x', result: { text: 'secret' } }));
+    assert.equal(store.getFloorState().phase, 'resyncing', 'text on a withheld step is not a daemon message');
+  } finally { stop(); }
+});
+
+test('a new turn and a new selection forget what was fetched, and a request waits for its selection', () => {
+  const { live, stop } = open();
+  try {
+    live.emit('message', steps([done('toolu_1')]));
+    store.requestStepResult('toolu_1');
+    live.emit('message', { type: 'floor.output.reply', selection_epoch: 1, agent_id: A, turn_id: OTHER_TURN,
+      revision: '0', text: 'next', truncated: false, gap: null, ended: false });
+    assert.deepEqual(store.getFloorState().output.stepResults, {});
+    store.selectOutputAgent(B, false, 'reply');
+    store.requestStepResult('toolu_1');
+    assert.equal(fetches(live).length, 1, 'nothing is asked before the new selection is confirmed');
+  } finally { stop(); }
+});

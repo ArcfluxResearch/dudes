@@ -10,7 +10,8 @@ use dudes_supervisor::host::AdoptionKey;
 use dudes_supervisor::{Redactor, StreamScrubber};
 use dudes_types::{AgentId, SessionId, TurnId};
 
-use crate::steps::{self, Closing, StepView};
+use crate::step_results::{self, Fetch, ResultStore};
+use crate::steps::{self, Closing, KeptEdit, StepView};
 
 const CHUNK_BYTES: usize = 4_096;
 const RING_CHUNKS: usize = 128;
@@ -271,15 +272,20 @@ struct PendingStep {
 
 #[derive(Clone)]
 enum StepOp {
-    Open(Box<StepView>),
+    Open {
+        view: Box<StepView>,
+        edit: Option<KeptEdit>,
+    },
     Close(Closing),
 }
 
 impl StepOp {
     fn bytes(&self) -> usize {
         match self {
-            Self::Open(view) => view.bytes(),
-            Self::Close(_) => 64,
+            Self::Open { view, edit } => view.bytes() + edit.as_ref().map_or(0, KeptEdit::bytes),
+            Self::Close(closing) => {
+                64 + closing.result.as_ref().map_or(0, steps::KeptResult::bytes)
+            }
         }
     }
 }
@@ -334,13 +340,16 @@ struct StepRing {
     bytes: usize,
     seq: u64,
     lost: bool,
+    results: ResultStore,
 }
 
 impl StepRing {
     fn apply(&mut self, op: StepOp, arrival: u128) {
         self.seq = self.seq.saturating_add(1);
         match op {
-            StepOp::Open(view) => {
+            StepOp::Open { view, edit } => {
+                self.results.forget(&view.id);
+                self.results.keep(&view.id, arrival, None, edit);
                 let bytes = view.bytes();
                 if let Some(old) = self.items.iter_mut().find(|old| old.view.id == view.id) {
                     self.bytes = self.bytes - old.view.bytes() + bytes;
@@ -356,7 +365,7 @@ impl StepRing {
                 }
                 self.trim();
             }
-            StepOp::Close(closing) => {
+            StepOp::Close(mut closing) => {
                 if let Some(step) = self
                     .items
                     .iter_mut()
@@ -364,6 +373,10 @@ impl StepRing {
                 {
                     step.view.close(&closing);
                     step.seq = self.seq;
+                    if steps::keeps_result(&step.view) {
+                        self.results
+                            .keep(&closing.id, arrival, closing.result.take(), None);
+                    }
                 }
             }
         }
@@ -745,7 +758,7 @@ impl State {
     fn step_bytes(&self) -> usize {
         self.rings
             .values()
-            .map(|ring| ring.steps.bytes + ring.pending_steps.bytes)
+            .map(|ring| ring.steps.bytes + ring.steps.results.bytes() + ring.pending_steps.bytes)
             .sum::<usize>()
             + self
                 .orphan
@@ -759,12 +772,16 @@ impl State {
     fn drop_oldest_step(&mut self) -> bool {
         enum Held {
             Kept(AgentId),
+            Result(AgentId),
             Waiting(AgentId),
             Unbound(ChildKey),
         }
         let kept = self.rings.iter().filter_map(|(agent, ring)| {
             let front = ring.steps.items.front()?;
             Some((front.arrival, Held::Kept(*agent)))
+        });
+        let results = self.rings.iter().filter_map(|(agent, ring)| {
+            Some((ring.steps.results.oldest_arrival()?, Held::Result(*agent)))
         });
         let waiting = self.rings.iter().filter_map(|(agent, ring)| {
             let front = ring.pending_steps.items.front()?;
@@ -775,6 +792,7 @@ impl State {
             Some((front.arrival, Held::Unbound(key.clone())))
         });
         let Some((_, held)) = kept
+            .chain(results)
             .chain(waiting)
             .chain(unbound)
             .min_by_key(|(arrival, _)| *arrival)
@@ -785,6 +803,11 @@ impl State {
             Held::Kept(agent) => {
                 if let Some(ring) = self.rings.get_mut(&agent) {
                     ring.steps.drop_oldest();
+                }
+            }
+            Held::Result(agent) => {
+                if let Some(ring) = self.rings.get_mut(&agent) {
+                    ring.steps.results.drop_oldest();
                 }
             }
             Held::Waiting(agent) => {
@@ -1116,19 +1139,25 @@ impl OutputRegistry {
         let session = event.session().as_str().to_owned();
         let op = match event {
             StepEvent::Open { step, .. } => {
-                StepOp::Open(Box::new(steps::open(&self.redactor, step, now)))
+                let (view, edit) = steps::open_with_text(&self.redactor, step, now);
+                StepOp::Open {
+                    view: Box::new(view),
+                    edit,
+                }
             }
             StepEvent::Close {
                 id,
                 failed,
                 exit,
                 result_bytes,
+                result,
                 ..
             } => StepOp::Close(Closing {
                 id: steps::scrub_id(&self.redactor, &id),
                 failed,
                 exit,
                 result_bytes,
+                result: result.map(|text| steps::keep_result(&self.redactor, &text)),
                 at: now,
             }),
         };
@@ -1393,6 +1422,23 @@ impl OutputRegistry {
         })
     }
 
+    /// The text one step of `agent`'s latest turn kept, for the page that selected the agent.
+    pub(crate) fn step_text(&self, agent: AgentId, turn: TurnId, id: &str) -> Fetch {
+        let state = self.state();
+        let Some(ring) = state
+            .rings
+            .get(&agent)
+            .filter(|ring| ring.turn == turn && matches!(ring.gate, SessionGate::Admitted(_)))
+        else {
+            return Fetch::Gone;
+        };
+        let id = steps::scrub_id(&self.redactor, id);
+        let Some(step) = ring.steps.items.iter().find(|step| step.view.id == id) else {
+            return Fetch::Gone;
+        };
+        step_results::fetch(&self.redactor, &step.view, ring.steps.results.get(&id))
+    }
+
     #[must_use]
     /// Metadata counters without any content.
     pub fn usage(&self) -> OutputUsage {
@@ -1608,6 +1654,18 @@ mod tests {
             failed: false,
             exit: None,
             result_bytes: 7,
+            result: None,
+        }
+    }
+
+    fn close_with(id: &str, text: &str) -> StepEvent {
+        StepEvent::Close {
+            session: SessionId::new(SESSION),
+            id: id.to_owned(),
+            failed: false,
+            exit: None,
+            result_bytes: text.len() as u64,
+            result: Some(text.to_owned()),
         }
     }
 
@@ -1790,5 +1848,183 @@ mod tests {
         output.confirm(agent, turn, &SessionId::new(SESSION));
         let step = &output.steps_since(agent, 0).unwrap().items[0];
         assert_eq!(step.args[0].value, "echo (redacted)");
+    }
+    fn ready_text(output: &OutputRegistry, agent: AgentId, turn: TurnId, id: &str) -> String {
+        match output.step_text(agent, turn, id) {
+            Fetch::Ready {
+                result: Some(result),
+                ..
+            } => result.text,
+            other => panic!("expected a result for {id}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_result_store_keeps_64_results_and_says_so_for_an_evicted_one() {
+        let (output, agent, turn, key) = bound();
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        for index in 0..70 {
+            let id = format!("toolu_{index}");
+            output.capture_step(&key, open_event(&id, SESSION, "ls"));
+            output.capture_step(&key, close_with(&id, &format!("out {index}")));
+        }
+        assert!(matches!(
+            output.step_text(agent, turn, "toolu_0"),
+            Fetch::Gone
+        ));
+        assert!(matches!(
+            output.step_text(agent, turn, "toolu_5"),
+            Fetch::Gone
+        ));
+        assert_eq!(ready_text(&output, agent, turn, "toolu_6"), "out 6");
+        assert_eq!(ready_text(&output, agent, turn, "toolu_69"), "out 69");
+        assert_eq!(
+            output.steps_since(agent, 0).unwrap().items.len(),
+            70,
+            "results never push a step out of the ring"
+        );
+    }
+
+    #[test]
+    fn a_result_is_cut_at_8_kib_and_a_cut_secret_is_not_half_kept() {
+        let (output, agent, turn, key) = bound();
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        output.capture_step(&key, open_event("toolu_1", SESSION, "cat big"));
+        output.capture_step(&key, close_with("toolu_1", &"x".repeat(30_000)));
+        let Fetch::Ready {
+            result: Some(result),
+            ..
+        } = output.step_text(agent, turn, "toolu_1")
+        else {
+            panic!("a ready result");
+        };
+        assert!(result.cut && result.text.len() <= steps::KEPT_BYTES);
+        let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let on_the_line = format!("{} {token}", "y".repeat(steps::KEPT_BYTES - 10));
+        output.capture_step(&key, open_event("toolu_2", SESSION, "cat key"));
+        output.capture_step(&key, close_with("toolu_2", &on_the_line));
+        assert!(matches!(
+            output.step_text(agent, turn, "toolu_2"),
+            Fetch::Withheld(reason) if reason == "the text holds a secret"
+        ));
+    }
+
+    #[test]
+    fn a_secret_learned_after_a_result_was_kept_is_taken_out_at_fetch() {
+        let redactor = Redactor::for_run();
+        let output = OutputRegistry::with_redactor(redactor.clone());
+        let agent = AgentId::from_parts(1, 1);
+        let turn = TurnId::from_parts(2, 1);
+        let key = AdoptionKey {
+            pid: 10,
+            start_time: 20,
+            boot: None,
+        };
+        output.replace(agent, turn);
+        assert!(output.register(agent, turn, &key));
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        output.capture_step(&key, open_event("toolu_1", SESSION, "env"));
+        output.capture_step(
+            &key,
+            close_with("toolu_1", "value late-secret-0123456789 here"),
+        );
+        redactor.set_source("test", ["late-secret-0123456789".to_owned()]);
+        assert_eq!(
+            ready_text(&output, agent, turn, "toolu_1"),
+            "value (redacted) here"
+        );
+    }
+
+    #[test]
+    fn results_of_sensitive_steps_and_connected_tools_are_never_kept() {
+        let (output, agent, turn, key) = bound();
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        output.capture_step(
+            &key,
+            open_event("toolu_1", SESSION, "cat ~/.aws/credentials"),
+        );
+        output.capture_step(&key, close_with("toolu_1", "PRIVATE-TEXT"));
+        let Fetch::Withheld(reason) = output.step_text(agent, turn, "toolu_1") else {
+            panic!("a withheld result");
+        };
+        assert_eq!(reason, "the step names a sensitive path");
+        assert_eq!(
+            output.state().rings[&agent].steps.results.bytes(),
+            0,
+            "nothing about it is kept"
+        );
+        output.capture_step(
+            &key,
+            StepEvent::Open {
+                session: SessionId::new(SESSION),
+                step: Step {
+                    id: "toolu_2".to_owned(),
+                    parent: None,
+                    kind: StepKind::Mcp,
+                    tool: "mcp__fs__read".to_owned(),
+                    args: Vec::new(),
+                    edit: None,
+                    plan: Vec::new(),
+                },
+            },
+        );
+        output.capture_step(&key, close_with("toolu_2", "PRIVATE-TEXT"));
+        assert!(matches!(
+            output.step_text(agent, turn, "toolu_2"),
+            Fetch::Withheld(_)
+        ));
+        assert_eq!(output.state().rings[&agent].steps.results.bytes(), 0);
+    }
+
+    #[test]
+    fn a_step_id_that_opens_again_keeps_none_of_its_old_text() {
+        let (output, agent, turn, key) = bound();
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        output.capture_step(&key, open_event("toolu_1", SESSION, "ls"));
+        output.capture_step(&key, close_with("toolu_1", "old text"));
+        assert_eq!(ready_text(&output, agent, turn, "toolu_1"), "old text");
+        output.capture_step(&key, open_event("toolu_1", SESSION, "ls"));
+        assert_eq!(output.state().rings[&agent].steps.results.bytes(), 0);
+    }
+
+    #[test]
+    fn kept_results_count_inside_the_run_cap() {
+        let output = OutputRegistry::new();
+        for pid in 0..20_u32 {
+            let agent = AgentId::from_parts(1, u128::from(pid) + 1);
+            let turn = TurnId::from_parts(2, u128::from(pid) + 1);
+            let key = AdoptionKey {
+                pid: pid + 10,
+                start_time: 20,
+                boot: None,
+            };
+            output.replace(agent, turn);
+            assert!(output.register(agent, turn, &key));
+            output.confirm(agent, turn, &SessionId::new(SESSION));
+            for step in 0..64 {
+                let id = format!("toolu_{pid}_{step}");
+                output.capture_step(&key, open_event(&id, SESSION, "ls"));
+                output.capture_step(&key, close_with(&id, &"z".repeat(steps::KEPT_BYTES)));
+            }
+        }
+        let state = output.state();
+        assert!(
+            state.step_bytes() + state.text_bytes() <= MAX_BYTES,
+            "{} bytes",
+            state.step_bytes()
+        );
+        let kept = state
+            .rings
+            .values()
+            .map(|ring| ring.steps.results.bytes())
+            .sum::<usize>();
+        assert!(kept > 0 && kept <= MAX_BYTES);
+        assert!(
+            state
+                .rings
+                .values()
+                .all(|ring| ring.steps.results.bytes() <= crate::step_results::BYTES),
+            "one agent's results stay within 512 KiB"
+        );
     }
 }

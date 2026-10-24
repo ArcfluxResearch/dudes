@@ -15,7 +15,7 @@
 //   a) add `<button onClick={...}>answer</button>` to `OfficeCanvas.tsx` — the
 //      exact control count goes red;
 //   b) send an extra message in `stream.ts` — say `socket.send('{"type":
-//      "agent.answer"}')` — "the page sends only the five named read-only stream messages" goes red
+//      "agent.answer"}')` — "the page sends only the six named read-only stream messages" goes red
 //      naming the message;
 //   c) delete a pattern from `FORBIDDEN` — "the scan finds what it looks for"
 //      goes red, because the fixture that carries a match for each
@@ -421,6 +421,8 @@ const ADMITTED_HANDLERS = [
       setPrompt({ freeIds, mode: 'collapsed' });
       openButton.current?.focus();
     }` },
+  { file: 'src/renderer/chat/Steps.tsx', tag: 'details', handler: 'onToggle',
+    expression: '(event) => { if (event.currentTarget.open && hasKeptText(step)) requestStepResult(step.id); }' },
   { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
     expression: '(event) => setFilters({ ...filters, agentId: event.currentTarget.value })' },
   { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
@@ -1108,7 +1110,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
   assert.match(form, /const choose = \(choice: CheckChoice\) => \{\s*if \(!blocked\) chooseGoalCheck\(gate\.agent, gate\.goal, choice\);\s*\};/);
 });
 
-test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Stop this turn, Stop and send, Pause all, resume, goal change, look edit, model change and dismiss buttons, Overview Answer, Review work, Review ticket and Change navigation, '
+test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Stop this turn, Stop and send, Pause all, resume, goal change, look edit, model change and dismiss buttons, Overview Answer, Review work, Review ticket and Change navigation, a step\'s Show the output, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation, '
@@ -1137,6 +1139,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(2).fill(DEVICE_NOTICES),
     DEVICES_SECTION,
     ...Array(13).fill(CHAT_PANEL),
+    'src/renderer/chat/Steps.tsx',
     ...Array(5).fill(CONTROL_PANEL),
     ...Array(5).fill(PAUSE_ALL_PANEL),
     ...Array(5).fill(RECOVERY_PANEL),
@@ -1369,6 +1372,9 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => setAsking(true)', '() => setAsking(false)',
     '() => {\n        setAsking(false);\n        void clearQueuedChat(chatGate(floor, row), browserChatDeps);\n      }',
   ].sort());
+  assert.deepEqual(clicksIn(await readFile(resolve(floor, 'src/renderer/chat/Steps.tsx'), 'utf8')), [
+    '() => requestStepResult(step.id)',
+  ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, CONTROL_PANEL), 'utf8')).sort(), [
     'dismissReceipt',
     '() => { if (!control.sending && floor.control) void checkControlStatus(browserControlDeps); }',
@@ -1464,9 +1470,9 @@ test('the served HTML and CSS match no FORBIDDEN pattern and no static activator
   assert.match(html, /<div id="root"><\/div>/);
 });
 
-test('the page sends only the five named read-only stream messages', async () => {
-  // The output view adds exactly one selected output read filter and its clear to
-  // `floor.subscribe` and `floor.unsubscribe`. An unlisted type has no
+test('the page sends only the six named read-only stream messages', async () => {
+  // The output view adds exactly one selected output read filter, its clear and the ask for one
+  // step's kept text to `floor.subscribe` and `floor.unsubscribe`. An unlisted type has no
   // dispatch target — but a page that tried would be a page asking for
   // authority it must not have, whoever refuses it.
   const stream = await readFile(resolve(source, 'renderer/floor/stream.ts'), 'utf8');
@@ -1482,13 +1488,16 @@ test('the page sends only the five named read-only stream messages', async () =>
     ts.forEachChild(node, collect);
   }
   collect(syntax);
-  assert.deepEqual(sent, ['visible ? VISIBLE : HIDDEN', 'CLEAR_OUTPUT', "JSON.stringify({ type: 'floor.output.select', agent_id: desired.targetId,\n          ...(desired.view === 'reply' ? { view: 'reply' } : {}) })", 'SUBSCRIBE', 'UNSUBSCRIBE'],
-    'the page sent anything beyond the five read-only browser-wire messages');
+  assert.deepEqual(sent, ['visible ? VISIBLE : HIDDEN',
+    "JSON.stringify({ type: 'floor.output.fetch', agent_id: ask.agentId, turn_id: ask.turnId,\n          step_id: ask.stepId })",
+    'CLEAR_OUTPUT', "JSON.stringify({ type: 'floor.output.select', agent_id: desired.targetId,\n          ...(desired.view === 'reply' ? { view: 'reply' } : {}) })", 'SUBSCRIBE', 'UNSUBSCRIBE'],
+    'the page sent anything beyond the six read-only browser-wire messages');
 
   const literals = [...stream.matchAll(/const (SUBSCRIBE|UNSUBSCRIBE|CLEAR_OUTPUT|VISIBLE|HIDDEN) = '([^']+)'/g)];
   assert.equal(literals.length, 5, 'the fixed client messages changed');
   const types = literals.map(([, , text]) => JSON.parse(text).type).sort();
   assert.deepEqual(types, ['floor.output.clear', 'floor.subscribe', 'floor.unsubscribe', 'floor.visibility', 'floor.visibility']);
+  assert.match(stream, /live\.send\(JSON\.stringify\(\{ type: 'floor\.output\.fetch', agent_id: ask\.agentId, turn_id: ask\.turnId,\s+step_id: ask\.stepId \}\)\)/);
   assert.match(stream, /live\.send\(JSON\.stringify\(\{ type: 'floor\.output\.select', agent_id: desired\.targetId,\s+\.\.\.\(desired\.view === 'reply' \? \{ view: 'reply' \} : \{\}\) \}\)\)/);
 
   // Nothing else in the renderer sends anything on a socket, but the terminal
