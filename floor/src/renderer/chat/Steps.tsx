@@ -109,7 +109,6 @@ function StepBox({ step, children, depth }: { readonly step: StepItem; readonly 
   return <li className="step" data-step-kind={step.kind} data-step-status={step.status} data-step-depth={depth}>
     <details>
       <summary>
-        {step.status === 'failed' ? <><span className="step-status">Failed</span>{' '}</> : null}
         <span className="step-summary">{stepSummary(step)}</span>
         {result === null ? null : <small className="step-outcome"> · {result}</small>}
       </summary>
@@ -124,7 +123,8 @@ function Tree({ steps, parent, byParent, depth, seen }: {
   readonly byParent: ReadonlyMap<string | null, readonly StepItem[]>; readonly depth: number; readonly seen: ReadonlySet<string>;
 }) {
   const level = byParent.get(parent) ?? [];
-  if (level.length === 0 || depth > MAX_DEPTH) return null;
+  if (level.length === 0) return null;
+  if (depth > MAX_DEPTH) return <p className="chat-warning step-deeper">Deeper steps are not shown.</p>;
   return <ol className={depth === 0 ? 'step-list' : 'step-list step-children'}>
     {level.map((step) => seen.has(step.id) ? null : <StepBox key={step.id} step={step} depth={depth}>
       <Tree steps={steps} parent={step.id} byParent={byParent} depth={depth + 1} seen={new Set([...seen, step.id])} />
@@ -150,6 +150,6 @@ export function Steps({ steps, truncated, stopped }: {
     {truncated ? <p className="chat-warning">Earlier steps are not shown.</p> : null}
     <Tree steps={steps} parent={null} byParent={byParent} depth={0} seen={new Set()} />
     {stopped ? <p className="chat-warning" role="status">This page stopped receiving steps because there were too many.
-      Select the agent again to start over.</p> : null}
+      Reload the page to start over.</p> : null}
   </details></section>;
 }

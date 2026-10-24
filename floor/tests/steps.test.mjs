@@ -137,7 +137,8 @@ test('the Chat shows each step as a collapsed box with its words, status and out
   ]);
   assert.match(html, /<details><summary><span class="step-summary">Ran echo hello</);
   assert.equal(html.match(/<details open/g)?.length, 1, 'only the list is open, every step box is closed');
-  assert.match(html, /<span class="step-status">Failed<\/span> <span class="step-summary">Ran false</);
+  assert.match(html, /<span class="step-summary">Ran false<\/span><small class="step-outcome"> · Failed, exit code 2/);
+  assert.equal(html.match(/Failed/g)?.length, 1, 'a failed step says so once');
   assert.match(html, /<dt>Command<\/dt>/);
   assert.match(html, /Failed, exit code 2/);
   assert.match(html, /Reading \/repo\/a\.rs/);
@@ -154,6 +155,13 @@ test('an edit shows its old and new text as a diff, in plain text', () => {
   assert.doesNotMatch(html, /<b>2<\/b>|<strong>x/);
   assert.match(html, /Cut to fit/);
   assert.match(html, /Edited \/repo\/a\.rs/);
+});
+
+test('steps nested past the depth limit are named, not dropped', () => {
+  const chain = Array.from({ length: 12 }, (_, index) =>
+    item(`toolu_${index}`, { parent: index === 0 ? null : `toolu_${index - 1}` }));
+  const html = view(chain);
+  assert.match(html, /Deeper steps are not shown/);
 });
 
 test('a plan is a checklist and a helper agent steps nest under the step that started them', () => {

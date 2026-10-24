@@ -3086,11 +3086,8 @@ samp,
 .step { margin: .2rem 0; }
 .step > details { border: 1px solid var(--line); border-radius: .35rem; background: var(--output); }
 .step summary { padding: .3rem .5rem; cursor: pointer; overflow-wrap: anywhere; }
-.step-status { font-weight: 600; color: var(--muted-ink); }
-.step[data-step-status='running'] > details > summary .step-status { color: var(--status-running); }
-.step[data-step-status='done'] > details > summary .step-status { color: var(--status-done); }
-.step[data-step-status='failed'] > details > summary .step-status { color: var(--danger-ink); }
 .step-outcome { color: var(--muted-ink); }
+.step[data-step-status='failed'] > details > summary .step-outcome { color: var(--danger-ink); }
 .step-body { padding: .25rem .5rem .5rem; border-top: 1px solid var(--line); }
 .step-args { margin: 0; }
 .step-args dt { font-weight: 600; color: var(--muted-ink); }
