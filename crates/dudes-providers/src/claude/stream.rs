@@ -259,18 +259,9 @@ impl TurnStream {
 impl TurnReader for TurnStream {
     fn line(&mut self, text: &str) -> LineRead {
         let Some(line) = self.push_parsed(text) else {
-            // The host delivers a line it would not keep as an empty one.
-            return LineRead {
-                steps: if text.is_empty() {
-                    self.steps
-                        .unreadable_line(self.session.as_ref())
-                        .into_iter()
-                        .collect()
-                } else {
-                    Vec::new()
-                },
-                ..LineRead::default()
-            };
+            // The host cannot tell a blank line from one it would not keep, so neither may end
+            // a step. The end of the turn settles any that stay open.
+            return LineRead::default();
         };
         let text = self
             .text
@@ -824,6 +815,30 @@ mod tests {
         let end = read(&lines).finish(EXIT_0);
         assert_eq!(end.unreadable, 2);
         assert!(end.usage.is_some(), "the turn still ends with usage");
+    }
+
+    /// A blank line is also what the host delivers for a line it would not keep, so it cannot
+    /// close a step: only the call's own result does.
+    #[test]
+    fn a_blank_line_leaves_an_open_step_open() {
+        let mut stream = TurnStream::default();
+        let call = format!(
+            r#"{{"type":"assistant","session_id":"{SESSION}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_1","name":"Bash","input":{{"command":"ls"}}}}]}}}}"#
+        );
+        let result = format!(
+            r#"{{"type":"user","session_id":"{SESSION}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}}]}}}}"#
+        );
+        assert!(stream.line(&init(SESSION)).steps.is_empty());
+        assert_eq!(stream.line(&call).steps.len(), 1);
+        assert!(
+            stream.line("").steps.is_empty(),
+            "a blank line closes nothing"
+        );
+        let closed = stream.line(&result).steps;
+        assert!(matches!(
+            &closed[..],
+            [StepEvent::Close { failed: false, .. }]
+        ));
     }
 
     /// A streamed message repeats its id on each block's line, and the last line's figure is the

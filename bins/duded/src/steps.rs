@@ -5,7 +5,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use dudes_providers::steps::{EditText, Step, StepKind, StepNote};
+use dudes_providers::steps::{EditText, Step, StepKind};
 use dudes_supervisor::{REDACTED, Redactor};
 use serde::Serialize;
 
@@ -93,7 +93,6 @@ pub(crate) struct Closing {
     pub(crate) failed: bool,
     pub(crate) exit: Option<i32>,
     pub(crate) result_bytes: u64,
-    pub(crate) note: Option<StepNote>,
     pub(crate) at: u64,
 }
 
@@ -106,7 +105,6 @@ impl StepView {
         };
         self.exit = closing.exit;
         self.result_bytes = Some(closing.result_bytes);
-        self.note = closing.note.map(StepNote::text);
         self.ended_at = Some(closing.at);
     }
 
@@ -162,28 +160,39 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
         plan,
     } = step;
     let mut withheld = None;
-    let args: Vec<ArgView> = args
-        .into_iter()
-        .map(|(key, value)| {
-            let value = redactor.scrub(&value);
-            if names_sensitive_path(kind, &tool, &key, &value) {
-                withheld = Some("the step names a sensitive path");
-            }
-            let value = if contains_secret(value.as_bytes()) {
-                withheld.get_or_insert("the step holds a secret");
-                REDACTED.to_owned()
-            } else {
-                value.into_owned()
-            };
-            let (value, cut) = cap(&value, INPUT_BYTES);
+    let tool_name = safe_name(redactor, &tool, &mut withheld);
+    let mut views = Vec::with_capacity(args.len());
+    for (key, value) in args {
+        let key_name = safe_name(redactor, &key, &mut withheld);
+        let value = redactor.scrub(&value);
+        if names_sensitive_path(kind, &tool, &key, &value) {
+            withheld = Some("the step names a sensitive path");
+        }
+        let value = if contains_secret(value.as_bytes()) {
+            withheld.get_or_insert("the step holds a secret");
+            REDACTED.to_owned()
+        } else {
+            value.into_owned()
+        };
+        let (value, cut) = cap(&value, INPUT_BYTES);
+        views.push((
+            is_path_key(&tool, &key),
             ArgView {
-                key: cap(&redactor.scrub(&key), NAME_BYTES).0,
+                key: key_name,
                 value,
                 cut,
-            }
-        })
-        .collect();
+            },
+        ));
+    }
     let edit = edit.and_then(|edit| edit_view(redactor, edit, &mut withheld));
+    // An edit tool carries its text in arguments the reader does not lift out (a list of edits, a
+    // notebook cell), so a withheld step shows its path and nothing else.
+    let hide_text = withheld.is_some() && matches!(kind, StepKind::Edit | StepKind::Write);
+    let args = views
+        .into_iter()
+        .filter(|(path, _)| *path || !hide_text)
+        .map(|(_, view)| view)
+        .collect();
     let plan = plan
         .into_iter()
         .map(|item| {
@@ -200,10 +209,10 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
         })
         .collect();
     StepView {
-        id,
-        parent,
+        id: scrub_id(redactor, &id),
+        parent: parent.map(|parent| scrub_id(redactor, &parent)),
         kind: kind.name(),
-        tool: cap(&redactor.scrub(&tool), NAME_BYTES).0,
+        tool: tool_name,
         status: Status::Running,
         args,
         edit,
@@ -214,6 +223,54 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
         note: None,
         started_at: now,
         ended_at: None,
+    }
+}
+
+/// A tool or argument name, cut to size, or the redaction mark when it holds a secret.
+fn safe_name(redactor: &Redactor, text: &str, withheld: &mut Option<&'static str>) -> String {
+    let text = redactor.scrub(text);
+    if contains_secret(text.as_bytes()) {
+        withheld.get_or_insert("the step holds a secret");
+        REDACTED.to_owned()
+    } else {
+        cap(&text, NAME_BYTES).0
+    }
+}
+
+/// A call id with any secret the daemon knows taken out. The same rule runs on the id of the
+/// result that closes the call, so the two still match.
+pub(crate) fn scrub_id(redactor: &Redactor, id: &str) -> String {
+    redactor.scrub(id).into_owned()
+}
+
+impl StepView {
+    /// This step with the secrets the daemon knows now taken out of every text it holds, for one
+    /// learned after the step was kept.
+    pub(crate) fn rescrubbed(mut self, redactor: &Redactor) -> Self {
+        let scrub = |text: &mut String| {
+            if let std::borrow::Cow::Owned(clean) = redactor.scrub(text) {
+                *text = clean;
+            }
+        };
+        scrub(&mut self.id);
+        scrub(&mut self.tool);
+        if let Some(parent) = &mut self.parent {
+            scrub(parent);
+        }
+        for arg in &mut self.args {
+            scrub(&mut arg.key);
+            scrub(&mut arg.value);
+        }
+        if let Some(edit) = &mut self.edit {
+            if let Some(old) = &mut edit.old {
+                scrub(old);
+            }
+            scrub(&mut edit.new);
+        }
+        for item in &mut self.plan {
+            scrub(&mut item.text);
+        }
+        self
     }
 }
 
@@ -256,13 +313,14 @@ fn edit_view(
 /// path, and a value that looks like one, are checked line by line, and so is each word of a
 /// command.
 fn names_sensitive_path(kind: StepKind, tool: &str, key: &str, value: &str) -> bool {
-    let key_is_path = matches!(
-        key,
-        "path" | "file_path" | "paths" | "directory" | "cwd" | "notebook_path"
-    ) || (tool == "Glob" && key == "pattern");
+    let key_is_path = is_path_key(tool, key);
     let command = kind == StepKind::Command && key == "command";
     value.lines().any(|line| {
         let line = line.trim();
+        // A nested leaf reads `name: value`, and the value alone may be the path.
+        let leaf = line
+            .split_once(": ")
+            .filter(|(name, _)| !name.contains(' '));
         if command {
             line.split(|c: char| {
                 c.is_whitespace()
@@ -275,8 +333,19 @@ fn names_sensitive_path(kind: StepKind, tool: &str, key: &str, value: &str) -> b
             .any(names_sensitive)
         } else {
             (key_is_path || path_like(line)) && names_sensitive(line)
+                || leaf.is_some_and(|(name, text)| {
+                    let name = name.rsplit(['.', ']']).next().unwrap_or(name);
+                    (is_path_key(tool, name) || path_like(text)) && names_sensitive(text.trim())
+                })
         }
     })
+}
+
+fn is_path_key(tool: &str, key: &str) -> bool {
+    matches!(
+        key,
+        "path" | "file_path" | "paths" | "directory" | "cwd" | "notebook_path"
+    ) || (tool == "Glob" && key == "pattern")
 }
 
 /// A file the Changes view refuses, or a directory that holds such files: a search over
@@ -477,6 +546,152 @@ mod tests {
     }
 
     #[test]
+    fn a_token_after_a_newline_in_a_nested_argument_is_redacted() {
+        let nested = "opts.note: first\nghp_abcdefghijklmnopqrstuvwxyz0123456789\nopts.password: \"hunter2-synthetic\"";
+        let view = open(
+            &redactor(),
+            step(StepKind::Mcp, "mcp__x__run", &[("opts", nested)]),
+            1,
+        );
+        let wire = json(&view);
+        assert!(!wire.contains("ghp_"), "{wire}");
+        assert!(!wire.contains("hunter2"), "{wire}");
+        assert_eq!(view.withheld, Some("the step holds a secret"));
+    }
+
+    #[test]
+    fn a_nested_sensitive_path_withholds_the_step() {
+        for nested in [
+            "opts.path: /w/.env",
+            "opts.file_path: .env",
+            "edits[0].path: ~/.aws/config",
+        ] {
+            let view = open(
+                &redactor(),
+                step(StepKind::Mcp, "mcp__x__read", &[("opts", nested)]),
+                1,
+            );
+            assert!(view.withheld.is_some(), "{nested}");
+        }
+        let plain = open(
+            &redactor(),
+            step(
+                StepKind::Mcp,
+                "mcp__x__read",
+                &[("opts", "opts.path: /w/src/a.rs")],
+            ),
+            1,
+        );
+        assert_eq!(plain.withheld, None);
+    }
+
+    #[test]
+    fn a_multi_line_known_secret_inside_a_nested_string_is_scrubbed() {
+        let multi = "line-one-synthetic-secret\nline-two-synthetic-secret";
+        let redactor = Redactor::new();
+        redactor.set_source("test", [multi.to_owned()]);
+        let nested = format!("opts.body: before {multi} after");
+        let wire = json(&open(
+            &redactor,
+            step(StepKind::Mcp, "mcp__x__run", &[("opts", &nested)]),
+            1,
+        ));
+        assert!(!wire.contains("synthetic-secret"), "{wire}");
+        assert!(wire.contains("before (redacted) after"), "{wire}");
+    }
+
+    #[test]
+    fn a_withheld_edit_tool_shows_its_path_and_none_of_its_text() {
+        for (tool, path_key, text_key, path) in [
+            (
+                "MultiEdit",
+                "file_path",
+                "edits[0].new_string",
+                "/work/me/.env",
+            ),
+            (
+                "MultiEdit",
+                "file_path",
+                "edits[0].new_string",
+                "~/.aws/config",
+            ),
+            (
+                "NotebookEdit",
+                "notebook_path",
+                "new_source",
+                "/work/me/.env",
+            ),
+            (
+                "NotebookEdit",
+                "notebook_path",
+                "new_source",
+                "~/.aws/config",
+            ),
+        ] {
+            let view = open(
+                &redactor(),
+                step(
+                    StepKind::Edit,
+                    tool,
+                    &[(path_key, path), (text_key, "plain text of the edit")],
+                ),
+                1,
+            );
+            let wire = json(&view);
+            assert!(view.withheld.is_some(), "{tool} {path}");
+            assert!(!wire.contains("plain text of the edit"), "{wire}");
+            assert_eq!(view.args.len(), 1, "{wire}");
+            assert_eq!(view.args[0].value, path);
+        }
+        let ordinary = open(
+            &redactor(),
+            step(
+                StepKind::Edit,
+                "MultiEdit",
+                &[("file_path", "/repo/a.rs"), ("edits[0].new_string", "kept")],
+            ),
+            1,
+        );
+        assert_eq!(
+            ordinary.args.len(),
+            2,
+            "an ordinary edit keeps its arguments"
+        );
+    }
+
+    #[test]
+    fn a_secret_in_a_tool_name_or_argument_key_never_reaches_the_wire() {
+        let key = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let view = open(
+            &redactor(),
+            step(StepKind::Mcp, key, &[(key, "value"), (SECRET, "value")]),
+            1,
+        );
+        let wire = json(&view);
+        assert!(!wire.contains("ghp_") && !wire.contains(SECRET), "{wire}");
+        assert_eq!(view.tool, "(redacted)");
+        assert_eq!(view.withheld, Some("the step holds a secret"));
+    }
+
+    #[test]
+    fn a_secret_learned_after_capture_is_scrubbed_when_the_step_is_read() {
+        let redactor = Redactor::new();
+        let mut kept = step(
+            StepKind::Command,
+            "Bash",
+            &[("command", "echo later-secret-0123456789")],
+        );
+        kept.edit = Some(EditText {
+            old: None,
+            new: "later-secret-0123456789".to_owned(),
+        });
+        let view = open(&redactor, kept, 1);
+        redactor.set_source("test", ["later-secret-0123456789".to_owned()]);
+        let wire = json(&view.rescrubbed(&redactor));
+        assert!(!wire.contains("later-secret"), "{wire}");
+    }
+
+    #[test]
     fn closing_and_abandoning_a_step() {
         let mut view = open(&Redactor::new(), step(StepKind::Command, "Bash", &[]), 10);
         view.close(&Closing {
@@ -484,7 +699,6 @@ mod tests {
             failed: true,
             exit: Some(2),
             result_bytes: 40,
-            note: None,
             at: 20,
         });
         assert_eq!(view.status, Status::Failed);

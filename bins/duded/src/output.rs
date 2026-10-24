@@ -19,7 +19,6 @@ const REPLY_BYTES: usize = 65_536;
 const MAX_RINGS: usize = 128;
 const STEP_RING_ENTRIES: usize = 256;
 const STEP_RING_BYTES: usize = 256 * 1_024;
-const MAX_STEP_BYTES: usize = 8 * 1_024 * 1_024;
 const MAX_BYTES: usize = 8 * 1_024 * 1_024;
 // A session is an untrusted exact identity, not an output chunk. Capping it before
 // retention also bounds 256 pending key/ring slots × 128 pieces × 256 bytes to 8 MiB.
@@ -298,10 +297,14 @@ impl StepQueue {
         self.bytes += item.op.bytes();
         self.items.push_back(item);
         while self.items.len() > STEP_RING_ENTRIES || self.bytes > STEP_RING_BYTES {
-            if let Some(old) = self.items.pop_front() {
-                self.bytes -= old.op.bytes();
-                self.lost = true;
-            }
+            self.drop_oldest();
+        }
+    }
+
+    fn drop_oldest(&mut self) {
+        if let Some(old) = self.items.pop_front() {
+            self.bytes -= old.op.bytes();
+            self.lost = true;
         }
     }
 }
@@ -663,10 +666,12 @@ impl State {
                 .orphan
                 .iter()
                 .filter_map(|(key, value)| {
-                    value
-                        .chunks
-                        .front()
-                        .map(|front| (key.clone(), front.arrival))
+                    let text = value.chunks.front().map(|front| front.arrival);
+                    let step = value.steps.items.front().map(|front| front.arrival);
+                    text.into_iter()
+                        .chain(step)
+                        .min()
+                        .map(|at| (key.clone(), at))
                 })
                 .min_by_key(|(_, at)| *at)
                 .map(|(key, _)| key)
@@ -676,7 +681,10 @@ impl State {
                 self.close(key);
             }
         }
-        while self.text_bytes() > MAX_BYTES {
+        while self.text_bytes() + self.step_bytes() > MAX_BYTES {
+            if self.drop_oldest_step() {
+                continue;
+            }
             let ring_oldest = self
                 .rings
                 .iter()
@@ -731,23 +739,66 @@ impl State {
                 (None, None) => break,
             }
         }
-        while self.step_bytes() > MAX_STEP_BYTES {
-            let oldest = self
-                .rings
-                .iter()
-                .filter_map(|(agent, ring)| {
-                    ring.steps.items.front().map(|step| (*agent, step.arrival))
-                })
-                .min_by_key(|(_, at)| *at);
-            let Some((agent, _)) = oldest else { break };
-            if let Some(ring) = self.rings.get_mut(&agent) {
-                ring.steps.drop_oldest();
-            }
-        }
     }
 
+    /// Every byte the steps hold, kept, waiting for a session or waiting for a turn.
     fn step_bytes(&self) -> usize {
-        self.rings.values().map(|ring| ring.steps.bytes).sum()
+        self.rings
+            .values()
+            .map(|ring| ring.steps.bytes + ring.pending_steps.bytes)
+            .sum::<usize>()
+            + self
+                .orphan
+                .values()
+                .map(|orphan| orphan.steps.bytes)
+                .sum::<usize>()
+    }
+
+    /// Drops the oldest step change anywhere, so steps give way before any text does. False when
+    /// no step is held.
+    fn drop_oldest_step(&mut self) -> bool {
+        enum Held {
+            Kept(AgentId),
+            Waiting(AgentId),
+            Unbound(ChildKey),
+        }
+        let kept = self.rings.iter().filter_map(|(agent, ring)| {
+            let front = ring.steps.items.front()?;
+            Some((front.arrival, Held::Kept(*agent)))
+        });
+        let waiting = self.rings.iter().filter_map(|(agent, ring)| {
+            let front = ring.pending_steps.items.front()?;
+            Some((front.arrival, Held::Waiting(*agent)))
+        });
+        let unbound = self.orphan.iter().filter_map(|(key, orphan)| {
+            let front = orphan.steps.items.front()?;
+            Some((front.arrival, Held::Unbound(key.clone())))
+        });
+        let Some((_, held)) = kept
+            .chain(waiting)
+            .chain(unbound)
+            .min_by_key(|(arrival, _)| *arrival)
+        else {
+            return false;
+        };
+        match held {
+            Held::Kept(agent) => {
+                if let Some(ring) = self.rings.get_mut(&agent) {
+                    ring.steps.drop_oldest();
+                }
+            }
+            Held::Waiting(agent) => {
+                if let Some(ring) = self.rings.get_mut(&agent) {
+                    ring.pending_steps.drop_oldest();
+                }
+            }
+            Held::Unbound(key) => {
+                if let Some(orphan) = self.orphan.get_mut(&key) {
+                    orphan.steps.drop_oldest();
+                }
+            }
+        }
+        true
     }
 
     fn drop_orphan(&mut self, key: &ChildKey) {
@@ -1072,14 +1123,12 @@ impl OutputRegistry {
                 failed,
                 exit,
                 result_bytes,
-                note,
                 ..
             } => StepOp::Close(Closing {
-                id,
+                id: steps::scrub_id(&self.redactor, &id),
                 failed,
                 exit,
                 result_bytes,
-                note,
                 at: now,
             }),
         };
@@ -1339,7 +1388,7 @@ impl OutputRegistry {
                 .items
                 .iter()
                 .filter(|step| step.seq > since)
-                .map(|step| step.view.clone())
+                .map(|step| step.view.clone().rescrubbed(&self.redactor))
                 .collect(),
         })
     }
@@ -1559,7 +1608,6 @@ mod tests {
             failed: false,
             exit: None,
             result_bytes: 7,
-            note: None,
         }
     }
 
@@ -1641,6 +1689,84 @@ mod tests {
         let step = &output.steps_since(agent, 0).unwrap().items[0];
         assert_eq!(step.status, steps::Status::Failed);
         assert_eq!(step.note, Some("the turn ended first"));
+    }
+
+    fn heavy_event(id: &str) -> StepEvent {
+        StepEvent::Open {
+            session: SessionId::new(SESSION),
+            step: Step {
+                id: id.to_owned(),
+                parent: None,
+                kind: StepKind::Other,
+                tool: "Custom".to_owned(),
+                args: (0..8)
+                    .map(|n| (format!("arg{n}"), "y".repeat(steps::INPUT_BYTES)))
+                    .collect(),
+                edit: None,
+                plan: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn steps_of_every_kind_share_the_run_cap_and_the_oldest_orphan_goes_first() {
+        let output = OutputRegistry::new();
+        let key_at = |pid: u32| AdoptionKey {
+            pid,
+            start_time: 20,
+            boot: None,
+        };
+        for pid in 1..=48_u32 {
+            for step in 0..20 {
+                output.capture_step(&key_at(pid), heavy_event(&format!("toolu_{pid}_{step}")));
+            }
+        }
+        let (agent, turn) = (AgentId::from_parts(1, 1), TurnId::from_parts(2, 1));
+        output.replace(agent, turn);
+        assert!(output.register(agent, turn, &key_at(100)));
+        for step in 0..20 {
+            output.capture_step(&key_at(100), heavy_event(&format!("toolu_w_{step}")));
+        }
+        let state = output.state();
+        assert!(
+            state.step_bytes() + state.text_bytes() <= MAX_BYTES,
+            "{} bytes held",
+            state.step_bytes()
+        );
+        let held = |pid: u32| {
+            state
+                .orphan
+                .get(&ChildKey::from(&key_at(pid)))
+                .map_or(0, |orphan| orphan.steps.items.len())
+        };
+        assert_eq!(held(1), 0, "the oldest steps-only orphan is evicted first");
+        assert!(held(48) > 0, "the newest orphan keeps its steps");
+        assert!(
+            !state.rings[&agent].pending_steps.items.is_empty(),
+            "the waiting steps of a bound turn are counted and kept while newest"
+        );
+    }
+
+    #[test]
+    fn a_secret_learned_after_capture_is_taken_out_when_steps_are_read() {
+        let redactor = Redactor::for_run();
+        let output = OutputRegistry::with_redactor(redactor.clone());
+        let (agent, turn) = (AgentId::from_parts(1, 1), TurnId::from_parts(2, 1));
+        let key = AdoptionKey {
+            pid: 10,
+            start_time: 20,
+            boot: None,
+        };
+        output.replace(agent, turn);
+        assert!(output.register(agent, turn, &key));
+        output.confirm(agent, turn, &SessionId::new(SESSION));
+        output.capture_step(
+            &key,
+            open_event("toolu_1", SESSION, "echo late-secret-0123456789"),
+        );
+        redactor.set_source("test", ["late-secret-0123456789".to_owned()]);
+        let step = &output.steps_since(agent, 0).unwrap().items[0];
+        assert_eq!(step.args[0].value, "echo (redacted)");
     }
 
     #[test]

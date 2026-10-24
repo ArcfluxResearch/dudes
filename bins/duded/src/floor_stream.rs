@@ -1538,7 +1538,7 @@ fn refresh_steps(
     else {
         return true;
     };
-    let mut send = |steps: &[StepView], gap: Option<&'static str>| -> Option<usize> {
+    let send = |queue: &mut QueueState, steps: &[StepView], gap: Option<&'static str>| {
         let frame = serialize_frame(&OutputFrame::Steps {
             selection_epoch: selection.epoch,
             agent_id: selection.agent,
@@ -1557,6 +1557,10 @@ fn refresh_steps(
             .ok()
             .map(|()| bytes)
     };
+    if queue.step_bytes_sent > STEP_BUDGET_BYTES {
+        selection.steps.stopped = true;
+        return send(queue, &[], Some("budget")).is_some();
+    }
     selection.steps.turn = Some(delta.turn);
     let mut start = 0;
     while start < delta.items.len() {
@@ -1568,13 +1572,13 @@ fn refresh_steps(
             bytes += delta.items[end].bytes();
             end += 1;
         }
-        let Some(wrote) = send(&delta.items[start..end], None) else {
+        let Some(wrote) = send(queue, &delta.items[start..end], None) else {
             return false;
         };
-        selection.steps.sent_bytes += wrote;
-        if selection.steps.sent_bytes > STEP_BUDGET_BYTES {
+        queue.step_bytes_sent += wrote;
+        if queue.step_bytes_sent > STEP_BUDGET_BYTES {
             selection.steps.stopped = true;
-            return send(&[], Some("budget")).is_some();
+            return send(queue, &[], Some("budget")).is_some();
         }
         start = end;
     }
@@ -2007,6 +2011,8 @@ struct QueueState {
     terminal: u8,
     selection_epoch: u64,
     selection: Option<OutputSelection>,
+    /// Step data sent on this socket so far, over every selection, against the step budget.
+    step_bytes_sent: usize,
 }
 
 #[derive(Debug)]
@@ -2042,7 +2048,6 @@ struct OutputSelection {
 struct StepsCursor {
     turn: Option<TurnId>,
     seq: u64,
-    sent_bytes: usize,
     stopped: bool,
 }
 
@@ -6701,5 +6706,197 @@ mod tests {
             .iter()
             .filter(|subscription| subscription.strong_count() > 0)
             .count()
+    }
+
+    mod steps_refresh {
+        use dudes_providers::steps::{Step, StepEvent, StepKind};
+        use dudes_types::SessionId;
+
+        use super::*;
+
+        const SESSION: &str = "session";
+
+        fn key(pid: u32) -> dudes_supervisor::host::AdoptionKey {
+            dudes_supervisor::host::AdoptionKey {
+                pid,
+                start_time: 20,
+                boot: None,
+            }
+        }
+
+        fn event(id: &str, args: usize) -> StepEvent {
+            StepEvent::Open {
+                session: SessionId::new(SESSION),
+                step: Step {
+                    id: id.to_owned(),
+                    parent: None,
+                    kind: StepKind::Other,
+                    tool: "Custom".to_owned(),
+                    args: (0..args)
+                        .map(|n| (format!("body{n}"), "y".repeat(2_000)))
+                        .collect(),
+                    edit: None,
+                    plan: Vec::new(),
+                },
+            }
+        }
+
+        fn turn_with(output: &OutputRegistry, agent: AgentId, turn: TurnId, pid: u32) {
+            output.replace(agent, turn);
+            assert!(output.register(agent, turn, &key(pid)));
+            output.confirm(agent, turn, &SessionId::new(SESSION));
+        }
+
+        fn selection(agent: AgentId) -> OutputSelection {
+            OutputSelection {
+                agent,
+                epoch: 1,
+                view: OutputView::Reply,
+                revision: 0,
+                reply_revision: None,
+                turn: None,
+                first_seq: 0,
+                next_seq: 0,
+                ended: false,
+                unavailable: None,
+                loss: None,
+                steps: StepsCursor::default(),
+            }
+        }
+
+        fn refresh(
+            queue: &mut QueueState,
+            selection: &mut OutputSelection,
+            output: &OutputRegistry,
+        ) -> bool {
+            let snapshot = output.snapshot(selection.agent);
+            refresh_steps(queue, selection, &snapshot, output)
+        }
+
+        /// What reached the socket's queue, frame by frame: the turn, the gap and the step ids.
+        fn sent(queue: &mut QueueState) -> Vec<(String, Option<String>, Vec<String>)> {
+            queue
+                .frames
+                .drain(..)
+                .map(|frame| {
+                    let wire: serde_json::Value =
+                        serde_json::from_slice(text_payload(&frame.bytes).unwrap()).unwrap();
+                    assert_eq!(wire["type"], "floor.output.steps");
+                    (
+                        wire["turn_id"].as_str().unwrap().to_owned(),
+                        wire["gap"].as_str().map(str::to_owned),
+                        wire["steps"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|step| step["id"].as_str().unwrap().to_owned())
+                            .collect(),
+                    )
+                })
+                .collect()
+        }
+
+        fn ids(frames: &[(String, Option<String>, Vec<String>)]) -> Vec<&str> {
+            frames
+                .iter()
+                .flat_map(|(_, _, ids)| ids.iter().map(String::as_str))
+                .collect()
+        }
+
+        #[test]
+        fn a_long_run_of_steps_goes_out_in_several_frames_and_resumes_from_the_cursor() {
+            let output = OutputRegistry::new();
+            let (agent, turn) = (AgentId::from_parts(1, 1), TurnId::from_parts(2, 1));
+            turn_with(&output, agent, turn, 10);
+            for index in 0..12 {
+                output.capture_step(&key(10), event(&format!("toolu_{index:02}"), 8));
+            }
+            let (mut queue, mut selection) = (QueueState::default(), selection(agent));
+            assert!(refresh(&mut queue, &mut selection, &output));
+            let frames = sent(&mut queue);
+            assert!(frames.len() >= 2, "{} frames", frames.len());
+            assert!(
+                frames
+                    .iter()
+                    .all(|(_, gap, ids)| gap.is_none() && !ids.is_empty())
+            );
+            let expected: Vec<String> = (0..12).map(|index| format!("toolu_{index:02}")).collect();
+            assert_eq!(ids(&frames), expected);
+            assert!(queue.step_bytes_sent > 0);
+            assert!(refresh(&mut queue, &mut selection, &output));
+            assert!(queue.frames.is_empty(), "nothing changed since the cursor");
+            output.capture_step(&key(10), event("toolu_next", 1));
+            assert!(refresh(&mut queue, &mut selection, &output));
+            assert_eq!(ids(&sent(&mut queue)), ["toolu_next"]);
+        }
+
+        #[test]
+        fn past_the_socket_budget_steps_stop_with_one_gap_frame_and_stay_stopped() {
+            let output = OutputRegistry::new();
+            let (agent, turn) = (AgentId::from_parts(1, 1), TurnId::from_parts(2, 1));
+            turn_with(&output, agent, turn, 10);
+            output.capture_step(&key(10), event("toolu_1", 1));
+            let (mut queue, mut selection) = (QueueState::default(), selection(agent));
+            queue.step_bytes_sent = STEP_BUDGET_BYTES - 10;
+            assert!(refresh(&mut queue, &mut selection, &output));
+            let frames = sent(&mut queue);
+            assert_eq!(
+                ids(&frames),
+                ["toolu_1"],
+                "the frame that crosses the budget is sent"
+            );
+            assert_eq!(frames.last().unwrap().1.as_deref(), Some("budget"));
+            assert!(selection.steps.stopped);
+            output.capture_step(&key(10), event("toolu_2", 1));
+            assert!(refresh(&mut queue, &mut selection, &output));
+            assert!(
+                queue.frames.is_empty(),
+                "a stopped selection sends nothing more"
+            );
+        }
+
+        #[test]
+        fn the_budget_belongs_to_the_socket_so_selecting_again_does_not_reset_it() {
+            let output = OutputRegistry::new();
+            let (agent, turn) = (AgentId::from_parts(1, 1), TurnId::from_parts(2, 1));
+            turn_with(&output, agent, turn, 10);
+            output.capture_step(&key(10), event("toolu_1", 1));
+            let mut queue = QueueState {
+                step_bytes_sent: STEP_BUDGET_BYTES + 1,
+                ..QueueState::default()
+            };
+            let mut again = selection(agent);
+            assert!(refresh(&mut queue, &mut again, &output));
+            let frames = sent(&mut queue);
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].1.as_deref(), Some("budget"));
+            assert!(frames[0].2.is_empty(), "no step data past the budget");
+            let (mut other_queue, mut fresh) = (QueueState::default(), selection(agent));
+            assert!(refresh(&mut other_queue, &mut fresh, &output));
+            assert_eq!(
+                ids(&sent(&mut other_queue)),
+                ["toolu_1"],
+                "another socket is unaffected"
+            );
+        }
+
+        #[test]
+        fn a_new_turn_sends_its_own_steps_from_the_start() {
+            let output = OutputRegistry::new();
+            let agent = AgentId::from_parts(1, 1);
+            let (first, second) = (TurnId::from_parts(2, 1), TurnId::from_parts(3, 1));
+            turn_with(&output, agent, first, 10);
+            output.capture_step(&key(10), event("toolu_old", 1));
+            let (mut queue, mut selection) = (QueueState::default(), selection(agent));
+            assert!(refresh(&mut queue, &mut selection, &output));
+            let old = sent(&mut queue);
+            assert_eq!(old[0].0, first.to_string());
+            turn_with(&output, agent, second, 11);
+            output.capture_step(&key(11), event("toolu_new", 1));
+            assert!(refresh(&mut queue, &mut selection, &output));
+            let new = sent(&mut queue);
+            assert_eq!(ids(&new), ["toolu_new"]);
+            assert_eq!(new[0].0, second.to_string());
+        }
     }
 }

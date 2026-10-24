@@ -108,23 +108,6 @@ pub struct Step {
     pub plan: Vec<PlanItem>,
 }
 
-/// How a step ended without a result the daemon can read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StepNote {
-    /// The result line was longer than the daemon keeps.
-    OutputTooLarge,
-}
-
-impl StepNote {
-    /// The note in the Floor's words.
-    #[must_use]
-    pub const fn text(self) -> &'static str {
-        match self {
-            Self::OutputTooLarge => "output too large",
-        }
-    }
-}
-
 /// A change to the steps of a turn.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StepEvent {
@@ -147,8 +130,6 @@ pub enum StepEvent {
         exit: Option<i32>,
         /// The size of the result in bytes. The result itself is not kept here.
         result_bytes: u64,
-        /// Why there is no readable result, if so.
-        note: Option<StepNote>,
     },
 }
 

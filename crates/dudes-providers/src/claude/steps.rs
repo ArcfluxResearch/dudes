@@ -10,9 +10,10 @@ use dudes_types::SessionId;
 use serde_json::Value;
 
 use super::{Line, StreamLine};
-use crate::steps::{EditText, PlanItem, PlanStatus, Step, StepEvent, StepKind, StepNote};
+use crate::steps::{EditText, PlanItem, PlanStatus, Step, StepEvent, StepKind};
 
-/// Open calls kept at once. A turn that opens more has its extra calls shown but never closed.
+/// Open calls kept at once. A call past this, or one that reuses the id of a call still open, is
+/// not shown: it could never close, and would read as running until the turn ends.
 const MAX_OPEN: usize = 256;
 const MAX_ID_BYTES: usize = 128;
 const MAX_ARGS: usize = 16;
@@ -43,9 +44,10 @@ impl LiveSteps {
                     .filter(|block| block.kind == "tool_use")
                     .filter_map(|block| {
                         let step = step(block, message.parent_tool_use_id.as_deref())?;
-                        if self.open.len() < MAX_OPEN {
-                            self.open.push(step.id.clone());
+                        if self.open.len() >= MAX_OPEN || self.open.contains(&step.id) {
+                            return None;
                         }
+                        self.open.push(step.id.clone());
                         Some(StepEvent::Open {
                             session: session.clone(),
                             step,
@@ -70,29 +72,11 @@ impl LiveSteps {
                         failed,
                         exit: failed.then(|| exit_code(&head)).flatten(),
                         result_bytes: bytes,
-                        note: None,
                     })
                 })
                 .collect(),
             _ => Vec::new(),
         }
-    }
-
-    /// A line too long to read was dropped by the host. The call it answered is not known, so the
-    /// oldest open call ends with a note rather than staying open for the rest of the turn.
-    pub(super) fn unreadable_line(&mut self, announced: Option<&SessionId>) -> Option<StepEvent> {
-        let session = announced?.clone();
-        if self.open.is_empty() {
-            return None;
-        }
-        Some(StepEvent::Close {
-            session,
-            id: self.open.remove(0),
-            failed: true,
-            exit: None,
-            result_bytes: 0,
-            note: Some(StepNote::OutputTooLarge),
-        })
     }
 }
 
@@ -178,8 +162,9 @@ fn kind(tool: &str) -> StepKind {
     }
 }
 
-/// An argument as text: a string as written, a list of strings one per line, anything else as
-/// compact JSON.
+/// An argument as text: a string as written, a list of strings one per line, and anything nested
+/// as one `name: value` line per leaf. Strings keep their real newlines, never JSON escapes, so
+/// the daemon's secret rules see the text as it was written.
 fn arg(value: &Value) -> Option<String> {
     match value {
         Value::Null => None,
@@ -191,7 +176,41 @@ fn arg(value: &Value) -> Option<String> {
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
-        other => Some(other.to_string()),
+        other => {
+            let mut lines = Vec::new();
+            leaves(other, "", &mut lines);
+            (!lines.is_empty()).then(|| lines.join("\n"))
+        }
+    }
+}
+
+fn leaves(value: &Value, name: &str, lines: &mut Vec<String>) {
+    let line = |text: &str| {
+        if name.is_empty() {
+            text.to_owned()
+        } else {
+            format!("{name}: {text}")
+        }
+    };
+    match value {
+        Value::Null => {}
+        Value::String(text) => lines.push(line(text)),
+        Value::Bool(_) | Value::Number(_) => lines.push(line(&value.to_string())),
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                leaves(item, &format!("{name}[{index}]"), lines);
+            }
+        }
+        Value::Object(fields) => {
+            for (key, item) in fields {
+                let path = if name.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{name}.{key}")
+                };
+                leaves(item, &path, lines);
+            }
+        }
     }
 }
 
@@ -280,7 +299,6 @@ mod tests {
                 failed: false,
                 exit: None,
                 result_bytes: 9,
-                note: None,
             }]
         );
     }
@@ -323,7 +341,6 @@ mod tests {
                 failed: true,
                 exit: Some(3),
                 result_bytes: 16,
-                note: None,
             }]
         );
     }
@@ -410,24 +427,35 @@ mod tests {
     }
 
     #[test]
-    fn a_line_too_long_to_read_closes_the_oldest_open_call_with_a_note() {
-        let (call, _) = captured();
-        let mut steps = LiveSteps::default();
-        assert!(
-            steps
-                .unreadable_line(Some(&SessionId::new(SESSION)))
-                .is_none()
+    fn nested_arguments_keep_real_newlines_and_unescaped_strings() {
+        let events = read(
+            &mut LiveSteps::default(),
+            &format!(
+                r#"{{"type":"assistant","session_id":"{SESSION}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_m","name":"mcp__x__run","input":{{"opts":{{"path":"/w/.env","body":"first\nghp_abcdefghijklmnopqrstuvwxyz0123456789","password":"p \"q\""}},"n":3}}}}]}}}}"#
+            ),
         );
-        read(&mut steps, call);
-        let closed = steps.unreadable_line(Some(&SessionId::new(SESSION)));
-        assert!(matches!(
-            closed,
-            Some(StepEvent::Close {
-                failed: true,
-                note: Some(StepNote::OutputTooLarge),
-                ..
-            })
-        ));
+        let [StepEvent::Open { step, .. }] = &events[..] else {
+            panic!("one open step expected");
+        };
+        let opts = &step.args.iter().find(|(key, _)| key == "opts").unwrap().1;
+        for line in [
+            "path: /w/.env",
+            "body: first\nghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "password: p \"q\"",
+        ] {
+            assert!(opts.contains(line), "{line} missing from {opts}");
+        }
+        assert!(!opts.contains("\\n"), "no JSON escapes: {opts}");
+    }
+
+    #[test]
+    fn a_second_call_with_an_open_id_is_not_a_step() {
+        let call = format!(
+            r#"{{"type":"assistant","session_id":"{SESSION}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_d","name":"Bash","input":{{}}}}]}}}}"#
+        );
+        let mut steps = LiveSteps::default();
+        assert_eq!(read(&mut steps, &call).len(), 1);
+        assert!(read(&mut steps, &call).is_empty());
     }
 
     #[test]
