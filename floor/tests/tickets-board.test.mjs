@@ -285,9 +285,9 @@ test('ticket switches are not called off before a snapshot or after the stream c
 test('tickets-off guidance names only companion controls reported off', () => {
   subscribe(store, { ticket: null });
   for (const [control, goal, command] of [
-    [false, false, ' Also turn on Pause, resume and rename and Change goals.'],
+    [false, false, ' Also turn on Pause, resume and rename and Change tasks.'],
     [false, true, ' Also turn on Pause, resume and rename.'],
-    [true, false, ' Also turn on Change goals.'],
+    [true, false, ' Also turn on Change tasks.'],
     [true, true, ''],
   ]) {
     const floor = { ...store.getFloorState(), settings: { switches: { control, goal } } };

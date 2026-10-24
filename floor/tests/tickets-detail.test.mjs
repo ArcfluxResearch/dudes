@@ -177,7 +177,7 @@ const EARLIER = {
       turn: cardId(11), authorization_lsn: '42', issue_lsn: '44', earlier: { kind: 'started', lsn: '10' },
       boundary: { state: 'unsettled' }, acknowledgment: { state: 'none' } }] } },
 };
-const EARLIER_WORDS = [/The earlier note/, /The earlier summary/, /the earlier check/, /Last recorded check/, /exit status 7/,
+const EARLIER_WORDS = [/The earlier note/, /The earlier summary/, /the earlier check/, /Last check/, /Exit status: 7/,
   /shortened in this view/, /What Dudes could not see/, /<h4>Instruction review<\/h4>/, /Review the recovered attempt/];
 
 test('a ticket that moved on shows nothing from its earlier reading until the next read answers', async () => {
@@ -296,7 +296,7 @@ test('an interrupted ticket opens the recovery view, or names the switches that 
   store.resetFloorStore();
   const off = await stuck('recovery_required', { control: false, recovery: false });
   assert.doesNotMatch(off, /data-action="review_recovery"/);
-  assert.match(off, /Turn on Pause, resume and rename and Recover interrupted goals under Floor switches in Settings/);
+  assert.match(off, /Turn on Pause, resume and rename and Recover interrupted tasks under Floor switches in Settings/);
 });
 
 test('the decoder keeps exactly the daemon\'s members and refuses the rest', async () => {

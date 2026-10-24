@@ -134,7 +134,7 @@ test('inspection offers only advertised context choices, literal repeat warnings
     assert.match(html, /At this inspection, work was also waiting for/);
     assert.match(html, /Open this ticket on the Board and review its instructions/);
     assert.match(html, /Resume alone cannot release this interruption/);
-    assert.match(html, /spending and work attempt limits, questions/);
+    assert.match(html, /existing limits, questions/);
     if (choices === 'repeat_issued_fresh') assert.match(html, /The engine may have run before Dudes recorded its launch\. Earlier effects may repeat/);
     else assert.match(html, /recap, which may shrink or be omitted/);
     assert.doesNotMatch(html, /<(?:textarea|input|select)\b|provider_session|\/private\/|transcript/);

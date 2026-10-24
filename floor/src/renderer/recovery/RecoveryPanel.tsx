@@ -35,7 +35,7 @@ const INVALIDATIONS: Readonly<Record<InvalidationReason, string>> = {
   lease_changed: 'The recorded checkout lease changed.', control_changed: 'The reviewed control changed.',
   agent_unavailable: 'The agent became unavailable.', authority_unavailable: 'The original browser authority became unavailable.',
 };
-const WAIT_LABELS: Readonly<Record<keyof Waits, string>> = { open_question: 'An open question needs an answer.', budget: 'The spending limit is holding this work.',
+const WAIT_LABELS: Readonly<Record<keyof Waits, string>> = { open_question: 'An open question needs an answer.', budget: 'A budget limit is holding this work.',
   hops: 'The task has no work attempts left.', instruction_review: 'Open this ticket on the Board and review its instructions before work can continue.', instruction_comparison: "Dudes is still comparing this ticket's instructions." };
 
 export function RecoveryPanel({ floor, row, onReadReceipt }: {
@@ -100,7 +100,7 @@ function RecoveryDraft({ draft, memory, floor, session }: {
         title={problem ?? (blocked ? 'Check the saved recovery request first.' : undefined)} ref={handFocusOnLeave} data-focus-on-leave="recovery-title"
         onClick={() => { if (problem === null && !blocked) chooseRecovery(draft.key, choice); }}>{CHOICES[choice]}</button>)}
     </div>
-    <p>Recovery keeps the spending and work attempt limits, questions, and instruction review. Allowing recovery does not guarantee that work will start.</p>
+    <p>Recovery keeps the existing limits, questions, and instruction review. Allowing recovery does not guarantee that work will start.</p>
     {waiting.length === 0 ? null : <div className="recovery-waits"><p>At this inspection, work was also waiting for:</p>
       <ul aria-label="Waits at inspection">{waiting.map(key => <li key={key}>{WAIT_LABELS[key]}</li>)}</ul></div>}
     {problem === null ? null : <p role="status">{problem}</p>}

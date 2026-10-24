@@ -58,6 +58,7 @@ test('Messages groups unordered pairs by journal order and shows only permitted 
   assert.match(html, /Grace &lt;archived&gt;/);
   assert.match(html, new RegExp(C));
   assert.ok(html.indexOf(`data-message-id="${B}"`) < html.indexOf(`data-message-id="${C}"`));
+  for (const label of ['Notified', 'Acknowledged', 'Delivery failed']) assert.match(html, new RegExp(`<span>${label}</span>`));
   for (const state of ['notified', 'acked', 'bounced']) assert.match(html, new RegExp(`>${state}<`));
   assert.doesNotMatch(html, /Send message|Reply|<form[^>]*.*message|subject|body_path/);
   assert.doesNotMatch(render({ messages: [] }), /role="tab"[^>]*>Messages<\/button>/);

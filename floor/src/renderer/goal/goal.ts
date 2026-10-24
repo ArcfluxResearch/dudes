@@ -493,7 +493,7 @@ export function presents(attempt: GoalAttempt, agent: string, goalId: string): b
  * Every form waits while a request is out and while one is unresolved. A 403
  * that settled its request holds every form while the page still holds the
  * session that was refused. A durable change holds back only the form for the
- * goal it replaced, until the projection shows the agent's task moving.
+ * goal it replaced, until the projection shows the agent's goal moving.
  */
 export function blocksForm(goal: GoalState, agent: string, goalId: string, session: number): boolean {
   if (goal.sending) return true;
@@ -694,7 +694,7 @@ export type Continuation =
   /** The goal moved, and the agent has taken a new turn. */
   | { readonly kind: 'continued'; readonly from: number; readonly to: number; readonly status: string };
 
-/** What the agent's task and hold are after a durable change, read from the projection and nothing else. */
+/** What the agent's goal and hold are after a durable change, read from the projection and nothing else. */
 export function continuationOf(attempt: GoalAttempt, floor: FloorState): Continuation {
   const row = floor.agents.find((agent) => agent.id === attempt.payload.agent);
   const current = floor.phase === 'live' && floor.snapshotEpoch === floor.epoch;

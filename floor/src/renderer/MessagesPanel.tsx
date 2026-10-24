@@ -6,6 +6,10 @@ import { messageGroups } from './messages.ts';
 import type { MessageRow, ThreadRow } from './messages.ts';
 import type { AgentRow } from './scene/cast.ts';
 
+const MESSAGE_STATE: Readonly<Record<MessageRow['state'], string>> = {
+  durable: 'Saved', notified: 'Notified', acked: 'Acknowledged', bounced: 'Delivery failed',
+};
+
 export function MessagesPanel({ messages, threads, agent, agents, retiredAgents }: {
   readonly messages: readonly MessageRow[];
   readonly threads: readonly ThreadRow[];
@@ -27,8 +31,9 @@ export function MessagesPanel({ messages, threads, agent, agents, retiredAgents 
       <ol aria-label={`Messages between ${pair.participants.map(name).join(', ')}`}>
         {pair.rows.map(row => <li key={row.id} data-message-id={row.id}>
           <p><strong>{name(row.from)}</strong> to <strong>{name(row.to)}</strong></p>
-          <p><RelativeTime at={row.at} /> · <span>{row.state}</span></p>
+          <p><RelativeTime at={row.at} /> · <span>{MESSAGE_STATE[row.state]}</span></p>
           <details><summary>Details</summary><dl><div><dt>Message id</dt><dd>{row.id}</dd></div>
+            <div><dt>Delivery state</dt><dd>{row.state}</dd></div>
             <div><dt>Creation order</dt><dd>{row.lsn}</dd></div></dl></details>
         </li>)}
       </ol>
