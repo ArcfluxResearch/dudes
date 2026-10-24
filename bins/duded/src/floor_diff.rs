@@ -231,9 +231,7 @@ pub fn recorded(
     {
         return Err(DiffRefusal::StaleTicket);
     }
-    let Some(GitTarget::Read(tree)) = GitTarget::of(world, claimant) else {
-        return Err(DiffRefusal::StaleTicket);
-    };
+    let tree = readable_tree(GitTarget::of(world, claimant))?;
     Ok(Recorded {
         card: view.id,
         seq: view.seq,
@@ -245,6 +243,16 @@ pub fn recorded(
         baseline: review.baseline,
         stamp: review.stamp.map(|(_, stamp)| stamp),
     })
+}
+
+/// The tree to read for a claimant. A retired agent's copy is not read, which `worktree_mismatch`
+/// says; an agent the world no longer knows leaves the ticket moved on.
+fn readable_tree(target: Option<GitTarget>) -> Result<Tree, DiffRefusal> {
+    match target {
+        Some(GitTarget::Read(tree)) => Ok(tree),
+        Some(GitTarget::Released | GitTarget::Removed) => Err(DiffRefusal::WorktreeMismatch),
+        None => Err(DiffRefusal::StaleTicket),
+    }
 }
 
 /// A recorded review turned into the values a read needs, and the binding every reply carries.
@@ -418,16 +426,24 @@ impl DiffReads {
     }
 
     fn bind(&self, recorded: &Recorded) -> Result<Subject, DiffRefusal> {
-        let BaselineOutcome::Captured {
-            device,
-            inode,
-            head,
-            preexisting_tracked,
-            preexisting_untracked,
-        } = recorded.baseline.outcome
-        else {
-            return Err(DiffRefusal::BaselineUnavailable);
-        };
+        let (device, inode, head, preexisting_tracked, preexisting_untracked) =
+            match recorded.baseline.outcome {
+                BaselineOutcome::Captured {
+                    device,
+                    inode,
+                    head,
+                    preexisting_tracked,
+                    preexisting_untracked,
+                } => (
+                    device,
+                    inode,
+                    head,
+                    preexisting_tracked,
+                    preexisting_untracked,
+                ),
+                BaselineOutcome::Unavailable { reason } => return Err(reason),
+                _ => return Err(DiffRefusal::BaselineUnavailable),
+            };
         let baseline_bytes =
             serde_json::to_vec(&recorded.baseline).map_err(|_| DiffRefusal::Unreadable)?;
         let tree_text = format!("{:?}", recorded.tree);
@@ -743,5 +759,23 @@ fn run(
                 manifest: None,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_retired_agents_copy_is_not_a_moved_on_ticket() {
+        assert_eq!(
+            readable_tree(Some(GitTarget::Released)).unwrap_err(),
+            DiffRefusal::WorktreeMismatch
+        );
+        assert_eq!(
+            readable_tree(Some(GitTarget::Removed)).unwrap_err(),
+            DiffRefusal::WorktreeMismatch
+        );
+        assert_eq!(readable_tree(None).unwrap_err(), DiffRefusal::StaleTicket);
     }
 }

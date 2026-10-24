@@ -21,6 +21,7 @@ import { RecoveredReview } from './RecoveredReview.tsx';
 import type { TicketDetail, TruncatedTicketField } from './detail.ts';
 import { ACTION_LABEL, actionsOf, agentChoiceSentence, agentRow, cardWords, noProjects, projectOf, requiresInstructionReview } from './model.ts';
 import type { TicketAction } from './model.ts';
+import { decodeWorktree } from '../worktree.ts';
 import { clearTicketChangesDraft, readTicketChangesDraft, writeTicketChangesDraft } from '../view.ts';
 import { agentsFor, ticketActionsOpen, TicketNotice } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
@@ -172,18 +173,19 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
   const ticket = card.ticket;
   const words = cardWords(floor, card);
   const loaded = mine?.detail ?? null;
+  const current = mine?.seq === card.seq ? loaded : null;
   const failure = engineStopped(ticket?.last_turn_end);
   return <>
     <dl>
       <div><dt>State</dt><dd>{stateName(card.status)}</dd></div>
       <div><dt>Agent</dt><dd>{words.agent ?? 'Not given to an agent'}</dd></div>
       {loaded === null ? null : <div><dt>Done when</dt><dd>{loaded.check.label}</dd></div>}
-      {ticket === null ? null : <div><dt>Round</dt><dd>{loaded?.round ?? ticket.round}</dd></div>}
+      {ticket === null ? null : <div><dt>Round</dt><dd>{current?.round ?? ticket.round}</dd></div>}
       {words.place === null ? null : <div><dt>Place</dt><dd>{words.place}</dd></div>}
     </dl>
     {failure === null ? null : <p className="ticket-needs" role="note">{failure}</p>}
     {card.status === 'blocked' ? <p className="ticket-needs" role="note">{reasonSentence(ticket?.reason ?? null)}</p>
-      : (loaded?.waiting ?? null) !== null ? <p className="ticket-wait">{loaded?.waiting?.note}</p>
+      : (current?.waiting ?? null) !== null ? <p className="ticket-wait">{current?.waiting?.note}</p>
         : words.note === null ? null : <p className="ticket-wait">{words.note}</p>}
     {mine === null || (mine.phase === 'loading' && loaded === null) ? <p role="status">Reading the ticket…</p> : null}
     {mine?.problem == null ? null : <p className="ticket-hint" role="status">{mine.problem}</p>}
@@ -388,7 +390,8 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
         <details><summary>Details</summary><p>{coverageText(loaded.coverage)}</p></details></section> : null}
     {(card.status === 'review' || card.status === 'done') && !changesView ? <ChangedFiles floor={floor} card={card} /> : null}
     {changesView
-      ? <DiffPanel card={card.id} expectedSeq={card.seq} transport={browserDiffTransport} /> : null}
+      ? <DiffPanel card={card.id} expectedSeq={card.seq} transport={browserDiffTransport}
+        ownCopy={decodeWorktree(agentRow(floor, card.claimed_by)?.worktree) !== null} /> : null}
     {loaded?.result == null ? null : <section aria-label="Check result"><h4>Last recorded check</h4>
       <p>{loaded.result.pass ? 'The check passed' : 'The check failed'}
         {loaded.result.exit === null ? '' : `, exit status ${loaded.result.exit}`}
