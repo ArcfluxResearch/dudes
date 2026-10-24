@@ -84,11 +84,12 @@ test('the engine step offers Claude three suggestions, Codex none, and a changed
   hire.showSection('engine');
   const values = (html) => [...html.matchAll(/<input type="radio" name="model"(?: checked="")? value="([^"]*)"/g)].map((match) => match[1]);
   assert.deepEqual(values(render()), ['', 'opus', 'sonnet', 'haiku']);
-  assert.match(render(), /Engine default/);
+  assert.match(render(), /Default model/);
   hire.editDraft({ engine: 'codex' });
   assert.equal(hire.getHireState().draft.model, undefined, 'a Claude model stayed on a Codex hire');
   assert.deepEqual(values(render()), ['']);
-  assert.match(render(), /name="model_name"/);
+  assert.match(render(), /placeholder="Leave empty to use the app&#x27;s default model"/);
+  assert.match(render(), /Leave empty and Codex chooses its default model/);
 });
 
 test('with a configured model the default says so, and a typed name shows in the text box', () => {
@@ -96,7 +97,7 @@ test('with a configured model the default says so, and a typed name shows in the
   fill();
   hire.showSection('engine');
   assert.match(render(), /Configured: haiku/);
-  assert.doesNotMatch(render(), /Engine default/);
+  assert.doesNotMatch(render(), /Default model/);
   hire.editDraft({ model: 'my-model' });
   assert.match(render(), /name="model_name"[^>]*value="my-model"/);
 });

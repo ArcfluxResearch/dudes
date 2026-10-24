@@ -13,20 +13,19 @@ import { UnavailableControls } from '../settings/SettingsView.tsx';
 import { INSTALL_COMMANDS, rowFor } from '../setup/daemon.ts';
 import { changeSetting } from '../settings/edit.ts';
 import { copyToClipboard } from '../setup/SetupView.tsx';
-import { decodeWorkspace } from '../workspace.ts';
 import { noProjects, viewConfirmed } from '../ticket/model.ts';
 import { AddProject, projectAddOn } from '../project/AddProject.tsx';
 import { EngineSignIn } from '../login/EngineSignIn.tsx';
 import type { ProviderRow } from '../setup/daemon.ts';
-import { HIRE_ENGINES, formatUsdMicros, isHireEngine } from './catalog.ts';
+import { HIRE_ENGINES, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
 import {
   LIMITS, MODEL_SUGGESTIONS, NO_PROJECT_LIST, agentsIn, checkHireStatus, lengthNote, ownCopyOffer, SECTIONS, browserHireDeps, chosenWorkspace,
-  chosenEngine, editDraft, freshSince, getHireState, moveSection, presenceOf, releasable,
+  chosenEngine, editDraft, freshSince, getHireState, moveSection, presenceOf, problemsIn, releasable,
   releaseAttempt, submitHire, TICKETS_OFF_AFTER, ticketsOff,
   sessionAfterRefusal, showSection, startAnotherHire, subscribeToHire,
 } from './hire.ts';
-import type { FieldName, HireAttempt, HireDraft, HireOutcome, HireState, OwnCopy } from './hire.ts';
+import type { FieldName, HireDraft, HireOutcome, HireState, OwnCopy } from './hire.ts';
 import type { EnrolledWorkspace } from './catalog.ts';
 
 /** What each engine may touch, as the operator must read it before choosing. */
@@ -55,12 +54,6 @@ function goalLine(row: AgentRow): string {
 function LengthNote({ value, limit }: { value: string; limit: number }) {
   const note = lengthNote(value, limit);
   return note === null ? null : <p className="hire-count" role="status">{note}</p>;
-}
-
-function cap(value: string | null, unit: 'usd' | 'tokens', perDay = false): string {
-  if (value === null) return 'No limit';
-  const amount = unit === 'usd' ? formatUsdMicros(value) : `${value} tokens`;
-  return perDay ? `${amount} per day` : amount;
 }
 
 /**
@@ -100,7 +93,7 @@ function SharedProjectNote({ names, copy }: { readonly names: readonly string[];
     {names.join(' and ')} already {names.length === 1 ? 'works' : 'work'} in this project. Two agents in one
     folder can overwrite each other, so Dudes holds their finished tickets for your review.{' '}
     {copy.state === 'available'
-      ? 'To keep them apart, work in its own copy (on the App step), or choose another project.'
+      ? 'To keep them apart, work in its own copy (on the Engine step), or choose another project.'
       : 'To keep them apart, choose another project.'}
   </p>;
 }
@@ -170,17 +163,20 @@ function ModelChoice({ engine, draft, frozen, configured, fixed, invalid }: {
         <label key={name} className="hire-choice">
           <input type="radio" name="model" value={name} checked={chosen === name}
             onChange={() => editDraft({ model: name })} />
-          <span className="hire-choice-label">{name === '' ? (configured === null ? 'Engine default' : `Configured: ${configured}`) : name}</span>
+          <span className="hire-choice-label">{name === '' ? (configured === null ? 'Default model' : `Configured: ${configured}`) : name}</span>
         </label>
       ))}
     </fieldset>
     <div className="hire-field">
       <label htmlFor="hire-model-name">Another model name</label>
       <input id="hire-model-name" name="model_name" type="text" autoComplete="off" spellCheck={false}
+        placeholder="Leave empty to use the app's default model"
         value={typed} disabled={frozen} aria-invalid={invalid}
         aria-describedby={invalid ? 'hire-problem' : undefined}
         onChange={(event) => editDraft({ model: event.target.value })} />
-      <p className="hire-count">Fixed for this agent. Dudes checks only the spelling; the app reports a name it does not know when the agent first runs.</p>
+      <p className="hire-count">{configured === null
+        ? `Leave empty and ${HIRE_ENGINES[engine]} chooses its default model.`
+        : `Leave empty to use the configured model, ${configured}.`} The engine checks the name when the agent first runs.</p>
     </div>
   </div>;
 }
@@ -214,11 +210,9 @@ export function HireWizardView({ hire, floor, onClose, onSettings }: {
   return (
     <section className="hire-wizard" id="hire-wizard" aria-labelledby="hire-title">
       <header className="hire-head">
-        <div>
-          <p className="agent-detail-kicker">Onboarding</p>
-          <h2 id="hire-title" tabIndex={-1}>Hire an agent</h2>
-        </div>
-        <button type="button" ref={handFocusOnLeave} data-focus-on-leave="hire-open" onClick={onClose}>Close</button>
+        <h2 id="hire-title" tabIndex={-1}>Hire an agent</h2>
+        {hire.outcome === null ? null : <button type="button" ref={handFocusOnLeave}
+          data-focus-on-leave="hire-open" onClick={onClose}>Close</button>}
       </header>
       {floor.onboarding === null && noProjects(floor) && floor.settings?.switches.hire !== false
         ? null : <UnavailableControls floor={floor} control="hire" />}
@@ -238,7 +232,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
   const noProject = catalog === null && noProjects(floor);
   const at = SECTIONS.findIndex((entry) => entry.key === hire.section);
   const workspace = chosenWorkspace(hire.draft, catalog);
-  const engine = chosenEngine(hire.draft, workspace);
+  const engine = chosenEngine(hire.draft, workspace, floor.daemon);
   const sharing = workspace === null ? [] : sharedProject(floor, workspace.workspaceId);
   const copy = ownCopyOffer(hire.draft, workspace, engine, sharing.length);
   const row = engine === null ? null : rowFor(floor.daemon, engine);
@@ -249,6 +243,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
   // A missing or signed-out engine holds the wizard on Engine, where its reason, Sign in and Check again are.
   const stuck = hire.section === 'engine' && missing !== null;
   const frozen = hire.attempt !== null;
+  const stepProblems = problemsIn(hire.draft, floor);
   const invalid = (field: FieldName) => hire.problem?.field === field;
   const described = (field: FieldName) => (invalid(field) ? 'hire-problem' : undefined);
 
@@ -263,7 +258,9 @@ function HireForm({ hire, floor, onClose, onSettings }: {
             {SECTIONS.map((entry, index) => (
               <li key={entry.key}>
                 <button type="button" aria-current={entry.key === hire.section ? 'step' : undefined}
-                  aria-disabled={stuck} onClick={() => { if (!stuck) showSection(entry.key); }}>
+                  aria-disabled={stuck || (index > at && stepProblems.some((problem) =>
+                    SECTIONS.findIndex((section) => section.key === problem.section) < index))}
+                  onClick={() => { if (!stuck) showSection(entry.key, floor); }}>
                   <span className="hire-index-number">{index + 1}</span>
                   <span className="hire-index-label">{entry.label}</span>
                   <span className="hire-index-hint">{entry.hint}</span>
@@ -279,7 +276,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
             <>
               <div className="hire-field">
                 <label htmlFor="hire-name">Name</label>
-                <input id="hire-name" name="name" type="text" autoComplete="off" spellCheck={false}
+                <input id="hire-name" name="name" type="text" required autoComplete="off" spellCheck={false}
                   value={hire.draft.name} disabled={frozen}
                   aria-invalid={invalid('name')} aria-describedby={described('name')}
                   onChange={(event) => editDraft({ name: event.target.value })} />
@@ -320,7 +317,8 @@ function HireForm({ hire, floor, onClose, onSettings }: {
                   aria-invalid={invalid('role')} aria-describedby={described('role')}
                   onChange={(event) => editDraft({ role: event.target.value })} />
                 <LengthNote value={hire.draft.role} limit={LIMITS.role} />
-                <p className="hire-count">Left empty, the role is engineer.</p>
+                <p className="hire-count">A label shown to people and other agents, not instructions for the agent.
+                  Leave empty to use engineer.</p>
               </div>
               </details>
             </>
@@ -352,7 +350,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
                 </dl></details>
               </>}
               {catalog === null || !projectAddOn(floor) ? null : <details className="hire-more" data-hire-add-project="true">
-                <summary>Work in another folder</summary>
+                <summary>Add another project</summary>
                 <AddProject floor={floor} />
               </details>}
               {workspace === null ? null : <SharedProjectNote names={sharing} copy={copy} />}
@@ -362,7 +360,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
             <>
               {workspace === null ? <p className="hire-note">Choose a project to see the engines it offers.</p> : (
                 <fieldset className="hire-choices" aria-invalid={invalid('engine')} aria-describedby={described('engine')}>
-                  <legend>Which app should do the work?</legend>
+                  <legend>Which engine should do the work?</legend>
                   {workspace.engines.map((name) => (
                     <label key={name} className="hire-choice">
                       <input type="radio" name="engine" value={name} checked={engine === name} disabled={frozen}
@@ -396,22 +394,6 @@ function HireForm({ hire, floor, onClose, onSettings }: {
                 </div>
               )}
               {engine === null ? null : <EngineSignIn engine={engine} row={row} terminal={floor.terminal} onSettings={onSettings} />}
-              {engine === null || workspace === null || catalog === null ? null : (
-                <details className="hire-more"><summary>Spending and turn limits</summary>
-                  <dl className="hire-facts" aria-label="Configured limits">
-                    <div><dt>Most turns for a task</dt><dd>{workspace.hopCap}</dd></div>
-                    <div><dt>Spending limit for a task</dt><dd>{cap(workspace.goalUsdMicros, 'usd')}</dd></div>
-                    <div><dt>Token limit for a task</dt><dd>{cap(workspace.goalTokens, 'tokens')}</dd></div>
-                    <div><dt>Daily spending limit for this agent</dt><dd>{cap(workspace.agentUsdPerDayMicros, 'usd', true)}</dd></div>
-                    <div><dt>Daily token limit for this agent</dt><dd>{cap(workspace.agentTokensPerDay, 'tokens', true)}</dd></div>
-                    <div><dt>Daily spending limit for the whole Floor</dt><dd>{cap(catalog.floorUsdPerDayMicros, 'usd', true)}</dd></div>
-                  </dl>
-                  <p className="hire-note">
-                    {`This agent runs at most ${workspace.hopCap} turns for a task. ${HIRE_ENGINES[engine]}'s own `
-                      + 'plan limits apply, and so does any limit shown above.'}
-                  </p>
-                </details>
-              )}
             </>
           )}
           {hire.problem === null || (noProject && hire.problem.field === 'workspace_id') ? null : (
@@ -433,7 +415,8 @@ function HireForm({ hire, floor, onClose, onSettings }: {
             onClick={() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }}>
             {hire.sending ? 'Hiring…' : 'Hire'}
           </button>
-          : <button type="button" className="hire-next" aria-disabled={frozen || stuck}
+          : <button type="button" className="hire-next" aria-disabled={frozen || stuck
+            || stepProblems.some((problem) => problem.section === hire.section)}
             onClick={() => { if (!frozen && !stuck) moveSection(1, floor); }}>Next</button>}
       </footer>
       {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <NoHireProjectHint floor={floor} />)
@@ -610,8 +593,8 @@ function AnswerBody({ outcome, hire, floor }: {
     case 'refused': {
       const session = sessionAfterRefusal(floor, hire.askedAtEpoch);
       if (outcome.note !== undefined && !hire.uncertain) {
-        return <><p className="hire-error" role="alert">Dudes refused these choices. No agent was hired. Review Details before trying again.</p>
-          <details className="hire-more"><summary>Details</summary><p>{outcome.note}</p></details></>;
+        return <><p className="hire-error" role="alert">No agent was hired.</p>
+          <p className="hire-note">{outcome.note}</p></>;
       }
       if (hire.uncertain) {
         // This refusal answered a check. The request before it has no known

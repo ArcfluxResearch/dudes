@@ -199,22 +199,37 @@ test('the offer waits while any ticket is open, and names the install command wh
   open({ projection: { lsn: 2, agents: [agent(ADA, 'Kim')], cards: [] } }, found(false, false));
   const html = card();
   assert.match(html, /Find Claude for Kim/);
-  assert.match(html, /daemon&#x27;s PATH/);
+  assert.match(html, /Dudes could not find Claude for Kim/);
+  assert.doesNotMatch(html, /daemon|PATH/);
   assert.match(html, /already installed[^]*Setup[^]*restart to find it/);
   assert.doesNotMatch(html, /is not installed on/);
   assert.match(html, /npm install -g @anthropic-ai\/claude-code/);
   assert.match(html, />Copy<\/button><button type="button">Recheck/);
 });
 
-test('with no agent the card says how to hire one, and Hire preselects the one project and the installed app', () => {
+test('Hire preselects the only project and available engine, including after choosing a project', () => {
   open({}, found(false, true));
   assert.match(card(), /Hire your first agent/);
   hire.prepareHire(store.getFloorState());
   const { draft } = hire.getHireState();
   assert.equal(draft.workspaceId, 'service');
   assert.equal(draft.engine, 'codex', 'Claude is not installed, so Codex is the choice');
+  hire.resetHire();
+  open({ onboarding: { ...ONBOARDING, workspaces: [...ONBOARDING.workspaces,
+    { ...ONBOARDING.workspaces[0], workspace_id: 'tools', label: 'Tools' }] } }, found(false, true));
+  const floor = store.getFloorState();
+  hire.prepareHire(floor);
+  assert.equal(hire.getHireState().draft.workspaceId, '', 'multiple projects need a choice');
+  hire.editDraft({ name: 'Kim', workspaceId: 'service' });
+  const workspace = hire.chosenWorkspace(hire.getHireState().draft, floor.onboarding);
+  assert.equal(hire.chosenEngine(hire.getHireState().draft, workspace, floor.daemon), 'codex');
+  assert.deepEqual(hire.problemsIn(hire.getHireState().draft, floor), []);
+  hire.editDraft({ engine: 'claude' });
+  assert.equal(hire.chosenEngine(hire.getHireState().draft, workspace, floor.daemon), 'claude',
+    'an explicit engine choice survives the available default');
   open({}, found(false, false));
   assert.match(card(), /install one, then press Recheck/);
+  assert.doesNotMatch(card(), /daemon|PATH/);
 });
 
 test('Hire says nothing about length until a field is near its limit, then says plainly that it is too long', () => {
