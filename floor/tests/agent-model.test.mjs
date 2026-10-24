@@ -65,7 +65,15 @@ test('with a turn open the panel shows what it runs and shows next only when it 
   snapshot(cleared, { claude: { provider: 'claude', program: 'claude', found: true, configured_model: 'haiku' } });
   assert.match(html(cleared), /next turn: <strong>haiku<\/strong>/, 'an absent override resolves through the report');
   snapshot(cleared);
-  assert.doesNotMatch(html(cleared), /next turn/, 'a model the page cannot name is not guessed');
+  assert.match(html(cleared), /Model this turn: <strong>sonnet<\/strong> · next turn: <strong>the engine.s own model<\/strong>/,
+    'an unnamed next is the engine’s own model, so a real difference is shown');
+  const unrecorded = { ...base, status: 'running', model: 'opus' };
+  snapshot(unrecorded);
+  assert.match(html(unrecorded), /Model this turn: <strong>the engine.s own model<\/strong> · next turn: <strong>opus<\/strong>/,
+    'an open turn that recorded no model ran on the engine’s own');
+  const alike = { ...base, status: 'running' };
+  snapshot(alike);
+  assert.doesNotMatch(html(alike), /next turn/, 'the engine’s own model on both sides is no difference');
 });
 
 test('a pinned model replaces next, says so, and offers no change', () => {
@@ -74,7 +82,36 @@ test('a pinned model replaces next, says so, and offers no change', () => {
   const markup = html(running);
   assert.match(markup, /set in the configuration, so the next turn uses it/);
   assert.doesNotMatch(markup, /Change model/);
-  assert.equal(model.modelAvailable(floor.getFloorState(), running), false);
+  assert.match(markup, /Remove my override/, 'clearing stays allowed under a pin when an override exists');
+  assert.equal(model.modelAvailable(floor.getFloorState(), running), true);
+  const bare = { ...running, model: undefined };
+  snapshot(bare, { claude: { provider: 'claude', program: 'claude', found: true, configured_model: 'haiku', model_fixed: true } });
+  assert.doesNotMatch(html(bare), /Remove my override|Change model/);
+  assert.equal(model.modelAvailable(floor.getFloorState(), bare), false);
+});
+
+test('under a pin the person can only clear their override', async () => {
+  const row = { ...base, model: 'opus' };
+  snapshot(row, { claude: { provider: 'claude', program: 'claude', found: true, configured_model: 'haiku', model_fixed: true } });
+  const ok = (p) => JSON.stringify({ request_id: p.request_id, state: 'changed', agent: p.agent, model: p.model });
+  const d = deps([{ status: 200, body: ok }]);
+  model.beginModel(row);
+  model.editModel('sonnet');
+  await model.submitModel(row, d);
+  assert.equal(d.calls.length, 0, 'a named model is not sent under a pin');
+  model.resetModel();
+  await model.removeOverride(row, d);
+  const sent = JSON.parse(d.calls[0].init.body);
+  assert.deepEqual([sent.expected, sent.model], ['opus', null]);
+  assert.equal(model.getModelState().outcome, 'changed');
+});
+
+test('an engine the daemon has not confirmed offers no change', () => {
+  snapshot(base, { claude: { provider: 'claude', program: 'claude', found: true, model_change_unsupported: true } });
+  assert.doesNotMatch(html(base), /Change model/);
+  assert.equal(model.modelAvailable(floor.getFloorState(), base), false);
+  snapshot(base, { claude: { provider: 'claude', program: 'claude', found: true } });
+  assert.match(html(base), /Change model/);
 });
 
 test('the change control needs the Floor control switch and a managed agent', () => {
@@ -144,7 +181,11 @@ test('a bad name is not sent, and each refusal is told in words', async () => {
   assert.equal(model.getModelState().outcome, 'refused');
   assert.equal(model.getModelState().reason, 'stale_model');
   assert.match(html(base), /changed since this page read it/);
-  for (const reason of ['agent_absent', 'agent_attached', 'model_unsupported', 'model_fixed', 'stale_model']) {
+  const off = model.decodeModelResponse(409, JSON.stringify({ request_id: 'r', state: 'refused', reason: 'action_off' }),
+    { request_id: 'r', agent: ID, expected: null, model: 'haiku' });
+  assert.deepEqual(off, { outcome: 'refused', reason: 'action_off' });
+  assert.match(model.REFUSAL_WORDS.action_off, /Pause, resume and rename/);
+  for (const reason of ['agent_absent', 'agent_attached', 'model_unsupported', 'model_fixed', 'stale_model', 'action_off']) {
     assert.ok(model.REFUSAL_WORDS[reason].length > 20, reason);
   }
 });

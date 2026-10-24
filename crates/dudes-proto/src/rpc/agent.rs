@@ -182,7 +182,8 @@ pub struct McpResult {
     pub changed: bool,
 }
 
-/// `agent.look` params. The engine, model and structural identity remain fixed.
+/// `agent.look` params. The engine and structural identity remain fixed. The model changes through
+/// `agent.model`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 // Field-level `required` would remove the `null` arm from these Option schemas.

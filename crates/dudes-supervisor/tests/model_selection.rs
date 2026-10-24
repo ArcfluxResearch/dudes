@@ -527,6 +527,74 @@ fn a_pinned_model_is_what_the_turn_records() {
     );
 }
 
+/// A pin the record cannot name (an empty or non-UTF-8 value) is still a pin: the launch passes
+/// it, so the refusal and the turn's record read it through the same helper, and the hire's
+/// override is not what the turn records.
+#[test]
+fn an_unreadable_pin_is_still_a_pin_and_the_override_is_not_recorded() {
+    let cell = configured(Some("model-alpha"));
+    let pinned = Selecting {
+        configured: Arc::clone(&cell),
+        pin: Some(""),
+    };
+    assert_eq!(
+        pinned.configuration_pin(),
+        Some(ModelSelection::named("model-alpha")),
+        "a pin with no value is a pin, answered by the adapter's own selection"
+    );
+    let unpinned = Selecting {
+        configured: cell.clone(),
+        pin: None,
+    };
+    assert_eq!(unpinned.configuration_pin(), None);
+
+    let mut h = pinned_harness(&cell, Some(""));
+    let agent = h.hire_naming(Some(dudes_types::ModelName::parse("model-hired").unwrap()));
+    h.set_goal(agent, &["npm", "test"]);
+    h.open_turn(agent).expect("a turn was issued");
+    assert_eq!(
+        recorded(&h),
+        vec![Some(ModelSelection::named("model-alpha"))],
+        "the turn records what the launch passes, not the override"
+    );
+}
+
+fn model_changes(h: &Harness) -> usize {
+    h.records()
+        .filter(|record| matches!(record, Record::AgentModelChanged { .. }))
+        .count()
+}
+
+/// A change for an absent or retired agent, or one that sets the override it already holds,
+/// appends nothing.
+#[test]
+fn a_model_change_that_changes_nothing_writes_no_record() {
+    let cell = configured(None);
+    let mut h = harness(&cell);
+    let agent = h.hire_naming(Some(dudes_types::ModelName::parse("model-hired").unwrap()));
+    change_model(&mut h, agent, Some("model-hired"));
+    assert_eq!(model_changes(&h), 0, "the override already held it");
+    change_model(&mut h, agent, Some("model-next"));
+    assert_eq!(model_changes(&h), 1);
+    change_model(&mut h, agent, Some("model-next"));
+    assert_eq!(model_changes(&h), 1, "setting it again writes nothing");
+
+    change_model(
+        &mut h,
+        AgentId::from_parts(1_787_394_600_000, 7),
+        Some("model-next"),
+    );
+    assert_eq!(model_changes(&h), 1, "an unknown agent writes nothing");
+
+    h.drive(Input::Command(Command::Retire {
+        agent,
+        reason: "done".to_owned(),
+        browser_retire: None,
+    }));
+    change_model(&mut h, agent, Some("model-late"));
+    assert_eq!(model_changes(&h), 1, "a retired agent writes nothing");
+}
+
 #[test]
 fn a_legacy_issue_without_a_selection_reissues_under_current_configuration() {
     let cell = configured(Some("model-beta"));

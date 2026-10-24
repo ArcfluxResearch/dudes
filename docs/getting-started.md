@@ -99,8 +99,10 @@ Dudes reads no engine's credentials or files.
    first runs. You can change an agent's model later from its panel on the Floor (it needs `floor.control`)
    or with `dudes model <agent> <name>`; the agent keeps its session and history, a run already under way
    keeps its model, and the next run uses the new one. `dudes model <agent> --clear` returns the agent to the
-   app's own model. A change is refused while a person holds the agent's terminal, and while the
-   configuration passes `--model` in Claude Code's extra arguments. From the command line, hire an agent, then give it a goal with the id that `hire`
+   app's own model. This works for Claude Code, Codex and Pi, each checked to keep the session's earlier
+   messages under a new model; an app that has not been checked refuses the change. A change is refused while
+   a person holds the agent's terminal, and while the configuration passes `--model` in Claude Code's extra
+   arguments (removing your own override is still allowed). From the command line, hire an agent, then give it a goal with the id that `hire`
    prints. This one gets a folder of its own. Dudes cannot check another agent's engine settings
    for a ticket, so in a repository two agents share it holds tickets in **Needs you** for review:
 

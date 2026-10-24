@@ -12721,7 +12721,7 @@
     },
     "LookParams": {
       "additionalProperties": false,
-      "description": "`agent.look` params. The engine, model and structural identity remain fixed.",
+      "description": "`agent.look` params. The engine and structural identity remain fixed. The model changes through\n`agent.model`.",
       "properties": {
         "accent": {
           "anyOf": [

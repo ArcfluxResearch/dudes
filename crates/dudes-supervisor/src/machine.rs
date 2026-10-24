@@ -2979,12 +2979,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// engine wins over both, so the selection a turn records is the model its launch passes.
     fn model_selection(&self, row: &AgentRow) -> Option<ModelSelection> {
         let adapter = self.adapters.get(row.provider)?;
-        if let Some(pin) = adapter
-            .fixed_model()
-            .and_then(|pin| pin.into_string().ok())
-            .filter(|pin| !pin.is_empty())
-        {
-            return Some(ModelSelection::named(pin));
+        if let Some(pin) = adapter.configuration_pin() {
+            return Some(pin);
         }
         Some(row.model.as_ref().map_or_else(
             || adapter.model_selection(),
@@ -4447,15 +4443,23 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 model,
                 by,
                 request,
-            } => self.persist(
-                Record::AgentModelChanged {
-                    agent,
-                    model,
-                    by,
-                    request,
-                },
-                Then::Fold,
-            ),
+            } => {
+                let Some(row) = self.world.agents.get(&agent) else {
+                    return;
+                };
+                if row.retired || row.model == model {
+                    return;
+                }
+                self.persist(
+                    Record::AgentModelChanged {
+                        agent,
+                        model,
+                        by,
+                        request,
+                    },
+                    Then::Fold,
+                );
+            }
             Command::ReplaceMcp { agent, mcp_servers } => {
                 let Some(row) = self.world.agents.get(&agent) else {
                     return;

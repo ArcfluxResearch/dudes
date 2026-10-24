@@ -1153,7 +1153,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(RENAME_PANEL),
     ...Array(6).fill(ADD_PROJECT_FORM),
     ...Array(4).fill(LOOK_PANEL),
-    ...Array(4).fill(MODEL_PANEL),
+    ...Array(5).fill(MODEL_PANEL),
     ...Array(3).fill(SETUP_VIEW),
     ...Array(10).fill(SETTINGS_VIEW),
     ...Array(5).fill(FIRST_RUN_GUIDE),
@@ -1238,7 +1238,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => beginLook(row)', 'cancelLook', '() => { void checkLook(browserLookDeps); }',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, MODEL_PANEL), 'utf8')), [
-    'cancelModel', '() => beginModel(row)', '() => { void checkModel(browserModelDeps); }',
+    '() => { void removeOverride(row, browserModelDeps); }', 'cancelModel', '() => beginModel(row)',
+    '() => { void checkModel(browserModelDeps); }',
   ]);
   const archiveSyntax = parsedByExtension(archive, ARCHIVED_AGENTS);
   assert.deepEqual(archiveSyntax.statements.filter(ts.isImportDeclaration).map((node) =>

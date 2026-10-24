@@ -448,6 +448,7 @@ where
                         program: adapter.program().to_os_string(),
                         model,
                         model_fixed,
+                        model_change: adapter.resumes_under_changed_model(),
                     }
                 })
             })

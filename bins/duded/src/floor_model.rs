@@ -154,6 +154,9 @@ pub(crate) struct IndexedModel {
 #[derive(Debug, Default)]
 pub(crate) struct DurableModelIndex {
     changes: BTreeMap<Hex32, IndexedModel>,
+    /// Requests answered because the override already held, which append no record. They live
+    /// for this run only, so a retry after another change to the agent still gets its first answer.
+    held: BTreeMap<Hex32, IndexedModel>,
 }
 
 impl DurableModelIndex {
@@ -193,8 +196,14 @@ impl DurableModelIndex {
         Ok(())
     }
 
+    pub(crate) fn remember_held(&mut self, request_id_digest: Hex32, held: IndexedModel) {
+        self.held.insert(request_id_digest, held);
+    }
+
     pub(crate) fn get(&self, request_id_digest: Hex32) -> Option<&IndexedModel> {
-        self.changes.get(&request_id_digest)
+        self.changes
+            .get(&request_id_digest)
+            .or_else(|| self.held.get(&request_id_digest))
     }
 }
 

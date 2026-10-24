@@ -274,6 +274,16 @@ pub trait Adapter: Send + Sync {
     fn fixed_model(&self) -> Option<std::ffi::OsString> {
         None
     }
+    /// The selection the configuration's fixed model gives every turn of this engine, or `None`
+    /// when nothing fixes it. A fixed model the record cannot name (empty, or not UTF-8) is still
+    /// a pin: the launch passes it, so the turn records the adapter's own selection and an agent's
+    /// override never applies. The one place the pin is read, for the refusal and the record alike.
+    fn configuration_pin(&self) -> Option<ModelSelection> {
+        self.fixed_model().map(|pin| match pin.into_string() {
+            Ok(name) if !name.is_empty() => ModelSelection::named(name),
+            _ => self.model_selection(),
+        })
+    }
     /// Whether this engine continues a confirmed session when the model named for the next turn
     /// differs from the one the session last ran under. An engine is checked against its own
     /// flags or protocol before it answers yes. An engine nobody has checked answers no, and a

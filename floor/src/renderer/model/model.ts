@@ -20,8 +20,9 @@ export interface ModelPayload {
 interface ModelAttempt { readonly payload: ModelPayload; readonly body: string }
 export type ModelOutcome = 'changed' | 'pending' | 'refused' | 'conflict' | 'forbidden'
   | 'rejected' | 'unavailable' | 'unknown';
-export type ModelRefusal = 'agent_absent' | 'agent_attached' | 'model_unsupported' | 'model_fixed' | 'stale_model';
-const REFUSALS: readonly string[] = ['agent_absent', 'agent_attached', 'model_unsupported', 'model_fixed', 'stale_model'];
+export type ModelRefusal = 'agent_absent' | 'agent_attached' | 'model_unsupported' | 'model_fixed' | 'stale_model' | 'action_off';
+const REFUSALS: readonly string[] = ['agent_absent', 'agent_attached', 'model_unsupported', 'model_fixed', 'stale_model',
+  'action_off'];
 export interface ModelState {
   readonly editor: string | null;
   readonly expected: string | null;
@@ -76,19 +77,28 @@ export interface ModelView {
   readonly next: string | null;
   /** The configuration sets the engine's model, so the override does not apply. */
   readonly pinned: boolean;
+  /** The daemon has not confirmed that this engine continues a session under another model. */
+  readonly unsupported: boolean;
+  /** The open turn runs under a model other than the one the next turn will use. */
+  readonly differs: boolean;
 }
+export const ENGINE_OWN = 'the engine’s own model';
 export function modelView(floor: FloorState, row: AgentRow): ModelView {
   const configured = typeof row.provider === 'string' ? rowFor(floor.daemon, row.provider) : null;
   const pinned = configured?.modelFixed === true;
   const next = pinned ? configured.configuredModel ?? null : overrideOf(row) ?? configured?.configuredModel ?? null;
-  const current = typeof row.turn_model === 'string' && row.turn_model !== '' ? row.turn_model : null;
-  return Object.freeze({ current, next, pinned });
+  const turnModel = typeof row.turn_model === 'string' && row.turn_model !== '' ? row.turn_model : null;
+  const current = turnModel ?? (row.status === 'running' ? ENGINE_OWN : null);
+  const differs = current !== null && current !== (next ?? ENGINE_OWN);
+  return Object.freeze({ current, next, pinned, unsupported: configured?.modelChangeUnsupported === true, differs });
 }
 
+/** Whether this page may send a model change for the agent now. Under a pin only clearing an override is allowed. */
 export function modelAvailable(floor: FloorState, row: AgentRow): boolean {
+  const view = modelView(floor, row);
   return floor.control && floor.phase === 'live' && !floor.stale && floor.snapshotEpoch === floor.epoch
     && floor.agents.some((agent) => agent.id === row.id) && row.mode !== 'attached'
-    && row.status !== 'attached' && !modelView(floor, row).pinned;
+    && row.status !== 'attached' && !view.unsupported && (!view.pinned || overrideOf(row) !== null);
 }
 export function modelProblem(draft: string): string | null {
   return draft === '' || MODEL_SHAPE.test(draft) ? null : BAD_MODEL;
@@ -114,12 +124,19 @@ export function cancelModel(): void { commit({ ...state, editor: null, expected:
 export async function submitModel(row: AgentRow, deps: ModelDeps): Promise<void> {
   const { draft, expected } = state;
   if (!modelAvailable(getFloorState(), row) || modelBlocked(state, deps.session()) || state.editor !== row.id
-    || modelProblem(draft) !== null || !deps.signedIn()) return;
+    || modelProblem(draft) !== null || !deps.signedIn()
+    || (modelView(getFloorState(), row).pinned && draft !== '')) return;
   const payload = Object.freeze({ request_id: mintAttemptId(deps.random), agent: row.id, expected,
     model: draft === '' ? null : draft });
   const attempt = Object.freeze({ payload, body: JSON.stringify(payload) });
   commit({ ...state, attempt, sending: true, outcome: null, reason: null, uncertain: false, refusedUnder: null });
   await send(attempt, deps);
+}
+/** Clear the agent's override, which stays allowed when the configuration pins the model. */
+export async function removeOverride(row: AgentRow, deps: ModelDeps): Promise<void> {
+  beginModel(row);
+  editModel('');
+  await submitModel(row, deps);
 }
 export async function checkModel(deps: ModelDeps): Promise<void> {
   const { attempt, outcome, sending } = state;
@@ -177,4 +194,5 @@ export const REFUSAL_WORDS: Readonly<Record<ModelRefusal, string>> = Object.free
   model_unsupported: 'This engine cannot continue a session under another model, so the model cannot change.',
   model_fixed: 'The configuration sets this engine’s model, so it cannot be changed here.',
   stale_model: 'The agent’s model changed since this page read it. Check it and try again.',
+  action_off: 'Changing a model from this page was turned off. Turn on Pause, resume and rename under Floor switches in Settings, then try again.',
 });

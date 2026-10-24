@@ -175,7 +175,9 @@ impl Adapter for PiAdapter {
         ModelSelection::provider_default()
     }
 
-    /// Pi takes `--model` beside `--session`, and records a model change inside the session it continues.
+    /// Checked with Pi 1.0.4 against a local stand-in for a chat completions API: three turns on
+    /// one `--session` under three different `--model` values each sent the named model, and each
+    /// request carried every earlier message (2, 4, then 6). Pi records the change in its session.
     fn resumes_under_changed_model(&self) -> bool {
         true
     }

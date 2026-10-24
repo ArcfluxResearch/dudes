@@ -42,6 +42,8 @@ pub(crate) struct Configured {
     pub(crate) model: Option<String>,
     /// Whether that model is fixed in a way a hire's own model cannot replace.
     pub(crate) model_fixed: bool,
+    /// Whether the engine is confirmed to continue a session under a changed model.
+    pub(crate) model_change: bool,
 }
 
 impl Configured {
@@ -352,6 +354,9 @@ impl Shared {
                     model_fixed: self.providers.iter().any(|configured| {
                         configured.provider == found.provider && configured.model_fixed
                     }),
+                    model_change_unsupported: self.providers.iter().any(|configured| {
+                        configured.provider == found.provider && !configured.model_change
+                    }),
                     configured_model: self
                         .providers
                         .iter()
@@ -392,6 +397,8 @@ struct ProviderView {
     configured_model: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     model_fixed: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    model_change_unsupported: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -820,6 +827,7 @@ mod tests {
                 program: OsString::from("claude"),
                 model: Some("haiku".to_owned()),
                 model_fixed: true,
+                model_change: false,
             }],
             path: None,
             home: Home::default(),
@@ -832,6 +840,10 @@ mod tests {
         let view = serde_json::to_value(shared.view(&rows, &probes)).expect("the view serializes");
         assert_eq!(view["providers"][0]["configured_model"], "haiku");
         assert_eq!(view["providers"][0]["model_fixed"], true);
+        assert_eq!(
+            view["providers"][0]["model_change_unsupported"], true,
+            "an engine not confirmed to continue under a changed model says so"
+        );
     }
 
     #[test]

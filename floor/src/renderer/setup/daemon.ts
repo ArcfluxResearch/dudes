@@ -32,6 +32,8 @@ export interface ProviderRow {
   readonly configuredModel?: string;
   /** Present when the configuration fixes the model in a way a hire cannot replace. */
   readonly modelFixed?: true;
+  /** Present when the daemon has not confirmed that this engine continues a session under another model. */
+  readonly modelChangeUnsupported?: true;
 }
 
 export interface DaemonReport {
@@ -55,7 +57,8 @@ const MAX_MODEL_BYTES = 256;
 const CONTROL = /\p{Cc}/u;
 const UTF8 = new TextEncoder();
 const REPORT_KEYS = Object.freeze(['state_dir', 'providers']);
-const ROW_KEYS = Object.freeze(['provider', 'program', 'found', 'path', 'detail', 'sign_in', 'configured_model', 'model_fixed']);
+const ROW_KEYS = Object.freeze(['provider', 'program', 'found', 'path', 'detail', 'sign_in', 'configured_model', 'model_fixed',
+  'model_change_unsupported']);
 const SIGN_IN_STATES: readonly SignInState[] = Object.freeze(['signed_in', 'signed_out', 'unknown']);
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -87,10 +90,12 @@ function row(value: unknown): ProviderRow | null {
     return null;
   }
   const configured = value.configured_model === undefined ? null : text(value.configured_model, MAX_MODEL_BYTES);
-  if (configured === undefined || (value.model_fixed !== undefined && value.model_fixed !== true)) return null;
+  if (configured === undefined || (value.model_fixed !== undefined && value.model_fixed !== true)
+    || (value.model_change_unsupported !== undefined && value.model_change_unsupported !== true)) return null;
   return Object.freeze({ provider, program, found: value.found, path, detail, signIn,
     ...(configured === null ? {} : { configuredModel: configured }),
-    ...(value.model_fixed === true ? { modelFixed: true as const } : {}) });
+    ...(value.model_fixed === true ? { modelFixed: true as const } : {}),
+    ...(value.model_change_unsupported === true ? { modelChangeUnsupported: true as const } : {}) });
 }
 
 /**

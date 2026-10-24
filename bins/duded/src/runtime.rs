@@ -2486,7 +2486,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.sup
             .adapters()
             .get(provider)
-            .is_some_and(|adapter| adapter.fixed_model().is_some())
+            .is_some_and(|adapter| adapter.configuration_pin().is_some())
     }
 
     /// What a hire into its own copy needs before anything is made: a Claude agent on a platform

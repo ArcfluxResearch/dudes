@@ -7,8 +7,8 @@ import { getFloorState, subscribeToFloor } from '../floor/store.ts';
 import { MODEL_SUGGESTIONS } from '../onboarding/hire.ts';
 import { isHireEngine } from '../onboarding/catalog.ts';
 import type { AgentRow } from '../scene/cast.ts';
-import { REFUSAL_WORDS, browserModelDeps, beginModel, cancelModel, checkModel, editModel, getModelState,
-  modelAvailable, modelBlocked, modelProblem, modelView, submitModel, subscribeToModel } from './model.ts';
+import { ENGINE_OWN, REFUSAL_WORDS, browserModelDeps, beginModel, cancelModel, checkModel, editModel, getModelState,
+  modelAvailable, modelBlocked, modelProblem, modelView, removeOverride, submitModel, subscribeToModel } from './model.ts';
 
 /** Which model the agent runs, and, where the operator may, a way to change it for the next turn. */
 export function ModelEditor({ row }: { readonly row: AgentRow }) {
@@ -21,16 +21,16 @@ export function ModelEditor({ row }: { readonly row: AgentRow }) {
   const available = modelAvailable(floor, row);
   const blocked = modelBlocked(state, floorSessionGeneration());
   const editing = available && state.editor === row.id && !blocked;
-  const next = view.next === null ? 'the engine’s own model' : view.next;
-  const differs = view.current !== null && view.next !== null && view.current !== view.next;
+  const next = view.next === null ? ENGINE_OWN : view.next;
   return <section className="agent-model" aria-label={`Model for ${name}`} data-agent-model={row.id}>
     <p className="agent-model-line" data-model-current={view.current ?? ''} data-model-next={view.next ?? ''}>
       {view.current === null
         ? <>Model: <strong>{next}</strong></>
-        : <>Model this turn: <strong>{view.current}</strong>{differs ? <> · next turn: <strong>{view.next}</strong></> : null}</>}
+        : <>Model this turn: <strong>{view.current}</strong>{view.differs ? <> · next turn: <strong>{next}</strong></> : null}</>}
       {view.pinned ? ' (set in the configuration, so the next turn uses it)' : ''}
     </p>
-    {!available ? null : editing ? <form onSubmit={(event) => { event.preventDefault(); void submitModel(row, browserModelDeps); }}
+    {!available ? null : view.pinned ? <button type="button" disabled={blocked}
+      onClick={() => { void removeOverride(row, browserModelDeps); }}>Remove my override</button> : editing ? <form onSubmit={(event) => { event.preventDefault(); void submitModel(row, browserModelDeps); }}
       onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelModel(); } }}>
       <fieldset className="hire-choices">
         <legend>Model for the next turn</legend>

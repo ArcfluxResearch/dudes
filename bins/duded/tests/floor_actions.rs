@@ -8942,7 +8942,8 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     assert_eq!(
         frame["daemon"],
         json!({"state_dir":"~/state","providers":[
-            {"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown"}
+            {"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown",
+             "model_change_unsupported":true}
         ]})
     );
     one_launch(&running.handle, &fixture, &home.path().join("work-a"));
@@ -8961,7 +8962,7 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     assert_eq!(
         frame["daemon"]["providers"],
         json!([{"provider":"claude","program":"prog","found":true,"path":outside_prog,
-            "sign_in":"unknown"}]),
+            "sign_in":"unknown","model_change_unsupported":true}]),
         "a path outside the home is shown in full, with no restart"
     );
     one_launch(&running.handle, &fixture, &home.path().join("work-b"));
@@ -8976,7 +8977,7 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     let (frame, _) = snapshot(&page);
     assert_eq!(
         frame["daemon"]["providers"],
-        json!([{"provider":"claude","program":"prog","found":false}])
+        json!([{"provider":"claude","program":"prog","found":false,"model_change_unsupported":true}])
     );
     let outcome = one_launch(&running.handle, &fixture, &home.path().join("work-c"));
     assert!(
@@ -15809,6 +15810,41 @@ fn browser_model_change_applies_to_the_next_turn_and_refuses_stale_requests() {
     let before = model_changes(&fixture);
     assert_eq!(post_model(&page, &first).1, original);
     assert_eq!(model_changes(&fixture), before);
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// A request answered because the override already held writes no record, and its retry after
+/// a command-line change still gets the first answer instead of a refusal that contradicts it.
+#[test]
+fn a_model_change_that_found_the_override_already_set_is_answered_alike_on_retry() {
+    let fixture = Fixture::new();
+    let settings = goal_settings(&fixture, true);
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    let page = exchange(addr, &issue(&settings).bootstrap);
+
+    let first = model_body(&request_id(1), agent, None, None);
+    let (head, original) = post_model(&page, &first);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(original["model"], Value::Null);
+    assert!(model_changes(&fixture).is_empty(), "nothing needed writing");
+
+    running
+        .handle
+        .ask(Ask::Model {
+            params: dudes_proto::rpc::agent::ModelParams {
+                agent,
+                model: Some(dudes_types::ModelName::parse("opus").unwrap()),
+            },
+            by: dudes_proto::Actor::Peer { pid: 7, uid: None },
+        })
+        .unwrap();
+    let (head, retried) = post_model(&page, &first);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(retried, original, "the retry repeats the first answer");
+    assert_eq!(model_changes(&fixture).len(), 1, "and appends nothing");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 

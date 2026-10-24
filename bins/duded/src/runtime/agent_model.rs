@@ -150,6 +150,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             });
         }
         if self.model_held(request.agent, request.model.as_ref()) {
+            self.ctx.model_index.remember_held(
+                request.request_id_digest,
+                crate::floor_model::IndexedModel {
+                    request_digest: request.request_digest,
+                    agent: request.agent,
+                    model: request.model.clone(),
+                },
+            );
             return Ok(changed(request.model.clone()));
         }
         let pumped = self.pump_browser(
