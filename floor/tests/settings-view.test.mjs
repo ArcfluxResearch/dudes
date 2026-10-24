@@ -68,10 +68,10 @@ test('Settings shows read-only running values, local commands, Setup and About',
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, git } }), onSetup() {} }));
     assert.match(gitRow(false), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> Off <button type="button">Turn on<\/button><\/dd>/);
     assert.match(gitRow(true), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
-    assert.match(html, /<dt>Start new goals<\/dt><dd><span class="settings-says">[^<]*<\/span> Off It needs Change goals and Hire agents\. <button type="button">Turn on<\/button><\/dd>/);
+    assert.match(html, /<dt>Start new tasks<\/dt><dd><span class="settings-says">[^<]*<\/span> Off It needs Change tasks and Hire agents\. <button type="button">Turn on<\/button><\/dd>/);
     const renewOn = renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, renew: true } }), onSetup() {} }));
-    assert.match(renewOn, /<dt>Start new goals<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
+    assert.match(renewOn, /<dt>Start new tasks<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
     const hint = (control) => renderToStaticMarkup(createElement(UnavailableControls, { floor: floor(), control }));
     assert.match(hint('retire'), /Turn on Pause, resume and rename and Retire agents under\s+Floor switches in Settings/);
     assert.match(hint('terminal'), /turn on Attach terminals under Floor switches in Settings, then restart Dudes/);

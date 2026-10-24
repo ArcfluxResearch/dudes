@@ -84,8 +84,8 @@ export function recoveryEnabled(floor: FloorState, row: AgentRow | null): boolea
 export function draftProblem(draft: Draft, floor: FloorState, session: number): string | null {
   const row = floor.agents.find(agent => agent.id === draft.inspection.expected.work.agent) ?? null;
   if (!liveReader(floor)) return 'Recovery waits for a live, confirmed Floor view. Your choice and receipts are kept.';
-  if (!floor.recovery || !floor.control) return 'Recovery needs floor.recovery and floor.control. Your choice and receipts are kept. Enable both locally, then restart the daemon.';
-  if (session !== draft.session || floor.epoch !== draft.epoch) return 'This page has a different Floor session or snapshot. Inspect again and make a fresh choice. Nothing is sent automatically.';
+  if (!floor.recovery || !floor.control) return 'Turn on Recover interrupted tasks and Pause, resume and rename under Floor switches in Settings, then restart Dudes. Your choice and receipts are kept.';
+  if (session !== draft.session || floor.epoch !== draft.epoch) return 'This page has a different sign-in or a newer update. Inspect again and make a fresh choice. Nothing is sent automatically.';
   if (!recoveryEnabled(floor, row) || row === null || goalIdOf(row) !== draft.inspection.expected.work.goal
     || (row.control_lsn ?? null) !== draft.inspection.expected.control_lsn) {
     return 'The inspected target changed. Inspect again and make a fresh choice. The earlier request keeps its original target.';
@@ -144,7 +144,7 @@ export async function inspectRecovery(agent: string, deps: RecoveryDeps): Promis
   if (state.inspections.get(agent) !== marker) return;
   if (result === null) {
     view(agent, { kind: 'problem', text: forbidden ? 'This Floor session cannot inspect recovery. Open Dudes to sign in again in this browser, then inspect explicitly.'
-      : 'Recovery could not be inspected. No choice was submitted. Inspect again when the daemon is available.' });
+      : 'Recovery could not be inspected. No choice was submitted. Inspect again when Dudes is available.' });
     return;
   }
   if (result.state === 'unavailable') { view(agent, { kind: 'unavailable', reason: result.reason }); return; }

@@ -49,7 +49,7 @@ import { floorFetch } from '../../transport.ts';
 const GOAL_ID = AGENT_ID;
 
 /** The line fixed for a change that must wait for the running turn, drawn and refused alike. */
-export const TURN_RUNNING = 'You can change the goal when the current turn ends';
+export const TURN_RUNNING = 'You can change the task when the current work attempt ends';
 
 /** What the new goal inherits from the one it replaces, read from the projection's goal view. */
 export interface CarryOver {
@@ -255,16 +255,16 @@ const RENEW_REASONS: ReadonlySet<string> = new Set(['agent_absent', 'agent_halte
 export type GoalRefusalReason = FixedRefusal | CheckRefusal;
 
 export const REFUSAL_REASONS: Readonly<Record<FixedRefusal, string>> = Object.freeze({
-  stale_goal: 'This agent’s goal changed since this page read it, so nothing was recorded. '
+  stale_goal: 'This agent’s task changed since this page read it, so nothing was recorded. '
     + 'The floor is being refreshed.',
   turn_open: TURN_RUNNING,
-  predicate_claimed: 'This goal uses a Claimed card status, which cannot prove completion, so nothing was recorded.',
-  predicate_todo: 'This goal uses a Todo card status, which cannot prove completion, so nothing was recorded.',
-  goal_exhausted: 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-    + 'Start a new goal is available when Start new goals is on in Settings and this agent’s project is enrolled.',
+  predicate_claimed: 'This task checks whether a card is assigned, which cannot prove that work finished. Nothing changed.',
+  predicate_todo: 'This task checks whether a card is To do, which cannot prove that work finished. Nothing changed.',
+  goal_exhausted: 'This task reached a work attempt or spending limit, so nothing was recorded. '
+    + 'Start a new task is available when Start new tasks is on in Settings and this agent’s project is enrolled.',
   agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
   agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
-  goal_not_exhausted: 'This goal still has turns or dollars left, so nothing was recorded. Change its text instead.',
+  goal_not_exhausted: 'This task still has work attempts or spending allowance, so nothing was recorded. Change its text instead.',
   workspace_unavailable: 'This agent’s project is no longer set up at its folder, so that check cannot be '
     + 'chosen. Nothing changed.',
   profile_changed: 'The operator changed that check after this page read it. Nothing changed. Choose again.',
@@ -272,21 +272,21 @@ export const REFUSAL_REASONS: Readonly<Record<FixedRefusal, string>> = Object.fr
 
 /** What a renewal's own reasons say, where they differ from a change's. */
 const RENEWAL_REASONS: Readonly<Partial<Record<FixedRefusal, string>>> = Object.freeze({
-  workspace_unavailable: 'This agent’s project or spending setup does not allow a new goal, so nothing was recorded. '
-    + 'This form cannot change the agent’s project or choose a different goal allowance. '
-    + 'Give it a new goal from a terminal (dudes goal), '
+  workspace_unavailable: 'This agent’s project or spending setup does not allow a new task, so nothing was recorded. '
+    + 'This form cannot change the agent’s project or choose a different task allowance. '
+    + 'Give it a new task from a terminal (dudes goal), '
     + 'or retire it and hire a new one.',
   profile_changed: 'The project’s allowance or checks changed since this page read it, so nothing was '
     + 'recorded. The floor is being refreshed.',
 });
 
 /** What `goal_exhausted` says when the page can offer a new goal beside it. */
-export const EXHAUSTED_WITH_RENEWAL = 'This goal has no turns or capped dollars left to carry over, so nothing was '
-  + 'recorded. Choose Start a new goal to use this project’s allowance.';
+export const EXHAUSTED_WITH_RENEWAL = 'This task reached a work attempt or spending limit, so nothing was '
+  + 'recorded. Choose Start a new task to use this project’s allowance.';
 
 const NOT_ENROLLED = 'This agent’s check already passes, and the page has no other check to offer for its project. '
   + 'Nothing changed. This page cannot define a completion check. '
-  + 'Set a new goal from a terminal (dudes goal) with a check that fails until the goal is met.';
+  + 'Set a new task from a terminal (dudes goal) with a check that fails until the task is met.';
 
 /** What one refusal of this request says. */
 export function refusalText(reason: GoalRefusalReason, attempt: GoalAttempt): string {
@@ -451,10 +451,10 @@ const LONE_SURROGATE = /\p{Cs}/u;
 export function problemWith(text: string, maxTextBytes: number): string | null {
   const trimmed = trimAsciiSpace(text);
   const bytes = utf8Bytes(trimmed);
-  if (bytes === 0) return 'The goal is empty.';
-  if (bytes > maxTextBytes) return `The goal is ${bytes} UTF-8 bytes; the limit is ${maxTextBytes}.`;
-  if (trimmed.includes('\u0000')) return 'The goal carries a NUL character, which the daemon refuses.';
-  if (LONE_SURROGATE.test(trimmed)) return 'The goal carries half of a surrogate pair, which is not text.';
+  if (bytes === 0) return 'The task is empty.';
+  if (bytes > maxTextBytes) return `The task is ${bytes} UTF-8 bytes; the limit is ${maxTextBytes}.`;
+  if (trimmed.includes('\u0000')) return 'The task contains a null character, which Dudes cannot use.';
+  if (LONE_SURROGATE.test(trimmed)) return 'The task carries half of a surrogate pair, which is not text.';
   return null;
 }
 
@@ -493,7 +493,7 @@ export function presents(attempt: GoalAttempt, agent: string, goalId: string): b
  * Every form waits while a request is out and while one is unresolved. A 403
  * that settled its request holds every form while the page still holds the
  * session that was refused. A durable change holds back only the form for the
- * goal it replaced, until the projection shows the agent's goal moving.
+ * goal it replaced, until the projection shows the agent's task moving.
  */
 export function blocksForm(goal: GoalState, agent: string, goalId: string, session: number): boolean {
   if (goal.sending) return true;
@@ -694,7 +694,7 @@ export type Continuation =
   /** The goal moved, and the agent has taken a new turn. */
   | { readonly kind: 'continued'; readonly from: number; readonly to: number; readonly status: string };
 
-/** What the agent's goal and hold are after a durable change, read from the projection and nothing else. */
+/** What the agent's task and hold are after a durable change, read from the projection and nothing else. */
 export function continuationOf(attempt: GoalAttempt, floor: FloorState): Continuation {
   const row = floor.agents.find((agent) => agent.id === attempt.payload.agent);
   const current = floor.phase === 'live' && floor.snapshotEpoch === floor.epoch;

@@ -75,6 +75,7 @@ export function AnswerFormView({ answer, floor, row, leaveFocusTo, compact = fal
       <div className="answer-actions">
         <button type="button" className="answer-send"
           aria-disabled={blocked || draft === '' || problem !== null || undefined}
+          title={problem ?? (blocked ? 'Wait for the current answer request or check its status.' : draft === '' ? 'Enter an answer first.' : undefined)}
           ref={handFocusOnLeave} data-focus-on-leave={focusOnLeave}
           aria-busy={answer.sending && mine}
           onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
@@ -128,6 +129,7 @@ export function AnswerStatusView({ answer, floor, session, leaveFocusTo }: {
       <footer className="answer-actions">
         {asking ? (
           <button type="button" aria-disabled={answer.sending || !floor.answering}
+            title={answer.sending ? 'Wait for the current answer request to finish.' : !floor.answering ? 'Reconnect to Dudes with Answer questions turned on in Settings.' : undefined}
             aria-busy={answer.sending} ref={handFocusOnLeave} data-focus-on-leave="answer-status-title"
             onClick={() => { if (!answer.sending && floor.answering) void checkAnswerStatus(browserAnswerDeps); }}>
             {answer.sending ? 'Checking…' : 'Check status'}
@@ -162,7 +164,7 @@ function OutcomeBody({ outcome, attempt, answer, floor, session }: {
       return (
         <>
           <p className="answer-success" role="status">
-            Recorded. The daemon holds this answer in its journal, which is not the same as the agent running.
+            Dudes saved the answer. This does not mean the agent has started work.
           </p>
           <blockquote className="answer-text">{attempt.payload.text}</blockquote>
           <p className="answer-continuation" data-answer-continuation={next.kind}>
@@ -172,8 +174,8 @@ function OutcomeBody({ outcome, attempt, answer, floor, session }: {
                   : next.kind === 'deferred'
                     ? 'The answer is recorded for this question.'
                   : next.kind === 'closed'
-                    ? `The question is closed. The agent is ${next.status || 'idle'}; no new turn has appeared yet.`
-                    : `The agent moved on: its turn count went from ${next.from} to ${next.to}, and it is `
+                    ? `The question is closed. The agent is ${next.status || 'idle'}; no new work attempt has appeared yet.`
+                    : `The agent moved on: its work attempt count went from ${next.from} to ${next.to}, and it is `
                       + `${next.status || 'idle'}.`}
           </p>
         </>
@@ -182,21 +184,21 @@ function OutcomeBody({ outcome, attempt, answer, floor, session }: {
     case 'pending':
       return (
         <p className="answer-pending" role="status">
-          Not confirmed yet. The daemon has this answer in progress, or cannot confirm it yet. Check status asks
+          Not confirmed yet. Dudes has this answer in progress, or cannot confirm it yet. Check status asks
           again with the same request, which never answers twice.
         </p>
       );
     case 'unavailable':
       return (
         <p className="answer-pending" role="status">
-          The daemon could not confirm this answer. Check status later asks again with the same request; this page
-          does not retry by itself. If this keeps happening, the operator may need to restart the daemon.
+          Dudes could not confirm this answer. Check status later asks again with the same request; this page
+          does not retry by itself. If this keeps happening, the operator may need to restart Dudes.
         </p>
       );
     case 'unknown':
       return (
         <p className="answer-pending" role="status">
-          The page lost the daemon&apos;s reply, so it cannot say whether this answer was recorded. Check status
+          The page lost Dudes&apos; reply, so it cannot say whether this answer was recorded. Check status
           asks again with the same request, which never answers twice.
         </p>
       );
@@ -209,14 +211,14 @@ function OutcomeBody({ outcome, attempt, answer, floor, session }: {
     case 'conflict':
       return (
         <p className="answer-error" role="alert">
-          The daemon holds a different request under this request id, so it refused this one before any effect.
+          Dudes holds a different request under this request id, so it refused this one before any effect.
           This is a page error; nothing was recorded.
         </p>
       );
     case 'rejected':
       return (
         <p className="answer-error" role="alert">
-          The daemon refused the request itself (HTTP {outcome.status}) before any effect. Nothing was recorded.
+          Dudes refused the request itself (HTTP {outcome.status}) before any effect. Nothing was recorded.
         </p>
       );
     case 'forbidden': {
@@ -227,17 +229,17 @@ function OutcomeBody({ outcome, attempt, answer, floor, session }: {
       return (
         <p className="answer-error" role="alert" data-answer-session={now}>
           {now === 'checking'
-            ? 'The daemon refused this request before any effect. Checking whether this Floor session is still live…'
+            ? 'Dudes refused this request before any effect. Checking whether this Floor session is still live…'
             : now === 'ended'
               ? 'Your Floor session has ended or was revoked. Open Dudes to sign in again '
                 + `in this browser: this page keeps the answer. ${next}`
               : now === 'renewed'
-                ? 'The daemon refused an earlier request before any effect, under a Floor session this page no '
+                ? 'Dudes refused an earlier request before any effect, under a Floor session this page no '
                   + 'longer uses. This page has signed in again and can answer now: '
                   + (answer.uncertain
                     ? 'Check status asks again with the same request, which never answers twice.'
                     : 'Edit and send again sends it under the new session.')
-                : 'The daemon refused this request before any effect, and this page can no longer answer with its '
+                : 'Dudes refused this request before any effect, and this page can no longer answer with its '
                   + `session. Open Dudes to sign in again, then answer again. ${next}`}
         </p>
       );

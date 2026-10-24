@@ -2965,7 +2965,7 @@ test('the goal form renders when the snapshot carries the goal sibling', () => {
   // The positive control for the absence checks below: with goal change on, the form is there.
   const html = center(floorWith(pursuing(), undefined, CONTROL, GOAL));
   assert.match(html, /<textarea[^>]*name="goal"/);
-  assert.match(html, />Change goal<\/button>/);
+  assert.match(html, />Change task<\/button>/);
   assert.match(html, new RegExp(`data-goal-agent-id="${ADA}" data-goal-id="${GOAL_ID}"`));
   // Where the live case looks for it: in the selected agent's own panel, after Pause.
   assert.match(html,
@@ -2996,7 +2996,7 @@ test('the goal gate stays closed without the sibling, or with any other sibling 
 });
 
 test('with the same rows but no goal sibling, no goal form renders', () => {
-  const none = /<textarea|name="goal"|Change goal|data-goal-|goal-carry/;
+  const none = /<textarea|name="goal"|Change task|data-goal-|goal-carry/;
   for (const [label, answer, control] of [
     ['the default configuration', undefined, undefined],
     ['answering on', SIBLING, undefined],
