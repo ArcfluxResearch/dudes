@@ -8,12 +8,12 @@ import { handFocusOnLeave } from './focus.ts';
 import type { AgentRow } from './scene/cast.ts';
 
 const UNAVAILABLE: Record<string, string> = {
-  unknown: 'Agent unavailable', retired: 'Agent retired', attached: 'Managed output unavailable for Attached agents',
+  unknown: 'Agent unavailable', retired: 'Agent retired', attached: 'Output unavailable for agents Dudes did not start',
   evicted: 'Recent output evicted', cleared: 'Selection cleared',
 };
 
 export function streamStatus(floor: FloorState): string {
-  if (floor.phase === 'closed') return 'Unavailable — session or daemon disconnected';
+  if (floor.phase === 'closed') return 'Unavailable — this page lost its connection to Dudes';
   if (floor.phase === 'resyncing' || floor.phase === 'connecting') return 'Reconnecting — waiting for the Floor';
   if (floor.stale) return 'Unconfirmed — waiting for the stream';
   const output = floor.output;
@@ -21,11 +21,11 @@ export function streamStatus(floor: FloorState): string {
     case 'idle': return 'No output selected';
     case 'selecting': return 'Selecting — waiting for output';
     case 'reconnecting': return 'Reconnecting — waiting for output';
-    case 'waiting': return output.reason === 'unbound' ? 'Waiting — no Managed turn bound yet'
-      : 'Waiting — no output in this daemon run';
+    case 'waiting': return output.reason === 'unbound' ? 'Waiting — this agent has no work running yet'
+      : 'Waiting — no output since Dudes last started';
     case 'live': return output.truncated ? 'Turn in progress — earlier output truncated' : 'Turn in progress';
     case 'ended': return output.truncated ? 'Last turn ended — earlier output truncated' : 'Last turn ended';
-    case 'gap': return 'Gap — output incomplete; retry to get a fresh snapshot';
+    case 'gap': return 'Gap — output incomplete; retry to load it again';
     case 'unavailable': return UNAVAILABLE[output.reason ?? ''] ?? 'Output unavailable';
   }
 }

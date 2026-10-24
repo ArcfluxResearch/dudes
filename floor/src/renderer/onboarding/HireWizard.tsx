@@ -64,8 +64,8 @@ function LengthNote({ value, limit }: { value: string; limit: number }) {
 function engineMissing(row: ProviderRow | null, engine: HireEngine | null): string | null {
   const name = engine === null ? 'This app' : HIRE_ENGINES[engine];
   if (row?.found === false) {
-    return `${name} was not found on the daemon’s PATH, so this agent could not start. `
-      + 'Check Setup for its location. If it is already installed, the daemon may need a restart to find it.';
+    return `${name} was not found on this computer, so this agent could not start. `
+      + 'Check Setup for its location. If it is already installed, restart Dudes so it looks again.';
   }
   if (row?.found === true && row.signIn === 'signed_out') {
     return `${name} is installed but not signed in, so this agent could not start. Sign in, then check again.`;
@@ -378,8 +378,8 @@ function HireForm({ hire, floor, onClose, onSettings }: {
               {withdrawn ? <p className="hire-note">An engine missing here may be turned off, or this project may need a spending limit to use it. Check Settings.</p>
                 : null}
               {engine === null || row === null ? null : <p className="hire-note" data-engine-found={row.found}>
-                {row.found ? `${HIRE_ENGINES[engine]} was found on the daemon’s PATH.`
-                  : `${HIRE_ENGINES[engine]} was not found on the daemon’s PATH.`}
+                {row.found ? `Dudes found ${HIRE_ENGINES[engine]}’s command on this computer.`
+                  : `Dudes did not find ${HIRE_ENGINES[engine]}’s command on this computer.`}
               </p>}
               {missing === null ? null : (
                 <div className="hire-problem" role="alert">

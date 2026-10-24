@@ -53,14 +53,14 @@ function hintFor(verb: ControlVerb, row: AgentRow): string {
 
 const HALT_NOTE = 'A halt from the command line stands on this agent. The Floor cannot lift it; only the local operator can.';
 const UNSETTLED_NOTE = 'An earlier pause or resume is not settled yet. Its status is shown in the request receipt.';
-const REFUSED_NOTE = 'The daemon refused this page’s Floor session, which can no longer pause or resume. Its status '
+const REFUSED_NOTE = 'Dudes no longer accepts this page’s sign-in, so it can no longer pause or resume. Its status '
   + 'is shown in the request receipt.';
 
 /** Why the buttons wait, when no request is out. */
 function heldBecause(control: ControlState): string {
   const { attempt, outcome } = control;
   if (attempt !== null && outcome?.kind === 'applied') {
-    return `This ${attempt.verb} is in the journal; the floor has not shown it yet.`;
+    return `This ${attempt.verb} was recorded, but the Floor has not shown it yet.`;
   }
   if (outcome?.kind === 'forbidden' && !control.uncertain) return REFUSED_NOTE;
   return UNSETTLED_NOTE;
@@ -196,7 +196,7 @@ export function ControlStatusView({ control, floor, session, leaveFocusTo = 'cre
           onClick={dismissReceipt}>Dismiss receipt</button>
       </footer> : null}
       {!asking || control.sending || floor.control ? null : (
-        <p className="hire-note">Check status waits for a live Floor session that offers pause and resume.</p>
+        <p className="hire-note">Check status waits until this page is signed in and the Floor offers pause and resume.</p>
       )}
     </section>
   );
@@ -207,10 +207,10 @@ const KICKER: Readonly<Record<ControlVerb, string>> = Object.freeze({
 });
 
 const RECORDED: Readonly<Record<ControlVerb, string>> = Object.freeze({
-  pause: 'Pause recorded. The daemon holds this pause in its journal, which is not the same as the agent stopping.',
-  halt: 'Stop recorded. The daemon holds this stop in its journal and is ending the turn; '
-    + 'that the process has ended shows below once the floor reports it.',
-  resume: 'Resume recorded. The daemon lifted this pause or stop in its journal, which is not the same as a new turn.',
+  pause: 'Pause recorded. Dudes will start no new work for this agent. That is not the same as the agent stopping.',
+  halt: 'Stop recorded. Dudes is ending the agent’s current work. '
+    + 'The Floor shows below when that work has ended.',
+  resume: 'Resume recorded. The pause or stop is lifted. That is not the same as new work starting.',
 });
 
 function continuationText(next: Continuation): string {
@@ -235,14 +235,14 @@ function continuationText(next: Continuation): string {
   }
 }
 
-const PENDING = 'Not confirmed yet. The daemon has this request in progress, or cannot confirm it yet. Check status '
+const PENDING = 'Not confirmed yet. Dudes is still working on this request, or cannot confirm it yet. Check status '
   + 'asks again with the same request, which never applies twice.';
-const UNAVAILABLE = 'The daemon could not confirm this request. Check status later asks again with the same request; '
-  + 'this page does not retry by itself. If this keeps happening, the operator may need to restart the daemon.';
-const UNKNOWN = 'The page lost the daemon’s reply, so it cannot say whether this request was recorded. Check status '
+const UNAVAILABLE = 'Dudes could not confirm this request. Check status later asks again with the same request. '
+  + 'This page does not retry by itself. If this keeps happening, restart Dudes.';
+const UNKNOWN = 'This page lost Dudes’ reply, so it cannot say whether this request was recorded. Check status '
   + 'asks again with the same request, which never applies twice.';
-const CONFLICT = 'The daemon holds a different request under this request id, so it refused this one before any '
-  + 'effect. This is a page error; nothing was recorded.';
+const CONFLICT = 'Dudes already holds a different request under this request id, so it refused this one and changed '
+  + 'nothing. This is a page error.';
 
 function OutcomeBody({ outcome, attempt, control, floor, session }: {
   readonly outcome: ControlOutcome;
@@ -278,7 +278,7 @@ function OutcomeBody({ outcome, attempt, control, floor, session }: {
     case 'rejected':
       return (
         <p className="control-error" role="alert">
-          {`The daemon refused the request itself (HTTP ${outcome.status}) before any effect. Nothing was recorded.`}
+          {`Dudes refused the request itself (HTTP ${outcome.status}) and changed nothing.`}
         </p>
       );
     case 'forbidden': {
@@ -289,21 +289,21 @@ function OutcomeBody({ outcome, attempt, control, floor, session }: {
       return (
         <p className="control-error" role="alert" data-control-session={now}>
           {now === 'checking'
-            ? 'The daemon refused this request before any effect. Checking whether this Floor session is still live…'
+            ? 'Dudes refused this request and changed nothing. Checking whether this page is still signed in…'
             : now === 'ended'
-              ? 'Your Floor session has ended or was revoked. Open Dudes to sign in again '
+              ? 'Your sign-in has ended or was revoked. Open Dudes to sign in again '
                 + (control.uncertain
                   // Only a request whose effect is unknown is kept; a press after a settled one mints a new request.
                   ? `in this browser: this page keeps the request. ${next}`
                   : 'in this browser, then press Pause or Resume again.')
               : now === 'renewed'
-                ? 'The daemon refused an earlier request before any effect, under a Floor session this page no '
+                ? 'Dudes refused an earlier request and changed nothing, because it used a sign-in this page no '
                   + 'longer uses. This page has signed in again and can act now: '
                   + (control.uncertain
                     ? 'Check status asks again with the same request, which never applies twice.'
                     : 'press Pause or Resume again.')
-                : 'The daemon refused this request before any effect, and this page can no longer pause or resume '
-                  + `with its session. Open Dudes to sign in again, then act again. ${next}`}
+                : 'Dudes refused this request and changed nothing, and this page can no longer pause or resume '
+                  + `with its sign-in. Open Dudes to sign in again, then act again. ${next}`}
         </p>
       );
     }
