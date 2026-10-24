@@ -44,18 +44,48 @@ pub struct AgentSnapshot {
     pub finished_today: Option<FloorFinishedToday>,
 }
 
+/// The scrubbed form of each question text seen, good for as long as the secret set is the same.
+/// A snapshot is built often and its questions rarely change, so most builds only look them up.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct ScrubMemo {
+    generation: u64,
+    scrubbed: std::collections::HashMap<String, String>,
+}
+
+impl ScrubMemo {
+    const MAX_REMEMBERED: usize = 1024;
+
+    fn scrub(&mut self, redactor: &dudes_supervisor::Redactor, text: &str) -> String {
+        let generation = redactor.generation();
+        if generation != self.generation {
+            self.scrubbed.clear();
+            self.generation = generation;
+        }
+        if let Some(done) = self.scrubbed.get(text) {
+            return done.clone();
+        }
+        let done = redactor.scrub(text).into_owned();
+        if self.scrubbed.len() >= Self::MAX_REMEMBERED {
+            self.scrubbed.clear();
+        }
+        self.scrubbed.insert(text.to_owned(), done.clone());
+        done
+    }
+}
+
 impl AgentSnapshot {
     /// Replace every secret the daemon knows in the agents' own words, which a journal written
     /// before the daemon learned the secret may still hold.
     #[doc(hidden)]
-    pub fn scrub(&mut self, redactor: &dudes_supervisor::Redactor) {
+    pub fn scrub(&mut self, redactor: &dudes_supervisor::Redactor, memo: &mut ScrubMemo) {
         for agent in &mut self.agents {
             if let Some(question) = &mut agent.question {
-                *question = redactor.scrub(question).into_owned();
+                *question = memo.scrub(redactor, question);
             }
         }
         for answered in &mut self.question_history {
-            answered.question = redactor.scrub(&answered.question).into_owned();
+            answered.question = memo.scrub(redactor, &answered.question);
         }
     }
 }

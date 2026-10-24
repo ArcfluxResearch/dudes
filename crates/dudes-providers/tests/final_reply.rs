@@ -55,20 +55,26 @@ fn completed_replies_preserve_text_beyond_the_legacy_limit() {
             let reply = end.final_reply.unwrap();
             assert_eq!(reply.text, text);
             assert_eq!(reply.completeness, FinalReplyCompleteness::Complete);
-            assert_eq!(end.last_message.unwrap().len(), 4096);
+            assert_eq!(end.last_message.unwrap(), text);
         }
     }
 }
 
 #[test]
-fn oversized_completed_replies_report_truncation_on_a_utf8_boundary() {
+fn oversized_completed_replies_leave_whole_and_cut_on_a_utf8_boundary_when_bounded() {
     let text = "é".repeat(32_769);
     let expected = format!("{}…", "é".repeat(32_766));
     for end in replies(&text, 0) {
-        let reply = end.final_reply.unwrap();
+        let whole = end.final_reply.unwrap();
+        assert_eq!(whole.text, text);
+        assert_eq!(whole.completeness, FinalReplyCompleteness::Complete);
+        let reply = whole.bounded();
         assert_eq!(reply.text, expected);
         assert_eq!(reply.completeness, FinalReplyCompleteness::Truncated);
-        assert_eq!(end.last_message.unwrap().len(), 4095);
+        assert_eq!(
+            dudes_providers::stream::bound(&end.last_message.unwrap()).len(),
+            4095
+        );
     }
 }
 

@@ -801,6 +801,34 @@ fn a_known_secret_and_terminal_codes_are_gone_from_memory_text() {
     daemon.stop();
 }
 
+/// The page preview cuts at 2,048 bytes. A secret across that byte is replaced before the cut, so
+/// the preview never shows its first part.
+#[test]
+fn a_secret_across_the_preview_cut_is_replaced_before_it() {
+    let fixture = Fixture::new();
+    let daemon = Daemon::boot(&fixture, raw_only());
+    let agent = daemon.hire(&fixture, "agent");
+    let secret = credential(&daemon.settings).expose().to_owned();
+    let text = format!("{}{secret}{}", "a".repeat(2_040), "b".repeat(1_100));
+    let lsn = daemon.append(agent, &text);
+    let mut page = daemon.page();
+    let first = page.page(agent, None);
+    let preview = first["entries"][0]["text"].as_str().expect("preview text");
+    assert!(
+        !preview.contains(&secret[..6]),
+        "the preview kept part of the secret"
+    );
+    assert!(preview.starts_with(&"a".repeat(2_000)));
+    assert_eq!(first["entries"][0]["cut"], json!(true));
+    let whole = page.entry(agent, lsn);
+    let full = whole["entry"]["text"].as_str().expect("entry text");
+    assert_eq!(
+        full,
+        format!("{}(redacted){}", "a".repeat(2_040), "b".repeat(1_100))
+    );
+    daemon.stop();
+}
+
 /// A retired agent's memory still reads, from its retirement on.
 #[test]
 fn a_retired_agents_memory_reads_and_an_unknown_agent_is_a_state() {

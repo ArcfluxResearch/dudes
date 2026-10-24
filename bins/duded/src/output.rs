@@ -611,7 +611,6 @@ impl State {
 }
 
 /// A daemon-run-only registry; all mutation and snapshots are ordered by one lock.
-#[derive(Default)]
 pub struct OutputRegistry {
     state: Mutex<State>,
     changed: Condvar,
@@ -628,28 +627,45 @@ impl std::fmt::Debug for OutputRegistry {
 }
 
 impl OutputRegistry {
+    /// An empty run-local registry that scrubs nothing. Only tests build one: a daemon builds its
+    /// registry with the secret set its children share.
+    #[cfg(any(test, feature = "testing"))]
+    #[expect(
+        clippy::new_without_default,
+        reason = "a Default would let a missed wiring compile"
+    )]
     #[must_use]
-    /// Construct an empty run-local registry.
     pub fn new() -> Self {
-        Self::default()
+        Self::with_redactor(Redactor::for_run())
     }
 
     /// An empty registry whose text is scrubbed of `redactor`'s secrets before anything keeps it.
     #[must_use]
     pub fn with_redactor(redactor: Redactor) -> Self {
         Self {
+            state: Mutex::default(),
+            changed: Condvar::new(),
             redactor,
-            ..Self::default()
+            streams: Mutex::default(),
         }
     }
 
+    /// The child's scrubber is taken out of the map while it matches, so one large message
+    /// blocks no other child. A child has one reader thread, so nothing else touches its entry.
     fn scrub(&self, key: &AdoptionKey, session: &str, text: &str) -> String {
-        let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
-        let (scrubber, last) = streams
-            .entry(ChildKey::from(key))
-            .or_insert_with(|| (self.redactor.stream(), String::new()));
-        session.clone_into(last);
-        scrubber.push(text)
+        let child = ChildKey::from(key);
+        let taken = self
+            .streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&child);
+        let mut scrubber = taken.map_or_else(|| self.redactor.stream(), |(scrubber, _)| scrubber);
+        let released = scrubber.push(text);
+        self.streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(child, (scrubber, session.to_owned()));
+        released
     }
 
     fn state(&self) -> MutexGuard<'_, State> {

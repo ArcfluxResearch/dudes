@@ -6,6 +6,7 @@
 //! before it is sent. The browser draws it as inert text.
 //! Nothing here is evidence, and none of it reaches the stream.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -151,16 +152,14 @@ pub fn answer(
     request: MemoryRequest,
 ) -> MemoryAnswer {
     let agent = request.agent;
+    let scrub = scrubbing(redactor);
     let Some(row) = world.agents.get(&agent) else {
         return MemoryAnswer::AgentUnknown;
     };
     match request.read {
         Read::Page { before } => {
             let first = before.is_none();
-            let mut page = memory.page(agent, before, PAGE_ENTRIES, PREVIEW_BYTES);
-            for entry in &mut page.entries {
-                scrub_entry(redactor, entry);
-            }
+            let page = memory.page(agent, before, PAGE_ENTRIES, PREVIEW_BYTES, &scrub);
             let mut summary = first.then(|| memory.summary(agent)).flatten();
             if let Some(summary) = &mut summary {
                 summary.text = redactor.scrub(&summary.text).into_owned();
@@ -174,17 +173,13 @@ pub fn answer(
             }
         }
         Read::Entry { lsn } => {
-            let mut entry = memory.entry(agent, lsn, ENTRY_TEXT_BYTES);
-            if let Some(entry) = &mut entry {
-                scrub_entry(redactor, entry);
-            }
-            MemoryAnswer::Entry(entry)
+            MemoryAnswer::Entry(memory.entry(agent, lsn, ENTRY_TEXT_BYTES, &scrub))
         }
     }
 }
 
-fn scrub_entry(redactor: &Redactor, entry: &mut MemoryEntry) {
-    entry.text = redactor.scrub(&entry.text).into_owned();
+fn scrubbing(redactor: &Redactor) -> impl for<'t> Fn(&'t str) -> Cow<'t, str> + '_ {
+    move |text| redactor.scrub(text)
 }
 
 /// The per-session interval between the starts of two page or entry reads.

@@ -28,7 +28,6 @@ use crate::redact::Redactor;
 /// Not `Clone` and not `Debug`: a derived `Debug` would print the maps' *keys* safely and their
 /// values through [`HookToken`]'s own redaction, but the type has no reason to be printed at all
 /// and the derive is one edit away from a struct that does. Nothing here needs either.
-#[derive(Default)]
 pub(crate) struct Mint {
     /// Every plaintext drawn for an agent this run, live or not, until the agent retires: a child
     /// may still hold a token a later draw replaced, so it stays a secret for as long.
@@ -60,8 +59,10 @@ pub(crate) struct Mint {
 impl Mint {
     pub(crate) fn with_redactor(redactor: Redactor) -> Self {
         Self {
+            drawn: BTreeMap::new(),
             redactor,
-            ..Self::default()
+            live: BTreeMap::new(),
+            pending: BTreeMap::new(),
         }
     }
 
@@ -136,7 +137,7 @@ mod tests {
     /// confirm another's. The window between the two is the "fsynced before the spawn" window.
     #[test]
     fn a_token_arms_a_child_only_once_its_record_is_confirmed() {
-        let mut mint = Mint::default();
+        let mut mint = Mint::with_redactor(Redactor::new());
         let mut rng = FakeRng::new();
         let (a, b) = (agent(1), agent(2));
 
@@ -157,6 +158,20 @@ mod tests {
         );
     }
 
+    /// A token is a secret from the moment it is drawn, before its record is acknowledged, since
+    /// the plaintext exists from then.
+    #[test]
+    fn a_pending_token_is_a_secret_before_it_is_confirmed() {
+        let redactor = Redactor::new();
+        let mut mint = Mint::with_redactor(redactor.clone());
+        let mut rng = FakeRng::new();
+        let a = agent(1);
+        let hash = mint.draw(a, &mut rng);
+        assert!(mint.live(a).is_none(), "a control: it is still pending");
+        let pending = mint.pending[&hash].1.expose().to_owned();
+        assert_eq!(redactor.scrub(&format!("t={pending}")), "t=(redacted)");
+    }
+
     /// The hash is of the token that was drawn, and with two draws outstanding for one agent each
     /// acknowledgement promotes **its own** — not whichever draw came last.
     ///
@@ -167,7 +182,7 @@ mod tests {
     /// credential still in flight.
     #[test]
     fn each_confirm_promotes_the_draw_its_hash_names() {
-        let mut mint = Mint::default();
+        let mut mint = Mint::with_redactor(Redactor::new());
         let mut rng = FakeRng::new();
         let a = agent(1);
 
@@ -205,7 +220,7 @@ mod tests {
     /// drops the draw rather than promoting it into the wrong agent's slot.
     #[test]
     fn confirming_a_hash_this_run_did_not_draw_is_inert() {
-        let mut mint = Mint::default();
+        let mut mint = Mint::with_redactor(Redactor::new());
         let mut rng = FakeRng::new();
         let (a, b) = (agent(1), agent(2));
 

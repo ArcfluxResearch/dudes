@@ -1070,7 +1070,7 @@ fn a_question_in_an_old_journal_is_scrubbed_of_a_secret_learned_since() {
     let mut snap = snapshot(&mut projections, Timestamp::from_unix_millis(AT)).unwrap();
     let redactor = dudes_supervisor::Redactor::new();
     redactor.set_source("test", ["hunter2hunter2".to_owned()]);
-    snap.scrub(&redactor);
+    snap.scrub(&redactor, &mut duded::floor::ScrubMemo::default());
     assert_eq!(
         snap.agents[0].question.as_deref(),
         Some("may I use (redacted) here?")

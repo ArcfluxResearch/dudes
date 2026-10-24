@@ -501,6 +501,40 @@ fn a_known_secret_split_across_pieces_never_reaches_the_ring_or_the_reply() {
     assert_eq!(snapshot.reply.unwrap().text, text);
 }
 
+#[test]
+fn a_secret_across_the_ring_chunk_boundary_is_replaced_before_it_is_chunked() {
+    const SECRET: &str = "tok_9fQ2LmZx81KdPvR4sWbN7hYcA3eJuT6o";
+    let redactor = dudes_supervisor::Redactor::new();
+    redactor.set_source("test", [SECRET.to_owned()]);
+    let output = OutputRegistry::with_redactor(redactor);
+    let agent: AgentId = id(1);
+    let turn: TurnId = id(2);
+    let key = AdoptionKey {
+        pid: 42,
+        start_time: 10,
+        boot: Some("boot-a".into()),
+    };
+    output.replace(agent, turn);
+    output.register(agent, turn, &key);
+    output.confirm(agent, turn, &SessionId::new("s"));
+    let text = format!("{}{SECRET}{}", "a".repeat(4_090), "b".repeat(50));
+    output.capture(&key, "s", &text);
+    output.watch_finished(&key);
+    let snapshot = output.snapshot(agent);
+    let chunks = chunks_of(&snapshot);
+    assert!(chunks.len() > 1, "the text crossed a chunk boundary");
+    for chunk in &chunks {
+        assert!(
+            !chunk.contains(&SECRET[..6]),
+            "a chunk kept part of the secret"
+        );
+    }
+    assert_eq!(
+        chunks.join(""),
+        format!("{}(redacted){}", "a".repeat(4_090), "b".repeat(50))
+    );
+}
+
 fn chunks_of(snapshot: &duded::output::OutputSnapshot) -> Vec<String> {
     match &snapshot.state {
         OutputState::Ready { chunks, .. } => chunks.iter().map(|c| c.text.clone()).collect(),

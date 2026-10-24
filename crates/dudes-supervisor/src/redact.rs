@@ -5,10 +5,15 @@
 //! the supervisor mints is added here by the mint and cannot be taken out again, so a caller that
 //! holds a handle can hide a value but never learn one.
 //!
-//! **What matches.** A secret matches as written, as lower- or upper-case hex, percent-encoded,
-//! and as base64 or base64url at each of the three alignments it can take inside a longer base64
-//! string, with the edge characters that depend on neighbouring bytes trimmed. A match becomes
-//! [`REDACTED`]. A secret that is split, reversed or compressed is not matched.
+//! **What matches.** A secret matches as written, as lower- or upper-case hex, percent-encoded
+//! (the RFC 3986 set, the `encodeURIComponent` set and the `+`-for-space form), and as base64 or
+//! base64url at each of the three alignments it can take inside a longer base64 string, with the
+//! edge characters that depend on neighbouring bytes trimmed. A match becomes [`REDACTED`]. A
+//! secret that is split, reversed or compressed is not matched.
+//!
+//! **Order.** Text is matched as written, then stripped of terminal escapes, then matched again,
+//! so neither an escape that swallows a character nor an escape inside a secret hides it. Callers
+//! that cut text scrub first and cut afterwards: a cut inside a secret would keep its first part.
 //!
 //! **Streams.** [`StreamScrubber`] holds back the tail of its buffer for as long as that tail is a
 //! prefix of some form in the set, so a known value is never released in part. Ordinary text has
@@ -20,6 +25,7 @@ use std::fmt;
 use std::ops::Bound;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use aho_corasick::{AhoCorasick, AhoCorasickKind, MatchKind};
 use dudes_providers::launch::EnvVar;
 use dudes_types::{AgentId, TurnId};
 
@@ -27,12 +33,23 @@ use dudes_types::{AgentId, TurnId};
 pub const REDACTED: &str = "(redacted)";
 
 /// The shortest secret the matcher accepts. A shorter value would match ordinary words.
-const MIN_SECRET_BYTES: usize = 4;
+const MIN_SECRET_BYTES: usize = 8;
 /// The shortest base64 form worth matching once its alignment-dependent edges are trimmed.
 const MIN_BASE64_FORM: usize = 8;
+/// The longest secret that gets every encoded form. A longer one is held as written only, so one
+/// huge value cannot make the set unbounded.
+const MAX_ENCODED_SECRET_BYTES: usize = 8 * 1024;
+/// The most secrets one source may hold. The rest are dropped in sorted order.
+const MAX_SECRETS_PER_SOURCE: usize = 256;
+/// The longest unfinished escape sequence a stream carries to the next piece. Past it the
+/// sequence is text.
+const ESCAPE_CARRY_BYTES: usize = 4 * 1024;
+/// A kept tail at least this long that never completed is redacted at the end of a stream. A
+/// shorter one is released: it is too short to name its secret.
+const MIN_PARTIAL_REDACTION_BYTES: usize = 8;
 
 /// The daemon-wide live secret set. Cheap to clone; every clone shares one set.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Redactor {
     inner: Arc<Mutex<Inner>>,
 }
@@ -41,6 +58,7 @@ pub struct Redactor {
 struct Inner {
     sources: BTreeMap<String, BTreeSet<String>>,
     matcher: Arc<Matcher>,
+    generation: u64,
 }
 
 impl fmt::Debug for Redactor {
@@ -55,9 +73,26 @@ impl fmt::Debug for Redactor {
 
 impl Redactor {
     /// An empty set. It strips terminal escapes and redacts nothing else.
+    ///
+    /// Only tests build one: a daemon shares the set its child sink owns, so a reader that was
+    /// never wired to it cannot compile.
+    #[cfg(any(test, feature = "testing"))]
+    #[expect(
+        clippy::new_without_default,
+        reason = "a Default would let a missed wiring compile"
+    )]
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::for_run()
+    }
+
+    /// The set a daemon run starts with. Only the owner of a run makes one; every reader is
+    /// handed a clone of it.
+    #[must_use]
+    pub fn for_run() -> Self {
+        Self {
+            inner: Arc::default(),
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -66,6 +101,12 @@ impl Redactor {
 
     fn matcher(&self) -> Arc<Matcher> {
         Arc::clone(&self.lock().matcher)
+    }
+
+    /// A number that changes whenever the set does. A cached scrub is good while it is the same.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.lock().generation
     }
 
     /// Replace everything `source` holds with `values`. An empty `values` ends the source.
@@ -78,6 +119,9 @@ impl Redactor {
         let values: BTreeSet<String> = values
             .into_iter()
             .filter(|value| value.len() >= MIN_SECRET_BYTES)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .take(MAX_SECRETS_PER_SOURCE)
             .collect();
         let mut inner = self.lock();
         let changed = if values.is_empty() {
@@ -90,6 +134,7 @@ impl Redactor {
         };
         if changed {
             inner.matcher = Arc::new(Matcher::of(inner.sources.values().flatten()));
+            inner.generation += 1;
         }
     }
 
@@ -112,11 +157,14 @@ impl Redactor {
         self.clear_source(&holder.source());
     }
 
-    /// `text` without terminal escape sequences and with every known secret replaced.
+    /// `text` with every known secret replaced and without terminal escape sequences.
     #[must_use]
     pub fn scrub<'a>(&self, text: &'a str) -> Cow<'a, str> {
         let matcher = self.matcher();
-        let stripped = strip_ansi(text);
+        let raw = matcher
+            .replace(text)
+            .map_or(Cow::Borrowed(text), Cow::Owned);
+        let stripped = strip_ansi(raw);
         match matcher.replace(&stripped) {
             Some(replaced) => Cow::Owned(replaced),
             None => stripped,
@@ -128,8 +176,9 @@ impl Redactor {
     pub fn stream(&self) -> StreamScrubber {
         StreamScrubber {
             redactor: self.clone(),
+            raw: Hold::default(),
             escape: String::new(),
-            held: String::new(),
+            clean: Hold::default(),
         }
     }
 }
@@ -155,19 +204,24 @@ impl Holder {
 /// Scrubs text that arrives in pieces.
 ///
 /// Each [`Self::push`] answers the part of the stream that can no longer become a secret, and
-/// keeps the rest. [`Self::finish`] answers what is kept.
+/// keeps the rest. [`Self::finish`] answers what is kept. Two passes run in turn: the first over
+/// the text as written, so an escape that swallows a character cannot hide a secret's start, and
+/// the second over the text without its escapes, so an escape inside a secret cannot split it.
 pub struct StreamScrubber {
     redactor: Redactor,
+    raw: Hold,
     /// An escape sequence the last piece began and did not finish.
     escape: String,
-    /// Scrubbed text that is a prefix of some form in the set.
-    held: String,
+    clean: Hold,
 }
 
 impl fmt::Debug for StreamScrubber {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StreamScrubber")
-            .field("held", &(self.held.len() + self.escape.len()))
+            .field(
+                "held",
+                &(self.raw.text.len() + self.escape.len() + self.clean.text.len()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -176,30 +230,68 @@ impl StreamScrubber {
     /// Add `piece` and answer the text that is now safe to release.
     pub fn push(&mut self, piece: &str) -> String {
         let matcher = self.redactor.matcher();
-        let mut input = std::mem::take(&mut self.escape);
-        input.push_str(piece);
-        let (clean, incomplete) = split_ansi(&input);
-        let mut text = std::mem::take(&mut self.held);
-        text.push_str(&clean);
-        incomplete.clone_into(&mut self.escape);
-        if let Some(replaced) = matcher.replace(&text) {
-            text = replaced;
-        }
-        let keep = matcher.held_tail(&text);
-        self.held = text.split_off(text.len() - keep);
-        text
+        let released = self.raw.push(&matcher, piece);
+        self.strip_and_hold(&matcher, &released)
     }
 
-    /// Release what is kept. A kept tail never became a whole secret, so it goes out as written.
+    /// Release what is kept. A kept tail of at least eight bytes that begins some secret is
+    /// replaced, since it names the secret's start; a shorter one goes out as written.
     pub fn finish(&mut self) -> String {
+        let matcher = self.redactor.matcher();
+        let released = self.raw.finish(&matcher);
+        let mut out = self.strip_and_hold(&matcher, &released);
         self.escape.clear();
-        let text = std::mem::take(&mut self.held);
-        self.redactor.scrub(&text).into_owned()
+        out.push_str(&self.clean.finish(&matcher));
+        out
+    }
+
+    fn strip_and_hold(&mut self, matcher: &Matcher, released: &str) -> String {
+        let mut input = std::mem::take(&mut self.escape);
+        input.push_str(released);
+        let (clean, incomplete) = split_ansi(&input);
+        incomplete.clone_into(&mut self.escape);
+        self.clean.push(matcher, &clean)
+    }
+}
+
+/// Text kept as written because its end could still become a secret.
+#[derive(Default)]
+struct Hold {
+    text: String,
+}
+
+impl Hold {
+    fn push(&mut self, matcher: &Matcher, piece: &str) -> String {
+        self.text.push_str(piece);
+        if matcher.forms.is_empty() {
+            return std::mem::take(&mut self.text);
+        }
+        let spans = matcher.spans(&self.text);
+        let mut cut = matcher.hold_start(&self.text);
+        // A match that reaches into the kept tail may be the start of a longer secret.
+        if let Some(&(start, _)) = spans.iter().find(|&&(_, end)| end > cut) {
+            cut = cut.min(start);
+        }
+        let kept = self.text.split_off(cut);
+        let head = std::mem::replace(&mut self.text, kept);
+        render(&head, &spans)
+    }
+
+    fn finish(&mut self, matcher: &Matcher) -> String {
+        let text = std::mem::take(&mut self.text);
+        let mut spans = matcher.spans(&text);
+        let cut = matcher.hold_start(&text);
+        if text.len() - cut >= MIN_PARTIAL_REDACTION_BYTES {
+            spans.push((cut, text.len()));
+            spans = merge(spans);
+        }
+        render(&text, &spans)
     }
 }
 
 #[derive(Default)]
 struct Matcher {
+    automaton: Option<AhoCorasick>,
     forms: BTreeSet<String>,
     longest: usize,
 }
@@ -208,58 +300,49 @@ impl Matcher {
     fn of<'a>(secrets: impl Iterator<Item = &'a String>) -> Self {
         let mut forms = BTreeSet::new();
         for secret in secrets {
-            add_forms(secret.as_bytes(), &mut forms);
+            add_forms(secret, &mut forms);
         }
         let longest = forms.iter().map(String::len).max().unwrap_or(0);
-        Self { forms, longest }
+        let automaton = (!forms.is_empty()).then(|| {
+            // The automatic choice builds a DFA, which takes quadratic time on a long repetitive
+            // secret; the contiguous NFA builds in linear time and searches as fast here.
+            AhoCorasick::builder()
+                .match_kind(MatchKind::Standard)
+                .kind(Some(AhoCorasickKind::ContiguousNFA))
+                .build(&forms)
+                .expect("the forms are few and non-empty, far under the automaton's limits")
+        });
+        Self {
+            automaton,
+            forms,
+            longest,
+        }
+    }
+
+    /// Every stretch of `text` some form covers, overlaps joined.
+    fn spans(&self, text: &str) -> Vec<(usize, usize)> {
+        let Some(automaton) = &self.automaton else {
+            return Vec::new();
+        };
+        merge(
+            automaton
+                .find_overlapping_iter(text)
+                .map(|found| (found.start(), found.end()))
+                .collect(),
+        )
     }
 
     /// `text` with every form replaced, or `None` when none occurs.
     fn replace(&self, text: &str) -> Option<String> {
-        let mut spans: Vec<(usize, usize)> = Vec::new();
-        for form in &self.forms {
-            if form.len() > text.len() {
-                continue;
-            }
-            let mut from = 0;
-            while let Some(at) = text[from..].find(form.as_str()) {
-                let start = from + at;
-                spans.push((start, start + form.len()));
-                from = start + text[start..].chars().next().map_or(1, char::len_utf8);
-            }
-        }
-        if spans.is_empty() {
-            return None;
-        }
-        spans.sort_unstable();
-        let mut out = String::with_capacity(text.len());
-        let mut copied = 0;
-        let mut current: Option<(usize, usize)> = None;
-        for (start, end) in spans {
-            match current {
-                Some((open, close)) if start <= close => current = Some((open, close.max(end))),
-                Some((open, close)) => {
-                    out.push_str(&text[copied..open]);
-                    out.push_str(REDACTED);
-                    copied = close;
-                    current = Some((start, end));
-                }
-                None => current = Some((start, end)),
-            }
-        }
-        if let Some((open, close)) = current {
-            out.push_str(&text[copied..open]);
-            out.push_str(REDACTED);
-            copied = close;
-        }
-        out.push_str(&text[copied..]);
-        Some(out)
+        let spans = self.spans(text);
+        (!spans.is_empty()).then(|| render(text, &spans))
     }
 
-    /// How many bytes at the end of `text` are a proper prefix of some form.
-    fn held_tail(&self, text: &str) -> usize {
+    /// Where the longest suffix of `text` that is a proper prefix of some form begins, or the
+    /// length of `text` when there is none.
+    fn hold_start(&self, text: &str) -> usize {
         if self.forms.is_empty() {
-            return 0;
+            return text.len();
         }
         let floor = text.len().saturating_sub(self.longest.saturating_sub(1));
         for start in floor..text.len() {
@@ -273,23 +356,59 @@ impl Matcher {
                 .next()
                 .is_some_and(|form| form.len() > tail.len() && form.starts_with(tail))
             {
-                return tail.len();
+                return start;
             }
         }
-        0
+        text.len()
     }
 }
 
-fn add_forms(secret: &[u8], forms: &mut BTreeSet<String>) {
-    if let Ok(raw) = std::str::from_utf8(secret) {
-        forms.insert(raw.to_owned());
+fn merge(mut spans: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    spans.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some((_, close)) if start <= *close => *close = (*close).max(end),
+            _ => merged.push((start, end)),
+        }
     }
+    merged
+}
+
+/// `text` with each of the merged, ordered `spans` replaced.
+fn render(text: &str, spans: &[(usize, usize)]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for &(start, end) in spans {
+        if end > text.len() {
+            break;
+        }
+        out.push_str(&text[copied..start]);
+        out.push_str(REDACTED);
+        copied = end;
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
+fn add_forms(secret: &str, forms: &mut BTreeSet<String>) {
+    forms.insert(secret.to_owned());
+    if secret.len() > MAX_ENCODED_SECRET_BYTES {
+        return;
+    }
+    let secret = secret.as_bytes();
     forms.insert(hex(secret, false));
     forms.insert(hex(secret, true));
     for upper in [false, true] {
-        let encoded = percent(secret, upper);
-        if encoded.as_bytes() != secret {
-            forms.insert(encoded);
+        for (keep, plus) in [
+            (rfc3986_unreserved as fn(u8) -> bool, false),
+            (uri_component_unreserved, false),
+            (rfc3986_unreserved, true),
+        ] {
+            let encoded = percent(secret, upper, keep, plus);
+            if encoded.as_bytes() != secret {
+                forms.insert(encoded);
+            }
         }
     }
     for lead in 0..3usize {
@@ -322,12 +441,27 @@ fn hex(bytes: &[u8], upper: bool) -> String {
     out
 }
 
-fn percent(bytes: &[u8], upper: bool) -> String {
+fn rfc3986_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+}
+
+/// What JavaScript's `encodeURIComponent` leaves raw.
+fn uri_component_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'-' | b'.' | b'_' | b'~' | b'!' | b'*' | b'\'' | b'(' | b')'
+        )
+}
+
+fn percent(bytes: &[u8], upper: bool, keep: fn(u8) -> bool, plus_for_space: bool) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(bytes.len());
     for &byte in bytes {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+        if keep(byte) {
             out.push(char::from(byte));
+        } else if plus_for_space && byte == b' ' {
+            out.push('+');
         } else if upper {
             write!(out, "%{byte:02X}").expect("formatting a String");
         } else {
@@ -355,71 +489,97 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 /// `text` without terminal escape sequences.
-fn strip_ansi(text: &str) -> Cow<'_, str> {
+fn strip_ansi(text: Cow<'_, str>) -> Cow<'_, str> {
     if !text.contains(['\u{1b}', '\u{9b}']) {
-        return Cow::Borrowed(text);
+        return text;
     }
-    Cow::Owned(split_ansi(text).0)
+    Cow::Owned(split_ansi(&text).0)
+}
+
+/// How far an escape sequence runs.
+enum Escape {
+    /// It ends after this many bytes.
+    Done(usize),
+    /// The text ends inside it.
+    Open,
+    /// It ran past [`ESCAPE_CARRY_BYTES`] with no end.
+    TooLong,
 }
 
 /// `text` without its complete escape sequences, and the unfinished sequence it ends in.
+///
+/// A sequence that has run [`ESCAPE_CARRY_BYTES`] without ending is not one: its introducer is
+/// dropped and the rest is text, so a stray `ESC ]` cannot swallow the output after it.
 fn split_ansi(text: &str) -> (String, &str) {
     let mut out = String::with_capacity(text.len());
-    let mut chars = text.char_indices().peekable();
-    while let Some((start, c)) = chars.next() {
-        match c {
-            '\u{9b}' => {
-                if !skip_csi(&mut chars) {
-                    return (out, &text[start..]);
-                }
+    let mut at = 0;
+    while let Some(found) = text[at..].find(['\u{1b}', '\u{9b}']) {
+        let start = at + found;
+        out.push_str(&text[at..start]);
+        let rest = &text[start..];
+        match escape_end(rest) {
+            Escape::Done(len) => at = start + len,
+            Escape::Open => return (out, rest),
+            Escape::TooLong => {
+                at = start + rest.chars().next().map_or(1, char::len_utf8);
             }
-            '\u{1b}' => match chars.next() {
-                None => return (out, &text[start..]),
-                Some((_, '[')) => {
-                    if !skip_csi(&mut chars) {
-                        return (out, &text[start..]);
-                    }
-                }
-                Some((_, ']')) => loop {
-                    match chars.next() {
-                        None => return (out, &text[start..]),
-                        Some((_, '\u{7}' | '\u{9c}')) => break,
-                        Some((_, '\u{1b}')) => {
-                            if chars.next().is_none() {
-                                return (out, &text[start..]);
-                            }
-                            break;
-                        }
-                        Some(_) => {}
-                    }
-                },
-                Some(_) => {}
-            },
-            c => out.push(c),
         }
     }
+    out.push_str(&text[at..]);
     (out, "")
 }
 
-/// Consume parameter and intermediate bytes through the final byte; `false` when the text ends
-/// first.
-fn skip_csi(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>) -> bool {
-    for (_, c) in chars.by_ref() {
+/// Where the escape sequence that opens `rest` ends.
+fn escape_end(rest: &str) -> Escape {
+    let mut chars = rest.char_indices();
+    let Some((_, introducer)) = chars.next() else {
+        return Escape::Open;
+    };
+    if introducer == '\u{9b}' {
+        return csi_end(chars);
+    }
+    match chars.next() {
+        None => Escape::Open,
+        Some((_, '[')) => csi_end(chars),
+        Some((_, ']')) => loop {
+            match chars.next() {
+                None => return Escape::Open,
+                Some((at, _)) if at > ESCAPE_CARRY_BYTES => return Escape::TooLong,
+                Some((at, c @ ('\u{7}' | '\u{9c}'))) => return Escape::Done(at + c.len_utf8()),
+                Some((_, '\u{1b}')) => {
+                    return chars
+                        .next()
+                        .map_or(Escape::Open, |(at, c)| Escape::Done(at + c.len_utf8()));
+                }
+                Some(_) => {}
+            }
+        },
+        Some((at, c)) => Escape::Done(at + c.len_utf8()),
+    }
+}
+
+/// Consume parameter and intermediate bytes through the final byte.
+fn csi_end(chars: std::str::CharIndices<'_>) -> Escape {
+    for (at, c) in chars {
+        if at > ESCAPE_CARRY_BYTES {
+            return Escape::TooLong;
+        }
         if ('\u{40}'..='\u{7e}').contains(&c) {
-            return true;
+            return Escape::Done(at + c.len_utf8());
         }
     }
-    false
+    Escape::Open
 }
 
 /// Environment values a child can print that are secrets by the daemon's measured rule.
 ///
 /// A value of at least 12 bytes whose name has an underscore-separated part ending in KEY, TOKEN,
 /// SECRET, PASS, PASSWORD, PASSWD, CREDENTIAL, CREDENTIALS, AUTH, BEARER, COOKIE, SESSION or
-/// PRIVATE (case ignored) is a secret whole. In any other value, each run of at least 16 letters,
-/// digits, `+`, `-` or `_` holding a letter and a digit, at 3.0 bits per character or more, is
-/// one; PATH, MANPATH, INFOPATH, HOME, PWD, OLDPWD, TMPDIR and `XDG_*` are exempt from that
-/// second rule. Secrets under these bounds are a stated residual.
+/// PRIVATE (case ignored) is a secret whole, and so is each token run inside it. In any other
+/// value, each run of at least 16 letters, digits, `+`, `-` or `_` holding a letter and a digit,
+/// at 3.0 bits per character or more, is one; PATH, MANPATH, INFOPATH, HOME, PWD, OLDPWD, TMPDIR
+/// and `XDG_*` are exempt from that second rule. Secrets under these bounds are a stated
+/// residual.
 #[must_use]
 pub fn env_secrets<'a>(vars: impl IntoIterator<Item = &'a EnvVar>) -> Vec<String> {
     let mut out = BTreeSet::new();
@@ -430,6 +590,9 @@ pub fn env_secrets<'a>(vars: impl IntoIterator<Item = &'a EnvVar>) -> Vec<String
         if secret_named(name) {
             if value.len() >= 12 {
                 out.insert(value.to_owned());
+                // A credential helper wraps the token (`x-access-token:ghp_...`), and a child
+                // prints the token alone.
+                out.extend(token_runs(value));
             }
             continue;
         }
@@ -528,8 +691,8 @@ mod tests {
             TOKEN.to_owned(),
             hex(TOKEN.as_bytes(), false),
             hex(TOKEN.as_bytes(), true),
-            percent(spaced.as_bytes(), false),
-            percent(spaced.as_bytes(), true),
+            percent(spaced.as_bytes(), false, rfc3986_unreserved, false),
+            percent(spaced.as_bytes(), true, rfc3986_unreserved, false),
         ];
         for form in forms {
             let text = format!("before {form} after");
@@ -629,11 +792,156 @@ mod tests {
     }
 
     #[test]
-    fn a_kept_prefix_that_never_completes_is_released_at_the_end() {
+    fn a_kept_prefix_of_eight_bytes_that_never_completes_is_redacted_at_the_end() {
         let redactor = redactor(&[TOKEN]);
         let mut stream = redactor.stream();
         assert_eq!(stream.push("see tok_9fQ2"), "see ");
-        assert_eq!(stream.finish(), "tok_9fQ2");
+        assert_eq!(stream.finish(), REDACTED);
+    }
+
+    #[test]
+    fn a_shorter_kept_prefix_is_released_at_the_end() {
+        let redactor = redactor(&[TOKEN]);
+        let mut stream = redactor.stream();
+        assert_eq!(stream.push("see tok_9fQ"), "see ");
+        assert_eq!(stream.finish(), "tok_9fQ");
+    }
+
+    fn streamed(redactor: &Redactor, text: &str, size: usize) -> (String, Vec<String>) {
+        let mut stream = redactor.stream();
+        let mut out = String::new();
+        let mut released = Vec::new();
+        let mut at = 0;
+        while at < text.len() {
+            let mut end = (at + size).min(text.len());
+            while !text.is_char_boundary(end) {
+                end += 1;
+            }
+            let piece = stream.push(&text[at..end]);
+            out.push_str(&piece);
+            released.push(piece);
+            at = end;
+        }
+        out.push_str(&stream.finish());
+        (out, released)
+    }
+
+    #[test]
+    fn a_secret_that_prefixes_a_longer_secret_never_defeats_the_hold_back() {
+        let short = "tok_9fQ2LmZx81Kd";
+        let long = format!("{short}PvR4sWbN7hYc");
+        let redactor = redactor(&[short, &long]);
+        for text in [
+            format!("a {long} b"),
+            format!("a {short} b"),
+            format!("a {short}Pv"),
+        ] {
+            for size in 1..=text.len() {
+                let (out, released) = streamed(&redactor, &text, size);
+                for piece in &released {
+                    assert!(!piece.contains("tok_9f"), "size {size} released {piece:?}");
+                }
+                assert!(!out.contains("tok_9f"), "size {size}: {out:?}");
+                assert!(!out.contains("PvR4"), "size {size}: {out:?}");
+            }
+        }
+        let (out, _) = streamed(&redactor, &format!("a {long} b"), 3);
+        assert_eq!(out, "a (redacted) b");
+    }
+
+    #[test]
+    fn an_escape_before_a_token_does_not_hide_its_first_characters() {
+        let redactor = redactor(&[TOKEN]);
+        for lead in ["\u{1b}", "\u{1b}[", "\u{9b}"] {
+            let text = format!("x {lead}{TOKEN} y");
+            let scrubbed = redactor.scrub(&text);
+            assert!(
+                !scrubbed.contains("9fQ2") && !scrubbed.contains("tok_"),
+                "{lead:?}: {scrubbed:?}"
+            );
+            for size in 1..=text.len() {
+                let (out, released) = streamed(&redactor, &text, size);
+                assert!(
+                    !out.contains("9fQ2") && !released.concat().contains("tok_"),
+                    "{lead:?} size {size}: {out:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unterminated_escape_does_not_swallow_the_output_after_it() {
+        let redactor = redactor(&[TOKEN]);
+        let mut stream = redactor.stream();
+        let mut out = stream.push("\u{1b}]");
+        let filler = "z".repeat(1024 * 1024);
+        let started = std::time::Instant::now();
+        for piece in filler.as_bytes().chunks(4096) {
+            out.push_str(&stream.push(std::str::from_utf8(piece).unwrap()));
+        }
+        out.push_str(&stream.finish());
+        assert!(out.ends_with(&filler[..4096]), "the output vanished");
+        assert!(out.len() > filler.len() - 8192);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn the_uri_component_and_plus_forms_match() {
+        let spaced = "tok 9fQ2/LmZx81Kd!*'()PvR4";
+        let redactor = redactor(&[spaced]);
+        let component = "tok%209fQ2%2FLmZx81Kd!*'()PvR4";
+        let form = "tok+9fQ2%2FLmZx81Kd%21%2A%27%28%29PvR4";
+        for text in [component, form] {
+            assert_eq!(
+                redactor.scrub(&format!("q={text}&")),
+                "q=(redacted)&",
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_secret_shorter_than_eight_bytes_is_not_held() {
+        let redactor = redactor(&["abcdefg"]);
+        assert_eq!(redactor.scrub("abcdefg"), "abcdefg");
+    }
+
+    #[test]
+    fn the_set_changes_the_generation_and_a_huge_value_gets_only_its_raw_form() {
+        let redactor = Redactor::new();
+        let before = redactor.generation();
+        let huge = "Ab1_".repeat(MAX_ENCODED_SECRET_BYTES);
+        redactor.set_source("huge", [huge.clone()]);
+        assert_ne!(redactor.generation(), before);
+        assert_eq!(redactor.matcher().forms.len(), 1);
+        assert_eq!(redactor.scrub(&format!("<{huge}>")), "<(redacted)>");
+        redactor.set_source("huge", [huge]);
+        let again = redactor.generation();
+        redactor.set_source("huge", [format!("{TOKEN}{TOKEN}")]);
+        assert_ne!(redactor.generation(), again);
+    }
+
+    #[test]
+    fn a_large_message_scrubs_in_well_under_a_second() {
+        let secrets: Vec<String> = (0..64)
+            .map(|n| format!("secret-value-{n:04}-xYz9QwErTy"))
+            .collect();
+        let refs: Vec<&str> = secrets.iter().map(String::as_str).collect();
+        let redactor = redactor(&refs);
+        let text = format!(
+            "{} {} {}",
+            "lorem ipsum ".repeat(80_000),
+            secrets[7],
+            "tail"
+        );
+        let started = std::time::Instant::now();
+        let out = redactor.scrub(&text);
+        assert!(out.ends_with("(redacted) tail"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -666,6 +974,20 @@ mod tests {
         assert!(!held.iter().any(|v| v.contains("Alex")));
         assert!(!held.contains(&"1234567".to_owned()), "the 7-byte residual");
         assert!(!held.contains(&"database".to_owned()));
+    }
+
+    #[test]
+    fn an_inner_token_of_a_secret_named_value_is_held_alone() {
+        let env = vars(&[(
+            "GIT_ASKPASS_TOKEN",
+            "x-access-token:ghp_Zq81KdPvR4sWbN7hYcA3eJ",
+        )]);
+        let held = env_secrets(&env);
+        assert!(
+            held.contains(&"ghp_Zq81KdPvR4sWbN7hYcA3eJ".to_owned()),
+            "{held:?}"
+        );
+        assert!(held.contains(&"x-access-token:ghp_Zq81KdPvR4sWbN7hYcA3eJ".to_owned()));
     }
 
     #[test]

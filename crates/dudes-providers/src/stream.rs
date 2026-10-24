@@ -287,8 +287,8 @@ pub struct TurnEnd {
     pub unreadable: u64,
 }
 
-/// Longest `last_message` or `reason` a reader emits, in bytes, marker included. Longer vendor
-/// text is cut on a char boundary and ends with `…`.
+/// Longest `last_message` or `reason` the journal keeps, in bytes, marker included. A reader
+/// hands the vendor text over whole; the supervisor scrubs it and then cuts it with [`bound`].
 pub const MAX_TEXT_BYTES: usize = 4096;
 
 /// Longest completed conversation reply, in UTF-8 bytes including its truncation marker.
@@ -313,17 +313,25 @@ pub enum FinalReplyCompleteness {
 }
 
 impl FinalReply {
-    /// Retain up to [`MAX_FINAL_REPLY_BYTES`] without splitting a UTF-8 character.
+    /// The reply as the vendor wrote it, whole. The supervisor scrubs it and then cuts it with
+    /// [`Self::bounded`], so a secret that straddles the limit is never half kept.
     #[must_use]
     pub fn new(text: &str) -> Self {
         Self {
-            text: bound_to(text, MAX_FINAL_REPLY_BYTES),
-            completeness: if text.len() <= MAX_FINAL_REPLY_BYTES {
-                FinalReplyCompleteness::Complete
-            } else {
-                FinalReplyCompleteness::Truncated
-            },
+            text: text.to_owned(),
+            completeness: FinalReplyCompleteness::Complete,
         }
+    }
+
+    /// This reply cut to [`MAX_FINAL_REPLY_BYTES`] on a UTF-8 boundary, marked truncated when
+    /// anything was cut.
+    #[must_use]
+    pub fn bounded(mut self) -> Self {
+        if self.text.len() > MAX_FINAL_REPLY_BYTES {
+            self.text = bound_to(&self.text, MAX_FINAL_REPLY_BYTES);
+            self.completeness = FinalReplyCompleteness::Truncated;
+        }
+        self
     }
 }
 
@@ -338,11 +346,14 @@ pub(crate) fn exit_name(exit: ExitStatus) -> String {
 
 /// Cut `text` to at most [`MAX_TEXT_BYTES`] bytes on a char boundary, ending with `…` when
 /// anything was cut.
-pub(crate) fn bound(text: &str) -> String {
+#[must_use]
+pub fn bound(text: &str) -> String {
     bound_to(text, MAX_TEXT_BYTES)
 }
 
-fn bound_to(text: &str, limit: usize) -> String {
+/// Cut `text` to at most `limit` bytes on a char boundary, ending with `…` when anything was cut.
+#[must_use]
+pub fn bound_to(text: &str, limit: usize) -> String {
     const MARKER: char = '…';
     if text.len() <= limit {
         return text.to_owned();

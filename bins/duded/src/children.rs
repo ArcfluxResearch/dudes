@@ -55,7 +55,7 @@ type PendingObservations = BTreeMap<ActivityKey, Vec<(Option<Lsn>, SessionObserv
 /// does, an end is logged and dropped rather than lost silently, which is the right behaviour for
 /// the only window in which one can happen: a child that outlived a daemon that never finished
 /// starting.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ChildEnds {
     handle: OnceLock<Handle>,
     open: Mutex<BTreeMap<u32, Registered>>,
@@ -115,11 +115,23 @@ impl ChildEnds {
     /// A sink with no way back into the loop yet.
     #[must_use]
     pub fn new() -> Arc<Self> {
-        let redactor = dudes_supervisor::Redactor::new();
+        let redactor = dudes_supervisor::Redactor::for_run();
         Arc::new(Self {
+            handle: OnceLock::new(),
+            open: Mutex::default(),
+            uncertain: Mutex::default(),
+            next_reader: Mutex::default(),
+            next_startup: Mutex::default(),
+            next_outbox: Mutex::default(),
+            next_mcp_grant: Mutex::default(),
+            codex_profile: OnceLock::new(),
+            protocols: Mutex::default(),
+            pending_observation: Mutex::default(),
+            sampling: AtomicBool::new(false),
+            pending_activity: Mutex::default(),
+            pending_end: Mutex::default(),
             output: Arc::new(OutputRegistry::with_redactor(redactor.clone())),
             redactor,
-            ..Self::default()
         })
     }
 

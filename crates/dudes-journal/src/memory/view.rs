@@ -1,6 +1,7 @@
 //! Bounded reads of one agent's memory for a viewer: a page of entries newest first, one entry by
 //! position, the active summary and the withheld appends. Each read copies at most what it returns.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::ops::Bound::{Excluded, Unbounded};
 
@@ -152,8 +153,11 @@ impl MemoryProjection {
         lsn: Lsn,
         applied: &super::Applied,
         max: usize,
+        scrub: &dyn for<'t> Fn(&'t str) -> Cow<'t, str>,
     ) -> MemoryEntry {
-        let (text, cut) = prefix(&applied.text, max);
+        let scrubbed = scrub(&applied.text);
+        let (text, _) = prefix(&scrubbed, max);
+        let cut = applied.text.len() > max;
         MemoryEntry {
             lsn,
             at: applied.at,
@@ -166,7 +170,8 @@ impl MemoryProjection {
     }
 
     /// Up to `limit` applied entries below `before` (all of them when `None`), newest first, each
-    /// cut to at most `preview` bytes.
+    /// scrubbed and then cut to at most `preview` bytes. `scrub` sees the whole text, so a secret
+    /// that straddles the cut is replaced, never half shown.
     #[must_use]
     pub fn page(
         &self,
@@ -174,6 +179,7 @@ impl MemoryProjection {
         before: Option<Lsn>,
         limit: usize,
         preview: usize,
+        scrub: &dyn for<'t> Fn(&'t str) -> Cow<'t, str>,
     ) -> MemoryPage {
         let through = self.condensed_through(agent);
         let Some(entries) = self.entries.get(&agent) else {
@@ -190,7 +196,7 @@ impl MemoryProjection {
         let page = below
             .by_ref()
             .take(limit)
-            .map(|(lsn, applied)| Self::entry_view(through, *lsn, applied, preview))
+            .map(|(lsn, applied)| Self::entry_view(through, *lsn, applied, preview, scrub))
             .collect();
         MemoryPage {
             count: u64::try_from(entries.len()).expect("usize fits into u64"),
@@ -200,16 +206,23 @@ impl MemoryProjection {
         }
     }
 
-    /// The applied entry at `lsn`, cut to at most `max` bytes, or `None` when this agent has no
-    /// applied entry there.
+    /// The applied entry at `lsn`, scrubbed and then cut to at most `max` bytes, or `None` when
+    /// this agent has no applied entry there.
     #[must_use]
-    pub fn entry(&self, agent: AgentId, lsn: Lsn, max: usize) -> Option<MemoryEntry> {
+    pub fn entry(
+        &self,
+        agent: AgentId,
+        lsn: Lsn,
+        max: usize,
+        scrub: &dyn for<'t> Fn(&'t str) -> Cow<'t, str>,
+    ) -> Option<MemoryEntry> {
         let applied = self.entries.get(&agent)?.get(&lsn)?;
         Some(Self::entry_view(
             self.condensed_through(agent),
             lsn,
             applied,
             max,
+            scrub,
         ))
     }
 

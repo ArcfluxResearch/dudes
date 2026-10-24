@@ -116,3 +116,76 @@ fn a_child_environment_is_held_until_its_turn_ends() {
         "use key-live-8h2k9d0s7f6g"
     );
 }
+
+fn journaled_turn_end(harness: &Harness) -> (Option<String>, Option<TurnOutcome>) {
+    harness
+        .journal
+        .iter()
+        .find_map(|entry| match &entry.record {
+            Record::TurnEnded {
+                last_message,
+                outcome,
+                ..
+            } => Some((last_message.clone(), outcome.clone())),
+            _ => None,
+        })
+        .expect("the turn ended")
+}
+
+fn end_with(harness: &mut Harness, agent: AgentId, outcome: TurnOutcome, last: Option<String>) {
+    let turn = harness.open_turn(agent).expect("a turn was issued");
+    harness.drive(Input::ChildExited {
+        final_reply: None,
+        elapsed_ms: None,
+        turn,
+        exit: ExitStatus {
+            code: Some(0),
+            signal: None,
+        },
+        usage: None,
+        model_usage: BTreeMap::new(),
+        outcome,
+        last_message: last,
+    });
+}
+
+#[test]
+fn a_secret_across_the_last_message_limit_is_replaced_before_the_cut() {
+    let mut harness = Harness::new();
+    let (agent, _) = harness.hire_with_goal(&["npm", "test"]);
+    let token = token_of(&harness);
+    let text = format!("{}{token}{}", "a".repeat(4_096 - 10), "b".repeat(200));
+    finish(&mut harness, agent, &text);
+    let (last, _) = journaled_turn_end(&harness);
+    let last = last.expect("a last message");
+    assert!(last.len() <= 4_096, "{}", last.len());
+    assert!(last.starts_with(&"a".repeat(4_000)));
+    assert!(
+        !last.contains(&token[..6]),
+        "the journaled message kept the first part of the secret"
+    );
+    assert!(
+        last.contains("(red"),
+        "the replacement was cut, not the secret"
+    );
+}
+
+#[test]
+fn a_failed_reason_is_scrubbed_and_then_cut() {
+    let mut harness = Harness::new();
+    let (agent, _) = harness.hire_with_goal(&["npm", "test"]);
+    let token = token_of(&harness);
+    let reason = format!(
+        "boom {token} {}{token}{}",
+        "a".repeat(4_096 - 60),
+        "b".repeat(300)
+    );
+    end_with(&mut harness, agent, TurnOutcome::Failed { reason }, None);
+    let (_, outcome) = journaled_turn_end(&harness);
+    let Some(TurnOutcome::Failed { reason }) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert!(reason.starts_with("boom (redacted) aaaa"), "{reason}");
+    assert!(reason.len() <= 4_096);
+    assert!(!reason.contains(&token[..6]), "{reason}");
+}

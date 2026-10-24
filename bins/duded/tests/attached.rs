@@ -506,7 +506,7 @@ fn attach_one(fixture: &Fixture, ptys: &SharedPtyHost) -> Attached {
         mut owner,
         sibling,
         append_failure,
-        host: _,
+        ..
     } = hired(fixture, ptys, fixture.settings());
     let response = attach(&mut owner, &settings, agent);
     assert!(response.error.is_none(), "attach was refused: {response:?}");
@@ -533,6 +533,7 @@ struct Hired {
     sibling: LocalClient,
     append_failure: duded::runtime::AppendFailure,
     host: SharedHost,
+    redactor: dudes_supervisor::Redactor,
 }
 
 /// Boot on `settings`, hire and confirm a session: everything an attach needs before it is asked.
@@ -549,6 +550,7 @@ fn hired_with_resolver(
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let children = duded::ChildEnds::new();
     host.bind_child_ends(Arc::clone(&children));
+    let redactor = children.redactor();
     let seams = duded::Seams {
         host: host.clone(),
         pty_host: Box::new(ptys.clone()),
@@ -613,6 +615,7 @@ fn hired_with_resolver(
         sibling,
         append_failure,
         host,
+        redactor,
     }
 }
 
@@ -3266,4 +3269,99 @@ fn seed_orphan_request(fixture: &Fixture, pty: dudes_proto::rpc::pty::PtyId) -> 
             },
         })
         .expect("seed the orphan request")
+}
+
+const PLANTED: &str = "ghp_Zq81KdPvR4sWbN7hYcA3eJ";
+
+fn planted_settings(fixture: &Fixture) -> duded::Settings {
+    let mut settings = fixture.settings();
+    settings
+        .daemon_env
+        .push(dudes_providers::launch::EnvVar::new(
+            "PLANTED_API_TOKEN",
+            PLANTED,
+        ));
+    settings
+}
+
+fn held(redactor: &dudes_supervisor::Redactor) -> bool {
+    redactor.scrub(PLANTED) != PLANTED
+}
+
+fn await_held(redactor: &dudes_supervisor::Redactor, want: bool, what: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while held(redactor) != want {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_pty_environment_is_held_while_attached_and_released_on_detach() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let Hired {
+        settings,
+        mut running,
+        agent,
+        mut owner,
+        redactor,
+        ..
+    } = hired(&fixture, &ptys, planted_settings(&fixture));
+    assert!(!held(&redactor), "nothing is held before an attach");
+    assert!(attach(&mut owner, &settings, agent).error.is_none());
+    await_held(&redactor, true, "the attached environment was never held");
+    assert!(detach(&mut owner, &settings, agent).error.is_none());
+    await_held(&redactor, false, "a detach did not release the environment");
+    running.stop(duded::ExitCause::Ended);
+}
+
+#[test]
+fn a_retired_attached_agent_releases_its_pty_environment() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let Hired {
+        settings,
+        mut running,
+        agent,
+        mut owner,
+        redactor,
+        ..
+    } = hired(&fixture, &ptys, planted_settings(&fixture));
+    assert!(attach(&mut owner, &settings, agent).error.is_none());
+    await_held(&redactor, true, "the attached environment was never held");
+    running
+        .handle
+        .input(Input::Command(dudes_supervisor::Command::Retire {
+            agent,
+            reason: "done".into(),
+            browser_retire: None,
+        }));
+    await_held(
+        &redactor,
+        false,
+        "a retirement did not release the environment",
+    );
+    running.stop(duded::ExitCause::Ended);
+}
+
+#[test]
+fn a_failed_pty_open_holds_nothing() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let Hired {
+        settings,
+        mut running,
+        agent,
+        mut owner,
+        redactor,
+        ..
+    } = hired(&fixture, &ptys, planted_settings(&fixture));
+    ptys.fail_next_open();
+    assert!(attach(&mut owner, &settings, agent).error.is_some());
+    fixture.await_record("system detach", |record| {
+        matches!(record, Record::Detached { .. }).then_some(())
+    });
+    assert!(!held(&redactor), "a failed open left its environment held");
+    running.stop(duded::ExitCause::Ended);
 }

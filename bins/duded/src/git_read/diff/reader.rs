@@ -290,18 +290,32 @@ pub struct DiffReader {
 // Off Unix every public method is a refusal stub that ignores its arguments.
 #[cfg_attr(not(unix), allow(clippy::unused_self, clippy::needless_pass_by_value))]
 impl DiffReader {
-    /// Use the daemon's runner/PATH and a private content-only scratch directory.
+    /// Use the daemon's runner/PATH and a private content-only scratch directory, and scrub every
+    /// file's text of `redactor`'s secrets before it is sent.
     #[must_use]
-    pub fn new(runner: Arc<dyn PredicateRunner>, path: Option<OsString>, scratch: &Path) -> Self {
+    pub fn with_secret_set(
+        runner: Arc<dyn PredicateRunner>,
+        path: Option<OsString>,
+        scratch: &Path,
+        redactor: dudes_supervisor::Redactor,
+    ) -> Self {
         Self {
             git: super::super::GitReader::new(runner, path, scratch.join("metadata")),
             scratch: scratch.join("content"),
             deadline: super::super::READ_DEADLINE,
-            redactor: dudes_supervisor::Redactor::new(),
+            redactor,
         }
     }
 
-    /// The same reader, scrubbing every file's text of `redactor`'s secrets before it is sent.
+    /// A reader that scrubs nothing. Only tests build one.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn new(runner: Arc<dyn PredicateRunner>, path: Option<OsString>, scratch: &Path) -> Self {
+        Self::with_secret_set(runner, path, scratch, dudes_supervisor::Redactor::for_run())
+    }
+
+    /// The same reader, scrubbing with `redactor` instead.
+    #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub fn with_redactor(mut self, redactor: dudes_supervisor::Redactor) -> Self {
         self.redactor = redactor;

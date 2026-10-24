@@ -244,6 +244,7 @@ struct Flow {
     append_failure: duded::runtime::AppendFailure,
     repo: PathBuf,
     column: Arc<ScriptedColumn>,
+    redactor: dudes_supervisor::Redactor,
 }
 
 fn credential(settings: &duded::Settings) -> OperatorCredential {
@@ -296,6 +297,7 @@ impl Flow {
             Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
         );
         host.bind_child_ends(Arc::clone(&seams.children));
+        let redactor = seams.children.redactor();
         let tokens = seams.rng.tokens();
         let daemon = duded::boot(&settings, seams).unwrap();
         let append_failure = daemon.append_failure();
@@ -315,6 +317,7 @@ impl Flow {
             append_failure,
             repo,
             column,
+            redactor,
         }
     }
 
@@ -3039,6 +3042,38 @@ fn a_daily_limit_and_an_open_question_move_no_card() {
     flow.stop();
 }
 
+/// A summary journaled before the daemon knew a secret is scrubbed where the Floor reads it, and
+/// only then cut.
+#[test]
+fn a_summary_from_before_a_secret_was_known_is_scrubbed_on_read() {
+    const SECRET: &str = "tok_9fQ2LmZx81KdPvR4sWbN7hYcA3eJuT6o";
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(
+        &fixture,
+        settings,
+        repo,
+        [common::fails(), common::passes()],
+    );
+    let cody = flow.hire("Cody");
+    let card = flow.create("One");
+    flow.give_ok(card, cody, None);
+    let (first, ..) = Flow::await_turn_number(&fixture, 1);
+    let message = format!("{}{SECRET}{}", "x".repeat(3_000), "y".repeat(100));
+    flow.end_turn(&fixture, first, Some(&message));
+    let (_second, ..) = Flow::await_turn_number(&fixture, 2);
+    let raw = flow.read(card).ticket.summary.expect("a summary");
+    assert!(
+        raw.contains(&SECRET[..4]),
+        "a control: nothing was held yet"
+    );
+    flow.redactor
+        .set_source("learned-later", [SECRET.to_owned()]);
+    let summary = flow.read(card).ticket.summary.expect("a summary");
+    assert!(!summary.contains(&SECRET[..4]), "{summary}");
+    flow.stop();
+}
+
 /// The summary is the agent's last message, cut and stripped of control bytes, and the check
 /// result is the daemon's own newest run: pass or fail, exit status and time. A new round starts
 /// with neither.
@@ -3070,7 +3105,8 @@ fn the_summary_and_the_check_result_follow_the_ticket() {
     flow.await_completed_review(card);
     let ready = flow.read(card).ticket;
     let summary = ready.summary.expect("a summary");
-    assert_eq!(summary.len(), 4_096);
+    // The journal keeps 4,096 bytes of the message and the control byte goes after that cut.
+    assert_eq!(summary.len(), 4_095);
     assert!(!summary.contains('\u{7}'));
     assert!(summary.starts_with(&"x".repeat(3_000)));
     let result = ready.check.expect("the check ran");

@@ -36,6 +36,7 @@ categories.workspace = true
 testing = []
 
 [dependencies]
+aho-corasick.workspace = true
 blake3.workspace = true
 dudes-policy.workspace = true
 dudes-proto.workspace = true
