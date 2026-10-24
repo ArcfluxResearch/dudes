@@ -94,10 +94,10 @@ test('the App step explains the copy, or says what trusting the project allows, 
     const page = async (state) => {
       hire.resetHire();
       choose();
-      hire.showSection('engine');
+      hire.showSection('engine', state);
       const view = await server.ssrLoadModule('/src/renderer/onboarding/hire.ts');
       view.editDraft({ name: 'Kim', workspaceId: 'parser', engine: 'claude' });
-      view.showSection('engine');
+      view.showSection('engine', state);
       return renderToStaticMarkup(createElement(HireWizardView, { hire: view.getHireState(), floor: state, onClose() {} }));
     };
     const trusted = await page(floor({ agents: working }));

@@ -73,7 +73,7 @@ test('an archived Codex or Pi engine is preselected only where the matched works
     assert.deepEqual(hire.getHireState().draft,
       { name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', engine: provider });
     assert.equal(hire.getHireState().prefill.notes.engine,
-      `${name}, the archived engine, is preselected. Review the engine and the current limits.`);
+      `${name}, the archived engine, is preselected. Review the engine choice.`);
   }
 
   hire.resetHire();

@@ -342,22 +342,13 @@ test('the checks sibling rides the snapshot beside the catalog, and goes with it
   assert.equal(getFloorState().snapshotEpoch, getFloorState().epoch);
 });
 
-test('a u64::MAX ceiling renders exactly, never through Number', () => {
+test('dollar formatting preserves a u64 exactly without Number', () => {
   assert.equal(formatUsdMicros(U64_MAX), '$18,446,744,073,709.551615');
   assert.notEqual(String(Number(U64_MAX) / 1_000_000), '18446744073709.551615', 'the control: Number rounds it');
   assert.equal(formatUsdMicros('100000000'), '$100');
   assert.equal(formatUsdMicros('500000'), '$0.5');
   assert.equal(formatUsdMicros('1'), '$0.000001');
   assert.equal(formatUsdMicros('9007199254740993'), '$9,007,199,254.740993');
-
-  subscribe({ onboarding: { floor_usd_per_day_micros: U64_MAX, workspaces: [{ ...CATALOG.workspaces[0],
-    goal_usd_micros: U64_MAX, agent_usd_per_day_micros: '9007199254740993' }] } });
-  hire.editDraft({ workspaceId: 'repo_1' });
-  hire.showSection('engine');
-  const html = render();
-  assert.match(html, /<dt>Spending limit for a task<\/dt><dd>\$18,446,744,073,709\.551615<\/dd>/);
-  assert.match(html, /<dt>Daily spending limit for this agent<\/dt><dd>\$9,007,199,254\.740993 per day<\/dd>/);
-  assert.match(html, /<dt>Daily spending limit for the whole Floor<\/dt><dd>\$18,446,744,073,709\.551615 per day<\/dd>/);
 });
 
 test('field limits count UTF-8 bytes after trimming ASCII whitespace only', () => {
@@ -404,16 +395,17 @@ test('a required field that fails moves to its own section and keeps what was ty
   assert.equal(net.calls.length, 0, 'nothing was sent for an invalid draft');
 });
 
-test('the three sections show only enrolled choices and the configured limits', () => {
+test('the three sections show only enrolled choices without passive limits', () => {
   subscribe();
   const sections = {};
+  hire.editDraft({ name: 'Kim' });
   for (const { key } of hire.SECTIONS) {
     hire.showSection(key);
     hire.editDraft({ workspaceId: 'repo_2' });
     sections[key] = render();
   }
   const index = [...sections.identity.matchAll(/class="hire-index-label">([^<]+)</g)].map((match) => match[1]);
-  assert.deepEqual(index, ['Who', 'Project', 'App']);
+  assert.deepEqual(index, ['Who', 'Project', 'Engine']);
   assert.equal((sections.identity.match(/aria-current="step"/g) ?? []).length, 1);
 
   const names = (html) => [...html.matchAll(/<(?:input|textarea)[^>]*name="([^"]+)"/g)].map((match) => match[1]);
@@ -427,12 +419,9 @@ test('the three sections show only enrolled choices and the configured limits', 
   assert.match(sections.workspace, /Parser repository/);
   assert.match(sections.engine, /<input type="radio" name="engine" checked="" value="claude"\/>/,
     'a workspace offering one engine offers it chosen');
-  for (const [dt, dd] of [['Most turns for a task', '3'],
-    ['Spending limit for a task', '\\$1\\.5'], ['Token limit for a task', 'No limit'], ['Daily spending limit for this agent', '\\$3 per day'],
-    ['Daily token limit for this agent', 'No limit'], ['Daily spending limit for the whole Floor', '\\$100 per day']]) {
-    assert.match(sections.engine, new RegExp(`<dt>${dt}</dt><dd>${dd}</dd>`));
-  }
   const all = Object.values(sections).join('\n');
+  assert.doesNotMatch(all, /Configured limits|Spending and turn limits/);
+  assert.match(sections.identity, /A label shown to people and other agents, not instructions for the agent/);
   assert.doesNotMatch(all, /type="file"|name="(?:cwd|command|provider|predicate|budget|isolation|trust)/,
     'a browser field edits how the agent runs');
   assert.doesNotMatch(all, /<input[^>]*type="hidden"/);
@@ -501,7 +490,7 @@ test('a hire needs no check: a project the checks sibling does not list is hired
 
 test('the Engine step states what each offered engine can touch', () => {
   subscribe({ onboarding: UNCAPPED });
-  hire.editDraft({ workspaceId: 'repo_3' });
+  hire.editDraft({ name: 'Kim', workspaceId: 'repo_3' });
   hire.showSection('engine');
   const lines = [...render().matchAll(/<span class="hire-choice-label">([^<]+)<\/span><span class="hire-note">([^<]+)</g)]
     .map(([, engine, line]) => [engine, line]);
@@ -513,19 +502,6 @@ test('the Engine step states what each offered engine can touch', () => {
   ]);
 });
 
-test('an unset ceiling reads No limit, and the hop cap and the engine bound a task', () => {
-  subscribe({ onboarding: { ...UNCAPPED, workspaces: [{ ...UNCAPPED.workspaces[0], goal_tokens: '9007199254740993' }] } });
-  hire.editDraft({ workspaceId: 'repo_3', engine: 'pi' });
-  hire.showSection('engine');
-  const html = render();
-  for (const [dt, dd] of [['Spending limit for a task', 'No limit'], ['Token limit for a task', '9007199254740993 tokens'],
-    ['Daily spending limit for this agent', 'No limit'], ['Daily token limit for this agent', 'No limit'], ['Daily spending limit for the whole Floor', 'No limit']]) {
-    assert.match(html, new RegExp(`<dt>${dt}</dt><dd>${dd}</dd>`), dt);
-  }
-  assert.match(html, /<p class="hire-note">This agent runs at most 8 turns for a task\. Pi&#x27;s own plan limits apply, and so does any limit shown above\.<\/p>/);
-  assert.doesNotMatch(html, /ceilings are the admission limits/);
-});
-
 const SETTINGS = Object.freeze({
   folder_picker: false, switches: { answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false, hire: true, git: false, renew: false, board: false, diff: false, project: false },
   budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
@@ -534,6 +510,7 @@ const SETTINGS = Object.freeze({
 
 test('with no project the Workspace step names the Settings controls to use', () => {
   subscribe({ onboarding: null, checks: null, settings: SETTINGS });
+  hire.editDraft({ name: 'Kim' });
   hire.showSection('workspace');
   const html = render();
   assert.match(html, /Agents work in a project, and none is set up yet\. Turn on Add and remove projects under Floor switches in Settings, then add your project folder\./);
@@ -550,6 +527,7 @@ test('with no project the Workspace step names the Settings controls to use', ()
 
 test('project setup guidance keeps the disconnected stream reason visible', () => {
   subscribe({ onboarding: null, checks: null, settings: SETTINGS });
+  hire.editDraft({ name: 'Kim' });
   hire.showSection('workspace');
   noteTransport('close');
   assert.match(render(), /The Floor stream is disconnected, so Hire is unavailable\./);
@@ -557,6 +535,7 @@ test('project setup guidance keeps the disconnected stream reason visible', () =
 
 test('project setup guidance keeps a stale-stream reason visible', () => {
   subscribe({ onboarding: null, checks: null, settings: SETTINGS });
+  hire.editDraft({ name: 'Kim' });
   hire.showSection('workspace');
   noteStale(true);
   const html = render();
@@ -568,6 +547,7 @@ test('project setup guidance keeps the Hire-off explanation visible', () => {
   subscribe({ onboarding: null, checks: null, settings: {
     ...SETTINGS, switches: { ...SETTINGS.switches, hire: false },
   } });
+  hire.editDraft({ name: 'Kim' });
   hire.showSection('workspace');
   const html = render();
   assert.match(html, /Hire is off\. Turn on Hire agents under Floor switches in Settings\./);
@@ -579,7 +559,7 @@ test('a missing engine is explained as turned off or needing a project spending 
   for (const [providers, shown] of [[['claude', 'pi'], true], [['claude'], false], [['claude', 'grok'], false]]) {
     resetFloorStore();
     subscribe({ settings: { ...SETTINGS, providers } });
-    hire.editDraft({ workspaceId: 'repo_1' });
+    hire.editDraft({ name: 'Kim', workspaceId: 'repo_1' });
     hire.showSection('engine');
     assert.equal(render().includes(WITHDRAWN), shown, `registered ${providers.join(', ')}`);
   }
@@ -587,6 +567,7 @@ test('a missing engine is explained as turned off or needing a project spending 
 
 test('Next is the main button on every step but the last, and Hire is offered only on the last', () => {
   subscribe();
+  fillDraft();
   for (const section of ['identity', 'workspace']) {
     hire.showSection(section);
     const html = render();
@@ -702,6 +683,39 @@ test('the response map: every row, and anything off the row proves nothing', () 
   }
 });
 
+test('a turned-off hire explains the refusal and keeps an earlier uncertain attempt frozen', async () => {
+  const actionOff = (request) => ({ status: 409, body: JSON.stringify({
+    attempt_id: request.attempt_id, state: 'refused', reason: 'action_off',
+  }) });
+  subscribe();
+  await hireOnce(daemon(actionOff));
+  assert.equal(hire.getHireState().outcome.kind, 'refused');
+  assert.match(render(), /Hiring was turned off/);
+  assert.match(render(), /Floor switches in Settings/);
+  assert.doesNotMatch(render(), /action_off/);
+  assert.equal(hire.releasable(hire.getHireState()), true);
+  const id = hire.getHireState().attempt.payload.attempt_id;
+  for (const body of [{ attempt_id: 'other', state: 'refused', reason: 'action_off' },
+    { attempt_id: id, state: 'refused', reason: 'ceiling_required' },
+    { attempt_id: id, state: 'refused', reason: 'action_off', extra: true }]) {
+    assert.equal(hire.decodeHireResponse(409, JSON.stringify(body), id).kind, 'unknown');
+  }
+
+  hire.resetHire();
+  const net = daemon(LOST, actionOff);
+  await hireOnce(net);
+  const attempt = hire.getHireState().attempt;
+  await hire.checkHireStatus(net);
+  assert.equal(net.calls[1].init.body, net.calls[0].init.body);
+  assert.equal(hire.getHireState().uncertain, true);
+  assert.equal(hire.releasable(hire.getHireState()), false);
+  hire.releaseAttempt();
+  assert.equal(hire.getHireState().attempt, attempt);
+  resubscribe({});
+  assert.match(render(), /may already have been hired/);
+  assert.doesNotMatch(render(), /No agent was hired|Hiring was turned off|>Edit the form</);
+});
+
 test('pending invents no agent and Check status reuses the same attempt', async () => {
   subscribe();
   const net = daemon(PENDING, PENDING, COMPLETE);
@@ -813,6 +827,7 @@ test('workspaces added while running stay ordinary selectable choices', () => {
   subscribe({ onboarding: { ...CATALOG, workspaces: CATALOG.workspaces.map((workspace) => ({
     ...workspace, reload_mark: { ...MARK, kind: 'added' },
   })) } });
+  hire.editDraft({ name: 'Kim' });
   hire.showSection('workspace');
   const html = render();
   assert.match(html, /hire-choice-label">Parser repository/);
@@ -838,6 +853,7 @@ test('a reload mark decodes, shows beside its workspace, and a malformed mark me
   }
 
   subscribe({ onboarding: MARKED });
+  hire.editDraft({ name: 'Kim' });
   hire.showSection('workspace');
   const html = render();
   assert.match(html, /data-reload-mark="changed">Updated while the daemon was running\.</);

@@ -2145,7 +2145,6 @@ samp,
   flex-direction: column;
   gap: 0.6rem;
   width: min(54rem, 100%);
-  min-height: min(34rem, 100%);
   max-height: 100%;
   overflow: auto;
   padding: 0.75rem;
@@ -3232,8 +3231,6 @@ samp,
   color: var(--muted-ink);
 }
 
-/* The first next step: one card over the office, where an empty floor needs a person to act. */
-/* Over the office only, and at its top, clear of the checks shelf and the zoom buttons at the foot of it. */
 .office-area {
   position: relative;
   display: flex;
@@ -3258,6 +3255,14 @@ samp,
   background: var(--surface);
   color: var(--ink);
   box-shadow: 0 8px 28px var(--panel-shadow);
+}
+.office-area > .first-task[data-first-task='hire'] {
+  position: fixed;
+  inset: 50% auto auto 50%;
+  width: min(30rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2 * var(--notice-rail-height) - 2rem);
+  margin: 0;
+  transform: translate(-50%, -50%);
 }
 .first-task h2 { margin: 0; font-size: 1.15rem; }
 .first-task p { margin: 0; }

@@ -68,12 +68,12 @@ before(async () => {
 after(async () => { await server?.close(); });
 beforeEach(() => { resetFloorStore(); hire.resetHire(); resetTicket(); });
 
-const render = () => renderToStaticMarkup(createElement(View, { hire: hire.getHireState(), floor: getFloorState(), onClose() {} }));
+const render = (floor = getFloorState()) => renderToStaticMarkup(createElement(View, { hire: hire.getHireState(), floor, onClose() {} }));
 
 test('the wizard has three sections and no first task or check choice', () => {
   subscribe();
   fill();
-  assert.deepEqual(hire.SECTIONS.map((entry) => entry.label), ['Who', 'Project', 'App']);
+  assert.deepEqual(hire.SECTIONS.map((entry) => entry.label), ['Who', 'Project', 'Engine']);
   for (const section of ['identity', 'workspace', 'engine']) {
     hire.showSection(section);
     assert.doesNotMatch(render(), /first_task|check_id|The task is done when|What should they do first/);
@@ -119,4 +119,32 @@ test('with tickets on the completed hire shows no tickets note', async () => {
   await hire.submitHire(getFloorState(), daemon({ '/floor/onboard': [COMPLETE] }).deps);
   assert.equal(hire.ticketsOff(getFloorState()), false);
   assert.doesNotMatch(render(), /data-hire-tickets/);
+});
+
+test('a first hire requires a name, leaves multiple engines to choose, and sends the engine default', async () => {
+  subscribe();
+  const both = { ...getFloorState(), onboarding: { ...getFloorState().onboarding,
+    workspaces: [{ ...getFloorState().onboarding.workspaces[0], engines: ['claude', 'codex'] }] },
+    daemon: { providers: [{ provider: 'claude', program: 'claude', found: true },
+      { provider: 'codex', program: 'codex', found: true }] } };
+  hire.prepareHire(both);
+  assert.equal(hire.getHireState().draft.workspaceId, 'repo_1');
+  assert.equal(hire.getHireState().draft.engine, undefined, 'multiple engines need a choice');
+  assert.match(render(both), /class="hire-next" aria-disabled="true"/);
+  hire.moveSection(1, both);
+  assert.equal(hire.getHireState().section, 'identity');
+  hire.showSection('engine', both);
+  assert.equal(hire.getHireState().section, 'identity', 'the section index cannot skip the name');
+  hire.editDraft({ name: 'Kim', role: 'reviewer' });
+  hire.moveSection(1, both);
+  assert.equal(hire.getHireState().section, 'workspace');
+  hire.moveSection(1, both);
+  assert.equal(hire.getHireState().section, 'engine');
+  hire.editDraft({ engine: 'codex' });
+  const net = daemon({ '/floor/onboard': [COMPLETE] });
+  await hire.submitHire(both, net.deps);
+  assert.equal(net.calls.length, 1);
+  assert.equal(net.calls[0].request.provider, 'codex');
+  assert.equal('model' in net.calls[0].request, false);
+  assert.match(render(), /Hired Kim\./);
 });
