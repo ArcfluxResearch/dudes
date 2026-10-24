@@ -17,6 +17,7 @@ import { getGitState, loadGit, refusalText, subscribeToGit } from '../git/git.ts
 import type { GitChangeKind } from '../git/git.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
+import { DIGEST_CAVEAT, digestSentence } from './digest.ts';
 import { checkDisplayCurrent, currentDetail, editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
 import { RecoveredReview } from './RecoveredReview.tsx';
 import type { TicketDetail, TruncatedTicketField } from './detail.ts';
@@ -361,6 +362,8 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   const modeAllowed = mode === 'none' || (mode === 'give'
     ? actions.includes('give') || actions.includes('try_again') : actions.includes(mode));
 
+  const stepDigest = card.ticket?.last_turn_end?.step_digest;
+  const digest = stepDigest === undefined ? null : digestSentence(stepDigest);
   const reviewing = card.status === 'review' || card.status === 'blocked';
   const needsReview = requiresInstructionReview(card) && reviewing;
   const reviewReady = !needsReview || reviewedWatermark(detail, card) !== null;
@@ -421,6 +424,8 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
       <details><summary>Details</summary><p>Checked at {recordedTime(shown.result.at)}.</p>
         {shown.result.exit === null ? null : <p>Exit status: {shown.result.exit}.</p>}</details>
     </section>}
+    {digest === null ? null : <section className="ticket-digest" aria-label="Steps the engine reported"><h4>Engine-reported steps</h4>
+      <p>{digest}</p><p className="ticket-digest-note">{DIGEST_CAVEAT}</p></section>}
     {!floor.ticket ? <TicketOffHint floor={floor} /> : null}
     {actions.length === 0 ? null : <div className="ticket-actions" role="group" aria-label="Ticket actions" aria-busy={sending}>
       {ordinary.length === 0 ? null : <div className="ticket-action-pair">{ordinary.map(actionButton)}</div>}

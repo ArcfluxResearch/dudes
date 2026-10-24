@@ -45,6 +45,7 @@ pub mod schema;
 pub mod task;
 pub mod ticket;
 pub mod traces;
+pub mod turn_report;
 
 /// The current RPC contract major. `goal.replace` checks [`rpc::Request::v`] against it;
 /// legacy methods do not gate on that field.
@@ -105,9 +106,9 @@ pub use messages::{
 };
 pub use projection::{
     ActivityAgent, ActivityCard, ActivityEvent, ActivityView, AgentView, CardTicket, CardView,
-    FloorDelta, FloorProjection, GoalView, LiveActivityKind, LiveActivityView, MAX_ACTIVITY_BYTES,
-    MAX_ACTIVITY_ROWS, MAX_RETIRED_AGENT_BYTES, MAX_RETIRED_AGENTS, MailView, PredicateOutcome,
-    RetiredAgentView, WorktreeView, WorktreeViewState,
+    FloorDelta, FloorProjection, GoalView, LastTurnView, LiveActivityKind, LiveActivityView,
+    MAX_ACTIVITY_BYTES, MAX_ACTIVITY_ROWS, MAX_RETIRED_AGENT_BYTES, MAX_RETIRED_AGENTS, MailView,
+    PredicateOutcome, RetiredAgentView, WorktreeView, WorktreeViewState,
 };
 pub use question_history::{
     AnsweredQuestionView, MAX_AGENT_QUESTION_HISTORY, MAX_QUESTION_HISTORY,
@@ -134,6 +135,7 @@ pub use traces::{
     MAX_AGENT_TRACE_BYTES, MAX_AGENT_TRACES, MAX_TRACE_BYTES, MAX_TRACES, TraceOutcome,
     TurnTraceView,
 };
+pub use turn_report::{ContextReport, StepDigest, TurnReport};
 
 // The vocabulary crate is re-exported so a client of the contract needs one dependency.
 pub use dudes_types as types;

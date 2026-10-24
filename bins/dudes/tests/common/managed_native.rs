@@ -242,6 +242,7 @@ impl SharedHost {
             native.watches.remove(index)
         };
         *watch.result.lock().unwrap_or_else(PoisonError::into_inner) = Some(TurnEnd {
+            report: dudes_proto::TurnReport::default(),
             final_observation: None,
             outcome,
             usage,

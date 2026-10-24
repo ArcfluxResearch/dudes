@@ -3053,6 +3053,8 @@ mod current_census_tests {
                 mcp_grant: None,
             },
             RecordKind::TurnEnded => Record::TurnEnded {
+                step_digest: None,
+                context: None,
                 agent: agent(),
                 turn: turn_id,
                 mode: Mode::Managed,

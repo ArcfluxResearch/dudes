@@ -581,6 +581,8 @@ mod tests {
             entries.push(Entry {
                 at: Timestamp::UNIX_EPOCH,
                 record: Record::TurnEnded {
+                    step_digest: None,
+                    context: None,
                     final_reply: None,
                     agent,
                     turn,
@@ -844,6 +846,7 @@ mod tests {
         }
         fn end_note_to_mail_refresh(&mut self, turn: TurnId) -> Seen {
             let mut effects = self.h.step(Input::ChildExited {
+                report: dudes_proto::TurnReport::default(),
                 final_reply: None,
                 elapsed_ms: None,
                 turn,

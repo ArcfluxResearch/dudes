@@ -88,6 +88,7 @@ impl TurnReader for LineReader {
     fn end(self: Box<Self>, exit: ExitStatus) -> TurnEnd {
         let completed = self.said.is_some() && exit.is_success();
         TurnEnd {
+            report: dudes_proto::TurnReport::default(),
             final_observation: None,
             final_reply: None,
             outcome: if completed {

@@ -91,6 +91,7 @@ fn pump_fixture_job(daemon: &mut TestDaemon, deadline: std::time::Instant) {
 
 fn observed_end(turn: TurnId) -> Input {
     Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -135,6 +136,7 @@ fn a_deferred_cut_failure_keeps_its_initiating_error_and_abandons_output() {
         .arm(OnboardingFailurePoint::SpendRefresh);
     let failure = daemon
         .pump(Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             elapsed_ms: None,
             turn,
@@ -688,6 +690,7 @@ fn seed_closing(fixture: &common::Fixture, complete: bool) -> common::SharedHost
                 goal,
             }));
             source.drive(Input::ChildExited {
+                report: dudes_proto::TurnReport::default(),
                 final_reply: None,
                 elapsed_ms: None,
                 turn,

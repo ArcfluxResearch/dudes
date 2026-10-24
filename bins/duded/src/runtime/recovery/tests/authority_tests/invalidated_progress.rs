@@ -96,6 +96,8 @@ fn observed_process_turn(
     append_history(
         daemon,
         Record::TurnEnded {
+            step_digest: None,
+            context: None,
             agent,
             turn,
             mode: Mode::Managed,

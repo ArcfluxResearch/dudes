@@ -84,6 +84,8 @@ fn journal_with_confirmed_session_and_issued_resume(
             Entry {
                 at: at(5),
                 record: Record::TurnEnded {
+                    step_digest: None,
+                    context: None,
                     final_reply: None,
                     elapsed_ms: None,
                     session_usage: None,

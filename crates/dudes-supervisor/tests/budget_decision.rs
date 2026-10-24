@@ -218,6 +218,7 @@ fn the_breaker_half_of_gate_5_journals_no_budget_decision() {
     }
     // End the turn and fail the predicate, so the loop decides again and reaches gate 5.
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

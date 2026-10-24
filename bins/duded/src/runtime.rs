@@ -9493,6 +9493,8 @@ mod mail_wake_fence_tests {
         fn replay_completed_goal(&mut self, turn: TurnId) {
             let (agent, goal) = (self.agent, self.goal);
             self.replay_record(Record::TurnEnded {
+                step_digest: None,
+                context: None,
                 agent,
                 turn,
                 mode: Mode::Managed,
@@ -10161,6 +10163,8 @@ mod mail_wake_fence_tests {
         let entry = Entry {
             at: Timestamp::from_unix_millis(172_800_001),
             record: Record::TurnEnded {
+                step_digest: None,
+                context: None,
                 agent,
                 turn,
                 mode: Mode::Managed,

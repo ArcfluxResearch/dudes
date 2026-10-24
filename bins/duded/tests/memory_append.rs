@@ -477,6 +477,7 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
     }
 
     let ended = Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn: first_turn,
@@ -540,6 +541,7 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
         .ask(duded::ports::Ask::Pause(agent))
         .expect("pause");
     let ended = Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn: second_turn,
@@ -742,6 +744,7 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
         .ask(duded::ports::Ask::Pause(agent))
         .expect("pause before restart");
     let ended = Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn: first_turn,
@@ -921,6 +924,7 @@ fn a_refused_nul_memory_append_leaves_the_next_turn_issued() {
     );
 
     let ended = Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

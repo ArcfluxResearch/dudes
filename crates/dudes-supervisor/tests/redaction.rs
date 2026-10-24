@@ -32,6 +32,7 @@ fn token_of(harness: &Harness) -> String {
 fn finish(harness: &mut Harness, agent: AgentId, text: &str) {
     let turn = harness.open_turn(agent).expect("a turn was issued");
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -137,6 +138,7 @@ fn journaled_turn_end(harness: &Harness) -> (Option<String>, Option<TurnOutcome>
 fn end_with(harness: &mut Harness, agent: AgentId, outcome: TurnOutcome, last: Option<String>) {
     let turn = harness.open_turn(agent).expect("a turn was issued");
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

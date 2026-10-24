@@ -640,6 +640,7 @@ fn observe_turn_end(handle: &duded::ports::Handle, fixture: &Fixture, agent: dud
         })
         .unwrap();
     handle.input(dudes_supervisor::Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

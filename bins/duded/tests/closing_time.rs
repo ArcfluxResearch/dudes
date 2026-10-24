@@ -578,6 +578,7 @@ fn seed_done_during_closing(fixture: &Fixture) -> AgentId {
     let turn = source.supervisor.world().agents[&agent].open_turn.unwrap();
     let announced_at = source.journal.len();
     source.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

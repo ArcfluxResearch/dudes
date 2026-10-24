@@ -107,6 +107,7 @@ fn run_one_predicate(outcome: duded::predicate::PredicateOutcome) -> (Fixture, V
 
     // The turn ends, which is what makes the machine judge the goal.
     running.handle.input(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -193,6 +194,7 @@ fn run_symlinked_predicate<P: PredicateRunner>(
     }
     let turn = fixture.await_turn();
     running.handle.input(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

@@ -1189,6 +1189,33 @@
         }
       ]
     },
+    "ContextReport": {
+      "description": "The context size an engine reported for a turn: how much of the prompt window its last model\ncall filled.",
+      "properties": {
+        "model": {
+          "description": "The model the engine reported the window for, as it named it.",
+          "type": "string"
+        },
+        "used": {
+          "description": "Tokens the last model call sent as its prompt: fresh, cached and newly cached.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "window": {
+          "description": "The model's context window, in tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "model",
+        "window",
+        "used"
+      ],
+      "type": "object"
+    },
     "ConversationAnswerAuthority": {
       "description": "Admission authority for one exact structured answer.",
       "oneOf": [
@@ -6423,6 +6450,89 @@
       ],
       "type": "object"
     },
+    "StepDigest": {
+      "description": "How many steps of each kind a turn took, and how many files its edit and write steps named.\n\nIt holds counts only: no tool name, input, path or result. It is what the engine reported, and\nan agent can change files through a shell step without any edit step, so it can undercount.",
+      "properties": {
+        "command": {
+          "default": 0,
+          "description": "Shell commands.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "edit": {
+          "default": 0,
+          "description": "Partial file edits.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_edited": {
+          "default": 0,
+          "description": "Distinct files the edit and write steps named.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mcp": {
+          "default": 0,
+          "description": "Calls to connected tool servers.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "other": {
+          "default": 0,
+          "description": "Anything else.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plan": {
+          "default": 0,
+          "description": "Plan updates.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "read": {
+          "default": 0,
+          "description": "File reads.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "search": {
+          "default": 0,
+          "description": "File or name searches.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "subagent": {
+          "default": 0,
+          "description": "Helper-agent handoffs.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "web": {
+          "default": 0,
+          "description": "Web fetches and searches.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "write": {
+          "default": 0,
+          "description": "Whole-file writes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "TaughtNoteAdmission": {
       "allOf": [
         {
@@ -7437,6 +7547,17 @@
           "$ref": "#/$defs/AgentId",
           "description": "The agent."
         },
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How full the engine said its context was on the turn's last model call. For display\nonly."
+        },
         "elapsed_ms": {
           "description": "Monotonic runtime duration in milliseconds, absent for historical or unobserved timing.",
           "format": "uint64",
@@ -7516,6 +7637,17 @@
             }
           ],
           "description": "The vendor's running total for the session at the turn's end, when the vendor reports\na running total rather than the turn's own usage. Evidence and the next\nturn's baseline, never a charge: `usage` is what this turn is charged."
+        },
+        "step_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepDigest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How many steps of each kind the turn took, as the engine reported them. Counts only,\nfor display: an agent can change files through a shell step, so it can undercount, and\nno gate, predicate or breaker reads it."
         },
         "t": {
           "const": "turn_ended",

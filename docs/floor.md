@@ -205,6 +205,11 @@ Set a spending limit when your account bills per use.
 - **A ticket.** Open a card to read its note, what the agent says it did, the check result and the
   files that changed. The agent's words are shown as plain text. The files come from the Git tab,
   so they need `floor.git` on.
+- **Engine-reported steps.** Under the check result, a ticket counts the steps its newest turn took,
+  such as commands, file reads and edits, and how many files its edits and writes named. These are
+  counts only, with no commands, paths or results. They come from the engine's own step list, so a
+  change made through a shell command is not counted as an edit. They never decide whether a
+  ticket passes.
 - **Changes.** With `floor.git` and `floor.diff` both on, a started ticket also has a Changes view.
   It lists the files that differ from where the agent's round began, including new files that Git
   does not track yet, and opens one file's old and current text side by side. A new file shows as
@@ -230,6 +235,15 @@ Set a spending limit when your account bills per use.
   is not shown for it.
 
 [Tickets](tickets.md) covers the same actions from the command line.
+
+## What the last turn used
+
+A selected agent's card and its Overview show what its newest ended turn reported: tokens, dollars
+and, for Claude, how much of the model's context window the turn's last call filled. A number the
+engine does not report reads "not reported by" that engine and is never shown as zero. The context
+figure is as of the last turn. After you change an agent's model, the Floor says the new model's
+window is not known until it runs, instead of showing the old model's figure. These numbers are
+shown for you to read. They do not stop an agent, finish a goal or move a ticket.
 
 ## After you upgrade
 

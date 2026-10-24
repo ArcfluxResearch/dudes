@@ -143,6 +143,7 @@ fn apply_outcome(
             mode: Mode::Managed,
             last_message,
             exit,
+            step_digest,
             ..
         } => {
             let goal = get_row::<TurnRow>(turns, &turn.to_bytes())?.and_then(|row| row.goal);
@@ -152,6 +153,7 @@ fn apply_outcome(
                     ticket.last_turn_end = Some(dudes_proto::TicketTurnEnd {
                         exit: *exit,
                         at: entry.at,
+                        step_digest: *step_digest,
                     });
                 }),
                 None => Ok(()),

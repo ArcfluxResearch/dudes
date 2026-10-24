@@ -25,6 +25,7 @@ fn latest_decision(h: &Harness, agent: AgentId) -> &LoopDecision {
 
 fn end_without_usage(h: &mut Harness, agent: AgentId) {
     h.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn: h.open_turn(agent).expect("a running turn"),
@@ -129,6 +130,7 @@ fn fail(
 ) -> TurnId {
     let turn = h.open_turn(agent).expect("a running turn");
     h.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         turn,
         elapsed_ms,

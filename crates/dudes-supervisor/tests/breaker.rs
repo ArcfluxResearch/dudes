@@ -1041,6 +1041,7 @@ fn a_held_uncapped_billing_source_exhausts_at_gate_five() {
     assert_eq!(rung(&harness, agent), BreakerRung::Constrain);
 
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -1610,6 +1611,7 @@ fn the_breaker_reaching_stop_kills_the_running_turn() {
 
     // And the end it produces names the breaker, not the signal the process died of.
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -1665,6 +1667,7 @@ fn gate_5_refuses_admission_once_the_breaker_stands_at_constrain() {
     // End the turn honestly and let the loop decide again: predicate fails, so gate 4 passes the
     // decision down to gate 5.
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

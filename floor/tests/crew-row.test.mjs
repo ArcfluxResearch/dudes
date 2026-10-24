@@ -30,6 +30,7 @@ test('a Waiting agent shows its question, whole, and its row says everything but
     status: 'waiting',
     activity: { kind: 'question', line: `? ${QUESTION}`, text: QUESTION, spoken: `Waiting question: ${QUESTION}` },
     liveActivity: null,
+    lastTurn: null,
     activeCard: null,
     hold: null,
     checkout: { worktree: null, shared: false },

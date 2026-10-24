@@ -232,6 +232,7 @@ impl Prefix {
             .0;
         daemon
             .pump(Input::ChildExited {
+                report: dudes_proto::TurnReport::default(),
                 final_reply: None,
                 elapsed_ms: Some(6_000),
                 turn,
@@ -433,6 +434,7 @@ fn end_native_turn(daemon: &mut TestDaemon, host: &common::SharedHost, turn: Tur
     host.finish_owned_child(
         &key,
         Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             elapsed_ms: Some(6_000),
             turn,

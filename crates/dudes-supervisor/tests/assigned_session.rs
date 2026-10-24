@@ -224,6 +224,8 @@ fn insert_prior_confirmed_turn(entries: &mut Vec<Entry>, session: SessionId) {
             Entry {
                 at,
                 record: Record::TurnEnded {
+                    step_digest: None,
+                    context: None,
                     final_reply: None,
                     elapsed_ms: None,
                     session_usage: None,
@@ -331,6 +333,7 @@ fn a_pre_spawn_historical_confirmation_cannot_authorize_a_repeat() {
 
 fn child_exits(harness: &mut Harness, turn: TurnId) {
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

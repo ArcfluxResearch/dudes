@@ -274,6 +274,8 @@ pub struct TurnEnd {
     pub usage: Option<ScopedUsage>,
     /// What the stream attributed to each model it named, keys as reported.
     pub model_usage: BTreeMap<String, Usage>,
+    /// What the reader adds for display beside the outcome. The daemon fills the step digest.
+    pub report: dudes_proto::TurnReport,
     /// The model's final message, when the turn completed and the vendor reported one.
     pub last_message: Option<String>,
     /// The completed reply before the legacy `last_message` limit, with explicit completeness.

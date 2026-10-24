@@ -307,6 +307,7 @@ impl SharedHost {
             native.watches.remove(&ordinal).unwrap()
         };
         *watch.result.lock().unwrap_or_else(PoisonError::into_inner) = Some(TurnEnd {
+            report: dudes_proto::TurnReport::default(),
             final_observation: None,
             outcome,
             usage,
@@ -2164,6 +2165,7 @@ pub(crate) fn set_goal(handle: &duded::Handle, params: GoalSetParams) -> GoalId 
 
 pub(crate) fn end_turn(handle: &duded::Handle, turn: TurnId) {
     handle.input(dudes_supervisor::Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -2188,6 +2190,7 @@ pub(crate) fn end_turn_with_native(
         fixture,
         host,
         dudes_supervisor::Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             elapsed_ms: None,
             turn,

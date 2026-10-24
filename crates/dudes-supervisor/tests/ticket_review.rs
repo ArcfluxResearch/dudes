@@ -317,6 +317,7 @@ fn a_baseline_naming_another_round_is_not_recorded() {
 fn end_turn_and_fail_predicate(harness: &mut Harness, agent: AgentId, goal: GoalId) {
     let turn = harness.open_turn(agent).expect("a turn is running");
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -557,6 +558,7 @@ fn a_passing_check_is_stamped_before_the_loop_decides_done() {
     let goal = started_goal(&harness, 0);
     let turn = harness.open_turn(agent).expect("a turn is running");
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

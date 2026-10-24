@@ -207,6 +207,7 @@ impl World {
         self.host.finish_owned_child(
             &key,
             Input::ChildExited {
+                report: dudes_proto::TurnReport::default(),
                 final_reply: None,
                 elapsed_ms: Some(5),
                 turn,

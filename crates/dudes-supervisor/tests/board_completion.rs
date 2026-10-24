@@ -89,6 +89,7 @@ fn done_decision(agent: AgentId) -> Entry {
 
 fn clean_exit(turn: dudes_types::TurnId) -> Input {
     Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

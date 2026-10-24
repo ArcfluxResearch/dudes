@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use dudes_proto::ContextReport;
 use dudes_proto::providers::claude::{ApiUsage, ResultLine};
 use dudes_types::{Tokens, Usage, Usd};
 
@@ -89,6 +90,32 @@ pub(crate) fn call(usage: &ApiUsage) -> Usage {
         usd: None,
     }
 }
+
+/// The prompt a call sent: fresh, cached and newly cached tokens.
+pub(crate) fn prompt_tokens(usage: &ApiUsage) -> u64 {
+    usage
+        .input_tokens
+        .saturating_add(usage.cache_read_input_tokens)
+        .saturating_add(usage.cache_creation_input_tokens)
+}
+
+/// The window the vendor reported for `model` in this result, paired with the prompt the turn's
+/// last call sent. A model the result does not name falls back to its only entry; with several
+/// entries and no match, or no reported window, nothing is claimed.
+pub(crate) fn context(result: &ResultLine, model: &str, used: u64) -> Option<ContextReport> {
+    let reported = result.model_usage.get(model).or_else(|| {
+        let mut all = result.model_usage.values();
+        all.next().filter(|_| all.next().is_none())
+    });
+    let window = reported?.context_window.filter(|window| *window > 0)?;
+    Some(ContextReport {
+        model: model.chars().take(MAX_MODEL_CHARS).collect(),
+        window,
+        used,
+    })
+}
+
+const MAX_MODEL_CHARS: usize = 128;
 
 /// Vendor float dollars → integer micro-dollars, rounded half away from zero. Refused before
 /// rounding: NaN, ±∞ and any negative amount, however small (`-1e-9` is an error, not zero).

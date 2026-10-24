@@ -570,3 +570,44 @@ fn replay_rebuilds_the_tickets_with_and_without_checkpoints() {
     ]);
     assert_eq!(rows[0], live.tickets().unwrap());
 }
+
+#[test]
+fn a_ticket_keeps_the_step_digest_of_its_newest_turn() {
+    let goal_id = GoalId::from_parts(8, 1);
+    let digest = dudes_proto::StepDigest {
+        command: 3,
+        edit: 2,
+        files_edited: 1,
+        ..dudes_proto::StepDigest::default()
+    };
+    let mut issued = samples::record(RecordKind::TurnIssued);
+    if let Record::TurnIssued {
+        agent: at,
+        goal: for_goal,
+        ..
+    } = &mut issued
+    {
+        *at = agent();
+        *for_goal = goal_id;
+    }
+    let mut ended = samples::record(RecordKind::TurnEnded);
+    if let Record::TurnEnded {
+        agent: at,
+        step_digest,
+        ..
+    } = &mut ended
+    {
+        *at = agent();
+        *step_digest = Some(digest);
+    }
+    let projections = project([
+        hire("service"),
+        created(card()),
+        assigned(card(), 0, None),
+        started(card(), goal_id, 1),
+        issued,
+        ended,
+    ]);
+    let (_, ticket) = projections.ticket(card()).unwrap().unwrap();
+    assert_eq!(ticket.last_turn_end.unwrap().step_digest, Some(digest));
+}

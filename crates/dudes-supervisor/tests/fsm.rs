@@ -112,6 +112,7 @@ fn last_decision_for(harness: &Harness, agent: dudes_types::AgentId) -> Option<L
 /// End `turn` and judge `goal` against a failing predicate, which is what releases a decision.
 fn end_turn_and_judge(harness: &mut Harness, turn: dudes_types::TurnId, goal: dudes_types::GoalId) {
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -155,6 +156,7 @@ fn agent_fsm_matches_section_5() {
 
     // Running -> Idle: an Observed turn end, and the loop re-decides.
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -416,6 +418,7 @@ fn a_killed_turn_ends_with_outcome_killed_by_the_ledgers_reason() {
         .goal
         .expect("the goal stands");
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -511,6 +514,7 @@ fn replay_reaches_the_same_statuses() {
     let (agent, goal) = harness.hire_with_goal(&["npm", "test"]);
     let turn = harness.open_turn(agent).expect("a turn was issued");
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

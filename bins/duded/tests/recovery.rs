@@ -319,6 +319,8 @@ mod durable {
 
     fn no_child_end(agent: AgentId, turn: TurnId) -> Record {
         Record::TurnEnded {
+            step_digest: None,
+            context: None,
             agent,
             turn,
             mode: Mode::Managed,

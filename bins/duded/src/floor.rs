@@ -312,6 +312,22 @@ fn agent_view(projections: &Projections, row: AgentRow, now: Timestamp) -> Resul
                 .and_then(|name| dudes_types::ModelName::parse(name).ok())
         });
 
+    let last_turn = row
+        .last_turn
+        .map(|turn| projections.turn(turn))
+        .transpose()
+        .with_context(|| format!("could not read the last turn of projected agent {}", row.id))?
+        .flatten()
+        .map(|turn| dudes_proto::projection::LastTurnView {
+            usage: turn.usage,
+            context: turn.context,
+            model: turn.model_selection.and_then(|selection| {
+                selection
+                    .selector()
+                    .and_then(|name| dudes_types::ModelName::parse(name).ok())
+            }),
+        });
+
     Ok(AgentView {
         character: row.character,
         accent: row.accent,
@@ -348,6 +364,7 @@ fn agent_view(projections: &Projections, row: AgentRow, now: Timestamp) -> Resul
         worktree: None,
         model: row.model,
         turn_model,
+        last_turn,
         shares_checkout: false,
     })
 }

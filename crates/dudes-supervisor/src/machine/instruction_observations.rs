@@ -721,6 +721,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let turn = TurnId::from_ulid(self.rng.ulid());
         self.persist(
             Record::TurnEnded {
+                step_digest: None,
+                context: None,
                 final_reply: None,
                 elapsed_ms: None,
                 session_usage: None,
@@ -2264,6 +2266,7 @@ mod tests {
 
     fn exited(turn: TurnId) -> Input {
         Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             turn,
             elapsed_ms: None,
             exit: dudes_proto::ExitStatus {
@@ -2313,6 +2316,8 @@ mod tests {
         entries.push(Entry {
             at: Timestamp::UNIX_EPOCH,
             record: Record::TurnEnded {
+                step_digest: None,
+                context: None,
                 agent,
                 turn,
                 mode: Mode::Managed,
