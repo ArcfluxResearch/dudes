@@ -11,7 +11,7 @@ import {
   notificationDestination, seedNotificationHistory,
 } from '../src/renderer/desktopNotifications.ts';
 import * as store from '../src/renderer/floor/store.ts';
-import { readDesktopNotificationChoice, writeDesktopNotificationChoice, readNotificationOfferSeen, writeNotificationOfferSeen } from '../src/renderer/view.ts';
+import { readDesktopNotificationChoice, writeDesktopNotificationChoice, readNotificationOfferStatus, writeNotificationOfferStatus } from '../src/renderer/view.ts';
 import { ADA, GRACE, agent, cardId, plainCard, subscribe, ticketCard } from './helpers/tickets.mjs';
 
 beforeEach(() => { store.resetFloorStore(); });
@@ -102,8 +102,8 @@ function preferencePorts(permission = 'default') {
     storage: () => ({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) }),
     readChoice() { return readDesktopNotificationChoice(this.storage); },
     writeChoice(enabled) { return writeDesktopNotificationChoice(enabled, this.storage); },
-    readOfferSeen() { return readNotificationOfferSeen(this.storage); },
-    writeOfferSeen() { writeNotificationOfferSeen(this.storage); },
+    readOffer() { return readNotificationOfferStatus(this.storage); },
+    writeOffer(status) { writeNotificationOfferStatus(status, this.storage); },
     permission() { return this.currentPermission; },
     async requestPermission() { this.requests += 1; this.currentPermission = 'granted'; return 'granted'; },
   };
@@ -280,31 +280,49 @@ test('delivery requires opt-in and granted permission, focuses the tab and opens
   }
 });
 
-test('the first confirmed give offers once on this device and permission still needs a click', async () => {
+test('a confirmed give waits for Board presentation before consuming the offer', async () => {
   const ports = preferencePorts();
   const preference = createNotificationPreference(ports);
   assert.equal(preference.getOffer(), false);
   preference.offerAfterGive();
   assert.equal(preference.getOffer(), true);
+  assert.equal(ports.readOffer(), 'ready');
   assert.equal(ports.requests, 0);
-  assert.equal(createNotificationPreference(ports).getOffer(), false);
-  await preference.setEnabled(true);
-  assert.equal(ports.requests, 1);
-  assert.equal(preference.getState().kind, 'on');
-  assert.equal(preference.getOffer(), false);
-  await preference.setEnabled(false);
+  const reload = createNotificationPreference(ports);
+  assert.equal(reload.getOffer(), true, 'a reload before visiting Board keeps the offer');
+  reload.presentOffer();
+  assert.equal(ports.readOffer(), 'seen');
+  assert.equal(reload.getOffer(), true, 'the presented offer stays until answered or Board closes');
+  assert.equal(createNotificationPreference(ports).getOffer(), false, 'a presented offer stays consumed after reload');
+  reload.hideOffer();
+  assert.equal(reload.getOffer(), false);
+  reload.offerAfterGive();
+  assert.equal(reload.getOffer(), false, 'another give cannot repeat the offer');
+  assert.equal(ports.requests, 0);
+  const optInPorts = preferencePorts();
+  const optIn = createNotificationPreference(optInPorts);
+  optIn.offerAfterGive();
+  optIn.presentOffer();
+  await optIn.setEnabled(true);
+  assert.equal(optInPorts.requests, 1);
+  assert.equal(optIn.getState().kind, 'on');
+  assert.equal(optIn.getOffer(), false);
+});
+
+test('dismissed, legacy seen and suppressed offers do not repeat', async () => {
+  const ports = preferencePorts();
+  const preference = createNotificationPreference(ports);
+  preference.offerAfterGive();
+  preference.presentOffer();
   preference.dismissOffer();
   preference.offerAfterGive();
   assert.equal(preference.getOffer(), false);
-  const reload = createNotificationPreference(ports);
-  reload.offerAfterGive();
-  assert.equal(reload.getOffer(), false);
-  const revoked = preferencePorts();
-  const cached = createNotificationPreference(revoked);
-  cached.getState();
-  revoked.currentPermission = 'denied';
-  cached.offerAfterGive();
-  assert.equal(cached.getOffer(), false);
+  assert.equal(createNotificationPreference(ports).getOffer(), false);
+  const legacy = preferencePorts();
+  legacy.values.set('dudes.floor.notification-offer-seen', 'true');
+  const seen = createNotificationPreference(legacy);
+  seen.offerAfterGive();
+  assert.equal(seen.getOffer(), false);
   for (const permission of ['granted', 'denied', 'unsupported']) {
     const suppressed = preferencePorts(permission);
     if (permission === 'granted') suppressed.writeChoice(true);
@@ -318,4 +336,65 @@ test('the first confirmed give offers once on this device and permission still n
     assert.equal(later.getOffer(), false);
     assert.equal(suppressed.requests, 0);
   }
+  const revoked = preferencePorts();
+  const cached = createNotificationPreference(revoked);
+  cached.offerAfterGive();
+  revoked.currentPermission = 'denied';
+  assert.equal(cached.getOffer(), false);
+});
+
+test('offer presentation survives blocked storage within this page', () => {
+  const ports = preferencePorts();
+  ports.storage = () => { throw Error('storage unavailable'); };
+  const preference = createNotificationPreference(ports);
+  preference.offerAfterGive();
+  assert.equal(preference.getOffer(), true);
+  preference.presentOffer();
+  preference.hideOffer();
+  preference.offerAfterGive();
+  assert.equal(preference.getOffer(), false);
+  assert.equal(ports.requests, 0);
+});
+
+test('the offer appears only on Board with a clear scope and click-only opt-in', async () => {
+  const previousNotification = globalThis.Notification;
+  const previousWindow = globalThis.window;
+  let requests = 0;
+  const values = new Map();
+  globalThis.Notification = class {
+    static permission = 'default';
+    static async requestPermission() { requests += 1; return 'granted'; }
+  };
+  globalThis.window = { localStorage: { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) } };
+  const server = await createServer({ root: resolve(import.meta.dirname, '..'), server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
+  try {
+    const { NotificationOffer } = await server.ssrLoadModule('/src/renderer/NotificationOffer.tsx');
+    const { desktopNotificationPreference: preference } = await server.ssrLoadModule('/src/renderer/desktopNotifications.ts');
+    const html = onBoard => renderToStaticMarkup(createElement(NotificationOffer, { onBoard, leaveFocusTo: 'floor-notices' }));
+    preference.offerAfterGive();
+    assert.equal(html(false), '');
+    assert.match(html(true), /Show a desktop notification when a ticket is ready or an agent asks something\? This browser, while this tab is open\./);
+    assert.match(html(true), />Turn on<\/button>/);
+    assert.match(html(true), />Not now<\/button>/);
+    assert.equal(values.get('dudes.floor.notification-offer-seen'), 'ready', 'rendering an unrelated screen does not consume the offer');
+    assert.equal(requests, 0);
+    preference.presentOffer();
+    preference.dismissOffer();
+    assert.equal(html(true), '');
+  } finally {
+    await server.close();
+    globalThis.Notification = previousNotification;
+    globalThis.window = previousWindow;
+  }
+});
+
+test('a Settings choice before Board consumes the pending offer', async () => {
+  const ports = preferencePorts();
+  const preference = createNotificationPreference(ports);
+  preference.offerAfterGive();
+  await preference.setEnabled(true);
+  await preference.setEnabled(false);
+  assert.equal(preference.getOffer(), false);
+  assert.equal(createNotificationPreference(ports).getOffer(), false);
+  assert.equal(ports.requests, 1);
 });

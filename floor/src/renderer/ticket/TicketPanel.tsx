@@ -23,7 +23,7 @@ import { ACTION_LABEL, actionsOf, agentChoiceSentence, agentRow, cardWords, noPr
 import type { TicketAction } from './model.ts';
 import { decodeWorktree } from '../worktree.ts';
 import { clearTicketChangesDraft, readTicketChangesDraft, writeTicketChangesDraft } from '../view.ts';
-import { agentsFor, ticketActionsOpen, TicketNotice } from './TicketBoard.tsx';
+import { agentsFor, ticketActionsOpen } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
 import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, engineStopped, reasonSentence, stateName } from './words.ts';
 import { StuckActions } from './StuckActions.tsx';
@@ -370,7 +370,6 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   return <section className="card-detail ticket-panel" aria-labelledby="card-detail-title" data-selected-card-id={card.id}
     data-ticket-status={card.status} data-mode={mode} ref={focusSheet} tabIndex={-1} data-focus-on-leave="view-board">
     <h3 id="card-detail-title">{card.title}</h3>
-    <TicketNotice card={card.id} floor={floor} />
     <Facts floor={floor} card={card} />
     <StuckActions floor={floor} card={card} onReviewRecovery={onReviewRecovery} />
     {loaded?.context == null ? null : <RecoveredReview context={loaded.context} fresh={fresh} />}

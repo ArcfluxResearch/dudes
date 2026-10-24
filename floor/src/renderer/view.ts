@@ -60,12 +60,17 @@ export function writeDesktopNotificationChoice(enabled: boolean, storage: () => 
   catch { return false; }
 }
 
-export function readNotificationOfferSeen(storage: () => ViewStorage = browserStorage): boolean {
-  try { return storage().getItem('dudes.floor.notification-offer-seen') === 'true'; } catch { return false; }
+export type NotificationOfferStatus = 'unseen' | 'ready' | 'seen';
+
+export function readNotificationOfferStatus(storage: () => ViewStorage = browserStorage): NotificationOfferStatus {
+  try {
+    const value = storage().getItem('dudes.floor.notification-offer-seen');
+    return value === 'true' ? 'seen' : value === 'ready' ? 'ready' : 'unseen';
+  } catch { return 'unseen'; }
 }
 
-export function writeNotificationOfferSeen(storage: () => ViewStorage = browserStorage): void {
-  try { storage().setItem('dudes.floor.notification-offer-seen', 'true'); } catch {}
+export function writeNotificationOfferStatus(status: 'ready' | 'seen', storage: () => ViewStorage = browserStorage): void {
+  try { storage().setItem('dudes.floor.notification-offer-seen', status === 'seen' ? 'true' : 'ready'); } catch {}
 }
 
 export interface NewTicketDraft {

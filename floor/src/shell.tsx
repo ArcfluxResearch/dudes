@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { currentPage, isPageView, openPage, subscribeToPage } from './navigation.ts';
@@ -36,6 +36,7 @@ import { TerminalPanel } from './renderer/terminal/TerminalPanel';
 import { JournalStoppedBanner } from './renderer/JournalStoppedBanner';
 import { ClosingTimeBanner } from './renderer/ClosingTimeBanner';
 import { TicketBanner } from './renderer/ticket/TicketBanner';
+import { TicketNotice, TicketNoticeHost } from './renderer/ticket/TicketBoard.tsx';
 import { useDesktopNotifications } from './renderer/useDesktopNotifications';
 import { requestCardSelection } from './renderer/BoardPanel';
 import { OpenCommand, SignInExpired } from './renderer/SignInExpired';
@@ -145,28 +146,6 @@ export function WebFloorShell() {
   return firstLink === null ? <SignedInShell /> : <SignedOutShell />;
 }
 
-function reserveNoticeRoom(shell: HTMLElement | null, stack: HTMLElement | null, office: HTMLElement | null,
-  setHost: (host: HTMLElement | null) => void) {
-  if (!shell || !stack || typeof ResizeObserver === 'undefined') return undefined;
-  const update = () => {
-    const showing = [...stack.children].some((child) => child.getBoundingClientRect().height > 0);
-    shell.toggleAttribute('data-notices', showing);
-    shell.style.setProperty('--notice-stack-height', showing ? `${Math.ceil(stack.getBoundingClientRect().height)}px` : '0px');
-  };
-  const findHost = () => {
-    const dialog = shell.querySelector<HTMLDialogElement>('.hire-dialog:modal, .retire-dialog:modal');
-    setHost(dialog ?? (office !== null && office.getClientRects().length > 0 ? office : null));
-  };
-  const observer = new ResizeObserver(() => { update(); findHost(); });
-  observer.observe(stack);
-  if (office !== null) observer.observe(office);
-  const dialogs = new MutationObserver(findHost);
-  dialogs.observe(shell, { childList: true, subtree: true, attributes: true, attributeFilter: ['open'] });
-  update();
-  findHost();
-  return () => { observer.disconnect(); dialogs.disconnect(); };
-}
-
 function SignedInShell() {
   const { signOutFailed } = useSyncExternalStore(subscribeToDevices, getDevicesState, getDevicesState);
   const signOut = () => { void signOutHere(); };
@@ -197,11 +176,26 @@ function SignedInShell() {
   const hireOpener = useRef<HTMLElement | null>(null);
   const backdropPress = useRef<number | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
-  const noticeStack = useRef<HTMLDivElement | null>(null);
-  const [officeNotices, setOfficeNotices] = useState<HTMLDivElement | null>(null);
-  const [noticeHost, setNoticeHost] = useState<HTMLElement | null>(null);
-  const modalNotices = noticeHost?.tagName === 'DIALOG';
-  useEffect(() => reserveNoticeRoom(shellRef.current, noticeStack.current, officeNotices, setNoticeHost), [noticeHost, officeNotices]);
+  const [noticeStack, setNoticeStack] = useState<HTMLDivElement | null>(null);
+  const [noticeArea] = useState(() => {
+    if (typeof document === 'undefined') return null;
+    const area = document.createElement('div');
+    area.className = 'notice-area';
+    return area;
+  });
+  useLayoutEffect(() => {
+    const shell = shellRef.current;
+    if (shell === null || noticeArea === null) return;
+    const update = () => {
+      const dialogs = shell.querySelectorAll<HTMLDialogElement>('.hire-dialog:modal, .retire-dialog:modal, .ticket-dialog:modal');
+      const host = dialogs.item(dialogs.length - 1) ?? shell;
+      if (noticeArea.parentElement !== host) host.append(noticeArea);
+    };
+    const observer = new MutationObserver(update);
+    observer.observe(shell, { childList: true, subtree: true, attributes: true, attributeFilter: ['open'] });
+    update();
+    return () => { observer.disconnect(); noticeArea.remove(); };
+  }, [noticeArea]);
   const selectedRow = selectedAgentRow(floor.agents, selectedId, floor.phase, floor.stale);
   const focusedId = focused ? focusAgentId(floor, selectedId) : null;
   const displayRow = focused ? selectedAgentRow(floor.agents, focusedId, floor.phase, floor.stale) : selectedRow;
@@ -469,24 +463,22 @@ function SignedInShell() {
     onReadRecoveryReceipt={readRecoveryReceipt} onOpenTicket={openCard} />;
 
   const notices = (
-    <div className="notice-area">
-      <div className="notice-stack" ref={noticeStack} id={modalNotices ? 'modal-floor-notices' : undefined}
-        tabIndex={modalNotices ? -1 : undefined}>
-        <PastedLinkNotice />
-        <NotificationOffer />
-        {signOutFailed ? <p className="link-refused" role="alert">Could not sign out, so this browser is still signed in. Try again.</p> : null}
-        <JournalStoppedBanner stopped={floor.journalStopped} />
-        <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
-        {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
-        <StreamNotice floor={floor} />
-        <DeviceNotices />
-        <DoneNotices notices={floor.doneNotices} leaveFocusTo={modalNotices ? 'modal-floor-notices' : home} />
-      </div>
+    <div className="notice-stack" ref={setNoticeStack} id="floor-notices" role="region" aria-label="Floor notices" tabIndex={0}>
+      <PastedLinkNotice />
+      {view === 'board' ? null : <TicketNotice floor={floor} />}
+      <NotificationOffer onBoard={view === 'board'} leaveFocusTo="floor-notices" />
+      {signOutFailed ? <p className="link-refused" role="alert">Could not sign out, so this browser is still signed in. Try again.</p> : null}
+      <JournalStoppedBanner stopped={floor.journalStopped} />
+      <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
+      {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
+      <StreamNotice floor={floor} />
+      <DeviceNotices />
+      <DoneNotices notices={floor.doneNotices} leaveFocusTo="floor-notices" />
     </div>
   );
 
   return (
-    <main className="shell" ref={shellRef} aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
+    <TicketNoticeHost value={noticeStack}><main className="shell" ref={shellRef} aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
       data-page={page ?? undefined}
       onKeyDown={(event) => {
         if (page !== null && closesPanel(event)) { event.stopPropagation(); closeView(); }
@@ -518,7 +510,6 @@ function SignedInShell() {
           </div>
           <div className="office-bar" ref={setOfficeBar} />
         </header>
-        {noticeHost === null ? notices : createPortal(notices, noticeHost)}
       </div>
       <div className="floor-stage" data-page={page ?? undefined}
         onKeyDown={(event) => { if (closesDrawer(event, drawerOpen)) { event.stopPropagation(); clearSelection(); } }}>
@@ -535,7 +526,6 @@ function SignedInShell() {
           <div className="office-area">
             {page === null ? <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
               onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} /> : null}
-            <div className="office-notices" ref={setOfficeNotices} />
             <FirstTask floor={floor} onHire={openHire} />
           </div>
           {focused ? null : <NeedsStrip agents={floor.agents} cards={floor.cards} selectedId={currentSelectedId}
@@ -566,6 +556,7 @@ function SignedInShell() {
               ?? document.getElementById('hire-open'))?.focus();
           }} /> : null}
       </div>
+      {noticeArea === null ? null : createPortal(notices, noticeArea)}
       <RetireDialog floor={floor} />
       {hiring ? <dialog className="hire-dialog" ref={hireDialog}
         aria-labelledby="hire-title" onCancel={(event) => { event.preventDefault(); closeHire(); }}
@@ -584,6 +575,6 @@ function SignedInShell() {
         {archiveHireKept ? <p role="status">The current Hire is kept. Resolve it before preparing another agent.</p> : null}
         <HireWizard floor={floor} onClose={() => closeHire()} onSettings={openSettingsFromHire} />
       </dialog> : null}
-    </main>
+    </main></TicketNoticeHost>
   );
 }

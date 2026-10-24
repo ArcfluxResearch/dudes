@@ -280,7 +280,6 @@ test('ticket switches are not called off before a snapshot or after the stream c
   assert.match(board(), /Tickets are off\. Turn on Make tickets under Floor switches in Settings\./);
   store.noteTransport('close');
   assert.doesNotMatch(board(), /Tickets are off/);
-  assert.match(board(), /Not connected to Dudes/);
 });
 
 test('tickets-off guidance names only companion controls reported off', () => {

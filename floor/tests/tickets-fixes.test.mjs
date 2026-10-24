@@ -188,17 +188,6 @@ test('the crew pill and the top bar say a ticket is ready for you, not done', ()
   assert.ok(!/ done</.test(html));
 });
 
-test('the stream line shows only while the view is unconfirmed, and once', () => {
-  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'todo'), plainCard(2)] });
-  const render = () => renderToStaticMarkup(createElement(board.TicketBoard, { floor: store.getFloorState(), selectedId: null, onSelect() {} }));
-  assert.ok(!/Live — confirmed/.test(render()));
-  assert.ok(!/stream-state/.test(render()));
-  store.noteTransport('close');
-  const closed = render();
-  assert.equal((closed.match(/Not connected to Dudes/g) ?? []).length, 1);
-  assert.match(closed, /<p class="stream-state" role="alert">/);
-});
-
 test('a ticket that needs you after a create stays said, and a stopped queue names its holder', async () => {
   subscribe(store, { agents: [agent(), agent(GRACE, 'Grace')], cards: [ticketCard(9, 'doing', { claimed_by: GRACE })] });
   const form = { title: 'x', note: '', project: null, check: null, agent: ADA };
