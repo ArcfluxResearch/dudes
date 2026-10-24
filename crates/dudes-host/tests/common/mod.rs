@@ -82,8 +82,9 @@
 //! shipped 100 ms. So a `LEAK` seen beside that failure is downstream of the panic and not the
 //! same defect as the one this section is about, which fires with every assertion passing.
 //!
-//! SIGKILL skips the temporary directory's destructor, so every helper also exits after
-//! [`HELPER_LIFETIME`]. This bound is longer than the tests and does not replace their kill assertions.
+//! SIGKILL skips the temporary directory's destructor. Each helper image starts a
+//! [`HELPER_LIFETIME`] watchdog, including the image after an exec. Its deadline is longer
+//! than the tests and does not replace their kill assertions.
 #![allow(dead_code)]
 
 use std::ffi::OsString;

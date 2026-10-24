@@ -128,7 +128,7 @@ pub fn run(
         // The two arms stay separate because what distinguishes them is the stream and the
         // message, not the code. `tests/success_means_sent.rs` holds the property over argv.
         Err(args::ArgError::HelpRequested) => {
-            let _ = write!(out, "{}", args::USAGE);
+            let _ = write!(out, "{}", args::help_for(argv));
             return exit::USAGE;
         }
         // The mistake and where the usage is, not the whole usage text: that buries the one line
