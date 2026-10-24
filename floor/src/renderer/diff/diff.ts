@@ -231,5 +231,7 @@ export async function postDiff(request: DiffRequest, signedIn: boolean,
     return response === null ? Object.freeze({ kind: 'unknown' }) : Object.freeze({ kind: 'response', response });
   }
   if (status === 403) return Object.freeze({ kind: 'forbidden' });
+  // The daemon routes this path only while the switches are on, so an unrouted POST means they were turned off.
+  if (status === 404) return Object.freeze({ kind: 'response', response: Object.freeze({ mode: 'refused', reason: 'disabled' }) });
   return Object.freeze({ kind: status === 503 ? 'unavailable' : 'unknown' });
 }

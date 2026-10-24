@@ -148,6 +148,17 @@ test('a ticket in Needs you shows its sentence, and a queued one the daemon\'s o
   assert.match(panel(), /Waiting for Ada to finish its current work\./);
 });
 
+test('a ticket given to an agent after it was read keeps its own round and no stale waiting line', async () => {
+  await open({ round: 0, summary: null, waiting: { wait: { kind: 'not_given' }, note: 'Not given to an agent yet. Choose Give to agent.' } },
+    { status: 'todo', cardFields: { claimed_by: null } });
+  assert.match(panel(), /Not given to an agent yet\./);
+  const floor = store.getFloorState();
+  const ready = { ...floor.cards[0], status: 'review', seq: 4, claimed_by: ADA, ticket: { ...floor.cards[0].ticket, round: 1 } };
+  const html = renderToStaticMarkup(createElement(TicketPanel, { floor, card: ready }));
+  assert.match(html, /<dt>Round<\/dt><dd>1<\/dd>/);
+  assert.doesNotMatch(html, /Not given to an agent yet/);
+});
+
 const GOAL = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
 
 /** The panel for a blocked ticket whose agent is held or interrupted, with the grants and the agent as given. */

@@ -114,7 +114,7 @@ export type DetailPhase = 'idle' | 'loading' | 'ready' | 'failed';
 export interface DetailState {
   readonly freshness: DetailReadKey | null;
   readonly card: string | null;
-  /** The card sequence this reading was taken for. */
+  /** The card sequence the held detail was read for, which stays while a newer read loads or fails. */
   readonly seq: number | null;
   readonly phase: DetailPhase;
   readonly detail: TicketDetail | null;
@@ -195,8 +195,9 @@ export function loadDetail(card: CardRow, deps: ControlDeps = browserControlDeps
 
 async function performRead(card: CardRow, deps: ControlDeps, key: DetailReadKey): Promise<void> {
   const same = state.card === card.id;
+  const heldSeq = same && state.detail !== null ? state.seq : card.seq;
   const ticket = ++latest;
-  commit({ card: card.id, seq: card.seq, phase: 'loading', detail: same ? state.detail : null, problem: null, freshness: key });
+  commit({ card: card.id, seq: heldSeq, phase: 'loading', detail: same ? state.detail : null, problem: null, freshness: key });
   const outcome = await readTicket(card.id, deps);
   if (ticket !== latest) return;
   pending = null;
@@ -213,11 +214,11 @@ async function performRead(card: CardRow, deps: ControlDeps, key: DetailReadKey)
       commit({ card: card.id, seq: card.seq, phase: 'ready', detail, problem: null, freshness: key });
       return;
     }
-    commit({ card: card.id, seq: card.seq, phase: 'failed', detail: same ? state.detail : null,
+    commit({ card: card.id, seq: heldSeq, phase: 'failed', detail: same ? state.detail : null,
       problem: 'The daemon sent a reply this page could not read.', freshness: key });
     return;
   }
-  commit({ card: card.id, seq: card.seq, phase: 'failed', detail: same ? state.detail : null,
+  commit({ card: card.id, seq: heldSeq, phase: 'failed', detail: same ? state.detail : null,
     problem: problemText(outcome, card.status), freshness: key });
 }
 

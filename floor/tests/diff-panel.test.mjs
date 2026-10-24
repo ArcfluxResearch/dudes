@@ -234,6 +234,39 @@ test('every refusal reason has its own plain sentence', async () => {
   }
 });
 
+test('a retired agent\'s missing copy and a switched-off route read as their own reasons', async () => {
+  for (const [reason, pattern] of [['worktree_mismatch', /own copy of the project is gone, was retired with the agent/],
+    ['disabled', /Changes view is turned off/]]) {
+    const app = await mount(() => response({ mode: 'refused', reason }));
+    try {
+      await app.click('Show changes');
+      assert.match(text(app.page.host), pattern);
+      assert.doesNotMatch(text(app.page.host), /moved on/);
+    } finally { await app.close(); }
+  }
+});
+
+test('a daemon that no longer routes the Changes view says it is turned off', async () => {
+  const outcome = await postDiff({ mode: 'manifest', card: DIFF_CARD, expected_seq: 4 }, 'c'.repeat(43),
+    async () => ({ status: 404, text: async () => 'Not Found' }));
+  const app = await mount(() => outcome);
+  try {
+    await app.click('Show changes');
+    assert.match(text(app.page.host), /Changes view is turned off/);
+    assert.doesNotMatch(text(app.page.host), /could not read/);
+  } finally { await app.close(); }
+});
+
+test('an agent in its own copy is told the panel reads that copy', async () => {
+  const own = await mount();
+  try {
+    await own.draw({ ownCopy: true });
+    assert.match(text(own.page.host), /reads the agent’s own copy of the project\. Edits made in your project folder do not appear here\./);
+  } finally { await own.close(); }
+  const shared = await mount();
+  try { assert.doesNotMatch(text(shared.page.host), /own copy/); } finally { await shared.close(); }
+});
+
 test('failures that are not a refusal tell the operator what to do', async () => {
   for (const [kind, pattern] of [['forbidden', /no current Floor session/], ['unavailable', /did not answer\. Choose Refresh/],
     ['unknown', /could not read\. Choose Refresh/]]) {
@@ -384,7 +417,7 @@ test('the request is one POST and every status has one reading', async () => {
   assert.equal((await run(200, JSON.stringify({ mode: 'refused', reason: 'session_limit' }))).outcome.response.reason, 'session_limit');
   assert.equal((await run(403, '')).outcome.kind, 'forbidden');
   assert.equal((await run(503, '')).outcome.kind, 'unavailable');
-  assert.equal((await run(404, '')).outcome.kind, 'unknown');
+  assert.deepEqual((await run(404, '')).outcome.response, { mode: 'refused', reason: 'disabled' });
   const none = await run(200, '', null);
   assert.equal(none.outcome.kind, 'forbidden');
   assert.equal(none.calls.length, 0, 'no session, no request');

@@ -1093,12 +1093,29 @@ fn a_ticket_without_a_recorded_baseline_has_no_diff() {
     lab.edit(|recorded| {
         recorded.baseline = lab
             .capture
-            .baseline_unavailable(binding(), DiffRefusal::Unreadable);
+            .baseline_unavailable(binding(), DiffRefusal::BaselineUnavailable);
     });
     assert_eq!(
         lab.refusal(1, &manifest_request()),
         DiffRefusal::BaselineUnavailable
     );
+}
+
+#[test]
+fn a_failed_baseline_capture_keeps_its_own_reason() {
+    let lab = Lab::new();
+    for reason in [
+        DiffRefusal::Unreadable,
+        DiffRefusal::TimedOut,
+        DiffRefusal::UnsupportedStorage,
+        DiffRefusal::GitUnavailable,
+    ] {
+        lab.start_round();
+        lab.edit(|recorded| {
+            recorded.baseline = lab.capture.baseline_unavailable(binding(), reason);
+        });
+        assert_eq!(lab.refusal(1, &manifest_request()), reason);
+    }
 }
 
 #[test]

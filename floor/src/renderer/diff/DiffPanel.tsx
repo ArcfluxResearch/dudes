@@ -50,7 +50,8 @@ const REFUSALS: Readonly<Record<DiffRefusalReason, string>> = {
   session_limit: 'This Floor session has used all the reading it is allowed (about 1 MiB), and Refresh does not renew it. '
     + 'Review the files in the agent’s project folder, or open Dudes to start a new Floor session.',
   unsupported_platform: 'The Changes view does not work on this daemon’s operating system. Review the files in the agent’s project folder.',
-  worktree_mismatch: 'The agent’s project copy no longer matches the one Dudes recorded, so nothing was read.',
+  worktree_mismatch: 'The agent’s own copy of the project is gone, was retired with the agent, or no longer matches the one Dudes recorded, so nothing was read. '
+    + 'Review the files in the project folder.',
   unsupported_storage: 'This repository uses storage the Changes view cannot read. Review the files in the agent’s project folder.',
   root_mismatch: 'The folder this ticket was recorded in has been replaced, so nothing was read.',
   timed_out: 'Reading the checkout took too long. Choose Refresh to try again.',
@@ -178,9 +179,13 @@ function validContent(review: DiffReviewState, opened: string, content: DiffCont
       && entry.path === file.path && entry.old_path === file.old_path && entry.kind === file.kind));
 }
 
-export function DiffPanel({ card, expectedSeq, transport }: {
+const OWN_COPY = 'This reads the agent’s own copy of the project. Edits made in your project folder do not appear here.';
+
+export function DiffPanel({ card, expectedSeq, transport, ownCopy = false }: {
   readonly card: string;
   readonly expectedSeq: number;
+  /** The agent works in its own copy, not in the project folder. */
+  readonly ownCopy?: boolean;
   readonly transport: DiffTransport;
 }) {
   const key = `${card}:${expectedSeq}:${transport.generation()}`;
@@ -240,6 +245,7 @@ export function DiffPanel({ card, expectedSeq, transport }: {
 
   return <section className="diff-panel" aria-label="Changes">
     <h4>Changes</h4>
+    {ownCopy ? <p className="diff-note">{OWN_COPY}</p> : null}
     {closed ? <>
       <p className="diff-note">Read the files this round changed or created, side by side. Nothing is read until you ask.</p>
       <button type="button" onClick={refresh}>Show changes</button>
