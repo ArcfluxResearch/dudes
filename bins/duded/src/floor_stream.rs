@@ -4219,6 +4219,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one story, from the failed end to the later success, reads best in one place"
+    )]
     fn a_failed_ticket_turn_reaches_the_floor_and_a_later_success_replaces_it() {
         use dudes_proto::record::samples;
         use dudes_proto::{ExitStatus, Record, RecordKind, TicketTurnEnd};
