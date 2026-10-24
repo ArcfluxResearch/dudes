@@ -104,5 +104,5 @@ export const ACTIVITY_LABELS: Readonly<Record<ActivityRow['kind'], string>> = Ob
   turn_issued: 'Work started', turn_ended: 'Work ended', goal_set: 'Task given', goal_done: 'Task completed',
   human_question: 'Question asked', human_answer: 'Question answered', agent_renamed: 'Agent renamed',
   agent_retired: 'Agent retired', pause: 'Agent paused', resume: 'Agent resumed',
-  card_created: 'Ticket created', card_transition: 'Ticket moved', card_claimed: 'Ticket assigned',
+  card_created: 'Item created', card_transition: 'Item moved', card_claimed: 'Item assigned',
 });

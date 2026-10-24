@@ -29,10 +29,11 @@ export function AddProject({ floor, off }: { readonly floor: FloorState; readonl
     <input id={id} name="folder" type="text" autoComplete="off" spellCheck={false}
       placeholder="~/code/my-app" value={typed} disabled={busy}
       onChange={(event) => { setTyped(event.target.value); if (add.kind !== 'idle') resetAdd(); }} />
-    <button type="submit" aria-disabled={busy || typed.trim() === '' || undefined}>
+    <button type="submit" aria-disabled={busy || typed.trim() === '' || undefined}
+      title={busy ? 'Wait for the current folder request to finish.' : typed.trim() === '' ? 'Enter a project folder first.' : undefined}>
       {add.kind === 'looking' ? 'Looking…' : 'Look at folder'}</button>
     {floor.settings?.folder_picker !== true ? null : <button type="button" className="add-project-choose"
-      aria-disabled={busy || undefined} onClick={() => {
+      aria-disabled={busy || undefined} title={busy ? 'Wait for the current folder request to finish.' : undefined} onClick={() => {
         if (busy) return;
         void chooseFolder().then((path) => {
           if (path === null) return;
@@ -43,7 +44,7 @@ export function AddProject({ floor, off }: { readonly floor: FloorState; readonl
     {shown === null ? null : <div className="add-project-preview" role="status">
       {previewLines(shown).map((line) => <p key={line}>{line}</p>)}
       {shown.already !== null ? null : <button type="button" className="add-project-submit"
-        aria-disabled={add.kind === 'adding' || undefined} onClick={() => { void addPreviewed(); }}>
+        aria-disabled={add.kind === 'adding' || undefined} title={add.kind === 'adding' ? 'Wait for the project to be added.' : undefined} onClick={() => { void addPreviewed(); }}>
         {add.kind === 'adding' ? 'Adding…' : add.kind === 'unsure' ? 'Try again' : 'Add project'}</button>}
     </div>}
     {add.kind === 'unsure' ? <p role="alert">Dudes did not confirm the add. Try again; it will not add the folder twice.</p> : null}
@@ -75,8 +76,10 @@ export function RemoveProject({ floor, projectId, label }: {
       {removal.kind === 'unsure' ? <p role="alert">Dudes did not confirm the removal. Try again; it will not
         remove anything twice.</p> : null}
       <button type="button" className="remove-project-confirm" aria-disabled={removing || undefined}
+        title={removing ? 'Wait for the project removal to finish.' : undefined}
         onClick={() => { void removeAsked(); }}>{removing ? 'Removing…' : `Remove ${label}`}</button>
       <button type="button" aria-disabled={removing || undefined}
+        title={removing ? 'Wait for the project removal to finish.' : undefined}
         onClick={() => { if (!removing) resetRemove(); }}>Keep project</button>
     </div>;
   }

@@ -159,7 +159,7 @@ export function problemText(outcome: Exclude<Outcome, { kind: 'done' }>, status:
   switch (outcome.kind) {
     case 'refused': return refusalSentence(outcome.reason, status);
     case 'forbidden': return 'This page has no Floor session, so nothing was sent.';
-    case 'rejected': return 'The daemon refused the request.';
+    case 'rejected': return 'Dudes refused the request.';
     case 'unavailable':
     case 'unknown': return COULD_NOT_CONFIRM;
   }

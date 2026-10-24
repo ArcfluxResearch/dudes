@@ -495,6 +495,7 @@ test('closing nested Hire skips a connected Give opener hidden by revoked author
   try {
     await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
     await act(async () => press(app.page.host.querySelector('[data-action="give"]')));
+    assert.equal(app.page.host.querySelector('[data-action="give"]'), null, 'the agent selector has one Give button');
     const opener = app.page.host.querySelector('.ticket-hire');
     const hire = hireLayer(app.page);
     await app.render({ ...app.floor, stale: true });

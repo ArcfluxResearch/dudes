@@ -173,8 +173,7 @@ export function GitPanel({ row, active, deps = browserControlDeps }: {
     <h3>Git</h3>
     <p className="git-note">
       A read of this agent&rsquo;s checkout, taken when you open this tab or press Refresh. It names tracked
-      files and local branches, never untracked files, authors or where the checkout is. You read it. The
-      Dudes never acts on it.
+      files and local branches, never untracked files, authors or where the checkout is. You read it. Dudes never acts on it.
     </p>
     <button type="button" className="git-refresh" aria-disabled={loading || undefined}
       title={loading ? 'Wait for the checkout to finish loading.' : undefined}

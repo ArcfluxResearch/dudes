@@ -23,7 +23,7 @@ export function ClosingTimeBanner({ closing, progress = null, stale }: {
   return <div className="closing-time-banner">
     <p role="status" aria-atomic="true">
     <strong>{stale ? 'Last observed: ' : ''}{closing === 'announced' ? 'Closing time announced' : 'Closing phase complete'}</strong>
-    {' '}{early ? 'Completed early.' : closing === 'announced' ? 'The daemon is coordinating closure.' : 'Closure is complete.'}
+    {' '}{early ? 'Completed early.' : closing === 'announced' ? 'Dudes is coordinating closing.' : 'Closure is complete.'}
     {progress !== null && <> {progress.acknowledged} of {progress.acknowledged + progress.settled + progress.owed} acknowledged, {progress.settled} settled, {progress.owed} still owed, {progress.running} {progress.running === 1 ? 'turn' : 'turns'} still running. Settled means nothing left to save.</>}
     </p>
     {remaining !== null && closing === 'announced' && <p className="closing-time-countdown">{stale ? 'Last observed estimate: ' : ''}About {remaining} {remaining === 1 ? 'second' : 'seconds'} left.</p>}

@@ -271,7 +271,6 @@ samp,
 .header-more > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 .header-menu { position: absolute; top: calc(100% + .4rem); right: 0; display: grid; gap: .35rem; width: max-content; min-width: 11rem; max-width: calc(100vw - 2rem); padding: .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 4px 16px var(--panel-shadow); }
 .header-menu button { padding: .3rem .6rem; border: 1px solid var(--line); background: var(--card-background); color: var(--ink); font: inherit; font-size: .86rem; text-align: left; cursor: pointer; }
-.top-bar-actions > .pause-all-control > p { max-width: 10rem; margin: .25rem 0 0; font-size: .7rem; color: var(--muted-ink); }
 
 .shell-signed-out .top-bar > .link-refused {
   flex: 0 0 100%;

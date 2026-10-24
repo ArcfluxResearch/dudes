@@ -264,7 +264,7 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
           : card.ticket === null && plainColumnOf(card) === null ? otherStateName(card.status) : stateName(card.status)}</span>
       </span>
       <strong>{card.title}</strong>
-      {failure === null ? null : <span className="ticket-note">{failure}</span>}
+      {failure === null ? null : <span className="ticket-note" title={failure}>An earlier engine attempt stopped. Open the ticket for details.</span>}
       {words.note === null ? null : <span className="ticket-note">{words.note}</span>}
       <span className="ticket-card-footer">
         {words.agent === null ? <span className="ticket-unassigned">Unassigned</span> : <span className="ticket-agent">

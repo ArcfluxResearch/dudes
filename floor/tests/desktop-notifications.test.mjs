@@ -88,7 +88,7 @@ test('ticket transitions can return after work, and notification text excludes o
   }, { reason: 'no_turns' })], agents: [agent(ADA, 'Ada\u2066', { goal: { text: 'private goal' } })] };
   let step = notificationArrivals(seedNotificationHistory(start), event(blocked));
   assert.deepEqual(step.notices.map(({ title, body }) => ({ title, body })), [{ title: '<Fix login>',
-    body: 'Needs you. The agent used all its turns on this ticket. Give to agent to try again, or Stop.' }]);
+    body: 'Needs you. The agent reached the work attempt limit for this ticket. Give to agent to try again, or Stop.' }]);
   assert.doesNotMatch(JSON.stringify(step.notices), /private/);
   step = notificationArrivals(step.history, event(start));
   step = notificationArrivals(step.history, event({ ...blocked, cards: [{ ...blocked.cards[0], status: 'review' }] }));

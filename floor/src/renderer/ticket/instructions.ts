@@ -236,7 +236,7 @@ const GAP_SENTENCES: Readonly<Record<InstructionGapReason, string>> = Object.fre
   unrecorded_launch_boundary: 'Dudes cannot tell whether the agent started before the starting copy was recorded.',
   cleanup_unconfirmed: "Dudes could not confirm that the agent's process had fully stopped.",
   attached_turn_start_missing: 'Dudes did not see this attached turn begin.',
-  ending_boundary_missing: "Dudes did not see the agent's process end after the daemon restarted.",
+  ending_boundary_missing: "Dudes did not see the agent's process end after Dudes restarted.",
 });
 
 const GAP_WITH_PATH: Partial<Record<InstructionGapReason, (path: string) => string>> = {

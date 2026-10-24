@@ -44,7 +44,7 @@ test('an announced closing snapshot publishes the observed phase', () => {
   apply(snapshot({ closing_time: announced }));
   assert.equal(getFloorState().closingTime, 'announced');
   assert.match(render(), /Closing time announced/);
-  assert.match(render(), /The daemon is coordinating closure\./);
+  assert.match(render(), /Dudes is coordinating closing\./);
 });
 
 test('the decoder returns only bounded phases and rejection accounting', () => {

@@ -128,7 +128,7 @@ test('unavailable none and truncated history remain explicit without a guessed l
     const decoded = context.decodeTicketContext(data); assert.ok(decoded);
     const html = renderToStaticMarkup(createElement(RecoveredReview, { context: decoded, fresh: false }));
     assert.ok(!html.includes('href='));
-    assert.match(html, /retained reading/);
+    assert.match(html, /view may be out of date/);
     assert.match(html, state === 'none' ? /no acknowledged review/ : state === 'truncated' ? /omitted by the display limit/ : /acknowledged review is unavailable/);
   }
   const bad = historyValue(); bad.recovered_review.relations[0].acknowledgment.lsn = '99';
@@ -145,9 +145,9 @@ test('current applicability is suppressed during failed stale off fenced and mis
     const floor = { ...current, ...changed };
     assert.equal(detail.checkDisplayCurrent(detail.getDetailState(), card, floor), false);
     const html = renderToStaticMarkup(createElement(TicketPanel, { floor, card }));
-    assert.match(html, /Last recorded check/);
-    assert.match(html, /applicability to the current work is unconfirmed/);
-    assert.ok(!html.includes('This result applies to the current recorded work.'));
+    assert.match(html, /Last check/);
+    assert.match(html, /Dudes cannot confirm that it checks the current work/);
+    assert.ok(!html.includes('This check covers the current work.'));
   }
   advance(NEXT);
   await detail.loadDetail(card, daemon(() => json(503, {})).deps);
