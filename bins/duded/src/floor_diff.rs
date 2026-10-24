@@ -211,7 +211,8 @@ pub struct Recorded {
 /// # Errors
 ///
 /// `baseline_unavailable` when the ticket never started or its round has no recorded baseline,
-/// and `stale_ticket` when the recorded round, goal, claimant or tree no longer agree.
+/// `stale_ticket` when the recorded round, goal or claimant no longer agree or the journal never
+/// hired the claimant, and `worktree_mismatch` when the claimant is retired or its copy removed.
 pub fn recorded(
     world: &World,
     view: &CardView,
@@ -231,7 +232,7 @@ pub fn recorded(
     {
         return Err(DiffRefusal::StaleTicket);
     }
-    let tree = readable_tree(GitTarget::of(world, claimant))?;
+    let tree = readable_tree(world, claimant)?;
     Ok(Recorded {
         card: view.id,
         seq: view.seq,
@@ -245,12 +246,16 @@ pub fn recorded(
     })
 }
 
-/// The tree to read for a claimant. A retired agent's copy is not read, which `worktree_mismatch`
-/// says; an agent the world no longer knows leaves the ticket moved on.
-fn readable_tree(target: Option<GitTarget>) -> Result<Tree, DiffRefusal> {
-    match target {
+/// The tree to read for a claimant. A retired agent's tree is not read, whether it was the project
+/// folder or a copy of its own, and neither is a removed copy: `worktree_mismatch` says so for
+/// each. Only an agent the journal never hired leaves the ticket moved on.
+fn readable_tree(world: &World, claimant: AgentId) -> Result<Tree, DiffRefusal> {
+    match GitTarget::of(world, claimant) {
         Some(GitTarget::Read(tree)) => Ok(tree),
         Some(GitTarget::Released | GitTarget::Removed) => Err(DiffRefusal::WorktreeMismatch),
+        None if world.agents.get(&claimant).is_some_and(|row| row.retired) => {
+            Err(DiffRefusal::WorktreeMismatch)
+        }
         None => Err(DiffRefusal::StaleTicket),
     }
 }
@@ -426,24 +431,24 @@ impl DiffReads {
     }
 
     fn bind(&self, recorded: &Recorded) -> Result<Subject, DiffRefusal> {
-        let (device, inode, head, preexisting_tracked, preexisting_untracked) =
-            match recorded.baseline.outcome {
-                BaselineOutcome::Captured {
-                    device,
-                    inode,
-                    head,
-                    preexisting_tracked,
-                    preexisting_untracked,
-                } => (
-                    device,
-                    inode,
-                    head,
-                    preexisting_tracked,
-                    preexisting_untracked,
-                ),
-                BaselineOutcome::Unavailable { reason } => return Err(reason),
-                _ => return Err(DiffRefusal::BaselineUnavailable),
-            };
+        let BaselineOutcome::Captured {
+            device,
+            inode,
+            head,
+            preexisting_tracked,
+            preexisting_untracked,
+        } = recorded.baseline.outcome
+        else {
+            // The round records its baseline once and Refresh never captures it again, so only a
+            // reason that stays true for good is passed on. Any other reads as no baseline.
+            return Err(match recorded.baseline.outcome {
+                BaselineOutcome::Unavailable {
+                    reason:
+                        reason @ (DiffRefusal::UnsupportedStorage | DiffRefusal::UnsupportedPlatform),
+                } => reason,
+                _ => DiffRefusal::BaselineUnavailable,
+            });
+        };
         let baseline_bytes =
             serde_json::to_vec(&recorded.baseline).map_err(|_| DiffRefusal::Unreadable)?;
         let tree_text = format!("{:?}", recorded.tree);
@@ -764,18 +769,109 @@ fn run(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use dudes_proto::record::{Actor, samples};
+    use dudes_proto::{Entry, Record, RecordKind, TicketCheck};
+    use dudes_supervisor::testing::unavailable_baseline;
+    use dudes_types::CardStatus;
+
     use super::*;
 
+    fn world(records: &[Record]) -> World {
+        let mut world = World::default();
+        for (at, record) in (1..).zip(records) {
+            world.apply(
+                Lsn(at),
+                &Entry {
+                    at: Timestamp::from_unix_millis(i64::try_from(at).unwrap()),
+                    record: record.clone(),
+                },
+            );
+        }
+        world
+    }
+
     #[test]
-    fn a_retired_agents_copy_is_not_a_moved_on_ticket() {
+    fn a_retired_agents_ticket_says_its_copy_is_gone_and_an_unknown_one_has_moved_on() {
+        let started = samples::record(RecordKind::TicketStarted);
+        let Record::TicketStarted {
+            card, agent, goal, ..
+        } = started.clone()
+        else {
+            unreachable!();
+        };
+        let baseline = Record::TicketBaselineRecorded {
+            card,
+            goal: goal.id,
+            baseline: unavailable_baseline(agent, card, 1, goal.id),
+        };
+        let plain = samples::record(RecordKind::AgentHired);
+        let lease = samples::record(RecordKind::WorktreeLeased);
+        let Record::WorktreeLeased { worktree: id, .. } = &lease else {
+            unreachable!();
+        };
+        let mut leased = plain.clone();
+        if let Record::AgentHired { worktree, .. } = &mut leased {
+            *worktree = Some(*id);
+        }
+        let retired = samples::record(RecordKind::AgentRetired);
+        let view = CardView {
+            id: card,
+            title: "Ship it".into(),
+            department: "engineering".into(),
+            status: CardStatus::Review,
+            status_by: Actor::System,
+            seq: Seq(3),
+            claimed_by: Some(agent),
+            deps: Vec::new(),
+            ticket: None,
+        };
+        let ticket = TicketRow {
+            description: String::new(),
+            project: "service".into(),
+            done_when: TicketCheck {
+                id: "default".into(),
+                label: "passes".into(),
+                predicate: goal.predicate.clone(),
+            },
+            goal: Some(goal.id),
+            queue: None,
+            message: None,
+            round: 1,
+            reason: None,
+            summary: None,
+            last_turn_end: None,
+            check: None,
+            instruction_review: None,
+            coverage: None,
+        };
+        let read = |records: &[Record]| {
+            recorded(&world(records), &view, &ticket).map(|recorded| recorded.tree)
+        };
+
         assert_eq!(
-            readable_tree(Some(GitTarget::Released)).unwrap_err(),
-            DiffRefusal::WorktreeMismatch
+            read(&[plain.clone(), started.clone(), baseline.clone()]),
+            Ok(Tree::Checkout(PathBuf::from("/work/repo")))
         );
+        for (hire, copy) in [(&plain, "the project folder"), (&leased, "its own copy")] {
+            let records = [
+                lease.clone(),
+                hire.clone(),
+                started.clone(),
+                baseline.clone(),
+                retired.clone(),
+            ];
+            assert_eq!(
+                read(&records),
+                Err(DiffRefusal::WorktreeMismatch),
+                "an agent retired from {copy}"
+            );
+        }
         assert_eq!(
-            readable_tree(Some(GitTarget::Removed)).unwrap_err(),
-            DiffRefusal::WorktreeMismatch
+            read(&[started, baseline]),
+            Err(DiffRefusal::StaleTicket),
+            "an agent the journal never hired"
         );
-        assert_eq!(readable_tree(None).unwrap_err(), DiffRefusal::StaleTicket);
     }
 }

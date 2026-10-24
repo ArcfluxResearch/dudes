@@ -235,7 +235,7 @@ test('every refusal reason has its own plain sentence', async () => {
 });
 
 test('a retired agent\'s missing copy and a switched-off route read as their own reasons', async () => {
-  for (const [reason, pattern] of [['worktree_mismatch', /own copy of the project is gone, was retired with the agent/],
+  for (const [reason, pattern] of [['worktree_mismatch', /The agent was retired, or its own copy of the project is gone/],
     ['disabled', /Changes view is turned off/]]) {
     const app = await mount(() => response({ mode: 'refused', reason }));
     try {

@@ -170,20 +170,24 @@ export function checkDisplayCurrent(current: DetailState, card: CardRow, floor: 
     && floor.messagesLsn !== null && sameKey(current.freshness, readKey(card, floor));
 }
 
+/** The held detail when it was read for `card` as it is now. A reading of an earlier version is never shown. */
+export function currentDetail(current: DetailState, card: CardRow): TicketDetail | null {
+  return current.card === card.id && current.seq === card.seq ? current.detail : null;
+}
+
 export function editableDetail(current: DetailState, card: CardRow): TicketDetail | null {
-  return current.phase === 'ready' && current.card === card.id && current.seq === card.seq
-    && current.detail !== null && !current.detail.truncated.includes('note') ? current.detail : null;
+  const held = currentDetail(current, card);
+  return current.phase === 'ready' && held !== null && !held.truncated.includes('note') ? held : null;
 }
 
 export function reviewedWatermark(current: DetailState, card: CardRow): InstructionWatermark | null {
   const snapshot = card.ticket?.instruction_review;
-  const review = current.detail?.instruction_review;
-  return current.phase === 'ready' && current.card === card.id && current.seq === card.seq
-    && snapshot !== undefined && review != null && !snapshot.pending_comparison && !review.pending_comparison
-    && sameInstructionWatermark(snapshot.watermark, review.watermark) ? review.watermark : null;
+  const review = currentDetail(current, card)?.instruction_review;
+  return current.phase === 'ready' && snapshot !== undefined && review != null && !snapshot.pending_comparison
+    && !review.pending_comparison && sameInstructionWatermark(snapshot.watermark, review.watermark) ? review.watermark : null;
 }
 
-/** Read `card`'s detail. The last reading of the same ticket stays on screen while the next is read. */
+/** Read `card`'s detail. The last reading of the same ticket is held while the next is read. */
 export function loadDetail(card: CardRow, deps: ControlDeps = browserControlDeps): Promise<void> {
   const key = readKey(card, getFloorState());
   desired = { card, deps, key };

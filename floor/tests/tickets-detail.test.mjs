@@ -159,6 +159,56 @@ test('a ticket given to an agent after it was read keeps its own round and no st
   assert.doesNotMatch(html, /Not given to an agent yet/);
 });
 
+/** A reading in which every field a later version of the ticket could change has words of its own. */
+const EARLIER = {
+  note: 'The earlier note', summary: 'The earlier summary', check: { id: 'default', label: 'the earlier check' },
+  check_result: { pass: false, exit: 7, at: 1_787_394_600_000 }, truncated: ['title'],
+  coverage: { provider: 'codex', limits: ['plugin_unknown'], saw_no_change: false },
+  instruction_review: instructionReview(),
+  context: { binding: { card: NEW, goal: cardId(10), round: 1, claimant: ADA },
+    check: { state: 'current', check_lsn: '11' },
+    recovered_review: { state: 'complete', acknowledgments: [], relations: [{ interval: { kind: 'started', lsn: '43' },
+      turn: cardId(11), authorization_lsn: '42', issue_lsn: '44', earlier: { kind: 'started', lsn: '10' },
+      boundary: { state: 'unsettled' }, acknowledgment: { state: 'none' } }] } },
+};
+const EARLIER_WORDS = [/The earlier note/, /The earlier summary/, /the earlier check/, /Last recorded check/, /exit status 7/,
+  /shortened in this view/, /What Dudes could not see/, /<h4>Instruction review<\/h4>/, /Review the recovered attempt/];
+
+test('a ticket that moved on shows nothing from its earlier reading until the next read answers', async () => {
+  await open(EARLIER);
+  const drawn = (card) => {
+    const floor = store.getFloorState();
+    return renderToStaticMarkup(createElement(TicketPanel, { floor: { ...floor, cards: [card] }, card }));
+  };
+  const read = store.getFloorState().cards[0];
+  const first = drawn(read);
+  for (const words of EARLIER_WORDS) assert.match(first, words, 'the reading is on screen for the version it was read for');
+  assert.notEqual(detail.editableDetail(detail.getDetailState(), read), null);
+
+  const moved = { ...read, seq: 4 };
+  const windows = { 'before the next read starts': drawn(moved) };
+  assert.equal(detail.editableDetail(detail.getDetailState(), moved), null, 'an earlier version is not editable');
+  let answer;
+  const next = detail.loadDetail(moved, daemon(() => new Promise((resolve) => { answer = resolve; })).deps);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(detail.getDetailState().phase, 'loading');
+  windows['while the next read runs'] = drawn(moved);
+  assert.equal(detail.editableDetail(detail.getDetailState(), moved), null);
+  for (const [when, html] of Object.entries(windows)) {
+    for (const words of EARLIER_WORDS) assert.doesNotMatch(html, words, when);
+    assert.match(html, /Reading the ticket…/, when);
+  }
+
+  answer(json(503, {}));
+  await next;
+  assert.equal(detail.getDetailState().phase, 'failed');
+  const failed = drawn(moved);
+  for (const words of EARLIER_WORDS) assert.doesNotMatch(failed, words, 'after the next read failed');
+  assert.match(failed, /We could not confirm that saved\./);
+  assert.doesNotMatch(failed, /Reading the ticket…/);
+  assert.equal(detail.editableDetail(detail.getDetailState(), moved), null);
+});
+
 const GOAL = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
 
 /** The panel for a blocked ticket whose agent is held or interrupted, with the grants and the agent as given. */
