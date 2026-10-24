@@ -22,6 +22,7 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 ### Fixes
 
 - Test helpers have a deadline so a killed test runner cannot leave them running indefinitely. Git-reader safety tests use smaller, shared fixtures while keeping their refusal checks and positive controls. (#181)
+- `crypto-bigint` is updated to 0.7.6 and `ctutils` to 0.4.5 for RUSTSEC-2026-0387. (#185)
 
 ## [0.95.0] - 2026-10-24
 
