@@ -1012,9 +1012,10 @@ mod tests {
 
     #[test]
     fn a_secret_named_value_survives_an_environment_full_of_other_tokens() {
-        let crowd: String = (0..MAX_SECRETS_PER_SOURCE + 100)
-            .map(|n| format!("Q{n:05}ZxKdPvR4sWbN7h "))
-            .collect();
+        let crowd = (0..MAX_SECRETS_PER_SOURCE + 100)
+            .map(|n| format!("Q{n:05}ZxKdPvR4sWbN7h"))
+            .collect::<Vec<_>>()
+            .join(" ");
         let env = vars(&[
             ("CROWD", &crowd),
             ("service_api_key", "abcdefghijklmnop0123"),
