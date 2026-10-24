@@ -56,10 +56,11 @@ export function FirstTask({ floor, onHire }: {
       {current.mode === 'open' ? <FirstTaskForm floor={floor} agents={offer.agents} /> : null}
     </> : null}
     {offer.kind === 'install' ? <>
-      <h2>Install {offer.engine === null ? 'the app' : appName(offer.engine)} for {offer.agent}</h2>
-      <p>{offer.agent} needs {offer.engine === null ? 'its app' : appName(offer.engine)}, which is not installed on
-        this computer yet.{offer.engine !== null && INSTALL_COMMANDS[offer.engine] !== undefined
-          ? ' Run this in a terminal, then press Recheck.' : ''}</p>
+      <h2>Find {offer.engine === null ? 'the app' : appName(offer.engine)} for {offer.agent}</h2>
+      <p>Dudes could not find {offer.engine === null ? 'the app' : appName(offer.engine)} for {offer.agent} on the
+        daemon&apos;s PATH.{offer.engine !== null && INSTALL_COMMANDS[offer.engine] !== undefined
+          ? ' If it is not installed, run this in a terminal, then press Recheck.' : ''}</p>
+      <p>If it is already installed, check its location in <a href="#/setup">Setup</a>. The daemon may need a restart to find it.</p>
       {offer.engine !== null && INSTALL_COMMANDS[offer.engine] !== undefined
         ? <Install command={INSTALL_COMMANDS[offer.engine]!} /> : <p><button type="button"
           onClick={() => refreshFloorSnapshot()}>Recheck</button></p>}
@@ -72,17 +73,17 @@ export function FirstTask({ floor, onHire }: {
         <p><button type="button" className="first-task-start" onClick={(event) => onHire(event.currentTarget)}>
           Hire an agent</button></p></> : null}
       {offer.why === 'no_app' ? <>
-        <p>Dudes needs Claude Code or Codex on this computer to run an agent. Install one, then press Recheck.</p>
+        <p>Dudes could not find Claude Code or Codex on the daemon&apos;s PATH. If neither is installed, install one, then press Recheck.</p>
+        <p>If one is already installed, check <a href="#/setup">Setup</a>. The daemon may need a restart to find it.</p>
         <Install command={INSTALL_COMMANDS.claude!} /></> : null}
       {offer.why === 'no_project' ? <>
         {projectAddOn(floor) ? <>
           <p>Agents work in a project folder, and none is set up yet. Add the folder of your project.</p>
           <AddProject floor={floor} /></> : <>
-          <p>Agents work in a project folder, and none is set up yet. In your project&apos;s folder, run{' '}
-            <code>dudes project add</code>, then press Recheck.</p>
-          <p><button type="button" onClick={() => refreshFloorSnapshot()}>Recheck</button></p></>}</> : null}
-      {offer.why === 'off' ? <p>Hiring from this page is turned off. Run <code>dudes hire</code> in a terminal to add
-        an agent.</p> : null}
+          <p>Agents work in a project folder, and none is set up yet. Turn on Add and remove projects under
+            Floor switches in <a href="#/settings">Settings</a>, then add your project folder.</p></>}</> : null}
+      {offer.why === 'off' ? <p>Hiring from this page is turned off. Turn on Hire agents under Floor switches in{' '}
+        <a href="#/settings">Settings</a>.</p> : null}
     </> : null}
   </section>;
 }

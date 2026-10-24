@@ -10,7 +10,7 @@ import {
   firstLinkProblem, pastedLinkBuildMismatch, pastedLinkRefused, pastedLinkWaitsForReload, subscribeToPastedLink,
 } from './connect';
 import { AgentDrawer, Receipts } from './renderer/AgentDrawer';
-import { CONTROL_VIEWS, Control, ControlNav, FocusRoster, toggledView, viewButtonId } from './renderer/Control';
+import { CONTROL_TITLE_ID, CONTROL_VIEWS, Control, ControlNav, FocusRoster, toggledView, viewButtonId } from './renderer/Control';
 import type { ControlView } from './renderer/Control';
 import { CrewList, drawerHandBack } from './renderer/CrewList';
 import { CrewStats } from './renderer/CrewTotals.tsx';
@@ -215,7 +215,7 @@ function SignedInShell() {
 
   useDesktopNotifications((target) => {
     setGuide('closed');
-    if (hiring) closeHire(true);
+    if (hiring) closeHire('revealed');
     if (target.kind === 'ticket') openCard(target.id);
     else { setFocused(false); closeView(); setCrewOpen(true); openQuestion(target.id); }
   });
@@ -224,6 +224,11 @@ function SignedInShell() {
     if (page === null) return;
     setFocused(false);
     setPanel(null);
+    setGuide('closed');
+    if (hiring) {
+      closeHire('navigation');
+      document.getElementById(CONTROL_TITLE_ID)?.focus();
+    }
     if (CONTROL_VIEWS.some((entry) => entry.view === page && entry.refresh)) refreshFloorSnapshot();
   }, [page]);
 
@@ -373,15 +378,21 @@ function SignedInShell() {
     setHiring(true);
   }
 
-  function closeHire(revealed = false): void {
+  function openSettingsFromHire(): void {
+    closeHire('navigation');
+    openView('settings');
+    document.getElementById(CONTROL_TITLE_ID)?.focus();
+  }
+
+  function closeHire(reason: 'dismissed' | 'revealed' | 'navigation' = 'dismissed'): void {
     backdropPress.current = null;
-    leaveHire();
+    if (reason !== 'navigation') leaveHire();
     hireDialog.current?.close();
     setHiring(false);
     const ticketDialog = document.getElementById('selected-card-detail');
     const ticketFallback = ticketDialog?.getAttribute('open') != null
       ? ticketDialog.querySelector<HTMLElement>('.ticket-dialog-close') : null;
-    if (!revealed || ticketFallback !== null) {
+    if (reason === 'dismissed' || (reason === 'revealed' && ticketFallback !== null)) {
       restoreFocusAfterDialog(hireOpener.current,
         ticketFallback ?? document.getElementById('hire-open') ?? document.getElementById('crew-toggle'));
     }
@@ -553,7 +564,7 @@ function SignedInShell() {
             rememberGuideClosed(); setGuide('closed');
             (document.getElementById('first-run-guide-open') ?? document.getElementById(viewButtonId('setup'))
               ?? document.getElementById('hire-open'))?.focus();
-          }} onHire={(opener) => openHire(opener)} /> : null}
+          }} /> : null}
       </div>
       <RetireDialog floor={floor} />
       {hiring ? <dialog className="hire-dialog" ref={hireDialog}
@@ -571,7 +582,7 @@ function SignedInShell() {
         }}
         onPointerCancel={() => { backdropPress.current = null; }}>
         {archiveHireKept ? <p role="status">The current Hire is kept. Resolve it before preparing another agent.</p> : null}
-        <HireWizard floor={floor} onClose={() => closeHire()} />
+        <HireWizard floor={floor} onClose={() => closeHire()} onSettings={openSettingsFromHire} />
       </dialog> : null}
     </main>
   );

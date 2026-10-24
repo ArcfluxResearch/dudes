@@ -129,7 +129,8 @@ test('the box shows where a newcomer meets no project, and falls back to the old
     assert.match(task, /data-first-task="hire"[^]*Folder on this computer/);
     assert.doesNotMatch(task, /dudes project add/);
     const off = renderToStaticMarkup(createElement(FirstTask, { floor: floor(false), onHire() {} }));
-    assert.match(off, /In your project&#x27;s folder, run[^]*dudes project add/);
+    assert.match(off, /Turn on Add and remove projects under[^]*Floor switches in <a href="#\/settings">Settings<\/a>/);
+    assert.doesNotMatch(off, /dudes project add/);
 
     const { lookAtFolder, addPreviewed, getAddState } = await server.ssrLoadModule('/src/renderer/project/add.ts');
     const answers = [reply(200, PREVIEW), reply(409, { state: 'refused', reason: 'not_git' })];

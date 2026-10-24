@@ -210,7 +210,7 @@ test('the renewal form replaces the change form exactly when every offer conditi
     assert.equal(gate().open, true, `${label} closed the change form too`);
     assert.equal(offered(), undefined, `${label} offered a renewal`);
     assert.match(form(), /data-goal-form="change"/);
-    assert.doesNotMatch(form(), /Start new goal/);
+    assert.doesNotMatch(form(), /Give a task/);
   }
 
   const never = {
@@ -261,7 +261,7 @@ test('the renewal form replaces the change form exactly when every offer conditi
 test('the renewal form states what a new goal gets, in the specified words, and starts with the current text', () => {
   subscribe();
   const html = form();
-  assert.match(html, /<h3[^>]*>Start a new goal<\/h3>/);
+  assert.match(html, /<h3[^>]*>Give a task<\/h3>/);
   const lines = [...html.matchAll(/<(?:p|li)[^>]*>([^<]*)<\/(?:p|li)>/g)].map((match) => match[1]);
   assert.deepEqual(lines.slice(0, 7), [
     'This goal has no turns left.',
@@ -274,7 +274,7 @@ test('the renewal form states what a new goal gets, in the specified words, and 
   ]);
   assert.doesNotMatch(html, /stays unchanged/);
   assert.match(html, /<textarea[^>]*name="goal"[^>]*>ship the parser<\/textarea>/);
-  assert.match(html, /<button type="button" class="goal-send"[^>]*>Start new goal<\/button>/);
+  assert.match(html, /<button type="button" class="goal-send"[^>]*>Give a task<\/button>/);
   assert.match(html, /data-renew-turns="3"/);
   assert.match(html, /data-renew-usd="1000000"/);
   assert.doesNotMatch(html, /Turns: exactly|Change goal|data-renew-tokens/);
@@ -461,12 +461,11 @@ test('profile_changed refreshes the snapshot, releases the form, and the next pr
   assert.equal(second.text, 'ship the lexer');
 });
 
-test('a goal_exhausted answer says to start a new goal only when one is offered, and otherwise keeps the terminal copy', async () => {
+test('an exhausted goal offers Give a task with renewal and points to Settings when unavailable', async () => {
   const offeredCopy = 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-    + 'Start a new goal with this project’s allowance below.';
-  const terminalCopy = 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-    + 'To continue, give the agent a new goal with its own limits from a terminal (dudes goal), '
-    + 'or retire it and hire a new one.';
+    + 'Choose Give a task to start a new goal with this project’s allowance.';
+  const settingsCopy = 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
+    + 'Give a task is available when Start new goals is on in Settings and this agent’s project is enrolled.';
   subscribe({ agents: [agent({ goal: goalView({ turns: 3 }) })] });
   await send(daemon(REFUSED('goal_exhausted')), 'ship the lexer');
   assert.ok(status().includes(`data-goal-reason="goal_exhausted">${offeredCopy}</p>`), status());
@@ -477,7 +476,9 @@ test('a goal_exhausted answer says to start a new goal only when one is offered,
     goal.resetGoal();
     subscribe({ goal: sibling, agents: [agent({ goal: goalView({ turns: 3 }) })] });
     await send(daemon(REFUSED('goal_exhausted')), 'ship the lexer');
-    assert.ok(status().includes(`data-goal-reason="goal_exhausted">${terminalCopy}</p>`), status());
+    assert.ok(status().includes(`data-goal-reason="goal_exhausted">${settingsCopy}`), status());
+    assert.match(status(), /<a href="#\/settings">Open Settings<\/a>/);
+    assert.doesNotMatch(status(), /dudes goal|from a terminal/);
     assert.match(form(), /data-goal-form="change"/);
   }
 });
