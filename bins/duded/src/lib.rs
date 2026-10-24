@@ -115,6 +115,7 @@ pub mod provider_check;
 pub mod pty_output;
 mod reserve;
 pub mod runtime;
+mod secret_patterns;
 pub mod settings;
 mod shutdown_receipt;
 pub mod sign_in;

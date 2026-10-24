@@ -684,11 +684,11 @@ impl DiffReader {
             current_mode: 0,
             reason: None,
         };
-        if super::text::sensitive_path(candidate.path.as_str())
+        if crate::secret_patterns::sensitive_path(candidate.path.as_str())
             || candidate
                 .old_path
                 .as_ref()
-                .is_some_and(|path| super::text::sensitive_path(path.as_str()))
+                .is_some_and(|path| crate::secret_patterns::sensitive_path(path.as_str()))
         {
             sample.reason = Some(DiffOmissionReason::SensitivePath);
             return Ok(sample);

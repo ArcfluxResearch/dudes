@@ -220,7 +220,7 @@ impl Root {
         budget: &Budget,
         after_read: impl FnOnce(),
     ) -> Result<Option<CurrentFile>, DiffOmissionReason> {
-        if super::text::sensitive_path(path.as_str()) {
+        if crate::secret_patterns::sensitive_path(path.as_str()) {
             return Err(DiffOmissionReason::SensitivePath);
         }
         budget.check().map_err(|_| DiffOmissionReason::Unreadable)?;
