@@ -261,10 +261,10 @@ test('only an explicit matching-turn reissue marker shows the interruption warni
 test('bounded history omission is unavailable history and only a retained null reply claims no reported final', () => {
   const empty = render(view());
   assert.match(empty, /No messages in the available history/);
-  assert.match(empty, /Only a limited history is retained; individual turns may be unavailable\./);
+  assert.match(empty, /Only recent history is kept, so some earlier work may be missing\./);
   assert.doesNotMatch(empty, /No final reply was reported/);
   const retained = render({ ...view(), turns: [turn()] });
-  assert.match(retained, /Only a limited history is retained; individual turns may be unavailable\./);
+  assert.match(retained, /Only recent history is kept, so some earlier work may be missing\./);
   assert.match(retained, /A natural ending…/);
   assert.doesNotMatch(retained, /No messages in the available history/);
   assert.match(render({ ...view(), turns: [turn({ reply: null })] }), /No final reply was reported/);

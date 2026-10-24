@@ -480,7 +480,7 @@ test('200 promises only the cause; a stopped or started turn is shown from proje
   await press(daemon(APPLIED), 'pause');
   assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: '1099511628300' });
   let html = status();
-  assert.match(html, /<p class="control-success" role="status">Pause recorded\. The daemon holds this pause in its journal, which is not the same as the agent stopping\.<\/p>/);
+  assert.match(html, /<p class="control-success" role="status">Pause recorded\. Dudes will start no new work for this agent\. That is not the same as the agent stopping\.<\/p>/);
   assert.deepEqual(wordingsIn(strip()), [], 'the 200 drew a pause the projection has not shown');
   assert.match(html, /data-control-continuation="running">A turn is still running; it runs to its end\./);
 
@@ -492,7 +492,7 @@ test('200 promises only the cause; a stopped or started turn is shown from proje
 
   await press(daemon(APPLIED), 'resume');
   html = status();
-  assert.match(html, /Resume recorded\. The daemon lifted this pause or stop in its journal, which is not the same as a new turn\./);
+  assert.match(html, /Resume recorded\. The pause or stop is lifted\. That is not the same as new work starting\./);
   assert.match(html, /data-control-continuation="waiting">No new turn has appeared yet\./);
   assert.deepEqual(wordingsIn(strip()), [['paused', 'Paused']], 'the 200 lifted a pause the projection still holds');
   delta([agent({ status: 'idle', control_lsn: '1099511628301' })], 12);
@@ -544,7 +544,7 @@ test('an empty 409 is a client error, never success', async () => {
   await press(daemon(EMPTY(409)), 'pause');
   assert.deepEqual(control.getControlState().outcome, { kind: 'conflict' });
   const html = status();
-  assert.match(html, /This is a page error; nothing was recorded\./);
+  assert.match(html, /This is a page error\./);
   assert.doesNotMatch(html, /control-success/);
 });
 
@@ -559,7 +559,7 @@ test('403 with a live snapshot says this page can no longer act; with a dead str
   subscribe();
   let html = status();
   assert.match(html, /data-control-session="live"/);
-  assert.match(html, /this page can no longer pause or resume with its session/);
+  assert.match(html, /this page can no longer pause or resume with its sign-in/);
   assert.doesNotMatch(html, /session has ended/);
   // A 403 on the only send is a confirmed no-effect, but this session can no longer act: the buttons wait.
   assert.equal(control.blocksControls(control.getControlState(), gate(), 1), true);
@@ -573,7 +573,7 @@ test('403 with a live snapshot says this page can no longer act; with a dead str
   noteTransport('close');
   html = status();
   assert.match(html, /data-control-session="ended"/);
-  assert.match(html, /Your Floor session has ended or was revoked\. Open Dudes to sign in again in this browser/);
+  assert.match(html, /Your sign-in has ended or was revoked\. Open Dudes to sign in again in this browser/);
   assert.doesNotMatch(html, /control-success/);
 
   // After signing in again, the message speaks for the new session.
@@ -615,7 +615,7 @@ test('503 offers a same-id retry and is never retried by itself', async () => {
   await new Promise((done) => setTimeout(done, 20));
   assert.equal(net.calls.length, 1, 'a 503 was retried by itself');
   const html = status();
-  assert.match(html, /this page does not retry by itself/);
+  assert.match(html, /This page does not retry by itself/);
   assert.match(html, /<button type="button" aria-disabled="false" aria-busy="false"[^>]*>Check status<\/button>/);
   assert.match(strip(), /<button type="button" class="control-pause" aria-disabled="true"/);
   await control.checkControlStatus(net);
@@ -634,7 +634,7 @@ test('pending offers Check status with the same request_id', async () => {
   assert.doesNotMatch(status(), /control-success/);
   await control.checkControlStatus(net);
   assert.deepEqual(control.getControlState().outcome, { kind: 'unknown' });
-  assert.match(status(), /The page lost the daemon’s reply/);
+  assert.match(status(), /This page lost Dudes’ reply/);
   await control.checkControlStatus(net);
   assert.equal(net.calls.length, 3);
   for (const call of net.calls) assert.equal(call.init.body, net.calls[0].init.body, 'Check status sent a different request');
@@ -823,7 +823,7 @@ test('a 200 holds the pressed verb until a delta moves its control position, and
   assert.equal(gate().offer, 'pause');
   assert.match(strip(), /<button type="button" class="control-pause" aria-disabled="true"/,
     'the pressed verb is offered again before the floor has shown the request');
-  assert.match(strip(), /<p class="hire-note">This pause is in the journal; the floor has not shown it yet\.<\/p>/);
+  assert.match(strip(), /<p class="hire-note">This pause was recorded, but the Floor has not shown it yet\.<\/p>/);
   await control.submitControl('pause', gate(), net);
   assert.equal(net.calls.length, 1, 'a second press sent the same control position again');
   assert.match(strip(), /class="control-pause"[^>]*data-focus-on-leave="control-status-title"/,
@@ -906,7 +906,7 @@ test('a 403 says what a press does next: an ended session keeps no settled reque
       `${id}’s Pause is offered beside a request to paste a new link`);
   }
   assert.match(strip(ADA, net.generation),
-    /The daemon refused this page’s Floor session, which can no longer pause or resume\./);
+    /Dudes no longer accepts this page’s sign-in, so it can no longer pause or resume\./);
   await control.submitControl('pause', gate(), net);
   assert.equal(net.calls.length, 1, 'a press went out on the session that was refused');
   // A fresh link, and its session's snapshot: the buttons act again, on the new session.
