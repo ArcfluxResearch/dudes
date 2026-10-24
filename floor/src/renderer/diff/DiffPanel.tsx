@@ -50,7 +50,7 @@ const REFUSALS: Readonly<Record<DiffRefusalReason, string>> = {
   session_limit: 'This Floor session has used all the reading it is allowed (about 1 MiB), and Refresh does not renew it. '
     + 'Review the files in the agent’s project folder, or open Dudes to start a new Floor session.',
   unsupported_platform: 'The Changes view does not work on this daemon’s operating system. Review the files in the agent’s project folder.',
-  worktree_mismatch: 'The agent’s own copy of the project is gone, was retired with the agent, or no longer matches the one Dudes recorded, so nothing was read. '
+  worktree_mismatch: 'The agent was retired, or its own copy of the project is gone or no longer matches the one Dudes recorded, so nothing was read. '
     + 'Review the files in the project folder.',
   unsupported_storage: 'This repository uses storage the Changes view cannot read. Review the files in the agent’s project folder.',
   root_mismatch: 'The folder this ticket was recorded in has been replaced, so nothing was read.',
