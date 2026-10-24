@@ -1101,20 +1101,40 @@ fn a_ticket_without_a_recorded_baseline_has_no_diff() {
     );
 }
 
+/// A round records its baseline once and Refresh never captures it again, so a recorded reason is
+/// passed on only when its words stay true and do not suggest Refresh.
 #[test]
-fn a_failed_baseline_capture_keeps_its_own_reason() {
-    let lab = Lab::new();
-    for reason in [
+fn a_failed_baseline_capture_names_its_reason_only_while_it_stays_true() {
+    let kept = [
+        DiffRefusal::UnsupportedStorage,
+        DiffRefusal::UnsupportedPlatform,
+        DiffRefusal::BaselineUnavailable,
+    ];
+    let replaced = [
         DiffRefusal::Unreadable,
         DiffRefusal::TimedOut,
-        DiffRefusal::UnsupportedStorage,
         DiffRefusal::GitUnavailable,
-    ] {
-        lab.start_round();
+        DiffRefusal::WorktreeMismatch,
+        DiffRefusal::RootMismatch,
+        DiffRefusal::Busy,
+        DiffRefusal::StaleTicket,
+        DiffRefusal::StaleManifest,
+        DiffRefusal::Expired,
+        DiffRefusal::InvalidRequest,
+        DiffRefusal::Disabled,
+        DiffRefusal::SessionLimit,
+    ];
+    let lab = Lab::new();
+    lab.start_round();
+    for (reason, shown) in kept
+        .map(|reason| (reason, reason))
+        .into_iter()
+        .chain(replaced.map(|reason| (reason, DiffRefusal::BaselineUnavailable)))
+    {
         lab.edit(|recorded| {
             recorded.baseline = lab.capture.baseline_unavailable(binding(), reason);
         });
-        assert_eq!(lab.refusal(1, &manifest_request()), reason);
+        assert_eq!(lab.refusal(1, &manifest_request()), shown, "{reason:?}");
     }
 }
 
