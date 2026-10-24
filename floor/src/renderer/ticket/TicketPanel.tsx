@@ -25,7 +25,7 @@ import { decodeWorktree } from '../worktree.ts';
 import { clearTicketChangesDraft, readTicketChangesDraft, writeTicketChangesDraft } from '../view.ts';
 import { agentsFor, ticketActionsOpen, TicketNotice } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
-import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, engineStopped, reasonSentence, stateName } from './words.ts';
+import { AGENT_SAYS, FROM_LAST_READING, NO_SUMMARY, agentWithoutProjectSentence, engineStopped, reasonSentence, stateName } from './words.ts';
 import { StuckActions } from './StuckActions.tsx';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
@@ -173,6 +173,10 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
   const ticket = card.ticket;
   const words = cardWords(floor, card);
   const shown = currentDetail(detail, card);
+  // The summary and the daemon's waiting words change without a new card sequence, so a reading at
+  // this sequence shows them as current only while the read is confirmed fresh.
+  const fresh = checkDisplayCurrent(detail, card, floor);
+  const waiting = (fresh ? shown?.waiting?.note : null) ?? words.note;
   const failure = engineStopped(ticket?.last_turn_end);
   return <>
     <dl>
@@ -184,8 +188,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
     </dl>
     {failure === null ? null : <p className="ticket-needs" role="note">{failure}</p>}
     {card.status === 'blocked' ? <p className="ticket-needs" role="note">{reasonSentence(ticket?.reason ?? null)}</p>
-      : (shown?.waiting ?? null) !== null ? <p className="ticket-wait">{shown?.waiting?.note}</p>
-        : words.note === null ? null : <p className="ticket-wait">{words.note}</p>}
+      : waiting === null ? null : <p className="ticket-wait">{waiting}</p>}
     {shown === null && mine?.phase !== 'failed' ? <p role="status">Reading the ticket…</p> : null}
     {mine?.problem == null ? null : <p className="ticket-hint" role="status">{mine.problem}</p>}
     {shown === null ? null : <>
@@ -201,6 +204,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
         {shown.summary === null || shown.summary === '' ? <p>{shown.truncated.includes('summary')
           ? "The agent's summary was omitted from this view." : `${NO_SUMMARY}.`}</p>
           : <p className="ticket-summary ticket-text">{shown.summary}</p>}
+        {fresh ? null : <p className="ticket-hint" role="note">{FROM_LAST_READING}</p>}
       </section>}
     </>}
   </>;
@@ -345,6 +349,9 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   const reviewing = card.status === 'review' || card.status === 'blocked';
   const needsReview = requiresInstructionReview(card) && reviewing;
   const reviewReady = !needsReview || reviewedWatermark(detail, card) !== null;
+  const noteUnread = actions.includes('edit') && editable === null;
+  const readHint = needsReview ? 'Read the current instruction evidence before reviewing this ticket.'
+    : noteUnread ? 'Read the complete current note before editing this ticket.' : null;
 
   const actionButton = (action: TicketAction) => <button key={action} type="button" className="ticket-action" data-action={action}
     disabled={sending || (action === 'edit' && editable === null)
@@ -378,10 +385,8 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
     {shown?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={shown.instruction_review}
       reviewing={reviewing} />}
     {(needsReview && !reviewReady) || (detail.card === card.id && detail.phase === 'failed')
-      || (actions.includes('edit') && detail.phase === 'ready' && editable === null) ? <div>
-      <p className="ticket-hint" role="status">{needsReview
-        ? 'Read the current instruction evidence before reviewing this ticket.'
-        : 'Read the complete current note before editing this ticket.'}</p>
+      || (noteUnread && detail.phase === 'ready') ? <div>
+      {readHint === null ? null : <p className="ticket-hint" role="status">{readHint}</p>}
       <button type="button" className="ticket-look" disabled={detail.phase === 'loading'}
         onClick={() => { void loadDetail(card); }}>Read again</button>
     </div> : null}

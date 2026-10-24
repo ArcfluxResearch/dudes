@@ -6,7 +6,7 @@ import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { fakePage, press } from './helpers/fake-page.mjs';
-import { ADA, cardId, daemon, json, subscribe, ticketCard } from './helpers/tickets.mjs';
+import { ADA, advance as advanceStore, cardId, daemon, json, subscribe, ticketCard } from './helpers/tickets.mjs';
 
 let server, context, detail, store, RecoveredReview, TicketPanel;
 const CARD = cardId(1);
@@ -27,10 +27,7 @@ function snapshot(cursor = CURSOR) {
     messages_lsn: cursor, threads_lsn: cursor }), epoch);
   return store.getFloorState().cards[0];
 }
-function advance(cursor) {
-  store.applyServerFrame(JSON.stringify({ type: 'floor.delta', delta: { lsn: Number(cursor), agents: [], cards: [] },
-    messages_lsn: cursor, threads_lsn: cursor }), store.getFloorState().epoch);
-}
+const advance = (cursor) => advanceStore(store, cursor);
 before(async () => {
   server = await createServer({ root: resolve(import.meta.dirname, '..'), cacheDir: 'node_modules/.vite-ticket-context',
     server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
