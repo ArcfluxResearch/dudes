@@ -1132,38 +1132,47 @@ fn a_git_that_never_answers_ends_as_timed_out() {
     assert_eq!(lab.scratch_left(), 0);
 }
 
-/// The version floor is the oldest git the matrix was run against: one release older is refused
-/// with a finite state, and the floor itself gets as far as reading.
 #[test]
-fn a_git_older_than_the_measured_floor_is_unavailable() {
-    let lab = Lab::new();
-    let repo = lab.repo("repo");
-    let state_with = |version: &str| {
-        let bin = lab.path().join(format!("bin-{version}"));
-        std::fs::create_dir(&bin).expect("bin");
-        let script = bin.join("git");
-        std::fs::write(
-            &script,
-            format!("#!/bin/sh\ncase \"$1\" in --version) echo git version {version};; *) exit 1;; esac\n"),
-        )
-        .expect("fake git");
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        lab.sh(&bin, &format!("'{}' --version", script.display()));
-        GitReader::new(
-            Arc::clone(&lab.runner) as Arc<dyn PredicateRunner>,
-            Some(bin.into_os_string()),
-            lab.path().join("scratch"),
-        )
-        .read(&checkout(&repo), NOW)
-        .state
-    };
-    assert_eq!(state_with("2.38.9"), GitState::GitUnavailable);
-    assert_eq!(state_with("1.9.1"), GitState::GitUnavailable);
+fn a_git_release_below_the_measured_floor_is_unavailable() {
+    assert_eq!(git_state_with_version("2.38.9"), GitState::GitUnavailable);
+}
+
+#[test]
+fn an_old_git_major_version_is_unavailable() {
+    assert_eq!(git_state_with_version("1.9.1"), GitState::GitUnavailable);
+}
+
+#[test]
+fn the_minimum_supported_git_version_reaches_the_read() {
     assert_eq!(
-        state_with("2.39.0"),
+        git_state_with_version("2.39.0"),
         GitState::Unreadable,
         "control: the floor passes the version check, and this fake then answers nothing else"
     );
+}
+
+fn git_state_with_version(version: &str) -> GitState {
+    let lab = Lab::new();
+    let repo = lab.repo("repo");
+    let bin = lab.path().join(format!("bin-{version}"));
+    std::fs::create_dir(&bin).expect("bin");
+    let script = bin.join("git");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in --version) echo git version {version};; *) exit 1;; esac\n"
+        ),
+    )
+    .expect("fake git");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    lab.sh(&bin, &format!("'{}' --version", script.display()));
+    GitReader::new(
+        Arc::clone(&lab.runner) as Arc<dyn PredicateRunner>,
+        Some(bin.into_os_string()),
+        lab.path().join("scratch"),
+    )
+    .read(&checkout(&repo), NOW)
+    .state
 }
 
 /// A minimal SHA-1, for the checksum at the end of an index the test rewrites.
