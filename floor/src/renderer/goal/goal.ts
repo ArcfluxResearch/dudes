@@ -261,7 +261,7 @@ export const REFUSAL_REASONS: Readonly<Record<FixedRefusal, string>> = Object.fr
   predicate_claimed: 'This goal uses a Claimed card status, which cannot prove completion, so nothing was recorded.',
   predicate_todo: 'This goal uses a Todo card status, which cannot prove completion, so nothing was recorded.',
   goal_exhausted: 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-    + 'Give a task is available when Start new goals is on in Settings and this agent’s project is enrolled.',
+    + 'Start a new goal is available when Start new goals is on in Settings and this agent’s project is enrolled.',
   agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
   agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
   goal_not_exhausted: 'This goal still has turns or dollars left, so nothing was recorded. Change its text instead.',
@@ -272,8 +272,9 @@ export const REFUSAL_REASONS: Readonly<Record<FixedRefusal, string>> = Object.fr
 
 /** What a renewal's own reasons say, where they differ from a change's. */
 const RENEWAL_REASONS: Readonly<Partial<Record<FixedRefusal, string>>> = Object.freeze({
-  workspace_unavailable: 'This agent’s project is not set up at its folder now, or sets no ceiling that the '
-    + 'daemon’s billing key requires, so nothing was recorded. Give it a new goal from a terminal (dudes goal), '
+  workspace_unavailable: 'This agent’s project or spending setup does not allow a new goal, so nothing was recorded. '
+    + 'This form cannot change the agent’s project or choose a different goal allowance. '
+    + 'Give it a new goal from a terminal (dudes goal), '
     + 'or retire it and hire a new one.',
   profile_changed: 'The project’s allowance or checks changed since this page read it, so nothing was '
     + 'recorded. The floor is being refreshed.',
@@ -281,10 +282,11 @@ const RENEWAL_REASONS: Readonly<Partial<Record<FixedRefusal, string>>> = Object.
 
 /** What `goal_exhausted` says when the page can offer a new goal beside it. */
 export const EXHAUSTED_WITH_RENEWAL = 'This goal has no turns or capped dollars left to carry over, so nothing was '
-  + 'recorded. Choose Give a task to start a new goal with this project’s allowance.';
+  + 'recorded. Choose Start a new goal to use this project’s allowance.';
 
-const NOT_ENROLLED = 'This agent’s check already passes, and no enrolled project offers this agent another check. '
-  + 'Nothing changed. Set a new goal from a terminal (dudes goal) with a check that fails until the goal is met.';
+const NOT_ENROLLED = 'This agent’s check already passes, and the page has no other check to offer for its project. '
+  + 'Nothing changed. This page cannot define a completion check. '
+  + 'Set a new goal from a terminal (dudes goal) with a check that fails until the goal is met.';
 
 /** What one refusal of this request says. */
 export function refusalText(reason: GoalRefusalReason, attempt: GoalAttempt): string {

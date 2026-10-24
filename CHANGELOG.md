@@ -11,6 +11,18 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.96.0] - 2026-10-24
+
+### Highlights
+
+- **Set up the Floor from the page.** The first-run guide offers the existing Floor switches directly and no longer repeats the first-task step. When adding a project, hiring, or Pi sign-in needs a switch, the page points to the matching setting. An exhausted goal offers Start a new goal, distinct from giving an agent a ticket. (#182)
+- **Clear the daily dollar ceiling in Settings.** Clear asks for confirmation and removes the Floor's daily dollar ceiling after a restart. Until then, the page that cleared it shows "No daily dollar ceiling after restart" beside the running amount. Reloaded pages and other tabs show the running amount without the note. Per-turn reserves cannot be cleared and must stay above zero. (#183)
+- **Find command help without scrolling through every command.** `dudes --help` is a short command index, with detailed usage and flags under each command's own `--help`. Quickstart help describes engine sign-in status and the Floor's sign-in offer. (#180)
+
+### Fixes
+
+- Test helpers have a deadline so a killed test runner cannot leave them running indefinitely. Git-reader safety tests use smaller, shared fixtures while keeping their refusal checks and positive controls. (#181)
+
 ## [0.95.0] - 2026-10-24
 
 ### Highlights
@@ -374,7 +386,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.95.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.96.0...HEAD
+[0.96.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.95.0...v0.96.0
 [0.95.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.94.0...v0.95.0
 [0.94.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.93.0...v0.94.0
 [0.93.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.92.0...v0.93.0

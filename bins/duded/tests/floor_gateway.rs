@@ -76,14 +76,14 @@ fn old_and_mixed_generation_bundles_are_refused() {
         "/tests/fixtures/floor-release-v1"
     ));
     let error = prepare(&floor(old)).expect_err("generation one is refused");
-    assert!(format!("{error:#}").contains("version mismatch"));
+    assert!(format!("{error:#}").contains("browser wire version mismatch"));
 
     for replace in ["release-manifest.json", "assets/app-01234567.js"] {
         let mixed = copy_fixture();
         fs::copy(old.join(replace), mixed.path().join(replace)).unwrap();
         let error = prepare(&floor(mixed.path())).expect_err("mixed generations are refused");
         let reason = if replace == "release-manifest.json" {
-            "version mismatch"
+            "browser wire version mismatch"
         } else {
             "SHA-256 mismatch"
         };
@@ -1352,25 +1352,25 @@ fn threaded_generation_refuses_old_and_mixed_asset_manifests_before_serving() {
         "/tests/fixtures/floor-release-v2"
     ));
     let error = prepare(&floor(old)).expect_err("generation two assets are refused");
-    assert!(format!("{error:#}").contains("version mismatch"));
+    assert!(format!("{error:#}").contains("browser wire version mismatch"));
     let previous = Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/floor-release-v3"
     ));
     let error = prepare(&floor(previous)).expect_err("generation three assets are refused");
-    assert!(format!("{error:#}").contains("version mismatch"));
+    assert!(format!("{error:#}").contains("browser wire version mismatch"));
     let previous = Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/floor-release-v4"
     ));
     let error = prepare(&floor(previous)).expect_err("generation four assets are refused");
-    assert!(format!("{error:#}").contains("version mismatch"));
+    assert!(format!("{error:#}").contains("browser wire version mismatch"));
     let previous = Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/floor-release-v5"
     ));
     let error = prepare(&floor(previous)).expect_err("generation five assets are refused");
-    assert!(format!("{error:#}").contains("version mismatch"));
+    assert!(format!("{error:#}").contains("browser wire version mismatch"));
     let matched = copy_fixture();
     prepare(&floor(matched.path())).expect("matching generation six fixture");
     let mixed = copy_fixture();
@@ -1380,5 +1380,5 @@ fn threaded_generation_refuses_old_and_mixed_asset_manifests_before_serving() {
     manifest["browser_wire_version"] = serde_json::json!(2);
     fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     let error = prepare(&floor(mixed.path())).expect_err("mixed generation manifest is refused");
-    assert!(format!("{error:#}").contains("browser wire"));
+    assert!(format!("{error:#}").contains("browser wire version mismatch"));
 }
