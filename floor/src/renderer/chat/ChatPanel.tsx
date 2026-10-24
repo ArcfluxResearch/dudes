@@ -234,14 +234,14 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
           {status === null ? null : <p className="chat-message-state" role="status">{status}</p>}
           {turn?.reply == null ? null : <div className="chat-message chat-assistant">
             <p className="chat-speaker">{name}</p>
-            <ChatText text={turn.reply} final />
+            <ChatText text={turn.reply} final mode="agent" />
             {turn.truncated ? <p className="chat-warning">Final reply was truncated.</p> : null}
             {turn.truncated === null ? <details className="chat-reply-details"><summary>Reply details</summary>
               <p>Final reply completeness is not recorded.</p></details> : null}
           </div>}
           {preview ? <div className="chat-message chat-assistant chat-preview" data-chat-preview="provisional">
             <p className="chat-speaker">{name}</p>
-            {floor.output.reply !== null && floor.output.reply.text !== '' ? <ChatText text={floor.output.reply.text} />
+            {floor.output.reply !== null && floor.output.reply.text !== '' ? <ChatText text={floor.output.reply.text} mode="agent" />
               : null}
             {floor.output.truncated ? <p className="chat-warning">Earlier live output was truncated.</p> : null}
             {floor.output.reply?.gap !== null ? <div className="chat-warning" role="status"><p>Live output is incomplete.</p>

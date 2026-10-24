@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import type { ReactNode } from 'react';
+import { AgentMarkdown } from './markdown.tsx';
 
 type TextPart = { readonly kind: 'text' | 'code'; readonly text: string };
 
@@ -29,8 +30,13 @@ function inlineText(text: string): readonly ReactNode[] {
   });
 }
 
-export function ChatText({ text, final = false }: { readonly text: string; readonly final?: boolean }) {
-  return <div className={`chat-text${final ? ' chat-final-reply' : ''}`}>
+/** `agent` draws the full Markdown subset for the agent's own words; `basic` keeps the person's messages as they were. */
+export function ChatText({ text, final = false, mode = 'basic' }: {
+  readonly text: string; readonly final?: boolean; readonly mode?: 'basic' | 'agent';
+}) {
+  const className = `chat-text${mode === 'agent' ? ' chat-md' : ''}${final ? ' chat-final-reply' : ''}`;
+  if (mode === 'agent') return <div className={className}><AgentMarkdown text={text} /></div>;
+  return <div className={className}>
     {splitFences(text).map((part, index) => part.kind === 'code'
       ? <pre className="chat-code" key={index}><code>{part.text}</code></pre>
       : <span key={index}>{inlineText(part.text)}</span>)}
