@@ -97,7 +97,7 @@ test('the agent\'s summary is text, and the panel says whose words they are', as
   assert.ok(!html.includes('<script>'), 'no script element');
   assert.ok(!html.includes('<b>bold'), 'no bold element');
   assert.ok(!html.includes('dangerouslySetInnerHTML'));
-  assert.match(html, /<p class="ticket-summary ticket-text">/);
+  assert.match(html, /<div class="ticket-summary md"><p>/);
   for (const attribute of html.matchAll(/(?:title|aria-label|data-[a-z-]+)="([^"]*)"/g)) {
     assert.ok(!attribute[1].includes('bold'), 'the summary reaches no attribute');
   }

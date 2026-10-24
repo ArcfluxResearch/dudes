@@ -27,6 +27,7 @@ import { agentsFor, ticketActionsOpen, TicketNotice } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
 import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, engineStopped, reasonSentence, stateName } from './words.ts';
 import { StuckActions } from './StuckActions.tsx';
+import { AgentMarkdown } from '../chat/markdown.tsx';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
 import { COVERAGE_SUMMARY, coverageText, groupGaps, instructionContextDetails, instructionContextText } from './instructions.ts';
@@ -200,7 +201,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
         <h4>{AGENT_SAYS}</h4>
         {shown.summary === null || shown.summary === '' ? <p>{shown.truncated.includes('summary')
           ? "The agent's summary was omitted from this view." : `${NO_SUMMARY}.`}</p>
-          : <p className="ticket-summary ticket-text">{shown.summary}</p>}
+          : <div className="ticket-summary md"><AgentMarkdown text={shown.summary} /></div>}
       </section>}
     </>}
   </>;
