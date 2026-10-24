@@ -133,6 +133,7 @@ fn attach(harness: &mut Harness, agent: AgentId) {
 /// End a turn failing and judge its goal failing, which is what makes the loop issue the next one.
 fn fail_turn(harness: &mut Harness, turn: TurnId, goal: GoalId) {
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -161,6 +162,7 @@ fn fail_turn(harness: &mut Harness, turn: TurnId, goal: GoalId) {
 
 fn complete_turn(harness: &mut Harness, turn: TurnId, goal: GoalId) {
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -951,6 +953,7 @@ fn end_the_killed_turn(harness: &mut Harness, agent: AgentId) {
         .open_turn(agent)
         .expect("a control: the turn child outlives the retirement until its kill lands");
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

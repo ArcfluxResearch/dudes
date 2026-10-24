@@ -94,6 +94,7 @@ fn is_answer(record: &Record) -> bool {
 /// nothing until [`fail_predicate`] answers.
 fn exit(harness: &mut Harness, turn: TurnId) {
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -611,6 +612,7 @@ fn waiting_for_fresh_answer_recovery(harness: &mut Harness, goal: &str) -> Agent
         browser: None,
     }));
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn: first,

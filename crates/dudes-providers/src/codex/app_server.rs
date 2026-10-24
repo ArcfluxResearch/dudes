@@ -470,6 +470,7 @@ impl TurnReader for AppServerReader {
             .final_reply
             .filter(|_| outcome == TurnOutcome::Completed);
         TurnEnd {
+            report: dudes_proto::TurnReport::default(),
             final_observation: None,
             last_message: final_reply.as_ref().map(|reply| reply.text.clone()),
             final_reply,

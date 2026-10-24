@@ -223,6 +223,7 @@ fn end_turn(boot: &Boot, fixture: &Fixture, turn: TurnId, final_reply: Option<&s
         fixture,
         &boot.host,
         Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: final_reply.map(|text| dudes_proto::ChatReply {
                 text: text.to_owned(),
                 completeness: dudes_proto::ChatReplyCompleteness::Complete,

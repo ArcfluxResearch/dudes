@@ -3742,6 +3742,8 @@ mod tests {
         secret: &str,
     ) -> dudes_proto::Record {
         dudes_proto::Record::TurnEnded {
+            step_digest: None,
+            context: None,
             final_reply: None,
             agent,
             turn,
@@ -4245,12 +4247,20 @@ mod tests {
             code: Some(1),
             signal: None,
         };
-        if let Record::TurnEnded { exit, .. } = &mut ended {
+        if let Record::TurnEnded {
+            exit, step_digest, ..
+        } = &mut ended
+        {
             *exit = failed;
+            *step_digest = None;
         }
         let at = apply(&mut projected, ended);
         let before = crate::floor::snapshot(&mut projected, at).unwrap();
-        let expected = Some(TicketTurnEnd { exit: failed, at });
+        let expected = Some(TicketTurnEnd {
+            step_digest: None,
+            exit: failed,
+            at,
+        });
         assert_eq!(
             before.cards[0].ticket.as_ref().unwrap().last_turn_end,
             expected
@@ -4531,6 +4541,7 @@ mod tests {
 
     fn agent(role: String) -> AgentView {
         AgentView {
+            last_turn: None,
             character: None,
             accent: None,
             id: AgentId::from_parts(1, 1),

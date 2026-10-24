@@ -4815,6 +4815,7 @@ impl NativeTurnFixture<'_> {
             self.fixture,
             self.host,
             Input::ChildExited {
+                report: dudes_proto::TurnReport::default(),
                 final_reply: None,
                 elapsed_ms: None,
                 turn,
@@ -6884,6 +6885,7 @@ fn newest_turn(fixture: &Fixture, agent: AgentId) -> TurnId {
 /// End a fake host's turn as its child would, having cost `usd`, or with no usage at all.
 fn end_turn(handle: &duded::Handle, turn: TurnId, usd: Option<Usd>) {
     handle.input(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

@@ -100,6 +100,7 @@ fn a_stop_during_dispatch_leaves_the_turn_open_and_kills_it_when_the_spawn_arriv
     assert!(killed(&harness, turn), "and the halt ends it");
 
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -399,6 +400,7 @@ fn a_reissue_under_a_breaker_stop_launches_and_the_kill_settles_the_turn() {
         "the breaker's kill follows the spawn"
     );
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn: source,

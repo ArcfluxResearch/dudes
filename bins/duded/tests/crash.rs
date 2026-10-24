@@ -470,6 +470,7 @@ fn finish_owned_retry(fixture: &Fixture, host: &common::SharedHost, turn: dudes_
         fixture,
         host,
         dudes_supervisor::Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             elapsed_ms: None,
             turn,

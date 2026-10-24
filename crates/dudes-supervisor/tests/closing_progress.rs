@@ -71,6 +71,7 @@ fn durable_counts_partition_participants_and_keep_acknowledged_turns_running() {
     ] {
         let turn = harness.open_turn(agent).unwrap();
         harness.drive(Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             elapsed_ms: None,
             turn,
@@ -179,6 +180,7 @@ fn a_done_goal_with_an_open_child_stays_owed_until_observed_end() {
         },
     );
     source.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

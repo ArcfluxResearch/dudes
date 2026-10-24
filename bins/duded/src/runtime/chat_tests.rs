@@ -717,6 +717,8 @@ fn completed_note_replay_keeps_the_latest_inferred_end_gate() {
         .append(&dudes_proto::Entry {
             at: dudes_types::Timestamp::from_unix_millis(1_787_394_600_000),
             record: Record::TurnEnded {
+                step_digest: None,
+                context: None,
                 final_reply: None,
                 agent,
                 turn,
@@ -806,6 +808,7 @@ fn failed_note_only_turns_keep_rapid_failure_protection_without_predicates() {
             &fixture,
             &host,
             dudes_supervisor::Input::ChildExited {
+                report: dudes_proto::TurnReport::default(),
                 final_reply: None,
                 turn,
                 elapsed_ms: Some(1),

@@ -79,6 +79,9 @@ pub struct TurnStream {
     session: Option<SessionId>,
     init_read: bool,
     calls: BTreeMap<String, Usage>,
+    /// The newest main-thread call's model and prompt tokens: what the context held when the turn
+    /// last called the model.
+    last_call: Option<(String, u64)>,
     attribution_refused: u64,
     unreadable: u64,
     text: LiveText,
@@ -148,6 +151,11 @@ impl TurnStream {
             && let (Some(id), Some(usage)) = (&message.message.id, &message.message.usage)
         {
             self.calls.insert(id.clone(), usage::call(usage));
+            if message.parent_tool_use_id.is_none()
+                && let Some(model) = message.message.model.as_deref().filter(|m| !m.is_empty())
+            {
+                self.last_call = Some((model.to_owned(), usage::prompt_tokens(usage)));
+            }
         }
         // Before an announcement, keep one provisional line because init may arrive later. Once
         // the session is known, retain only binding candidates; count and drop every other line
@@ -203,6 +211,7 @@ impl TurnStream {
             session,
             init_read: _,
             calls,
+            last_call,
             attribution_refused,
             unreadable,
             text: _,
@@ -241,9 +250,17 @@ impl TurnStream {
         // else: a `result` the daemon could not bind to the announced session buys no evidence any
         // more than it buys an outcome or a cost.
         let model_usage = result.as_ref().map(usage::by_model).unwrap_or_default();
+        let context = result
+            .as_ref()
+            .zip(last_call)
+            .and_then(|(result, (model, used))| usage::context(result, &model, used));
         TurnEnd {
             final_observation: None,
             outcome: derived.into(),
+            report: dudes_proto::TurnReport {
+                context,
+                step_digest: None,
+            },
             usage,
             usage_refused,
             model_usage,
@@ -839,6 +856,44 @@ mod tests {
             &closed[..],
             [StepEvent::Close { failed: false, .. }]
         ));
+    }
+
+    /// The gauge's numbers come from the last main-thread call's prompt and the window the result
+    /// names for that call's model. A helper agent's later call and a window the result does not
+    /// report change nothing.
+    #[test]
+    fn context_is_the_last_main_call_against_its_models_window() {
+        let call = |id: &str, model: &str, parent: &str, input: u64| {
+            format!(
+                r#"{{"type":"assistant","session_id":"{SESSION}",{parent}"message":{{"id":"{id}","model":"{model}","role":"assistant","content":[],"usage":{{"input_tokens":{input},"output_tokens":1,"cache_read_input_tokens":100,"cache_creation_input_tokens":10}}}}}}"#
+            )
+        };
+        let result = |window: &str| {
+            format!(
+                r#"{{"type":"result","subtype":"success","is_error":false,"session_id":"{SESSION}","result":"ok","total_cost_usd":0.1,"modelUsage":{{"opus-x":{{"inputTokens":9,"outputTokens":1,"cacheReadInputTokens":1,"cacheCreationInputTokens":1,"costUSD":0.1{window}}},"haiku-x":{{"inputTokens":1,"outputTokens":1,"cacheReadInputTokens":1,"cacheCreationInputTokens":1,"costUSD":0.0,"contextWindow":1000}}}}}}"#
+            )
+        };
+        let lines = |window: &str| {
+            read(&[
+                init(SESSION),
+                call("a", "opus-x", "", 1),
+                call("b", "opus-x", "", 5),
+                call("c", "haiku-x", r#""parent_tool_use_id":"toolu_1","#, 999),
+                result(window),
+            ])
+            .finish(EXIT_0)
+            .report
+            .context
+        };
+        assert_eq!(
+            lines(r#","contextWindow":200000"#),
+            Some(dudes_proto::ContextReport {
+                model: "opus-x".into(),
+                window: 200_000,
+                used: 115,
+            })
+        );
+        assert_eq!(lines(""), None, "no reported window, no claim");
     }
 
     /// A streamed message repeats its id on each block's line, and the last line's figure is the

@@ -164,6 +164,7 @@ fn a_retired_agent_with_a_recorded_child_keeps_its_lease_active() {
     assert_eq!(harness.supervisor.world().live_worktrees().count(), 1);
 
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -481,6 +482,7 @@ fn a_resumed_agent_is_not_held_again_at_its_next_turn_end() {
         .open_turn(agent)
         .expect("resumed, the agent re-issues its turn");
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

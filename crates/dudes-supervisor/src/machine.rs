@@ -353,6 +353,7 @@ struct ManagedEnd {
     exit: ExitStatus,
     usage: Option<ScopedUsage>,
     model_usage: BTreeMap<String, Usage>,
+    report: dudes_proto::TurnReport,
     outcome: TurnOutcome,
     last_message: Option<String>,
     final_reply: Option<dudes_proto::ChatReply>,
@@ -365,6 +366,7 @@ impl ManagedEnd {
             exit: ExitStatus::UNKNOWN,
             usage: None,
             model_usage: BTreeMap::new(),
+            report: dudes_proto::TurnReport::default(),
             outcome,
             last_message: None,
             final_reply: None,
@@ -1276,6 +1278,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 exit,
                 usage,
                 model_usage,
+                report,
                 outcome,
                 last_message,
             } => self.end_turn(
@@ -1285,6 +1288,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     exit,
                     usage,
                     model_usage,
+                    report,
                     outcome,
                     last_message,
                     final_reply,
@@ -3295,6 +3299,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         );
         self.persist(
             Record::TurnEnded {
+                step_digest: None,
+                context: None,
                 final_reply: None,
                 elapsed_ms: None,
                 session_usage: None,
@@ -3523,6 +3529,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             exit,
             usage,
             model_usage,
+            report,
             outcome,
             last_message,
             final_reply,
@@ -3608,6 +3615,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 last_message,
                 session,
                 outcome: Some(outcome),
+                step_digest: report.step_digest,
+                context: report.context,
             },
             then.unwrap_or_else(|| self.after_turn_end(turn, row.agent, row.goal)),
         );
@@ -5653,6 +5662,7 @@ mod tests {
             .to_owned();
         harness.supervisor.world.test_browser_issue(turn, agent);
         harness.drive(Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: Some(dudes_proto::ChatReply {
                 text: format!("here: {token}"),
                 completeness: dudes_proto::ChatReplyCompleteness::Complete,
@@ -5703,6 +5713,7 @@ mod tests {
         harness.supervisor.world.test_browser_issue(turn, agent);
         let text = format!("{}{token}{}", "a".repeat(65_536 - 10), "b".repeat(500));
         harness.drive(Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: Some(dudes_proto::ChatReply {
                 text,
                 completeness: dudes_proto::ChatReplyCompleteness::Complete,
@@ -6146,6 +6157,7 @@ mod tests {
     /// The adapter's clean exit for one turn.
     fn exited(turn: TurnId) -> Input {
         Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             elapsed_ms: None,
             turn,
@@ -6457,6 +6469,8 @@ mod closing_controls {
             &Entry {
                 at: Timestamp::from_unix_millis(18),
                 record: Record::TurnEnded {
+                    step_digest: None,
+                    context: None,
                     final_reply: None,
                     elapsed_ms: None,
                     session_usage: None,
@@ -6773,6 +6787,8 @@ mod closing_controls {
             &Entry {
                 at: Timestamp::UNIX_EPOCH,
                 record: Record::TurnEnded {
+                    step_digest: None,
+                    context: None,
                     final_reply: None,
                     elapsed_ms: None,
                     session_usage: None,
@@ -7045,6 +7061,7 @@ mod taught_notes_controls {
         let (agent, goal) = h.hire_with_goal(&["/usr/bin/true"]);
         let turn = h.open_turn(agent).unwrap();
         h.drive(Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             elapsed_ms: None,
             turn,

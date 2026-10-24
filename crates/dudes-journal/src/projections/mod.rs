@@ -2244,6 +2244,8 @@ pub(crate) mod tests {
         Entry {
             at,
             record: Record::TurnEnded {
+                step_digest: None,
+                context: None,
                 final_reply: None,
                 elapsed_ms: None,
                 session_usage: None,
@@ -3245,6 +3247,8 @@ pub(crate) mod tests {
                 Entry {
                     at: at(5),
                     record: Record::TurnEnded {
+                        step_digest: None,
+                        context: None,
                         final_reply: None,
                         elapsed_ms: None,
                         session_usage: None,

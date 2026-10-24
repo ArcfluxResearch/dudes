@@ -172,6 +172,7 @@ fn in_flight_predicate_dies_with_the_daemon(cause: ExitCause) {
 
     let turn = fixture.await_turn();
     running.handle.input(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -454,6 +455,7 @@ fn a_really_swept_predicate_journals_no_result() {
     );
     let turn = fixture.await_turn();
     running.handle.input(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

@@ -123,6 +123,7 @@ fn every_active_effect_variant_has_an_emitting_path() {
 
     // RunPredicate: the turn ends, and the goal is judged.
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

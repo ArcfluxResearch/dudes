@@ -955,6 +955,15 @@ pub enum Record {
         /// supervisor always writes `Some`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         outcome: Option<TurnOutcome>,
+        /// How many steps of each kind the turn took, as the engine reported them. Counts only,
+        /// for display: an agent can change files through a shell step, so it can undercount, and
+        /// no gate, predicate or breaker reads it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_digest: Option<crate::turn_report::StepDigest>,
+        /// How full the engine said its context was on the turn's last model call. For display
+        /// only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<crate::turn_report::ContextReport>,
     },
     /// The predicate runner judged the goal.
     PredicateResult {
@@ -3838,6 +3847,17 @@ pub mod samples {
                 last_message: Some("done".into()),
                 session: Some(SessionId::new("sess-1")),
                 outcome: Some(TurnOutcome::Completed),
+                step_digest: Some(crate::turn_report::StepDigest {
+                    command: 2,
+                    edit: 1,
+                    files_edited: 1,
+                    ..crate::turn_report::StepDigest::default()
+                }),
+                context: Some(crate::turn_report::ContextReport {
+                    model: "claude-haiku-4-5".to_owned(),
+                    window: 200_000,
+                    used: 5_000,
+                }),
             },
             RecordKind::PredicateResult => Record::PredicateResult {
                 goal: goal(),
@@ -4574,6 +4594,8 @@ mod tests {
     #[test]
     fn a_turn_ended_model_usage_is_zero_to_many_raw_keys() {
         let ended = |map: BTreeMap<String, Usage>| Record::TurnEnded {
+            step_digest: None,
+            context: None,
             final_reply: None,
             elapsed_ms: None,
             session_usage: None,
@@ -4765,6 +4787,63 @@ mod tests {
             let text = serde_json::to_string(&record).unwrap();
             assert_eq!(serde_json::from_str::<Record>(&text).unwrap(), record);
         }
+    }
+
+    /// An older reader ignores the digest and the context beside it, and a record without them
+    /// keeps its bytes. The reader below has the shape `TurnEnded` had before the two fields.
+    #[test]
+    fn turn_ended_report_fields_are_ignored_by_an_older_reader() {
+        #[derive(Debug, PartialEq, Deserialize)]
+        #[serde(tag = "t", rename_all = "snake_case")]
+        enum Before {
+            TurnEnded {
+                agent: AgentId,
+                turn: TurnId,
+                mode: Mode,
+                exit: ExitStatus,
+                usage: Option<Usage>,
+                outcome: Option<TurnOutcome>,
+            },
+        }
+        let record = samples::record(RecordKind::TurnEnded);
+        let json = serde_json::to_value(&record).unwrap();
+        assert_eq!(json["step_digest"]["files_edited"], 1);
+        assert_eq!(json["context"]["window"], 200_000);
+        let Record::TurnEnded {
+            agent,
+            turn,
+            mode,
+            exit,
+            usage,
+            outcome,
+            ..
+        } = record.clone()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            serde_json::from_value::<Before>(json).unwrap(),
+            Before::TurnEnded {
+                agent,
+                turn,
+                mode,
+                exit,
+                usage,
+                outcome
+            }
+        );
+        let mut bare = record;
+        if let Record::TurnEnded {
+            step_digest,
+            context,
+            ..
+        } = &mut bare
+        {
+            *step_digest = None;
+            *context = None;
+        }
+        let bare = serde_json::to_value(&bare).unwrap();
+        assert!(bare.get("step_digest").is_none() && bare.get("context").is_none());
     }
 
     /// Forward compatibility: a record written by an older daemon without a later-added

@@ -30,6 +30,7 @@ fn announce(harness: &mut Harness) {
 
 fn end_turn(harness: &mut Harness, turn: TurnId) {
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

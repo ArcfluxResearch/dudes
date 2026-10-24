@@ -625,6 +625,8 @@ fn ended(agent: AgentId, turn: TurnId, mode: Mode, k: u8, n: u64) -> Record {
         _ => Some(counted),
     };
     Record::TurnEnded {
+        step_digest: None,
+        context: None,
         final_reply: None,
         elapsed_ms: None,
         session_usage: None,

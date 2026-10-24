@@ -238,6 +238,8 @@ fn managed_samples_require_the_current_open_turn() {
     harness.drive(Input::ActivityFlush);
     assert_eq!(activity(&harness), vec![LiveActivityKind::Compacting]);
     let ended = Record::TurnEnded {
+        step_digest: None,
+        context: None,
         final_reply: None,
         agent,
         turn,

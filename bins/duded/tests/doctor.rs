@@ -435,6 +435,7 @@ fn end(fixture: &Fixture, host: &SharedHost, turn: TurnId, usage: Option<Usage>)
         fixture,
         host,
         Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             elapsed_ms: None,
             turn,
@@ -618,6 +619,8 @@ fn managed_record(agent: AgentId, turn: TurnId, record: ManagedRecord<'_>) -> Re
             session: session.clone(),
         },
         ManagedRecord::Ended(session) => Record::TurnEnded {
+            step_digest: None,
+            context: None,
             final_reply: None,
             elapsed_ms: None,
             session_usage: None,
@@ -782,6 +785,7 @@ fn session_replay_trace() -> SessionReplayTrace {
         session: confirmed.clone(),
     });
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn: first,

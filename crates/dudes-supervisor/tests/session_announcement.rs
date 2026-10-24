@@ -206,6 +206,7 @@ fn consent(
 
 fn end_and_check(harness: &mut Harness, goal: GoalId, open: TurnId) {
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn: open,
@@ -552,6 +553,7 @@ fn a_vanished_or_killed_turn_does_not_invalidate() {
                 text: Some("stop".into()),
             }));
             harness.drive(Input::ChildExited {
+                report: dudes_proto::TurnReport::default(),
                 final_reply: None,
                 elapsed_ms: None,
                 turn: resumed,

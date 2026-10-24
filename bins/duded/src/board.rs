@@ -118,6 +118,19 @@ pub(crate) fn largest_ticket() -> CardTicket {
                 signal: Some(i32::MIN),
             },
             at: Timestamp::from_unix_millis(i64::MIN),
+            step_digest: Some(dudes_proto::StepDigest {
+                command: u32::MAX,
+                read: u32::MAX,
+                edit: u32::MAX,
+                write: u32::MAX,
+                search: u32::MAX,
+                web: u32::MAX,
+                plan: u32::MAX,
+                subagent: u32::MAX,
+                mcp: u32::MAX,
+                other: u32::MAX,
+                files_edited: u32::MAX,
+            }),
         }),
         instruction_review: Some(dudes_proto::InstructionReviewSummary {
             watermark: dudes_proto::InstructionReviewWatermark {

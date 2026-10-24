@@ -53,6 +53,10 @@ pub struct TicketTurnEnd {
     pub exit: crate::ExitStatus,
     /// When the turn's end was recorded.
     pub at: Timestamp,
+    /// The steps the engine reported for the turn. Counts only, and what the engine reported: a
+    /// change made through a shell is not an edit step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_digest: Option<crate::turn_report::StepDigest>,
 }
 
 /// What the board keeps of a ticket beyond what every card has.

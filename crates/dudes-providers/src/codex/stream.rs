@@ -225,6 +225,7 @@ impl TurnReader for TurnStream {
         let final_reply = final_reply.filter(|_| outcome == TurnOutcome::Completed);
         let last_message = final_reply.as_ref().map(|reply| reply.text.clone());
         TurnEnd {
+            report: dudes_proto::TurnReport::default(),
             final_observation: None,
             outcome,
             usage,

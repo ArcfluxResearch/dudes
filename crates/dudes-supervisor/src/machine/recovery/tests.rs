@@ -324,6 +324,8 @@ fn unclaimed_new_with_open_question() -> (Machine, RecoveryWork) {
                 entry: Entry {
                     at: Timestamp::UNIX_EPOCH,
                     record: Record::TurnEnded {
+                        step_digest: None,
+                        context: None,
                         agent,
                         turn: work.turn,
                         mode: dudes_types::Mode::Managed,
@@ -596,6 +598,8 @@ fn a_single_confirmed_context_failure_without_hold_keeps_ordinary_admission() {
                 entry: Entry {
                     at: Timestamp::UNIX_EPOCH,
                     record: Record::TurnEnded {
+                        step_digest: None,
+                        context: None,
                         agent,
                         turn,
                         mode: dudes_types::Mode::Managed,
@@ -947,6 +951,8 @@ fn replay_another_failed_goal(
         prefix,
         20_003,
         Record::TurnEnded {
+            step_digest: None,
+            context: None,
             agent,
             turn,
             mode: dudes_types::Mode::Managed,
@@ -1177,6 +1183,7 @@ fn failure_source(model: Option<&str>) -> (Vec<(Lsn, Entry)>, AgentId) {
         browser: None,
     }));
     harness.drive(crate::Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: Some(10_000),
         turn: source_turn,
@@ -1705,6 +1712,7 @@ fn unconfirmed_context_turn(harness: &mut Harness, agent: AgentId, first: TurnId
         session: confirmed.clone(),
     });
     harness.drive(crate::Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: Some(10_000),
         turn: first,
@@ -1767,6 +1775,7 @@ fn legacy_uncertainty_source(
             });
         } else {
             harness.drive(crate::Input::ChildExited {
+                report: dudes_proto::TurnReport::default(),
                 final_reply: None,
                 elapsed_ms: Some(10_000),
                 turn,

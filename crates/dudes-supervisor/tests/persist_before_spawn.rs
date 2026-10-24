@@ -446,6 +446,7 @@ fn a_managed_turn_walks_the_section_6_sequence() {
     assert_eq!(harness.supervisor.status_of(agent), AgentStatus::Running);
 
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,

@@ -87,6 +87,7 @@ fn spend(goal: u64, agent_today: u64, floor_today: u64) -> SpendView {
 fn end_the_turn_and_fail_the_predicate(harness: &mut Harness, agent: AgentId, goal: GoalId) {
     let turn = harness.open_turn(agent).expect("a turn was in flight");
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -458,6 +459,7 @@ fn an_agent_that_is_not_exhausted_is_not_re_examined() {
     let (agent, goal) = harness.hire_with_goal(&["npm", "test"]);
     let turn = harness.open_turn(agent).expect("a turn was in flight");
     harness.drive(Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -597,6 +599,7 @@ fn an_upgrade_re_decides_an_agent_whose_check_did_not_run_once() {
     let (agent, goal) = harness.hire_with_goal(&["no-such-check"]);
     while let Some(turn) = harness.open_turn(agent) {
         harness.drive(Input::ChildExited {
+            report: dudes_proto::TurnReport::default(),
             final_reply: None,
             elapsed_ms: None,
             turn,

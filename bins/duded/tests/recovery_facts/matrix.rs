@@ -714,6 +714,8 @@ fn terminal(work: RecoveryWork, outcome: dudes_proto::TurnOutcome) -> Record {
         final_reply,
         last_message,
         elapsed_ms,
+        step_digest: _,
+        context: _,
     } = &mut record
     else {
         unreachable!()

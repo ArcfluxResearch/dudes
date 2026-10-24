@@ -690,6 +690,7 @@ impl Flow {
 
 fn ticket_child_exit(turn: TurnId, message: Option<&str>, cost: Option<Usd>) -> Input {
     Input::ChildExited {
+        report: dudes_proto::TurnReport::default(),
         final_reply: None,
         elapsed_ms: Some(5),
         turn,
