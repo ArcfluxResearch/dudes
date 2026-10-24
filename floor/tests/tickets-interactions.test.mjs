@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
-import { act, createElement, StrictMode } from 'react';
+import { act, createElement, StrictMode, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createServer } from 'vite';
 import ts from 'typescript';
@@ -14,7 +14,7 @@ import { restoreFocusAfterDialog } from '../src/renderer/focus.ts';
 import { fakePage, press } from './helpers/fake-page.mjs';
 import { ADA, GRACE, agent, cardId, subscribe, ticketCard, TWO_PROJECTS, instructionReview, instructionSummary, INSTRUCTION_WATERMARK } from './helpers/tickets.mjs';
 
-let server, store, ticket, detail, git, Control, browserControlDeps;
+let server, store, ticket, detail, git, Control, browserControlDeps, TicketNoticeHost, StreamNotice, JournalStoppedBanner;
 const seen = [];
 const storedDrafts = new Map();
 let reply;
@@ -27,6 +27,9 @@ before(async () => {
   detail = await server.ssrLoadModule('/src/renderer/ticket/detail.ts');
   git = await server.ssrLoadModule('/src/renderer/git/git.ts');
   ({ Control } = await server.ssrLoadModule('/src/renderer/Control.tsx'));
+  ({ TicketNoticeHost } = await server.ssrLoadModule('/src/renderer/ticket/TicketBoard.tsx'));
+  ({ StreamNotice } = await server.ssrLoadModule('/src/renderer/StreamNotice.tsx'));
+  ({ JournalStoppedBanner } = await server.ssrLoadModule('/src/renderer/JournalStoppedBanner.tsx'));
   ({ browserControlDeps } = await server.ssrLoadModule('/src/renderer/control/control.ts'));
   Object.assign(browserControlDeps, {
     signedIn: () => true, epoch: () => 1, session: () => 1, refresh() {}, random() {},
@@ -176,6 +179,13 @@ test('Hire Close and Cancel ignore the click event and restore a removed opener 
   } finally { page.restore(); }
 });
 
+function SharedNotices({ floor, children }) {
+  const [host, setHost] = useState(null);
+  return createElement(TicketNoticeHost, { value: host },
+    createElement('div', { id: 'floor-notices', ref: setHost, tabIndex: 0 },
+      createElement(StreamNotice, { floor }), createElement(JournalStoppedBanner, { stopped: floor.journalStopped })), children);
+}
+
 async function mount(cards, { agents = [agent()], onHire = () => {}, hireAvailable = false, strict = false } = {}) {
   subscribe(store, { cards, agents, checks: TWO_PROJECTS });
   const page = pageForTickets();
@@ -186,7 +196,8 @@ async function mount(cards, { agents = [agent()], onHire = () => {}, hireAvailab
     floor = next;
     const control = createElement(Control, { floor, view: 'board', selectedId: null,
       onClose: () => closes.push('board'), onView() {}, onOpenQuestion() {}, onHire });
-    await act(async () => root.render(strict ? createElement(StrictMode, null, control) : control));
+    const shell = createElement(SharedNotices, { floor }, control);
+    await act(async () => root.render(strict ? createElement(StrictMode, null, shell) : shell));
     page.flushFocus();
   };
   await render();
@@ -230,7 +241,7 @@ for (const replacement of ['closed', 'another card', 'new draft']) {
         assert.equal(dialog.getAttribute('open'), null);
       } else if (replacement === 'another card') {
         assert.equal(dialog.querySelector('.ticket-panel').getAttribute('data-selected-card-id'), cardId(1));
-        assert.ok(dialog.querySelector('.ticket-notice') === null, 'create feedback stays outside another card');
+        assert.equal(app.page.host.querySelector('.ticket-notice'), null, 'create feedback stays outside another card');
       } else {
         assert.equal(dialog.getAttribute('data-composer'), 'true');
         assert.equal(dialog.querySelector('[name="title"]').value, 'A newer unsent draft');
@@ -250,7 +261,7 @@ test('a live composer opens its saved card under StrictMode', async () => {
     const dialog = app.page.host.querySelector('.ticket-dialog');
     assert.notEqual(dialog.getAttribute('open'), null);
     assert.equal(dialog.querySelector('.ticket-panel').getAttribute('data-selected-card-id'), cardId(2));
-    const notice = dialog.querySelector('.ticket-notice');
+    const notice = app.page.host.querySelector('.ticket-notice');
     assert.ok(notice !== null, 'the saved card keeps its creation result');
     assert.ok(textOf(notice).includes('Ticket created. Choose Give to agent when it is ready.'));
   } finally { await app.close(); }
@@ -272,7 +283,7 @@ test('a refused optional assignment stays visible on the auto-opened created car
     await app.render({ ...app.floor, cards: [{ ...ticketCard(2, 'todo'), seq: 0 }] });
     const panel = app.page.host.querySelector('.ticket-panel');
     assert.equal(panel.getAttribute('data-selected-card-id'), cardId(2));
-    const notice = panel.querySelector('.ticket-notice');
+    const notice = app.page.host.querySelector('.ticket-notice');
     assert.ok(notice !== null, 'a refused assignment does not hide the created ticket or its result');
     assert.equal(notice.getAttribute('data-tone'), 'problem');
     assert.ok(textOf(notice).includes('Ticket created, but it was not given to Ada. That agent is not available for this project.'));
@@ -520,7 +531,7 @@ test('successful Hire reveals the agent without opening it, and returns to the u
   } finally { await app.close(); }
 });
 
-test('the composer explains revoked authority inside its modal and keeps the draft', async () => {
+test('the composer keeps its draft when authority is revoked', async () => {
   for (const closed of [{ stale: true }, { ticket: false }]) {
     const app = await mount([]);
     try {
@@ -530,7 +541,7 @@ test('the composer explains revoked authority inside its modal and keeps the dra
       seen.length = 0;
       await app.render({ ...app.floor, ...closed });
       const dialog = app.page.host.querySelector('.ticket-dialog');
-      assert.ok(textOf(dialog).includes(closed.stale ? 'Not connected to Dudes'
+      assert.ok(textOf(closed.stale ? app.page.host : dialog).includes(closed.stale ? 'Nothing has come from Dudes'
         : 'Tickets are off. Turn on Make tickets under Floor switches in Settings.'));
       assert.equal(dialog.querySelector('.ticket-create').disabled, true);
       await act(async () => propsOf(dialog.querySelector('form')).onSubmit({ preventDefault() {} }));
@@ -587,8 +598,8 @@ test('Give, Edit and changes retain unsent fields while authority is unavailable
         seen.length = 0;
         await app.render({ ...app.floor, ...closed });
         assert.notEqual(mode.getAttribute('hidden'), null);
-        assert.ok(textOf(app.page.host.querySelector('.ticket-dialog')).includes(closed.stale
-          ? 'Not connected to Dudes' : 'Tickets are off. Turn on Make tickets'));
+        assert.ok(textOf(closed.stale ? app.page.host : app.page.host.querySelector('.ticket-dialog')).includes(closed.stale
+          ? 'Nothing has come from Dudes' : 'Tickets are off. Turn on Make tickets'));
         assert.equal(app.page.host.querySelector('.ticket-action'), null);
         const form = mode.querySelector('form');
         await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));
@@ -662,7 +673,7 @@ for (const timing of ['before selection', 'after selection']) {
       if (timing === 'after selection') await act(async () => acknowledge());
       const panel = app.page.host.querySelector('.ticket-panel');
       assert.equal(panel.getAttribute('data-selected-card-id'), cardId(2));
-      assert.ok(panel.querySelector('.ticket-notice') === null, 'the acknowledgement is not evidence about this card');
+      assert.equal(app.page.host.querySelector('.ticket-notice'), null, 'the acknowledgement is not evidence about this card');
       assert.ok(textOf(panel).includes('Instruction review'));
       assert.equal(panel.querySelector('[data-action="accept"]').disabled, false, 'the second card still needs its own review');
       await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
@@ -670,7 +681,7 @@ for (const timing of ['before selection', 'after selection']) {
       assert.ok(textOf(app.page.host.querySelector('.ticket-notice')).includes('Instruction review acknowledged. The ticket remains open.'));
       await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
       await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
-      assert.ok(app.page.host.querySelector('.ticket-composer').querySelector('.ticket-notice') === null, 'card feedback stays outside the composer');
+      assert.equal(app.page.host.querySelector('.ticket-notice'), null, 'card feedback stays outside the composer');
     } finally { await app.close(); }
   });
 }
@@ -701,7 +712,7 @@ test('another card\'s feedback survives an obsolete timer and dismiss handler', 
     const newer = ticket.getTicketState().notice;
     await act(async () => { expire(); dismiss(); });
     assert.equal(ticket.getTicketState().notice, newer);
-    assert.ok(app.page.host.querySelector('.ticket-panel').querySelector('.ticket-notice') !== null);
+    assert.ok(app.page.host.querySelector('.ticket-notice') !== null);
     await act(async () => press(app.page.host.querySelector('.ticket-dismiss')));
     assert.ok(app.page.host.querySelector('.ticket-notice') === null, 'the current dismiss still works');
   } finally {

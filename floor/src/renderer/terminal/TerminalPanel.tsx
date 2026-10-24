@@ -6,7 +6,7 @@
 // the terminal on and what each agent's row says; the terminal store says
 // where the one channel is. Nothing here reads the wire — `terminal.ts` does —
 // and the only input this file hands on is what the screen received from the
-// operator. With the terminal off, which is the default, it draws nothing.
+// operator. With the terminal off, it explains how to turn it on.
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { RefObject } from 'react';
@@ -44,13 +44,13 @@ function nameOf(floor: FloorState, agent: string): string {
   return typeof row?.name === 'string' && row.name !== '' ? row.name : agent;
 }
 
-const ATTACH_HINT = 'Attach hands you this agent’s CLI. Its loop holds while you type, and Detach hands it back.';
+const ATTACH_HINT = 'Open this agent’s real CLI. Automatic work waits while you type. Detach returns control to Dudes.';
 
 const UNAVAILABLE: Readonly<Record<Extract<TerminalOffer, { kind: 'unavailable' }>['reason'], string>> = Object.freeze({
-  running: 'Attach waits for this agent’s running turn to end.',
-  attached: 'A person already holds this agent’s keyboard.',
-  halted: 'A halt stands on this agent, so the Floor cannot attach it.',
-  'no-session': 'Attach waits for this agent’s first confirmed session.',
+  running: 'Wait for this agent’s current work to finish before opening its CLI.',
+  attached: 'Someone already has this agent’s CLI open.',
+  halted: 'This agent is halted, so its CLI cannot open.',
+  'no-session': 'This agent does not have a saved CLI session to open yet.',
 });
 
 const TRUST_WARNING = 'Claude Code may ask you to trust this folder. Check the folder before accepting in the terminal. '
@@ -81,8 +81,8 @@ export function TerminalAttach({ floor, row }: { readonly floor: FloorState; rea
 
 function whyNoAttach(floor: FloorState, offer: Exclude<TerminalOffer, { readonly kind: 'none' | 'attach' }>): string {
   switch (offer.kind) {
-    case 'open-here': return 'This agent’s terminal is open.';
-    case 'open-elsewhere': return `The terminal is open for ${nameOf(floor, offer.agent)}. Detach it before attaching this agent.`;
+    case 'open-here': return 'This agent’s CLI is already open.';
+    case 'open-elsewhere': return `The CLI is open for ${nameOf(floor, offer.agent)}. Detach it before opening this agent’s CLI.`;
     case 'unavailable': return UNAVAILABLE[offer.reason];
   }
 }
@@ -101,7 +101,7 @@ export function TerminalAttachView({ floor, offer }: { readonly floor: FloorStat
     <div className="agent-detail-terminal" data-terminal-offer={offer.kind}>
       <button type="button" className="terminal-attach" title={hint} aria-describedby="terminal-hint"
         aria-haspopup={claudeTrust ? 'dialog' : undefined} aria-disabled={target === null || undefined}
-        onClick={() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }}>Attach</button>
+        onClick={() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }}>Open the real CLI</button>
       {confirming && target !== null && claudeTrust ? <AttachConfirmation name={nameOf(floor, target)}
         onCancel={() => setConfirming(false)}
         onConfirm={() => { setConfirming(false); attachTerminal(target, browserTerminalPorts()); }} /> : null}
@@ -111,25 +111,25 @@ export function TerminalAttachView({ floor, offer }: { readonly floor: FloorStat
 }
 
 const PROGRESS: Readonly<Record<Exclude<OpenChannel['phase'], 'ended'>, string>> = Object.freeze({
-  opening: 'Opening the terminal channel…',
-  attaching: 'Attaching — waiting for the daemon…',
-  attached: 'Attached — what you type goes to this agent’s CLI. Its loop holds until you detach.',
-  detaching: 'Detaching — waiting for the daemon to confirm the close…',
+  opening: 'Opening the CLI…',
+  attaching: 'Waiting for Dudes to open the CLI…',
+  attached: 'What you type goes to this agent’s CLI. Automatic work waits until you detach.',
+  detaching: 'Closing the CLI. Waiting for Dudes to confirm…',
 });
 
-const RETURNED = 'The daemon closes the agent’s terminal and returns the agent to its loop.';
+const RETURNED = 'Dudes closes the agent’s CLI and returns it to automatic work.';
 
 const ENDINGS: Readonly<Record<Exclude<TerminalEnding, 'closed'>, string>> = Object.freeze({
-  detached: 'Detached. The daemon confirmed the close, and the agent is back under its loop.',
-  refused: 'The daemon refused to attach this agent. It may have started a turn, gained a halt or left the floor '
-    + 'since this page read it.',
-  unconfirmed: 'The daemon closed the terminal without confirming the detach. The agent stays held until the daemon '
-    + 'confirms its close.',
-  policy: `The daemon refused a message from this page and closed the terminal. ${RETURNED}`,
-  lost: `The terminal channel was lost. ${RETURNED}`,
-  unopened: 'The terminal channel did not open. The Floor session may have ended, or its one terminal slot is still '
-    + 'closing; try Attach again.',
-  unloaded: 'This page could not load its terminal, so it attached nothing. Reload the page to try again.',
+  detached: 'Detached. Dudes confirmed the CLI closed. Automatic work can continue.',
+  refused: 'Dudes could not open this agent’s CLI. It may have started work, been halted or left the Floor '
+    + 'since this page last updated.',
+  unconfirmed: 'The CLI connection closed before Dudes confirmed the detach. Automatic work stays paused until Dudes '
+    + 'confirms the CLI closed.',
+  policy: `Dudes could not accept a request from this page and closed the CLI. ${RETURNED}`,
+  lost: `The CLI connection was lost. ${RETURNED}`,
+  unopened: 'The CLI connection did not open. Your Floor sign-in may have ended, or another terminal may still be '
+    + 'closing. Try Open the real CLI again.',
+  unloaded: 'This page could not load the terminal, so no CLI opened. Reload the page to try again.',
 });
 
 /**
@@ -138,12 +138,12 @@ const ENDINGS: Readonly<Record<Exclude<TerminalEnding, 'closed'>, string>> = Obj
  * and the wording follows it when it does.
  */
 function closedBecause(floor: FloorState, agent: string): string {
-  if (floor.phase === 'closed') return 'The Floor session ended or the daemon stopped, so the terminal closed.';
+  if (floor.phase === 'closed') return 'Your Floor sign-in ended or Dudes stopped, so the CLI closed.';
   const row = floor.agents.find((candidate) => candidate.id === agent);
   const current = floor.phase === 'live' && floor.snapshotEpoch === floor.epoch;
-  if (current && row === undefined) return 'The agent was retired, so the daemon closed its terminal.';
-  if (row?.halted === true) return 'A halt now stands on this agent, so the daemon closed its terminal.';
-  return `The daemon closed the terminal: the Floor session may have expired, or the agent’s CLI exited. ${RETURNED}`;
+  if (current && row === undefined) return 'The agent was retired, so Dudes closed its CLI.';
+  if (row?.halted === true) return 'This agent is halted, so Dudes closed its CLI.';
+  return `Dudes closed the CLI. Your Floor sign-in may have expired, or the agent’s CLI exited. ${RETURNED}`;
 }
 
 function statusOf(channel: OpenChannel, floor: FloorState): string {
@@ -234,18 +234,22 @@ export function TerminalPanelView({ channel, floor, theme = 'light' }: {
           command(action);
         }}>
           <button type="button" aria-label="Zoom out" aria-keyshortcuts={`${modifier}+-`}
-            disabled={fontSize <= MIN_FONT_SIZE} onClick={() => command('zoom-out')}>−</button>
+            aria-disabled={fontSize <= MIN_FONT_SIZE || undefined}
+            title={fontSize <= MIN_FONT_SIZE ? `Minimum zoom is ${MIN_FONT_SIZE}px.` : undefined}
+            aria-description={fontSize <= MIN_FONT_SIZE ? `Minimum zoom is ${MIN_FONT_SIZE}px.` : undefined} onClick={() => command('zoom-out')}>−</button>
           <button type="button" aria-label="Reset terminal zoom" aria-keyshortcuts={`${modifier}+0`}
             onClick={() => command('zoom-reset')}>{fontSize}px</button>
           <button type="button" aria-label="Zoom in" aria-keyshortcuts={`${modifier}+=`}
-            disabled={fontSize >= MAX_FONT_SIZE} onClick={() => command('zoom-in')}>+</button>
+            aria-disabled={fontSize >= MAX_FONT_SIZE || undefined}
+            title={fontSize >= MAX_FONT_SIZE ? `Maximum zoom is ${MAX_FONT_SIZE}px.` : undefined}
+            aria-description={fontSize >= MAX_FONT_SIZE ? `Maximum zoom is ${MAX_FONT_SIZE}px.` : undefined} onClick={() => command('zoom-in')}>+</button>
           <button type="button" aria-label="Copy selection" aria-keyshortcuts={`${modifier}+C`}
             onClick={() => command('copy')}>Copy</button>
           <button type="button" aria-expanded={expanded} onClick={() => command('expand')}>
             {expanded ? 'Restore' : 'Expand'}</button>
           {channel.phase === 'attached' || detaching ? (
             <button type="button" className="terminal-detach" aria-disabled={detaching || undefined}
-              aria-busy={detaching} onClick={detachTerminal}>{detaching ? 'Detaching…' : 'Detach'}</button>
+              aria-busy={detaching} aria-describedby={detaching ? 'terminal-status' : undefined} onClick={detachTerminal}>{detaching ? 'Detaching…' : 'Detach'}</button>
           ) : null}
           {ended ? (
             <button ref={handFocusOnLeave} type="button" className="terminal-close"
@@ -255,7 +259,7 @@ export function TerminalPanelView({ channel, floor, theme = 'light' }: {
         </div>
       </header>
       <p className={`terminal-state${ended ? ' terminal-ended' : ''}${failed ? ' terminal-failed' : ''}`}
-        role={failed ? 'alert' : 'status'}>
+        id="terminal-status" role={failed ? 'alert' : 'status'}>
         {statusOf(channel, floor)}
       </p>
       <p className="hire-note terminal-keys">{KEYS_HINT}</p>

@@ -11,8 +11,6 @@ import { journalPosition } from './format.ts';
 import { closesPanel, handFocusOnLeave, restoreFocusAfterDialog } from './focus.ts';
 import { StreamReadStatus } from './ReadError.tsx';
 import type { FloorState } from './floor/store.ts';
-import { NotConnected } from './StreamNotice.tsx';
-import { JournalStoppedBanner } from './JournalStoppedBanner.tsx';
 import { waitingOnYou } from './questions.ts';
 import type { WaitingItem } from './questions.ts';
 import { fieldsOf } from './scene/label.ts';
@@ -292,6 +290,8 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
           onClick={onClose}>×</button>}
       </header>
       <div className="control-view">{panels[view]}</div>
+      {view === 'board' ? <TicketNotice floor={floor}
+        card={showing ? overlay?.kind === 'card' ? overlay.id : null : undefined} /> : null}
       {view === 'board' ? <dialog className="ticket-dialog" id="selected-card-detail" ref={dialog}
         data-composer={overlay?.kind === 'new'}
         aria-label={overlay?.kind === 'new' ? 'New ticket' : 'Ticket detail'}
@@ -300,10 +300,8 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
         {showing ? <><header className="ticket-dialog-head"><p>{overlay?.kind === 'new' ? 'New ticket' : 'Ticket review'}</p>
           <button type="button" className="ticket-dialog-close" aria-label="Close ticket dialog" onClick={closeOverlay}>×</button>
         </header>
-        {viewConfirmed(floor) ? null : <NotConnected />}
-        <JournalStoppedBanner stopped={floor.journalStopped} className="stream-state" />
         {overlay?.kind === 'new' ? <div className="ticket-composer"><h3>New ticket</h3>
-          <p>Tell an agent what you want to happen.</p><TicketNotice card={null} floor={floor} />
+          <p>Tell an agent what you want to happen.</p>
           {floor.ticket ? null : <TicketOffHint floor={floor} />}
           <NewTicketForm floor={floor} onHire={onHire} onCancel={closeOverlay}
             onCreated={(id) => { opener.current = null; seenCard.current = null; setOverlay({ kind: 'card', id }); }} />

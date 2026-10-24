@@ -6,7 +6,8 @@ import type { FloorState } from './floor/store.ts';
 import type { ProjectionEvent } from './floor/projection.ts';
 import { agentRow, tickets, viewConfirmed, waitingTickets } from './ticket/model.ts';
 import { readable, reasonSentence } from './ticket/words.ts';
-import { readDesktopNotificationChoice, writeDesktopNotificationChoice, readNotificationOfferSeen, writeNotificationOfferSeen } from './view.ts';
+import type { NotificationOfferStatus } from './view.ts';
+import { readDesktopNotificationChoice, writeDesktopNotificationChoice, readNotificationOfferStatus, writeNotificationOfferStatus } from './view.ts';
 
 type NoticeTarget =
   | { readonly kind: 'ticket'; readonly id: string }
@@ -91,8 +92,8 @@ export interface NotificationPreferenceState {
 interface NotificationPreferencePorts {
   readChoice(): { readonly enabled: boolean; readonly remembered: boolean };
   writeChoice(enabled: boolean): boolean;
-  readOfferSeen(): boolean;
-  writeOfferSeen(): void;
+  readOffer(): NotificationOfferStatus;
+  writeOffer(status: 'ready' | 'seen'): void;
   permission(): NotificationPermission | 'unsupported';
   requestPermission(): Promise<NotificationPermission>;
 }
@@ -100,8 +101,8 @@ interface NotificationPreferencePorts {
 const browserPorts: NotificationPreferencePorts = {
   readChoice: readDesktopNotificationChoice,
   writeChoice: writeDesktopNotificationChoice,
-  readOfferSeen: readNotificationOfferSeen,
-  writeOfferSeen: writeNotificationOfferSeen,
+  readOffer: readNotificationOfferStatus,
+  writeOffer: writeNotificationOfferStatus,
   permission: () => typeof Notification === 'undefined' ? 'unsupported' : Notification.permission,
   requestPermission: () => Notification.requestPermission(),
 };
@@ -109,7 +110,7 @@ const browserPorts: NotificationPreferencePorts = {
 export function createNotificationPreference(ports: NotificationPreferencePorts = browserPorts) {
   let state: NotificationPreferenceState | null = null;
   let request = 0;
-  let offerSeen: boolean | null = null;
+  let offerStatus: NotificationOfferStatus | null = null;
   let offerVisible = false;
   const listeners = new Set<() => void>();
 
@@ -130,6 +131,8 @@ export function createNotificationPreference(ports: NotificationPreferencePorts 
   }
 
   async function setEnabled(enabled: boolean): Promise<void> {
+    offerStatus ??= ports.readOffer();
+    if (offerStatus === 'ready') saveOffer('seen');
     const attempt = ++request;
     if (!enabled) { publish('off', true); return; }
     const permission = ports.permission();
@@ -145,22 +148,40 @@ export function createNotificationPreference(ports: NotificationPreferencePorts 
     }
   }
 
+  function getOffer(): boolean {
+    offerStatus ??= ports.readOffer();
+    const permission = ports.permission();
+    return (offerStatus === 'ready' || offerVisible) && permission !== 'denied' && permission !== 'unsupported'
+      && (getState().kind === 'off' || getState().kind === 'asking' || getState().kind === 'unavailable');
+  }
+
+  function saveOffer(status: 'ready' | 'seen'): void {
+    offerStatus = status;
+    ports.writeOffer(status);
+    for (const listener of listeners) listener();
+  }
+
   return {
-    getState, setEnabled,
-    getOffer: () => offerVisible && (getState().kind === 'off' || getState().kind === 'asking' || getState().kind === 'unavailable'),
+    getState, setEnabled, getOffer,
     offerAfterGive: () => {
-      offerSeen ??= ports.readOfferSeen();
-      if (offerSeen) return;
-      offerSeen = true;
-      ports.writeOfferSeen();
+      offerStatus ??= ports.readOffer();
+      if (offerStatus !== 'unseen') return;
       const permission = ports.permission();
-      offerVisible = permission !== 'denied' && permission !== 'unsupported'
-        && (getState().kind === 'off' || getState().kind === 'unavailable');
+      saveOffer(permission === 'denied' || permission === 'unsupported' || getState().kind === 'on' ? 'seen' : 'ready');
+    },
+    presentOffer: () => {
+      if (offerStatus !== 'ready' || !getOffer()) return;
+      offerVisible = true;
+      saveOffer('seen');
+    },
+    hideOffer: () => {
+      if (!offerVisible) return;
+      offerVisible = false;
       for (const listener of listeners) listener();
     },
     dismissOffer: () => {
       offerVisible = false;
-      for (const listener of listeners) listener();
+      saveOffer('seen');
     },
     subscribe(listener: () => void): () => void { listeners.add(listener); return () => { listeners.delete(listener); }; },
     unavailable: () => publish('unavailable'),

@@ -390,14 +390,14 @@ test('with the terminal switch off, the header says how to turn it on', async ()
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
     providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 6 },
   };
-  const hint = /<p class="settings-guidance">Terminal is off\. Turn on Attach terminals under Floor switches in Settings\.<\/p>/;
+  const hint = /<p class="settings-guidance">To open the real CLI, turn on Attach terminals under Floor switches in Settings, then restart Dudes\.<\/p>/;
   assert.match(header(center({ settings, terminal: false })), hint);
   const on = { ...settings, switches: { ...settings.switches, terminal: true } };
   assert.doesNotMatch(center({ settings: on, terminal: true }), hint);
   assert.doesNotMatch(center({ settings: null, terminal: false }), hint);
 });
 
-test('the switches that are off fold into one Enable more controls disclosure, with each hint\'s words', async () => {
+test('terminal guidance stays visible while other switched-off controls fold into Enable more controls', async () => {
   const { center } = await drawer();
   const settings = {
     folder_picker: false, switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
@@ -408,16 +408,16 @@ test('the switches that are off fold into one Enable more controls disclosure, w
   const hints = (html) => [...html.matchAll(/<p class="settings-guidance">([\s\S]*?)<\/p>/g)]
     .map(([, words]) => words.replace(/<[^>]+>/g, '').replace(/\s+/g, ' '));
   const RETIRE = 'Retire is off. Turn on Pause, resume and rename and Retire agents under Floor switches in Settings.';
-  const TERMINAL = 'Terminal is off. Turn on Attach terminals under Floor switches in Settings.';
+  const TERMINAL = 'To open the real CLI, turn on Attach terminals under Floor switches in Settings, then restart Dudes.';
 
   const both = header(center({ settings, retire: false, terminal: false }));
   const [, count, inside] = DISCLOSURE.exec(both) ?? [];
-  assert.equal(count, '2');
-  assert.deepEqual(hints(inside ?? ''), [RETIRE, TERMINAL]);
-  assert.deepEqual(hints(both.replace(DISCLOSURE, '')), [], 'a hint sits outside the disclosure');
+  assert.equal(count, '1');
+  assert.deepEqual(hints(inside ?? ''), [RETIRE]);
+  assert.deepEqual(hints(both.replace(DISCLOSURE, '')), [TERMINAL], 'the terminal guidance stays visible');
 
   const terminalOnly = header(center({ settings, retire: true, terminal: false }));
-  assert.equal(DISCLOSURE.exec(terminalOnly)?.[1], '1');
+  assert.doesNotMatch(terminalOnly, DISCLOSURE);
   assert.deepEqual(hints(terminalOnly), [TERMINAL]);
 
   assert.doesNotMatch(center({ settings, retire: true, terminal: true }), /enable-controls/);

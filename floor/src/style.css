@@ -3524,22 +3524,26 @@ samp,
   cursor: default;
 }
 
-.shell { --notice-offset: 0.6rem; }
+.shell:not(.shell-signed-out) {
+  --notice-rail-height: 5rem;
+  padding-bottom: var(--notice-rail-height);
+}
 
 .top-region {
   position: relative;
 }
 
 .notice-area {
-  position: absolute;
-  top: 100%;
+  position: fixed;
   right: 0;
+  bottom: 0;
   left: 0;
   z-index: var(--layer-notices);
-  display: flex;
-  justify-content: center;
-  padding: var(--notice-offset) 1rem 0;
-  pointer-events: none;
+  box-sizing: border-box;
+  height: var(--notice-rail-height);
+  padding: 0.5rem 1rem max(0.5rem, env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line);
+  background: var(--surface-muted);
 }
 
 .notice-stack {
@@ -3548,85 +3552,47 @@ samp,
   align-items: center;
   gap: 0.5rem;
   box-sizing: border-box;
-  max-width: 100%;
-  max-height: min(28dvh, 14rem);
-  padding: 0 0.5rem 0.5rem;
+  height: 100%;
+  padding: 0.25rem 0.5rem;
   overflow-y: auto;
   overscroll-behavior: contain;
-  pointer-events: auto;
 }
 
-.shell:has(.control-panel, .agent-drawer) {
-  --notice-offset: 3.5rem;
+.notice-stack > :is(.done-notices, .device-notices):empty {
+  position: absolute;
 }
 
-/* A phone sheet fills the screen and its close button sits in the top 2.75rem, so the area hangs from just below that row. */
-@media (max-width: 800px) {
-  .shell:not([data-page]):has(.agent-drawer) .top-region > .notice-area {
-    position: fixed;
-    top: 2.75rem;
-    padding-top: 0.3rem;
-  }
+.notice-stack:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 1px;
 }
 
-/*
- * While notices show, an open panel starts its content below them. The shell carries the stack's
- * height and data-notices; with no notice showing none of this applies and nothing moves. The
- * offsets are where the area starts (3.5rem under the top bar, 3.05rem on a phone sheet).
- */
-@media (min-width: 801px) {
-  .shell[data-notices] .control-panel .control-view {
-    margin-top: var(--notice-stack-height);
-  }
-
-  .shell[data-notices] .agent-drawer {
-    padding-top: calc(3.5rem + var(--notice-stack-height));
-  }
+.shell .hire-dialog,
+.shell .ticket-dialog {
+  height: calc(100dvh - var(--notice-rail-height));
+  max-height: calc(100dvh - var(--notice-rail-height));
 }
 
-@media (max-width: 800px) {
-  .shell[data-notices] .agent-drawer {
-    padding-top: calc(3.05rem + var(--notice-stack-height));
-  }
+.shell .ticket-dialog[data-composer='true'] {
+  height: fit-content;
+  max-height: calc(100dvh - var(--notice-rail-height) - 4rem);
 }
 
-@media (min-width: 801px) {
-  .shell[data-notices] .office-area > .first-task {
-    top: calc(0.75rem + var(--notice-offset) + var(--notice-stack-height));
-    max-height: calc(100% - 2rem - var(--notice-offset) - var(--notice-stack-height));
-  }
-}
-
-.office-notices { display: none; }
-
-@media (max-width: 800px) {
-  .office-area { flex: none; }
-  .shell:not(:has(.control-panel, .agent-drawer)) .office-notices { display: block; }
-  .office-notices > .notice-area {
-    position: static;
-    padding: 0.6rem 1rem;
-  }
-  .shell:not([data-notices]) .office-notices {
-    height: 0;
-    overflow: hidden;
-  }
-}
-
-.hire-dialog > .notice-area,
-.retire-dialog > .notice-area {
+.shell .retire-dialog {
   position: fixed;
-  top: 0.5rem;
-  padding: 0;
+  inset: 0 0 var(--notice-rail-height);
+  max-height: calc(100dvh - var(--notice-rail-height) - 2rem);
+  margin: auto;
+  overflow-y: auto;
 }
 
-.shell[data-notices] .hire-dialog {
-  padding-top: calc(1rem + var(--notice-stack-height));
-}
+@media (max-width: 800px) {
+  .shell:not(.shell-signed-out) { --notice-rail-height: min(8.5rem, 24dvh); }
 
-.shell[data-notices] .retire-dialog {
-  max-height: calc(100dvh - 2rem - var(--notice-stack-height));
-  margin-top: calc(1rem + var(--notice-stack-height));
-  overflow: auto;
+  .shell .agent-drawer {
+    bottom: var(--notice-rail-height);
+    max-height: calc(100dvh - var(--notice-rail-height));
+  }
 }
 
 .notice-stack > * {
@@ -4092,7 +4058,6 @@ samp,
 
 .shell[data-page] {
   height: 100dvh;
-  --notice-offset: 0.6rem;
 }
 
 .shell[data-page] .office-bar {
@@ -4120,18 +4085,4 @@ samp,
   padding: 1.5rem max(1rem, calc((100% - 52rem) / 2));
   border: 0;
   border-radius: 0;
-}
-
-.shell[data-page] .top-region > .notice-area {
-  position: absolute;
-  top: 100%;
-  padding-top: var(--notice-offset);
-}
-
-.shell[data-page][data-notices] .control-panel[data-page] {
-  padding-top: calc(1.5rem + var(--notice-offset) + var(--notice-stack-height));
-}
-
-.shell[data-page][data-notices] .control-panel[data-page] .control-view {
-  margin-top: 0;
 }
