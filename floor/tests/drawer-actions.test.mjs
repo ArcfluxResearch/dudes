@@ -63,15 +63,15 @@ test('Pause, Retire and Attach share one row with no paragraph between them', ()
   assert.match(html, /<div class="agent-detail-actions"/, 'no action row');
   const block = actionsOf(html);
   const labels = [...block.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label);
-  assert.deepEqual(labels.slice(0, 3), ['Pause', 'Retire', 'Attach']);
-  const between = block.slice(block.indexOf('class="control-pause"'), block.indexOf('>Attach<'));
+  assert.deepEqual(labels.slice(0, 3), ['Pause', 'Retire', 'Open the real CLI']);
+  const between = block.slice(block.indexOf('class="control-pause"'), block.indexOf('>Open the real CLI<'));
   assert.doesNotMatch(between, /<p\b/);
   assert.doesNotMatch(block, /trust this folder/);
 });
 
 test('the Attach explanation is the button’s description and tooltip, and a waiting Attach says why', () => {
   const block = actionsOf(drawer());
-  const text = 'Attach hands you this agent’s CLI\\. Its loop holds while you type, and Detach hands it back\\.';
+  const text = 'Open this agent’s real CLI\\. Automatic work waits while you type\\. Detach returns control to Dudes\\.';
   assert.match(block, new RegExp(`<button[^>]*class="terminal-attach"[^>]*title="${text}"`));
   assert.match(block, /<button[^>]*class="terminal-attach"[^>]*aria-describedby="terminal-hint"/);
   assert.match(block, new RegExp(`<span class="visually-hidden" id="terminal-hint">${text}</span>`));
@@ -79,13 +79,14 @@ test('the Attach explanation is the button’s description and tooltip, and a wa
   assert.doesNotMatch(drawer(), /agent-detail-tab-terminal|agent-detail-panel-terminal/);
   const running = actionsOf(drawer({ fields: { status: 'running' } }));
   assert.match(running, /<button[^>]*class="terminal-attach"[^>]*aria-disabled="true"[^>]*>/);
-  assert.match(running, /id="terminal-hint">Attach waits for this agent’s running turn to end\./);
+  assert.match(running, /id="terminal-hint">Wait for this agent’s current work to finish before opening its CLI\./);
 });
 
-test('a switched-off action is not drawn and Enable more controls closes the row', () => {
+test('a switched-off terminal explains how to open the real CLI without a disclosure', () => {
   const block = actionsOf(drawer({ off: ['terminal'] }));
-  assert.doesNotMatch(block, /terminal-attach/);
-  assert.ok(block.indexOf('class="control-pause"') < block.indexOf('class="enable-controls"'));
+  assert.doesNotMatch(block, /terminal-attach|enable-controls/);
+  assert.match(block, /<p class="settings-guidance">To open the real CLI, turn on Attach terminals under Floor switches in Settings, then restart Dudes\.<\/p>/);
+  assert.equal((block.match(/Attach terminals/g) ?? []).length, 1);
 });
 
 test('the Pause explanation is the button’s description and tooltip, not a paragraph', () => {

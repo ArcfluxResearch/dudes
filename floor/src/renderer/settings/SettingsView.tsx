@@ -69,7 +69,7 @@ export function UnavailableControls({ floor, control }: {
     return <p className="settings-guidance">Retire is off. Turn on Pause, resume and rename and Retire agents under
       Floor switches in Settings.</p>;
   }
-  return <p className="settings-guidance">Terminal is off. Turn on Attach terminals under Floor switches in Settings.</p>;
+  return <p className="settings-guidance">To open the real CLI, turn on Attach terminals under Floor switches in Settings, then restart Dudes.</p>;
 }
 
 export function SettingsView({ floor, onSetup }: {

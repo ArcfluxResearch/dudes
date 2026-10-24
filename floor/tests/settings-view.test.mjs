@@ -74,7 +74,7 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.match(renewOn, /<dt>Start new goals<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
     const hint = (control) => renderToStaticMarkup(createElement(UnavailableControls, { floor: floor(), control }));
     assert.match(hint('retire'), /Turn on Pause, resume and rename and Retire agents under\s+Floor switches in Settings/);
-    assert.match(hint('terminal'), /Turn on Attach terminals under Floor switches in Settings/);
+    assert.match(hint('terminal'), /turn on Attach terminals under Floor switches in Settings, then restart Dudes/);
 
     assert.match(html, /Manage engines, projects and spending/);
     assert.match(html, /Check which engines the daemon can find\. Sign in when you hire an agent\./);
