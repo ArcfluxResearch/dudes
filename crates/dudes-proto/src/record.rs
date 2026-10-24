@@ -1207,6 +1207,18 @@ pub enum Record {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         browser: Option<BrowserControl>,
     },
+    /// The Floor's stop of one agent's turn: a halt the Floor made, and, in the same append, the
+    /// open turn it closes when no launch for that turn had begun.
+    BrowserHalt {
+        /// The agent.
+        agent: AgentId,
+        /// The admitting request and session.
+        browser: BrowserControl,
+        /// The open turn this halt closes unlaunched, so nothing relaunches it; absent when the
+        /// agent had no such turn and a running or launching one is killed instead.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        abandons: Option<TurnId>,
+    },
     /// `loop.resume`, or the Floor's opt-in resume of one agent.
     Resume {
         /// The agent.
@@ -2351,6 +2363,7 @@ impl Record {
             Self::Halt { .. } => RecordKind::Halt,
             Self::Pause { .. } => RecordKind::Pause,
             Self::Resume { .. } => RecordKind::Resume,
+            Self::BrowserHalt { .. } => RecordKind::BrowserHalt,
             Self::MemoryAppend { .. } => RecordKind::MemoryAppend,
             Self::MemoryCondense { .. } => RecordKind::MemoryCondense,
             Self::HookTokenMinted { .. } => RecordKind::HookTokenMinted,
@@ -2632,6 +2645,8 @@ pub enum RecordKind {
     FloorDeviceKeyEnrolled = 92,
     /// [`Record::AgentModelChanged`].
     AgentModelChanged = 93,
+    /// [`Record::BrowserHalt`].
+    BrowserHalt = 94,
 }
 
 impl RecordKind {
@@ -2688,8 +2703,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 93] {
-        let mut kinds = [Self::AgentHired; 93];
+    const fn known_kinds() -> [Self; 94] {
+        let mut kinds = [Self::AgentHired; 94];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2742,6 +2757,7 @@ impl RecordKind {
         kinds[90] = Self::FloorDeviceUsed;
         kinds[91] = Self::FloorDeviceKeyEnrolled;
         kinds[92] = Self::AgentModelChanged;
+        kinds[93] = Self::BrowserHalt;
         kinds
     }
 
@@ -2788,6 +2804,7 @@ impl RecordKind {
                 | Self::RecoveryRequired
                 | Self::RecoveryAuthorized
                 | Self::RecoveryInvalidated
+                | Self::BrowserHalt
         )
     }
 
@@ -3970,6 +3987,16 @@ pub mod samples {
                 agent: agent(),
                 browser: None,
             },
+            RecordKind::BrowserHalt => Record::BrowserHalt {
+                agent: agent(),
+                browser: BrowserControl {
+                    request_id: Hex32::new([0xab; 32]),
+                    request_digest: Hex32::new([0xcd; 32]),
+                    control_lsn: None,
+                    session_digest: Hex32::new([0xef; 32]),
+                },
+                abandons: Some(turn()),
+            },
             RecordKind::Resume => Record::Resume {
                 agent: agent(),
                 browser: Some(BrowserControl {
@@ -4124,7 +4151,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 93);
+        assert_eq!(RecordKind::KNOWN.len(), 94);
         for &kind in &RecordKind::KNOWN[46..66] {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {
@@ -4627,7 +4654,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            93,
+            94,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -5651,8 +5678,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 93);
-        assert_eq!(RecordKind::from_tag(94), None);
+        assert_eq!(RecordKind::KNOWN.len(), 94);
+        assert_eq!(RecordKind::from_tag(95), None);
     }
 
     const TICKET_KINDS: [(RecordKind, u16); 5] = [
@@ -6029,6 +6056,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(94), None);
+        assert_eq!(RecordKind::from_tag(95), None);
     }
 }

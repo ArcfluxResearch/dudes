@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// Pause and Resume in the selected agent's detail, and the one request's
-// status.
+// Pause, Stop this turn and Resume in the selected agent's detail, and the one
+// request's status.
 //
 // A view over two stores. The floor store says what the journal holds —
 // whether pause and resume are on, whether the agent is paused, halted or
 // running — and the control store says what this page sent and what the
 // daemon replied. Nothing here decides what a reply means; `control.ts` reads
-// it. How a pause is worded comes from the projection row alone, so it is
-// drawn whoever paused the agent. The buttons exist only when `controlGate`
-// opens: with pause and resume off, which is the default, this file draws no
-// control at all.
+// it. How a pause or a stop is worded comes from the projection row alone, so
+// it is drawn whoever made it. The buttons exist only when `controlGate`
+// opens: with the Floor's control off, which is the default, this file draws
+// no control at all.
 
 import { useSyncExternalStore } from 'react';
 
@@ -21,29 +21,37 @@ import type { FloorState } from '../floor/store.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from '../focus.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import {
-  REFUSAL_REASONS, afterRefusal, blocksControls, browserControlDeps, checkControlStatus, checkable, continuationOf,
-  controlGate, getControlState, dismissReceipt, receiptDismissible, pauseWording, sentFrom, submitControl, subscribeToControl,
+  PARTIAL_EDITS_NOTE, REFUSAL_REASONS, afterRefusal, blocksControls, browserControlDeps, checkControlStatus, checkable,
+  continuationOf, controlGate, getControlState, dismissReceipt, receiptDismissible, pauseWording, sentFrom, stopWording,
+  submitControl, subscribeToControl,
 } from './control.ts';
 import type { Continuation, ControlAttempt, ControlOutcome, ControlState, ControlVerb } from './control.ts';
 
 /** What each button does, beside it: the consequence, not the mechanism. */
 const HINTS: Readonly<Record<ControlVerb, string>> = Object.freeze({
   pause: 'Pause stops new turns and kills nothing: a turn already running runs to its end.',
+  halt: 'Stop this turn ends the running turn now and keeps the agent. No new turn starts until you press Resume.',
   resume: 'Resume lifts this pause; the loop then decides whether a new turn starts, within its budget.',
 });
+
+/** Resume after the Floor's own stop: what comes back and what does not. */
+const RESUME_AFTER_STOP_HINT = 'Resume lifts your stop. The stopped turn is not brought back: with a goal the loop '
+  + 'decides afresh, and without one nothing starts until you send a message. A turn that was only starting when you '
+  + 'pressed Stop may start once more with its original task.';
 
 /** Pausing an attached agent does more, and says so before the press. */
 const ATTACHED_PAUSE_HINT = 'Pause refuses this agent’s prompts and tool calls until a Resume: each prompt submitted '
   + 'in its attached session is blocked and erased, each tool call is denied, and compaction is blocked.';
 
 function hintFor(verb: ControlVerb, row: AgentRow): string {
+  if (verb === 'resume' && row.halted === true && row.halted_by_floor === true) return RESUME_AFTER_STOP_HINT;
   if (verb === 'resume' && automaticHoldOf(row) !== null) {
     return 'Resume clears this automatic hold and retries under the goal’s remaining limits.';
   }
   return verb === 'pause' && row.mode === 'attached' ? ATTACHED_PAUSE_HINT : HINTS[verb];
 }
 
-const HALT_NOTE = 'A halt stands on this agent. The Floor cannot lift it; only the local operator can.';
+const HALT_NOTE = 'A halt from the command line stands on this agent. The Floor cannot lift it; only the local operator can.';
 const UNSETTLED_NOTE = 'An earlier pause or resume is not settled yet. Its status is shown in the request receipt.';
 const REFUSED_NOTE = 'The daemon refused this page’s Floor session, which can no longer pause or resume. Its status '
   + 'is shown in the request receipt.';
@@ -72,8 +80,9 @@ export function ControlStripView({ control, floor, row, session }: {
   readonly session: number;
 }) {
   const wording = pauseWording(row);
+  const stopped = stopWording(row);
   const gate = controlGate(floor, row);
-  if (wording === null && !gate.open) return null;
+  if (wording === null && stopped === null && !gate.open) return null;
   const blocked = blocksControls(control, gate, session);
   const attempt = control.attempt;
   const pressedHere = attempt !== null && sentFrom(attempt, gate);
@@ -86,6 +95,9 @@ export function ControlStripView({ control, floor, row, session }: {
       {wording === null ? null : (
         <p className="agent-detail-pause" role="status" data-pause-state={wording.state}>{wording.text}</p>
       )}
+      {stopped === null ? null : (
+        <p className="agent-detail-pause" role="status" data-stop-state={stopped.state}>{stopped.text}</p>
+      )}
       {!gate.open ? null : (
         <>
           {/* While it waits the slot is aria-disabled, never disabled: a
@@ -93,9 +105,9 @@ export function ControlStripView({ control, floor, row, session }: {
               repeats are not presses, and neither is the second click of a
               double-click: the verb has flipped by then, and it would undo the
               first. */}
-          {gate.offer === 'none' ? null : (
+          {gate.offer === 'none' && !gate.stop ? null : (
             <div className="control-actions">
-              {gate.offer === 'pause' ? (
+              {gate.offer !== 'pause' && gate.offer !== 'resume' ? null : gate.offer === 'pause' ? (
                 <button key="pause" ref={handFocusOnLeave} type="button" className="control-pause"
                   aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
                   title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
@@ -110,10 +122,20 @@ export function ControlStripView({ control, floor, row, session }: {
                   {busy ? 'Sending…' : 'Resume'}
                 </button>
               )}
+              {gate.stop ? (
+                <button key="halt" type="button" className="control-stop" ref={handFocusOnLeave}
+                  aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
+                  title={HINTS.halt} aria-describedby="control-stop-note"
+                  onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
+                  onClick={(event) => { if (event.detail < 2) void submitControl('halt', gate, browserControlDeps); }}>
+                  {busy && attempt?.verb === 'halt' ? 'Sending…' : 'Stop this turn'}
+                </button>
+              ) : null}
             </div>
           )}
+          {gate.stop ? <p className="hire-note control-stop-note" id="control-stop-note">{PARTIAL_EDITS_NOTE}</p> : null}
           {hint === undefined ? null : <span className="visually-hidden" id="control-hint">{hint}</span>}
-          {gate.halted ? <p className="hire-note control-halt-note">{HALT_NOTE}</p> : null}
+          {gate.halted && !gate.haltedByFloor ? <p className="hire-note control-halt-note">{HALT_NOTE}</p> : null}
           {blocked && !control.sending ? <p className="hire-note">{heldBecause(control)}</p> : null}
           {control.problem === null || attempt !== null ? null : (
             <p className="control-problem" role="alert">{control.problem}</p>
@@ -151,7 +173,7 @@ export function ControlStatusView({ control, floor, session, leaveFocusTo = 'cre
       data-control-outcome={outcome?.kind ?? 'sending'} data-control-verb={attempt.verb} data-control-agent-id={agent}
       data-control-lsn={controlLsn ?? ''}>
       <h3 id="control-status-title" tabIndex={-1}>
-        <span className="agent-detail-kicker">{attempt.verb === 'pause' ? 'Pause request' : 'Resume request'}</span> {name}
+        <span className="agent-detail-kicker">{KICKER[attempt.verb]}</span> {name}
       </h3>
       <dl className="hire-facts">
         <div><dt>AgentId</dt><dd>{agent}</dd></div>
@@ -180,9 +202,15 @@ export function ControlStatusView({ control, floor, session, leaveFocusTo = 'cre
   );
 }
 
+const KICKER: Readonly<Record<ControlVerb, string>> = Object.freeze({
+  pause: 'Pause request', halt: 'Stop request', resume: 'Resume request',
+});
+
 const RECORDED: Readonly<Record<ControlVerb, string>> = Object.freeze({
   pause: 'Pause recorded. The daemon holds this pause in its journal, which is not the same as the agent stopping.',
-  resume: 'Resume recorded. The daemon lifted this pause in its journal, which is not the same as a new turn.',
+  halt: 'Stop recorded. The daemon holds this stop in its journal and is ending the turn; '
+    + 'that the process has ended shows below once the floor reports it.',
+  resume: 'Resume recorded. The daemon lifted this pause or stop in its journal, which is not the same as a new turn.',
 });
 
 function continuationText(next: Continuation): string {
@@ -195,6 +223,10 @@ function continuationText(next: Continuation): string {
       return 'A turn is still running; it runs to its end.';
     case 'idle':
       return `No turn is running now; the agent is ${next.status || 'idle'}.`;
+    case 'stopping':
+      return 'The turn’s process is still being ended.';
+    case 'stopped':
+      return `The turn has ended; the agent is ${next.status || 'idle'}. ${PARTIAL_EDITS_NOTE}`;
     case 'waiting':
       return 'No new turn has appeared yet.';
     case 'continued':

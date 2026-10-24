@@ -59,6 +59,10 @@ pub struct AgentRow {
     pub paused: bool,
     /// `loop.halt` standing.
     pub halted: bool,
+    /// The standing halt is the Floor's own stop: set by `BrowserHalt`, cleared by `Halt` and
+    /// `Resume`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub halted_by_floor: bool,
     /// Rung after the last `BreakerBeat`.
     pub breaker: BreakerRung,
     /// The goal it pursues.
@@ -150,6 +154,7 @@ impl Default for AgentRow {
             mode: Mode::Managed,
             paused: false,
             halted: false,
+            halted_by_floor: false,
             breaker: BreakerRung::Healthy,
             goal: None,
             context_lsn: Lsn::ZERO,
@@ -329,6 +334,7 @@ fn completed_goal_for_settlement(
         | Record::HumanAnswer { agent, .. }
         | Record::Detached { agent, .. }
         | Record::BrowserNoteIssuedCancelled { agent, .. }
+        | Record::BrowserHalt { agent, .. }
         | Record::NoteOnlyTurnIssued { agent, .. }
         | Record::TaughtNoteOnlyTurnIssued { agent, .. }
         | Record::TurnIssuedWithBrowserNote { agent, .. } => {
@@ -480,6 +486,18 @@ fn apply_flow(
                 a.settle(goal_completed);
             })
         }
+        Record::BrowserHalt {
+            agent, abandons, ..
+        } => update(table, lsn, *agent, record, |a| {
+            a.halted = true;
+            a.halted_by_floor = true;
+            a.control_lsn = Some(lsn);
+            a.live_activity = None;
+            if abandons.is_some() && a.open_turn == *abandons {
+                a.open_turn = None;
+                a.settle(goal_completed);
+            }
+        }),
         Record::ConversationTurnDecided {
             agent, decision, ..
         }
@@ -561,12 +579,14 @@ fn apply_flow(
         Record::Resume { agent, .. } => update(table, lsn, *agent, record, |a| {
             a.automatic_hold = None;
             a.halted = false;
+            a.halted_by_floor = false;
             a.paused = false;
             a.control_lsn = Some(lsn);
             a.live_activity = None;
         }),
         Record::Halt { agent, .. } => update(table, lsn, *agent, record, |a| {
             a.halted = true;
+            a.halted_by_floor = false;
             a.control_lsn = Some(lsn);
             a.live_activity = None;
         }),

@@ -4394,6 +4394,7 @@ mod tests {
             mode: Mode::Managed,
             paused: false,
             halted: false,
+            halted_by_floor: false,
             automatic_hold: None,
             breaker: BreakerRung::Healthy,
             goal: None,

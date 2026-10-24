@@ -49,7 +49,7 @@ const ATTACH_HINT = 'Open this agent’s real CLI. Automatic work waits while yo
 const UNAVAILABLE: Readonly<Record<Extract<TerminalOffer, { kind: 'unavailable' }>['reason'], string>> = Object.freeze({
   running: 'Wait for this agent’s current work to finish before opening its CLI.',
   attached: 'Someone already has this agent’s CLI open.',
-  halted: 'This agent is halted, so its CLI cannot open.',
+  halted: 'This agent is halted, so its CLI cannot open. Press Resume first if you stopped it from this page.',
   'no-session': 'This agent does not have a saved CLI session to open yet.',
 });
 
@@ -142,7 +142,10 @@ function closedBecause(floor: FloorState, agent: string): string {
   const row = floor.agents.find((candidate) => candidate.id === agent);
   const current = floor.phase === 'live' && floor.snapshotEpoch === floor.epoch;
   if (current && row === undefined) return 'The agent was retired, so Dudes closed its CLI.';
-  if (row?.halted === true) return 'This agent is halted, so Dudes closed its CLI.';
+  if (row?.halted === true) {
+    return row.halted_by_floor === true ? 'You stopped this agent, so Dudes closed its CLI. Press Resume to let it work again.'
+      : 'This agent is halted, so Dudes closed its CLI.';
+  }
   return `Dudes closed the CLI. Your Floor sign-in may have expired, or the agent’s CLI exited. ${RETURNED}`;
 }
 

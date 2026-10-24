@@ -262,7 +262,8 @@ export const REFUSAL_REASONS: Readonly<Record<FixedRefusal, string>> = Object.fr
   predicate_todo: 'This task checks whether a card is To do, which cannot prove that work finished. Nothing changed.',
   goal_exhausted: 'This task reached a work attempt or spending limit, so nothing was recorded. '
     + 'Start a new task is available when Start new tasks is on in Settings and this agent’s project is enrolled.',
-  agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
+  agent_halted: 'A halt stands on this agent, so nothing was recorded. Press Resume first if you stopped it from this page; '
+    + 'a halt from the command line only the local operator can lift.',
   agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
   goal_not_exhausted: 'This task still has work attempts or spending allowance, so nothing was recorded. Change its text instead.',
   workspace_unavailable: 'This agent’s project is no longer set up at its folder, so that check cannot be '

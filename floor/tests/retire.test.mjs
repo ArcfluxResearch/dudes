@@ -494,7 +494,7 @@ test('Pause instead appears only while the control module offers Pause, sends th
     await sent(calls);
     assert.deepEqual(calls.map(({ url }) => url), ['/floor/pause'], 'Pause instead did not send one ordinary pause');
     assert.deepEqual(Object.keys(JSON.parse(calls[0].init.body)), ['request_id', 'agent', 'control_lsn']);
-    assert.deepEqual(control.getControlState().outcome, { kind: 'applied' });
+    assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: '1099511628300' });
   });
 
   // Not for a paused agent, not without the control sibling, and not while a pause or resume is unresolved.

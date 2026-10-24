@@ -1037,6 +1037,7 @@ pub(super) fn capture_before(
         Record::Pause { agent, .. }
         | Record::Resume { agent, .. }
         | Record::Halt { agent, .. }
+        | Record::BrowserHalt { agent, .. }
         | Record::AgentHeld { agent, .. } => Some(*agent),
         _ => None,
     };

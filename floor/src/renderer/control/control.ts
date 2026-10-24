@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// Pause or resume one agent: which verb the page may offer, how the Floor
-// words a pause, one request, and what its outcome proves.
+// Pause, stop or resume one agent: which verb the page may offer, how the
+// Floor words a pause or a stop, one request, and what its outcome proves.
 //
-// Pausing and resuming is the operator's opt-in. A snapshot carries the
-// `control` sibling only when the daemon routes the two actions, and without
+// Pausing, stopping and resuming is the operator's opt-in. A snapshot carries
+// the `control` sibling only when the daemon routes the actions, and without
 // it there is no button at all. A request names its agent and the agent's
 // control identity — the journal position of its newest pause, resume or
 // halt record, a decimal string copied from the projection and never read as
@@ -19,10 +19,10 @@
 // offers only what the projection says, and never sends anything by itself.
 //
 // What an outcome proves is narrow on purpose. `applied` means the daemon
-// holds the pause, or lifted it, durably — not that a turn stopped or started.
-// Whether one did is read from the projection alone. The browser can neither
-// issue a halt nor lift one: no verb here names it, and Resume is never
-// offered to a halted agent.
+// holds the pause or the stop, or lifted it, durably — not that a turn ended
+// or started. Whether one did is read from the projection alone. The page can
+// stop one turn and lift only the halt that stop made: a halt the operator made
+// from the command line is never offered a Resume here.
 
 import { currentFloorSession, floorSessionGeneration } from '../../session.ts';
 import { automaticHoldOf } from '../automaticHold.ts';
@@ -34,13 +34,15 @@ import { mintAttemptId } from '../onboarding/hire.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { floorFetch } from '../../transport.ts';
 
-export type ControlVerb = 'pause' | 'resume';
+export type ControlVerb = 'pause' | 'halt' | 'resume';
 
-/** The two routes, one per verb. The route is the verb: no request member selects one. */
-const ROUTES = Object.freeze({ pause: '/floor/pause', resume: '/floor/resume' });
+/** The three routes, one per verb. The route is the verb: no request member selects one. */
+const ROUTES = Object.freeze({ pause: '/floor/pause', halt: '/floor/halt', resume: '/floor/resume' });
 
 /** What an applied request's `state` says, per route. */
-const APPLIED_STATE: Readonly<Record<ControlVerb, string>> = Object.freeze({ pause: 'paused', resume: 'resumed' });
+const APPLIED_STATE: Readonly<Record<ControlVerb, string>> = Object.freeze({
+  pause: 'paused', halt: 'halted', resume: 'resumed',
+});
 
 export type ControlGate =
   | { readonly open: false }
@@ -49,9 +51,14 @@ export type ControlGate =
     readonly agent: string;
     /** The agent's control identity exactly as the projection sent it, or `null` when it has none. */
     readonly controlLsn: string | null;
-    /** The one verb the page may offer now; `none` for a paused agent under a halt. */
-    readonly offer: ControlVerb | 'none';
+    /** The one of Pause and Resume the page may offer now; `none` for a paused agent under an operator's halt. */
+    readonly offer: Exclude<ControlVerb, 'halt'> | 'none';
+    /** Whether "Stop this turn" may be offered: a managed agent with a turn running and no halt standing. */
+    readonly stop: boolean;
+    /** A halt stands on the agent, whoever made it. */
     readonly halted: boolean;
+    /** The standing halt is this page's own stop, which Resume lifts. */
+    readonly haltedByFloor: boolean;
     /** The agent's turn count when the buttons were drawn, for telling a new turn apart. */
     readonly turns: number;
   };
@@ -78,9 +85,12 @@ export function controlGate(floor: FloorState, row: AgentRow | null): ControlGat
   }
   const paused = row.paused === true;
   const halted = row.halted === true;
+  const haltedByFloor = halted && row.halted_by_floor === true;
   return Object.freeze({
     open: true, agent: row.id, controlLsn,
-    offer: automaticHoldOf(row) !== null ? 'resume' : !paused ? 'pause' : halted ? 'none' : 'resume', halted,
+    offer: automaticHoldOf(row) !== null || haltedByFloor ? 'resume' : !paused ? 'pause' : halted ? 'none' : 'resume',
+    stop: !halted && row.mode === 'managed' && row.status === 'running',
+    halted, haltedByFloor,
     turns: typeof row.turns === 'number' ? row.turns : 0,
   });
 }
@@ -109,6 +119,29 @@ export function pauseWording(row: AgentRow): PauseWording | null {
   return PAUSED;
 }
 
+/** How the Floor words its own stop: "Stopping" while the halted agent has a turn open, "Stopped" once it has none. */
+export interface StopWording {
+  readonly state: 'stopping' | 'stopped';
+  readonly text: string;
+}
+
+const STOPPING: StopWording = Object.freeze({
+  state: 'stopping', text: 'Stopping — the turn’s process is being ended; no new turn will start',
+});
+const STOPPED: StopWording = Object.freeze({
+  state: 'stopped', text: 'Stopped — no new turn will start until you press Resume',
+});
+
+/** The words for an agent this page stopped, read from `halted`, `halted_by_floor` and `status` and nothing else. */
+export function stopWording(row: AgentRow): StopWording | null {
+  if (row.halted !== true || row.halted_by_floor !== true) return null;
+  return row.status === 'running' ? STOPPING : STOPPED;
+}
+
+/** Stopping a turn can leave work half done, and says so before the press and after it. */
+export const PARTIAL_EDITS_NOTE = 'Stopping ends the turn’s whole process tree at once. It can leave partial edits in the '
+  + 'working tree and a stale git lock file behind.';
+
 /** The request body, exactly: three fields, and nothing else. */
 export interface ControlPayload {
   readonly request_id: string;
@@ -124,19 +157,26 @@ export interface ControlAttempt {
   readonly turnsAtSend: number;
 }
 
-export type ControlRefusalReason = 'agent_absent' | 'agent_halted' | 'stale_control';
+export type ControlRefusalReason = 'agent_absent' | 'agent_attached' | 'agent_halted' | 'stale_control' | 'no_running_turn';
 
 export const REFUSAL_REASONS: Readonly<Record<ControlRefusalReason, string>> = Object.freeze({
-  stale_control: 'This agent’s pause state changed since this page read it, so nothing was recorded. '
+  stale_control: 'This agent’s control state changed since this page read it, so nothing was recorded. '
     + 'The floor is being refreshed.',
-  agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
+  agent_halted: 'A halt stands on this agent. Resume lifts a stop made from this page; a halt made from the command '
+    + 'line only the local operator can lift. Nothing was recorded.',
   agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
+  agent_attached: 'A person is using this agent’s terminal, so stopping it from here would lock them out. '
+    + 'Nothing was recorded.',
+  no_running_turn: 'This agent has no turn to stop right now, so nothing was recorded.',
 });
 
 /** What one response proves. Only `applied` means the daemon holds the change. */
 export type ControlOutcome =
-  /** 200: this request's pause is durable, or its lifting is. Not a stopped or a started turn. */
-  | { readonly kind: 'applied' }
+  /**
+   * 200: this request's pause or stop is durable, or its lifting is. Not an ended or a started turn.
+   * `controlLsn` is the control identity the record set, the one a note sent after a stop presents.
+   */
+  | { readonly kind: 'applied'; readonly controlLsn: string }
   /** 202: in flight, or its durability is unresolved. */
   | { readonly kind: 'pending' }
   /** Typed 409: refused before any effect, for this reason. */
@@ -301,9 +341,9 @@ export function checkable(control: ControlState): boolean {
     && control.outcome.kind !== 'applied' && !releasable(control);
 }
 
-/** Press Pause or Resume. It refuses while the buttons wait, so a second press does nothing. */
+/** Press Pause, Stop this turn or Resume. It refuses while the buttons wait, so a second press does nothing. */
 export async function submitControl(verb: ControlVerb, gate: ControlGate, deps: ControlDeps): Promise<void> {
-  if (!gate.open || gate.offer !== verb || blocksControls(state, gate, deps.session())) return;
+  if (!gate.open || (verb === 'halt' ? !gate.stop : gate.offer !== verb) || blocksControls(state, gate, deps.session())) return;
   if (!deps.signedIn()) {
     commit({ ...state, problem: 'This page has no Floor session, so nothing was sent.' });
     return;
@@ -398,7 +438,7 @@ export function decodeControlResponse(status: number, text: string, attempt: Con
       return exactly(body, ['request_id', 'state', 'agent', 'control_lsn'])
         && body.request_id === payload.request_id && body.state === APPLIED_STATE[attempt.verb]
         && body.agent === payload.agent && canonicalLsn(body.control_lsn)
-        ? Object.freeze({ kind: 'applied' }) : UNKNOWN;
+        ? Object.freeze({ kind: 'applied', controlLsn: body.control_lsn }) : UNKNOWN;
     }
     case 202: {
       const body = json(text);
@@ -453,6 +493,10 @@ export type Continuation =
   | { readonly kind: 'running' }
   /** After a pause: no turn is running now. */
   | { readonly kind: 'idle'; readonly status: string }
+  /** After a stop: the turn's process is still being ended. */
+  | { readonly kind: 'stopping' }
+  /** After a stop: no turn is open now. */
+  | { readonly kind: 'stopped'; readonly status: string }
   /** After a resume: no new turn has appeared yet. */
   | { readonly kind: 'waiting' }
   /** After a resume: the agent has taken a new turn. */
@@ -466,6 +510,9 @@ export function continuationOf(attempt: ControlAttempt, floor: FloorState): Cont
   const status = typeof row.status === 'string' ? row.status : '';
   if (attempt.verb === 'pause') {
     return Object.freeze(status === 'running' ? { kind: 'running' } : { kind: 'idle', status });
+  }
+  if (attempt.verb === 'halt') {
+    return Object.freeze(status === 'running' ? { kind: 'stopping' } : { kind: 'stopped', status });
   }
   const turns = typeof row.turns === 'number' ? row.turns : 0;
   if (turns > attempt.turnsAtSend) {

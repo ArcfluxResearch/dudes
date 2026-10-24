@@ -8225,6 +8225,40 @@
       "type": "object"
     },
     {
+      "description": "The Floor's stop of one agent's turn: a halt the Floor made, and, in the same append, the\nopen turn it closes when no launch for that turn had begun.",
+      "properties": {
+        "abandons": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The open turn this halt closes unlaunched, so nothing relaunches it; absent when the\nagent had no such turn and a running or launching one is killed instead."
+        },
+        "agent": {
+          "$ref": "#/$defs/AgentId",
+          "description": "The agent."
+        },
+        "browser": {
+          "$ref": "#/$defs/BrowserControl",
+          "description": "The admitting request and session."
+        },
+        "t": {
+          "const": "browser_halt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "agent",
+        "browser"
+      ],
+      "type": "object"
+    },
+    {
       "description": "`loop.resume`, or the Floor's opt-in resume of one agent.",
       "properties": {
         "agent": {

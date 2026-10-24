@@ -105,6 +105,7 @@ const ANSWER_PATH: &str = "/floor/answer";
 /// Routed only when the operator enabled control; otherwise a POST to either is any
 /// unrouted POST. No path names halt.
 const PAUSE_PATH: &str = "/floor/pause";
+const HALT_PATH: &str = "/floor/halt";
 const RESUME_PATH: &str = "/floor/resume";
 /// Routed only when the operator enabled goal change; otherwise a POST here is any
 /// unrouted POST.
@@ -1237,6 +1238,7 @@ impl ActionRoute {
             RECEIPT_RECOVERY_PATH => Some(Self::Recovery(RecoveryRoute::Receipt)),
             ANSWER_PATH if live.answer => Some(Self::Answer),
             PAUSE_PATH if live.control.pause_resume() => Some(Self::Control(ControlVerb::Pause)),
+            HALT_PATH if live.control.pause_resume() => Some(Self::Control(ControlVerb::Halt)),
             RESUME_PATH if live.control.pause_resume() => Some(Self::Control(ControlVerb::Resume)),
             GOAL_PATH if live.control.goal() => Some(Self::Goal),
             RENEW_PATH if live.control.renew() => Some(Self::Renew),

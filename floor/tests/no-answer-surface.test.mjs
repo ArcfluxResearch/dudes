@@ -59,8 +59,9 @@
 //   k) make the control gate refuse everything — "Pause and Resume render when
 //      the snapshot carries the control sibling" goes red (the positive
 //      control);
-//   l) put a `halt` member in the control request, or a halt route beside the
-//      two — "no control names halt…" goes red naming the file;
+//   l) put a `halt` member in the control request, or name the halt route
+//      outside the control module — "only the control module names the Floor’s
+//      stop…" goes red naming the file;
 //   m) an on[A-Z] handler prop other than onClick — onDoubleClick,
 //      onContextMenu, onFocus, onBlur, onWheel or onTouchStart — or a spread
 //      (`{...x}`), on a lowercase intrinsic tag anywhere under floor/src
@@ -86,7 +87,7 @@
 //      `.onbeforepaste =`, `.onclick ??=`), but a Floor data field in
 //      `FLOOR_DATA_FIELDS` — a ref callback, say — anywhere under floor/src
 //      turns "the floor ships no mutation control…" red, naming the file;
-//   q) a `halt?:` optional-field spelling turns "no control names halt…" red,
+//   q) a `halt?:` optional-field spelling outside the control module turns "only the control module names…" red,
 //      naming the file, and a fourth `fetch(` line in control.ts turns "the
 //      page reaches the network in five places…" red, listing the lines;
 //   r) `.click` as a whole word with the `.` right before it, or the word
@@ -482,6 +483,7 @@ const ADMITTED_HANDLERS = [
   // repeats and nothing else, pinned by its exact body on its own button.
   { file: CONTROL_PANEL, tag: 'button', className: 'control-pause', handler: 'onKeyDown', expression: REFUSE_REPEAT },
   { file: CONTROL_PANEL, tag: 'button', className: 'control-resume', handler: 'onKeyDown', expression: REFUSE_REPEAT },
+  { file: CONTROL_PANEL, tag: 'button', className: 'control-stop', handler: 'onKeyDown', expression: REFUSE_REPEAT },
   // RetirePanel.tsx: Escape fires the modal confirmation's `cancel`, which
   // closes it and sends nothing.
   { file: RETIRE_PANEL, tag: 'dialog', className: 'retire-dialog', handler: 'onCancel', expression: 'cancelRetire' },
@@ -1106,7 +1108,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
   assert.match(form, /const choose = \(choice: CheckChoice\) => \{\s*if \(!blocked\) chooseGoalCheck\(gate\.agent, gate\.goal, choice\);\s*\};/);
 });
 
-test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Pause all, resume, goal change, look edit, model change and dismiss buttons, Overview Answer, Review work, Review ticket and Change navigation, '
+test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Stop this turn, Stop and send, Pause all, resume, goal change, look edit, model change and dismiss buttons, Overview Answer, Review work, Review ticket and Change navigation, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation, '
@@ -1134,8 +1136,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(ANSWER_FORM),
     ...Array(2).fill(DEVICE_NOTICES),
     DEVICES_SECTION,
-    ...Array(12).fill(CHAT_PANEL),
-    ...Array(4).fill(CONTROL_PANEL),
+    ...Array(13).fill(CHAT_PANEL),
+    ...Array(5).fill(CONTROL_PANEL),
     ...Array(5).fill(PAUSE_ALL_PANEL),
     ...Array(5).fill(RECOVERY_PANEL),
     ...Array(3).fill(GOAL_PANEL),
@@ -1362,6 +1364,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => selectChatAnswer(row.id, null)',
     '() => selectChatAnswer(row.id, { questionLsn: question.questionLsn, question: question.question })',
     '() => void startFreshChat(attempt, outcome, browserChatDeps)',
+    '() => void stopAndSend(gate, stopControl, browserChatDeps)',
     '() => removeChatFile(row.id, file.id)',
     '() => setAsking(true)', '() => setAsking(false)',
     '() => {\n        setAsking(false);\n        void clearQueuedChat(chatGate(floor, row), browserChatDeps);\n      }',
@@ -1371,6 +1374,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => { if (!control.sending && floor.control) void checkControlStatus(browserControlDeps); }',
     "(event) => { if (event.detail < 2) void submitControl('pause', gate, browserControlDeps); }",
     "(event) => { if (event.detail < 2) void submitControl('resume', gate, browserControlDeps); }",
+    "(event) => { if (event.detail < 2) void submitControl('halt', gate, browserControlDeps); }",
   ].sort());
   assert.deepEqual(clicksIn(await readFile(resolve(floor, PAUSE_ALL_PANEL), 'utf8')).sort(), [
     'onOpen', 'onCancel', 'onConfirm', 'onCheck', 'onDismiss',
@@ -1631,7 +1635,7 @@ const REQUESTS = {
     fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', "fetch('/floor/answer')"],
   },
   [CONTROL_MODULE]: {
-    paths: ['/floor/pause', '/floor/resume', 'application/json'],
+    paths: ['/floor/pause', '/floor/halt', '/floor/resume', 'application/json'],
     methods: ['POST'],
     fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', 'fetch(ROUTES[attempt.verb])'],
   },
@@ -1974,9 +1978,9 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
     'fetch(url: string, init: RequestInit): Promise<ControlResponse>;',
     'const response = await fetch(ROUTES[attempt.verb], {',
   ], 'the control module calls fetch somewhere new');
-  assert.match(controlText, /const ROUTES = Object\.freeze\(\{ pause: '\/floor\/pause', resume: '\/floor\/resume' \}\);/);
-  assert.deepEqual([...controlText.matchAll(/'(\/[^']*)'/g)].map((match) => match[1]), ['/floor/pause', '/floor/resume'],
-    'the control module names a path beyond its two routes');
+  assert.match(controlText, /const ROUTES = Object\.freeze\(\{ pause: '\/floor\/pause', halt: '\/floor\/halt', resume: '\/floor\/resume' \}\);/);
+  assert.deepEqual([...controlText.matchAll(/'(\/[^']*)'/g)].map((match) => match[1]), ['/floor/pause', '/floor/halt', '/floor/resume'],
+    'the control module names a path beyond its three routes');
   assert.deepEqual([...controlText.matchAll(/method:\s*'([A-Z]+)'/g)].map((match) => match[1]), ['POST'],
     'pause and resume use a method other than POST');
 
@@ -2626,14 +2630,16 @@ test('only the goal module names the renew route, and it names it once', async (
 });
 
 /**
- * A halt route, or a `halt` member in anything the page could send. Neither
- * route, no request member and no label may name halt: the browser can
- * neither issue a halt nor lift one.
+ * A halt route, or a `halt` member in anything the page could send. The one
+ * stop the page may make is the Floor's own, named by the control module and
+ * its panel alone; no other source names the route or a `halt` member, no
+ * request carries one, and no label says halt or restart.
  */
 const HALT_NAMED = /\/floor\/halt\b|['"]?\bhalt['"]?\s*\??\s*:/;
-const CONTROL_LABELS = new Set(['Pause', 'Resume', 'Sending…', 'Check status', 'Checking…', 'Dismiss receipt']);
+const HALT_ADMITTED = new Set(['src/renderer/control/control.ts', 'src/renderer/control/ControlPanel.tsx']);
+const CONTROL_LABELS = new Set(['Pause', 'Stop this turn', 'Resume', 'Sending…', 'Check status', 'Checking…', 'Dismiss receipt']);
 
-test('no control names halt: no route or member, and no label says halt or restart', async () => {
+test('only the control module names the Floor’s stop: no route or member elsewhere, and no label says halt or restart', async () => {
   // The control: each planted halt spelling is found, and the flag the page reads is not.
   for (const planted of ["fetch('/floor/halt')", 'const body = { halt: true };', 'JSON.stringify({ "halt": 1 })',
     "{ 'halt' : false }", 'halt?: boolean']) {
@@ -2644,7 +2650,8 @@ test('no control names halt: no route or member, and no label says halt or resta
   }
   const naming = [];
   for (const path of await filesUnder(source, ['.ts', '.tsx'])) {
-    if (HALT_NAMED.test(await readFile(path, 'utf8'))) naming.push(path.slice(floor.length + 1));
+    const named = path.slice(floor.length + 1);
+    if (HALT_NAMED.test(await readFile(path, 'utf8')) && !HALT_ADMITTED.has(named)) naming.push(named);
   }
   assert.deepEqual(naming, [], 'a source names a halt route or member');
 
@@ -2919,7 +2926,7 @@ test('the control gate stays closed without the sibling, a live confirmed view, 
   // The control: each gate condition met, and the gate opens with the row's own position, as text.
   const baseline = floorWith(working(), undefined, CONTROL);
   assert.deepEqual(controlGate(baseline, baseline.agents[0]), {
-    open: true, agent: ADA, controlLsn: LSN, offer: 'pause', halted: false, turns: 3,
+    open: true, agent: ADA, controlLsn: LSN, offer: 'pause', stop: true, halted: false, haltedByFloor: false, turns: 3,
   });
   assert.equal(open(floorWith(working({ control_lsn: '18446744073709551615' }), undefined, CONTROL)), true);
   assert.equal(open(floorWith(working({ control_lsn: undefined }), undefined, CONTROL)), true);

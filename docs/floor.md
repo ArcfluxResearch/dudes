@@ -153,6 +153,19 @@ again. Trust is refused for a repository whose git configuration includes other 
 filter, or whose `.claude` or `.mcp.json` is a symbolic link. Codex and Pi agents cannot work in a copy,
 and neither can any agent on Windows. Agents already in a copy keep working after an untrust.
 
+## Pause, stop and resume
+
+With `floor.control` on, an agent's drawer offers **Pause**, **Stop this turn** and **Resume**. Pause lets a
+running turn finish and starts no new one. **Stop this turn** ends the running turn at once and keeps
+the agent: the page says "Stopping" while the turn's process ends and "Stopped" when no turn is open,
+and nothing new starts until you press **Resume**. Stopping ends the turn's whole process tree, so it can
+leave partial edits in the working tree and a stale git lock file. A stop also cancels a queued note
+whose turn had not started, and clears that note's text; send it again after you press **Resume**. The
+Floor refuses a stop while a person has the agent's terminal open. **Resume** lifts a stop made here, a pause and an automatic hold; a halt
+made with `dudes halt` stays until `dudes resume`. In Chat, **Stop and send** stops the turn, sends your
+message as a note once the turn has ended and then lifts the stop; it needs `floor.control` on too. This is not the ticket board's
+**Stop**, which ends a ticket. See [Pause, resume, halt and retire](goals-and-stopping.md#pause-resume-halt-and-retire).
+
 ## Recover an interrupted goal
 
 **Recover interrupted goal** appears in an eligible agent's drawer when both `floor.recovery` and
