@@ -17,7 +17,15 @@
 //!
 //! **Streams.** [`StreamScrubber`] holds back the tail of its buffer for as long as that tail is a
 //! prefix of some form in the set, so a known value is never released in part. Ordinary text has
-//! no such tail and is released at once.
+//! no such tail and is released at once. A completed match is held too while a longer form could
+//! still continue it. The hold never exceeds the longest form: past that, text is replaced and
+//! released, so a run of one repeated byte against a secret made of it costs time linear in its
+//! length, and the only part of such a run that can leave is a fragment of the secret shorter
+//! than it.
+//!
+//! **Limits.** A secret longer than 64 KiB is matched as written only. A source holds at most
+//! 4,096 secrets, secret-named values first; any beyond that are dropped and the first time this
+//! happens is logged without the values.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,10 +45,11 @@ const MIN_SECRET_BYTES: usize = 8;
 /// The shortest base64 form worth matching once its alignment-dependent edges are trimmed.
 const MIN_BASE64_FORM: usize = 8;
 /// The longest secret that gets every encoded form. A longer one is held as written only, so one
-/// huge value cannot make the set unbounded.
-const MAX_ENCODED_SECRET_BYTES: usize = 8 * 1024;
-/// The most secrets one source may hold. The rest are dropped in sorted order.
-const MAX_SECRETS_PER_SOURCE: usize = 256;
+/// huge value cannot make the set unbounded. It covers a PEM private key with room to spare.
+const MAX_ENCODED_SECRET_BYTES: usize = 64 * 1024;
+/// The most secrets one source may hold, far above any real environment. The rest are dropped,
+/// and the values handed first are the ones kept.
+const MAX_SECRETS_PER_SOURCE: usize = 4096;
 /// The longest unfinished escape sequence a stream carries to the next piece. Past it the
 /// sequence is text.
 const ESCAPE_CARRY_BYTES: usize = 4 * 1024;
@@ -59,6 +68,7 @@ struct Inner {
     sources: BTreeMap<String, BTreeSet<String>>,
     matcher: Arc<Matcher>,
     generation: u64,
+    cap_logged: bool,
 }
 
 impl fmt::Debug for Redactor {
@@ -88,6 +98,9 @@ impl Redactor {
 
     /// The set a daemon run starts with. Only the owner of a run makes one; every reader is
     /// handed a clone of it.
+    ///
+    /// One production caller makes the run's set, the child sink in the daemon; a test in this
+    /// crate's `tests/` fails when a second appears.
     #[must_use]
     pub fn for_run() -> Self {
         Self {
@@ -111,19 +124,35 @@ impl Redactor {
 
     /// Replace everything `source` holds with `values`. An empty `values` ends the source.
     ///
-    /// A value stays in the set until the last source naming it has ended.
+    /// A value stays in the set until the last source naming it has ended. Past
+    /// [`MAX_SECRETS_PER_SOURCE`] values the first ones given are kept, so a caller lists its most
+    /// certain secrets first.
     pub fn set_source<I>(&self, source: &str, values: I)
     where
         I: IntoIterator<Item = String>,
     {
-        let values: BTreeSet<String> = values
-            .into_iter()
-            .filter(|value| value.len() >= MIN_SECRET_BYTES)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .take(MAX_SECRETS_PER_SOURCE)
-            .collect();
+        let mut kept = BTreeSet::new();
+        let mut dropped = 0usize;
+        for value in values {
+            if value.len() < MIN_SECRET_BYTES {
+                continue;
+            }
+            if kept.len() < MAX_SECRETS_PER_SOURCE {
+                kept.insert(value);
+            } else if !kept.contains(&value) {
+                dropped += 1;
+            }
+        }
+        let values = kept;
         let mut inner = self.lock();
+        if dropped > 0 && !std::mem::replace(&mut inner.cap_logged, true) {
+            tracing::warn!(
+                source,
+                dropped,
+                kept = MAX_SECRETS_PER_SOURCE,
+                "a secret source is over its cap; the values beyond it are not scrubbed"
+            );
+        }
         let changed = if values.is_empty() {
             inner.sources.remove(source).is_some()
         } else if inner.sources.get(source) == Some(&values) {
@@ -272,9 +301,21 @@ impl Hold {
         if let Some(&(start, _)) = spans.iter().find(|&&(_, end)| end > cut) {
             cut = cut.min(start);
         }
+        // Never keep more than the longest form: a run of overlapping matches would otherwise be
+        // held and rescanned whole on every push.
+        let mut floor = self.text.len().saturating_sub(matcher.longest);
+        while !self.text.is_char_boundary(floor) {
+            floor += 1;
+        }
+        cut = cut.max(floor);
         let kept = self.text.split_off(cut);
         let head = std::mem::replace(&mut self.text, kept);
-        render(&head, &spans)
+        let in_head: Vec<_> = spans
+            .iter()
+            .filter(|&&(start, _)| start < cut)
+            .map(|&(start, end)| (start, end.min(cut)))
+            .collect();
+        render(&head, &in_head)
     }
 
     fn finish(&mut self, matcher: &Matcher) -> String {
@@ -338,8 +379,9 @@ impl Matcher {
         (!spans.is_empty()).then(|| render(text, &spans))
     }
 
-    /// Where the longest suffix of `text` that is a proper prefix of some form begins, or the
-    /// length of `text` when there is none.
+    /// Where the longest suffix of `text` that some longer form starts with begins, or the length
+    /// of `text` when there is none. A suffix that is itself a whole form counts when a longer
+    /// form continues it.
     fn hold_start(&self, text: &str) -> usize {
         if self.forms.is_empty() {
             return text.len();
@@ -353,8 +395,8 @@ impl Matcher {
             if self
                 .forms
                 .range::<str, _>((Bound::Included(tail), Bound::Unbounded))
-                .next()
-                .is_some_and(|form| form.len() > tail.len() && form.starts_with(tail))
+                .take_while(|form| form.starts_with(tail))
+                .any(|form| form.len() > tail.len())
             {
                 return start;
             }
@@ -517,6 +559,17 @@ fn split_ansi(text: &str) -> (String, &str) {
         let start = at + found;
         out.push_str(&text[at..start]);
         let rest = &text[start..];
+        // An introducer left directly before a replaced secret goes alone, so the sequence it
+        // would open cannot eat the marker.
+        let introducer = match rest.as_bytes() {
+            [0x1b, b'[' | b']', ..] => 2,
+            [0x1b, ..] => 1,
+            _ => '\u{9b}'.len_utf8(),
+        };
+        if rest[introducer..].starts_with(REDACTED) {
+            at = start + introducer;
+            continue;
+        }
         match escape_end(rest) {
             Escape::Done(len) => at = start + len,
             Escape::Open => return (out, rest),
@@ -582,26 +635,33 @@ fn csi_end(chars: std::str::CharIndices<'_>) -> Escape {
 /// residual.
 #[must_use]
 pub fn env_secrets<'a>(vars: impl IntoIterator<Item = &'a EnvVar>) -> Vec<String> {
-    let mut out = BTreeSet::new();
+    let mut named = Vec::new();
+    let mut runs = Vec::new();
     for var in vars {
         let (Some(name), Some(value)) = (var.name().to_str(), var.expose_value().to_str()) else {
             continue;
         };
         if secret_named(name) {
             if value.len() >= 12 {
-                out.insert(value.to_owned());
+                named.push(value.to_owned());
                 // A credential helper wraps the token (`x-access-token:ghp_...`), and a child
                 // prints the token alone.
-                out.extend(token_runs(value));
+                named.extend(token_runs(value));
             }
             continue;
         }
         if exempt_from_runs(name) {
             continue;
         }
-        out.extend(token_runs(value));
+        runs.extend(token_runs(value));
     }
-    out.into_iter().collect()
+    // Secret-named values come first: they are the ones a source cap must never drop.
+    let mut seen = BTreeSet::new();
+    named
+        .into_iter()
+        .chain(runs)
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
 }
 
 const SECRET_SUFFIXES: &[&str] = &[
@@ -828,25 +888,61 @@ mod tests {
 
     #[test]
     fn a_secret_that_prefixes_a_longer_secret_never_defeats_the_hold_back() {
-        let short = "tok_9fQ2LmZx81Kd";
-        let long = format!("{short}PvR4sWbN7hYc");
-        let redactor = redactor(&[short, &long]);
-        for text in [
-            format!("a {long} b"),
-            format!("a {short} b"),
-            format!("a {short}Pv"),
-        ] {
-            for size in 1..=text.len() {
-                let (out, released) = streamed(&redactor, &text, size);
-                for piece in &released {
-                    assert!(!piece.contains("tok_9f"), "size {size} released {piece:?}");
+        // The short secret ends in a byte that no form starts with, so only the longer form can
+        // make the stream wait once the short one has completed.
+        for short in ["tok_9fQ2LmZx81Km", "tok_9fQ2LmZx81Kd"] {
+            let long = format!("{short}PvR4sWbN7hYc");
+            let redactor = redactor(&[short, &long]);
+            for text in [
+                format!("a {long} b"),
+                format!("a {short} b"),
+                format!("a {short}Pv"),
+                format!("a {short}PvR4sWbN7hY"),
+            ] {
+                for size in 1..=text.len() {
+                    let (out, released) = streamed(&redactor, &text, size);
+                    for piece in &released {
+                        assert!(
+                            !piece.contains("tok_9f") && !piece.contains("PvR4"),
+                            "{short} size {size} released {piece:?}"
+                        );
+                    }
+                    assert!(
+                        !out.contains("tok_9f") && !out.contains("PvR4"),
+                        "{short} size {size}: {out:?}"
+                    );
                 }
-                assert!(!out.contains("tok_9f"), "size {size}: {out:?}");
-                assert!(!out.contains("PvR4"), "size {size}: {out:?}");
+            }
+            for size in 1..=("a  b".len() + long.len()) {
+                let (out, _) = streamed(&redactor, &format!("a {long} b"), size);
+                assert_eq!(out, "a (redacted) b", "{short} size {size}");
+                let (out, _) = streamed(&redactor, &format!("a {short} b"), size);
+                assert_eq!(out, "a (redacted) b", "{short} size {size}");
             }
         }
-        let (out, _) = streamed(&redactor, &format!("a {long} b"), 3);
-        assert_eq!(out, "a (redacted) b");
+    }
+
+    #[test]
+    fn a_run_of_overlapping_matches_is_held_no_longer_than_the_longest_form() {
+        let secret = "ab".repeat(8);
+        let redactor = redactor(&[&secret]);
+        let longest = redactor.matcher().longest;
+        let mut stream = redactor.stream();
+        let started = std::time::Instant::now();
+        let mut out = String::new();
+        let run = "ab".repeat(50_000);
+        for piece in run.as_bytes().chunks(64) {
+            out.push_str(&stream.push(std::str::from_utf8(piece).unwrap()));
+            assert!(
+                stream.raw.text.len() <= longest,
+                "{}",
+                stream.raw.text.len()
+            );
+        }
+        out.push_str(&stream.finish());
+        assert!(out.contains(REDACTED));
+        assert!(!out.contains(&secret), "a whole secret left");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]
@@ -883,6 +979,77 @@ mod tests {
         assert!(out.ends_with(&filler[..4096]), "the output vanished");
         assert!(out.len() > filler.len() - 8192);
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn an_escape_introducer_before_a_token_leaves_the_marker_whole() {
+        let redactor = redactor(&[TOKEN]);
+        for lead in ["\u{1b}[", "\u{9b}", "\u{1b}", "\u{1b}]"] {
+            let text = format!("x {lead}{TOKEN} y");
+            assert_eq!(redactor.scrub(&text), "x (redacted) y", "{lead:?}");
+            for size in 1..=text.len() {
+                let (out, _) = streamed(&redactor, &text, size);
+                assert_eq!(out, "x (redacted) y", "{lead:?} size {size}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_source_keeps_thousands_of_secrets_and_the_first_given_past_its_cap() {
+        let redactor = Redactor::new();
+        let values: Vec<String> = (0..MAX_SECRETS_PER_SOURCE + 50)
+            .map(|n| format!("zq{n:06}-secret-value"))
+            .collect();
+        redactor.set_source("many", values.clone());
+        assert_eq!(redactor.scrub(&values[0]), REDACTED);
+        assert_eq!(
+            redactor.scrub(&values[MAX_SECRETS_PER_SOURCE - 1]),
+            REDACTED
+        );
+        let dropped = &values[MAX_SECRETS_PER_SOURCE];
+        assert_eq!(redactor.scrub(dropped), dropped.as_str());
+    }
+
+    #[test]
+    fn a_secret_named_value_survives_an_environment_full_of_other_tokens() {
+        let crowd: String = (0..MAX_SECRETS_PER_SOURCE + 100)
+            .map(|n| format!("Q{n:05}ZxKdPvR4sWbN7h "))
+            .collect();
+        let env = vars(&[
+            ("CROWD", &crowd),
+            ("service_api_key", "abcdefghijklmnop0123"),
+        ]);
+        let held = env_secrets(&env);
+        assert!(held.len() > MAX_SECRETS_PER_SOURCE, "{}", held.len());
+        assert_eq!(held[0], "abcdefghijklmnop0123");
+        let redactor = Redactor::new();
+        redactor.hold_env(Holder::Pty(AgentId::NIL), &env);
+        assert_eq!(redactor.scrub("abcdefghijklmnop0123"), REDACTED);
+    }
+
+    #[test]
+    fn a_secret_of_sixty_kib_gets_its_encoded_forms_and_builds_quickly() {
+        let mut seed = 0x2545_f491_u32;
+        let secret: String = (0..60 * 1024)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                char::from(
+                    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+                        [(seed >> 24) as usize % 62],
+                )
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        let redactor = redactor(&[&secret]);
+        let built = started.elapsed();
+        assert!(redactor.matcher().forms.len() > 4);
+        let text = format!(
+            "<{}|{}>",
+            hex(secret.as_bytes(), false),
+            b64(secret.as_bytes())
+        );
+        assert_eq!(redactor.scrub(&text), "<(redacted)|(redacted)>");
+        assert!(built < std::time::Duration::from_secs(2), "{built:?}");
     }
 
     #[test]

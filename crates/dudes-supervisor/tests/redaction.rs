@@ -2,11 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use dudes_proto::{ExitStatus, Record, TurnOutcome};
+use dudes_proto::{
+    Actor, Entry, Event, EventKind, ExitStatus, PeerProvenance, Record, TurnOutcome,
+};
 use dudes_providers::launch::{EnvVar, LaunchSpec};
 use dudes_supervisor::testing::{Harness, Seen};
-use dudes_supervisor::{Command, Holder, Input, REDACTED};
-use dudes_types::AgentId;
+use dudes_supervisor::{Command, Holder, HookId, Input, REDACTED};
+use dudes_types::{AgentId, Lsn, Provenance, SessionId, Timestamp, TurnId};
 
 fn token_of(harness: &Harness) -> String {
     harness
@@ -188,4 +190,115 @@ fn a_failed_reason_is_scrubbed_and_then_cut() {
     assert!(reason.starts_with("boom (redacted) aaaa"), "{reason}");
     assert!(reason.len() <= 4_096);
     assert!(!reason.contains(&token[..6]), "{reason}");
+}
+
+#[test]
+fn an_attached_hook_last_message_is_scrubbed_before_the_turn_end_is_journaled() {
+    let mut harness = Harness::new();
+    let agent = harness.hire();
+    harness.drive(Input::Replayed {
+        lsn: Lsn(1),
+        entry: Entry {
+            at: Timestamp::from_unix_millis(1),
+            record: Record::SessionLearned {
+                agent,
+                turn: TurnId::NIL,
+                session: SessionId::from("550e8400-e29b-41d4-a716-446655440000"),
+            },
+        },
+    });
+    harness.drive(Input::Command(Command::Attach {
+        agent,
+        by: Actor::System,
+        provenance: Some(PeerProvenance::NoRecordedAgent),
+        cols: 80,
+        rows: 24,
+    }));
+    let token = harness
+        .trace
+        .iter()
+        .find_map(|seen| match seen {
+            Seen::OpenPty { spec, .. } => spec
+                .env
+                .iter()
+                .find(|var| var.name() == "DUDES_TOKEN")
+                .and_then(|var| var.expose_value().to_str())
+                .map(str::to_owned),
+            _ => None,
+        })
+        .expect("the attached child was handed its token");
+    let padding = "x".repeat(4_000);
+    harness.drive(Input::Hook {
+        hook: HookId(1),
+        event: Event {
+            agent,
+            at: Timestamp::from_unix_millis(2),
+            provenance: Provenance::Observed,
+            kind: EventKind::TurnEnd {
+                last_message: Some(format!("{padding} {token} tail")),
+            },
+            raw: None,
+        },
+    });
+    let journaled: Vec<_> = harness
+        .journal
+        .iter()
+        .filter_map(|entry| match &entry.record {
+            Record::TurnEnded { last_message, .. } => last_message.clone(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(journaled.len(), 1, "the hook end was journaled");
+    assert!(!journaled[0].contains(&token[..8]), "{:?}", journaled[0]);
+    assert!(journaled[0].contains(REDACTED));
+}
+
+fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|name| name != "target") {
+                rust_files(&path, out);
+            }
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// A second private secret set would hide nothing from the readers that use the first, so only
+/// the places that own a run may make one.
+#[test]
+fn only_the_run_owner_and_the_test_constructors_make_a_secret_set() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    for dir in ["crates", "bins"] {
+        rust_files(&root.join(dir), &mut files);
+    }
+    let mut makers: Vec<String> = files
+        .iter()
+        .filter(|path| !path.components().any(|part| part.as_os_str() == "tests"))
+        .filter(|path| {
+            std::fs::read_to_string(path).is_ok_and(|text| text.contains("Redactor::for_run("))
+        })
+        .map(|path| {
+            path.strip_prefix(&root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace("../", "")
+        })
+        .collect();
+    makers.sort();
+    assert_eq!(
+        makers,
+        [
+            "bins/duded/src/children.rs",
+            "bins/duded/src/git_read/diff/reader.rs",
+            "bins/duded/src/output.rs",
+            "crates/dudes-supervisor/src/machine.rs",
+        ],
+    );
 }

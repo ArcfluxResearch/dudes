@@ -1,5 +1,6 @@
 //! Bounded reads of one agent's memory for a viewer: a page of entries newest first, one entry by
-//! position, the active summary and the withheld appends. Each read copies at most what it returns.
+//! position, the active summary and the withheld appends. A read scrubs the whole text of each
+//! entry it returns before it cuts it, so it works on the entry's full length, not on the bound.
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
@@ -156,8 +157,7 @@ impl MemoryProjection {
         scrub: &dyn for<'t> Fn(&'t str) -> Cow<'t, str>,
     ) -> MemoryEntry {
         let scrubbed = scrub(&applied.text);
-        let (text, _) = prefix(&scrubbed, max);
-        let cut = applied.text.len() > max;
+        let (text, cut) = prefix(&scrubbed, max);
         MemoryEntry {
             lsn,
             at: applied.at,

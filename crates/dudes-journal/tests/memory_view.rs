@@ -212,6 +212,21 @@ fn a_secret_across_a_cut_is_scrubbed_before_the_cut_and_never_half_shown() {
 }
 
 #[test]
+fn an_entry_that_is_short_once_scrubbed_is_not_reported_as_cut() {
+    const SECRET: &str = "tok_9fQ2LmZx81KdPvR4sWbN7hYcA3eJuT6o";
+    fn hide(text: &str) -> Cow<'_, str> {
+        Cow::Owned(text.replace(SECRET, "(redacted)"))
+    }
+    let (_root, mut memory) = projection();
+    let text = SECRET.repeat(60);
+    assert!(text.len() > 2_048);
+    fold(&mut memory, 1, append(agent(), &text, None));
+    let preview = &memory.page(agent(), None, 1, 2_048, &hide).entries[0];
+    assert_eq!(preview.text, "(redacted)".repeat(60));
+    assert!(!preview.cut, "everything the entry holds was shown");
+}
+
+#[test]
 fn an_entry_is_read_only_at_an_applied_position_of_that_agent() {
     let (_root, mut memory) = projection();
     fold(&mut memory, 1, append(agent(), "mine", None));
