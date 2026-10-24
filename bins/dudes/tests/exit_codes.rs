@@ -233,7 +233,6 @@ fn help_and_an_unknown_command_differ_by_stream_not_by_code() {
     let help = Cli::bare().args(["--help"]).run();
     assert_eq!(help.code(), exit::SUCCESS, "{}", help.output());
     assert!(help.stdout.contains("USAGE"), "{}", help.stdout);
-    assert!(help.stdout.contains("Chat is always on"), "{}", help.stdout);
     assert!(
         help.stderr.is_empty(),
         "a help request is not an error and writes no error line: {}",
@@ -245,9 +244,22 @@ fn help_and_an_unknown_command_differ_by_stream_not_by_code() {
 
     let nested = Cli::bare().args(["hire", "--help"]).run();
     assert_eq!(nested.code(), exit::USAGE, "{}", nested.output());
-    assert_eq!(nested.stdout, help.stdout);
+    assert!(
+        nested.stdout.contains("dudes hire --name"),
+        "{}",
+        nested.output()
+    );
+    assert!(!nested.stdout.contains("COMMANDS"), "{}", nested.output());
 
-    let unknown = Cli::bare().args(["nosuch"]).run();
+    let config = Cli::bare().args(["config", "--help"]).run();
+    assert_eq!(config.code(), exit::USAGE, "{}", config.output());
+    assert!(
+        config.stdout.contains("Chat is always on"),
+        "{}",
+        config.output()
+    );
+
+    let unknown = Cli::bare().args(["nosuch", "--help"]).run();
     assert_eq!(unknown.code(), exit::USAGE, "{}", unknown.output());
     assert!(
         unknown.stderr.contains("nosuch"),
@@ -256,7 +268,7 @@ fn help_and_an_unknown_command_differ_by_stream_not_by_code() {
     );
     assert_eq!(
         unknown.stderr,
-        "dudes: unknown command `nosuch`\nRun `dudes --help` for every command and its options.\n",
+        "dudes: unknown command `nosuch`\nRun `dudes --help` for commands or `dudes <command> --help` for options.\n",
         "the mistake and where the usage is, and nothing else"
     );
 }

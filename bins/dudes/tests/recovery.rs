@@ -347,7 +347,10 @@ fn recovery_parser_requires_explicit_choices_and_documents_the_retained_id() {
         "do not resend",
         "does not promise launch",
     ] {
-        assert!(dudes::args::USAGE.contains(literal), "{literal}");
+        assert!(
+            dudes::args::help_for(&words(&["recovery", "--help"])).contains(literal),
+            "{literal}"
+        );
     }
 }
 
