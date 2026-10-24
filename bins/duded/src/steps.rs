@@ -1,7 +1,9 @@
 //! A turn's steps, made safe to show. Every text field passes the daemon's secret scrub before it
 //! is cut to size or kept, so nothing past this module holds a secret the daemon knows, and a
 //! step that names a sensitive path or carries a secret-shaped value loses its edit text too.
-//! Results are not here: a step carries only how it ended and how big its result was.
+//! A step on the wire carries only how it ended and how big its result was. A result's text, and
+//! an edit's text past the input cap, are kept apart (see `step_results`) and sent only when
+//! the selected agent's page asks for them.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,6 +15,8 @@ use crate::secret_patterns::{contains_secret, sensitive_path};
 
 /// The most an input, or one side of an edit, shows. The rest is cut and marked.
 pub(crate) const INPUT_BYTES: usize = 2 * 1024;
+/// The most a kept result, or one side of a kept edit, holds. The rest is cut and marked.
+pub(crate) const KEPT_BYTES: usize = 8 * 1024;
 const PLAN_ITEM_BYTES: usize = 512;
 const NAME_BYTES: usize = 128;
 
@@ -93,7 +97,92 @@ pub(crate) struct Closing {
     pub(crate) failed: bool,
     pub(crate) exit: Option<i32>,
     pub(crate) result_bytes: u64,
+    pub(crate) result: Option<KeptResult>,
     pub(crate) at: u64,
+}
+
+/// Text a step keeps for a fetch: scrubbed when it arrived and cut to size.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct KeptText {
+    pub(crate) text: String,
+    pub(crate) cut: bool,
+}
+
+impl std::fmt::Debug for KeptText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeptText")
+            .field("bytes", &self.text.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A result as kept. One that held a secret-shaped value keeps nothing but that fact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum KeptResult {
+    Text(KeptText),
+    Secret,
+}
+
+/// An edit's text as kept, for an edit too long to show in the step itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct KeptEdit {
+    pub(crate) old: Option<KeptText>,
+    pub(crate) new: KeptText,
+}
+
+impl KeptText {
+    pub(crate) const fn bytes(&self) -> usize {
+        self.text.len()
+    }
+}
+
+impl KeptResult {
+    pub(crate) const fn bytes(&self) -> usize {
+        match self {
+            Self::Text(text) => text.bytes(),
+            Self::Secret => 0,
+        }
+    }
+}
+
+impl KeptEdit {
+    pub(crate) fn bytes(&self) -> usize {
+        self.old.as_ref().map_or(0, KeptText::bytes) + self.new.bytes()
+    }
+}
+
+/// Whether a finished step's result text is worth keeping for a fetch. A step that is withheld,
+/// a connected tool's, and a step whose text is its own edit or plan never are.
+pub(crate) fn keeps_result(view: &StepView) -> bool {
+    view.withheld.is_none() && !matches!(view.kind, "mcp" | "plan" | "edit" | "write")
+}
+
+/// Scrubs a result's whole text, looks for a secret-shaped value in all of it, and only then cuts
+/// it, so a value on the cut line is never half kept.
+pub(crate) fn keep_result(redactor: &Redactor, text: &str) -> KeptResult {
+    let text = redactor.scrub(text);
+    if result_holds_secret(&text) {
+        KeptResult::Secret
+    } else {
+        KeptResult::Text(keep_text(&text))
+    }
+}
+
+/// Whether a result holds a secret-shaped value, in its text or in any `name: value` line.
+pub(crate) fn result_holds_secret(text: &str) -> bool {
+    holds_secret("result", text)
+}
+
+fn keep_text(text: &str) -> KeptText {
+    let (text, cut) = cap(text, KEPT_BYTES);
+    KeptText { text, cut }
+}
+
+/// A text with the secrets the daemon knows now taken out, for one learned after it was kept.
+pub(crate) fn rescrub(redactor: &Redactor, text: &mut String) {
+    if let std::borrow::Cow::Owned(clean) = redactor.scrub(text) {
+        *text = clean;
+    }
 }
 
 impl StepView {
@@ -149,7 +238,18 @@ pub(crate) fn now_ms() -> u64 {
 }
 
 /// The safe form of a step the engine just started.
+#[cfg(test)]
 pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
+    open_with_text(redactor, step, now).0
+}
+
+/// The safe form of a step the engine just started, and its edit text when that is too long to
+/// show in the step and nothing about the step is withheld.
+pub(crate) fn open_with_text(
+    redactor: &Redactor,
+    step: Step,
+    now: u64,
+) -> (StepView, Option<KeptEdit>) {
     let Step {
         id,
         parent,
@@ -186,7 +286,21 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
             },
         ));
     }
-    let edit = edit.and_then(|edit| edit_view(redactor, edit, &mut withheld));
+    let edit = edit.map(|EditText { old, new }| EditText {
+        old: old.map(|old| redactor.scrub(&old).into_owned()),
+        new: redactor.scrub(&new).into_owned(),
+    });
+    let shown = edit
+        .as_ref()
+        .and_then(|edit| edit_view(edit, &mut withheld));
+    let kept = shown
+        .as_ref()
+        .filter(|shown| shown.cut)
+        .zip(edit.as_ref())
+        .map(|(_, edit)| KeptEdit {
+            old: edit.old.as_deref().map(keep_text),
+            new: keep_text(&edit.new),
+        });
     // A tool can carry its text in arguments the reader does not lift out (a list of edits, a
     // notebook cell, an MCP write's content), so a withheld edit step, and any step that names a
     // sensitive path, shows its path arguments and nothing else. A command is its own input and
@@ -216,14 +330,14 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
             }
         })
         .collect();
-    StepView {
+    let view = StepView {
         id: scrub_id(redactor, &id),
         parent: parent.map(|parent| scrub_id(redactor, &parent)),
         kind: kind.name(),
         tool: tool_name,
         status: Status::Running,
         args,
-        edit,
+        edit: shown,
         plan,
         withheld,
         exit: None,
@@ -231,7 +345,8 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
         note: None,
         started_at: now,
         ended_at: None,
-    }
+    };
+    (view, kept)
 }
 
 /// Whether an argument holds a secret: its text on its own, and each line as the `"key":"value"`
@@ -283,11 +398,7 @@ impl StepView {
     /// This step with the secrets the daemon knows now taken out of every text it holds, for one
     /// learned after the step was kept.
     pub(crate) fn rescrubbed(mut self, redactor: &Redactor) -> Self {
-        let scrub = |text: &mut String| {
-            if let std::borrow::Cow::Owned(clean) = redactor.scrub(text) {
-                *text = clean;
-            }
-        };
+        let scrub = |text: &mut String| rescrub(redactor, text);
         scrub(&mut self.id);
         scrub(&mut self.tool);
         if let Some(parent) = &mut self.parent {
@@ -310,16 +421,10 @@ impl StepView {
     }
 }
 
-/// The edit text, unless the file is sensitive or the text holds a secret. The scrub runs on the
-/// whole text and the cut after it, so a secret on the cut line is never half kept.
-fn edit_view(
-    redactor: &Redactor,
-    edit: EditText,
-    withheld: &mut Option<&'static str>,
-) -> Option<EditView> {
+/// The edit text, unless the file is sensitive or the text holds a secret. The text arrives
+/// scrubbed whole and the cut comes after it, so a secret on the cut line is never half kept.
+fn edit_view(edit: &EditText, withheld: &mut Option<&'static str>) -> Option<EditView> {
     let EditText { old, new } = edit;
-    let old = old.map(|old| redactor.scrub(&old).into_owned());
-    let new = redactor.scrub(&new).into_owned();
     if old
         .as_deref()
         .is_some_and(|old| contains_secret(old.as_bytes()))
@@ -332,12 +437,12 @@ fn edit_view(
     }
     let (old, old_cut) = match old {
         Some(old) => {
-            let (old, cut) = cap(&old, INPUT_BYTES);
+            let (old, cut) = cap(old, INPUT_BYTES);
             (Some(old), cut)
         }
         None => (None, false),
     };
-    let (new, new_cut) = cap(&new, INPUT_BYTES);
+    let (new, new_cut) = cap(new, INPUT_BYTES);
     Some(EditView {
         old,
         new,
@@ -808,6 +913,7 @@ mod tests {
             failed: true,
             exit: Some(2),
             result_bytes: 40,
+            result: None,
             at: 20,
         });
         assert_eq!(view.status, Status::Failed);

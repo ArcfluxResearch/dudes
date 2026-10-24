@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import type { ReactNode } from 'react';
-import type { PlanItem, StepArg, StepItem } from '../floor/steps.ts';
+import { requestStepResult } from '../floor/store.ts';
+import { EMPTY_RESULTS, hasKeptText } from '../floor/steps.ts';
+import type { PlanItem, ResultText, StepArg, StepItem, StepResult } from '../floor/steps.ts';
 
 const SUMMARY_CHARS = 100;
 const PLAN_MARKS = { pending: '☐', in_progress: '▸', completed: '☑' } as const;
@@ -79,9 +81,49 @@ function repeatsSummary(step: StepItem, item: StepArg): boolean {
   return step.edit !== null && item.key === 'file_path' && !item.cut && item.value === firstLine(item.value);
 }
 
-function Body({ step }: { readonly step: StepItem }) {
+type Results = Readonly<Record<string, StepResult>>;
+
+function CutNote({ text }: { readonly text: ResultText }) {
+  return text.cut ? <small className="step-cut">Cut to fit. Only the start of the output is kept.</small> : null;
+}
+
+function Diff({ old, next, cut, note }: {
+  readonly old: string | null; readonly next: string; readonly cut: boolean; readonly note: string;
+}) {
+  return <div className="step-diff" role="group" aria-label="Changes">
+    <pre className="step-text">{old === null ? null : <Lines text={old} sign="-" />}<Lines text={next} sign="+" /></pre>
+    {cut ? <small className="step-cut">{note}</small> : null}
+  </div>;
+}
+
+/** What the daemon kept for the step: its output, or an edit too long to show. Asked for once, on opening. */
+function Kept({ step, kept }: { readonly step: StepItem; readonly kept: StepResult | undefined }) {
+  const edit = step.kind === 'edit' || step.kind === 'write';
+  if (kept === undefined) {
+    return <button type="button" className="step-show" onClick={() => requestStepResult(step.id)}>
+      {edit ? 'Show the full text' : 'Show the output'}</button>;
+  }
+  switch (kept.state) {
+    case 'loading': return <p className="step-result" role="status">Loading…</p>;
+    case 'waiting': return <p className="step-result">This step is still running.</p>;
+    case 'gone': return <p className="step-result">This text is no longer kept.</p>;
+    case 'withheld': return <p className="step-withheld">Output is hidden: {kept.reason ?? 'it may hold a secret'}.</p>;
+    case 'refused': return <p className="step-withheld">The daemon would not send this: {kept.reason ?? 'the request was refused'}.</p>;
+    case 'ready':
+      if (kept.edit !== null) {
+        return <Diff old={kept.edit.old?.text ?? null} next={kept.edit.new.text}
+          cut={kept.edit.new.cut || kept.edit.old?.cut === true} note="Cut to fit. The whole change is in the Changes view." />;
+      }
+      return kept.result === null ? null : <div className="step-output">
+        <pre className="step-text">{kept.result.text}</pre><CutNote text={kept.result} /></div>;
+  }
+}
+
+function Body({ step, results }: { readonly step: StepItem; readonly results: Results }) {
   const result = step.resultBytes === null ? null
     : step.resultBytes === 0 ? 'No output.' : `${step.resultBytes} bytes of output.`;
+  const kept = hasKeptText(step) ? results[step.id] : undefined;
+  const whole = kept?.state === 'ready' && kept.edit !== null;
   return <div className="step-body">
     {step.kind === 'plan' ? <ul className="step-plan" aria-label="Plan">
       {step.plan.map((item, index) => <li key={index} data-plan-status={item.status}>
@@ -95,46 +137,48 @@ function Body({ step }: { readonly step: StepItem }) {
         <dd><pre className="step-text">{item.value}</pre>{item.cut ? <small className="step-cut">Cut to fit.</small> : null}</dd>
       </div>)}
     </dl>}
-    {step.edit === null ? null : <div className="step-diff" role="group" aria-label="Changes">
-      <pre className="step-text">{step.edit.old === null ? null : <Lines text={step.edit.old} sign="-" />}<Lines text={step.edit.new} sign="+" /></pre>
-      {step.edit.cut ? <small className="step-cut">Cut to fit.</small> : null}
-    </div>}
+    {step.edit === null || whole ? null
+      : <Diff old={step.edit.old} next={step.edit.new} cut={step.edit.cut} note="Cut to fit." />}
     {step.withheld === null ? null : <p className="step-withheld">Text is hidden: {step.withheld}.</p>}
     {result === null ? null : <p className="step-result">{result}</p>}
+    {hasKeptText(step) ? <Kept step={step} kept={kept} /> : null}
   </div>;
 }
 
-function StepBox({ step, children, depth }: { readonly step: StepItem; readonly children: ReactNode; readonly depth: number }) {
+function StepBox({ step, children, depth, results }: {
+  readonly step: StepItem; readonly children: ReactNode; readonly depth: number; readonly results: Results;
+}) {
   const result = outcome(step);
   return <li className="step" data-step-kind={step.kind} data-step-status={step.status} data-step-depth={depth}>
-    <details>
+    <details onToggle={(event) => { if (event.currentTarget.open && hasKeptText(step)) requestStepResult(step.id); }}>
       <summary>
         <span className="step-summary">{stepSummary(step)}</span>
         {result === null ? null : <small className="step-outcome"> · {result}</small>}
       </summary>
-      <Body step={step} />
+      <Body step={step} results={results} />
     </details>
     {children}
   </li>;
 }
 
-function Tree({ steps, parent, byParent, depth, seen }: {
+function Tree({ steps, parent, byParent, depth, seen, results }: {
   readonly steps: readonly StepItem[]; readonly parent: string | null;
   readonly byParent: ReadonlyMap<string | null, readonly StepItem[]>; readonly depth: number; readonly seen: ReadonlySet<string>;
+  readonly results: Results;
 }) {
   const level = byParent.get(parent) ?? [];
   if (level.length === 0) return null;
   if (depth > MAX_DEPTH) return <p className="chat-warning step-deeper">Deeper steps are not shown.</p>;
   return <ol className={depth === 0 ? 'step-list' : 'step-list step-children'}>
-    {level.map((step) => seen.has(step.id) ? null : <StepBox key={step.id} step={step} depth={depth}>
-      <Tree steps={steps} parent={step.id} byParent={byParent} depth={depth + 1} seen={new Set([...seen, step.id])} />
+    {level.map((step) => seen.has(step.id) ? null : <StepBox key={step.id} step={step} depth={depth} results={results}>
+      <Tree steps={steps} parent={step.id} byParent={byParent} depth={depth + 1} seen={new Set([...seen, step.id])} results={results} />
     </StepBox>)}
   </ol>;
 }
 
 /** The agent's steps for one turn, oldest first, a helper's steps under the step that started it. */
-export function Steps({ steps, truncated, stopped }: {
-  readonly steps: readonly StepItem[]; readonly truncated: boolean; readonly stopped: boolean;
+export function Steps({ steps, truncated, stopped, results = EMPTY_RESULTS }: {
+  readonly steps: readonly StepItem[]; readonly truncated: boolean; readonly stopped: boolean; readonly results?: Results;
 }) {
   if (steps.length === 0) return null;
   const ids = new Set(steps.map((step) => step.id));
@@ -148,7 +192,7 @@ export function Steps({ steps, truncated, stopped }: {
     <summary className="chat-steps-title">Steps <small>({steps.length}){steps.length > OPEN_UP_TO && latest !== undefined
       ? ` · latest: ${stepSummary(latest)}` : ''}</small></summary>
     {truncated ? <p className="chat-warning">Earlier steps are not shown.</p> : null}
-    <Tree steps={steps} parent={null} byParent={byParent} depth={0} seen={new Set()} />
+    <Tree steps={steps} parent={null} byParent={byParent} depth={0} seen={new Set()} results={results} />
     {stopped ? <p className="chat-warning" role="status">This page stopped receiving steps because there were too many.
       Reload the page to start over.</p> : null}
   </details></section>;

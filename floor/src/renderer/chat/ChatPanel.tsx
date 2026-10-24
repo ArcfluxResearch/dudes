@@ -249,7 +249,7 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
             </div>}
           {status === null ? null : <p className="chat-message-state" role="status">{status}</p>}
           {turn !== null && stepsMatch(floor, row, turn)
-            ? <Steps steps={floor.output.steps} truncated={floor.output.stepsTruncated} stopped={floor.output.stepsStopped} /> : null}
+            ? <Steps steps={floor.output.steps} truncated={floor.output.stepsTruncated} stopped={floor.output.stepsStopped} results={floor.output.stepResults} /> : null}
           {turn?.reply == null ? null : <div className="chat-message chat-assistant">
             <p className="chat-speaker">{name}</p>
             <ChatText text={turn.reply} final mode="agent" />

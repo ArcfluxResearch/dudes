@@ -2,8 +2,8 @@
 //!
 //! A call opens on the `assistant` line that carries its `tool_use` block, whole, and closes on
 //! the `user` line that carries its `tool_result`. The only carried state is the ids of the calls
-//! still open, so the same lines always give the same events. The result's text stays on the
-//! line: only its size leaves here.
+//! still open, so the same lines always give the same events. A result's text leaves here only as
+//! a bounded start for the daemon to scrub and keep. It is never sent on to a browser as it is.
 
 use dudes_proto::providers::claude::ContentBlock;
 use dudes_types::SessionId;
@@ -21,6 +21,9 @@ const MAX_PLAN_ITEMS: usize = 64;
 /// The most one nested argument flattens to. The rest is cut and marked, so one huge input
 /// cannot multiply into a larger text before the daemon checks it.
 const MAX_ARG_BYTES: usize = 64 * 1024;
+/// The most of a result's text that leaves the reader. It is far above what the daemon keeps, so
+/// the daemon scrubs and checks a long result before it cuts it, and never keeps half a secret.
+const MAX_RESULT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Default)]
 pub(super) struct LiveSteps {
@@ -68,13 +71,14 @@ impl LiveSteps {
                     let at = self.open.iter().position(|open| open == id)?;
                     self.open.remove(at);
                     let failed = block.is_error == Some(true);
-                    let (bytes, head) = result_size(block.content.as_ref());
+                    let (bytes, head, result) = result_text(block.content.as_ref());
                     Some(StepEvent::Close {
                         session: session.clone(),
                         id: id.to_owned(),
                         failed,
                         exit: failed.then(|| exit_code(&head)).flatten(),
                         result_bytes: bytes,
+                        result,
                     })
                 })
                 .collect(),
@@ -241,8 +245,9 @@ fn plan_item(todo: &Value) -> Option<PlanItem> {
     })
 }
 
-/// A result's size in bytes and its first characters, which carry a command's exit status.
-fn result_size(content: Option<&Value>) -> (u64, String) {
+/// A result's size in bytes, its first characters, which carry a command's exit status, and its
+/// text cut to what the daemon may read.
+fn result_text(content: Option<&Value>) -> (u64, String, Option<String>) {
     let pieces: Vec<&str> = match content {
         Some(Value::String(text)) => vec![text.as_str()],
         Some(Value::Array(blocks)) => blocks
@@ -256,7 +261,8 @@ fn result_size(content: Option<&Value>) -> (u64, String) {
         .first()
         .map(|piece| piece.chars().take(24).collect())
         .unwrap_or_default();
-    (bytes, head)
+    let text = (bytes > 0).then(|| crate::stream::bound_to(&pieces.join("\n"), MAX_RESULT_BYTES));
+    (bytes, head, text)
 }
 
 fn exit_code(head: &str) -> Option<i32> {
@@ -313,6 +319,7 @@ mod tests {
                 failed: false,
                 exit: None,
                 result_bytes: 9,
+                result: Some("hello-two".to_owned()),
             }]
         );
     }
@@ -355,8 +362,45 @@ mod tests {
                 failed: true,
                 exit: Some(3),
                 result_bytes: 16,
+                result: Some("Exit code 3\nboom".to_owned()),
             }]
         );
+    }
+
+    #[test]
+    fn a_result_of_text_blocks_is_joined_and_a_huge_one_is_cut_for_the_daemon() {
+        let mut steps = LiveSteps::default();
+        read(
+            &mut steps,
+            &format!(
+                r#"{{"type":"assistant","session_id":"{SESSION}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_1","name":"Read","input":{{"file_path":"/a"}}}},{{"type":"tool_use","id":"toolu_2","name":"Read","input":{{"file_path":"/b"}}}}]}}}}"#
+            ),
+        );
+        let huge = "h".repeat(MAX_RESULT_BYTES * 2);
+        let closed = read(
+            &mut steps,
+            &format!(
+                r#"{{"type":"user","session_id":"{SESSION}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_1","content":[{{"type":"text","text":"one"}},{{"type":"image"}},{{"type":"text","text":"two"}}]}},{{"type":"tool_result","tool_use_id":"toolu_2","content":"{huge}"}}]}}}}"#
+            ),
+        );
+        let [
+            StepEvent::Close {
+                result: first,
+                result_bytes: 6,
+                ..
+            },
+            StepEvent::Close {
+                result: Some(second),
+                result_bytes,
+                ..
+            },
+        ] = &closed[..]
+        else {
+            panic!("two closes expected, got {closed:?}");
+        };
+        assert_eq!(first.as_deref(), Some("one\ntwo"));
+        assert_eq!(*result_bytes, huge.len() as u64);
+        assert!(second.len() <= MAX_RESULT_BYTES && second.ends_with('…'));
     }
 
     #[test]

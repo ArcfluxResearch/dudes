@@ -1,6 +1,7 @@
 //! The steps of a managed turn as an engine's reader reports them: the tool calls it made and
 //! how each ended. Every type here is in no vendor's vocabulary, and none of it has been checked
-//! for secrets or cut to a size. The daemon does both before anything leaves it.
+//! for secrets or cut to a size. The daemon does both before anything leaves it, and a result's
+//! text goes no further than the daemon's own store.
 
 use dudes_types::SessionId;
 
@@ -128,8 +129,11 @@ pub enum StepEvent {
         failed: bool,
         /// The command's exit status, when the engine said.
         exit: Option<i32>,
-        /// The size of the result in bytes. The result itself is not kept here.
+        /// The size of the result in bytes.
         result_bytes: u64,
+        /// The start of the result's text, as the engine sent it and cut to a size the daemon
+        /// can scrub whole. It goes to the daemon's result store and never to a browser.
+        result: Option<String>,
     },
 }
 

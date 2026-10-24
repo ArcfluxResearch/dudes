@@ -90,6 +90,10 @@ fn managed_output_child_helper() {
         out.flush().expect("end flush");
         return;
     }
+    if label == "RESULTS" {
+        results_child(&mut out, &session, &dir);
+        return;
+    }
     wait_file(&dir.join("release-next"));
     assistant(&mut out, &session, &format!("{label}-second"));
     writeln!(out, r#"{{"type":"assistant","session_id":"wrong","message":{{"role":"assistant","content":[{{"type":"text","text":"{label}-wrong-session"}}]}}}}"#).expect("wrong-session line");
@@ -104,6 +108,92 @@ fn managed_output_child_helper() {
     }
     wait_file(&dir.join("release-exit"));
     writeln!(out, r#"{{"type":"result","session_id":"{session}","subtype":"success","is_error":false,"result":"{label}-result"}}"#).expect("result line");
+    out.flush().expect("end flush");
+}
+
+fn results_child(out: &mut impl std::io::Write, session: &str, dir: &Path) {
+    let token = std::env::var(STEP_SECRET).expect("planted secret");
+    let call = |id: &str, name: &str, input: Value| {
+        serde_json::json!({"type": "assistant", "session_id": session, "message": {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}})
+    };
+    let result = |id: &str, text: &str| {
+        serde_json::json!({"type": "user", "session_id": session, "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": id, "content": text,
+                "is_error": false}]}})
+    };
+    let bash = |command: &str| serde_json::json!({ "command": command });
+    let mut lines = Vec::new();
+    for index in 0..70 {
+        let id = format!("toolu_fill{index}");
+        lines.push(call(&id, "Bash", bash("true")));
+        lines.push(result(&id, &format!("filler {index}")));
+    }
+    let big = format!("{}TAIL-MARK", "x".repeat(20_000));
+    for (id, name, input, text) in [
+        (
+            "toolu_plain",
+            "Bash",
+            bash("echo plain"),
+            "plain output line".to_owned(),
+        ),
+        (
+            "toolu_known",
+            "Bash",
+            bash("echo x"),
+            format!("token {token} end"),
+        ),
+        (
+            "toolu_shape",
+            "Bash",
+            bash("echo y"),
+            "key=ghp_abcdefghijklmnopqrstuvwxyz0123456789".to_owned(),
+        ),
+        (
+            "toolu_env",
+            "Read",
+            serde_json::json!({"file_path": "/work/user/.env"}),
+            "DB_URL=PRIVATE-ENV-TEXT".to_owned(),
+        ),
+        (
+            "toolu_cat",
+            "Bash",
+            bash("cat ~/.aws/credentials"),
+            "PRIVATE-AWS-TEXT".to_owned(),
+        ),
+        (
+            "toolu_mcp",
+            "mcp__fs__read_file",
+            serde_json::json!({"path": "/work/a.txt"}),
+            "PRIVATE-MCP-TEXT".to_owned(),
+        ),
+        ("toolu_big", "Bash", bash("cat big.txt"), big),
+        (
+            "toolu_edit",
+            "Edit",
+            serde_json::json!({"file_path": "/repo/a.rs", "old_string": "a",
+                "new_string": "n".repeat(5_000)}),
+            "updated".to_owned(),
+        ),
+        (
+            "toolu_write",
+            "Write",
+            serde_json::json!({"file_path": "/repo/b.rs", "content": "w".repeat(9_000)}),
+            "created".to_owned(),
+        ),
+    ] {
+        lines.push(call(id, name, input));
+        lines.push(result(id, &text));
+    }
+    for line in lines {
+        writeln!(out, "{line}").expect("step line");
+    }
+    out.flush().expect("step flush");
+    std::fs::write(dir.join("steps-ready"), b"ready").expect("steps marker");
+    wait_file(&dir.join("release-exit"));
+    writeln!(out, r#"{{"type":"result","session_id":"{session}","subtype":"success","is_error":false,"result":"done"}}"#).expect("result line");
     out.flush().expect("end flush");
 }
 
@@ -692,6 +782,138 @@ fn steps_reach_only_the_selected_socket_scrubbed_and_others_see_a_kind() {
             "an unselected socket heard {private}"
         );
     }
+    std::fs::write(dir.join("release-exit"), b"go").unwrap();
+    drop(selected);
+    drop(bystander);
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+fn fetch(socket: &mut WebSocket, agent: &str, turn: &str, step: &str) -> Value {
+    socket.send(&format!(
+        r#"{{"type":"floor.output.fetch","agent_id":"{agent}","turn_id":"{turn}","step_id":"{step}"}}"#
+    ));
+    loop {
+        let frame = socket.output();
+        if frame["type"] == "floor.output.step" && frame["step_id"] == step {
+            return frame;
+        }
+    }
+}
+
+fn check_fetches(selected: &mut WebSocket, agent: &str, turn: &str) {
+    let mut heard = String::new();
+    let mut ask = |id: &str| {
+        let frame = fetch(selected, agent, turn, id);
+        heard.push_str(&frame.to_string());
+        frame
+    };
+
+    let plain = ask("toolu_plain");
+    assert_eq!(plain["state"], "ready");
+    assert_eq!(plain["result"]["text"], "plain output line");
+
+    let known = ask("toolu_known");
+    assert_eq!(known["result"]["text"], "token (redacted) end");
+
+    for (id, private) in [
+        ("toolu_shape", "ghp_"),
+        ("toolu_env", "PRIVATE-ENV"),
+        ("toolu_cat", "PRIVATE-AWS"),
+        ("toolu_mcp", "PRIVATE-MCP"),
+    ] {
+        let frame = ask(id);
+        assert_eq!(frame["state"], "withheld", "{id}: {frame}");
+        assert!(frame["reason"].is_string(), "{id}: {frame}");
+        assert!(frame.get("result").is_none(), "{id}: {frame}");
+        assert!(!frame.to_string().contains(private), "{id}: {frame}");
+    }
+
+    let big = ask("toolu_big");
+    let text = big["result"]["text"].as_str().unwrap();
+    assert!(
+        text.len() <= 8 * 1024 && big["result"]["cut"] == true,
+        "{big}"
+    );
+    assert!(!text.contains("TAIL-MARK"));
+
+    let edit = ask("toolu_edit");
+    assert_eq!(edit["edit"]["new"]["text"].as_str().unwrap().len(), 5_000);
+    assert!(edit["edit"]["new"].get("cut").is_none());
+    let write = ask("toolu_write");
+    assert_eq!(write["edit"]["new"]["cut"], true);
+    assert!(write["edit"]["new"]["text"].as_str().unwrap().len() <= 8 * 1024);
+
+    let evicted = ask("toolu_fill0");
+    assert_eq!(evicted["state"], "gone");
+    assert!(!heard.contains(SECRET_VALUE), "the secret reached the wire");
+}
+
+#[test]
+fn step_results_are_fetched_scrubbed_and_only_by_the_socket_that_selected_the_agent() {
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::new());
+    let settings = settings(&fixture, free_port());
+    let captured = Arc::new(Captured::default());
+    let daemon = duded::boot::boot_with_options_and_floor_faults(
+        &settings,
+        seams(
+            &settings,
+            ChildEnds::new(),
+            Arc::clone(&captured),
+            Arc::clone(&clock),
+        ),
+        duded::settings::RunOptions::default(),
+        None,
+        FloorStreamFault::default().without_heartbeat(),
+    )
+    .expect("boot local results fixture");
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let dir = fixture.state.path().join("RESULTS");
+    std::fs::create_dir(&dir).unwrap();
+    let agent = common::hire(&running.handle, &dir).to_string();
+    let page = common::floor_session_on(&settings, addr, {
+        let clock = Arc::clone(&clock);
+        move || clock.now().unix_millis()
+    });
+    let mut selected = WebSocket::connect(&page);
+    selected.send(r#"{"type":"floor.subscribe"}"#);
+    assert_eq!(selected.json()["type"], "floor.snapshot");
+    let mut bystander = WebSocket::connect(&page);
+    bystander.send(r#"{"type":"floor.subscribe"}"#);
+    assert_eq!(bystander.json()["type"], "floor.snapshot");
+    selected.send(&format!(
+        r#"{{"type":"floor.output.select","agent_id":"{agent}","view":"reply"}}"#
+    ));
+    assert_eq!(selected.output()["reason"], "no_run_output");
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent.parse().unwrap(), &["/usr/bin/true"]),
+    );
+    wait_file(&dir.join("steps-ready"));
+    captured.wait_for("toolu_write");
+    let mut turn = None;
+    let mut closed = 0;
+    for _ in 0..64 {
+        let frame = selected.output();
+        if frame["type"] == "floor.output.steps" {
+            turn = frame["turn_id"].as_str().map(str::to_owned);
+            closed += frame["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|step| step["status"] == "done" && step["id"] == "toolu_write")
+                .count();
+        }
+        if closed > 0 {
+            break;
+        }
+    }
+    let turn = turn.expect("the turn of the steps");
+    check_fetches(&mut selected, &agent, &turn);
+    let refused = fetch(&mut bystander, &agent, &turn, "toolu_plain");
+    assert_eq!(refused["state"], "refused");
+    assert!(!refused.to_string().contains("plain output line"));
     std::fs::write(dir.join("release-exit"), b"go").unwrap();
     drop(selected);
     drop(bystander);
