@@ -262,6 +262,12 @@ fn engine_child(out: &mut impl std::io::Write, label: &str, session: &str, dir: 
             line("item.completed", item("file_change", serde_json::json!({"id": "item_4", "changes": files, "status": "completed"}))),
             line("item.started", item("todo_list", serde_json::json!({"id": "item_5", "items": [{"text": "Ship it", "completed": false}]}))),
             line("item.completed", item("todo_list", serde_json::json!({"id": "item_5", "items": [{"text": "Ship it", "completed": true}]}))),
+            line("item.started", item("command_execution", serde_json::json!({"id": "item_6", "command": ["bash", "-lc", "cat ~/.aws/credentials"], "status": "in_progress"}))),
+            line("item.completed", item("command_execution", serde_json::json!({"id": "item_6", "command": ["bash", "-lc", "cat ~/.aws/credentials"], "aggregated_output": "PRIVATE-ARRAY-TEXT", "exit_code": 0, "status": "completed"}))),
+            line("item.completed", item("file_change", serde_json::json!({"id": "item_7", "changes": [{"path": "/repo/.env", "kind": "update"}], "status": "completed"}))),
+            line("item.started", item("mcp_tool_call", serde_json::json!({"id": "item_8", "server": "docs", "tool": "find", "arguments": {"topic": "rust"}, "status": "in_progress"}))),
+            line("item.completed", item("mcp_tool_call", serde_json::json!({"id": "item_8", "server": "docs", "tool": "find", "arguments": {"topic": "rust"}, "result": {"content": [{"type": "text", "text": "PRIVATE-MCP-TEXT"}]}, "status": "completed"}))),
+            line("item.completed", item("web_search", serde_json::json!({"id": "item_9", "query": "rust lifetimes"}))),
         ]
         .into_iter()
         .map(|value| value.to_string())
@@ -278,6 +284,12 @@ fn engine_child(out: &mut impl std::io::Write, label: &str, session: &str, dir: 
             end("call_3", "grep", "no match", true),
             start("call_4", "edit", serde_json::json!({"path": "/repo/a.rs", "edits": [{"oldText": "let a = 1;", "newText": "let a = 2;"}]})),
             end("call_4", "edit", "ok", false),
+            start("call_5", "edit", serde_json::json!({"path": "/repo/.env", "edits": [{"oldText": "A=1", "newText": "PRIVATE-EDIT-TEXT"}]})),
+            end("call_5", "edit", "ok", false),
+            start("call_6", "grep", serde_json::json!({"pattern": "key", "path": "~/.aws"})),
+            end("call_6", "grep", "PRIVATE-GREP-TEXT", false),
+            start("call_7|fc_x", "bash", serde_json::json!({"command": "pwd"})),
+            end("call_7|fc_x", "bash", "/repo\n", false),
         ]
         .into_iter()
         .map(|value| value.to_string())
@@ -904,8 +916,9 @@ fn steps_reach_only_the_selected_socket_scrubbed_and_others_see_a_kind() {
 }
 
 /// The last frame of each step the page heard, until every id in `ids` is no longer running.
-fn collect_by_id(selected: &mut WebSocket, ids: &[&str]) -> (String, Vec<Value>) {
+fn collect_by_id(selected: &mut WebSocket, ids: &[&str]) -> (String, Vec<Value>, String) {
     let mut seen = String::new();
+    let mut turn = String::new();
     let mut last: Vec<Value> = Vec::new();
     for _ in 0..64 {
         let frame = selected.output();
@@ -913,6 +926,10 @@ fn collect_by_id(selected: &mut WebSocket, ids: &[&str]) -> (String, Vec<Value>)
         if frame["type"] != "floor.output.steps" {
             continue;
         }
+        frame["turn_id"]
+            .as_str()
+            .unwrap_or_default()
+            .clone_into(&mut turn);
         for step in frame["steps"].as_array().unwrap() {
             last.retain(|old| old["id"] != step["id"]);
             last.push(step.clone());
@@ -924,7 +941,7 @@ fn collect_by_id(selected: &mut WebSocket, ids: &[&str]) -> (String, Vec<Value>)
             break;
         }
     }
-    (seen, last)
+    (seen, last, turn)
 }
 
 fn step_of<'a>(steps: &'a [Value], id: &str) -> &'a Value {
@@ -932,6 +949,108 @@ fn step_of<'a>(steps: &'a [Value], id: &str) -> &'a Value {
         .iter()
         .find(|step| step["id"] == id)
         .unwrap_or_else(|| panic!("no step {id} in {steps:?}"))
+}
+
+fn check_codex_steps(socket: &mut WebSocket, agent: &str) {
+    let (seen, steps, turn) = collect_by_id(
+        socket,
+        &[
+            "item_1", "item_2", "item_3", "item_4-1", "item_5", "item_6", "item_7", "item_8",
+            "item_9",
+        ],
+    );
+    assert!(
+        !seen.contains("PRIVATE-AWS-TEXT"),
+        "a withheld result reached the socket"
+    );
+    let ls = step_of(&steps, "item_1");
+    assert_eq!(
+        (ls["kind"].as_str(), ls["status"].as_str()),
+        (Some("command"), Some("done"))
+    );
+    assert_eq!(ls["args"][0]["value"], "/bin/zsh -lc 'ls'");
+    assert_eq!(ls["result_bytes"], 6);
+    assert!(step_of(&steps, "item_2")["withheld"].is_string());
+    let failed = step_of(&steps, "item_3");
+    assert_eq!(
+        (failed["status"].as_str(), failed["exit"].as_i64()),
+        (Some("failed"), Some(2))
+    );
+    assert_eq!(step_of(&steps, "item_4-0")["kind"], "write");
+    assert_eq!(step_of(&steps, "item_4-1")["kind"], "edit");
+    assert_eq!(
+        step_of(&steps, "item_4-1")["args"][0]["value"],
+        "/repo/a.rs"
+    );
+    assert_eq!(step_of(&steps, "item_5")["plan"][0]["text"], "Ship it");
+    assert_eq!(step_of(&steps, "item_5")["status"], "done");
+    assert!(step_of(&steps, "item_6")["withheld"].is_string());
+    assert_eq!(
+        step_of(&steps, "item_6")["args"][0]["value"],
+        "cat ~/.aws/credentials"
+    );
+    assert!(step_of(&steps, "item_7")["withheld"].is_string());
+    assert_eq!(step_of(&steps, "item_7")["kind"], "edit");
+    assert_eq!(step_of(&steps, "item_8")["kind"], "mcp");
+    assert_eq!(step_of(&steps, "item_9")["kind"], "web");
+    assert_eq!(step_of(&steps, "item_9")["status"], "done");
+
+    let listing = fetch(socket, agent, &turn, "item_1");
+    assert_eq!(listing["state"], "ready", "{listing}");
+    assert_eq!(listing["result"]["text"], "a.txt\n");
+    let mut heard = String::new();
+    for (id, private) in [
+        ("item_2", "PRIVATE-AWS-TEXT"),
+        ("item_6", "PRIVATE-ARRAY-TEXT"),
+        ("item_8", "PRIVATE-MCP-TEXT"),
+    ] {
+        let frame = fetch(socket, agent, &turn, id);
+        assert_eq!(frame["state"], "withheld", "{id}: {frame}");
+        assert!(frame.get("result").is_none(), "{id}: {frame}");
+        heard.push_str(&frame.to_string());
+        assert!(!heard.contains(private), "{id}: {frame}");
+    }
+}
+
+fn check_pi_steps(socket: &mut WebSocket, agent: &str) {
+    let bar = "call_7-fc_x-a7059c3c9d585e45";
+    let (seen, steps, turn) = collect_by_id(
+        socket,
+        &[
+            "call_1", "call_2", "call_3", "call_4", "call_5", "call_6", bar,
+        ],
+    );
+    assert!(
+        !seen.contains("PRIVATE-ENV-TEXT"),
+        "a withheld result reached the socket"
+    );
+    assert_eq!(step_of(&steps, "call_1")["kind"], "command");
+    assert_eq!(step_of(&steps, "call_1")["status"], "done");
+    assert!(step_of(&steps, "call_2")["withheld"].is_string());
+    assert_eq!(step_of(&steps, "call_3")["kind"], "search");
+    assert_eq!(step_of(&steps, "call_3")["status"], "failed");
+    let edit = step_of(&steps, "call_4");
+    assert_eq!(edit["kind"], "edit");
+    assert_eq!(edit["edit"]["old"], "let a = 1;");
+    assert_eq!(edit["edit"]["new"], "let a = 2;");
+    let env_edit = step_of(&steps, "call_5");
+    assert!(env_edit["withheld"].is_string());
+    assert!(env_edit["edit"].is_null(), "{env_edit}");
+    assert!(!seen.contains("PRIVATE-EDIT-TEXT"));
+    assert!(!seen.contains("PRIVATE-GREP-TEXT"));
+    assert_eq!(step_of(&steps, "call_6")["kind"], "search");
+    assert_eq!(step_of(&steps, bar)["status"], "done");
+
+    let pwd = fetch(socket, agent, &turn, bar);
+    assert_eq!(pwd["state"], "ready", "{pwd}");
+    assert_eq!(pwd["result"]["text"], "/repo\n");
+    let no_match = fetch(socket, agent, &turn, "call_3");
+    assert_eq!(no_match["result"]["text"], "no match");
+    for id in ["call_2", "call_6"] {
+        let frame = fetch(socket, agent, &turn, id);
+        assert_eq!(frame["state"], "withheld", "{id}: {frame}");
+        assert!(!frame.to_string().contains("PRIVATE-"), "{id}: {frame}");
+    }
 }
 
 #[test]
@@ -961,6 +1080,7 @@ fn codex_and_pi_steps_reach_the_selected_socket_scrubbed_by_the_same_rules() {
     });
     let mut dirs = Vec::new();
     let mut sockets = Vec::new();
+    let mut agents = Vec::new();
     for label in ["CODEX", "PI"] {
         let dir = fixture.state.path().join(label);
         std::fs::create_dir(&dir).unwrap();
@@ -978,6 +1098,7 @@ fn codex_and_pi_steps_reach_the_selected_socket_scrubbed_by_the_same_rules() {
         );
         dirs.push(dir);
         sockets.push(socket);
+        agents.push(agent);
     }
     let [codex_dir, pi_dir] = &dirs[..] else {
         unreachable!("two engines");
@@ -985,49 +1106,8 @@ fn codex_and_pi_steps_reach_the_selected_socket_scrubbed_by_the_same_rules() {
     wait_file(&codex_dir.join("steps-ready"));
     wait_file(&pi_dir.join("steps-ready"));
 
-    let (seen, steps) = collect_by_id(
-        &mut sockets[0],
-        &["item_1", "item_2", "item_3", "item_4-1", "item_5"],
-    );
-    assert!(
-        !seen.contains("PRIVATE-AWS-TEXT"),
-        "a withheld result reached the socket"
-    );
-    let ls = step_of(&steps, "item_1");
-    assert_eq!(
-        (ls["kind"].as_str(), ls["status"].as_str()),
-        (Some("command"), Some("done"))
-    );
-    assert_eq!(ls["args"][0]["value"], "/bin/zsh -lc 'ls'");
-    assert_eq!(ls["result_bytes"], 6);
-    assert!(step_of(&steps, "item_2")["withheld"].is_string());
-    let failed = step_of(&steps, "item_3");
-    assert_eq!(
-        (failed["status"].as_str(), failed["exit"].as_i64()),
-        (Some("failed"), Some(2))
-    );
-    assert_eq!(step_of(&steps, "item_4-0")["kind"], "write");
-    assert_eq!(step_of(&steps, "item_4-1")["kind"], "edit");
-    assert_eq!(
-        step_of(&steps, "item_4-1")["args"][0]["value"],
-        "/repo/a.rs"
-    );
-    assert_eq!(step_of(&steps, "item_5")["plan"][0]["text"], "Ship it");
-
-    let (seen, steps) = collect_by_id(&mut sockets[1], &["call_1", "call_2", "call_3", "call_4"]);
-    assert!(
-        !seen.contains("PRIVATE-ENV-TEXT"),
-        "a withheld result reached the socket"
-    );
-    assert_eq!(step_of(&steps, "call_1")["kind"], "command");
-    assert_eq!(step_of(&steps, "call_1")["status"], "done");
-    assert!(step_of(&steps, "call_2")["withheld"].is_string());
-    assert_eq!(step_of(&steps, "call_3")["kind"], "search");
-    assert_eq!(step_of(&steps, "call_3")["status"], "failed");
-    let edit = step_of(&steps, "call_4");
-    assert_eq!(edit["kind"], "edit");
-    assert_eq!(edit["edit"]["old"], "let a = 1;");
-    assert_eq!(edit["edit"]["new"], "let a = 2;");
+    check_codex_steps(&mut sockets[0], &agents[0].to_string());
+    check_pi_steps(&mut sockets[1], &agents[1].to_string());
 
     std::fs::write(codex_dir.join("release-exit"), b"go").unwrap();
     std::fs::write(pi_dir.join("release-exit"), b"go").unwrap();

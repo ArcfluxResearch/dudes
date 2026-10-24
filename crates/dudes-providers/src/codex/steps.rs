@@ -7,8 +7,8 @@
 //!
 //! | Item type                            | Kind      | Input                          | Result            |
 //! |--------------------------------------|-----------|--------------------------------|-------------------|
-//! | `command_execution`                  | command   | `command`                      | aggregated output |
-//! | `file_change`, one step per path     | edit or write | `file_path`                | none              |
+//! | `command_execution`                  | command   | `command`, and `cwd` if sent   | aggregated output |
+//! | `file_change`, one step per path     | edit or write | `file_path`, a move target | none              |
 //! | `mcp_tool_call`                      | mcp       | the call's `arguments`         | none              |
 //! | `web_search`                         | web       | `query`                        | none              |
 //! | `todo_list`, and a plan update       | plan      | the plan's items               | none              |
@@ -16,7 +16,9 @@
 //!
 //! A call opens on the item that starts it and closes on the item that completes it. The state
 //! carried is the ids of the calls still open, so the same lines always give the same events.
-//! Codex gives an exit code only for a command, and no parent for any item.
+//! A command with no text, or one that talks to a process already running, keeps no output. An item
+//! that arrives only as completed opens and closes at once. Codex gives an exit code only for a
+//! command, and no parent for any item.
 
 use std::collections::BTreeMap;
 
@@ -24,8 +26,7 @@ use dudes_types::SessionId;
 use serde_json::Value;
 
 use crate::steps::{
-    MAX_OPEN, PlanItem, PlanStatus, Step, StepEvent, StepKind, bounded_result, object_args,
-    valid_id,
+    MAX_OPEN, PlanItem, PlanStatus, Step, StepEvent, StepKind, bounded_result, object_args, step_id,
 };
 
 const MAX_PATHS: usize = 64;
@@ -59,6 +60,7 @@ struct Open {
 pub(super) struct LiveSteps {
     open: BTreeMap<String, Open>,
     plan_updates: u32,
+    last_plan: Vec<PlanItem>,
 }
 
 impl LiveSteps {
@@ -66,10 +68,10 @@ impl LiveSteps {
         let Some(id) = item_id(item) else {
             return Vec::new();
         };
-        if self.open.len() >= MAX_OPEN || self.open.contains_key(id) {
+        if self.open.len() >= MAX_OPEN || self.open.contains_key(&id) {
             return Vec::new();
         }
-        let steps = steps(id, item);
+        let steps = steps(&id, item);
         if steps.is_empty() {
             return Vec::new();
         }
@@ -78,7 +80,7 @@ impl LiveSteps {
             .map(|step| step.plan.clone())
             .unwrap_or_default();
         self.open.insert(
-            id.to_owned(),
+            id,
             Open {
                 ids: steps.iter().map(|step| step.id.clone()).collect(),
                 plan,
@@ -93,7 +95,7 @@ impl LiveSteps {
         let Some(id) = item_id(item) else {
             return Vec::new();
         };
-        let Some(open) = self.open.get_mut(id) else {
+        let Some(open) = self.open.get_mut(&id) else {
             return Vec::new();
         };
         if !is_todo(item) {
@@ -119,43 +121,40 @@ impl LiveSteps {
         let Some(id) = item_id(item) else {
             return Vec::new();
         };
-        if !self.open.contains_key(id) {
-            return Vec::new();
-        }
-        let mut events = self.updated(session, item);
-        let Some(open) = self.open.remove(id) else {
-            return events;
+        let (mut events, ids) = if self.open.contains_key(&id) {
+            let events = self.updated(session, item);
+            let open = self.open.remove(&id);
+            (events, open.map(|open| open.ids).unwrap_or_default())
+        } else {
+            let steps = steps(&id, item);
+            let ids = steps.iter().map(|step| step.id.clone()).collect();
+            (opens(session, steps), ids)
         };
-        let failed = failed(item);
         let (exit, bytes, result) = outcome(item);
         events.extend(closes(
             session,
-            open.ids,
-            failed,
+            ids,
+            failed(item),
             exit,
             Some((bytes, result)),
         ));
         events
     }
 
-    /// The app-server's plan for the turn, restated in full. Each restatement is a step, and the
-    /// one before it is over.
+    /// The app-server's plan for the turn, restated in full. A plan has no running phase, so each
+    /// restatement opens and closes at once, and one that repeats the last is not a step.
     pub(super) fn plan(&mut self, session: &SessionId, items: Vec<PlanItem>) -> Vec<StepEvent> {
-        let mut events = Vec::new();
-        if self.plan_updates > 0 {
-            events.extend(closes(
-                session,
-                vec![format!("plan-{}", self.plan_updates)],
-                false,
-                None,
-                None,
-            ));
+        if self.plan_updates > 0 && items == self.last_plan {
+            return Vec::new();
         }
         self.plan_updates += 1;
-        events.push(StepEvent::Open {
+        let id = format!("plan-{}", self.plan_updates);
+        self.last_plan.clone_from(&items);
+        let mut events = vec![StepEvent::Open {
             session: session.clone(),
-            step: plan_step(format!("plan-{}", self.plan_updates), "plan", items),
-        });
+            step: plan_step(id.clone(), "plan", items),
+        }];
+        events.extend(closes(session, vec![id], false, None, None));
         events
     }
 }
@@ -224,10 +223,8 @@ fn item_type(item: &Value) -> &str {
     item.get("type").and_then(Value::as_str).unwrap_or_default()
 }
 
-fn item_id(item: &Value) -> Option<&str> {
-    item.get("id")
-        .and_then(Value::as_str)
-        .filter(|id| valid_id(id))
+fn item_id(item: &Value) -> Option<String> {
+    item.get("id").and_then(Value::as_str).and_then(step_id)
 }
 
 fn is_todo(item: &Value) -> bool {
@@ -246,9 +243,12 @@ fn steps(id: &str, item: &Value) -> Vec<Step> {
     };
     match item_type(item) {
         "command_execution" | "commandExecution" => {
-            let args = command_text(item)
+            let mut args: Vec<(String, String)> = command_text(item)
                 .map(|command| vec![("command".to_owned(), command)])
                 .unwrap_or_default();
+            if let Some(cwd) = text(item, "cwd", "cwd").filter(|cwd| !cwd.is_empty()) {
+                args.push(("cwd".to_owned(), cwd.to_owned()));
+            }
             vec![one(StepKind::Command, "shell", args)]
         }
         "file_change" | "fileChange" => file_steps(id, item),
@@ -340,6 +340,10 @@ fn file_steps(id: &str, item: &Value) -> Vec<Step> {
                 "delete" => (StepKind::Edit, "delete"),
                 _ => (StepKind::Edit, "update"),
             };
+            let mut args = vec![("file_path".to_owned(), path.to_owned())];
+            if let Some(target) = move_target(change) {
+                args.push(("paths".to_owned(), target.to_owned()));
+            }
             Step {
                 id: if single {
                     id.to_owned()
@@ -349,7 +353,7 @@ fn file_steps(id: &str, item: &Value) -> Vec<Step> {
                 parent: None,
                 kind,
                 tool: tool.to_owned(),
-                args: vec![("file_path".to_owned(), path.to_owned())],
+                args,
                 edit: None,
                 plan: Vec::new(),
             }
@@ -365,6 +369,13 @@ fn change_kind(change: &Value) -> &str {
         Some(Value::Object(kind)) => kind.get("type").and_then(Value::as_str).unwrap_or_default(),
         _ => "",
     }
+}
+
+/// Where a change moves the file to. The daemon reads `paths` as a path, so a move into a
+/// sensitive folder is withheld like an edit of a file there.
+fn move_target(change: &Value) -> Option<&str> {
+    let kind = change.get("kind")?;
+    text(kind, "move_path", "movePath").filter(|target| !target.is_empty())
 }
 
 fn todo_items(item: &Value) -> Vec<PlanItem> {
@@ -400,13 +411,32 @@ fn outcome(item: &Value) -> (Option<i32>, u64, Option<String>) {
     if !matches!(item_type(item), "command_execution" | "commandExecution") {
         return (None, 0, None);
     }
-    let exit = failed(item)
-        .then(|| field(item, "exit_code", "exitCode").and_then(Value::as_i64))
-        .flatten()
-        .and_then(|code| i32::try_from(code).ok());
+    if !keeps_output(item) {
+        return (failed_exit(item), 0, None);
+    }
+    let exit = failed_exit(item);
     let (bytes, result) =
         bounded_result(text(item, "aggregated_output", "aggregatedOutput").unwrap_or_default());
     (exit, bytes, result)
+}
+
+fn failed_exit(item: &Value) -> Option<i32> {
+    failed(item)
+        .then(|| field(item, "exit_code", "exitCode").and_then(Value::as_i64))
+        .flatten()
+        .and_then(|code| i32::try_from(code).ok())
+}
+
+/// Whether a command's output is the output of the command the step names. A step with no
+/// command text, or one that talks to a process already running, has output the daemon cannot
+/// check against a command, so its text is not passed on.
+fn keeps_output(item: &Value) -> bool {
+    let named = command_text(item).is_some_and(|command| !command.trim().is_empty());
+    let interaction = matches!(
+        text(item, "source", "source"),
+        Some("unifiedExecInteraction" | "unified_exec_interaction")
+    );
+    named && !interaction
 }
 
 #[cfg(test)]
@@ -675,6 +705,75 @@ mod tests {
         assert_eq!(
             command_text(&item(r#"["git","status","--short"]"#)).as_deref(),
             Some("git status --short")
+        );
+    }
+
+    #[test]
+    fn items_that_only_arrive_completed_open_and_close_together() {
+        let events = run(&[
+            completed(
+                r#"{"id":"item_11","type":"file_change","changes":[{"path":"/repo/a.rs","kind":"update"}],"status":"completed"}"#,
+            ),
+            completed(r#"{"id":"item_12","type":"web_search","query":"rust lifetimes"}"#),
+        ]);
+        let [patch, patched, search, searched] = &events[..] else {
+            panic!("two opens and two closes expected, got {events:?}");
+        };
+        assert_eq!(
+            (open(patch).id.as_str(), open(patch).kind),
+            ("item_11", StepKind::Edit)
+        );
+        assert_eq!(close(patched), ("item_11", false, None, 0, None));
+        assert_eq!(
+            (open(search).tool.as_str(), open(search).kind),
+            ("web_search", StepKind::Web)
+        );
+        assert_eq!(close(searched), ("item_12", false, None, 0, None));
+    }
+
+    #[test]
+    fn a_move_target_rides_with_the_step_under_a_path_key() {
+        let events = run(&[started(
+            r#"{"id":"item_13","type":"file_change","changes":[{"path":"/repo/a.rs","kind":{"type":"update","move_path":"/work/me/.ssh/a.rs"}}]}"#,
+        )]);
+        assert_eq!(
+            open(&events[0]).args,
+            [
+                ("file_path".to_owned(), "/repo/a.rs".to_owned()),
+                ("paths".to_owned(), "/work/me/.ssh/a.rs".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_command_with_no_text_or_that_talks_to_a_running_process_keeps_no_output() {
+        let events = run(&[
+            started(r#"{"id":"item_14","type":"command_execution","status":"in_progress"}"#),
+            completed(
+                r#"{"id":"item_14","type":"command_execution","command":"","aggregated_output":"PRIVATE","exit_code":0,"status":"completed"}"#,
+            ),
+            started(
+                r#"{"id":"item_15","type":"command_execution","command":"ls","status":"in_progress"}"#,
+            ),
+            completed(
+                r#"{"id":"item_15","type":"command_execution","command":"ls","source":"unifiedExecInteraction","aggregated_output":"PRIVATE","exit_code":0,"status":"completed"}"#,
+            ),
+        ]);
+        assert_eq!(close(&events[1]), ("item_14", false, None, 0, None));
+        assert_eq!(close(&events[3]), ("item_15", false, None, 0, None));
+    }
+
+    #[test]
+    fn a_command_carries_its_working_directory() {
+        let events = run(&[started(
+            r#"{"id":"item_16","type":"command_execution","command":"cat *","cwd":"/work/me/.ssh"}"#,
+        )]);
+        assert_eq!(
+            open(&events[0]).args,
+            [
+                ("command".to_owned(), "cat *".to_owned()),
+                ("cwd".to_owned(), "/work/me/.ssh".to_owned()),
+            ]
         );
     }
 

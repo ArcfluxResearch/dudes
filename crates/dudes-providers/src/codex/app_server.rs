@@ -1153,22 +1153,60 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_update_closes_the_plan_before_it_and_opens_the_next() {
+    fn a_plan_update_opens_and_closes_at_once_and_a_repeat_is_not_a_step() {
         let mut reader = reader();
         ready(&mut reader);
         let update = |statuses: [&str; 2]| json!({"method":"turn/plan/updated","params":{"threadId":THREAD,"turnId":TURN,"explanation":null,"plan":[{"step":"Write it","status":statuses[0]},{"step":"Test it","status":statuses[1]}]}});
         let first = read(&mut reader, update(["inProgress", "pending"])).steps;
+        let repeat = read(&mut reader, update(["inProgress", "pending"])).steps;
         let second = read(&mut reader, update(["completed", "inProgress"])).steps;
-        let [StepEvent::Open { step, .. }] = &first[..] else {
-            panic!("one open expected, got {first:?}");
+        let [
+            StepEvent::Open { step, .. },
+            StepEvent::Close { id, failed, .. },
+        ] = &first[..]
+        else {
+            panic!("an open and a close expected, got {first:?}");
         };
         assert_eq!((step.id.as_str(), step.kind), ("plan-1", StepKind::Plan));
+        assert_eq!((id.as_str(), *failed), ("plan-1", false));
         assert_eq!(step.plan[0].status, crate::steps::PlanStatus::InProgress);
-        let [StepEvent::Close { id, .. }, StepEvent::Open { step, .. }] = &second[..] else {
-            panic!("a close and an open expected, got {second:?}");
+        assert!(repeat.is_empty());
+        let [StepEvent::Open { step, .. }, StepEvent::Close { id, .. }] = &second[..] else {
+            panic!("an open and a close expected, got {second:?}");
         };
-        assert_eq!((id.as_str(), step.id.as_str()), ("plan-1", "plan-2"));
+        assert_eq!((id.as_str(), step.id.as_str()), ("plan-2", "plan-2"));
         assert_eq!(step.plan[0].status, crate::steps::PlanStatus::Completed);
+    }
+
+    #[test]
+    fn a_command_carries_its_working_directory_and_a_poll_keeps_no_output() {
+        let mut reader = reader();
+        ready(&mut reader);
+        let command = json!({"type":"commandExecution","id":"call-9","command":"cat *","cwd":"/work/me/.ssh","source":"agent","status":"inProgress"});
+        let opened = read(&mut reader, tool("item/started", &command)).steps;
+        let [StepEvent::Open { step, .. }] = &opened[..] else {
+            panic!("one open step expected, got {opened:?}");
+        };
+        assert_eq!(
+            step.args,
+            [
+                ("command".to_owned(), "cat *".to_owned()),
+                ("cwd".to_owned(), "/work/me/.ssh".to_owned()),
+            ]
+        );
+        let poll = json!({"type":"commandExecution","id":"call-9","command":"cat *","cwd":"/work/me/.ssh","source":"unifiedExecInteraction","processId":"77","status":"completed","aggregatedOutput":"PRIVATE","exitCode":0});
+        let closed = read(&mut reader, tool("item/completed", &poll)).steps;
+        assert_eq!(
+            closed,
+            [StepEvent::Close {
+                session: SessionId::new(THREAD),
+                id: "call-9".to_owned(),
+                failed: false,
+                exit: None,
+                result_bytes: 0,
+                result: None,
+            }]
+        );
     }
 
     #[test]

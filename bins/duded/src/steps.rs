@@ -653,6 +653,32 @@ mod tests {
     }
 
     #[test]
+    fn a_command_run_in_a_sensitive_folder_is_withheld_and_a_plain_folder_is_not() {
+        let sensitive = open(
+            &redactor(),
+            step(
+                StepKind::Command,
+                "shell",
+                &[("command", "cat *"), ("cwd", "/work/me/.ssh")],
+            ),
+            1,
+        );
+        assert_eq!(sensitive.withheld, Some("the step names a sensitive path"));
+        assert!(!keeps_result(&sensitive));
+        let plain = open(
+            &redactor(),
+            step(
+                StepKind::Command,
+                "shell",
+                &[("command", "cat *"), ("cwd", "/work/me/project")],
+            ),
+            1,
+        );
+        assert_eq!(plain.withheld, None);
+        assert!(keeps_result(&plain));
+    }
+
+    #[test]
     fn a_step_naming_a_sensitive_path_shows_its_input_and_hides_its_edit() {
         for (kind, tool, args) in [
             (
