@@ -20,7 +20,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
-import { ADA, GRACE, agent, cardId, daemon, json, subscribe, ticketCard, instructionReview, instructionSummary, INSTRUCTION_WATERMARK } from './helpers/tickets.mjs';
+import { ADA, GRACE, advance as advanceStore, agent, cardId, daemon, json, subscribe, ticketCard, instructionReview, instructionSummary, INSTRUCTION_WATERMARK } from './helpers/tickets.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const NEW = cardId(1);
@@ -70,8 +70,11 @@ const panel = () => {
   return renderToStaticMarkup(createElement(TicketPanel, { floor, card: floor.cards.find((c) => c.id === NEW) }));
 };
 
+const advance = (cursor, changes) => advanceStore(store, cursor, changes);
+
 async function open(fields, { git = false, status = 'review', cardFields = {} } = {}) {
   subscribe(store, { agents: [agent()], cards: [ticketCard(1, status, { claimed_by: ADA, ...cardFields })], git });
+  advance('20');
   const { deps, seen } = daemon((url) => url === '/floor/ticket/read' ? json(200, reply(fields, { status })) : json(503, {}));
   await detail.loadDetail(store.getFloorState().cards[0], deps);
   return { deps, seen };
@@ -204,9 +207,55 @@ test('a ticket that moved on shows nothing from its earlier reading until the ne
   assert.equal(detail.getDetailState().phase, 'failed');
   const failed = drawn(moved);
   for (const words of EARLIER_WORDS) assert.doesNotMatch(failed, words, 'after the next read failed');
-  assert.match(failed, /We could not confirm that saved\./);
+  assert.match(failed, /Dudes could not read this ticket\. Choose Read again\./);
+  assert.doesNotMatch(failed, /could not confirm that saved/, 'a read saves nothing');
+  assert.match(failed, />Read again<\/button>/);
+  assert.doesNotMatch(failed, /before editing this ticket/, 'a ticket in review cannot be edited');
   assert.doesNotMatch(failed, /Reading the ticket…/);
   assert.equal(detail.editableDetail(detail.getDetailState(), moved), null);
+});
+
+test('a failed read of a ticket that can be edited also asks for the complete note', async () => {
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'todo')] });
+  await detail.loadDetail(store.getFloorState().cards[0], daemon(() => json(503, {})).deps);
+  assert.equal(detail.getDetailState().phase, 'failed');
+  const html = panel();
+  assert.match(html, /Dudes could not read this ticket\. Choose Read again\./);
+  assert.match(html, /Read the complete current note before editing this ticket\./);
+  assert.match(html, />Read again<\/button>/);
+});
+
+test('a reading of the same version that is not confirmed current marks the summary and drops the daemon\'s waiting words', async () => {
+  await open({ summary: 'I fixed the test.' });
+  const current = panel();
+  assert.match(current, /I fixed the test\./);
+  assert.doesNotMatch(current, /from the last reading/, 'a confirmed reading needs no label');
+
+  advance('21');
+  let answer;
+  const rereading = detail.loadDetail(store.getFloorState().cards[0], daemon(() => new Promise((resolve) => { answer = resolve; })).deps);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(detail.getDetailState().phase, 'loading');
+  const windows = { 'while the re-read runs': panel() };
+  answer(json(503, {}));
+  await rereading;
+  windows['after the re-read failed'] = panel();
+  for (const [when, html] of Object.entries(windows)) {
+    assert.match(html, /<div class="ticket-summary md"><p>I fixed the test\.<\/p><\/div><p class="ticket-hint" role="note">This is from the last reading of the ticket\. It may have changed since\.<\/p>/, when);
+  }
+  assert.match(windows['after the re-read failed'], /Dudes could not read this ticket\./);
+
+  detail.resetDetail();
+  store.resetFloorStore();
+  await open({ waiting: { wait: { kind: 'agent_busy' }, note: 'Waiting for Ada to finish its current work.' }, summary: null },
+    { status: 'claimed' });
+  assert.match(panel(), /Waiting for Ada to finish its current work\./, 'the daemon\'s words while the reading is current');
+  advance('21');
+  await detail.loadDetail(store.getFloorState().cards[0], daemon(() => json(503, {})).deps);
+  const stale = panel();
+  assert.doesNotMatch(stale, /Waiting for Ada to finish/, 'Ada is idle on the board, so the old waiting line is not repeated');
+  advance('22', { agents: [agent(ADA, 'Ada', { paused: true })] });
+  assert.match(panel(), /Waiting for Ada to be resumed\./, 'the card\'s own words stand in');
 });
 
 const GOAL = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
