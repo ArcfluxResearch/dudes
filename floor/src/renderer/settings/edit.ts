@@ -148,8 +148,10 @@ subscribeToFloor(() => {
   const phase = floor.phase;
   if (phase === 'live' && !floor.stale && floor.settings?.budget.floor_usd_per_day_micros === null
     && state.pendingDailyCeilingClear) {
+    const saved = state.last?.key === 'budget.floor_usd_per_day'
+      && (state.last.result.kind === 'saved' || state.last.result.kind === 'not_live');
     commit({ ...state, pendingDailyCeilingClear: false,
-      last: state.last?.key === 'budget.floor_usd_per_day' ? null : state.last });
+      last: saved ? null : state.last });
   }
   if (lastPhase === 'closed' && phase === 'live') forgetPendingRestart();
   lastPhase = phase;

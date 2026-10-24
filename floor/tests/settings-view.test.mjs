@@ -249,6 +249,19 @@ test('a saved daily ceiling clear stays beside the running value until replaced 
     assert.equal(edit.getSettingsEditState().last, null, 'the confirmed clear no longer asks for another restart');
     assert.doesNotMatch(render(unlimited), />Clear limit<\/button>/);
     assert.match(render(unlimited), /<dt>Floor daily dollars<\/dt><dd>No ceiling/);
+    store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 2, agents: [] }, settings: report }), epoch);
+    await save('budget.floor_usd_per_day', 'unset');
+    signing.installSigner(signer);
+    await session.adoptStoredFloorSession(signer);
+    globalThis.window = { fetch: response('refused', 409) };
+    try { await edit.changeSetting('budget.floor_usd_per_day', '8', null); }
+    finally { globalThis.window = savedWindow; signing.installSigner(null); session.resetFloorSession(); }
+    const refusal = edit.getSettingsEditState().last;
+    assert.equal(refusal?.result.kind, 'refused');
+    assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, true);
+    store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 3, agents: [] }, settings: unlimited }), epoch);
+    assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, false);
+    assert.equal(edit.getSettingsEditState().last, refusal, 'confirming the earlier clear keeps a later refusal visible');
     edit.resetSettingsEdit();
   } finally { await server.close(); }
 });
