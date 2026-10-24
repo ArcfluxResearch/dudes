@@ -89,6 +89,6 @@ export function crewRowOf(row: AgentRow, cards: readonly CardRow[] = [], context
     activeCard: task,
     hold,
     checkout,
-    description: `${facts.join(', ')}. ${activity.spoken}${liveActivity === null ? '' : `. ${liveActivity}`}${lastTurn === null ? '' : `. ${lastTurn}`}${task === null ? '' : `. Active card: ${task.title}`}. Project: ${workspace}${checkout.worktree === null ? '' : `. ${checkout.worktree}`}${checkout.shared ? `. ${SHARED_DIRECTORY_TEXT}` : ''}`,
+    description: `${facts.join(', ')}. ${activity.spoken}${liveActivity === null ? '' : `. ${liveActivity}`}${lastTurn === null ? '' : `. Last turn: ${lastTurn}`}${task === null ? '' : `. Active card: ${task.title}`}. Project: ${workspace}${checkout.worktree === null ? '' : `. ${checkout.worktree}`}${checkout.shared ? `. ${SHARED_DIRECTORY_TEXT}` : ''}`,
   };
 }

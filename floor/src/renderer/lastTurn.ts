@@ -25,7 +25,7 @@ export interface LastTurnText {
   readonly gauge: Gauge | null;
   /** Said when the gauge is missing or does not describe the next turn. */
   readonly contextNote: string;
-  /** One line for the crew card. */
+  /** One line for the crew card, which labels it as the last turn. */
   readonly line: string;
 }
 
@@ -41,6 +41,11 @@ const grouped = new Intl.NumberFormat('en-US');
 
 function tokenCount(value: number): string {
   return grouped.format(value);
+}
+
+function compact(value: number): string {
+  return value < 1000 ? String(value) : value < 1_000_000
+    ? `${(value / 1000).toFixed(value < 10_000 ? 1 : 0).replace(/\.0$/, '')}k` : `${(value / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
 }
 
 function windowName(value: number): string {
@@ -92,14 +97,14 @@ export function lastTurnOf(row: AgentRow): LastTurnText | null {
       text: `${percent}% of a ${windowName(window)} window (${tokenCount(used)} tokens), as of the last turn` });
     contextNote = '';
   }
-  const parts = [total === null ? `tokens not reported by ${engine}` : `${tokenCount(total)} tokens`,
+  const parts = [total === null ? `tokens not reported by ${engine}` : `${compact(total)} tokens`,
     micros === null ? null : cost.replace('Cost: ', ''),
-    gauge === null ? null : `context ${gauge.percent}%`].filter((part): part is string => part !== null);
+    gauge === null ? null : `${gauge.percent}% context`].filter((part): part is string => part !== null);
   return Object.freeze({
     tokens: total === null ? `Tokens: not reported by ${engine}` : `${tokenCount(total)} tokens`,
     breakdown: !known ? null
       : `${tokenCount(input)} new, ${tokenCount(read)} read from cache, ${tokenCount(written)} written to cache, ${tokenCount(output)} produced`,
     cost, gauge, contextNote,
-    line: `Last turn: ${parts.join(' · ')}`,
+    line: parts.join(' · '),
   });
 }

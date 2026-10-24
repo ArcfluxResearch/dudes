@@ -1099,18 +1099,16 @@ samp,
 .agent-overview-check, .agent-overview-change { margin-top: .6rem; }
 .agent-overview-details { padding-top: .8rem; border-top: 1px solid var(--line); }
 .agent-overview-details[open] > summary, .agent-overview-check[open] > summary { margin-bottom: .6rem; }
-.agent-overview-usage dl { display: grid; gap: .45rem; margin: 0; }
-.agent-overview-usage dl > div { display: grid; grid-template-columns: 5rem minmax(0, 1fr); gap: .6rem; align-items: baseline; }
-.agent-overview-usage dt { color: var(--muted-ink); font-size: .8rem; }
-.agent-overview-usage dd { margin: 0; display: grid; gap: .25rem; overflow-wrap: anywhere; }
+.drawer-frame .agent-detail .agent-overview-usage dl { grid-template-columns: minmax(0, 1fr); }
+.agent-overview-usage dd { display: grid; gap: .25rem; }
 .agent-overview-usage small { color: var(--muted-ink); font-size: .8rem; }
 .usage-gauge { display: block; height: .5rem; border: 1px solid var(--line); border-radius: .3rem; background: var(--surface-muted); overflow: hidden; }
 .usage-gauge > span { display: block; height: 100%; background: var(--accent-ink); }
 .usage-gauge > span[data-high='true'] { background: var(--status-waiting); }
-.crew-last-turn { color: var(--muted-ink); }
+.crew-who .crew-last-turn { color: var(--muted-ink); overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 .ticket-digest h4 { margin: 0 0 .3rem; }
 .ticket-digest p { margin: 0 0 .3rem; }
-.ticket-digest .ticket-digest-note { color: var(--muted-ink); font-size: .85rem; }
+.ticket-digest .ticket-digest-note { color: var(--muted-ink); font-size: inherit; }
 .agent-overview-shared { padding: .6rem .75rem; border-left: 3px solid var(--accent-ink); font-size: .85rem; }
 .agent-detail-head > .agent-look-editor, .agent-detail-head > .agent-model { padding: 0; border: 0; }
 .agent-detail-head > .agent-model { color: var(--muted-ink); font-size: .8rem; }

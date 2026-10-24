@@ -19,7 +19,7 @@ test('a Claude turn shows tokens, dollars and a context gauge', () => {
   assert.equal(shown.cost, 'Cost: $0.03');
   assert.equal(shown.gauge.percent, 25);
   assert.equal(shown.gauge.text, '25% of a 200k window (50,000 tokens), as of the last turn');
-  assert.equal(shown.line, 'Last turn: 3,700 tokens · $0.03 · context 25%');
+  assert.equal(shown.line, '3.7k tokens · $0.03 · 25% context');
 });
 
 test('a changed model never wears the old model’s gauge', () => {
@@ -36,14 +36,14 @@ test('an engine that reports no dollars and no window says so', () => {
   assert.equal(shown.cost, 'Cost: not reported by Codex');
   assert.equal(shown.contextNote, 'Context: not reported by Codex');
   assert.equal(shown.gauge, null);
-  assert.equal(shown.line, 'Last turn: 3,700 tokens');
+  assert.equal(shown.line, '3.7k tokens');
 });
 
 test('an engine that reports nothing says so for tokens too', () => {
   const shown = lastTurnOf({ id: 'a', provider: 'pi', last_turn: {} });
   assert.equal(shown.tokens, 'Tokens: not reported by Pi');
   assert.equal(shown.breakdown, null);
-  assert.equal(shown.line, 'Last turn: tokens not reported by Pi');
+  assert.equal(shown.line, 'tokens not reported by Pi');
 });
 
 test('a gauge caps at one hundred percent and tiny costs say under a cent', () => {
@@ -55,6 +55,6 @@ test('a gauge caps at one hundred percent and tiny costs say under a cent', () =
 test('the card says what the last turn used', async () => {
   const { crewRowOf } = await import('../src/renderer/crewRow.ts');
   const row = crewRowOf(claude);
-  assert.equal(row.lastTurn, 'Last turn: 3,700 tokens · $0.03 · context 25%');
-  assert.match(row.description, /Last turn: 3,700 tokens/);
+  assert.equal(row.lastTurn, '3.7k tokens · $0.03 · 25% context');
+  assert.match(row.description, /Last turn: 3.7k tokens/);
 });
