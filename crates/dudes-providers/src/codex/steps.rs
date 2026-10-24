@@ -408,3 +408,278 @@ fn outcome(item: &Value) -> (Option<i32>, u64, Option<String>) {
         bounded_result(text(item, "aggregated_output", "aggregatedOutput").unwrap_or_default());
     (exit, bytes, result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codex::stream::TurnStream;
+    use crate::steps::MAX_RESULT_BYTES;
+    use crate::stream::TurnReader;
+
+    const THREAD: &str = "01a0e1d9-84d5-7bc2-8567-d32735103d71";
+
+    fn run(lines: &[String]) -> Vec<StepEvent> {
+        let mut stream = TurnStream::new();
+        stream.line(&format!(
+            r#"{{"type":"thread.started","thread_id":"{THREAD}"}}"#
+        ));
+        lines
+            .iter()
+            .flat_map(|line| stream.line(line).steps)
+            .collect()
+    }
+
+    fn started(item: &str) -> String {
+        format!(r#"{{"type":"item.started","item":{item}}}"#)
+    }
+
+    fn completed(item: &str) -> String {
+        format!(r#"{{"type":"item.completed","item":{item}}}"#)
+    }
+
+    fn open(event: &StepEvent) -> &Step {
+        let StepEvent::Open { step, .. } = event else {
+            panic!("an open step expected, got {event:?}");
+        };
+        step
+    }
+
+    fn close(event: &StepEvent) -> (&str, bool, Option<i32>, u64, Option<&str>) {
+        let StepEvent::Close {
+            id,
+            failed,
+            exit,
+            result_bytes,
+            result,
+            ..
+        } = event
+        else {
+            panic!("a close expected, got {event:?}");
+        };
+        (id, *failed, *exit, *result_bytes, result.as_deref())
+    }
+
+    #[test]
+    fn a_captured_command_opens_and_closes_with_its_output() {
+        let fixture = include_str!("../../tests/fixtures/codex/c2-command.stdout");
+        let mut stream = TurnStream::new();
+        let events: Vec<StepEvent> = fixture
+            .lines()
+            .flat_map(|line| stream.line(line).steps)
+            .collect();
+        let [opened, closed] = &events[..] else {
+            panic!("an open and a close expected, got {events:?}");
+        };
+        let step = open(opened);
+        assert_eq!(step.id, "item_1");
+        assert_eq!(step.kind, StepKind::Command);
+        assert_eq!(
+            step.args,
+            [("command".to_owned(), "/bin/zsh -lc 'echo ok'".to_owned())]
+        );
+        assert_eq!(close(closed), ("item_1", false, None, 3, Some("ok\n")));
+    }
+
+    #[test]
+    fn a_failed_command_closes_failed_with_its_exit_status() {
+        let events = run(&[
+            started(
+                r#"{"id":"item_2","type":"command_execution","command":"false","aggregated_output":"","exit_code":null,"status":"in_progress"}"#,
+            ),
+            completed(
+                r#"{"id":"item_2","type":"command_execution","command":"false","aggregated_output":"boom","exit_code":2,"status":"failed"}"#,
+            ),
+        ]);
+        assert_eq!(
+            close(&events[1]),
+            ("item_2", true, Some(2), 4, Some("boom"))
+        );
+    }
+
+    #[test]
+    fn a_long_output_is_cut_at_the_reader_limit() {
+        let output = "o".repeat(MAX_RESULT_BYTES * 2);
+        let events = run(&[
+            started(
+                r#"{"id":"item_3","type":"command_execution","command":"yes","status":"in_progress"}"#,
+            ),
+            completed(&format!(
+                r#"{{"id":"item_3","type":"command_execution","command":"yes","aggregated_output":"{output}","exit_code":0,"status":"completed"}}"#
+            )),
+        ]);
+        let (_, failed, _, bytes, result) = close(&events[1]);
+        assert!(!failed);
+        assert_eq!(bytes, output.len() as u64);
+        let result = result.unwrap();
+        assert!(result.len() <= MAX_RESULT_BYTES && result.ends_with('…'));
+    }
+
+    #[test]
+    fn a_file_change_is_one_step_per_path_by_change_kind() {
+        let changes = r#""changes":[{"path":"/repo/new.rs","kind":"add"},{"path":"/repo/a.rs","kind":"update"}]"#;
+        let events = run(&[
+            started(&format!(
+                r#"{{"id":"item_4","type":"file_change",{changes},"status":"in_progress"}}"#
+            )),
+            completed(&format!(
+                r#"{{"id":"item_4","type":"file_change",{changes},"status":"completed"}}"#
+            )),
+        ]);
+        let [first, second, done_first, done_second] = &events[..] else {
+            panic!("two opens and two closes expected, got {events:?}");
+        };
+        let (first, second) = (open(first), open(second));
+        assert_eq!(
+            (first.id.as_str(), first.kind),
+            ("item_4-0", StepKind::Write)
+        );
+        assert_eq!(
+            (second.id.as_str(), second.kind),
+            ("item_4-1", StepKind::Edit)
+        );
+        assert_eq!(
+            first.args,
+            [("file_path".to_owned(), "/repo/new.rs".to_owned())]
+        );
+        assert_eq!(first.edit, None);
+        assert_eq!(close(done_first).0, "item_4-0");
+        assert_eq!(close(done_second), ("item_4-1", false, None, 0, None));
+    }
+
+    #[test]
+    fn a_failed_patch_closes_failed() {
+        let item = r#""type":"file_change","changes":[{"path":"/repo/a.rs","kind":"update"}]"#;
+        let events = run(&[
+            started(&format!(
+                r#"{{"id":"item_5",{item},"status":"in_progress"}}"#
+            )),
+            completed(&format!(r#"{{"id":"item_5",{item},"status":"failed"}}"#)),
+        ]);
+        assert_eq!(open(&events[0]).id, "item_5");
+        assert!(close(&events[1]).1);
+    }
+
+    #[test]
+    fn mcp_web_and_unknown_items_get_their_kinds_and_no_result() {
+        let events = run(&[
+            started(
+                r#"{"id":"item_6","type":"mcp_tool_call","server":"docs","tool":"find","arguments":{"topic":"rust"},"status":"in_progress"}"#,
+            ),
+            completed(
+                r#"{"id":"item_6","type":"mcp_tool_call","server":"docs","tool":"find","arguments":{"topic":"rust"},"result":{"content":[]},"status":"completed"}"#,
+            ),
+            started(r#"{"id":"item_7","type":"web_search","query":"rust lifetimes"}"#),
+            completed(r#"{"id":"item_7","type":"web_search","query":"rust lifetimes"}"#),
+            started(r#"{"id":"item_8","type":"collab_tool_call","status":"in_progress"}"#),
+            completed(r#"{"id":"item_8","type":"collab_tool_call","status":"completed"}"#),
+        ]);
+        let kinds: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                StepEvent::Open { step, .. } => Some((step.kind, step.tool.as_str())),
+                StepEvent::Close { .. } => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (StepKind::Mcp, "mcp__docs__find"),
+                (StepKind::Web, "web_search"),
+                (StepKind::Other, "collab_tool_call"),
+            ]
+        );
+        assert_eq!(
+            open(&events[0]).args,
+            [("topic".to_owned(), "rust".to_owned())]
+        );
+        assert_eq!(
+            open(&events[2]).args,
+            [("query".to_owned(), "rust lifetimes".to_owned())]
+        );
+        assert!(events.iter().all(|event| match event {
+            StepEvent::Close {
+                result,
+                result_bytes,
+                ..
+            } => result.is_none() && *result_bytes == 0,
+            StepEvent::Open { .. } => true,
+        }));
+    }
+
+    #[test]
+    fn replies_and_reasoning_are_not_steps() {
+        let events = run(&[
+            completed(r#"{"id":"item_0","type":"reasoning","text":"thinking"}"#),
+            started(r#"{"id":"item_9","type":"agent_message","text":""}"#),
+            completed(r#"{"id":"item_9","type":"agent_message","text":"done"}"#),
+        ]);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn a_todo_list_is_a_plan_that_reads_as_a_new_step_when_it_changes() {
+        let list = |first: bool, second: bool| {
+            format!(
+                r#""id":"item_10","type":"todo_list","items":[{{"text":"Write it","completed":{first}}},{{"text":"Test it","completed":{second}}}]"#
+            )
+        };
+        let events = run(&[
+            started(&format!("{{{}}}", list(false, false))),
+            format!(
+                r#"{{"type":"item.updated","item":{{{}}}}}"#,
+                list(true, false)
+            ),
+            format!(
+                r#"{{"type":"item.updated","item":{{{}}}}}"#,
+                list(true, false)
+            ),
+            completed(&format!("{{{}}}", list(true, true))),
+        ]);
+        let ids: Vec<_> = events
+            .iter()
+            .map(|event| match event {
+                StepEvent::Open { step, .. } => format!("open {}", step.id),
+                StepEvent::Close { id, .. } => format!("close {id}"),
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "open item_10",
+                "close item_10",
+                "open item_10-r1",
+                "close item_10-r1",
+                "open item_10-r2",
+                "close item_10-r2",
+            ]
+        );
+        let last = open(&events[4]);
+        assert_eq!(last.kind, StepKind::Plan);
+        assert_eq!(
+            last.plan.iter().map(|item| item.status).collect::<Vec<_>>(),
+            [PlanStatus::Completed, PlanStatus::Completed]
+        );
+    }
+
+    #[test]
+    fn a_command_given_as_a_list_reads_as_the_script_it_runs() {
+        let item = |command: &str| serde_json::json!({"command": serde_json::from_str::<Value>(command).unwrap()});
+        assert_eq!(
+            command_text(&item(r#"["bash","-lc","cat ~/.aws/credentials"]"#)).as_deref(),
+            Some("cat ~/.aws/credentials")
+        );
+        assert_eq!(
+            command_text(&item(r#"["git","status","--short"]"#)).as_deref(),
+            Some("git status --short")
+        );
+    }
+
+    #[test]
+    fn no_session_means_no_steps() {
+        let mut stream = TurnStream::new();
+        let read = stream.line(&started(
+            r#"{"id":"item_1","type":"command_execution","command":"ls"}"#,
+        ));
+        assert!(read.steps.is_empty());
+    }
+}

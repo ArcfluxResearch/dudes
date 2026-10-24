@@ -593,6 +593,7 @@ mod tests {
     use super::*;
     use crate::adapter::TurnSession;
     use crate::protocol::ProtocolAction;
+    use crate::steps::{StepEvent, StepKind};
     use dudes_types::ModelSelection;
     use serde_json::{Value, json};
 
@@ -1094,5 +1095,86 @@ mod tests {
         assert!(matches!(end.outcome, TurnOutcome::Failed { .. }));
         assert!(end.session.is_none());
         assert!(end.final_reply.is_none());
+    }
+
+    fn tool(method: &str, item: &Value) -> Value {
+        json!({"method":method,"params":{"threadId":THREAD,"turnId":TURN,"item":item}})
+    }
+
+    #[test]
+    fn app_server_items_open_and_close_as_steps_in_the_same_shape_as_exec() {
+        let mut reader = reader();
+        ready(&mut reader);
+        let command = json!({"type":"commandExecution","id":"call-1","command":["bash","-lc","cat ~/.aws/credentials"],"status":"inProgress","aggregatedOutput":null,"exitCode":null});
+        let opened = read(&mut reader, tool("item/started", &command)).steps;
+        let [StepEvent::Open { step, .. }] = &opened[..] else {
+            panic!("one open step expected, got {opened:?}");
+        };
+        assert_eq!(step.kind, StepKind::Command);
+        assert_eq!(
+            step.args,
+            [("command".to_owned(), "cat ~/.aws/credentials".to_owned())]
+        );
+        let done = json!({"type":"commandExecution","id":"call-1","command":"x","status":"failed","aggregatedOutput":"denied","exitCode":126});
+        let closed = read(&mut reader, tool("item/completed", &done)).steps;
+        assert_eq!(
+            closed,
+            [StepEvent::Close {
+                session: SessionId::new(THREAD),
+                id: "call-1".to_owned(),
+                failed: true,
+                exit: Some(126),
+                result_bytes: 6,
+                result: Some("denied".to_owned()),
+            }]
+        );
+
+        let patch = json!({"type":"fileChange","id":"call-2","status":"inProgress","changes":[{"path":"/repo/a.rs","kind":{"type":"update","move_path":null},"diff":"@@"},{"path":"/repo/b.rs","kind":{"type":"add"},"diff":"+x"}]});
+        let opened = read(&mut reader, tool("item/started", &patch)).steps;
+        let kinds: Vec<_> = opened
+            .iter()
+            .map(|event| match event {
+                StepEvent::Open { step, .. } => (step.id.as_str(), step.kind),
+                StepEvent::Close { .. } => panic!("an open expected"),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [("call-2-0", StepKind::Edit), ("call-2-1", StepKind::Write)]
+        );
+        let web = json!({"type":"webSearch","id":"call-3","query":"rust lifetimes","action":null});
+        assert_eq!(read(&mut reader, tool("item/started", &web)).steps.len(), 1);
+    }
+
+    #[test]
+    fn a_plan_update_closes_the_plan_before_it_and_opens_the_next() {
+        let mut reader = reader();
+        ready(&mut reader);
+        let update = |statuses: [&str; 2]| json!({"method":"turn/plan/updated","params":{"threadId":THREAD,"turnId":TURN,"explanation":null,"plan":[{"step":"Write it","status":statuses[0]},{"step":"Test it","status":statuses[1]}]}});
+        let first = read(&mut reader, update(["inProgress", "pending"])).steps;
+        let second = read(&mut reader, update(["completed", "inProgress"])).steps;
+        let [StepEvent::Open { step, .. }] = &first[..] else {
+            panic!("one open expected, got {first:?}");
+        };
+        assert_eq!((step.id.as_str(), step.kind), ("plan-1", StepKind::Plan));
+        assert_eq!(step.plan[0].status, crate::steps::PlanStatus::InProgress);
+        let [StepEvent::Close { id, .. }, StepEvent::Open { step, .. }] = &second[..] else {
+            panic!("a close and an open expected, got {second:?}");
+        };
+        assert_eq!((id.as_str(), step.id.as_str()), ("plan-1", "plan-2"));
+        assert_eq!(step.plan[0].status, crate::steps::PlanStatus::Completed);
+    }
+
+    #[test]
+    fn another_turns_items_and_replies_open_no_steps() {
+        let mut reader = reader();
+        ready(&mut reader);
+        let foreign = json!({"method":"item/started","params":{"threadId":THREAD,"turnId":"other","item":{"type":"commandExecution","id":"x","command":"ls"}}});
+        assert!(read(&mut reader, foreign).steps.is_empty());
+        assert!(
+            read(&mut reader, item("item/started", "a", None))
+                .steps
+                .is_empty()
+        );
     }
 }
