@@ -11483,7 +11483,7 @@
       "oneOf": [
         {
           "const": "no_host_call",
-          "description": "The live continuation asserts that this exact Managed attempt never called the host.\nAn observed refusal hold or exact observed `NotLaunched` end corroborates the assertion;\nrecovery cannot infer it from either.",
+          "description": "The live continuation asserts that this exact Managed attempt never called the host.\nAn observed refusal hold, an exact observed `NotLaunched` end, or a Floor halt that\nabandoned this very turn before any launch began corroborates the assertion; recovery\ncannot infer it from any of them.",
           "type": "string"
         }
       ]
