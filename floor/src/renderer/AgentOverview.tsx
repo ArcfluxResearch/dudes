@@ -13,6 +13,7 @@ import { HIRE_ENGINES } from './onboarding/catalog.ts';
 import type { AgentRow } from './scene/cast.ts';
 import type { AgentFields } from './scene/label.ts';
 import { reasonSentence, stateName } from './ticket/words.ts';
+import { lastTurnOf } from './lastTurn.ts';
 import { workspaceLabel } from './workspace.ts';
 import { decodeWorktree, sharesCheckout, worktreeText } from './worktree.ts';
 
@@ -44,6 +45,7 @@ export function AgentOverview({ row, cards, fields, control, recovery, goalForm,
   readonly onOpenTicket?: (id: string) => void;
 }) {
   const ticket = currentTicketOf(row, cards);
+  const lastTurn = lastTurnOf(row);
   const goal = typeof row.goal === 'object' && row.goal !== null ? row.goal as Record<string, unknown> : null;
   const automaticHold = automaticHoldOf(row);
   const held = ticket?.status === 'blocked';
@@ -117,6 +119,19 @@ export function AgentOverview({ row, cards, fields, control, recovery, goalForm,
       </>}
       {goalForm === null ? null : <details className="agent-overview-change"><summary>{ticket === null ? 'Change' : 'Change goal'}</summary>{goalForm}</details>}
     </section>
+    {lastTurn === null ? null : <section className="agent-overview-usage" aria-label="Last turn">
+      <h3>Last turn</h3>
+      <dl>
+        <div><dt>Tokens</dt><dd>{lastTurn.tokens}{lastTurn.breakdown === null ? null : <small>{lastTurn.breakdown}</small>}</dd></div>
+        <div><dt>Cost</dt><dd>{lastTurn.cost.replace('Cost: ', '')}</dd></div>
+        <div><dt>Context</dt><dd>{lastTurn.gauge === null ? lastTurn.contextNote.replace('Context: ', '') : <>
+          <span className="usage-gauge" role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={100}
+            aria-valuenow={lastTurn.gauge.percent} aria-valuetext={lastTurn.gauge.text}>
+            <span style={{ width: `${lastTurn.gauge.percent}%` }} data-high={lastTurn.gauge.percent >= 80 ? 'true' : 'false'} />
+          </span>
+          <small>{lastTurn.gauge.text}</small></>}</dd></div>
+      </dl>
+    </section>}
     {liveOutput}
     {!sharesCheckout(row) ? null : <p className="agent-overview-shared" role="status"><strong>Shared directory</strong>
       {' '}Another live agent works in this agent's directory, so their edits and checkouts can collide.</p>}

@@ -11,6 +11,7 @@ import { ticketWord } from './ticket/model.ts';
 import { checkoutOf, SHARED_DIRECTORY_TEXT } from './worktree.ts';
 import type { CheckoutOwnership } from './worktree.ts';
 import type { LiveActivityContext } from './liveActivity.ts';
+import { lastTurnOf } from './lastTurn.ts';
 
 /**
  * `line` is what the row shows, and CSS cuts it to the row's width. `text`
@@ -36,6 +37,8 @@ export interface CrewRow {
   readonly status: string;
   readonly activity: Activity;
   readonly liveActivity: string | null;
+  /** What the newest ended turn used, in one line, or `null` before any turn has ended. */
+  readonly lastTurn: string | null;
   readonly activeCard: CardRow | null;
   readonly hold: Hold | null;
   readonly checkout: CheckoutOwnership;
@@ -70,6 +73,7 @@ export function crewRowOf(row: AgentRow, cards: readonly CardRow[] = [], context
   const status = ticketWord(cards, row, fields.status) ?? fields.status;
   const liveActivity = fields.liveActivity;
   const checkout = checkoutOf(row);
+  const lastTurn = lastTurnOf(row)?.line ?? null;
   const facts = [fields.role, engine === '—' ? '' : engine, status, `${fields.usd} spent today`, hold ?? '']
     .filter((fact) => fact !== '');
   return {
@@ -81,9 +85,10 @@ export function crewRowOf(row: AgentRow, cards: readonly CardRow[] = [], context
     status: shown(status),
     activity,
     liveActivity,
+    lastTurn,
     activeCard: task,
     hold,
     checkout,
-    description: `${facts.join(', ')}. ${activity.spoken}${liveActivity === null ? '' : `. ${liveActivity}`}${task === null ? '' : `. Active card: ${task.title}`}. Project: ${workspace}${checkout.worktree === null ? '' : `. ${checkout.worktree}`}${checkout.shared ? `. ${SHARED_DIRECTORY_TEXT}` : ''}`,
+    description: `${facts.join(', ')}. ${activity.spoken}${liveActivity === null ? '' : `. ${liveActivity}`}${lastTurn === null ? '' : `. ${lastTurn}`}${task === null ? '' : `. Active card: ${task.title}`}. Project: ${workspace}${checkout.worktree === null ? '' : `. ${checkout.worktree}`}${checkout.shared ? `. ${SHARED_DIRECTORY_TEXT}` : ''}`,
   };
 }

@@ -104,6 +104,7 @@ export function CrewList({ agents, cards = [], stepLabels = {}, selectedId, sele
                     title={crew.activity.text}>{crew.activity.line}</small>
                   {crew.liveActivity === null ? null : <small className="crew-live-activity"
                     data-live-activity={crew.liveActivity}>{crew.liveActivity}</small>}
+                  {crew.lastTurn === null ? null : <small className="crew-last-turn">{crew.lastTurn}</small>}
                   {stepLabels[row.id] === undefined ? null : <small className="crew-step-label">{stepLabels[row.id]}</small>}
                 </span>
                 <span className="crew-state">
