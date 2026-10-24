@@ -3149,19 +3149,20 @@ samp,
 .chat-code { margin: .6rem 0; padding: .65rem; overflow-x: auto; border: 1px solid var(--line); border-radius: .35rem; background: var(--surface-muted); font: .85rem/1.5 var(--font-data); white-space: pre; }
 .chat-code code { font: inherit; }
 .chat-md { white-space: normal; }
-.md > :first-child, .chat-md > :first-child { margin-top: 0; }
-.md > :last-child, .chat-md > :last-child { margin-bottom: 0; }
-.md p, .md-heading, .md blockquote, .md ul, .md ol, .md .md-table { margin: .5rem 0; }
-.md li > p { margin: 0; }
-.md ul, .md ol { padding-inline-start: 1.4rem; }
-.md blockquote { padding-inline-start: .75rem; border-inline-start: 3px solid var(--line); color: var(--muted-ink); }
+:is(.md, .chat-md) { min-width: 0; overflow-wrap: anywhere; }
+:is(.md, .chat-md) > :first-child { margin-top: 0; }
+:is(.md, .chat-md) > :last-child { margin-bottom: 0; }
+:is(.md, .chat-md) :is(p, ul, ol, blockquote, .md-heading, .md-table) { margin: .5rem 0; }
+:is(.md, .chat-md) li { margin: .15rem 0; }
+:is(.md, .chat-md) li > p { margin: 0; }
+:is(.md, .chat-md) :is(ul, ol) { padding-inline-start: 1.4rem; }
+:is(.md, .chat-md) blockquote { padding-inline-start: .75rem; border-inline-start: 3px solid var(--line); color: var(--muted-ink); }
 .md-heading { font-weight: 700; }
 .md-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
 .md-table { overflow-x: auto; }
-.md table { border-collapse: collapse; font-size: .9em; }
-.md th, .md td { padding: .25rem .5rem; border: 1px solid var(--line); text-align: start; vertical-align: top; }
-.md th { background: var(--surface-muted); font-weight: 700; }
-.md .chat-code { white-space: pre; }
+:is(.md, .chat-md) table { border-collapse: collapse; font-size: .9em; }
+:is(.md, .chat-md) :is(th, td) { padding: .25rem .5rem; border: 1px solid var(--line); text-align: start; vertical-align: top; }
+:is(.md, .chat-md) th { background: var(--surface-muted); font-weight: 700; }
 .chat-inline-code { padding: .1rem .25rem; border-radius: .2rem; background: var(--surface-muted); font: .9em var(--font-data); }
 
 .completion-check-identity {
