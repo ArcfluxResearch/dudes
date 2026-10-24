@@ -3150,7 +3150,7 @@ samp,
 .chat-code code { font: inherit; }
 .chat-md { white-space: normal; }
 :is(.md, .chat-md) { min-width: 0; overflow-wrap: anywhere; }
-:is(.md, .chat-md) :is(p, ul, ol, blockquote, .md-heading, .md-table) { margin: .5rem 0; }
+:is(.md, .chat-md) :where(p, ul, ol, blockquote, .md-heading, .md-table) { margin: .5rem 0; }
 :is(.md, .chat-md) li > :is(p, ul, ol, blockquote, .md-heading, .md-table) { margin: 0; }
 :is(.md, .chat-md) > :first-child { margin-top: 0; }
 :is(.md, .chat-md) > :last-child { margin-bottom: 0; }
