@@ -206,5 +206,6 @@ pub struct PlanUpdate {
     /// Owning turn.
     pub turn_id: Option<String>,
     /// Plan entries, each a `step` text with a `status` of `pending`, `inProgress` or `completed`.
+    #[serde(deserialize_with = "super::null_as_default")]
     pub plan: Vec<Value>,
 }
