@@ -15013,6 +15013,70 @@ fn the_settings_route_writes_only_the_closed_list_of_keys() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
+#[test]
+fn clearing_the_daily_dollar_ceiling_is_saved_for_the_next_start() {
+    let fixture = Fixture::new();
+    let mut settings = reload_settings(&fixture, "[budget]\nfloor_usd_per_day = 5\n");
+    settings.floor_usd_per_day = Some(Usd::from_dollars(5));
+    settings.per_turn_floor = load_operator(settings.operator_config.as_ref().unwrap())
+        .unwrap()
+        .budget
+        .per_turn_floor;
+    let (_, mut running, _, page) = default_floor(&settings);
+    let file = settings.operator_config.as_ref().expect("operator file");
+    let post = |key: &str, value: &str| {
+        let body = serde_json::to_vec(&json!({"key": key, "value": value})).expect("JSON");
+        post_bytes(&page, "/floor/settings", &body, None)
+    };
+
+    let before = std::fs::read(file).expect("config");
+    for key in ["budget.per_turn_floor.usd", "budget.per_turn_floor.tokens"] {
+        let (head, body) = post(key, "unset");
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+        assert_eq!(body["reason"], "bad_value");
+        assert_eq!(std::fs::read(file).unwrap(), before);
+    }
+    let (head, body) = post("budget.floor_usd_per_day", "0");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+    assert_eq!(
+        load_operator(file).unwrap().budget.floor_usd_per_day,
+        Some(Usd::ZERO)
+    );
+
+    let (head, body) = post("budget.floor_usd_per_day", "unset");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+    assert_eq!(body["state"], "saved");
+    assert!(
+        body["restart"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("budget"))
+    );
+    let saved = load_operator(file).expect("saved config").budget;
+    assert_eq!(saved.floor_usd_per_day, None);
+    assert_eq!(saved.per_turn_floor, settings.per_turn_floor);
+    let (frame, _) = snapshot(&page);
+    assert_eq!(
+        frame["settings"]["budget"]["floor_usd_per_day_micros"],
+        "5000000"
+    );
+    let (_, body) = post("budget.floor_usd_per_day", "unset");
+    assert_eq!(body["wrote"], false);
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+
+    settings.floor_usd_per_day = saved.floor_usd_per_day;
+    let (_, mut restarted, _, page) = default_floor(&settings);
+    let (frame, _) = snapshot(&page);
+    assert_eq!(
+        frame["settings"]["budget"]["floor_usd_per_day_micros"],
+        Value::Null
+    );
+    assert_eq!(
+        restarted.stop(ExitCause::ShutdownRpc),
+        ExitCause::ShutdownRpc
+    );
+}
+
 /// A switch turned off from the Settings route refuses the very next action with `action_off`,
 /// without a restart.
 #[test]

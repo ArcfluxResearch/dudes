@@ -110,7 +110,8 @@ export function SettingsView({ floor, onSetup }: {
             current={report.budget.per_turn_tokens} /></dd></div>
       </dl>
       <p>When unset, the per-turn reserves default to $0.25 and 20000 tokens. Raising a limit, or setting one where
-        there was none, asks first. This page cannot remove a limit once it is set, and a reserve has to stay above zero.</p>
+        there was none, asks first. You can clear the daily dollar ceiling after confirming. Per-turn reserves
+        cannot be cleared and have to stay above zero.</p>
     </section>
     <DesktopNotificationChoice />
     <DevicesSection />
@@ -191,6 +192,7 @@ function LimitEditor({ settingKey, unit, label, current }: {
   const [typed, setTyped] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
   const id = useId();
+  const dailyCeiling = settingKey === 'budget.floor_usd_per_day';
   return <form className="settings-limit" onSubmit={(event) => {
     event.preventDefault();
     if (edit.sending !== null) return;
@@ -204,6 +206,12 @@ function LimitEditor({ settingKey, unit, label, current }: {
     <input id={id} type="text" inputMode="decimal" autoComplete="off" spellCheck={false} value={typed}
       onChange={(event) => { setTyped(event.target.value); setProblem(null); }} />
     <button type="submit" aria-disabled={edit.sending !== null || typed.trim() === '' || undefined}>Save</button>
+    {dailyCeiling && current !== null ? <button type="button" className="settings-clear-limit"
+      aria-disabled={edit.sending !== null || undefined}
+      onClick={() => { void changeSetting(settingKey, 'unset',
+        `This removes the Floor daily dollar ceiling of ${formatUsdMicros(current)}. After a restart, there will be no daily dollar ceiling.`, 'Clear limit'); }}>Clear limit</button> : null}
+    {dailyCeiling && current !== null && edit.pendingDailyCeilingClear
+      ? <span role="status"> Saved from this page. No daily dollar ceiling after restart.</span> : null}
     {problem === null ? null : <span role="alert"> {problem}</span>}
     <EditOutcome settingKey={settingKey} label={`Change ${label}`} />
   </form>;
