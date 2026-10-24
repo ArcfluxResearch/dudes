@@ -531,7 +531,7 @@ function SignedInShell() {
       </div>
       <div className="floor-stage" data-page={page ?? undefined}
         onKeyDown={(event) => { if (closesDrawer(event, drawerOpen)) { event.stopPropagation(); clearSelection(); } }}>
-        {crewOpen && !focused ? <CrewList agents={floor.agents} cards={floor.cards} selectedId={currentSelectedId}
+        {crewOpen && !focused ? <CrewList agents={floor.agents} cards={floor.cards} stepLabels={floor.stepLabels} selectedId={currentSelectedId}
           selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent}
           onOpenCard={openCard}
           addAgent={floor.agents.length === 0 && hireSwitchOn(floor) ? null

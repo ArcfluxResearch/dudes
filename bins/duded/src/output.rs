@@ -1292,6 +1292,23 @@ impl OutputRegistry {
         }
     }
 
+    /// The kind of the step each running agent is in now, newest running step first.
+    pub(crate) fn step_labels(&self) -> BTreeMap<AgentId, &'static str> {
+        self.state()
+            .rings
+            .iter()
+            .filter(|(_, ring)| matches!(ring.gate, SessionGate::Admitted(_)) && !ring.ended)
+            .filter_map(|(agent, ring)| {
+                ring.steps
+                    .items
+                    .iter()
+                    .rev()
+                    .find(|step| step.view.status == steps::Status::Running)
+                    .map(|step| (*agent, step.view.kind))
+            })
+            .collect()
+    }
+
     /// The steps of `agent`'s latest turn that changed after `since`, once the turn's session is
     /// confirmed. `since` is zero for everything the ring holds.
     pub(crate) fn steps_since(&self, agent: AgentId, since: u64) -> Option<StepsDelta> {

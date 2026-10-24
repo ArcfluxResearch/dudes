@@ -754,6 +754,7 @@ where
         floor: None,
         floor_heartbeat: None,
         floor_day_watch: None,
+        floor_step_labels: None,
         transport: None,
         reaper: Some(reaping),
         activity_flusher: None,
@@ -845,6 +846,14 @@ where
                     daemon.ctx.local_days.clone(),
                     crate::floor_stream::DAY_WATCH_PERIOD,
                 ),
+        );
+        daemon.floor_step_labels = Some(
+            daemon
+                .ctx
+                .floor_streams
+                .as_ref()
+                .expect("the Floor stream registry was just installed")
+                .start_label_watch(crate::floor_stream::STEP_LABEL_PERIOD),
         );
         witness.startup.record(StartupStep::FloorReady);
     }

@@ -47,7 +47,7 @@ const CLIENT_TYPES: [&str; 5] = [
     "floor.output.select",
     "floor.output.clear",
 ];
-const SERVER_TYPES: [&str; 15] = [
+const SERVER_TYPES: [&str; 16] = [
     "floor.snapshot",
     "floor.delta",
     "floor.resync",
@@ -60,6 +60,7 @@ const SERVER_TYPES: [&str; 15] = [
     "floor.output.ended",
     "floor.output.reply",
     "floor.output.steps",
+    "floor.step.labels",
     "floor.device.enrolled",
     "floor.device.acknowledged",
     "floor.device.removed",
@@ -145,6 +146,24 @@ pub(crate) const HEARTBEAT_PERIOD: Duration = Duration::from_millis(2_000);
 
 /// The one discriminator a heartbeat carries, and the whole frame beside it.
 const HEARTBEAT_TYPE: &str = "floor.heartbeat";
+
+/// How often every open stream is told which step kind each running agent is in.
+pub(crate) const STEP_LABEL_PERIOD: Duration = Duration::from_millis(500);
+
+const LABELS_TYPE: &str = "floor.step.labels";
+
+#[derive(Serialize)]
+struct LabelsFrame {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    labels: Vec<LabelWire>,
+}
+
+#[derive(Serialize)]
+struct LabelWire {
+    agent_id: AgentId,
+    label: &'static str,
+}
 
 /// The discriminator of the contentless message that tells a page to subscribe again.
 const RESYNC_TYPE: &str = "floor.resync";
@@ -1189,6 +1208,31 @@ impl FloorStreams {
             if now != seen {
                 seen = now;
                 broadcast(inner, RESYNC_TYPE);
+            }
+        })
+    }
+
+    /// Start the timer that tells every open stream which kind of step each running agent is in:
+    /// only the kind, with no name, input or result. Agents that are not selected get nothing
+    /// more. The list is repeated while any agent has a kind, so a page that subscribes late
+    /// learns it within one period, and one empty list follows the last.
+    pub(crate) fn start_label_watch(&self, period: Duration) -> HeartbeatTask {
+        let mut announced = false;
+        self.start_timer("dudes-floor-step-labels", period, true, move |inner| {
+            let labels = inner.output.step_labels();
+            if labels.is_empty() && !announced {
+                return;
+            }
+            announced = !labels.is_empty();
+            let frame = serialize_frame(&LabelsFrame {
+                kind: LABELS_TYPE,
+                labels: labels
+                    .into_iter()
+                    .map(|(agent_id, label)| LabelWire { agent_id, label })
+                    .collect(),
+            });
+            if let Ok(frame) = frame {
+                broadcast_frame(inner, &Arc::from(frame));
             }
         })
     }
