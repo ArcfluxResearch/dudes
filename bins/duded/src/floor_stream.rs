@@ -29,6 +29,7 @@ use crate::floor_websocket::{MAX_MESSAGE_BYTES, text_frame, text_payload};
 use crate::output::{Loss, OutputRegistry, OutputSnapshot, OutputState, ReplyLoss, Unavailable};
 use crate::provider_check::ProviderCheck;
 use crate::sign_in::SignInCheck;
+use crate::steps::StepView;
 
 /// Accepted maximum queued messages on one Floor stream.
 pub const MAX_QUEUE_MESSAGES: usize = 256;
@@ -46,7 +47,7 @@ const CLIENT_TYPES: [&str; 5] = [
     "floor.output.select",
     "floor.output.clear",
 ];
-const SERVER_TYPES: [&str; 14] = [
+const SERVER_TYPES: [&str; 15] = [
     "floor.snapshot",
     "floor.delta",
     "floor.resync",
@@ -58,6 +59,7 @@ const SERVER_TYPES: [&str; 14] = [
     "floor.output.unavailable",
     "floor.output.ended",
     "floor.output.reply",
+    "floor.output.steps",
     "floor.device.enrolled",
     "floor.device.acknowledged",
     "floor.device.removed",
@@ -76,6 +78,15 @@ enum OutputFrame<'a> {
         truncated: bool,
         gap: Option<&'static str>,
         ended: bool,
+    },
+    #[serde(rename = "floor.output.steps")]
+    Steps {
+        selection_epoch: u64,
+        agent_id: AgentId,
+        turn_id: TurnId,
+        truncated: bool,
+        gap: Option<&'static str>,
+        steps: &'a [StepView],
     },
     #[serde(rename = "floor.output.unavailable")]
     Unavailable {
@@ -553,8 +564,9 @@ impl FloorStreams {
                     ended: false,
                     unavailable: None,
                     loss: None,
+                    steps: StepsCursor::default(),
                 };
-                let sent = refresh_reply(&mut queue, selection, &snapshot);
+                let sent = refresh_reply(&mut queue, selection, &snapshot, &self.0.output);
                 subscription.queue.changed.notify_all();
                 if !sent {
                     bail!("Floor reply selection queue has ended");
@@ -576,6 +588,7 @@ impl FloorStreams {
                             ended: false,
                             unavailable: Some(reason),
                             loss: None,
+                            steps: StepsCursor::default(),
                         });
                     }
                     OutputFrame::Unavailable {
@@ -642,6 +655,7 @@ impl FloorStreams {
                     ended,
                     unavailable: None,
                     loss,
+                    steps: StepsCursor::default(),
                 });
                 Ok(())
             }
@@ -1383,14 +1397,17 @@ fn refresh_reply(
     queue: &mut QueueState,
     mut selection: OutputSelection,
     snapshot: &OutputSnapshot,
+    output: &OutputRegistry,
 ) -> bool {
     selection.revision = snapshot.revision;
     if let Some(reply) = &snapshot.reply {
         if selection.turn != Some(reply.turn) {
             queue.purge_output();
+            selection.steps = StepsCursor::default();
         } else if selection.reply_revision == Some(reply.revision) {
+            let sent = refresh_steps(queue, &mut selection, snapshot, output);
             queue.selection = Some(selection);
-            return true;
+            return sent;
         }
         let gap = reply.loss.map(|loss| match loss {
             ReplyLoss::ProviderLimit => "provider_limit",
@@ -1418,6 +1435,9 @@ fn refresh_reply(
         selection.reply_revision = Some(reply.revision);
         selection.ended = reply.ended;
         selection.unavailable = None;
+        if !refresh_steps(queue, &mut selection, snapshot, output) {
+            return false;
+        }
     } else {
         let reason = match snapshot.state {
             OutputState::Unavailable(reason) => reason,
@@ -1445,6 +1465,82 @@ fn refresh_reply(
         selection.unavailable = Some(reason);
     }
     queue.selection = Some(selection);
+    true
+}
+
+/// The most step data one socket is sent before steps stop and say so.
+const STEP_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+/// One steps frame carries at most this much step data, so escaping cannot push it past the
+/// frame limit.
+const STEP_FRAME_BYTES: usize = 64 * 1024;
+
+/// Send the steps that changed since this socket last heard of them. Returns false when the
+/// socket's queue has ended.
+fn refresh_steps(
+    queue: &mut QueueState,
+    selection: &mut OutputSelection,
+    snapshot: &OutputSnapshot,
+    output: &OutputRegistry,
+) -> bool {
+    let Some(mark) = snapshot.steps else {
+        return true;
+    };
+    let cursor = &mut selection.steps;
+    let same_turn = cursor.turn == Some(mark.turn);
+    if cursor.stopped || (same_turn && cursor.seq == mark.seq) {
+        return true;
+    }
+    let Some(delta) = output.steps_since(selection.agent, if same_turn { cursor.seq } else { 0 })
+    else {
+        return true;
+    };
+    let mut send = |steps: &[StepView], gap: Option<&'static str>| -> Option<usize> {
+        let frame = serialize_frame(&OutputFrame::Steps {
+            selection_epoch: selection.epoch,
+            agent_id: selection.agent,
+            turn_id: delta.turn,
+            truncated: delta.truncated,
+            gap,
+            steps,
+        });
+        let Ok(frame) = frame else {
+            terminate(queue, ENDED);
+            return None;
+        };
+        let bytes = frame.len();
+        queue
+            .enqueue_frame(Arc::from(frame), QueueKind::Output)
+            .ok()
+            .map(|()| bytes)
+    };
+    let cursor = &mut selection.steps;
+    cursor.turn = Some(delta.turn);
+    let mut batch: Vec<&StepView> = Vec::new();
+    let mut batch_bytes = 0;
+    let mut frames: Vec<Vec<StepView>> = Vec::new();
+    for step in &delta.items {
+        let bytes = step.bytes();
+        if batch_bytes + bytes > STEP_FRAME_BYTES && !batch.is_empty() {
+            frames.push(batch.drain(..).cloned().collect());
+            batch_bytes = 0;
+        }
+        batch.push(step);
+        batch_bytes += bytes;
+    }
+    if !batch.is_empty() {
+        frames.push(batch.into_iter().cloned().collect());
+    }
+    for steps in frames {
+        let Some(bytes) = send(&steps, None) else {
+            return false;
+        };
+        selection.steps.sent_bytes += bytes;
+        if selection.steps.sent_bytes > STEP_BUDGET_BYTES {
+            selection.steps.stopped = true;
+            return send(&[], Some("budget")).is_some();
+        }
+    }
+    selection.steps.seq = delta.seq;
     true
 }
 
@@ -1484,7 +1580,7 @@ fn refresh_output(inner: &Inner, queue: &Queue, agent: AgentId, epoch: u64) -> b
     // This read is the authoritative one. A prior wait_changed snapshot is only a hint.
     let snapshot = inner.output.snapshot(agent);
     if selection.view == OutputView::Reply {
-        let sent = refresh_reply(&mut state, selection, &snapshot);
+        let sent = refresh_reply(&mut state, selection, &snapshot, &inner.output);
         queue.changed.notify_all();
         return sent;
     }
@@ -1900,6 +1996,16 @@ struct OutputSelection {
     ended: bool,
     unavailable: Option<Unavailable>,
     loss: Option<Loss>,
+    steps: StepsCursor,
+}
+
+/// What this socket has been sent of the selected agent's steps.
+#[derive(Clone, Copy, Debug, Default)]
+struct StepsCursor {
+    turn: Option<TurnId>,
+    seq: u64,
+    sent_bytes: usize,
+    stopped: bool,
 }
 
 impl QueueState {
