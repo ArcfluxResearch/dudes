@@ -111,6 +111,7 @@ fn managed_output_child_helper() {
     out.flush().expect("end flush");
 }
 
+#[allow(clippy::too_many_lines)]
 fn results_child(out: &mut impl std::io::Write, session: &str, dir: &Path) {
     let token = std::env::var(STEP_SECRET).expect("planted secret");
     let call = |id: &str, name: &str, input: Value| {
@@ -168,6 +169,37 @@ fn results_child(out: &mut impl std::io::Write, session: &str, dir: &Path) {
             "mcp__fs__read_file",
             serde_json::json!({"path": "/work/a.txt"}),
             "PRIVATE-MCP-TEXT".to_owned(),
+        ),
+        (
+            "toolu_bgout",
+            "BashOutput",
+            serde_json::json!({"bash_id": "bash_1"}),
+            "PRIVATE-BG-TEXT".to_owned(),
+        ),
+        (
+            "toolu_grep",
+            "Grep",
+            serde_json::json!({"pattern": "KEY", "path": "/work/user"}),
+            "config/.aws/credentials:3:PRIVATE-GREP-TEXT".to_owned(),
+        ),
+        (
+            "toolu_mystery",
+            "Mystery",
+            serde_json::json!({"note": "x"}),
+            "PRIVATE-OTHER-TEXT".to_owned(),
+        ),
+        (
+            "toolu_envfile",
+            "Bash",
+            bash("cat settings.ini"),
+            "DB_PASSWORD=hunter2hunter2".to_owned(),
+        ),
+        (
+            "toolu_secretedit",
+            "Edit",
+            serde_json::json!({"file_path": "/repo/c.rs", "old_string": "a",
+                "new_string": format!("password = hunter2hunter2\n{}", "n".repeat(5_000))}),
+            "updated".to_owned(),
         ),
         ("toolu_big", "Bash", bash("cat big.txt"), big),
         (
@@ -800,6 +832,25 @@ fn fetch(socket: &mut WebSocket, agent: &str, turn: &str, step: &str) -> Value {
     }
 }
 
+fn check_refusals(selected: &mut WebSocket, other_agent: &str, agent: &str, turn: &str) {
+    let mut stale = turn.to_owned();
+    let last = if stale.ends_with('0') { '1' } else { '0' };
+    stale.replace_range(stale.len() - 1.., &last.to_string());
+    let refused = [
+        fetch(selected, other_agent, turn, "toolu_plain"),
+        fetch(selected, agent, &stale, "toolu_plain"),
+        fetch(selected, agent, turn, "bad id!"),
+    ];
+    for frame in &refused {
+        assert_eq!(frame["state"], "refused", "{frame}");
+        assert_eq!(frame["reason"], "this page has not selected that step");
+        assert!(frame.get("result").is_none() && frame.get("edit").is_none());
+    }
+    let guessed = fetch(selected, agent, turn, "toolu_guess");
+    assert_eq!(guessed["state"], "gone", "{guessed}");
+    assert!(guessed.get("result").is_none() && guessed.get("reason").is_none());
+}
+
 fn check_fetches(selected: &mut WebSocket, agent: &str, turn: &str) {
     let mut heard = String::new();
     let mut ask = |id: &str| {
@@ -820,6 +871,11 @@ fn check_fetches(selected: &mut WebSocket, agent: &str, turn: &str) {
         ("toolu_env", "PRIVATE-ENV"),
         ("toolu_cat", "PRIVATE-AWS"),
         ("toolu_mcp", "PRIVATE-MCP"),
+        ("toolu_bgout", "PRIVATE-BG"),
+        ("toolu_grep", "PRIVATE-GREP"),
+        ("toolu_mystery", "PRIVATE-OTHER"),
+        ("toolu_envfile", "hunter2"),
+        ("toolu_secretedit", "hunter2"),
     ] {
         let frame = ask(id);
         assert_eq!(frame["state"], "withheld", "{id}: {frame}");
@@ -872,6 +928,9 @@ fn step_results_are_fetched_scrubbed_and_only_by_the_socket_that_selected_the_ag
     let dir = fixture.state.path().join("RESULTS");
     std::fs::create_dir(&dir).unwrap();
     let agent = common::hire(&running.handle, &dir).to_string();
+    let other_dir = fixture.state.path().join("OTHER");
+    std::fs::create_dir(&other_dir).unwrap();
+    let other = common::hire(&running.handle, &other_dir).to_string();
     let page = common::floor_session_on(&settings, addr, {
         let clock = Arc::clone(&clock);
         move || clock.now().unix_millis()
@@ -910,7 +969,19 @@ fn step_results_are_fetched_scrubbed_and_only_by_the_socket_that_selected_the_ag
         }
     }
     let turn = turn.expect("the turn of the steps");
+    check_refusals(&mut selected, &other, &agent, &turn);
     check_fetches(&mut selected, &agent, &turn);
+    let mut signed_out = TcpStream::connect(page.addr).unwrap();
+    signed_out
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    signed_out
+        .write_all(
+            page.upgrade_head_with("/floor/stream", "dudes-floor-v4", None)
+                .as_bytes(),
+        )
+        .unwrap();
+    assert!(!read_head(&mut signed_out).starts_with("HTTP/1.1 101"));
     let refused = fetch(&mut bystander, &agent, &turn, "toolu_plain");
     assert_eq!(refused["state"], "refused");
     assert!(!refused.to_string().contains("plain output line"));
