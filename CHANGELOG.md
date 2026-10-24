@@ -34,7 +34,7 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ### Fixes
 
-- Four timing-dependent tests no longer fail at random on a busy machine. (#197)
+- Five timing-dependent tests no longer fail at random on a busy machine. (#197, #204)
 
 ### Breaking
 
