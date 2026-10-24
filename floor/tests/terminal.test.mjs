@@ -354,7 +354,7 @@ after(async () => {
 });
 
 const panel = (channel, floor) => renderToStaticMarkup(createElement(TerminalPanelView, { channel, floor }));
-const status = (html) => /<p class="terminal-state[^"]*" role="(?:status|alert)">([^<]*)<\/p>/.exec(html)?.[1];
+const status = (html) => /<p class="terminal-state[^"]*"[^>]* role="(?:status|alert)">([^<]*)<\/p>/.exec(html)?.[1];
 const buttons = (html) => [...html.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label)
   .filter((label) => ['Detach', 'Detaching…', 'Close'].includes(label));
 
@@ -371,15 +371,16 @@ test('Attach carries its explanation as a tooltip and description, and a disable
   };
   assert.equal(view({ kind: 'none' }), '');
   const open = view({ kind: 'attach', agent: ADA });
-  described(open, 'Attach hands you this agent’s CLI\\. Its loop holds while you type, and Detach hands it back\\.');
+  assert.match(open, />Open the real CLI<\/button>/);
+  described(open, 'Open this agent’s real CLI\\. Automatic work waits while you type\\. Detach returns control to Dudes\\.');
   assert.doesNotMatch(attachButton(open), /aria-disabled/);
   for (const [offer, words] of [
-    [{ kind: 'unavailable', reason: 'running' }, 'Attach waits for this agent’s running turn to end\\.'],
-    [{ kind: 'unavailable', reason: 'attached' }, 'A person already holds this agent’s keyboard\\.'],
-    [{ kind: 'unavailable', reason: 'halted' }, 'A halt stands on this agent, so the Floor cannot attach it\\.'],
-    [{ kind: 'unavailable', reason: 'no-session' }, 'Attach waits for this agent’s first confirmed session\\.'],
-    [{ kind: 'open-here' }, 'This agent’s terminal is open\\.'],
-    [{ kind: 'open-elsewhere', agent: GRACE }, 'The terminal is open for Grace\\. Detach it before attaching this agent\\.'],
+    [{ kind: 'unavailable', reason: 'running' }, 'Wait for this agent’s current work to finish before opening its CLI\\.'],
+    [{ kind: 'unavailable', reason: 'attached' }, 'Someone already has this agent’s CLI open\\.'],
+    [{ kind: 'unavailable', reason: 'halted' }, 'This agent is halted, so its CLI cannot open\\.'],
+    [{ kind: 'unavailable', reason: 'no-session' }, 'This agent does not have a saved CLI session to open yet\\.'],
+    [{ kind: 'open-here' }, 'This agent’s CLI is already open\\.'],
+    [{ kind: 'open-elsewhere', agent: GRACE }, 'The CLI is open for Grace\\. Detach it before opening this agent’s CLI\\.'],
   ]) {
     const html = view(offer);
     described(html, words);
@@ -392,7 +393,7 @@ test('Claude Attach shows the workspace trust warning in a confirmation before o
   const view = (agent) => renderToStaticMarkup(createElement(TerminalAttachView, { floor, offer: { kind: 'attach', agent } }));
   const claude = view(ADA);
   assert.doesNotMatch(claude, /trust this folder/);
-  assert.match(claude, /<button type="button" class="terminal-attach" title="[^"]*" aria-describedby="terminal-hint" aria-haspopup="dialog">Attach<\/button>/);
+  assert.match(claude, /<button type="button" class="terminal-attach" title="[^"]*" aria-describedby="terminal-hint" aria-haspopup="dialog">Open the real CLI<\/button>/);
   assert.doesNotMatch(view(GRACE), /aria-haspopup/);
   const dialog = renderToStaticMarkup(createElement(AttachConfirmation, { name: 'Ada', onConfirm() {}, onCancel() {} }));
   assert.match(dialog, /Claude Code may ask you to trust this folder/);
@@ -411,31 +412,31 @@ test('the panel offers Detach only while attached, and Close only once ended', (
   assert.match(panel(open('detaching'), floor), /aria-disabled="true"/);
   assert.deepEqual(buttons(panel({ ...open('ended'), ending: 'detached' }, floor)), ['Close']);
   assert.equal(status(panel(open('attached'), floor)),
-    'Attached — what you type goes to this agent’s CLI. Its loop holds until you detach.');
+    'What you type goes to this agent’s CLI. Automatic work waits until you detach.');
   // The way out of the grid is on screen in every phase, the ended one included.
   for (const channel of [open('attached'), { ...open('ended'), ending: 'lost' }]) {
     assert.match(panel(channel, floor), /<p class="hire-note terminal-keys">Tab and Shift\+Tab go to the CLI\. Press Ctrl\+\] to move the keyboard from the terminal to this panel’s button\.<\/p>/);
   }
 });
 
-test('a daemon close is explained from the projection, which may arrive after it', () => {
+test('a closed CLI is explained from the latest agent state, which may arrive after it', () => {
   const closed = { phase: 'ended', id: 1, agent: ADA, ending: 'closed' };
-  assert.equal(status(panel(closed, floorOf([]))), 'The agent was retired, so the daemon closed its terminal.');
+  assert.equal(status(panel(closed, floorOf([]))), 'The agent was retired, so Dudes closed its CLI.');
   assert.equal(status(panel(closed, floorOf([row({ halted: true })]))),
-    'A halt now stands on this agent, so the daemon closed its terminal.');
+    'This agent is halted, so Dudes closed its CLI.');
   assert.equal(status(panel(closed, floorOf([row()], { phase: 'closed' }))),
-    'The Floor session ended or the daemon stopped, so the terminal closed.');
+    'Your Floor sign-in ended or Dudes stopped, so the CLI closed.');
   assert.equal(status(panel(closed, floorOf([row()]))),
-    'The daemon closed the terminal: the Floor session may have expired, or the agent’s CLI exited. '
-    + 'The daemon closes the agent’s terminal and returns the agent to its loop.');
+    'Dudes closed the CLI. Your Floor sign-in may have expired, or the agent’s CLI exited. '
+    + 'Dudes closes the agent’s CLI and returns it to automatic work.');
   // Between subscriptions an absent row proves nothing about retirement.
-  assert.match(status(panel(closed, floorOf([], { phase: 'resyncing', snapshotEpoch: 3 }))), /^The daemon closed/);
+  assert.match(status(panel(closed, floorOf([], { phase: 'resyncing', snapshotEpoch: 3 }))), /^Dudes closed/);
   assert.equal(status(panel({ ...closed, ending: 'detached' }, floorOf([row()]))),
-    'Detached. The daemon confirmed the close, and the agent is back under its loop.');
+    'Detached. Dudes confirmed the CLI closed. Automatic work can continue.');
   // A confirmed detach is the one ending that is not an alert.
   assert.match(panel({ ...closed, ending: 'detached' }, floorOf([row()])),
-    /<p class="terminal-state terminal-ended" role="status">Detached\./);
-  assert.match(panel(closed, floorOf([])), /<p class="terminal-state terminal-ended terminal-failed" role="alert">/);
+    /<p class="terminal-state terminal-ended" id="terminal-status" role="status">Detached\./);
+  assert.match(panel(closed, floorOf([])), /<p class="terminal-state terminal-ended terminal-failed" id="terminal-status" role="alert">/);
 });
 test('the terminal header offers bounded zoom, selection copy and reversible expansion', () => {
   const html = panel({ phase: 'attached', id: 1, agent: ADA }, floorOf([row()]));
@@ -446,6 +447,22 @@ test('the terminal header offers bounded zoom, selection copy and reversible exp
   assert.match(html, /aria-expanded="false"[^>]*>Expand<\/button>/);
   assert.match(html, /data-terminal-expanded="false"/);
   assert.match(html, /Cmd\+= zooms in|Ctrl\+\] first/);
+});
+
+test('zoom limit buttons keep their reason reachable by keyboard', () => {
+  const saved = globalThis.window;
+  try {
+    for (const [size, label, reason] of [[10, 'Zoom out', 'Minimum zoom is 10px.'], [32, 'Zoom in', 'Maximum zoom is 32px.']]) {
+      globalThis.window = { localStorage: { getItem: () => String(size) } };
+      const html = panel({ phase: 'attached', id: 1, agent: ADA }, floorOf([row()]));
+      const button = new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`).exec(html)?.[0] ?? '';
+      assert.match(button, /aria-disabled="true"/);
+      assert.ok(button.includes(`aria-description="${reason}"`));
+      assert.doesNotMatch(button, / disabled=/);
+    }
+  } finally {
+    globalThis.window = saved;
+  }
 });
 
 test('pressing a waiting Attach neither opens the confirmation nor attaches, and an available one does open it', async () => {
