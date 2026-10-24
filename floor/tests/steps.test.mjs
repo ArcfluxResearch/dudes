@@ -135,8 +135,10 @@ test('the Chat shows each step as a collapsed box with its words, status and out
     item('toolu_2', { kind: 'command', status: 'failed', exit: 2, args: [{ key: 'command', value: 'false', cut: false }] }),
     item('toolu_3', { kind: 'read', status: 'running', endedAt: null, args: [{ key: 'file_path', value: '/repo/a.rs', cut: false }] }),
   ]);
-  assert.match(html, /<details><summary><span class="step-status">Done<\/span> <span class="step-summary">Ran echo hello</);
-  assert.doesNotMatch(html, /<details open/);
+  assert.match(html, /<details><summary><span class="step-summary">Ran echo hello</);
+  assert.equal(html.match(/<details open/g)?.length, 1, 'only the list is open, every step box is closed');
+  assert.match(html, /<span class="step-status">Failed<\/span> <span class="step-summary">Ran false</);
+  assert.match(html, /<dt>Command<\/dt>/);
   assert.match(html, /Failed, exit code 2/);
   assert.match(html, /Reading \/repo\/a\.rs/);
   assert.match(html, /250 ms/);
@@ -179,4 +181,10 @@ test('a step whose text is hidden says why and shows no text', () => {
 test('the Steps list is absent for an agent that is not the selected turn', () => {
   const html = view([]);
   assert.doesNotMatch(html, /chat-steps/);
+});
+
+test('a long list starts closed and names the latest step, so the reply stays in view', () => {
+  const many = Array.from({ length: 9 }, (_, i) => item(`toolu_${i}`, { args: [{ key: 'command', value: `echo ${i}`, cut: false }] }));
+  assert.match(view(many), /<details><summary class="chat-steps-title">Steps <small>\(9\) · latest: Ran echo 8<\/small>/);
+  assert.match(view(many.slice(0, 8)), /<details open="">/);
 });

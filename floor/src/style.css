@@ -3079,7 +3079,7 @@ samp,
 .chat-preview { border-inline-start: 3px solid var(--accent-ink); }
 
 .chat-steps { margin: .5rem 0; font-size: .85rem; }
-.chat-steps-title { margin: 0 0 .25rem; font-size: .85rem; }
+.chat-steps-title { margin: 0 0 .25rem; font-size: .85rem; font-weight: 600; cursor: pointer; overflow-wrap: anywhere; }
 .chat-steps-title small { color: var(--muted-ink); font-weight: 400; }
 .step-list { margin: 0; padding: 0; list-style: none; }
 .step-children { margin-inline-start: 1rem; padding-inline-start: .5rem; border-inline-start: 2px solid var(--line); }
@@ -3103,6 +3103,7 @@ samp,
 .step-cut, .step-withheld, .step-result { display: block; margin: .25rem 0 0; color: var(--muted-ink); font-size: .8rem; }
 .step-plan { margin: 0 0 .35rem; padding: 0; list-style: none; }
 .step-plan li[data-plan-status='completed'] > span:not(.step-plan-mark) { text-decoration: line-through; color: var(--muted-ink); }
+.step-plan li { margin: .15rem 0; }
 .step-plan small { color: var(--muted-ink); }
 .crew-step-label { color: var(--muted-ink); }
 .chat-compose { flex: 0 0 auto; border-top: 1px solid var(--line); padding-top: .75rem; }

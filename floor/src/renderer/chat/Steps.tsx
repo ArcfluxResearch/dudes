@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import type { ReactNode } from 'react';
-import type { PlanItem, StepItem } from '../floor/steps.ts';
+import type { PlanItem, StepArg, StepItem } from '../floor/steps.ts';
 
 const SUMMARY_CHARS = 100;
 const PLAN_MARKS = { pending: '☐', in_progress: '▸', completed: '☑' } as const;
 const PLAN_WORDS = { pending: 'to do', in_progress: 'in progress', completed: 'done' } as const;
 const MAX_DEPTH = 8;
+const OPEN_UP_TO = 8;
+const KEY_WORDS: Readonly<Record<string, string>> = {
+  command: 'Command', file_path: 'File', path: 'Folder', notebook_path: 'Notebook', pattern: 'Search for', query: 'Search for',
+  url: 'Address', description: 'Task', prompt: 'Instructions', subagent_type: 'Helper type',
+};
 
 function firstLine(value: string): string {
   const line = value.split('\n', 1)[0] ?? '';
@@ -70,6 +75,10 @@ function Lines({ text, sign }: { readonly text: string; readonly sign: '-' | '+'
     <span aria-hidden="true" className="step-diff-sign">{sign}</span>{line}{'\n'}</span>)}</>;
 }
 
+function repeatsSummary(step: StepItem, item: StepArg): boolean {
+  return step.edit !== null && item.key === 'file_path' && !item.cut && item.value === firstLine(item.value);
+}
+
 function Body({ step }: { readonly step: StepItem }) {
   const result = step.resultBytes === null ? null
     : step.resultBytes === 0 ? 'No output.' : `${step.resultBytes} bytes of output.`;
@@ -81,8 +90,8 @@ function Body({ step }: { readonly step: StepItem }) {
       </li>)}
     </ul> : null}
     {step.args.length === 0 ? null : <dl className="step-args">
-      {step.args.map((item) => <div key={item.key}>
-        <dt>{item.key}</dt>
+      {step.args.filter((item) => !repeatsSummary(step, item)).map((item) => <div key={item.key}>
+        <dt>{KEY_WORDS[item.key] ?? item.key}</dt>
         <dd><pre className="step-text">{item.value}</pre>{item.cut ? <small className="step-cut">Cut to fit.</small> : null}</dd>
       </div>)}
     </dl>}
@@ -100,8 +109,8 @@ function StepBox({ step, children, depth }: { readonly step: StepItem; readonly 
   return <li className="step" data-step-kind={step.kind} data-step-status={step.status} data-step-depth={depth}>
     <details>
       <summary>
-        <span className="step-status">{step.status === 'running' ? 'Running' : step.status === 'failed' ? 'Failed' : 'Done'}</span>
-        {' '}<span className="step-summary">{stepSummary(step)}</span>
+        {step.status === 'failed' ? <><span className="step-status">Failed</span>{' '}</> : null}
+        <span className="step-summary">{stepSummary(step)}</span>
         {result === null ? null : <small className="step-outcome"> · {result}</small>}
       </summary>
       <Body step={step} />
@@ -134,11 +143,13 @@ export function Steps({ steps, truncated, stopped }: {
     const key = step.parent !== null && ids.has(step.parent) && step.parent !== step.id ? step.parent : null;
     byParent.set(key, [...(byParent.get(key) ?? []), step]);
   }
-  return <section className="chat-steps" aria-label="Steps">
-    <h4 className="chat-steps-title">Steps <small>({steps.length})</small></h4>
+  const latest = steps.at(-1);
+  return <section className="chat-steps" aria-label="Steps"><details open={steps.length <= OPEN_UP_TO}>
+    <summary className="chat-steps-title">Steps <small>({steps.length}){steps.length > OPEN_UP_TO && latest !== undefined
+      ? ` · latest: ${stepSummary(latest)}` : ''}</small></summary>
     {truncated ? <p className="chat-warning">Earlier steps are not shown.</p> : null}
     <Tree steps={steps} parent={null} byParent={byParent} depth={0} seen={new Set()} />
     {stopped ? <p className="chat-warning" role="status">This page stopped receiving steps because there were too many.
       Select the agent again to start over.</p> : null}
-  </section>;
+  </details></section>;
 }
