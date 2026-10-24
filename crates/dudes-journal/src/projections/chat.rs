@@ -846,6 +846,34 @@ pub(super) fn apply(
                 view.state = ChatTurnState::Cancelled;
             });
         }
+        Record::BrowserHalt {
+            agent,
+            abandons: Some(turn),
+            ..
+        } => {
+            let Some(mut issue) = get_row::<BrowserTurn>(&tables.issues, &turn.to_bytes())? else {
+                return Ok(());
+            };
+            if issue.agent != *agent
+                || !issue.intents.is_empty()
+                || issue.spawn.is_some()
+                || issue.end.is_some()
+                || issue.cancellation.is_some()
+            {
+                return Err(invalid());
+            }
+            issue.cancellation = Some(Cancellation::Clean(lsn));
+            put_row(&mut tables.issues, &turn.to_bytes(), &issue)?;
+            let mut value = note(&tables.notes, issue.note_lsn)?;
+            value.state = NoteState::Cancelled;
+            value.text.clear();
+            tables
+                .notes
+                .insert(issue.note_lsn.0, encoded(&value)?.as_slice())?;
+            update_history(&mut window, *turn, |view| {
+                view.state = ChatTurnState::Cancelled;
+            });
+        }
         Record::BrowserNoteReissueCancelled {
             agent,
             note_lsn,

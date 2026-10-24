@@ -613,7 +613,8 @@ impl OnboardingFailure {
             }
             | Record::Resume {
                 browser: Some(_), ..
-            } => OnboardingFailurePoint::Control,
+            }
+            | Record::BrowserHalt { .. } => OnboardingFailurePoint::Control,
             _ => return false,
         };
         let mut armed = self.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -712,7 +713,8 @@ impl OnboardingPause {
             }
             | Record::Resume {
                 browser: Some(_), ..
-            } => (
+            }
+            | Record::BrowserHalt { .. } => (
                 Some(Point::BeforeControlPermit),
                 Some(Point::AfterControlPermit),
                 None,
@@ -2862,7 +2864,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         })
     }
 
-    /// The writer-thread steps for one admitted pause or resume, on this writer thread and in this
+    /// The writer-thread steps for one admitted pause, stop or resume, on this writer thread and in this
     /// order.
     ///
     /// **Index truth first**, even while fenced: a durable same key returns its original result,
@@ -2900,18 +2902,25 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 reason,
             });
         }
-        let browser = Some(BrowserControl {
+        let browser = BrowserControl {
             request_id: request.request_id,
             request_digest: request.request_digest,
             control_lsn: request.control_lsn,
             session_digest: session.digest(),
-        });
+        };
         let agent = request.agent;
         let pumped = self.pump_browser(
             session,
             match request.verb {
-                ControlVerb::Pause => Command::Pause { agent, browser },
-                ControlVerb::Resume => Command::Resume { agent, browser },
+                ControlVerb::Pause => Command::Pause {
+                    agent,
+                    browser: Some(browser),
+                },
+                ControlVerb::Halt => Command::BrowserHalt { agent, browser },
+                ControlVerb::Resume => Command::Resume {
+                    agent,
+                    browser: Some(browser),
+                },
             },
         );
         // Durable and indexed is the whole promise, whatever a later effect of the same pump did.
@@ -2920,6 +2929,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         {
             return Ok(applied(indexed));
         }
+        if matches!(pumped, Err(PumpFailure::Forbidden | PumpFailure::NoEffect)) {
+            self.sup.browser_append_refused(request.request_id);
+        }
         Err(match pumped {
             Err(PumpFailure::Forbidden) => ControlRefusal::Forbidden,
             Err(PumpFailure::NoEffect) => ControlRefusal::UnavailableNoEffect,
@@ -2927,10 +2939,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         })
     }
 
-    /// The refusal reasons, the first that holds, read from the supervisor's fold on
-    /// this thread: `agent_absent` for an unknown or retired agent; `agent_halted` for a resume of
-    /// a halted one; `stale_control` when the presented control identity is not the agent's
-    /// current one, or the agent is not in the state the verb leaves.
+    /// The refusal reasons, the first that holds, read from the supervisor's fold on this thread.
+    /// Every verb answers `agent_absent` for an unknown or retired agent. A stop answers
+    /// `agent_attached` while a human holds the keyboard, `agent_halted` while any halt stands,
+    /// `stale_control` when the presented control identity is not current, and `no_running_turn`
+    /// when there is no turn to end. A resume answers `agent_halted` only for an operator's halt,
+    /// and `stale_control` when the control identity differs or the agent is neither paused,
+    /// automatically held nor halted by the Floor. A pause answers `stale_control` likewise.
     fn control_refusal(&self, request: &ControlRequest) -> Option<&'static str> {
         let Some(row) = self
             .sup
@@ -2941,12 +2956,25 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         else {
             return Some("agent_absent");
         };
-        if request.verb == ControlVerb::Resume && row.halted {
+        if request.verb == ControlVerb::Halt {
+            if row.attached {
+                return Some("agent_attached");
+            }
+            if row.halted {
+                return Some("agent_halted");
+            }
+            if row.control_lsn != request.control_lsn {
+                return Some("stale_control");
+            }
+            return (!self.sup.has_stoppable_turn(request.agent)).then_some("no_running_turn");
+        }
+        if request.verb == ControlVerb::Resume && row.halted && !row.halted_by_floor {
             return Some("agent_halted");
         }
         let leaves = match request.verb {
             ControlVerb::Pause => !row.paused,
-            ControlVerb::Resume => row.paused || row.automatic_hold.is_some(),
+            ControlVerb::Resume => row.paused || row.automatic_hold.is_some() || row.halted,
+            ControlVerb::Halt => unreachable!("a stop returns above"),
         };
         (row.control_lsn != request.control_lsn || !leaves).then_some("stale_control")
     }

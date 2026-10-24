@@ -34,6 +34,9 @@ pub(crate) enum ChatAction {
     Send {
         text: String,
         context_reset_turn: Option<TurnId>,
+        /// The control identity the Floor's stop returned: the note goes in as the second step of
+        /// stop and send, and the Floor's halt is lifted right after it.
+        after_stop: Option<Lsn>,
     },
     Cancel {
         note_lsn: Lsn,
@@ -126,6 +129,7 @@ struct SendJson {
     agent: String,
     text: String,
     context_reset_turn: Option<String>,
+    after_stop: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -137,6 +141,17 @@ struct CancelJson {
 }
 
 impl ChatRequest {
+    /// Whether this is the second step of stop and send, which lifts a halt the Floor made.
+    pub(crate) const fn follows_stop(&self) -> bool {
+        matches!(
+            self.action,
+            ChatAction::Send {
+                after_stop: Some(_),
+                ..
+            }
+        )
+    }
+
     /// Parse one bounded, canonical browser-note body without admitting a journal effect.
     ///
     /// The resulting command still requires an authenticated session and writer admission.
@@ -158,6 +173,15 @@ impl ChatRequest {
                 let text = dudes_proto::normalized_chat_text(&raw.text)
                     .ok_or_else(|| anyhow!("Floor Chat text is outside its admitted bounds"))?
                     .to_owned();
+                if raw.after_stop.is_some() && raw.context_reset_turn.is_some() {
+                    bail!("a note after a stop cannot also reset a context");
+                }
+                let after_stop = raw
+                    .after_stop
+                    .as_deref()
+                    .map(crate::floor_answer::decode_canonical_lsn)
+                    .transpose()
+                    .context("invalid Floor Chat after_stop")?;
                 (
                     raw.request_id,
                     raw.agent,
@@ -175,6 +199,7 @@ impl ChatRequest {
                                 Ok(turn)
                             })
                             .transpose()?,
+                        after_stop,
                     },
                     "dudes.chat.send.v1",
                     "text",
@@ -205,19 +230,28 @@ impl ChatRequest {
             } => Some(turn.to_string()),
             _ => None,
         };
-        let digest = reset.as_ref().map_or_else(
-            || request_digest(domain, &agent_wire, field, &value),
-            |turn| {
-                digest_fields(
-                    "dudes.chat.send.reset.v1",
-                    &[
-                        ("agent", &agent_wire),
-                        (field, &value),
-                        ("context_reset_turn", turn),
-                    ],
-                )
-            },
-        );
+        let after_stop = match &action {
+            ChatAction::Send {
+                after_stop: Some(lsn),
+                ..
+            } => Some(lsn.0.to_string()),
+            _ => None,
+        };
+        let digest = match (&reset, &after_stop) {
+            (Some(turn), _) => digest_fields(
+                "dudes.chat.send.reset.v1",
+                &[
+                    ("agent", &agent_wire),
+                    (field, &value),
+                    ("context_reset_turn", turn),
+                ],
+            ),
+            (None, Some(lsn)) => digest_fields(
+                "dudes.chat.send.stop.v1",
+                &[("agent", &agent_wire), (field, &value), ("after_stop", lsn)],
+            ),
+            (None, None) => request_digest(domain, &agent_wire, field, &value),
+        };
         Ok(Self {
             request_id_digest: Hex32::new(Sha256::digest(decoded.bytes()).into()),
             request_wire,

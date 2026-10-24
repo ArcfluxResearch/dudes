@@ -1097,6 +1097,40 @@ mod tests {
     }
 
     #[test]
+    fn a_floor_stop_does_not_close_an_issued_mail_wake_turn() {
+        let mut f = Flow::completed();
+        let issued = f.pending_issue();
+        f.ack(&issued);
+        let turn = f.h.supervisor.world.agents[&f.agent]
+            .open_turn
+            .expect("the wake turn is open");
+        f.h.supervisor.spawning.clear();
+        f.h.supervisor.live_issues.insert(turn);
+        let effects = f.h.step(Input::Command(crate::input::Command::BrowserHalt {
+            agent: f.agent,
+            browser: dudes_proto::record::BrowserControl {
+                request_id: dudes_proto::record::Hex32::new([7; 32]),
+                request_digest: dudes_proto::record::Hex32::new([8; 32]),
+                control_lsn: None,
+                session_digest: dudes_proto::record::Hex32::new([9; 32]),
+            },
+        }));
+        assert!(
+            effects.iter().any(|seen| matches!(
+                seen,
+                Seen::Persist {
+                    entry: Entry {
+                        record: Record::BrowserHalt { abandons: None, .. },
+                        ..
+                    },
+                    ..
+                }
+            )),
+            "the stop halts and leaves the wake turn to its own records"
+        );
+    }
+
+    #[test]
     fn checkpointed_mail_issue_status_matches_physical_replay_without_another_launch() {
         let mut outcomes = Vec::new();
         for checkpoint in [false, true] {

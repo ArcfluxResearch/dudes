@@ -63,11 +63,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             return Err(ChatRefusal::Forbidden);
         }
         if let Some(indexed) = self.ctx.chat_index.get(request.request_id_digest) {
-            return if indexed.request_digest == request.request_digest {
-                Ok(indexed.outcome(request.request_wire.clone()))
-            } else {
-                Err(ChatRefusal::Conflict)
-            };
+            if indexed.request_digest != request.request_digest {
+                return Err(ChatRefusal::Conflict);
+            }
+            if self.ctx.switches.load().control.pause_resume() {
+                self.lift_floor_halt_after_note(session, request)?;
+            }
+            return Ok(indexed.outcome(request.request_wire.clone()));
+        }
+        // The second step of stop and send lifts a halt, so it needs the control switch. A resend
+        // of a note that is already durable was answered above.
+        if request.follows_stop() && !self.ctx.switches.load().control.pause_resume() {
+            return refused(ChatReason::ActionOff);
         }
         if self.ctx.journal_writes_stopped() {
             return Err(ChatRefusal::UnavailableNoEffect);
@@ -81,13 +88,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             ChatAction::Send {
                 text,
                 context_reset_turn,
+                after_stop,
             } => {
                 let row = match self.sup.world().agents.get(&request.agent) {
                     None => return refused(ChatReason::AgentAbsent),
                     Some(row) if row.retired => return refused(ChatReason::AgentRetired),
-                    Some(row) if row.halted => return refused(ChatReason::Halted),
                     Some(row) => row,
                 };
+                // The second step of stop and send is the only send that reaches a halted agent,
+                // and only the Floor's own halt, still the one its first step returned.
+                if let Some(stop) = after_stop {
+                    if row.control_lsn != Some(*stop) {
+                        return refused(ChatReason::StaleControl);
+                    }
+                    if !(row.halted && row.halted_by_floor) {
+                        return refused(ChatReason::Halted);
+                    }
+                    if row.open_turn.is_some() {
+                        return refused(ChatReason::TurnOpen);
+                    }
+                } else if row.halted {
+                    return refused(ChatReason::Halted);
+                }
                 let loss = self.sup.world().conversation_context_loss(request.agent);
                 if !row.attached && row.goal.is_none() {
                     match (loss, context_reset_turn) {
@@ -179,10 +201,81 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if let Some(indexed) = self.ctx.chat_index.get(request.request_id_digest)
             && indexed.request_digest == request.request_digest
         {
+            self.lift_floor_halt_after_note(session, request)?;
             return Ok(indexed.outcome(request.request_wire.clone()));
         }
         if matches!(pumped, Err(PumpFailure::Forbidden | PumpFailure::NoEffect)) {
             self.sup.browser_append_refused(request.request_id_digest);
+        }
+        Err(match pumped {
+            Err(PumpFailure::Forbidden) => ChatRefusal::Forbidden,
+            Err(PumpFailure::NoEffect) => ChatRefusal::UnavailableNoEffect,
+            Ok(()) | Err(PumpFailure::Uncertain) => ChatRefusal::Unavailable,
+        })
+    }
+}
+
+impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<H, P, C, R> {
+    /// The second append of stop and send: lift the Floor's halt once its note is durable.
+    ///
+    /// The resume carries an identity derived from the note's own request, so a resend finds it in
+    /// the control index and appends nothing. It is appended only while the halt is still the
+    /// Floor's and the control identity is still the one the stop returned, so a halt an operator
+    /// made after a crash is never lifted by a resent request.
+    fn lift_floor_halt_after_note(
+        &mut self,
+        session: &crate::floor_session::SessionIdentity,
+        request: &ChatRequest,
+    ) -> Result<(), ChatRefusal> {
+        let ChatAction::Send {
+            after_stop: Some(stop),
+            ..
+        } = &request.action
+        else {
+            return Ok(());
+        };
+        let derive = |domain: &[u8], source: dudes_proto::record::Hex32| {
+            use sha2::Digest as _;
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(domain);
+            hasher.update(source.bytes());
+            dudes_proto::record::Hex32::new(hasher.finalize().into())
+        };
+        let request_id = derive(
+            b"dudes.chat.send.stop.resume.id.v1\0",
+            request.request_id_digest,
+        );
+        if self.ctx.control_index.get(request_id).is_some() {
+            return Ok(());
+        }
+        let still_floor_halt = self
+            .sup
+            .world()
+            .agents
+            .get(&request.agent)
+            .is_some_and(|row| {
+                !row.retired && row.halted && row.halted_by_floor && row.control_lsn == Some(*stop)
+            });
+        if !still_floor_halt {
+            return Ok(());
+        }
+        let pumped = self.pump_browser(
+            session,
+            Command::Resume {
+                agent: request.agent,
+                browser: Some(dudes_proto::record::BrowserControl {
+                    request_id,
+                    request_digest: derive(
+                        b"dudes.chat.send.stop.resume.digest.v1\0",
+                        request.request_digest,
+                    ),
+                    control_lsn: Some(*stop),
+                    session_digest: session.digest(),
+                }),
+            },
+        );
+        if self.ctx.control_index.get(request_id).is_some() {
+            return Ok(());
         }
         Err(match pumped {
             Err(PumpFailure::Forbidden) => ChatRefusal::Forbidden,
@@ -587,7 +680,8 @@ pub(super) fn attribution_session(
         | Record::Resume {
             browser: Some(meta),
             ..
-        } => Some(meta.session_digest),
+        }
+        | Record::BrowserHalt { browser: meta, .. } => Some(meta.session_digest),
         Record::AgentRenamed {
             browser_rename: Some(meta),
             ..

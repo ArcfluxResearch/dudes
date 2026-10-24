@@ -36,7 +36,7 @@ before(async () => {
 after(async () => { await server?.close(); });
 
 const PAUSED_LINE = 'The office is paused. No agent starts a new turn until it is resumed.';
-const HALTED_LINE = 'The office is halted. A halt stands on every agent, and only the local operator can lift it.';
+const HALTED_LINE = 'The office is halted. A halt stands on every agent. Resume lifts a stop made from this page; only the local operator can lift one made from the command line.';
 
 test('HALT_ANY, PAUSE_ANY, HALT_CLAUSE_DROPPED, MODE_UNCONFIRMED and BANNER_UNWIRED mutants: the office is paused or halted only when every agent is, and says so', async () => {
   const view = (agents, patch = {}) => officeModeOf({ phase: 'live', epoch: 2, snapshotEpoch: 2, agents, ...patch });

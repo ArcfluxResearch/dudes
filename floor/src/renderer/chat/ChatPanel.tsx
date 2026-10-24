@@ -6,8 +6,9 @@ import { AnswerForm } from '../answer/AnswerPanel.tsx';
 import { selectOutputAgent } from '../floor/store.ts';
 import type { FloorState, OutputStatus } from '../floor/store.ts';
 import { handFocusOnLeave } from '../focus.ts';
+import { PARTIAL_EDITS_NOTE, controlGate } from '../control/control.ts';
 import type { AgentRow } from '../scene/cast.ts';
-import { browserChatDeps, cancelChat, clearQueuedChat, queuedChatNotes, chatDraft, chatFiles, chatGate, chatReleasable, chatSendProblem,
+import { advanceStopAndSend, browserChatDeps, canStopAndSend, cancelChat, stopAndSend, clearQueuedChat, queuedChatNotes, chatDraft, chatFiles, chatGate, chatReleasable, chatSendProblem,
   chatSettled, chatUploading, dropChatFiles, editChatDraft, getChatState, overChatFiles, pasteChatFiles, pickChatFiles,
   queuesChatOnKey, reconcileChat, releaseChat, removeChatFile,
   retryChat, selectChatAnswer, startFreshChat, submitChat, subscribeToChat } from './chat.ts';
@@ -23,7 +24,7 @@ import { FullOutput } from '../LiveWork.tsx';
 export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
   agent_absent: 'The agent is no longer on the floor.',
   agent_retired: 'The agent was retired.',
-  halted: 'This agent is stopped. Open Overview to review its status.',
+  halted: 'This agent is stopped. Press Resume in Overview if you stopped it from this page; otherwise review its status there.',
   unsupported_delivery: 'This agent cannot receive messages in this session.',
   goal_absent: 'The task this message belongs to is unavailable.',
   queue_full: 'Too many messages are waiting. Remove a queued note or wait for delivery.',
@@ -41,6 +42,9 @@ export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
   delivery_started: 'Delivery has started. Its text cannot be retracted.',
   note_unknown: 'This note is no longer waiting for delivery. Check the conversation for its status.',
   note_cancelled: 'This note was already cancelled.',
+  stale_control: 'This agent changed after the stop, so the note was not sent. It is still in the box.',
+  turn_open: 'The stopped turn has not ended yet, so the note was not sent. It is still in the box.',
+  action_off: 'Stopping and sending is switched off, so the note was not sent. It is still in the box.',
 };
 
 export function ChatPanel({ floor, row, fullOutput = false, onFullOutput }: {
@@ -58,7 +62,8 @@ export function ChatPanel({ floor, row, fullOutput = false, onFullOutput }: {
   }, [target]);
   useEffect(() => {
     if (chatGate(floor, row).open && floor.chat !== null) reconcileChat(floor.chat);
-  }, [floor.chat, floor.phase, floor.stale, floor.epoch, floor.snapshotEpoch, row, chat.acknowledged]);
+    void advanceStopAndSend(browserChatDeps);
+  }, [floor.chat, floor.phase, floor.stale, floor.epoch, floor.snapshotEpoch, row, chat.acknowledged, chat.stopSend]);
   return <ChatPanelView floor={floor} row={row} action={chat} fullOutput={fullOutput} onFullOutput={onFullOutput} />;
 }
 
@@ -75,6 +80,7 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
   const problem = chatSendProblem(action, row.id);
   const attempt = action.attempt?.payload.agent === row.id ? action.attempt : null;
   const blocked = action.attempt !== null || action.clearing != null || problem !== null || chatUploading(action, row.id);
+  const stopControl = controlGate(floor, row);
   const accepts = row.mode !== 'attached';
   const name = typeof row.name === 'string' ? row.name : 'this agent';
   const question = answerGate(floor, row);
@@ -132,10 +138,19 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
               onChange={(event) => pickChatFiles(event, gate)} />
             <span aria-hidden="true">+</span>
           </label> : null}
-          <button type="button" className="chat-send" disabled={blocked}
+          {stopControl.open && stopControl.stop ? <button type="button" className="chat-stop-send"
+            disabled={blocked || !canStopAndSend(action, gate, stopControl)} aria-describedby="chat-stop-send-note"
+            title="Stop this turn, then send your message once it has ended"
+            onClick={() => void stopAndSend(gate, stopControl, browserChatDeps)}>Stop and send</button> : null}
+          <button type="button" className="chat-send" disabled={blocked || action.stopSend !== null}
             onClick={() => void submitChat(gate, browserChatDeps)}>Send</button>
         </div>
       </div>
+      {stopControl.open && stopControl.stop ? <p className="hire-note" id="chat-stop-send-note">
+        Stop and send ends the running turn, then sends your message as a note. {PARTIAL_EDITS_NOTE}</p> : null}
+      {action.stopSend?.agent === row.id ? <p role="status" data-chat-stop-send={action.stopSend.stopLsn === null ? 'stopping' : 'waiting'}>
+        {action.stopSend.stopLsn === null ? 'Stopping this turn…'
+          : 'Stopped. Sending your note once the turn has ended…'}</p> : null}
       {accepts ? null : <p className="chat-guidance">Files work with agents Dudes launches.</p>}
       {(draft !== '' || files.length > 0) && problem !== null ? <p role="alert">{problem}</p> : null}
       {action.problem === null ? null : <p role="alert">{action.problem}</p>}
@@ -268,7 +283,10 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
           <p>Agent: <code>{attempt.payload.agent}</code></p>
           <p>Status: <code>{outcome?.kind ?? 'sending'}</code></p>
         </details>
-        {outcome?.kind === 'context_lost' ? <button type="button" className="chat-start-fresh" disabled={action.sending}
+        {outcome?.kind === 'context_lost' && 'after_stop' in attempt.payload
+          ? <p role="status">The stopped turn left no conversation to continue. Press Resume to let the agent work
+            again, then send a new message. Your note is still in the box.</p> : null}
+        {outcome?.kind === 'context_lost' && !('after_stop' in attempt.payload) ? <button type="button" className="chat-start-fresh" disabled={action.sending}
           ref={handFocusOnLeave} data-focus-on-leave="chat-text"
           onClick={() => void startFreshChat(attempt, outcome, browserChatDeps)}>Start fresh and resend this message</button> : null}
         {chatReleasable(action)
@@ -343,7 +361,7 @@ function turnText(turn: ChatTurn, output: OutputStatus | null): string | null {
     case 'running': return output === 'ended' ? 'Waiting for reply status' : 'Replying…';
     case 'ended': return turn.reply === null ? 'No final reply was reported' : null;
     case 'failed': return turn.reply === null ? 'Turn failed. No final reply was reported' : 'Turn failed.';
-    case 'cancelled': return 'Cancelled before delivery.';
+    case 'cancelled': return 'Cancelled before delivery. The agent did not receive this note.';
     case 'delivery_uncertain': return 'Delivery before restart is unknown.';
     case 'reissue_cancelled': return 'Future reissue stopped. Delivery before restart is unknown.';
   }

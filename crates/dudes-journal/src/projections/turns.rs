@@ -375,6 +375,19 @@ pub(crate) fn apply(
                 session_usage: *session_usage,
             }))
         }
+        Record::BrowserHalt {
+            abandons: Some(turn),
+            ..
+        } => {
+            update(table, lsn, *turn, record, |t| {
+                if t.status == TurnStatus::Issued {
+                    t.status = TurnStatus::Killed;
+                    t.end_lsn = Some(lsn);
+                    t.ended_at = Some(entry.at);
+                }
+            })?;
+            Ok(None)
+        }
         // `KillDeferred` deliberately moves no row: it records that a standing kill was *not*
         // carried out, which changes neither the turn's status nor its end.
         // It is journaled for `dudes why`. The test named after it pins that it is inert *and*

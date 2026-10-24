@@ -155,7 +155,7 @@ function held() {
 }
 
 const APPLIED = (request, url) => ({ status: 200, body: JSON.stringify({
-  request_id: request.request_id, state: url === '/floor/pause' ? 'paused' : 'resumed', agent: request.agent,
+  request_id: request.request_id, state: url === '/floor/pause' ? 'paused' : url === '/floor/halt' ? 'halted' : 'resumed', agent: request.agent,
   control_lsn: NEXT }) });
 const PENDING = (request) => ({ status: 202, body: JSON.stringify({ request_id: request.request_id, state: 'pending' }) });
 const REFUSED = (reason) => (request) => ({ status: 409, body: JSON.stringify({
@@ -175,7 +175,8 @@ function gate(id = ADA) {
 async function press(net, verb, id = ADA) {
   const open = gate(id);
   assert.equal(open.open, true, `the controls for ${id} are not open`);
-  assert.equal(open.offer, verb, `${id} is not offered ${verb}`);
+  if (verb === 'halt') assert.equal(open.stop, true, `${id} is not offered a stop`);
+  else assert.equal(open.offer, verb, `${id} is not offered ${verb}`);
   await control.submitControl(verb, open, net);
 }
 
@@ -277,7 +278,7 @@ test('the control sibling decodes exactly {}, and anything else means no buttons
   }
 });
 
-test('Pause only while not paused; Resume only while paused and not halted; no button names halt or restart', () => {
+test('Pause only while not paused; Resume only while paused and not halted; Stop this turn only while a managed turn runs under no halt; no button names halt or restart', () => {
   const kinds = [
     { mode: 'managed', status: 'running' },
     { mode: 'managed', status: 'idle' },
@@ -296,16 +297,58 @@ test('Pause only while not paused; Resume only while paused and not halted; no b
         assert.equal(gate().offer, want, label);
         const html = strip();
         const buttons = buttonsIn(html);
-        assert.deepEqual(buttons, labels[want], label);
+        const stop = kind.mode === 'managed' && kind.status === 'running' && !halted ? ['Stop this turn'] : [];
+        assert.deepEqual(buttons, [...labels[want], ...stop], label);
         drawn += buttons.length;
         for (const text of buttons) assert.doesNotMatch(text, /halt|restart/i, `${label}: a button names ${text}`);
         // A halt the Floor cannot lift is said, in a sentence and not on a control.
-        if (halted) assert.match(html, /<p class="hire-note control-halt-note">A halt stands on this agent\./, label);
+        if (halted) assert.match(html, /<p class="hire-note control-halt-note">A halt from the command line stands on this agent\./, label);
         else assert.doesNotMatch(html, /control-halt-note/, label);
       }
     }
   }
-  assert.equal(drawn, 9, 'the matrix drew too few buttons to prove anything');
+  assert.equal(drawn, 11, 'the matrix drew too few buttons to prove anything');
+});
+
+test('a halt this page made offers Resume and says Stopping, then Stopped; an operator’s halt offers neither', () => {
+  const stopped = (fields) => agent({ halted: true, halted_by_floor: true, control_lsn: LSN, ...fields });
+  resetFloorStore();
+  subscribe({ agents: [stopped({ status: 'running' })] });
+  assert.equal(gate().offer, 'resume');
+  assert.equal(gate().stop, false, 'no second stop while a halt stands');
+  let html = strip();
+  assert.deepEqual(buttonsIn(html), ['Resume']);
+  assert.match(html, /data-stop-state="stopping">Stopping — the turn’s process is being ended; no new turn will start</);
+  assert.match(html, /Resume lifts your stop\. The stopped turn is not brought back/);
+  assert.doesNotMatch(html, /control-halt-note/, 'the halt note is for the operator’s halt');
+
+  resetFloorStore();
+  subscribe({ agents: [stopped({ status: 'idle' })] });
+  html = strip();
+  assert.match(html, /data-stop-state="stopped">Stopped — no new turn will start until you press Resume</);
+  assert.deepEqual(buttonsIn(html), ['Resume']);
+
+  resetFloorStore();
+  subscribe({ agents: [agent({ halted: true, status: 'idle', control_lsn: LSN })] });
+  html = strip();
+  assert.doesNotMatch(html, /data-stop-state/);
+  assert.match(html, /control-halt-note/);
+  assert.deepEqual(buttonsIn(html), ['Pause'], 'the unchanged offer for an operator’s halt');
+});
+
+test('Stop this turn carries the partial-edits note and posts to its own route with the same three fields', async () => {
+  resetFloorStore();
+  control.resetControl();
+  subscribe({ agents: [agent({ control_lsn: LSN })] });
+  assert.match(strip(), /Stopping ends the turn’s whole process tree at once\. It can leave partial edits in the working tree and a stale git lock file behind\./);
+  const net = daemon(APPLIED);
+  await press(net, 'halt');
+  assert.equal(net.calls.length, 1);
+  const [{ url, init }] = net.calls;
+  assert.equal(url, '/floor/halt');
+  assert.deepEqual(Object.keys(JSON.parse(init.body)), ['request_id', 'agent', 'control_lsn']);
+  assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: NEXT });
+  assert.match(strip() + status(), /Stop request/);
 });
 
 test('one press posts exactly three fields to its own route with the REQUEST_ID header; control_lsn is the row’s string or null', async () => {
@@ -331,7 +374,7 @@ test('one press posts exactly three fields to its own route with the REQUEST_ID 
       const presented = lsn === undefined ? 'null' : `"${lsn}"`;
       assert.equal(init.body, `{"request_id":"${sent.request_id}","agent":"${ADA}","control_lsn":${presented}}`,
         `${verb} with control_lsn ${lsn}`);
-      assert.deepEqual(control.getControlState().outcome, { kind: 'applied' });
+      assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: '1099511628300' });
     }
   }
 
@@ -366,7 +409,7 @@ test('a malformed control_lsn closes the controls instead of sending null', asyn
   assert.equal(gate().open, true);
   resetFloorStore();
   subscribe();
-  assert.deepEqual(gate(), { open: true, agent: ADA, controlLsn: null, offer: 'pause', halted: false, turns: 3 });
+  assert.deepEqual(gate(), { open: true, agent: ADA, controlLsn: null, offer: 'pause', stop: true, halted: false, haltedByFloor: false, turns: 3 });
 });
 
 // --- the three wordings ------------------------------------------------------
@@ -435,7 +478,7 @@ test('an idle paused agent whose goal predicate passed shows Paused, never Done'
 test('200 promises only the cause; a stopped or started turn is shown from projection deltas', async () => {
   subscribe();
   await press(daemon(APPLIED), 'pause');
-  assert.deepEqual(control.getControlState().outcome, { kind: 'applied' });
+  assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: '1099511628300' });
   let html = status();
   assert.match(html, /<p class="control-success" role="status">Pause recorded\. The daemon holds this pause in its journal, which is not the same as the agent stopping\.<\/p>/);
   assert.deepEqual(wordingsIn(strip()), [], 'the 200 drew a pause the projection has not shown');
@@ -449,7 +492,7 @@ test('200 promises only the cause; a stopped or started turn is shown from proje
 
   await press(daemon(APPLIED), 'resume');
   html = status();
-  assert.match(html, /Resume recorded\. The daemon lifted this pause in its journal, which is not the same as a new turn\./);
+  assert.match(html, /Resume recorded\. The daemon lifted this pause or stop in its journal, which is not the same as a new turn\./);
   assert.match(html, /data-control-continuation="waiting">No new turn has appeared yet\./);
   assert.deepEqual(wordingsIn(strip()), [['paused', 'Paused']], 'the 200 lifted a pause the projection still holds');
   delta([agent({ status: 'idle', control_lsn: '1099511628301' })], 12);
@@ -467,18 +510,18 @@ test('stale_control says the agent changed since the page read it, and refreshes
   assert.deepEqual(control.getControlState().outcome, { kind: 'refused', reason: 'stale_control' });
   assert.equal(net.refreshes, 1, 'a stale_control did not ask for a fresh snapshot');
   const html = status();
-  assert.match(html, /<p class="control-error" role="alert" data-control-reason="stale_control">This agent’s pause state changed since this page read it, so nothing was recorded\. The floor is being refreshed\.<\/p>/);
+  assert.match(html, /<p class="control-error" role="alert" data-control-reason="stale_control">This agent’s control state changed since this page read it, so nothing was recorded\. The floor is being refreshed\.<\/p>/);
   assert.doesNotMatch(html, /control-success|>Check status</);
   // Nothing was recorded, so nothing is held back: the fresh snapshot decides what is offered.
   assert.equal(control.blocksControls(control.getControlState(), gate(), 1), false);
   subscribe({ agents: [agent({ paused: true, control_lsn: NEXT })] });
-  assert.deepEqual(buttonsIn(strip()), ['Resume']);
+  assert.deepEqual(buttonsIn(strip()), ['Resume', 'Stop this turn']);
   assert.match(strip(), new RegExp(`data-control-lsn="${NEXT}"`));
 });
 
 test('agent_halted and agent_absent are each shown as themselves, and nothing looks like success', async () => {
   const said = {
-    agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
+    agent_halted: 'A halt stands on this agent. Resume lifts a stop made from this page; a halt made from the command line only the local operator can lift. Nothing was recorded.',
     agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
   };
   for (const [reason, text] of Object.entries(said)) {
@@ -561,7 +604,7 @@ test('403 with a live snapshot says this page can no longer act; with a dead str
   await control.checkControlStatus(unresolved);
   assert.equal(unresolved.calls.length, 3);
   assert.equal(unresolved.calls[2].init.body, unresolved.calls[0].init.body);
-  assert.deepEqual(control.getControlState().outcome, { kind: 'applied' });
+  assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: '1099511628300' });
 });
 
 test('503 offers a same-id retry and is never retried by itself', async () => {
@@ -578,7 +621,7 @@ test('503 offers a same-id retry and is never retried by itself', async () => {
   await control.checkControlStatus(net);
   assert.equal(net.calls[1].url, net.calls[0].url);
   assert.equal(net.calls[1].init.body, net.calls[0].init.body);
-  assert.deepEqual(control.getControlState().outcome, { kind: 'applied' });
+  assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: '1099511628300' });
 });
 
 test('pending offers Check status with the same request_id', async () => {
@@ -595,7 +638,7 @@ test('pending offers Check status with the same request_id', async () => {
   await control.checkControlStatus(net);
   assert.equal(net.calls.length, 3);
   for (const call of net.calls) assert.equal(call.init.body, net.calls[0].init.body, 'Check status sent a different request');
-  assert.deepEqual(control.getControlState().outcome, { kind: 'applied' });
+  assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: '1099511628300' });
 });
 
 test('the response map: every row, and anything off its row proves nothing', () => {
@@ -607,8 +650,8 @@ test('the response map: every row, and anything off its row proves nothing', () 
   const ok = (state, fields = {}) => JSON.stringify({ request_id: REQUEST_ID, state, agent: ADA, control_lsn: NEXT, ...fields });
   const other = 'B'.repeat(43);
   const rows = [
-    [pause, 200, ok('paused'), { kind: 'applied' }],
-    [resume, 200, ok('resumed'), { kind: 'applied' }],
+    [pause, 200, ok('paused'), { kind: 'applied', controlLsn: '1099511628300' }],
+    [resume, 200, ok('resumed'), { kind: 'applied', controlLsn: '1099511628300' }],
     [pause, 200, ok('resumed'), { kind: 'unknown' }],
     [resume, 200, ok('paused'), { kind: 'unknown' }],
     [pause, 200, ok('paused', { request_id: other }), { kind: 'unknown' }],
@@ -661,7 +704,7 @@ test('both buttons are disabled while a request is pending, and a second press s
   assert.equal(net.calls.length, 1, 'a second request went out while the first was out');
   reply.release(APPLIED);
   await first;
-  assert.deepEqual(control.getControlState().outcome, { kind: 'applied' });
+  assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: '1099511628300' });
   assert.match(strip(), /<button type="button" class="control-resume" aria-busy="false"/);
 });
 
@@ -674,13 +717,13 @@ test('after a reload the page sends nothing by itself, and request_id lived only
   assert.equal(net.calls.length, 0, 'Check status without an attempt sent something');
   assert.equal(control.getControlState().attempt, null);
   assert.equal(status(), '');
-  assert.deepEqual(buttonsIn(strip()), ['Pause']);
+  assert.deepEqual(buttonsIn(strip()), ['Pause', 'Stop this turn']);
   assert.doesNotMatch(strip(), /disabled=""/);
 
   // Nothing in the view sends by itself: each press is its button, Check status its button.
   const panel = await readFile(resolve(root, 'src/renderer/control/ControlPanel.tsx'), 'utf8');
   assert.doesNotMatch(panel, /useEffect|useLayoutEffect/, 'the control view runs an effect');
-  assert.equal([...panel.matchAll(/submitControl\(/g)].length, 2);
+  assert.equal([...panel.matchAll(/submitControl\(/g)].length, 3);
   assert.equal([...panel.matchAll(/checkControlStatus\(/g)].length, 1);
 });
 
@@ -689,7 +732,7 @@ test('the release gate lets an attempt go only on a confirmed no-effect outcome'
     verb: 'pause', payload: { request_id: REQUEST_ID, agent: ADA, control_lsn: LSN }, body: '{}', turnsAtSend: 0,
   });
   const outcomes = [
-    { kind: 'applied' }, { kind: 'pending' }, { kind: 'unavailable' }, { kind: 'unknown' },
+    { kind: 'applied', controlLsn: '1099511628300' }, { kind: 'pending' }, { kind: 'unavailable' }, { kind: 'unknown' },
     { kind: 'refused', reason: 'stale_control' }, { kind: 'conflict' }, { kind: 'forbidden' },
     { kind: 'rejected', status: 400 },
   ];
@@ -702,7 +745,7 @@ test('the release gate lets an attempt go only on a confirmed no-effect outcome'
         const label = `${outcome.kind}, uncertain ${uncertain}, sending ${sending}`;
         assert.equal(control.releasable(state), want, label);
         // Drawn for the attempt's own agent, still at the position it named, on a session no 403 was received under.
-        const own = { open: true, agent: ADA, controlLsn: LSN, offer: 'pause', halted: false, turns: 0 };
+        const own = { open: true, agent: ADA, controlLsn: LSN, offer: 'pause', stop: true, halted: false, haltedByFloor: false, turns: 0 };
         assert.equal(control.blocksControls(state, own, 1), sending || outcome.kind === 'applied' || !want, label);
       }
     }
@@ -747,7 +790,7 @@ test('Check status may ask only for an attempt not settled, not let go and not i
     verb: 'resume', payload: { request_id: REQUEST_ID, agent: ADA, control_lsn: LSN }, body: '{}', turnsAtSend: 0,
   });
   const outcomes = [
-    null, { kind: 'applied' }, { kind: 'pending' }, { kind: 'unavailable' }, { kind: 'unknown' },
+    null, { kind: 'applied', controlLsn: '1099511628300' }, { kind: 'pending' }, { kind: 'unavailable' }, { kind: 'unknown' },
     { kind: 'refused', reason: 'agent_halted' }, { kind: 'conflict' }, { kind: 'forbidden' },
     { kind: 'rejected', status: 413 },
   ];
@@ -775,7 +818,7 @@ test('a 200 holds the pressed verb until a delta moves its control position, and
   subscribe({ agents: [agent({ control_lsn: LSN }), GRACE_ROW()] });
   const net = daemon(APPLIED, APPLIED);
   await press(net, 'pause');
-  assert.deepEqual(control.getControlState().outcome, { kind: 'applied' });
+  assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: '1099511628300' });
   // No delta yet: the row still names the position the request named, and still offers Pause.
   assert.equal(gate().offer, 'pause');
   assert.match(strip(), /<button type="button" class="control-pause" aria-disabled="true"/,
@@ -791,7 +834,7 @@ test('a 200 holds the pressed verb until a delta moves its control position, and
     'a flip of another agent’s button hands the keyboard to this request’s heading');
   // The delta moves the position: the opposite verb is offered, and it is live.
   delta([agent({ paused: true, control_lsn: NEXT }), GRACE_ROW()], 10);
-  assert.deepEqual(buttonsIn(strip()), ['Resume']);
+  assert.deepEqual(buttonsIn(strip()), ['Resume', 'Stop this turn']);
   assert.doesNotMatch(strip(), /aria-disabled/, 'the opposite verb still waits after the floor showed the request');
   assert.match(strip(), /class="control-resume"[^>]*data-focus-on-leave="agent-detail-title"/,
     'a flip of a Resume this page never pressed hands the keyboard to an older request');
@@ -873,7 +916,7 @@ test('a 403 says what a press does next: an ended session keeps no settled reque
   assert.doesNotMatch(strip(ADA, net.generation), /aria-disabled/);
   await control.submitControl('pause', gate(), net);
   assert.equal(net.calls.length, 2);
-  assert.deepEqual(control.getControlState().outcome, { kind: 'applied' });
+  assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: '1099511628300' });
 });
 
 

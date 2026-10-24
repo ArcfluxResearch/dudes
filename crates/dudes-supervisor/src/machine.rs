@@ -53,6 +53,8 @@ use crate::world::{AgentRow, MAX_PENDING_STEERS, World};
 
 mod browser_notes;
 mod conversations;
+#[cfg(test)]
+mod floor_stop_tests;
 mod instruction_observations;
 pub use instruction_observations::InstructionSource;
 mod mail_wakes;
@@ -533,6 +535,10 @@ pub struct Supervisor<C: Clock, R: Rng> {
     status: BTreeMap<AgentId, AgentStatus>,
     ledger: Ledger,
     live_issues: BTreeSet<TurnId>,
+    /// Turns a recovery consent put in [`Self::live_issues`]. A prior run may already have made
+    /// the host call for such a turn's instruction attempt, so a Floor stop never closes one as
+    /// unlaunched.
+    consented_issues: BTreeSet<TurnId>,
     recovery_discovery: recovery::Discovery,
     spend: BTreeMap<AgentId, SpendView>,
     mail_refreshes: BTreeMap<AgentId, MailRefresh>,
@@ -729,6 +735,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             status: BTreeMap::new(),
             ledger: Ledger::new(),
             live_issues: BTreeSet::new(),
+            consented_issues: BTreeSet::new(),
             recovery_discovery: recovery::Discovery::default(),
             spend: BTreeMap::new(),
             mail_refreshes: BTreeMap::new(),
@@ -1509,6 +1516,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             | Record::Pause { agent, .. }
             | Record::Resume { agent, .. }
             | Record::Halt { agent, .. }
+            | Record::BrowserHalt { agent, .. }
             | Record::Detached { agent, .. } => {
                 self.activity_pending.remove(agent);
                 if let Some(journaled) = self.activity_journaled.get_mut(agent) {
@@ -1656,6 +1664,20 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     self.reissued.remove(turn);
                     self.reissue_confirmations.remove(turn);
                 }
+            }
+            Record::BrowserHalt {
+                agent,
+                abandons: Some(turn),
+                ..
+            } => {
+                self.browser_launches.remove(turn);
+                self.spawning.remove(turn);
+                self.reissued.remove(turn);
+                self.reissue_confirmations.remove(turn);
+                self.live_issues.remove(turn);
+                self.consented_issues.remove(turn);
+                self.status
+                    .insert(*agent, self.world.settled_status(*agent));
             }
             Record::BrowserNoteContextEmitted { agent, .. } => {
                 self.browser_context.remove(agent);
@@ -1913,6 +1935,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             } => self.push_spawn(agent, turn, launch, mcp_grant, operation),
             Then::ReissueSpawned { agent, turn } => {
                 self.persist_held_reissue_confirmation(agent, turn);
+                self.kill_standing_cause(agent);
             }
             Then::Decide { agent } => self.decide(agent, operation),
             Then::TicketStamp { goal, then } => {
@@ -2597,6 +2620,54 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         } else {
             TurnSession::Assigned
         }
+    }
+
+    /// The agent's open turn when this run issued it and no launch for it has begun, so closing
+    /// it cannot leave a started process unrecorded. A browser turn still preparing its launch or
+    /// waiting on its dispatch intent has begun none. Closing time and a mail wake settle through
+    /// their own records, so neither is closed here, and neither is a turn whose unfinished
+    /// instruction attempt cannot be settled as having left no process.
+    fn unlaunched_turn(&self, agent: AgentId) -> Option<TurnId> {
+        if self.closing_active || self.closing_recovery {
+            return None;
+        }
+        let turn = self.world.agents.get(&agent)?.open_turn?;
+        let row = self.world.turns.get(&turn)?;
+        let launch_begun = match self.browser_launches.get(&turn) {
+            Some(
+                BrowserLaunchPhase::Preparing { .. } | BrowserLaunchPhase::IntentPending { .. },
+            ) => false,
+            Some(_) => true,
+            None => self.spawning.contains(&turn),
+        };
+        (row.is_issued_not_spawned()
+            && self.live_issues.contains(&turn)
+            && !(self.consented_issues.contains(&turn)
+                && self.world.instructions.current_for_turn(turn).is_some())
+            && !launch_begun
+            && !self.world.mail_wake_origin(turn)
+            && (self.world.instructions.current_for_turn(turn).is_none()
+                || self.no_host_attempt(agent, Some(turn)).is_some())
+            && self.world.browser_issue(turn).is_none_or(|issue| {
+                issue.dispatch_intents.is_empty() && issue.cancellation.is_none()
+            }))
+        .then_some(turn)
+    }
+
+    /// Whether a Floor stop has a turn to end: a spawned or launching one, or one it can close
+    /// unlaunched. A turn found issued after a restart waits for the person's consent and is not
+    /// running.
+    #[must_use]
+    pub fn has_stoppable_turn(&self, agent: AgentId) -> bool {
+        let Some(turn) = self.world.agents.get(&agent).and_then(|row| row.open_turn) else {
+            return false;
+        };
+        self.world
+            .turns
+            .get(&turn)
+            .is_some_and(crate::world::TurnRow::is_open_child)
+            || self.spawning.contains(&turn)
+            || self.unlaunched_turn(agent).is_some()
     }
 
     fn reissue_pending(&self, agent: AgentId) -> bool {
@@ -4619,6 +4690,37 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 Record::Halt { agent, text },
                 Then::KillStandingCause { agent },
             ),
+            // The Floor's stop is one append that halts, marks the halt as the Floor's and closes
+            // a turn no launch has begun. A turn whose launch has begun is left open: closing it
+            // would make its spawn acknowledgement return early, and the started process would
+            // run on unrecorded. That turn is killed when its spawn arrives, as for any halt.
+            Command::BrowserHalt { agent, browser } => {
+                if self.world.agents.get(&agent).is_none_or(|row| row.attached) {
+                    return;
+                }
+                let abandons = self.unlaunched_turn(agent);
+                if let Some(turn) = abandons {
+                    self.claim_browser_halt_cancel(turn);
+                }
+                // The closed turn's instruction attempt never reached a host call, so it is
+                // settled the way a refused launch settles it.
+                let then = abandons
+                    .and_then(|turn| self.no_host_attempt(agent, Some(turn)))
+                    .map_or(Then::KillStandingCause { agent }, |attempt| {
+                        Then::InstructionPreHostEnded {
+                            attempt,
+                            then: Box::new(Then::KillStandingCause { agent }),
+                        }
+                    });
+                self.persist(
+                    Record::BrowserHalt {
+                        agent,
+                        browser,
+                        abandons,
+                    },
+                    then,
+                );
+            }
             // A browser pause or resume is the same record with its attribution beside it, and
             // takes the same continuation as the local one.
             Command::Pause { agent, browser } => {

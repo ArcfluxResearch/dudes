@@ -35,7 +35,8 @@ export function officeModeOf(floor: {
   const halted = agents.filter((row) => row.halted === true).length;
   if (agents.length === 0) return LIVE_OFFICE;
   if (halted === agents.length) {
-    return { mode: 'halted', line: 'The office is halted. A halt stands on every agent, and only the local operator can lift it.' };
+    return { mode: 'halted', line: 'The office is halted. A halt stands on every agent. Resume lifts a stop made from this page; '
+      + 'only the local operator can lift one made from the command line.' };
   }
   if (!agents.every((row) => row.paused === true || row.halted === true)) return LIVE_OFFICE;
   return { mode: 'paused', line: halted === 0 ? PAUSED : `${PAUSED} Halted agents stay halted.` };
