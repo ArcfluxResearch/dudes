@@ -81,6 +81,9 @@
 //! there as expected, no helper survives the run, and **no `LEAK` is reported** even at nextest's
 //! shipped 100 ms. So a `LEAK` seen beside that failure is downstream of the panic and not the
 //! same defect as the one this section is about, which fires with every assertion passing.
+//!
+//! SIGKILL skips the temporary directory's destructor, so every helper also exits after
+//! [`HELPER_LIFETIME`]. This bound is longer than the tests and does not replace their kill assertions.
 #![allow(dead_code)]
 
 use std::ffi::OsString;
@@ -144,6 +147,9 @@ pub(crate) const MORE_THAN_A_PIPE_HOLDS: usize = 1 << 20;
 /// How long the helper waits between heartbeats.
 const BEAT: Duration = Duration::from_millis(20);
 
+/// Leave room for the ten-second duplex release while bounding a killed runner's orphan helpers.
+const HELPER_LIFETIME: Duration = Duration::from_secs(60);
+
 /// How long a freshly spawned helper gets to write its first beats before a control gives up on it.
 const STARTUP: Duration = Duration::from_secs(2);
 
@@ -164,12 +170,16 @@ const PASSTHROUGH: &[&str] = &[
 
 /// Become the helper if this process was launched as one; return immediately otherwise.
 ///
-/// Never returns in the helper case: each role either parks forever or replaces its own image.
+/// Never returns in the helper case: each role exits or replaces its own image.
 pub(crate) fn run_if_helper() {
     let Ok(role) = std::env::var(ROLE) else {
         return;
     };
     let mark = PathBuf::from(std::env::var(MARK).expect("a helper is always given a mark path"));
+    let _watchdog = std::thread::spawn(|| {
+        sleep(HELPER_LIFETIME);
+        std::process::exit(0);
+    });
     match role.as_str() {
         PARK => {
             write_atomic(&mark, &std::process::id().to_string());

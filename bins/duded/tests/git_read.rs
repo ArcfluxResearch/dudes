@@ -597,6 +597,8 @@ fn a_symlinked_head_is_refused() {
 
 #[test]
 fn a_hostile_head_string_is_refused() {
+    let lab = Lab::new();
+    let repo = lab.repo("repo");
     for hostile in [
         "ref: refs/heads/../../../../etc/passwd\n",
         "ref: ../../other/.git/HEAD\n",
@@ -604,8 +606,6 @@ fn a_hostile_head_string_is_refused() {
         "garbage\n",
         "",
     ] {
-        let lab = Lab::new();
-        let repo = lab.repo("repo");
         std::fs::write(repo.join(".git/HEAD"), hostile).expect("hostile HEAD");
         let view = lab.read(&repo);
         assert_eq!(view.state, GitState::Unreadable, "{hostile:?}");
@@ -1442,12 +1442,16 @@ impl Lab {
         }
     }
 
-    /// A lease with the agent's work in it, and the secret repository beside it.
-    fn leased_world(&self) -> (Leased, Secret) {
+    fn worked_lease(&self) -> Leased {
         let origin = self.origin();
         let leased = self.lease(&origin, None, lease_id());
         self.agent_work(&leased);
-        (leased, self.secret())
+        leased
+    }
+
+    /// A lease with the agent's work in it, and the secret repository beside it.
+    fn leased_world(&self) -> (Leased, Secret) {
+        (self.worked_lease(), self.secret())
     }
 
     /// Plain git in `cwd` that may block: its output, or `None` when `deadline` killed it.
@@ -1688,7 +1692,7 @@ fn a_commondir_naming_another_repository_is_a_mismatch() {
 #[test]
 fn a_rewritten_admin_gitdir_changes_nothing_until_a_prune_removes_the_directory() {
     let lab = Lab::new();
-    let (leased, _) = lab.leased_world();
+    let leased = lab.worked_lease();
     let elsewhere = lab.path().join("elsewhere");
     std::fs::create_dir(&elsewhere).expect("elsewhere");
     std::fs::write(
@@ -1721,46 +1725,51 @@ fn a_rewritten_admin_gitdir_changes_nothing_until_a_prune_removes_the_directory(
     assert_eq!(lab.read_lease(&leased).state, GitState::WorktreeMismatch);
 }
 
-/// A5 and A5b: a per-worktree configuration, with the extension on, at format version 1 and 0.
 #[test]
-fn a_per_worktree_configuration_runs_nothing() {
-    for format in ["1", "0"] {
-        let lab = Lab::new();
-        let (leased, _) = lab.leased_world();
-        let origin = leased.origin();
-        let monitor = lab.tool("worktree-fsmonitor", "");
-        let config = if format == "1" {
-            let filter = lab.tool("worktree-filter", "cat");
-            let pager = lab.tool("worktree-pager", "cat");
-            std::fs::write(origin.join(".git/info/attributes"), "* filter=evil\n")
-                .expect("attributes");
-            std::fs::write(leased.path().join("d.txt"), "DELTA\n").expect("an edit to hash");
-            format!(
-                "[core]\n\tfsmonitor = {}\n\tpager = {}\n[filter \"evil\"]\n\tclean = {}\n",
-                monitor.display(),
-                pager.display(),
-                filter.display()
-            )
-        } else {
-            format!("[core]\n\tfsmonitor = {}\n", monitor.display())
-        };
-        lab.git(origin, &["config", "core.repositoryformatversion", format]);
-        lab.git(origin, &["config", "extensions.worktreeConfig", "true"]);
-        std::fs::write(leased.admin().join("config.worktree"), config).expect("config.worktree");
-        lab.forget();
-        lab.plain_until(leased.path(), &["status", "--porcelain"], CONTROL);
-        assert!(
-            lab.ran().contains("worktree-fsmonitor"),
-            "format {format}: control: plain git runs the per-worktree monitor"
-        );
-        let view = lab.read_lease(&leased);
-        assert_eq!(view.state, GitState::Ok, "format {format}");
-        assert_eq!(
-            subjects(&view),
-            ["agent two", "agent one"],
-            "format {format}"
-        );
-    }
+fn a_per_worktree_configuration_in_format_one_runs_nothing() {
+    per_worktree_configuration_runs_nothing("1");
+}
+
+#[test]
+fn a_per_worktree_configuration_in_format_zero_runs_nothing() {
+    per_worktree_configuration_runs_nothing("0");
+}
+
+fn per_worktree_configuration_runs_nothing(format: &str) {
+    let lab = Lab::new();
+    let leased = lab.worked_lease();
+    let origin = leased.origin();
+    let monitor = lab.tool("worktree-fsmonitor", "");
+    let config = if format == "1" {
+        let filter = lab.tool("worktree-filter", "cat");
+        let pager = lab.tool("worktree-pager", "cat");
+        std::fs::write(origin.join(".git/info/attributes"), "* filter=evil\n").expect("attributes");
+        std::fs::write(leased.path().join("d.txt"), "DELTA\n").expect("an edit to hash");
+        format!(
+            "[core]\n\tfsmonitor = {}\n\tpager = {}\n[filter \"evil\"]\n\tclean = {}\n",
+            monitor.display(),
+            pager.display(),
+            filter.display()
+        )
+    } else {
+        format!("[core]\n\tfsmonitor = {}\n", monitor.display())
+    };
+    lab.git(origin, &["config", "core.repositoryformatversion", format]);
+    lab.git(origin, &["config", "extensions.worktreeConfig", "true"]);
+    std::fs::write(leased.admin().join("config.worktree"), config).expect("config.worktree");
+    lab.forget();
+    lab.plain_until(leased.path(), &["status", "--porcelain"], CONTROL);
+    assert!(
+        lab.ran().contains("worktree-fsmonitor"),
+        "format {format}: control: plain git runs the per-worktree monitor"
+    );
+    let view = lab.read_lease(&leased);
+    assert_eq!(view.state, GitState::Ok, "format {format}");
+    assert_eq!(
+        subjects(&view),
+        ["agent two", "agent one"],
+        "format {format}"
+    );
 }
 
 /// A6: `<common>/worktrees/<id>` is a link to another repository's worktree directory.
@@ -1778,7 +1787,7 @@ fn a_linked_administrative_directory_is_a_mismatch() {
 #[test]
 fn an_administrative_directory_link_to_its_own_moved_directory_is_a_mismatch() {
     let lab = Lab::new();
-    let (leased, _) = lab.leased_world();
+    let leased = lab.worked_lease();
     assert_own_link_refused(&lab, &leased, &leased.admin(), "A6");
 }
 
@@ -1809,7 +1818,7 @@ fn a_linked_worktrees_directory_is_a_mismatch() {
 #[test]
 fn a_worktrees_directory_link_to_its_own_moved_directory_is_a_mismatch() {
     let lab = Lab::new();
-    let (leased, _) = lab.leased_world();
+    let leased = lab.worked_lease();
     assert_own_link_refused(&lab, &leased, &leased.origin().join(".git/worktrees"), "A7");
 }
 
@@ -1841,7 +1850,7 @@ fn a_linked_origin_git_directory_is_a_mismatch_even_when_it_is_the_repositorys_o
 #[test]
 fn a_fifo_admin_head_is_refused_at_once() {
     let lab = Lab::new();
-    let (leased, _) = lab.leased_world();
+    let leased = lab.worked_lease();
     let head = leased.admin().join("HEAD");
     std::fs::remove_file(&head).expect("remove HEAD");
     nix::unistd::mkfifo(&head, nix::sys::stat::Mode::from_bits_truncate(0o600)).expect("mkfifo");
@@ -1867,7 +1876,7 @@ fn a_fifo_admin_head_is_refused_at_once() {
 #[test]
 fn an_admin_head_naming_a_per_worktree_ref_is_refused() {
     let lab = Lab::new();
-    let (leased, _) = lab.leased_world();
+    let leased = lab.worked_lease();
     std::fs::write(
         leased.admin().join("HEAD"),
         "ref: refs/worktree/elsewhere\n",
@@ -1886,7 +1895,7 @@ fn an_admin_head_naming_a_per_worktree_ref_is_refused() {
 #[test]
 fn hostile_configuration_attributes_and_hooks_in_the_common_directory_run_nothing() {
     let lab = Lab::new();
-    let (leased, _) = lab.leased_world();
+    let leased = lab.worked_lease();
     let common = leased.origin().join(".git");
     for (key, name, tail) in [
         ("core.fsmonitor", "common-fsmonitor", ""),
@@ -1929,7 +1938,7 @@ fn hostile_configuration_attributes_and_hooks_in_the_common_directory_run_nothin
 #[test]
 fn a_gitlink_in_a_lease_does_not_run_its_nested_configuration() {
     let lab = Lab::new();
-    let (leased, _) = lab.leased_world();
+    let leased = lab.worked_lease();
     let nested = leased.path().join("nested");
     std::fs::create_dir(&nested).expect("nested");
     lab.git(&nested, &["init", "--quiet", "-b", "main"]);
@@ -1992,7 +2001,7 @@ fn a_tree_that_is_a_link_is_a_mismatch() {
 #[test]
 fn a_tree_link_to_its_own_moved_directory_is_a_mismatch() {
     let lab = Lab::new();
-    let (leased, _) = lab.leased_world();
+    let leased = lab.worked_lease();
     assert_own_link_refused(&lab, &leased, leased.path(), "A13");
 }
 
@@ -2047,9 +2056,9 @@ fn a_lease_whose_files_are_missing_or_malformed_is_refused() {
             GitState::UnsupportedStorage,
         ),
     ];
+    let lab = Lab::new();
+    let origin = lab.origin();
     for (row, plant, state) in rows {
-        let lab = Lab::new();
-        let origin = lab.origin();
         let leased = lab.lease(&origin, None, lease_id());
         assert_eq!(
             lab.read_lease(&leased).state,
@@ -2068,7 +2077,7 @@ fn a_lease_whose_files_are_missing_or_malformed_is_refused() {
 #[test]
 fn an_origin_with_no_remote_is_measured_from_the_start_commit() {
     let lab = Lab::new();
-    let (leased, _) = lab.leased_world();
+    let leased = lab.worked_lease();
     assert_ne!(
         lab.plain(
             leased.path(),
@@ -2202,7 +2211,7 @@ fn move_onto_amended_main(lab: &Lab, leased: &Leased, prune: bool) {
 #[test]
 fn an_agent_that_moved_its_branch_off_its_start_is_behind() {
     let lab = Lab::new();
-    let (leased, _) = lab.leased_world();
+    let leased = lab.worked_lease();
     move_onto_amended_main(&lab, &leased, false);
     let view = lab.read_lease(&leased);
     assert_eq!(
@@ -2221,7 +2230,7 @@ fn an_agent_that_moved_its_branch_off_its_start_is_behind() {
 #[test]
 fn a_start_commit_that_is_gone_shows_no_distance() {
     let lab = Lab::new();
-    let (leased, _) = lab.leased_world();
+    let leased = lab.worked_lease();
     move_onto_amended_main(&lab, &leased, true);
     assert_eq!(
         lab.plain(
