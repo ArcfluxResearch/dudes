@@ -24,7 +24,7 @@ import {
 } from './retire.ts';
 import type { RetireAttempt, RetireRefusalReason, RetireState } from './retire.ts';
 
-const HALTED_LINE = <>A halted agent is retired with the local <code>agent.retire</code> call.</>;
+const HALTED_LINE = 'This agent is halted. Lift the halt from the command line before retiring it from this page.';
 
 const CONSEQUENCES = 'Its running turn stops now, and its terminal closes. It leaves the Floor for good. Only a new '
   + 'hire can replace it, and a new hire starts without its memory. Its history stays in the journal.';

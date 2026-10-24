@@ -120,7 +120,7 @@ function pageForTickets() {
 const propsOf = (element) => element[Object.keys(element).find((key) => key.startsWith('__reactProps$'))];
 const textOf = (element) => element.nodeType === 3 ? element.nodeValue : element.childNodes.map(textOf).join('');
 
-async function closeHireCallback(page, dialog, opener) {
+async function closeHireCallback(page, dialog, opener, onLeave = () => {}) {
   const source = await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8');
   const syntax = ts.createSourceFile('shell.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let callback, completion, cancellation;
@@ -138,7 +138,7 @@ async function closeHireCallback(page, dialog, opener) {
   const code = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const closeHire = new Function('backdropPress', 'hireDialog', 'hireOpener', 'document', 'setHiring', 'restoreFocusAfterDialog',
     'leaveHire', `${code}\nreturn closeHire;`)({ current: null }, { current: dialog }, { current: opener }, page.document,
-    () => {}, restoreFocusAfterDialog, () => {});
+    () => {}, restoreFocusAfterDialog, onLeave);
   const selections = [];
   const completed = ts.transpileModule(`const complete = ${completion};`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -421,6 +421,40 @@ test('the composer keeps its draft while Hire is opened and the roster changes',
   } finally { await app.close(); }
 });
 
+test('opening Settings from Hire dismisses the modal, keeps the draft and focuses Settings', async () => {
+  const page = pageForTickets();
+  const hire = await server.ssrLoadModule('/src/renderer/onboarding/hire.ts');
+  hire.resetHire();
+  try {
+    hire.editDraft({ name: 'Ada', role: 'Engineer' });
+    const layer = hireLayer(page);
+    const heading = page.document.body.appendChild(page.document.createElement('h2'));
+    heading.setAttribute('id', 'control-title');
+    const { closeHire } = await closeHireCallback(page, layer.dialog, layer.topbar, hire.leaveHire);
+    const source = await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8');
+    const syntax = ts.createSourceFile('shell.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let navigation;
+    (function visit(node) {
+      if (ts.isCallExpression(node) && node.expression.getText(syntax) === 'useEffect'
+        && node.arguments[0]?.getText(syntax).includes('if (page === null) return;')) navigation = node.arguments[0].getText(syntax);
+      ts.forEachChild(node, visit);
+    })(syntax);
+    assert.ok(navigation);
+    const code = ts.transpile(`const navigate = ${navigation};`, { target: ts.ScriptTarget.ES2022 });
+    const navigate = Function('page', 'hiring', 'closeHire', 'setFocused', 'setPanel', 'setGuide', 'document',
+      'CONTROL_TITLE_ID', 'CONTROL_VIEWS', 'refreshFloorSnapshot', `${code}; return navigate;`)(
+      'settings', true, closeHire, () => {}, () => {}, () => {}, page.document, 'control-title', [], () => {});
+    navigate();
+    page.flushFocus();
+    assert.equal(layer.dialog.getAttribute('open'), null);
+    assert.equal(hire.getHireState().draft.name, 'Ada');
+    assert.equal(hire.getHireState().draft.role, 'Engineer');
+    assert.equal(page.document.activeElement, heading);
+    closeHire();
+    assert.equal(hire.getHireState().draft.name, '', 'explicit dismissal still forgets an unsent draft');
+  } finally { hire.resetHire(); page.restore(); }
+});
+
 test('closing nested Hire stays inside the composer after its opener disappears', async () => {
   const app = await mount([], { agents: [], hireAvailable: true });
   try {
@@ -478,7 +512,7 @@ test('successful Hire reveals the agent without opening it, and returns to the u
     app.page.flushFocus();
     hire.dialog.showModal();
     hire.field.focus();
-    closeHire(true);
+    closeHire('revealed');
     const selected = app.page.document.body.appendChild(app.page.document.createElement('h2'));
     selected.focus();
     app.page.flushFocus();

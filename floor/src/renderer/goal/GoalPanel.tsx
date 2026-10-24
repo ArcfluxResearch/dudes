@@ -110,7 +110,7 @@ export function GoalFormView({ goal, floor, row, session }: {
   return (
     <section className="agent-detail-goal" aria-labelledby={`${field}-title`} data-goal-agent-id={gate.agent}
       data-goal-id={gate.goal} data-goal-form={offer === undefined ? 'change' : 'renew'}>
-      <h3 id={`${field}-title`}>{offer === undefined ? 'Change this agent’s goal' : 'Start a new goal'}</h3>
+      <h3 id={`${field}-title`}>{offer === undefined ? 'Change this agent’s goal' : 'Give a task'}</h3>
       {offer === undefined ? <><p>The new goal keeps what this one has left:</p><CarryList carry={gate.carry} /></>
         : <RenewList offer={offer} />}
       <fieldset className="hire-choices" data-check-choice="goal">
@@ -134,7 +134,7 @@ export function GoalFormView({ goal, floor, row, session }: {
       <p className="hire-note">{offer === undefined
         ? 'Changing the goal runs the check once first. If it already passes, nothing changes.'
         : 'Starting the new goal runs the check once first. If it already passes, nothing changes.'}</p>
-      <label htmlFor={field}>New goal</label>
+      <label htmlFor={field}>{offer === undefined ? 'New goal' : 'New task'}</label>
       {/* The field is read-only and Send aria-disabled while they wait, never
           disabled: a disabled element drops the keyboard focus it holds. A
           running turn holds only Send, so the new text can be written while
@@ -155,7 +155,7 @@ export function GoalFormView({ goal, floor, row, session }: {
           aria-disabled={blocked || gate.turnRunning || draft === '' || problem !== null || check === null || undefined}
           ref={handFocusOnLeave} data-focus-on-leave={focusOnLeave}
           aria-busy={goal.sending && mine} onClick={() => void submitGoal(gate, browserGoalDeps)}>
-          {goal.sending && mine ? 'Sending…' : offer === undefined ? 'Change goal' : 'Start new goal'}
+          {goal.sending && mine ? 'Sending…' : offer === undefined ? 'Change goal' : 'Give a task'}
         </button>
       </div>
       <p className="hire-note">
@@ -300,6 +300,8 @@ function OutcomeBody({ outcome, attempt, goal, floor, session }: {
           data-check-refusal={isCheckRefusal(outcome.reason) ? outcome.reason : undefined}>
           {outcome.reason === 'goal_exhausted' && renewalOffered(floor, goal, attempt)
             ? EXHAUSTED_WITH_RENEWAL : refusalText(outcome.reason, attempt)}
+          {outcome.reason === 'goal_exhausted' && !renewalOffered(floor, goal, attempt)
+            ? <> <a href="#/settings">Open Settings</a></> : null}
         </p>
       );
     case 'conflict':

@@ -71,7 +71,8 @@ function cap(value: string | null, unit: 'usd' | 'tokens', perDay = false): stri
 function engineMissing(row: ProviderRow | null, engine: HireEngine | null): string | null {
   const name = engine === null ? 'This app' : HIRE_ENGINES[engine];
   if (row?.found === false) {
-    return `${name} is not installed on this computer, so this agent could not start. Install it, then check again.`;
+    return `${name} was not found on the daemon’s PATH, so this agent could not start. `
+      + 'Check Setup for its location. If it is already installed, the daemon may need a restart to find it.';
   }
   if (row?.found === true && row.signIn === 'signed_out') {
     return `${name} is installed but not signed in, so this agent could not start. Sign in, then check again.`;
@@ -195,18 +196,20 @@ function unavailable(floor: FloorState): string | null {
   return null;
 }
 
-export function HireWizard({ floor, onClose }: {
+export function HireWizard({ floor, onClose, onSettings }: {
   readonly floor: FloorState;
   readonly onClose: () => void;
+  readonly onSettings?: () => void;
 }) {
   const hire = useSyncExternalStore(subscribeToHire, getHireState, getHireState);
-  return <HireWizardView hire={hire} floor={floor} onClose={onClose} />;
+  return <HireWizardView hire={hire} floor={floor} onClose={onClose} onSettings={onSettings} />;
 }
 
-export function HireWizardView({ hire, floor, onClose }: {
+export function HireWizardView({ hire, floor, onClose, onSettings }: {
   readonly hire: HireState;
   readonly floor: FloorState;
   readonly onClose: () => void;
+  readonly onSettings?: () => void;
 }) {
   return (
     <section className="hire-wizard" id="hire-wizard" aria-labelledby="hire-title">
@@ -219,16 +222,17 @@ export function HireWizardView({ hire, floor, onClose }: {
       </header>
       {floor.onboarding === null && noProjects(floor) && floor.settings?.switches.hire !== false
         ? null : <UnavailableControls floor={floor} control="hire" />}
-      {hire.outcome === null ? <HireForm hire={hire} floor={floor} onClose={onClose} />
+      {hire.outcome === null ? <HireForm hire={hire} floor={floor} onClose={onClose} onSettings={onSettings} />
         : <HireAnswer hire={hire} floor={floor} onClose={onClose} />}
     </section>
   );
 }
 
-function HireForm({ hire, floor, onClose }: {
+function HireForm({ hire, floor, onClose, onSettings }: {
   readonly hire: HireState;
   readonly floor: FloorState;
   readonly onClose: () => void;
+  readonly onSettings?: () => void;
 }) {
   const catalog = floor.onboarding;
   const noProject = catalog === null && noProjects(floor);
@@ -376,8 +380,8 @@ function HireForm({ hire, floor, onClose }: {
               {withdrawn ? <p className="hire-note">An engine missing here may be turned off, or this project may need a spending limit to use it. Check Settings.</p>
                 : null}
               {engine === null || row === null ? null : <p className="hire-note" data-engine-found={row.found}>
-                {row.found ? `${HIRE_ENGINES[engine]} is installed on this computer.`
-                  : `${HIRE_ENGINES[engine]} is not installed on this computer.`}
+                {row.found ? `${HIRE_ENGINES[engine]} was found on the daemon’s PATH.`
+                  : `${HIRE_ENGINES[engine]} was not found on the daemon’s PATH.`}
               </p>}
               {missing === null ? null : (
                 <div className="hire-problem" role="alert">
@@ -391,7 +395,7 @@ function HireForm({ hire, floor, onClose }: {
                   <button type="button" onClick={() => refreshFloorSnapshot()}>Check again</button>
                 </div>
               )}
-              {engine === null ? null : <EngineSignIn engine={engine} row={row} terminal={floor.terminal} />}
+              {engine === null ? null : <EngineSignIn engine={engine} row={row} terminal={floor.terminal} onSettings={onSettings} />}
               {engine === null || workspace === null || catalog === null ? null : (
                 <details className="hire-more"><summary>Spending and turn limits</summary>
                   <dl className="hire-facts" aria-label="Configured limits">

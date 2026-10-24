@@ -77,6 +77,8 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.match(hint('terminal'), /Turn on Attach terminals under Floor switches in Settings/);
 
     assert.match(html, /Manage engines, projects and spending/);
+    assert.match(html, /Check which engines the daemon can find\. Sign in when you hire an agent\./);
+    assert.doesNotMatch(html, /Check whether each engine is installed and signed in/);
     const diffRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, diff: true, git } }), onSetup() {} }));
     assert.match(diffRow(false), /<dt>Read ticket changes<\/dt><dd><span class="settings-says">[^<]*<\/span> On, but it needs Show changed files /);

@@ -129,7 +129,7 @@
 //   ad) a second path or fetch in retire.ts turns "fetch and new WebSocket
 //      match in seven known files…" red, the retire route named outside
 //      retire.ts turns "no source asks for…" red, and a line naming the local
-//      retire method outside ADMITTED_OPERATOR_LINES turns "no source asks
+//      retire method turns "no source asks
 //      for…" red;
 //   ae) a `contenteditable`, a `designMode` or a CSS `-webkit-user-modify`
 //      anywhere under floor/src turns "the floor admits only the named
@@ -315,7 +315,8 @@ const HIRE_ENTRY = 'src/renderer/onboarding/HireEntry.tsx';
 const STREAM_NOTICE = 'src/renderer/StreamNotice.tsx';
 const ADMITTED_WITHOUT_HANDLER = new Map([
   [SETUP_VIEW, Object.freeze(['a link'])], [SETTINGS_VIEW, Object.freeze(['a link'])], [STREAM_NOTICE, Object.freeze(['a link'])],
-  [RECOVERED_REVIEW, Object.freeze(['a link'])],
+  [RECOVERED_REVIEW, Object.freeze(['a link'])], [FIRST_TASK, Object.freeze(['a link'])],
+  [GOAL_PANEL, Object.freeze(['a link'])],
   // The sign-in link the engine printed, drawn whole in a read-only field and offered as one link to open in a new tab.
   [LOGIN_PANEL, Object.freeze(['an input', 'a link'])],
 ]);
@@ -1092,7 +1093,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
 test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Pause all, resume, goal change, look edit and dismiss buttons, Overview Answer, Review work, Review ticket and Change navigation, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
-  + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation and Hire opener, '
+  + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation, '
   + 'and checkout differences\' explicit show, refresh, hide, open and more-files controls', async () => {
   const buttons = [];
   const clicks = [];
@@ -1138,8 +1139,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(LOOK_PANEL),
     ...Array(3).fill(SETUP_VIEW),
     ...Array(10).fill(SETTINGS_VIEW),
-    ...Array(7).fill(FIRST_RUN_GUIDE),
-    ...Array(7).fill(FIRST_TASK),
+    ...Array(5).fill(FIRST_RUN_GUIDE),
+    ...Array(6).fill(FIRST_TASK),
     ...Array(10).fill(TERMINAL_PANEL),
     ...Array(5).fill(LOGIN_PANEL),
     ...Array(7).fill('src/shell.tsx'),
@@ -1148,7 +1149,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   ];
   assert.deepEqual(buttons.sort(), [...expected, AGENT_ORDER].sort());
   expected.sort();
-  const clickExpected = [...expected];
+  const clickExpected = [...expected, LOGIN_PANEL];
   clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
   // The ticket forms each submit with a button that has no click handler of its own.
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
@@ -1269,7 +1270,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(center, /\{ view: 'settings', label: 'Settings', refresh: true \}/);
   assert.match(center, /onSetup=\{\(\) => onView\('setup'\)\}/);
   assert.match(shell, /function openView\(next: ControlView\): void \{\s*setFocused\(false\);\s*if \(isPageView\(next\)\) \{\s*setPanel\(null\);\s*openPage\(next\);\s*\} else \{\s*openPage\(null\);\s*setPanel\(next\);\s*\}\s*\}/);
-  assert.match(shell, /if \(page === null\) return;\s*setFocused\(false\);\s*setPanel\(null\);\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === page && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}, \[page\]\)/);
+  assert.match(shell, /if \(page === null\) return;\s*setFocused\(false\);\s*setPanel\(null\);\s*setGuide\('closed'\);\s*if \(hiring\) \{\s*closeHire\('navigation'\);\s*document\.getElementById\(CONTROL_TITLE_ID\)\?\.focus\(\);\s*\}\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === page && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}, \[page\]\)/);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup', 'onSetup',
     '() => { void changeSetting(settingKey, next); }', '() => { void confirmSetting(); }', '() => cancelSetting()',
     "() => { void changeSetting(settingKey, 'unset',\n        `This removes the Floor daily dollar ceiling of ${formatUsdMicros(current)}. After a restart, there will be no daily dollar ceiling.`, 'Clear limit'); }",
@@ -1280,10 +1281,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     'onGuide',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, FIRST_RUN_GUIDE), 'utf8')), [
-    '() => copyToClipboard(text)',
     'onClose',
     '() => onStep(entry.key)',
-    '(event) => onHire(event.currentTarget)',
     '() => onStep(steps[at - 1].key)',
     '() => refreshFloorSnapshot()',
     '() => onStep(steps[at + 1].key)',
@@ -2477,15 +2476,6 @@ const ADMITTED_TERMINAL_LINES = Object.freeze({
   [LOGIN_PANEL]: ["const drawn = term.element?.querySelector('.xterm-screen')?.getBoundingClientRect();"],
 });
 
-/**
- * Retire's halted line tells the operator which local call retires a halted
- * agent. It names that method as text on this one line, admitted here and
- * nowhere else; the page never calls it.
- */
-const ADMITTED_OPERATOR_LINES = Object.freeze({
-  [RETIRE_PANEL]: ['const HALTED_LINE = <>A halted agent is retired with the local <code>agent.retire</code> call.</>;'],
-});
-
 /** The answer route. The answer module names it once, in its one fetch, and nothing else names it. */
 const ANSWER_ROUTE = /\/floor\/answer\b/g;
 
@@ -2496,7 +2486,7 @@ const CONTROL_ROUTES = /\/floor\/(?:pause|resume)\b/g;
 const RETIRE_ROUTE = /\/floor\/retire\b/g;
 
 test('no source asks for an answer method, steer, terminal or generic RPC, and only their own modules name the answer, pause, resume and '
-  + 'retire routes, but for the terminal panel\'s and Retire\'s pinned lines', async () => {
+  + 'retire routes, but for the terminal panel\'s pinned lines', async () => {
   const fixture = `
     fetch('/floor/answer'); send({ type: 'agent.answer' }); steerAgent(); pty.write(bytes);
     const envelope = { jsonrpc: '2.0', "method": 'x' }; call('agent.hire'); call('goal.set');
@@ -2515,9 +2505,7 @@ test('no source asks for an answer method, steer, terminal or generic RPC, and o
   const controlNaming = {};
   const retireNaming = {};
   const [, TERMINAL_INPUT] = OTHER_AUTHORITY.find(([name]) => name === 'terminal input');
-  const [, OPERATOR_METHOD] = OTHER_AUTHORITY.find(([name]) => name === 'a local operator method');
   const terminalLines = {};
-  const operatorLines = {};
   for (const path of await filesUnder(source, ['.ts', '.tsx'])) {
     const relative = path.slice(floor.length + 1);
     const text = await readFile(path, 'utf8');
@@ -2526,12 +2514,6 @@ test('no source asks for an answer method, steer, terminal or generic RPC, and o
       terminalLines[relative] = text.split('\n').map((line) => line.trim()).filter((line) => TERMINAL_INPUT.test(line));
       if (JSON.stringify(terminalLines[relative]) === JSON.stringify(ADMITTED_TERMINAL_LINES[relative])) {
         found = found.filter((name) => name !== 'terminal input');
-      }
-    }
-    if (Object.hasOwn(ADMITTED_OPERATOR_LINES, relative)) {
-      operatorLines[relative] = text.split('\n').map((line) => line.trim()).filter((line) => OPERATOR_METHOD.test(line));
-      if (JSON.stringify(operatorLines[relative]) === JSON.stringify(ADMITTED_OPERATOR_LINES[relative])) {
-        found = found.filter((name) => name !== 'a local operator method');
       }
     }
     if (found.length > 0) carrying.push(`${relative}: ${found.join(', ')}`);
@@ -2545,7 +2527,6 @@ test('no source asks for an answer method, steer, terminal or generic RPC, and o
   assert.deepEqual(carrying, [],
     'the floor asks for authority beyond selection, retry, one Hire, one answer, one pause or resume and one Retire');
   assert.deepEqual(terminalLines, ADMITTED_TERMINAL_LINES, 'the terminal names its grid on lines not admitted');
-  assert.deepEqual(operatorLines, ADMITTED_OPERATOR_LINES, 'Retire names the local retire method on lines not admitted');
   assert.deepEqual(naming, { [ANSWER_MODULE]: 1 }, 'the answer route is named outside its module, or twice');
   assert.deepEqual(controlNaming, { [CONTROL_MODULE]: 2 },
     'a pause or resume route is named outside its module, or more than once');
@@ -3080,9 +3061,8 @@ test('Retire renders when the snapshot carries the retire sibling', () => {
     new RegExp(`<div class="retire-offer"><button type="button" class="retire-open" data-retire-offer="${ADA}"[^>]*>Retire</button>`));
   // Where the live case looks for it: in the selected agent's own panel, after Pause.
   assert.match(html, /<aside class="agent-detail"[\s\S]*class="control-pause"[\s\S]*class="retire-open"/);
-  // A halted agent has the local route named instead, and no button.
   const halted = center(floorWith(working({ halted: true }), undefined, CONTROL, undefined, undefined, RETIRE));
-  assert.match(halted, /A halted agent is retired with the local <code>agent\.retire<\/code> call\./);
+  assert.match(halted, /Lift the halt from the command line before retiring it from this page\./);
   assert.doesNotMatch(halted, /data-retire-offer/);
 });
 

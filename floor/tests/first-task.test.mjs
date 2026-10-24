@@ -198,7 +198,10 @@ test('the offer waits while any ticket is open, and names the install command wh
   assert.equal(card(), '');
   open({ projection: { lsn: 2, agents: [agent(ADA, 'Kim')], cards: [] } }, found(false, false));
   const html = card();
-  assert.match(html, /Install Claude for Kim/);
+  assert.match(html, /Find Claude for Kim/);
+  assert.match(html, /daemon&#x27;s PATH/);
+  assert.match(html, /already installed[^]*Setup[^]*restart to find it/);
+  assert.doesNotMatch(html, /is not installed on/);
   assert.match(html, /npm install -g @anthropic-ai\/claude-code/);
   assert.match(html, />Copy<\/button><button type="button">Recheck/);
 });
@@ -211,7 +214,7 @@ test('with no agent the card says how to hire one, and Hire preselects the one p
   assert.equal(draft.workspaceId, 'service');
   assert.equal(draft.engine, 'codex', 'Claude is not installed, so Codex is the choice');
   open({}, found(false, false));
-  assert.match(card(), /Install one, then press Recheck/);
+  assert.match(card(), /install one, then press Recheck/);
 });
 
 test('Hire says nothing about length until a field is near its limit, then says plainly that it is too long', () => {

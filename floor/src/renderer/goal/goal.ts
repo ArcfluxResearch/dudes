@@ -261,8 +261,7 @@ export const REFUSAL_REASONS: Readonly<Record<FixedRefusal, string>> = Object.fr
   predicate_claimed: 'This goal uses a Claimed card status, which cannot prove completion, so nothing was recorded.',
   predicate_todo: 'This goal uses a Todo card status, which cannot prove completion, so nothing was recorded.',
   goal_exhausted: 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-    + 'To continue, give the agent a new goal with its own limits from a terminal (dudes goal), '
-    + 'or retire it and hire a new one.',
+    + 'Give a task is available when Start new goals is on in Settings and this agent’s project is enrolled.',
   agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
   agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
   goal_not_exhausted: 'This goal still has turns or dollars left, so nothing was recorded. Change its text instead.',
@@ -282,7 +281,7 @@ const RENEWAL_REASONS: Readonly<Partial<Record<FixedRefusal, string>>> = Object.
 
 /** What `goal_exhausted` says when the page can offer a new goal beside it. */
 export const EXHAUSTED_WITH_RENEWAL = 'This goal has no turns or capped dollars left to carry over, so nothing was '
-  + 'recorded. Start a new goal with this project’s allowance below.';
+  + 'recorded. Choose Give a task to start a new goal with this project’s allowance.';
 
 const NOT_ENROLLED = 'This agent’s check already passes, and no enrolled project offers this agent another check. '
   + 'Nothing changed. Set a new goal from a terminal (dudes goal) with a check that fails until the goal is met.';

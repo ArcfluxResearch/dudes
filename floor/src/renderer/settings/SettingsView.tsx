@@ -85,7 +85,7 @@ export function SettingsView({ floor, onSetup }: {
     <p>Manage engines, projects and spending. Choices for this browser are below.</p>
     {floor.stale ? <p role="status">View unconfirmed. These values are from the last snapshot.</p> : null}
     <section aria-labelledby="settings-providers"><h3 id="settings-providers">Engines</h3>
-      <p>Check whether each engine is installed and signed in. <button type="button" onClick={onSetup}>Open Setup</button></p>
+      <p>Check which engines the daemon can find. Sign in when you hire an agent. <button type="button" onClick={onSetup}>Open Setup</button></p>
       <ul className="settings-engines">{report.providers.filter((provider) => !ENGINES.some(([id]) => id === provider)).map((provider) =>
         <li key={provider}><button type="button" onClick={onSetup} aria-label={`Check ${provider} in Setup`}>{provider === 'claude' ? 'Claude' : provider}</button>
           <span>Available in Setup.</span></li>)}
@@ -115,20 +115,7 @@ export function SettingsView({ floor, onSetup }: {
     </section>
     <DesktopNotificationChoice />
     <DevicesSection />
-    <section aria-labelledby="settings-switches"><h3 id="settings-switches">Floor switches</h3>
-      <dl><div><dt>Chat messages</dt><dd>Always on, with no setting</dd></div>
-      {SWITCHES.map(([key, label, says]) => {
-        const on = report.switches[key];
-        return <div key={key}><dt>{label}</dt>
-          <dd><span className="settings-says">{says}</span>{' '}
-            {key === 'diff' && on && !report.switches.git ? 'On, but it needs Show changed files' : on ? 'On' : 'Off'}
-            {key === 'renew' && !on ? ' It needs Change goals and Hire agents.' : null}{' '}
-            <SwitchButton settingKey={`floor.${key}`} label={label} next={on ? 'off' : 'on'} /></dd></div>;
-      })}</dl>
-      <p>Recovery also needs Pause, resume and rename. Spending limits still apply.</p>
-      <details><summary>Configuration details</summary><dl>{SWITCHES.map(([key, label]) =>
-        <div key={key}><dt>{label}</dt><dd><code>floor.{key}</code></dd></div>)}</dl></details>
-    </section>
+    <FloorSwitches report={report} />
     <UnavailableControls floor={floor} control="hire" />
     <OfficeLayoutChoice />
     <section className="settings-about" aria-labelledby="settings-about"><h3 id="settings-about">About</h3>
@@ -152,6 +139,26 @@ export function SettingsView({ floor, onSetup }: {
       </details>
     </section>
   </div>;
+}
+
+export function FloorSwitches({ report, headingId = 'settings-switches' }: {
+  readonly report: SettingsReport;
+  readonly headingId?: string;
+}) {
+  return <section aria-labelledby={headingId}><h3 id={headingId}>Floor switches</h3>
+    <dl><div><dt>Chat messages</dt><dd>Always on, with no setting</dd></div>
+    {SWITCHES.map(([key, label, says]) => {
+      const on = report.switches[key];
+      return <div key={key}><dt>{label}</dt>
+        <dd><span className="settings-says">{says}</span>{' '}
+          {key === 'diff' && on && !report.switches.git ? 'On, but it needs Show changed files' : on ? 'On' : 'Off'}
+          {key === 'renew' && !on ? ' It needs Change goals and Hire agents.' : null}{' '}
+          <SwitchButton settingKey={`floor.${key}`} label={label} next={on ? 'off' : 'on'} /></dd></div>;
+    })}</dl>
+    <p>Recovery also needs Pause, resume and rename. Spending limits still apply.</p>
+    <details><summary>Configuration details</summary><dl>{SWITCHES.map(([key, label]) =>
+      <div key={key}><dt>{label}</dt><dd><code>floor.{key}</code></dd></div>)}</dl></details>
+  </section>;
 }
 
 /** Turns one switch or engine on or off through the daemon, which keeps the file's start rules. */

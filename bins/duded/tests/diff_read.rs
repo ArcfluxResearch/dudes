@@ -492,7 +492,7 @@ fn vector(name: &str, plant: impl FnOnce(&Lab), plain: &[&str]) {
 }
 
 #[test]
-fn live_filter_and_monitor_programs_do_not_run_for_any_content_argv() {
+fn live_filter_programs_do_not_run_for_any_content_argv() {
     vector(
         "filter",
         |lab| {
@@ -502,6 +502,10 @@ fn live_filter_and_monitor_programs_do_not_run_for_any_content_argv() {
         },
         &["add", "a.txt"],
     );
+}
+
+#[test]
+fn live_monitor_programs_do_not_run_for_any_content_argv() {
     vector(
         "monitor",
         |lab| {
@@ -513,7 +517,7 @@ fn live_filter_and_monitor_programs_do_not_run_for_any_content_argv() {
 }
 
 #[test]
-fn live_textconv_external_diff_and_hook_programs_do_not_run_for_any_content_argv() {
+fn live_textconv_programs_do_not_run_for_any_content_argv() {
     vector(
         "textconv",
         |lab| {
@@ -523,6 +527,10 @@ fn live_textconv_external_diff_and_hook_programs_do_not_run_for_any_content_argv
         },
         &["diff", "--textconv"],
     );
+}
+
+#[test]
+fn live_external_diff_programs_do_not_run_for_any_content_argv() {
     vector(
         "external",
         |lab| {
@@ -531,6 +539,10 @@ fn live_textconv_external_diff_and_hook_programs_do_not_run_for_any_content_argv
         },
         &["diff"],
     );
+}
+
+#[test]
+fn live_hook_programs_do_not_run_for_any_content_argv() {
     vector(
         "hook",
         |lab| {
