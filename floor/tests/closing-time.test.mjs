@@ -261,7 +261,7 @@ test('closing coexists with journal-stopped and remains last-observed after disc
   apply(snapshot({ closing_time: announced }, { journal_stopped: { lsn: '99' } }));
   const floor = getFloorState();
   assert.match(render(), /Closing time announced/);
-  assert.match(renderToStaticMarkup(createElement(JournalBanner, { stopped: floor.journalStopped })), /journal stopped accepting writes at segment 0 · byte 99/);
+  assert.match(renderToStaticMarkup(createElement(JournalBanner, { stopped: floor.journalStopped })), /Saving stopped at segment 0 · byte 99/);
   assert.equal(renderToStaticMarkup(createElement(Notice, { floor })), '');
   noteStale(true);
   assert.match(render(), /Last observed/);

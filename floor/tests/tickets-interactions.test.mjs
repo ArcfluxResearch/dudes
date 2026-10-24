@@ -863,29 +863,6 @@ test('Ask for changes keeps per-ticket text after close and reload, retains a re
   } finally { await app.close(); }
 });
 
-test('Board Give uses an idle agent and reuses the create id after a lost reply', async () => {
-  const app = await mount([ticketCard(1, 'review')], { agents: [agent(ADA, 'Ada', { status: 'running' }), agent(GRACE, 'Grace')] });
-  try {
-    const form = app.page.host.querySelector('.board-give');
-    assert.equal(form.querySelectorAll('option').length, 1);
-    await act(async () => propsOf(form.querySelector('input')).onChange({ target: { value: 'Make the toolbar clearer' } }));
-    reply = () => { throw Error('lost response'); };
-    await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));
-    assert.equal(form.querySelector('input').value, 'Make the toolbar clearer');
-    assert.equal(seen.length, 1);
-    const request = seen[0][1].request_id;
-    reply = (url) => ({ status: 200, text: async () => JSON.stringify({ state: url.endsWith('/assign') ? 'assigned' : 'created',
-      card: cardId(2), seq: 0, lsn: '4097', ...(url.endsWith('/assign') ? { start: { state: 'started' } } : {}) }) });
-    await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));
-    assert.equal(form.querySelector('input').value, '');
-    assert.deepEqual(seen.map(([url, body]) => [url, body]), [
-      ['/floor/ticket', { request_id: request, title: 'Make the toolbar clearer', project: 'service', done_when: 'default', done_when_revision: 'a'.repeat(64) }],
-      ['/floor/ticket', { request_id: request, title: 'Make the toolbar clearer', project: 'service', done_when: 'default', done_when_revision: 'a'.repeat(64) }],
-      ['/floor/ticket/assign', { card: cardId(2), agent: GRACE, expected_seq: 0 }],
-    ]);
-  } finally { await app.close(); }
-});
-
 test('a restored ticket draft requires a new project choice when its project disappears', async () => {
   let app = await mount([]);
   try {
@@ -902,24 +879,6 @@ test('a restored ticket draft requires a new project choice when its project dis
     assert.equal(app.page.host.querySelector('.ticket-create').disabled, true);
     await act(async () => propsOf(app.page.host.querySelector('[name="project"]')).onChange({ target: { value: 'website' } }));
     assert.equal(app.page.host.querySelector('.ticket-create').disabled, false);
-  } finally { await app.close(); }
-});
-
-test('Board Give retains typed work when its selected agent stops being free', async () => {
-  const app = await mount([], { agents: [agent(), agent(GRACE, 'Grace')] });
-  try {
-    let form = app.page.host.querySelector('.board-give');
-    await act(async () => propsOf(form.querySelector('select')).onChange({ target: { value: ADA } }));
-    await act(async () => propsOf(form.querySelector('input')).onChange({ target: { value: 'Keep this with the chosen agent' } }));
-    await app.render({ ...app.floor, agents: [agent(ADA, 'Ada', { status: 'running' }), agent(GRACE, 'Grace')] });
-    form = app.page.host.querySelector('.board-give');
-    assert.equal(form.querySelector('input').value, 'Keep this with the chosen agent');
-    assert.equal(propsOf(form.querySelector('select')).value, '');
-    assert.equal(form.querySelector('button').disabled, true);
-    await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));
-    assert.deepEqual(seen, []);
-    await act(async () => propsOf(form.querySelector('select')).onChange({ target: { value: GRACE } }));
-    assert.equal(form.querySelector('button').disabled, false);
   } finally { await app.close(); }
 });
 

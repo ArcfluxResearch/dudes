@@ -450,7 +450,6 @@ const ADMITTED_HANDLERS = [
   { file: ANSWER_FORM, tag: 'textarea', handler: 'onKeyDown' },
   { file: ANSWER_FORM, tag: 'button', className: 'answer-send', handler: 'onKeyDown', expression: REFUSE_REPEAT },
   { file: GOAL_PANEL, tag: 'textarea', handler: 'onChange' },
-  { file: TICKET_BOARD, tag: 'form', className: 'ticket-form board-give', handler: 'onSubmit', expression: '(event) => { void give(event); }' },
   // The ticket forms hold the draft on this device and send one typed request on submit.
   ...[TICKET_BOARD, TICKET_PANEL].flatMap((file) => [
     { file, tag: 'form', className: 'ticket-form', handler: 'onSubmit', expression: '(event) => { void submit(event); }' },
@@ -490,6 +489,14 @@ const ADMITTED_HANDLERS = [
     expression: '(event) => { event.preventDefault(); closeOverlay(); }' },
   { file: CONTROL_VIEW, tag: 'dialog', className: 'ticket-dialog', handler: 'onKeyDown',
     expression: "(event) => { if (event.key === 'Escape') event.stopPropagation(); }" },
+  { file: FLOOR_SHELL, tag: 'details', className: 'header-more', handler: 'onKeyDown',
+    expression: `(event) => {
+              if (event.key === 'Escape') {
+                event.currentTarget.open = false;
+                event.currentTarget.querySelector('summary')?.focus();
+                event.stopPropagation();
+              }
+            }` },
   { file: TICKET_BOARD, tag: 'div', className: 'ticket-card-regions', handler: 'onKeyDown', expression: 'moveCardFocus' },
   { file: FLOOR_SHELL, tag: 'div', className: 'panel-splitter', handler: 'onPointerDown', expression: 'startResize' },
   { file: FLOOR_SHELL, tag: 'div', className: 'panel-splitter', handler: 'onPointerMove', expression: 'moveResize' },
@@ -1125,7 +1132,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(3).fill(GOAL_PANEL),
     ...Array(2).fill('src/renderer/ticket/StuckActions.tsx'),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
-    ...Array(9).fill(TICKET_BOARD),
+    ...Array(8).fill(TICKET_BOARD),
     ...Array(2).fill(NOTIFICATION_OFFER),
     ...Array(10).fill(TICKET_PANEL),
     ...Array(13).fill(HIRE_FORM),
@@ -1149,10 +1156,9 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   ];
   assert.deepEqual(buttons.sort(), [...expected, AGENT_ORDER].sort());
   expected.sort();
-  const clickExpected = [...expected, LOGIN_PANEL];
+  const clickExpected = [...expected, LOGIN_PANEL, FLOOR_SHELL];
   clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
   // The ticket forms each submit with a button that has no click handler of its own.
-  clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
@@ -1223,8 +1229,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   const archiveSyntax = parsedByExtension(archive, ARCHIVED_AGENTS);
   assert.deepEqual(archiveSyntax.statements.filter(ts.isImportDeclaration).map((node) =>
     [node.moduleSpecifier.text, node.importClause?.isTypeOnly]), [
-    ['react', false], ['./archive.ts', true], ['./appearance.ts', false], ['./Portrait.tsx', false],
-    ['./format.ts', false], ['./worktree.ts', false], ['./ReadError.tsx', false],
+    ['./RelativeTime.tsx', false], ['./engines.ts', false], ['react', false], ['./archive.ts', true], ['./appearance.ts', false], ['./Portrait.tsx', false],
+    ['./worktree.ts', false], ['./ReadError.tsx', false],
     ['./floor/reads.ts', false], ['./floor/store.ts', true],
     ['./scene/label.ts', false], ['./onboarding/HireEntry.tsx', false], ['./memory/MemoryPanel.tsx', false], ['./view.ts', false],
   ]);
@@ -1273,7 +1279,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(shell, /if \(page === null\) return;\s*setFocused\(false\);\s*setPanel\(null\);\s*setGuide\('closed'\);\s*if \(hiring\) \{\s*closeHire\('navigation'\);\s*document\.getElementById\(CONTROL_TITLE_ID\)\?\.focus\(\);\s*\}\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === page && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}, \[page\]\)/);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup', 'onSetup',
     '() => { void changeSetting(settingKey, next); }', '() => { void confirmSetting(); }', '() => cancelSetting()',
-    "() => { void changeSetting(settingKey, 'unset',\n        `This removes the Floor daily dollar ceiling of ${formatUsdMicros(current)}. After a restart, there will be no daily dollar ceiling.`, 'Clear limit'); }",
+    "() => { void changeSetting(settingKey, 'unset',\n        `This removes the daily dollar limit of ${formatUsdMicros(current)}. After a restart, there will be no daily dollar limit.`, 'Clear limit'); }",
     '() => { void desktopNotificationPreference.setEnabled(!on); }', '() => setOfficePin(id)']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETUP_VIEW), 'utf8')).sort(), [
     '() => copyToClipboard(install)',
@@ -1315,10 +1321,17 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ['(event) => onAddAgent(event.currentTarget)']);
   assert.deepEqual(clicksIn(await readFile(resolve(source, 'shell.tsx'), 'utf8')), [
     'reloadPage',
+    '(event) => openHire(event.currentTarget)',
+    `(event) => {
+                if (!(event.target as HTMLElement).closest('button')) return;
+                const menu = event.currentTarget;
+                const details = menu.closest('details');
+                details?.removeAttribute('open');
+                if (menu.contains(menu.ownerDocument.activeElement)) details?.querySelector('summary')?.focus();
+              }`,
     'closeView',
     'toggleCrew',
     'toggleFocus',
-    '(event) => openHire(event.currentTarget)',
     '() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))',
     'signOut',
   ]);

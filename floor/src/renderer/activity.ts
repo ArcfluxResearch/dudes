@@ -84,11 +84,11 @@ export function decodeActivity(value: unknown): { readonly rows: readonly Activi
 export function activityText(row: ActivityRow): string {
   const name = 'agent' in row ? row.agent.name || 'An agent' : '';
   switch (row.kind) {
-    case 'turn_issued': return `${name} started a turn`;
-    case 'turn_ended': return `${name} ended a turn`;
-    case 'goal_set': return `${name} received a goal`;
-    case 'goal_done': return `${name} completed a goal`;
-    case 'human_question': return `${name} opened a question`;
+    case 'turn_issued': return `Dudes asked ${name} to work`;
+    case 'turn_ended': return `${name} finished a work attempt`;
+    case 'goal_set': return `${name} received a task`;
+    case 'goal_done': return `${name} completed a task`;
+    case 'human_question': return `${name} asked a question`;
     case 'human_answer': return `${name} received an answer`;
     case 'agent_renamed': return `${name} was renamed`;
     case 'agent_retired': return `${name} retired`;
@@ -96,7 +96,7 @@ export function activityText(row: ActivityRow): string {
     case 'resume': return `${name} resumed`;
     case 'card_created': return `Created ${row.card.title} · ${stateName(row.card.status)}`;
     case 'card_transition': return `Moved ${row.card.title} · ${stateName(row.card.status)}`;
-    case 'card_claimed': return `${name} claimed ${row.card.title} · ${stateName(row.card.status)}`;
+    case 'card_claimed': return `${name} was assigned ${row.card.title} · ${stateName(row.card.status)}`;
   }
 }
 
@@ -104,5 +104,5 @@ export const ACTIVITY_LABELS: Readonly<Record<ActivityRow['kind'], string>> = Ob
   turn_issued: 'Work started', turn_ended: 'Work ended', goal_set: 'Task given', goal_done: 'Task completed',
   human_question: 'Question asked', human_answer: 'Question answered', agent_renamed: 'Agent renamed',
   agent_retired: 'Agent retired', pause: 'Agent paused', resume: 'Agent resumed',
-  card_created: 'Card created', card_transition: 'Card moved', card_claimed: 'Card assigned',
+  card_created: 'Ticket created', card_transition: 'Ticket moved', card_claimed: 'Ticket assigned',
 });

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { RelativeTime } from '../RelativeTime.tsx';
 import { useSyncExternalStore } from 'react';
 
-import { recordedTime } from '../format.ts';
 import { getDevicesState, answerBrowser, subscribeToDevices } from './devices.ts';
 import { signOutHere } from './signOut.ts';
 import type { Device } from './devices.ts';
 
-function when(at: number | string | null): string {
-  return at === null ? 'not yet' : recordedTime(at);
+function When({ at }: { readonly at: number | string | null }) {
+  return at === null ? 'not yet' : <RelativeTime at={at} />;
 }
 
 function Row({ device }: { readonly device: Device }) {
@@ -16,9 +16,9 @@ function Row({ device }: { readonly device: Device }) {
     <li className="device-row">
       <h4>{device.name}{device.this ? <span className="device-this"> This browser</span> : null}</h4>
       <dl>
-        <div><dt>Signed in</dt><dd>{when(device.signed_in)}</dd></div>
-        <div><dt>First used</dt><dd>{when(device.first_used)}</dd></div>
-        <div><dt>Last used</dt><dd>{when(device.last_used)}</dd></div>
+        <div><dt>Signed in</dt><dd><When at={device.signed_in} /></dd></div>
+        <div><dt>First used</dt><dd><When at={device.first_used} /></dd></div>
+        <div><dt>Last used</dt><dd><When at={device.last_used} /></dd></div>
       </dl>
       <button type="button" aria-label={`Sign out ${device.name}${device.this ? ' (this browser)' : ''}`}
         onClick={() => { void (device.this ? signOutHere() : answerBrowser(device.id, 'remove')); }}>Sign out</button>

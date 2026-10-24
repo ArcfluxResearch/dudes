@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { RelativeTime } from './RelativeTime.tsx';
 import type { RetiredAgentRow } from './archive.ts';
-import { recordedTime } from './format.ts';
 import { messageGroups } from './messages.ts';
 import type { MessageRow, ThreadRow } from './messages.ts';
 import type { AgentRow } from './scene/cast.ts';
@@ -27,9 +27,9 @@ export function MessagesPanel({ messages, threads, agent, agents, retiredAgents 
       <ol aria-label={`Messages between ${pair.participants.map(name).join(', ')}`}>
         {pair.rows.map(row => <li key={row.id} data-message-id={row.id}>
           <p><strong>{name(row.from)}</strong> to <strong>{name(row.to)}</strong></p>
-          <p><time>{recordedTime(row.at)}</time> · <span>{row.state}</span></p>
-          <dl><div><dt>Message id</dt><dd>{row.id}</dd></div>
-            <div><dt>Creation order</dt><dd>{row.lsn}</dd></div></dl>
+          <p><RelativeTime at={row.at} /> · <span>{row.state}</span></p>
+          <details><summary>Details</summary><dl><div><dt>Message id</dt><dd>{row.id}</dd></div>
+            <div><dt>Creation order</dt><dd>{row.lsn}</dd></div></dl></details>
         </li>)}
       </ol>
     </section>)}

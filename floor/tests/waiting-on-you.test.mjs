@@ -110,7 +110,7 @@ test('choosing an entry hands that agent to the handler the office question mark
 test('an entry cannot be opened while the view is unconfirmed', () => {
   subscribe([ada()]);
   store.noteStale(true);
-  assert.match(overview(), /<button type="button" class="waiting-open" disabled="">Answer<\/button>/);
+  assert.match(overview(), /<button type="button" class="waiting-open" disabled="" title="Reconnect to Dudes before answering.">Answer<\/button>/);
 });
 
 test('entries come newest question first', () => {

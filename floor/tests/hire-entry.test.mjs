@@ -94,7 +94,7 @@ test('an empty Floor has one way into Hire, the header and the first-task card, 
   assert.match(shell, /addAgent=\{floor\.agents\.length === 0 && hireSwitchOn\(floor\) \? null/);
   const props = { floor: on, selectedId: null, onSelectAgent() {}, onOpenTasks() {}, onAddAgent() {} };
   const enabled = await render('OfficeCanvas', props);
-  assert.match(enabled, /No current agents/);
+  assert.doesNotMatch(enabled, /No current agents/);
   assert.doesNotMatch(enabled, /id="hire-open-office"|Add agent/);
   const occupied = await render('OfficeCanvas', { ...props, floor: { ...on, agents: [{ id: '01ARZ3NDEKTSV4RRFFQ69G5FAV' }] } });
   assert.doesNotMatch(occupied, /id="hire-open-office"/);

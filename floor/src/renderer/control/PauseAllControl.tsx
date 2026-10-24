@@ -85,9 +85,13 @@ export function PauseAllControlView({ floor, currentFloor = floor, state, confir
   return <div className="pause-all-control">
     {available ? <button type="button" className="pause-all-open" id="pause-all-open" aria-expanded={confirming}
       aria-controls={confirming ? 'pause-all-confirm' : undefined} disabled={active || count === 0}
+      title={active ? 'Wait for the current pause request to finish.' : count === 0 ? 'No agents can be paused right now.' : undefined}
+      aria-describedby={active || count === 0 ? 'pause-all-unavailable' : undefined}
       onClick={onOpen}>Pause all</button> : null}
+    {!available || !active && count > 0 ? null : <p id="pause-all-unavailable">
+      {active ? 'Waiting for the pause result.' : 'No agents to pause.'}</p>}
     {confirming && available ? <section className="pause-all-confirm" id="pause-all-confirm" aria-label="Confirm Pause all">
-      <p>Pause {count} current {count === 1 ? 'agent' : 'agents'}? Running turns continue to their end.</p>
+      <p>Pause {count} current {count === 1 ? 'agent' : 'agents'}? Work already running continues to its end.</p>
       <div className="pause-all-actions">
         <button type="button" id="pause-all-cancel" onClick={onCancel}>Cancel</button>
         <button type="button" className="pause-all-submit" onClick={onConfirm}>Confirm pause all</button>
