@@ -1,8 +1,8 @@
 //! Codex's items as steps, from both of its streams.
 //!
 //! `codex exec --json` writes `item.started`, `item.updated` and `item.completed` lines with
-//! snake_case fields, and the app-server writes `item/started` and `item/completed`
-//! notifications with camelCase ones. The two carry the same items, so one mapping reads both from
+//! `snake_case` fields, and the app-server writes `item/started` and `item/completed`
+//! notifications with `camelCase` ones. The two carry the same items, so one mapping reads both from
 //! the item as JSON, taking a field under either spelling.
 //!
 //! | Item type                            | Kind      | Input                          | Result            |
@@ -209,7 +209,7 @@ fn closes(
         .collect()
 }
 
-/// A field under its snake_case or camelCase spelling.
+/// A field under its `snake_case` or `camelCase` spelling.
 fn field<'a>(item: &'a Value, snake: &str, camel: &str) -> Option<&'a Value> {
     item.get(snake)
         .or_else(|| item.get(camel))
@@ -653,10 +653,14 @@ mod tests {
                 "close item_10-r2",
             ]
         );
-        let last = open(&events[4]);
-        assert_eq!(last.kind, StepKind::Plan);
+        let newest = open(&events[4]);
+        assert_eq!(newest.kind, StepKind::Plan);
         assert_eq!(
-            last.plan.iter().map(|item| item.status).collect::<Vec<_>>(),
+            newest
+                .plan
+                .iter()
+                .map(|item| item.status)
+                .collect::<Vec<_>>(),
             [PlanStatus::Completed, PlanStatus::Completed]
         );
     }

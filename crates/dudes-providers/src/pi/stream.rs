@@ -232,6 +232,56 @@ impl TurnStream {
         }
     }
 
+    fn tool_start(
+        &mut self,
+        id: Option<String>,
+        name: Option<String>,
+        server: Option<String>,
+        args: Option<&Value>,
+    ) -> LineRead {
+        let steps = self
+            .session
+            .as_ref()
+            .zip(id.as_deref().zip(name.as_deref()))
+            .and_then(|(session, (id, name))| self.steps.start(session, id, name, args))
+            .into_iter()
+            .collect();
+        if let Some(id) = id {
+            self.pending_tools.remove(&id);
+            if let Some((name, server)) = name.zip(server) {
+                self.pending_tools.insert(id, PendingTool { name, server });
+            }
+        }
+        LineRead {
+            activity: Some(LiveActivityKind::UsingTool),
+            steps,
+            ..LineRead::default()
+        }
+    }
+
+    fn tool_end(
+        &mut self,
+        id: Option<&str>,
+        name: Option<&str>,
+        succeeded: bool,
+        failed: bool,
+        result: &str,
+    ) -> LineRead {
+        self.complete_tool(id, name, succeeded);
+        let steps = self
+            .session
+            .as_ref()
+            .zip(id)
+            .and_then(|(session, id)| self.steps.end(session, id, failed, result))
+            .into_iter()
+            .collect();
+        LineRead {
+            activity: Some(LiveActivityKind::Working),
+            steps,
+            ..LineRead::default()
+        }
+    }
+
     fn update_message(
         &mut self,
         update: &MessageUpdate,
@@ -395,49 +445,14 @@ impl TurnReader for TurnStream {
                 name,
                 server,
                 args,
-            } => {
-                let steps = self
-                    .session
-                    .as_ref()
-                    .zip(id.as_deref().zip(name.as_deref()))
-                    .and_then(|(session, (id, name))| {
-                        self.steps.start(session, id, name, args.as_ref())
-                    })
-                    .into_iter()
-                    .collect();
-                if let Some(id) = id {
-                    self.pending_tools.remove(&id);
-                    if let Some((name, server)) = name.zip(server) {
-                        self.pending_tools.insert(id, PendingTool { name, server });
-                    }
-                }
-                return LineRead {
-                    activity: Some(LiveActivityKind::UsingTool),
-                    steps,
-                    ..LineRead::default()
-                };
-            }
+            } => return self.tool_start(id, name, server, args.as_ref()),
             Event::ToolEnd {
                 id,
                 name,
                 succeeded,
                 failed,
                 result,
-            } => {
-                self.complete_tool(id.as_deref(), name.as_deref(), succeeded);
-                let steps = self
-                    .session
-                    .as_ref()
-                    .zip(id.as_deref())
-                    .and_then(|(session, id)| self.steps.end(session, id, failed, &result))
-                    .into_iter()
-                    .collect();
-                return LineRead {
-                    activity: Some(LiveActivityKind::Working),
-                    steps,
-                    ..LineRead::default()
-                };
-            }
+            } => return self.tool_end(id.as_deref(), name.as_deref(), succeeded, failed, &result),
             Event::Settled => self.phase = Phase::Settled,
             Event::RunEnd => {
                 if let Some(call) = self.in_flight.as_mut() {

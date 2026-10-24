@@ -235,8 +235,8 @@ mod tests {
             ),
             ("find", r#"{"pattern":"*.rs"}"#, StepKind::Search),
             ("ls", r#"{"path":"."}"#, StepKind::Search),
-            ("mcp__docs__find", r#"{}"#, StepKind::Mcp),
-            ("teleport", r#"{}"#, StepKind::Other),
+            ("mcp__docs__find", r"{}", StepKind::Mcp),
+            ("teleport", r"{}", StepKind::Other),
         ];
         let lines: Vec<String> = tools
             .iter()

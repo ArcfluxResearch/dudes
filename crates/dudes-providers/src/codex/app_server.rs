@@ -307,61 +307,7 @@ impl AppServerReader {
                 completed,
                 body,
                 value,
-            } => {
-                if !self.attributed(body.thread_id.as_deref(), body.turn_id.as_deref()) {
-                    return LineRead::default();
-                }
-                let Some(item) = body.item else {
-                    self.unreadable += 1;
-                    return LineRead::default();
-                };
-                let steps = match (&self.thread, &value) {
-                    (Some(session), Some(value)) if completed => {
-                        self.steps.completed(session, value)
-                    }
-                    (Some(session), Some(value)) => self.steps.started(session, value),
-                    _ => Vec::new(),
-                };
-                if item.kind.as_deref() == Some("mcpToolCall") {
-                    let mut read = item
-                        .server
-                        .map_or_else(LineRead::default, |server| self.server_named(&server));
-                    read.steps = steps;
-                    return read;
-                }
-                if value.is_some() {
-                    return LineRead {
-                        steps,
-                        ..LineRead::default()
-                    };
-                }
-                if item.kind.as_deref() != Some("agentMessage") {
-                    return LineRead::default();
-                }
-                let Some(id) = item.id.filter(|id| valid_id(id)) else {
-                    self.unreadable += 1;
-                    return LineRead::default();
-                };
-                if !self.items.contains_key(&id) && self.items.len() >= MAX_ITEMS {
-                    return self.fail();
-                }
-                let progress = self.items.entry(id).or_default();
-                if !completed {
-                    progress.start(0, true);
-                    return LineRead::default();
-                }
-                let Some(text) = item.text else {
-                    self.unreadable += 1;
-                    return LineRead::default();
-                };
-                if !text.is_empty() {
-                    self.final_reply = Some(FinalReply::new(&text));
-                }
-                let fragment = progress
-                    .complete(0, &text)
-                    .map(|fragment| self.layout.render(fragment));
-                self.text(fragment)
-            }
+            } => self.item(completed, body, value.as_ref()),
             Event::Delta(body) => {
                 if !self.attributed(body.thread_id.as_deref(), body.turn_id.as_deref()) {
                     return LineRead::default();
@@ -420,6 +366,65 @@ impl AppServerReader {
                 }
             }
         }
+    }
+
+    fn item(
+        &mut self,
+        completed: bool,
+        body: wire::ItemNotification,
+        value: Option<&Value>,
+    ) -> LineRead {
+        if !self.attributed(body.thread_id.as_deref(), body.turn_id.as_deref()) {
+            return LineRead::default();
+        }
+        let Some(item) = body.item else {
+            self.unreadable += 1;
+            return LineRead::default();
+        };
+        let steps = match (&self.thread, &value) {
+            (Some(session), Some(value)) if completed => self.steps.completed(session, value),
+            (Some(session), Some(value)) => self.steps.started(session, value),
+            _ => Vec::new(),
+        };
+        if item.kind.as_deref() == Some("mcpToolCall") {
+            let mut read = item
+                .server
+                .map_or_else(LineRead::default, |server| self.server_named(&server));
+            read.steps = steps;
+            return read;
+        }
+        if value.is_some() {
+            return LineRead {
+                steps,
+                ..LineRead::default()
+            };
+        }
+        if item.kind.as_deref() != Some("agentMessage") {
+            return LineRead::default();
+        }
+        let Some(id) = item.id.filter(|id| valid_id(id)) else {
+            self.unreadable += 1;
+            return LineRead::default();
+        };
+        if !self.items.contains_key(&id) && self.items.len() >= MAX_ITEMS {
+            return self.fail();
+        }
+        let progress = self.items.entry(id).or_default();
+        if !completed {
+            progress.start(0, true);
+            return LineRead::default();
+        }
+        let Some(text) = item.text else {
+            self.unreadable += 1;
+            return LineRead::default();
+        };
+        if !text.is_empty() {
+            self.final_reply = Some(FinalReply::new(&text));
+        }
+        let fragment = progress
+            .complete(0, &text)
+            .map(|fragment| self.layout.render(fragment));
+        self.text(fragment)
     }
 
     fn text(&self, fragment: Option<String>) -> LineRead {
