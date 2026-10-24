@@ -18,6 +18,9 @@ const MAX_OPEN: usize = 256;
 const MAX_ID_BYTES: usize = 128;
 const MAX_ARGS: usize = 16;
 const MAX_PLAN_ITEMS: usize = 64;
+/// The most one nested argument flattens to. The rest is cut and marked, so one huge input
+/// cannot multiply into a larger text before the daemon checks it.
+const MAX_ARG_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Default)]
 pub(super) struct LiveSteps {
@@ -178,27 +181,38 @@ fn arg(value: &Value) -> Option<String> {
         ),
         other => {
             let mut lines = Vec::new();
-            leaves(other, "", &mut lines);
+            let mut room = MAX_ARG_BYTES;
+            leaves(other, "", &mut lines, &mut room);
             (!lines.is_empty()).then(|| lines.join("\n"))
         }
     }
 }
 
-fn leaves(value: &Value, name: &str, lines: &mut Vec<String>) {
-    let line = |text: &str| {
-        if name.is_empty() {
+fn leaves(value: &Value, name: &str, lines: &mut Vec<String>, room: &mut usize) {
+    if *room == 0 {
+        return;
+    }
+    let mut push = |text: &str| {
+        let line = if name.is_empty() {
             text.to_owned()
         } else {
             format!("{name}: {text}")
+        };
+        if line.len() > *room {
+            lines.push(crate::stream::bound_to(&line, (*room).max(3)));
+            *room = 0;
+        } else {
+            *room -= line.len() + 1;
+            lines.push(line);
         }
     };
     match value {
         Value::Null => {}
-        Value::String(text) => lines.push(line(text)),
-        Value::Bool(_) | Value::Number(_) => lines.push(line(&value.to_string())),
+        Value::String(text) => push(text),
+        Value::Bool(_) | Value::Number(_) => push(&value.to_string()),
         Value::Array(items) => {
             for (index, item) in items.iter().enumerate() {
-                leaves(item, &format!("{name}[{index}]"), lines);
+                leaves(item, &format!("{name}[{index}]"), lines, room);
             }
         }
         Value::Object(fields) => {
@@ -208,7 +222,7 @@ fn leaves(value: &Value, name: &str, lines: &mut Vec<String>) {
                 } else {
                     format!("{name}.{key}")
                 };
-                leaves(item, &path, lines);
+                leaves(item, &path, lines, room);
             }
         }
     }
@@ -446,6 +460,23 @@ mod tests {
             assert!(opts.contains(line), "{line} missing from {opts}");
         }
         assert!(!opts.contains("\\n"), "no JSON escapes: {opts}");
+    }
+
+    #[test]
+    fn a_huge_nested_argument_is_cut_with_a_mark() {
+        let numbers = vec!["1234567890"; 20_000].join(",");
+        let events = read(
+            &mut LiveSteps::default(),
+            &format!(
+                r#"{{"type":"assistant","session_id":"{SESSION}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_h","name":"mcp__x__run","input":{{"opts":{{"list":[{numbers}]}}}}}}]}}}}"#
+            ),
+        );
+        let [StepEvent::Open { step, .. }] = &events[..] else {
+            panic!("one open step expected");
+        };
+        let opts = &step.args[0].1;
+        assert!(opts.len() <= MAX_ARG_BYTES, "{}", opts.len());
+        assert!(opts.ends_with('…'));
     }
 
     #[test]

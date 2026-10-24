@@ -160,6 +160,7 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
         plan,
     } = step;
     let mut withheld = None;
+    let mut names_path = false;
     let tool_name = safe_name(redactor, &tool, &mut withheld);
     let mut views = Vec::with_capacity(args.len());
     for (key, value) in args {
@@ -167,8 +168,9 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
         let value = redactor.scrub(&value);
         if names_sensitive_path(kind, &tool, &key, &value) {
             withheld = Some("the step names a sensitive path");
+            names_path = true;
         }
-        let value = if contains_secret(value.as_bytes()) {
+        let value = if holds_secret(&key, &value) {
             withheld.get_or_insert("the step holds a secret");
             REDACTED.to_owned()
         } else {
@@ -185,9 +187,15 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
         ));
     }
     let edit = edit.and_then(|edit| edit_view(redactor, edit, &mut withheld));
-    // An edit tool carries its text in arguments the reader does not lift out (a list of edits, a
-    // notebook cell), so a withheld step shows its path and nothing else.
-    let hide_text = withheld.is_some() && matches!(kind, StepKind::Edit | StepKind::Write);
+    // A tool can carry its text in arguments the reader does not lift out (a list of edits, a
+    // notebook cell, an MCP write's content), so a withheld edit step, and any step that names a
+    // sensitive path, shows its path arguments and nothing else. A command is its own input and
+    // stays whole.
+    let hide_text = match kind {
+        StepKind::Command => false,
+        StepKind::Edit | StepKind::Write => withheld.is_some(),
+        _ => names_path,
+    };
     let args = views
         .into_iter()
         .filter(|(path, _)| *path || !hide_text)
@@ -224,6 +232,34 @@ pub(crate) fn open(redactor: &Redactor, step: Step, now: u64) -> StepView {
         started_at: now,
         ended_at: None,
     }
+}
+
+/// Whether an argument holds a secret: its text on its own, and each line as the `"key":"value"`
+/// pair the credential rule reads. A nested leaf reads `name: value` and a top-level argument is
+/// its value alone, so the key has to be put back in front of the value.
+fn holds_secret(key: &str, value: &str) -> bool {
+    let pair = |key: &str, text: &str| {
+        contains_secret(format!("\"{key}\":\"{}\"", text.replace('"', "'")).as_bytes())
+    };
+    contains_secret(value.as_bytes())
+        || value.lines().any(|line| {
+            match line
+                .split_once(": ")
+                .filter(|(name, _)| !name.contains(' '))
+            {
+                Some((name, text)) => pair(leaf_name(name), text),
+                None => pair(key, line),
+            }
+        })
+}
+
+/// The last name on a flattened path: `opts.paths[0]` is `paths`.
+fn leaf_name(path: &str) -> &str {
+    let mut name = path;
+    while let Some(open) = name.strip_suffix(']').and_then(|n| n.rfind('[')) {
+        name = &name[..open];
+    }
+    name.rsplit('.').next().unwrap_or(name)
 }
 
 /// A tool or argument name, cut to size, or the redaction mark when it holds a secret.
@@ -334,7 +370,7 @@ fn names_sensitive_path(kind: StepKind, tool: &str, key: &str, value: &str) -> b
         } else {
             (key_is_path || path_like(line)) && names_sensitive(line)
                 || leaf.is_some_and(|(name, text)| {
-                    let name = name.rsplit(['.', ']']).next().unwrap_or(name);
+                    let name = leaf_name(name);
                     (is_path_key(tool, name) || path_like(text)) && names_sensitive(text.trim())
                 })
         }
@@ -689,6 +725,79 @@ mod tests {
         redactor.set_source("test", ["later-secret-0123456789".to_owned()]);
         let wire = json(&view.rescrubbed(&redactor));
         assert!(!wire.contains("later-secret"), "{wire}");
+    }
+
+    const SESSION: &str = "511d87b0-cfa9-4d55-bb92-47360e5b69d4";
+
+    /// A tool call as the Claude reader sees it on the wire, opened the way the daemon opens it.
+    fn from_stream(tool: &str, input: &str) -> StepView {
+        use dudes_providers::claude::stream::TurnStream;
+        use dudes_providers::stream::TurnReader;
+        let mut stream = TurnStream::new();
+        stream.line(&format!(
+            r#"{{"type":"system","subtype":"init","session_id":"{SESSION}","tools":[]}}"#
+        ));
+        let call = format!(
+            r#"{{"type":"assistant","session_id":"{SESSION}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_1","name":"{tool}","input":{input}}}]}}}}"#
+        );
+        let mut events = stream.line(&call).steps;
+        let Some(dudes_providers::steps::StepEvent::Open { step, .. }) = events.pop() else {
+            panic!("one open step expected");
+        };
+        open(&Redactor::new(), step, 1)
+    }
+
+    #[test]
+    fn a_credential_key_in_raw_tool_input_never_reaches_the_wire() {
+        for key in ["password", "api_key", "client_secret"] {
+            for input in [
+                format!(r#"{{"opts":{{"{key}":"hunter2hunter2"}}}}"#),
+                format!(r#"{{"{key}":"hunter2hunter2"}}"#),
+                format!(r#"{{"a":{{"b":[{{"{key}":"hunter2hunter2"}}]}}}}"#),
+            ] {
+                let view = from_stream("mcp__x__run", &input);
+                let wire = json(&view);
+                assert!(!wire.contains("hunter2"), "{input} gave {wire}");
+                assert_eq!(view.withheld, Some("the step holds a secret"), "{input}");
+            }
+        }
+        let plain = from_stream("mcp__x__run", r#"{"opts":{"name":"hunter2hunter2"}}"#);
+        assert_eq!(plain.withheld, None);
+    }
+
+    #[test]
+    fn a_bare_sensitive_file_in_a_list_under_a_path_key_is_withheld() {
+        for file in ["id_rsa", "credentials", "x.pem"] {
+            let view = from_stream(
+                "mcp__x__read",
+                &format!(r#"{{"opts":{{"paths":["{file}"]}}}}"#),
+            );
+            assert!(view.withheld.is_some(), "{file}");
+        }
+        assert_eq!(leaf_name("opts.paths[0]"), "paths");
+        assert_eq!(leaf_name("edits[0].path"), "path");
+    }
+
+    #[test]
+    fn a_step_naming_a_sensitive_path_shows_only_its_path_whatever_its_kind() {
+        for (tool, input) in [
+            (
+                "mcp__fs__write_file",
+                r#"{"path":"/w/.env","content":"DB=plain"}"#,
+            ),
+            ("Strange", r#"{"file_path":"/w/.env","body":"DB=plain"}"#),
+        ] {
+            let view = from_stream(tool, input);
+            let wire = json(&view);
+            assert!(view.withheld.is_some(), "{tool}");
+            assert!(!wire.contains("DB=plain"), "{wire}");
+            assert_eq!(view.args.len(), 1, "{wire}");
+        }
+        let ordinary = from_stream(
+            "mcp__fs__write_file",
+            r#"{"path":"/w/a.txt","content":"x"}"#,
+        );
+        assert_eq!(ordinary.args.len(), 2);
     }
 
     #[test]
