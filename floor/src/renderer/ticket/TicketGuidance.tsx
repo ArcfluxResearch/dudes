@@ -7,7 +7,7 @@ import { projectAddOn } from '../project/AddProject.tsx';
 export function TicketOffHint({ floor }: { readonly floor: FloorState }) {
   if (!viewConfirmed(floor)) return null;
   const needed = (['control', 'goal'] as const).filter((key) => floor.settings?.switches[key] === false);
-  const names = needed.map(key => key === 'control' ? 'Pause, resume and rename' : 'Change goals');
+  const names = needed.map(key => key === 'control' ? 'Pause, resume and rename' : 'Change tasks');
   return <p className="ticket-hint">Tickets are off. Turn on Make tickets under Floor switches in Settings.
     {names.length === 0 ? null : <> Also turn on {names.join(' and ')}.</>}
   </p>;

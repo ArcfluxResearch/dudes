@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// Retire against every reply the daemon can give.
+// Retire against every reply Dudes can give.
 //
-// The daemon here is a function from the request the page sent to a status and
+// Dudes here is a function from the request the page sent to a status and
 // a body, shaped exactly like the gateway's response map: `200 retired`,
 // `202 pending`, a typed `409 refused`, an empty `409`, an empty `403`, an
 // empty `503`, a `400`, and a response that never arrives. The floor is the
@@ -68,7 +68,7 @@ function agent(fields = {}) {
 const GRACE_ROW = (fields = {}) => agent({ id: GRACE, name: 'Grace', ...fields });
 
 /**
- * A fresh subscription on the real store. The daemon enables retiring only
+ * A fresh subscription on the real store. Dudes enables retiring only
  * with pause and resume, so both siblings come by default; `null` leaves one out.
  */
 function subscribe({ agents = [agent()], retire: retireSibling = SIBLING, control: controlSibling = SIBLING } = {}) {
@@ -86,7 +86,7 @@ function delta(agents, lsn, removed = []) {
 }
 
 /**
- * The daemon's replies, one per request, each a function of what was sent and
+ * Dudes's replies, one per request, each a function of what was sent and
  * where. A reply that returns an Error is a response the page never received.
  */
 function daemon(...replies) {
@@ -616,7 +616,7 @@ test('each refusal is said as itself, lets Retire go, and nothing looks like suc
   const said = {
     agent_absent: 'That agent is already retired.',
     agent_halted: HALTED_LINE,
-    liveness_unknown: 'The daemon cannot yet tell whether this agent’s process is running. Try again in a moment.',
+    liveness_unknown: 'Dudes cannot yet tell whether this agent’s process is running. Try again in a moment.',
   };
   for (const [reason, text] of Object.entries(said)) {
     resetFloorStore();

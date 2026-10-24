@@ -62,7 +62,7 @@ for (const close of ['transport close', 'disconnected frame']) {
     assert.equal(getFloorState().phase, 'closed');
     assert.deepEqual(getFloorState().activity, []);
     const html = await render('LogPanel', { floor: getFloorState() });
-    assert.match(html, /Activity is unavailable while the stream is disconnected/);
+    assert.match(html, /Activity is unavailable while disconnected/);
     assert.match(html, /<button[^>]*>Retry<\/button>/);
     assert.doesNotMatch(html, /No recent activity/);
     assert.doesNotMatch(html, /data-activity-lsn=|Ada paused/);
@@ -97,9 +97,9 @@ test('the decoder admits only the twelve event kinds and reconstructs their disp
     { lsn: '12', at: 1_000, kind: 'card_transition', card: { ...card, status: 'done' } });
   const result = decodeActivity(raw);
   assert.equal(result.rejected, 0);
-  assert.deepEqual(result.rows.map(activityText), ['Ada started a turn', 'Ada ended a turn', 'Ada received a goal', 'Ada completed a goal',
-    'Ada opened a question', 'Ada received an answer', 'Ada retired', 'Ada paused', 'Ada resumed',
-    'Created Build parser · To do', 'Ada claimed Build parser · To do', 'Moved Build parser · Done']);
+  assert.deepEqual(result.rows.map(activityText), ['Dudes asked Ada to work', 'Ada finished a work attempt', 'Ada received a task', 'Ada completed a task',
+    'Ada asked a question', 'Ada received an answer', 'Ada retired', 'Ada paused', 'Ada resumed',
+    'Created Build parser · To do', 'Ada was assigned Build parser · To do', 'Moved Build parser · Done']);
   assert.ok(!JSON.stringify(result.rows).includes(SECRET));
   for (const kind of ['mail', 'hook_token_minted', 'attached', 'steer', 'memory_append', 'predicate_result', 'unknown']) {
     assert.deepEqual(decodeActivity([row(1, kind)]), { rows: [], rejected: 1 });
@@ -142,10 +142,10 @@ test('snapshot and delta activity renders newest journal position first with ine
   assert.doesNotMatch(html, new RegExp(SECRET));
   assert.match(html, /Filter recent activity/);
   assert.match(html, /All agents/);
-  assert.match(html, /All kinds/);
+  assert.match(html, /All events/);
   assert.match(html, /Search activity/);
   assert.doesNotMatch(html, /<script|<button|<textarea|<form|<a\b/);
-  assert.match(html, /<small>Jan 1, 1970[^<]*<\/small><details><summary>Details<\/summary><p>Record position: segment 0 · byte 3<\/p>/);
+  assert.match(html, /<time dateTime="[^"]*" title="Jan 1, 1970[^"]*">[^<]*ago<\/time><\/small><details><summary>Details<\/summary><p>Jan 1, 1970[^<]*<\/p><p>Record position: segment 0 · byte 3<\/p>/);
   const center = await render('Control', { floor, selectedId: null, onClose() {}, onView() {}, view: 'log' });
   assert.match(center, /<section class="control-panel" id="control-panel" data-view="log" aria-labelledby="control-title"/);
   assert.match(center, /<h2 id="control-title" tabindex="-1">Log<\/h2>/);

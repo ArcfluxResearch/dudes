@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// Changing one agent's goal against every reply the daemon can give.
+// Changing one agent's goal against every reply Dudes can give.
 //
-// The daemon here is a function from the request the page sent to a status and
+// Dudes here is a function from the request the page sent to a status and
 // a body, shaped exactly like the gateway's response map: `200 changed`,
 // `202 pending`, a typed `409 refused`, an empty `409`, an empty `403`, an
 // empty `503`, a `400`, and a response that never arrives. The floor is the
@@ -10,17 +10,17 @@
 // the real components, rendered to markup. What is asserted is what an
 // operator would read, and above all what they would not: a changed goal on
 // the strength of a 200, a form for a halted agent, a carry-over that reads
-// higher than the goal has left, or a second request id for a request that may
+// higher than the task has left, or a second request id for a request that may
 // already be in the journal.
 //
 // Mutation controls, each named by the test it turns red:
-//   - the sibling decoder takes any bound ............. "the goal sibling decodes…"
+//   - the sibling decoder takes any bound ............. "the task sibling decodes…"
 //   - the halt check dropped from goalGate ............. "the form appears only with…"
 //   - the running-turn line or its hold dropped ........ "while a turn runs…"
 //   - dollars left truncated instead of rounded up ..... "the carry-over says…"
-//   - NUL let through, or U+0001 refused ............... "the text bounds are the daemon’s…"
-//   - "Goal changed" read from the 200 ................. "each change wording…"
-//   - no refresh on stale_goal ......................... "stale_goal says the goal changed…"
+//   - NUL let through, or U+0001 refused ............... "the text bounds are Dudes’…"
+//   - "Task changed" read from the 200 ................. "each change wording…"
+//   - no refresh on stale_goal ......................... "stale_goal says the task changed…"
 //   - a 200 naming the replaced goal read as changed ... "the response map…"
 //   - a request that is out not holding the form ....... "a pending request disables Send…"
 //   - a new request id on Check status, or a 503
@@ -33,7 +33,7 @@
 //     sending none ..................................... "Keep sends no check fields…"
 //   - an achieved goal starting on Keep ................ "an achieved goal starts with nothing chosen…"
 //
-// The goal module and the floor store are loaded through the same Vite SSR
+// The task module and the floor store are loaded through the same Vite SSR
 // server as the views, so a view that reads module state reads the state these
 // tests drive.
 
@@ -60,7 +60,7 @@ const G2 = '01JBQ8XK2M3N4P5Q6R7S8T9VWZ';
 const REQUEST_ID = 'A'.repeat(43);
 const FRESH = `${'B'.repeat(42)}E`;
 const LIMITS = Object.freeze({ max_text_bytes: 2048 });
-const TURN_LINE = 'You can change the goal when the current turn ends';
+const TURN_LINE = 'You can change the task when the current work attempt ends';
 
 /** A goal with 3 turns and $1.500001 left. */
 function goalView(fields = {}) {
@@ -116,7 +116,7 @@ function delta(agents, lsn, removed = []) {
 }
 
 /**
- * The daemon's replies, one per request, each a function of what was sent. A
+ * Dudes's replies, one per request, each a function of what was sent. A
  * reply that returns an Error is a response the page never received.
  */
 function daemon(...replies) {
@@ -181,10 +181,10 @@ function gate(id = ADA) {
   return goal.goalGate(getFloorState(), rowOf(id));
 }
 
-/** Type a draft into one agent's form and press Change goal. */
+/** Type a draft into one agent's form and press Change task. */
 async function change(net, text = 'ship the lexer', id = ADA) {
   const open = gate(id);
-  assert.equal(open.open, true, `the goal form for ${id} is not open`);
+  assert.equal(open.open, true, `the task form for ${id} is not open`);
   goal.editGoalDraft(open.agent, open.goal, text);
   await goal.submitGoal(open, net);
 }
@@ -244,7 +244,7 @@ function center(row = rowOf()) {
   return stage({ floor: getFloorState(), row });
 }
 
-/** The Change goal button as assistive technology reads it: [aria-disabled, aria-busy, label], or null. */
+/** The Change task button as assistive technology reads it: [aria-disabled, aria-busy, label], or null. */
 function sendButton(html) {
   const found = html.match(/<button type="button" class="goal-send"([^>]*)>([^<]*)<\/button>/);
   if (found === null) return null;
@@ -252,8 +252,8 @@ function sendButton(html) {
   return [attribute('aria-disabled'), attribute('aria-busy'), found[2]];
 }
 
-const LIVE = Object.freeze([null, 'false', 'Change goal']);
-const HELD = Object.freeze(['true', 'false', 'Change goal']);
+const LIVE = Object.freeze([null, 'false', 'Change task']);
+const HELD = Object.freeze(['true', 'false', 'Change task']);
 
 /** The continuation line of the status, as [kind, text]. */
 function continuation() {
@@ -263,7 +263,7 @@ function continuation() {
 
 // --- the form, and when it is offered ----------------------------------------------------
 
-test('the goal sibling decodes exactly {max_text_bytes} within the daemon bound, and lives no longer than its subscription', () => {
+test('the task sibling decodes exactly {max_text_bytes} within Dudes bound, and lives no longer than its subscription', () => {
   assert.deepEqual(decodeGoalLimits({ max_text_bytes: 2048 }), { maxTextBytes: 2048 });
   assert.deepEqual(decodeGoalLimits({ max_text_bytes: 1 }), { maxTextBytes: 1 });
   const refused = {
@@ -272,7 +272,7 @@ test('the goal sibling decodes exactly {max_text_bytes} within the daemon bound,
     'a second member': { max_text_bytes: 2048, enabled: true }, 'the control sibling': {},
   };
   for (const [label, value] of Object.entries(refused)) {
-    assert.equal(decodeGoalLimits(value), null, `${label} decoded as the goal sibling`);
+    assert.equal(decodeGoalLimits(value), null, `${label} decoded as the task sibling`);
   }
 
   subscribe();
@@ -337,10 +337,10 @@ test('the form appears only with the sibling and a current goal, and never for a
     resetFloorStore();
     arrange();
     const row = rowOf() ?? agent();
-    assert.equal(goal.goalGate(getFloorState(), row).open, false, `${label} opened the goal gate`);
+    assert.equal(goal.goalGate(getFloorState(), row).open, false, `${label} opened the task gate`);
     const drawn = center(row);
     assert.match(drawn, /<aside class="agent-detail"/, `${label}: the detail is not drawn, so the absence proves nothing`);
-    assert.doesNotMatch(drawn, /<textarea|data-goal-|Change goal/, `${label} drew the goal form`);
+    assert.doesNotMatch(drawn, /<textarea|data-goal-|Change task/, `${label} drew the task form`);
   }
   // A row the floor does not list, and no row at all, open nothing.
   resetFloorStore();
@@ -355,7 +355,7 @@ test('the carry-over says the turns left exactly and the dollars left at most', 
     subscribe({ agents: [agent({ goal: goalView(view) })] });
     return form().match(/<ul class="goal-carry">[\s\S]*?<\/ul>/)?.[0];
   };
-  const list = (dollars, turns = 3) => `<ul class="goal-carry"><li>Turns: exactly ${turns} left.</li><li>${dollars}</li></ul>`;
+  const list = (dollars, turns = 3) => `<ul class="goal-carry"><li>Work attempts: exactly ${turns} left.</li><li>${dollars}</li></ul>`;
   // $5.00 less $3.499999 is $1.500001: at most $1.51, never the $1.50 a truncation would claim.
   assert.equal(carried({}), list('Dollars: at most $1.51 left.'));
   assert.equal(carried({ spent: { usd: 3_500_000 } }), list('Dollars: at most $1.50 left.'));
@@ -365,7 +365,7 @@ test('the carry-over says the turns left exactly and the dollars left at most', 
   // No dollar cap: said, and no figure is given for it.
   for (const budget of [{}, { usd: null }, { tokens: 5000 }]) {
     const html = carried({ budget });
-    assert.equal(html, list('Dollars: this goal sets no dollar cap.'), JSON.stringify(budget));
+    assert.equal(html, list('Dollars: this task sets no dollar limit.'), JSON.stringify(budget));
     assert.doesNotMatch(html.replace('exactly 3', ''), /\$|[0-9]/, 'an uncapped unit was given a number');
   }
 });
@@ -378,7 +378,7 @@ test('while a turn runs the form cannot send, says so in the specified words, an
   assert.ok(html.includes(`<p class="goal-turn" role="status">${TURN_LINE}</p>`), 'the running-turn line is not drawn');
   assert.deepEqual(sendButton(html), HELD);
   assert.doesNotMatch(html, /<textarea[^>]*readonly/i, 'the draft cannot be written while the turn ends');
-  // The same detail keeps Pause live and mounts the goal draft inside Change.
+  // The same detail keeps Pause live and mounts the task draft inside Change.
   assert.match(html,
     /<button type="button" class="control-pause"[^>]*>Pause<\/button>[\s\S]*?<section id="agent-detail-panel-overview"[^>]*>[\s\S]*?<details class="agent-overview-change"><summary>Change<\/summary><section class="agent-detail-goal"/);
   assert.doesNotMatch(html.match(/<button type="button" class="control-pause"[^>]*>/)[0], /aria-disabled/);
@@ -456,14 +456,14 @@ test('one press posts exactly four fields to /floor/goal with the REQUEST_ID hea
   assert.match(form(), /<p class="goal-problem" role="alert">This page has no Floor session, so nothing was sent\.<\/p>/);
 });
 
-test('the text bounds are the daemon’s: 1 to 2048 bytes after trim, no NUL, and other control characters allowed', async () => {
+test('the text bounds are Dudes’: 1 to 2048 bytes after trim, no NUL, and other control characters allowed', async () => {
   const cases = [
-    ['', 'The goal is empty.'],
-    [' \t\r\n ', 'The goal is empty.'],
-    ['x'.repeat(2049), 'The goal is 2049 UTF-8 bytes; the limit is 2048.'],
-    [`${'é'.repeat(1024)}x`, 'The goal is 2049 UTF-8 bytes; the limit is 2048.'],
-    ['ship\u0000it', 'The goal carries a NUL character, which the daemon refuses.'],
-    ['ship \ud800 it', 'The goal carries half of a surrogate pair, which is not text.'],
+    ['', 'The task is empty.'],
+    [' \t\r\n ', 'The task is empty.'],
+    ['x'.repeat(2049), 'The task is 2049 UTF-8 bytes; the limit is 2048.'],
+    [`${'é'.repeat(1024)}x`, 'The task is 2049 UTF-8 bytes; the limit is 2048.'],
+    ['ship\u0000it', 'The task contains a null character, which Dudes cannot use.'],
+    ['ship \ud800 it', 'The task carries half of a surrogate pair, which is not text.'],
     [`  ${'x'.repeat(2048)}\n`, null],
     ['é'.repeat(1024), null],
     ['ship\u0001it\u001f\u007f', null],
@@ -482,7 +482,7 @@ test('the text bounds are the daemon’s: 1 to 2048 bytes after trim, no NUL, an
     assert.ok(form().includes(`${want}</p>`), `${want} is not drawn`);
     assert.deepEqual(sendButton(form()), HELD);
   }
-  // The largest body the daemon admits: 2048 bytes of U+0001, each escaped as six bytes.
+  // The largest body Dudes admits: 2048 bytes of U+0001, each escaped as six bytes.
   goal.resetGoal();
   const net = daemon(CHANGED);
   await change(net, '\u0001'.repeat(2048));
@@ -492,12 +492,12 @@ test('the text bounds are the daemon’s: 1 to 2048 bytes after trim, no NUL, an
 
 // --- what an outcome proves ---------------------------------------------------------------
 
-test('each change wording is read from projection rows: a 200 alone never says the goal changed', async () => {
+test('each change wording is read from projection rows: a 200 alone never says the task changed', async () => {
   const cases = [
-    ['a paused agent', { paused: true, control_lsn: '1099511628288' }, 'paused', 'Goal changed. Paused until you resume.'],
+    ['a paused agent', { paused: true, control_lsn: '1099511628288' }, 'paused', 'Task changed. Paused until you resume.'],
     ['an attached agent', { mode: 'attached', status: 'attached' }, 'attached',
-      'Goal changed. It takes effect after you detach.'],
-    ['a free idle agent', {}, 'waiting', 'Goal changed. No new turn has appeared yet; the agent is idle.'],
+      'Task changed. It takes effect after you detach.'],
+    ['a free idle agent', {}, 'waiting', 'Task changed. No new work attempt has appeared yet; the agent is idle.'],
   ];
   for (const [label, fields, kind, text] of cases) {
     resetFloorStore();
@@ -506,27 +506,27 @@ test('each change wording is read from projection rows: a 200 alone never says t
     await change(daemon(CHANGED));
     assert.deepEqual(goal.getGoalState().outcome, { kind: 'changed' }, label);
     const recorded = status();
-    assert.match(recorded, /<p class="goal-success" role="status">Goal change recorded\. The daemon holds the new goal in its journal, which is not the same as a new turn\.<\/p>/);
-    assert.deepEqual(continuation(), ['unchanged', 'The floor has not shown the new goal yet.'], label);
-    assert.doesNotMatch(recorded, /Goal changed/, `${label}: the 200 was worded as a changed goal`);
+    assert.match(recorded, /<p class="goal-success" role="status">Dudes saved the new task\. This does not mean the agent has started work\.<\/p>/);
+    assert.deepEqual(continuation(), ['unchanged', 'The floor has not shown the new task yet.'], label);
+    assert.doesNotMatch(recorded, /Task changed/, `${label}: the 200 was worded as a changed goal`);
     delta([agent({ ...fields, goal: goalView({ id: G2, text: 'ship the lexer', turns: 0, hop_cap: 3 }) })], 10);
     assert.deepEqual(continuation(), [kind, text], label);
   }
-  // A new turn on the new goal is read from the turn count.
+  // A new turn on the new task is read from the turn count.
   delta([agent({ status: 'running', turns: 4, goal: goalView({ id: G2, turns: 1, hop_cap: 3 }) })], 11);
   assert.deepEqual(continuation(),
-    ['continued', 'Goal changed. A new turn started: its turn count went from 3 to 4, and it is running.']);
-  // The same wordings hold whoever changed the goal: a delta alone moves them, never a reply.
+    ['continued', 'Task changed. A new work attempt started: its work attempt count went from 3 to 4, and it is running.']);
+  // The same wordings hold whoever changed the task: a delta alone moves them, never a reply.
   delta([], 12, [ADA]);
   assert.deepEqual(continuation(), ['absent', 'The agent is no longer on the floor.']);
 });
 
-test('stale_goal says the goal changed since the page read it, and refreshes the floor', async () => {
+test('stale_goal says the task changed since the page read it, and refreshes the floor', async () => {
   subscribe();
   const net = daemon(REFUSED('stale_goal'));
   await change(net);
   assert.equal(net.refreshes, 1, 'a stale_goal did not ask for a fresh snapshot');
-  assert.ok(status().includes('<p class="goal-error" role="alert" data-goal-reason="stale_goal">This agent’s goal '
+  assert.ok(status().includes('<p class="goal-error" role="alert" data-goal-reason="stale_goal">This agent’s task '
     + 'changed since this page read it, so nothing was recorded. The floor is being refreshed.</p>'));
   // Nothing was recorded, so nothing is held back: the fresh snapshot decides which goal the form replaces.
   subscribe({ agents: [agent({ goal: goalView({ id: G2 }) })] });
@@ -539,10 +539,10 @@ test('each admission refusal explains why nothing was recorded', async () => {
   const said = {
     agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
     agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
-    goal_exhausted: 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-      + 'Start a new goal is available when Start new goals is on in Settings and this agent’s project is enrolled.',
-    predicate_claimed: 'This goal uses a Claimed card status, which cannot prove completion, so nothing was recorded.',
-    predicate_todo: 'This goal uses a Todo card status, which cannot prove completion, so nothing was recorded.',
+    goal_exhausted: 'This task reached a work attempt or spending limit, so nothing was recorded. '
+      + 'Start a new task is available when Start new tasks is on in Settings and this agent’s project is enrolled.',
+    predicate_claimed: 'This task checks whether a card is assigned, which cannot prove that work finished. Nothing changed.',
+    predicate_todo: 'This task checks whether a card is To do, which cannot prove that work finished. Nothing changed.',
   };
   for (const [reason, text] of Object.entries(said)) {
     resetFloorStore();
@@ -553,7 +553,7 @@ test('each admission refusal explains why nothing was recorded', async () => {
     const html = status();
     assert.ok(html.includes(`<p class="goal-error" role="alert" data-goal-reason="${reason}">${text}`),
       `${reason} is not shown as itself`);
-    assert.doesNotMatch(html, /goal-success|Goal changed/);
+    assert.doesNotMatch(html, /goal-success|Task changed/);
     assert.equal(net.refreshes, 0, `${reason} asked for a snapshot it does not need`);
   }
   resetFloorStore();
@@ -565,7 +565,7 @@ test('each admission refusal explains why nothing was recorded', async () => {
 
 // --- the completion check choice ----------------------------------------------------------
 
-/** The goal form's check choice, as [data-check-id, checked, label] per option, or null when none is drawn. */
+/** The task form's check choice, as [data-check-id, checked, label] per option, or null when none is drawn. */
 function goalChecks(html) {
   const group = html.match(/<fieldset class="hire-choices" data-check-choice="goal">([\s\S]*?)<\/fieldset>/);
   if (group === null) return null;
@@ -585,7 +585,7 @@ test('the check choice offers Keep and then the agent’s workspace checks, with
     ['default', false, 'Parser tests pass'],
     ['contributing', false, 'CONTRIBUTING.md exists (may already be true)'],
   ]);
-  assert.ok(html.includes('</fieldset><p class="hire-note">Changing the goal runs the check once first. If it already '
+  assert.ok(html.includes('</fieldset><p class="hire-note">Changing the task runs the check once first. If it already '
     + 'passes, nothing changes.</p>'), 'the choice does not say the check runs once first');
   assert.doesNotMatch(html, /stays unchanged/);
 
@@ -648,14 +648,14 @@ test('an achieved goal starts with nothing chosen, and Send waits for a choice',
   assert.deepEqual(sendButton(form()), HELD);
 });
 
-/** What each check refusal of a goal change says, for a check named as `check`. */
+/** What each check refusal of a task change says, for a check named as `check`. */
 const GOAL_REFUSALS = (check) => ({
-  check_already_passes: `${check} already passes in this project, so it cannot show when this goal is done. `
-    + 'Nothing changed. Choose another check, or ask the operator to add one for this goal with dudes project '
+  check_already_passes: `${check} already passes in this project, so it cannot show when this task is done. `
+    + 'Nothing changed. Choose another check, or ask the operator to add one for this task with dudes project '
     + 'check add.',
   check_did_not_finish: `${check} did not finish, so it cannot show whether it already passes. Nothing changed. `
     + 'Try again, or ask the operator to raise its timeout.',
-  check_cannot_run: `${check} could not run, so nothing changed. The daemon log says why.`,
+  check_cannot_run: `${check} could not run, so nothing changed. Dudes’ log says why.`,
   check_running: 'A check is still running for this Floor session. Try again when it ends.',
   check_limit: 'This Floor session has run its 32 checks. Open Dudes to start a new Floor session.',
 });
@@ -687,7 +687,7 @@ test('each check refusal reads as the Hire’s with Nothing changed, names the c
 test('an agent no enrolled project offers checks to can only keep its check, and an already-passing one says why', async () => {
   const NOT_ENROLLED = 'This agent’s check already passes, and the page has no other check to offer for its project. '
     + 'Nothing changed. This page cannot define a completion check. '
-    + 'Set a new goal from a terminal (dudes goal) with a check that fails until the goal is met.';
+    + 'Set a new task from a terminal (dudes goal) with a check that fails until the task is met.';
   subscribe({ agents: [enrolled({ workspace: { id: 'repo_9', label: 'Elsewhere' } })], checks: CHECKS });
   await change(daemon(REFUSED('check_already_passes')));
   assert.ok(status().includes('<p class="goal-error" role="alert" data-goal-reason="check_already_passes" '
@@ -797,7 +797,7 @@ test('Check status resends the identical body after a 503, a pending reply and a
   assert.match(status(), /Not confirmed yet\./);
   await goal.checkGoalStatus(net);
   assert.deepEqual(goal.getGoalState().outcome, { kind: 'unknown' });
-  assert.match(status(), /The page lost the daemon’s reply/);
+  assert.match(status(), /The page lost Dudes’ reply/);
   await goal.checkGoalStatus(net);
   assert.deepEqual(goal.getGoalState().outcome, { kind: 'changed' });
   assert.equal(net.calls.length, 4);
@@ -827,9 +827,9 @@ test('the draft and the request id live in module memory only: a reload forgets 
   assert.equal(status(), '');
   assert.match(form(), /<textarea[^>]*><\/textarea>/);
 
-  // Nothing in the view sends by itself: Change goal is its button, Check status its button.
+  // Nothing in the view sends by itself: Change task is its button, Check status its button.
   const panel = await readFile(resolve(root, 'src/renderer/goal/GoalPanel.tsx'), 'utf8');
-  assert.doesNotMatch(panel, /useEffect|useLayoutEffect/, 'the goal view runs an effect');
+  assert.doesNotMatch(panel, /useEffect|useLayoutEffect/, 'the task view runs an effect');
   assert.equal([...panel.matchAll(/submitGoal\(/g)].length, 1);
   assert.equal([...panel.matchAll(/checkGoalStatus\(/g)].length, 1);
 });
@@ -849,23 +849,23 @@ test('a reply to a request this page no longer holds is ignored', async () => {
   assert.equal(net.refreshes, 0, 'a reply to a request the page no longer holds asked for a snapshot');
 });
 
-test('a changed goal holds its own form until the projection moves the goal, and the status heading names it', async () => {
+test('a changed goal holds its own form until the projection moves the task, and the status heading names it', async () => {
   subscribe({ agents: [agent(), GRACE_ROW()] });
   const net = daemon(CHANGED, CHANGED);
   await change(net);
-  assert.match(form(), /<p class="hire-note" role="status">This goal change is in the journal; the floor has not shown the new goal yet\.<\/p>/);
+  assert.match(form(), /<p class="hire-note" role="status">Dudes saved this task change\. The page has not shown the new task yet\.<\/p>/);
   assert.deepEqual(sendButton(form()), HELD);
   await change(net, 'ship it again');
   assert.equal(net.calls.length, 1, 'a second press named the replaced goal again');
-  assert.equal(accessibleNameOfHeading(status(), 'goal-status-title'), 'Goal change Ada');
+  assert.equal(accessibleNameOfHeading(status(), 'goal-status-title'), 'Task change Ada');
   assert.match(status(), /<blockquote class="goal-text">ship the lexer<\/blockquote>/);
-  // The delta moves the goal: the form now replaces G2, with its own empty draft and its own carry-over.
+  // The delta moves the task: the form now replaces G2, with its own empty draft and its own carry-over.
   delta([agent({ goal: goalView({ id: G2, turns: 0, hop_cap: 3, spent: { usd: 0 }, budget: { usd: 1_500_001 } }) }),
     GRACE_ROW()], 10);
   const moved = form();
   assert.match(moved, new RegExp(`data-goal-id="${G2}"`));
   assert.match(moved, /<textarea[^>]*><\/textarea>/);
-  assert.match(moved, /<li>Turns: exactly 3 left\.<\/li><li>Dollars: at most \$1\.51 left\.<\/li>/);
+  assert.match(moved, /<li>Work attempts: exactly 3 left\.<\/li><li>Dollars: at most \$1\.51 left\.<\/li>/);
   await change(net, 'ship the formatter');
   assert.equal(net.calls.length, 2);
   assert.equal(JSON.parse(net.calls[1].init.body).goal, G2);
@@ -879,7 +879,7 @@ test('a 403 on a live session holds every goal form until a fresh session, and a
   invalidateFloorEpoch();
   assert.match(status(), /data-goal-session="checking"/);
   subscribe({ agents: [agent(), GRACE_ROW()] });
-  assert.match(status(net.generation), /this page can no longer change goals with its session/);
+  assert.match(status(net.generation), /this page can no longer change tasks with its session/);
   for (const id of [ADA, GRACE]) {
     goal.editGoalDraft(id, G1, 'ship the lexer');
     assert.deepEqual(sendButton(form(id, net.generation)), HELD, `${id}’s form is live beside a 403`);

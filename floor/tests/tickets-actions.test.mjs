@@ -103,7 +103,7 @@ test('the response map: each answer is worded for what it proves', async () => {
   assert.equal(notice.text, 'This page has no Floor session, so nothing was sent.');
   assert.equal(deps.refreshed, 1, 'a 403 asks for a fresh snapshot');
   [, notice] = await text({ status: 400, text: '' });
-  assert.equal(notice.text, 'The daemon refused the request.');
+  assert.equal(notice.text, 'Dudes refused the request.');
   for (const reply of [{ status: 503, text: '' }, { status: 500, text: '' }, { status: 200, text: 'not json' },
     done('accepted', cardId(2)), done('stopped', NEW), json(409, { state: 'refused', reason: 'made_up' }),
     json(409, { state: 'refused', reason: 'stale_card', extra: 1 }), { status: 409, text: '' }]) {

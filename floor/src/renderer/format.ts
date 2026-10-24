@@ -21,6 +21,16 @@ export function recordedTime(at: number | string): string {
   });
 }
 
+export function relativeTime(at: number | string, now = Date.now()): string {
+  const elapsed = new Date(at).getTime() - now;
+  if (!Number.isFinite(elapsed)) return 'Time unavailable';
+  if (Math.abs(elapsed) < 60_000) return 'just now';
+  const units = [[31_536_000_000, 'year'], [2_592_000_000, 'month'], [86_400_000, 'day'],
+    [3_600_000, 'hour'], [60_000, 'minute']] as const;
+  const [duration, unit] = units.find(([duration]) => Math.abs(elapsed) >= duration)!;
+  return new Intl.RelativeTimeFormat(undefined, { numeric: 'always' }).format(Math.trunc(elapsed / duration), unit);
+}
+
 /** The time of day alone, such as 18:40, for a notice about something that just happened. */
 export function clockTime(at: number | string): string {
   const date = new Date(at);

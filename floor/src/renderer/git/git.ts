@@ -48,7 +48,7 @@ export const GIT_STATES = [
 ] as const;
 export type GitState = (typeof GIT_STATES)[number];
 
-/** The commit `ahead`, `behind` and the commit list are measured from. The daemon decides; the page only says which. */
+/** The commit `ahead`, `behind` and the commit list are measured from. Dudes decides; the page only says which. */
 export const GIT_AGAINST = ['remote_default_branch', 'worktree_start'] as const;
 export type GitAgainst = (typeof GIT_AGAINST)[number];
 
@@ -333,13 +333,13 @@ export async function loadGit(agent: string, deps: ControlDeps): Promise<void> {
 }
 
 const REFUSALS: Readonly<Record<Exclude<GitState, 'ok'>, string>> = Object.freeze({
-  agent_unknown: 'The daemon does not know this agent.',
+  agent_unknown: 'Dudes does not know this agent.',
   not_a_checkout_root: 'This agent does not work at the root of a Git checkout, so there is nothing to read.',
   // A gitfile also comes from a submodule checkout or a separated git directory, so this does not say "linked worktree".
   gitfile_unsupported: 'This agent’s .git is a link file that Dudes did not create, so the Git tab does not read it.',
   unsupported_storage: 'This repository uses storage the Git tab does not read, or is larger than it reads.',
-  unsupported_platform: 'The Git tab is not available on this daemon’s platform.',
-  git_unavailable: 'The daemon found no usable git to read with.',
+  unsupported_platform: 'The Git tab is not available on this computer.',
+  git_unavailable: 'Dudes found no usable git to read with.',
   busy: 'Another read is running, or this page read a moment ago. Try again in a few seconds.',
   timed_out: 'The read did not finish in time.',
   unreadable: 'The repository could not be read as a repository.',
@@ -359,10 +359,10 @@ export function refusalText(view: GitView | null, failure: GitOutcome | null, bu
     case 'forbidden':
       return 'This page has no Floor session, so nothing was sent.';
     case 'rejected':
-      return 'The daemon refused the request.';
+      return 'Dudes refused the request.';
     case 'unavailable':
-      return 'The daemon did not answer.';
+      return 'Dudes did not answer.';
     case 'unknown':
-      return 'The daemon sent a reply this page could not read.';
+      return 'Dudes sent a reply this page could not read.';
   }
 }

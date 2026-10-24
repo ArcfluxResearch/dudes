@@ -356,7 +356,7 @@ test('below 1440 the view tabs tighten even without Hire or Pause all', async ()
   const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
   const space = width => declared(rulesAt(css, width), selector => selector === '.top-bar', '--tab-space');
   assert.equal(space(1439), '0.4rem');
-  assert.equal(space(1440), '0.75rem');
+  assert.equal(space(1440), '0.5rem');
 });
 
 test('the top bar hides its crew count below 1440 pixels, and shows it from 1440 beside every button', async () => {

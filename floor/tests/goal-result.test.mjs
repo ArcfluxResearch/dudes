@@ -130,7 +130,7 @@ test('a result whose check could not run says so, shows its position and no prov
   assert.deepEqual(goalResultOf(goalOf(notRun)), { kind: 'not_run', position: 1099511627779 });
   const html = renderResult(goalOf(notRun));
   assert.equal(html, '<section aria-label="Latest completion check"><h3>Latest completion check</h3>'
-    + '<p>Latest check could not run. Its program did not start, so this result says nothing about the goal. '
+    + '<p>Latest check could not run. Its program did not start, so this result says nothing about the task. '
     + 'The journal shows why (dudes tail).</p>'
     + '<dl></dl><details><summary>Details</summary><dl><div><dt>Journal position</dt><dd class="data">segment 1 · byte 3</dd></div></dl></details></section>');
   const detail = renderDetail(rowOf(goalOf(notRun)));

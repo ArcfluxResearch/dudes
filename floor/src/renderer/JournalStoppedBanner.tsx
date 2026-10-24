@@ -8,7 +8,8 @@ export function JournalStoppedBanner({ stopped, className = 'journal-stopped-ban
   readonly className?: string;
 }) {
   if (stopped === null) return null;
-  return <p className={className} role="alert">
-    The journal stopped accepting writes at {journalPosition(stopped.lsn)}; likely a full disk or an I/O error; free space and restart the daemon.
-  </p>;
+  return <div className={className} role="alert">
+    <p>Dudes cannot save changes. Check the disk for free space or errors, then restart Dudes.</p>
+    <details><summary>Details</summary><p>Saving stopped at {journalPosition(stopped.lsn)}.</p></details>
+  </div>;
 }

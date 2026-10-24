@@ -41,7 +41,7 @@ export function StreamNotice({ floor }: { readonly floor: FloorState }) {
     {' '}<Reconnect />
   </p>;
   if (floor.phase === 'connecting' || floor.snapshotEpoch !== floor.epoch) return <p className="stream-notice" role="status">
-    Connecting. Waiting for the first snapshot from the daemon.
+    Connecting to Dudes. Waiting for the latest agents and tickets.
   </p>;
   return null;
 }

@@ -434,7 +434,7 @@ function TicketsOffNote({ floor }: { readonly floor: FloorState }) {
     {switches?.board === false
       ? <button type="button" onClick={() => { void changeSetting('floor.board', 'on'); }}>Turn on tickets</button>
       : null}
-    {needed.length === 0 ? null : <p>{`Tickets also need ${needed.map((key) => key === 'control' ? 'Pause, resume and rename' : 'Change goals').join(' and ')} on, under Floor switches in Settings.`}</p>}
+    {needed.length === 0 ? null : <p>{`Tickets also need ${needed.map((key) => key === 'control' ? 'Pause, resume and rename' : 'Change tasks').join(' and ')} on, under Floor switches in Settings.`}</p>}
   </div>;
 }
 

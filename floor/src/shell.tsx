@@ -110,7 +110,7 @@ export function PastedLinkNotice() {
   if (buildMismatch) {
     return (
       <p className="link-refused" role="alert">
-        The daemon now serves a different Floor build from this page, so the link pasted into this tab was not
+        Dudes now serves a different Floor build from this page, so the link pasted into this tab was not
         used. This page is as it was, but it cannot sign in to the new build. Copy any draft you need, reload
         this tab, then paste the link again.
       </p>
@@ -118,7 +118,7 @@ export function PastedLinkNotice() {
   }
   return (
     <p className="link-refused" role="alert">
-      The Floor link pasted into this tab was refused, or the daemon could not be reached to take it. This page is
+      The Floor link pasted into this tab was refused, or Dudes could not be reached to take it. This page is
       as it was and keeps what it holds. For a new sign-in, run <OpenCommand /> in a terminal.
     </p>
   );
@@ -204,8 +204,9 @@ function SignedInShell() {
   const effectiveTheme = preferences.theme === 'system' ? (osDark ? 'dark' : 'light') : preferences.theme;
   const reveal = agentToReveal(hire, floor);
   const drawerOpen = displayRow !== null || floor.output.targetId !== null;
-  const home = focused ? 'focus-toggle' : 'crew-toggle';
-  const leaveDrawerTo = drawerHandBack({ agent: currentSelectedId, focused, crewOpen, viewOpen: view !== null });
+  const home = 'header-more-toggle';
+  const drawerFocus = drawerHandBack({ agent: currentSelectedId, focused, crewOpen, viewOpen: view !== null });
+  const leaveDrawerTo = ['crew-toggle', 'focus-toggle'].includes(drawerFocus) ? home : drawerFocus;
 
   useDesktopNotifications((target) => {
     setGuide('closed');
@@ -388,7 +389,7 @@ function SignedInShell() {
       ? ticketDialog.querySelector<HTMLElement>('.ticket-dialog-close') : null;
     if (reason === 'dismissed' || (reason === 'revealed' && ticketFallback !== null)) {
       restoreFocusAfterDialog(hireOpener.current,
-        ticketFallback ?? document.getElementById('hire-open') ?? document.getElementById('crew-toggle'));
+        ticketFallback ?? document.getElementById('hire-open') ?? document.getElementById(home));
     }
   }
 
@@ -413,7 +414,7 @@ function SignedInShell() {
       if (id !== null) selectAgent(id);
     }
     setFocused((active) => !active);
-    document.getElementById('focus-toggle')?.focus();
+    document.getElementById(home)?.focus();
   }
 
   function startResize(event: ReactPointerEvent<HTMLDivElement>): void {
@@ -490,23 +491,40 @@ function SignedInShell() {
           <CrewStats agents={floor.agents} cards={floor.cards} statuses={focused} />
           <ControlNav floor={floor} view={focused ? null : view} onToggle={toggleView} />
           <div className="top-bar-actions" role="group" aria-label="Floor actions">
-            {page === null ? null : <button type="button" id="office-open" onClick={closeView}>Office</button>}
-            <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={page === null && crewOpen && !focused && view !== 'board'}
-              aria-controls={page === null && crewOpen && !focused && view !== 'board' ? 'crew-list' : undefined}
-              onClick={toggleCrew}>Crew</button>
-            <button type="button" className="focus-toggle" id="focus-toggle" aria-pressed={focused}
-              aria-keyshortcuts="Alt+Shift+F" onClick={toggleFocus}>
-              {focused ? 'Leave focus' : 'Focus agent'}
-            </button>
             {hireSwitchOn(floor) ? <button type="button" className="hire-open" id="hire-open" aria-expanded={hiring}
               aria-controls={hiring ? 'hire-wizard' : undefined}
               onClick={(event) => openHire(event.currentTarget)}>Hire an agent</button> : null}
             <PauseAllControl floor={floor} />
-            <button type="button" className="theme-toggle" aria-pressed={effectiveTheme === 'dark'}
-              onClick={() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))}>
-              Use {effectiveTheme === 'dark' ? 'light' : 'dark'} theme
-            </button>
-            <button type="button" className="sign-out" onClick={signOut}>Sign out</button>
+            <details className="header-more" onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.currentTarget.open = false;
+                event.currentTarget.querySelector('summary')?.focus();
+                event.stopPropagation();
+              }
+            }}>
+              <summary id="header-more-toggle">More</summary>
+              <div className="header-menu" onClick={(event) => {
+                if (!(event.target as HTMLElement).closest('button')) return;
+                const menu = event.currentTarget;
+                const details = menu.closest('details');
+                details?.removeAttribute('open');
+                if (menu.contains(menu.ownerDocument.activeElement)) details?.querySelector('summary')?.focus();
+              }}>
+                {page === null ? null : <button type="button" id="office-open" onClick={closeView}>Office</button>}
+                <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={page === null && crewOpen && !focused && view !== 'board'}
+                  aria-controls={page === null && crewOpen && !focused && view !== 'board' ? 'crew-list' : undefined}
+                  onClick={toggleCrew}>Crew</button>
+                <button type="button" className="focus-toggle" id="focus-toggle" aria-pressed={focused}
+                  aria-keyshortcuts="Alt+Shift+F" onClick={toggleFocus}>
+                  {focused ? 'Leave focus' : 'Focus agent'}
+                </button>
+                <button type="button" className="theme-toggle" aria-pressed={effectiveTheme === 'dark'}
+                  onClick={() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))}>
+                  Use {effectiveTheme === 'dark' ? 'light' : 'dark'} theme
+                </button>
+                <button type="button" className="sign-out" onClick={signOut}>Sign out</button>
+              </div>
+            </details>
           </div>
           <div className="office-bar" ref={setOfficeBar} />
         </header>
@@ -538,7 +556,7 @@ function SignedInShell() {
         <div className="stage-side">
           <Receipts floor={floor} leaveFocusTo={displayRow === null ? home : AGENT_DETAIL_HEADING_ID} />
           {focused ? <section className="focus-mode" aria-label="Focus mode" ref={handFocusOnLeave}
-            data-focus-on-leave="focus-toggle">
+            data-focus-on-leave="header-more-toggle">
             <h2>Focused agent</h2>
             <div className="focus-frame">
               {drawer}

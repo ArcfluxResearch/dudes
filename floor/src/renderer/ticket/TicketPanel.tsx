@@ -10,7 +10,8 @@ import { DiffPanel } from '../diff/DiffPanel.tsx';
 import { browserDiffTransport } from '../diff/transport.ts';
 import { getFloorState } from '../floor/store.ts';
 import type { FloorState } from '../floor/store.ts';
-import { handFocusOnLeave } from '../focus.ts';
+import { handFocusAfterLeave, handFocusOnLeave } from '../focus.ts';
+import { RelativeTime } from '../RelativeTime.tsx';
 import { recordedTime } from '../format.ts';
 import { getGitState, loadGit, refusalText, subscribeToGit } from '../git/git.ts';
 import type { GitChangeKind } from '../git/git.ts';
@@ -25,7 +26,7 @@ import { decodeWorktree } from '../worktree.ts';
 import { clearTicketChangesDraft, readTicketChangesDraft, writeTicketChangesDraft } from '../view.ts';
 import { agentsFor, ticketActionsOpen } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
-import { AGENT_SAYS, FROM_LAST_READING, NO_SUMMARY, agentWithoutProjectSentence, engineStopped, reasonSentence, stateName } from './words.ts';
+import { AGENT_SAYS, FROM_LAST_READING, NO_SUMMARY, agentWithoutProjectSentence, engineStopped, reasonSentence, stateName, statusSentence } from './words.ts';
 import { StuckActions } from './StuckActions.tsx';
 import { AgentMarkdown } from '../chat/markdown.tsx';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
@@ -98,6 +99,7 @@ function ChangedFiles({ floor, card }: { readonly floor: FloorState; readonly ca
         <span className="git-kind">{file.kind}</span>{' '}<span className="git-path data">{file.path}{file.cut ? '…' : ''}</span>
       </li>)}</ul>) : null}
     {agent === null ? null : <button type="button" className="ticket-look" disabled={loading}
+      title={loading ? 'Wait for the checkout to finish loading.' : undefined}
       onClick={look}>Look again</button>}
   </section>;
 }
@@ -180,14 +182,20 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
   const waiting = (fresh ? shown?.waiting?.note : null) ?? words.note;
   const failure = engineStopped(ticket?.last_turn_end);
   return <>
-    <dl>
+    <p className="ticket-status">{statusSentence(card.status, words.agent, words.place)}</p>
+    <details className="ticket-facts"><summary>Details</summary><dl>
       <div><dt>State</dt><dd>{stateName(card.status)}</dd></div>
       <div><dt>Agent</dt><dd>{words.agent ?? 'Not given to an agent'}</dd></div>
       {shown === null ? null : <div><dt>Done when</dt><dd>{shown.check.label}</dd></div>}
       {ticket === null ? null : <div><dt>Round</dt><dd>{shown?.round ?? ticket.round}</dd></div>}
       {words.place === null ? null : <div><dt>Place</dt><dd>{words.place}</dd></div>}
     </dl>
-    {failure === null ? null : <p className="ticket-needs" role="note">{failure}</p>}
+    {failure === null ? null : <p>{failure}</p>}
+    {shown?.coverage != null && shown.coverage.limits.length > 0
+      ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4>
+        <p>{COVERAGE_SUMMARY}</p><p>{coverageText(shown.coverage)}</p></section> : null}
+    </details>
+    {failure === null ? null : <p className="ticket-needs" role="note">An earlier engine attempt stopped. Open Details for its result.</p>}
     {card.status === 'blocked' ? <p className="ticket-needs" role="note">{reasonSentence(ticket?.reason ?? null)}</p>
       : waiting === null ? null : <p className="ticket-wait">{waiting}</p>}
     {shown === null && mine?.phase !== 'failed' ? <p role="status">Reading the ticket…</p> : null}
@@ -255,7 +263,7 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
   }
 
   return <form className="ticket-form" aria-label={mode === 'changes' ? 'Ask for changes' : 'Give to agent'}
-    onSubmit={(event) => { void submit(event); }}>
+    ref={handFocusAfterLeave} data-focus-on-leave="card-detail-title" onSubmit={(event) => { void submit(event); }}>
     <div className="ticket-field">
       <label htmlFor={`${ids}-agent`}>Agent</label>
       <select id={`${ids}-agent`} value={chosen ?? ''} onChange={(event) => setAgent(event.target.value)}>
@@ -268,7 +276,9 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
       <textarea id={`${ids}-message`} rows={3} maxLength={2048} value={message}
         onChange={(event) => { writeTicketChangesDraft(card.id, event.target.value); setMessage(event.target.value); }} />
     </div> : null}
-    <button type="submit" disabled={sending || chosen === null || !reviewReady || !ticketActionsOpen(floor)}>
+    <button type="submit" disabled={sending || chosen === null || !reviewReady || !ticketActionsOpen(floor)}
+      title={sending ? 'Wait for the current request to finish.' : !reviewReady ? 'Read the current instruction review first.'
+        : !ticketActionsOpen(floor) ? 'Reconnect to Dudes before giving this ticket.' : chosen === null ? 'Choose an agent.' : undefined}>
       {mode === 'changes' ? 'Send back' : 'Give to agent'}</button>
     <button type="button" onClick={onDone}>Cancel</button>
   </form>;
@@ -314,7 +324,10 @@ function EditForm({ floor, card, detail, onDone }: {
       </select>
     </div> : null}
     <button type="submit" disabled={sending || title.trim() === '' || !ticketActionsOpen(floor)
-      || editableDetail(getDetailState(), card) === null}>Save</button>
+      || editableDetail(getDetailState(), card) === null}
+      title={sending ? 'Wait for the current request to finish.' : title.trim() === '' ? 'Enter a title.'
+        : !ticketActionsOpen(floor) ? 'Reconnect to Dudes before editing.' : editableDetail(getDetailState(), card) === null
+          ? 'Read the complete current note before editing.' : undefined}>Save</button>
     <button type="button" onClick={onDone}>Cancel</button>
   </form>;
 }
@@ -342,7 +355,8 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   const project = (detail.card === card.id ? detail.detail?.project : undefined) ?? projectOf(floor, card);
   const fresh = checkDisplayCurrent(detail, card, floor);
   const editable = editableDetail(detail, card);
-  const ordinary = actions.filter((action) => action !== 'remove' && action !== 'stop');
+  const ordinary = actions.filter((action) => action !== 'remove' && action !== 'stop'
+    && !(mode === 'give' && (action === 'give' || action === 'try_again')));
   const destructive = actions.filter((action) => action === 'remove' || action === 'stop');
   const modeAllowed = mode === 'none' || (mode === 'give'
     ? actions.includes('give') || actions.includes('try_again') : actions.includes(mode));
@@ -357,6 +371,9 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   const actionButton = (action: TicketAction) => <button key={action} type="button" className="ticket-action" data-action={action}
     disabled={sending || (action === 'edit' && editable === null)
       || ((action === 'accept' || action === 'changes') && !reviewReady)}
+    title={sending ? 'Wait for the current request to finish.' : action === 'edit' && editable === null
+      ? 'Read the complete current note before editing.' : (action === 'accept' || action === 'changes') && !reviewReady
+        ? 'Read the current instruction review first.' : undefined}
     onClick={() => press(action)}>{ACTION_LABEL[action]}</button>;
 
   function press(action: TicketAction): void {
@@ -378,7 +395,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
 
   return <section className="card-detail ticket-panel" aria-labelledby="card-detail-title" data-selected-card-id={card.id}
     data-ticket-status={card.status} data-mode={mode} ref={focusSheet} tabIndex={-1} data-focus-on-leave="view-board">
-    <h3 id="card-detail-title">{card.title}</h3>
+    <h3 id="card-detail-title" tabIndex={-1}>{card.title}</h3>
     <Facts floor={floor} card={card} />
     <StuckActions floor={floor} card={card} onReviewRecovery={onReviewRecovery} />
     {shown?.context == null ? null : <RecoveredReview context={shown.context} fresh={fresh} />}
@@ -388,24 +405,21 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
       || (noteUnread && detail.phase === 'ready') ? <div>
       {readHint === null ? null : <p className="ticket-hint" role="status">{readHint}</p>}
       <button type="button" className="ticket-look" disabled={detail.phase === 'loading'}
+        title={detail.phase === 'loading' ? 'Wait for the ticket to finish loading.' : undefined}
         onClick={() => { void loadDetail(card); }}>Read again</button>
     </div> : null}
-    {shown?.coverage != null && shown.coverage.limits.length > 0
-      ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4>
-        <p>{COVERAGE_SUMMARY}</p>
-        <details><summary>Details</summary><p>{coverageText(shown.coverage)}</p></details></section> : null}
     {(card.status === 'review' || card.status === 'done') && !changesView ? <ChangedFiles floor={floor} card={card} /> : null}
     {changesView
       ? <DiffPanel card={card.id} expectedSeq={card.seq} transport={browserDiffTransport}
         ownCopy={decodeWorktree(agentRow(floor, card.claimed_by)?.worktree) !== null} /> : null}
-    {shown?.result == null ? null : <section aria-label="Check result"><h4>Last recorded check</h4>
-      <p>{shown.result.pass ? 'The check passed' : 'The check failed'}
-        {shown.result.exit === null ? '' : `, exit status ${shown.result.exit}`}
-        {' '}at {recordedTime(shown.result.at)}.</p>
-      <p>{!fresh ? 'This retained result is history. Its applicability to the current work is unconfirmed.'
-        : shown.context?.check.state === 'current' ? 'This result applies to the current recorded work.'
-          : shown.context?.check.state === 'historical' ? 'Later work was admitted. This result is history and does not check that work.'
-            : 'Dudes could not establish whether this result applies to the current work.'}</p>
+    {shown?.result == null ? null : <section aria-label="Check result"><h4>Last check</h4>
+      <p>{shown.result.pass ? 'The check passed' : 'The check failed'} <RelativeTime at={shown.result.at} />.</p>
+      <p>{!fresh ? 'This is an earlier check. Dudes cannot confirm that it checks the current work.'
+        : shown.context?.check.state === 'current' ? 'This check covers the current work.'
+          : shown.context?.check.state === 'historical' ? 'More work happened after this check. It does not check those changes.'
+            : 'Dudes cannot confirm whether this check covers the current work.'}</p>
+      <details><summary>Details</summary><p>Checked at {recordedTime(shown.result.at)}.</p>
+        {shown.result.exit === null ? null : <p>Exit status: {shown.result.exit}.</p>}</details>
     </section>}
     {!floor.ticket ? <TicketOffHint floor={floor} /> : null}
     {actions.length === 0 ? null : <div className="ticket-actions" role="group" aria-label="Ticket actions" aria-busy={sending}>
@@ -423,6 +437,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
       <p>{mode === 'remove' ? 'Remove this ticket? It leaves the board. Its record stays in the journal.'
         : 'Stop this ticket? The agent finishes its current step before stopping.'}</p>
       <button type="button" className="ticket-remove" disabled={sending || !open || !modeAllowed}
+        title={sending ? 'Wait for the current request to finish.' : !open ? 'Reconnect to Dudes before changing this ticket.' : !modeAllowed ? 'This ticket changed. Open its current actions.' : undefined}
         onClick={() => {
           if (!open || !actions.includes(mode)) return;
           void changeTicket(card, { verb: mode }).then((changed) => { if (changed) setMode('none'); });

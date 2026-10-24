@@ -136,7 +136,7 @@ test('Waiting on you lists questions first, then Needs you, then Ready for you',
   assert.deepEqual(items.map((item) => [item.kind, item.name]), [
     ['question', 'Ada'], ['ticket', 'Ticket 2'], ['ticket', 'Ticket 1'],
   ]);
-  assert.equal(items[1].text, 'The agent used all its turns on this ticket. Give to agent to try again, or Stop.');
+  assert.equal(items[1].text, 'The agent reached the work attempt limit for this ticket. Give to agent to try again, or Stop.');
   assert.equal(items[2].text, 'Ready for you. The check passed. Accept it, or ask for changes.');
   assert.equal(questions.waitingOnYou(floor.agents).length, 1, 'the agents alone still give the questions');
 

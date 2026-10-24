@@ -47,6 +47,17 @@ export function stateName(status: CardRow['status']): string {
   }
 }
 
+export function statusSentence(status: CardRow['status'], agent: string | null, place: string | null): string {
+  switch (status) {
+    case 'todo': return 'This ticket is ready to give to an agent.';
+    case 'claimed': return `This ticket is ${place ?? 'queued'} for ${agent ?? 'an agent'}.`;
+    case 'doing': return `${agent ?? 'An agent'} is working on this ticket.`;
+    case 'review': return `${agent ?? 'The agent'}'s work is ready for you to review.`;
+    case 'blocked': return `This ticket needs your next step${agent === null ? '' : ` before ${agent} can continue`}.`;
+    case 'done': return 'This ticket is done.';
+  }
+}
+
 /** What a card without a ticket says of itself where no column fits: the state as recorded, and whose word it is. */
 export function otherStateName(status: CardRow['status']): string {
   switch (status) {
@@ -63,18 +74,18 @@ export function refusalSentence(code: RefusalCode, status: CardRow['status'] | n
 }
 
 const REASONS: Readonly<Record<TicketReason, string>> = Object.freeze({
-  recovery_required: "This work was interrupted. Recovery keeps the same goal and ticket round. Review recovery to see what was recorded and choose how to continue. Earlier effects may repeat.",
+  recovery_required: "This work was interrupted. Recovery continues the same task. Review recovery to see what was recorded and choose how to continue. Earlier effects may repeat.",
   project_unavailable: "This ticket’s project is no longer set up. Add the project in Settings, then create a new ticket for it. Keep anything you need from this ticket before removing it.",
   check_cannot_run: "The completion check could not run. Its program may be missing or unsafe to run directly. Review the check in the project setup, then try again. If the check changed, remove this ticket and create it again.",
   ceiling_required: "This account bills per use and needs a spending limit. Review the project limits in Settings. Ask the person who set up the project to add a limit before trying again.",
-  reserve_missing: "A spending reserve is missing. Set a per-turn reserve under Spending limits in Settings, then try again.",
-  goal_changed: "The agent's goal was changed outside the board. Give to agent to try again, or Stop.",
+  reserve_missing: "A spending reserve is missing. Set the available dollars and tokens needed to start work under Spending limits in Settings, then try again.",
+  goal_changed: "The agent's task was changed outside the board. Give to agent to try again, or Stop.",
   limit_goal: "This ticket reached its spending limit. Give to agent to try again, or Stop.",
   slowed: "The agent kept failing and was slowed down. Look at the agent, then Give to agent to try again, or Stop.",
-  no_turns: "The agent used all its turns on this ticket. Give to agent to try again, or Stop.",
+  no_turns: "The agent reached the work attempt limit for this ticket. Give to agent to try again, or Stop.",
   held_launch: "The agent's engine would not start. Fix the cause, then resume the agent.",
-  held_failing: "The agent's turns kept failing at once. Fix the cause, then resume the agent.",
-  held_unsure: "Dudes could not confirm how the agent's last turn ended. Resume the agent, or Stop.",
+  held_failing: "The engine kept failing as soon as work started. Fix the cause, then resume the agent.",
+  held_unsure: "Dudes could not confirm how the agent's last work attempt ended. Resume the agent, or Stop.",
   shared_instructions_changed: "Shared project instructions changed during this work. Review the change, then Accept or Ask for changes.",
   shared_instructions_unknown: "Dudes could not determine whether shared project instructions changed during this work. Review the work, then Accept or Ask for changes.",
   worktree_missing: "The agent's project copy is missing. Restore the folder and resume the agent, or Stop and give the ticket to another agent.",
