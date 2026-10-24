@@ -48,10 +48,11 @@ Dudes reads no engine's credentials or files.
      and whether it is signed in. The daemon asks the engine's own status command (`claude auth
      status` or `codex login status`) and reads only its exit status. Pi has no such command:
      run `pi`, then type `/login` inside it;
-   - prints `dudes login claude` or `dudes login codex` for each engine that is signed out.
-     Run the command to sign in;
    - opens the Floor in your default browser with a one-time link, as `dudes open` does (over SSH,
      or where no opener is found, it prints the link for you to paste into a browser).
+
+   If an engine is signed out, the Floor offers its sign-in when you choose that engine for a
+   task. You can also run `dudes login claude` or `dudes login codex` in a terminal.
 
    Quickstart enrolls no project and hires no agent for you, and the Floor does both.
 
@@ -143,7 +144,7 @@ Dudes reads no engine's credentials or files.
    already running it says so, and it tells you when that daemon is a different version from
    `dudes`.
 
-`dudes --help` lists every command and option.
+`dudes --help` lists every command. Run `dudes <command> --help` for its options and examples.
 
 ## Install a release
 
