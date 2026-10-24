@@ -187,11 +187,19 @@ pub(crate) fn keep_result(redactor: &Redactor, text: &str) -> KeptResult {
 /// Whether a result holds a secret-shaped value, in its text or in any `name: value` or
 /// `name=value` line, or leads a line with a sensitive path and a colon, as search output does.
 pub(crate) fn result_holds_secret(text: &str) -> bool {
-    holds_secret("result", text)
-        || text.lines().any(|line| {
-            line.split_once(':')
-                .is_some_and(|(path, _)| names_sensitive(path.trim()))
-        })
+    holds_secret("result", text) || text.lines().any(|line| names_sensitive(line_path(line)))
+}
+
+/// The path a search line leads with, up to its colon. A drive letter's colon is not that one.
+fn line_path(line: &str) -> &str {
+    let line = line.trim();
+    let from = match line.as_bytes() {
+        [letter, b':', b'\\' | b'/', ..] if letter.is_ascii_alphabetic() => 2,
+        _ => 0,
+    };
+    line[from..]
+        .split_once(':')
+        .map_or("", |(path, _)| &line[..from + path.len()])
 }
 
 /// Whether the text of an edit holds a secret-shaped value.
@@ -388,10 +396,25 @@ fn holds_secret(key: &str, value: &str) -> bool {
             .any(|key| contains_secret(format!("\"{key}\":\"{text}\"").as_bytes()))
     };
     contains_secret(value.as_bytes())
-        || value.lines().any(|line| match split_pair(line) {
-            Some((name, text)) => pair(leaf_name(name), text),
-            None => pair(key, line),
-        })
+        || value
+            .lines()
+            .map(bare_line)
+            .any(|line| match split_pair(line) {
+                Some((name, text)) => pair(leaf_name(name), text),
+                None => pair(key, line),
+            })
+}
+
+/// A line without what tools put in front of it: indentation, a line number and its `→`, tab, `:`
+/// or `-`, and a shell `export `.
+fn bare_line(line: &str) -> &str {
+    let line = line.trim_start();
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    let line = match line[digits..].strip_prefix(['\u{2192}', '\t', ':', '-']) {
+        Some(rest) if digits > 0 => rest.trim_start(),
+        _ => line,
+    };
+    line.strip_prefix("export ").map_or(line, str::trim_start)
 }
 
 /// A line as `name: value`, `name=value` or `name = value`, when the name is a single word.
@@ -554,10 +577,20 @@ mod tests {
             "password = hunter2hunter2",
             "DB_PASSWORD=hunter2hunter2",
             "ok\ndb.password: hunter2hunter2",
+            "     3\u{2192}password = hunter2hunter2",
+            "     3\u{2192}API_KEY=abcdefgh1234",
+            "     3\u{2192}db_password: hunter2hunter2",
+            "export API_KEY=abcdefgh1234",
+            "3:API_KEY=abcdefgh1234",
         ] {
             assert!(holds_secret("result", text), "{text}");
         }
         assert!(!holds_secret("result", "name = value\nretries=3"));
+        assert!(!holds_secret("result", "     3\u{2192}retries = 3"));
+        assert!(!holds_secret("result", "     3\u{2192}let x = y;"));
+        assert!(result_holds_secret("C:\\w\\.env:3:A=b"));
+        assert!(result_holds_secret("C:/w/.ssh/id_rsa:3:A"));
+        assert!(!result_holds_secret("C:\\w\\main.rs:3:A=b"));
         assert!(result_holds_secret(".env:API_KEY=x"));
         assert!(result_holds_secret("a\nconfig/.aws/credentials:3:y"));
         assert!(!result_holds_secret("src/main.rs:3:fn main"));

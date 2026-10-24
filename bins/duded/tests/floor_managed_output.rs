@@ -195,6 +195,12 @@ fn results_child(out: &mut impl std::io::Write, session: &str, dir: &Path) {
             "DB_PASSWORD=hunter2hunter2".to_owned(),
         ),
         (
+            "toolu_numbered",
+            "Read",
+            serde_json::json!({"file_path": "config/settings.ini"}),
+            "     3\u{2192}password = hunter2hunter2".to_owned(),
+        ),
+        (
             "toolu_secretedit",
             "Edit",
             serde_json::json!({"file_path": "/repo/c.rs", "old_string": "a",
@@ -875,6 +881,7 @@ fn check_fetches(selected: &mut WebSocket, agent: &str, turn: &str) {
         ("toolu_grep", "PRIVATE-GREP"),
         ("toolu_mystery", "PRIVATE-OTHER"),
         ("toolu_envfile", "hunter2"),
+        ("toolu_numbered", "hunter2"),
         ("toolu_secretedit", "hunter2"),
     ] {
         let frame = ask(id);
