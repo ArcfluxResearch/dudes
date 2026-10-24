@@ -132,9 +132,14 @@ export function agentWithoutProjectSentence(agent: string): string {
 /** Shown when an answer to a create or an action never arrived. */
 export const COULD_NOT_CONFIRM = "We could not confirm that saved. Look at the board before you try again.";
 
+/** Shown when a ticket's detail could not be read. A read changes nothing, so there is nothing to confirm. */
+export const COULD_NOT_READ = "Dudes could not read this ticket. Choose Read again.";
+
 /** Shown under the summary: whose words they are. */
 export const AGENT_SAYS = "The agent says";
 export const NO_SUMMARY = "The agent left no summary";
+/** Shown under a summary whose reading is not confirmed current. */
+export const FROM_LAST_READING = "This is from the last reading of the ticket. It may have changed since.";
 
 const SIGNAL_NAMES: Readonly<Record<number, string>> = Object.freeze({
   1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 4: 'SIGILL', 5: 'SIGTRAP', 6: 'SIGABRT',
