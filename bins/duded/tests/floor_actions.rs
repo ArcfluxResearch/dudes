@@ -9401,6 +9401,9 @@ fn one_launch(
 
 /// Long enough that the next subscription reuses no earlier check.
 const PAST_REUSE: Duration = Duration::from_millis(1_150);
+/// The check is held until the test releases it, so a snapshot that waited for it would never
+/// return. Any wait this far past the deadline is the check, not a busy machine.
+const SCHEDULER_STALL: Duration = Duration::from_secs(3);
 
 #[cfg(unix)]
 #[test]
@@ -9643,14 +9646,18 @@ fn browser_daemon_check_is_bounded_by_its_deadline() {
         "a check past its deadline adds nothing"
     );
     assert!(
-        waited < Duration::from_millis(1_500),
+        waited >= duded::provider_check::DEADLINE,
+        "the snapshot gave up on a held check after {waited:?}, before its deadline"
+    );
+    assert!(
+        waited < duded::provider_check::DEADLINE + SCHEDULER_STALL,
         "the snapshot waited {waited:?} for a held check"
     );
 
     let again = std::time::Instant::now();
     let (during, _) = snapshot(&page);
     assert!(
-        again.elapsed() < Duration::from_millis(500),
+        again.elapsed() < duded::provider_check::DEADLINE,
         "a snapshot after the running check's deadline goes at once"
     );
     assert_eq!(during.get("daemon"), None);
