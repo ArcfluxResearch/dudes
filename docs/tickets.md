@@ -55,7 +55,7 @@ The answer is immediate and says what happened:
   eight tickets, and the sentence says what it waits for: the agent's current work, or the ticket
   that holds the project. A project runs one ticket at a time, and a ticket that is Ready for you
   holds it until it is accepted or sent back.
-- `Queued. Cody is paused.` A paused or halted agent starts nothing until it is resumed.
+- `Queued. Cody is paused.` A paused or halted agent starts nothing until it is resumed. That includes an agent you stopped with **Stop this turn** on the Floor, which **Resume** lifts. The ticket board's own **Stop** ends a ticket, not the agent's turn.
 - `Needs you: ...` The ticket could not start for a reason only you can fix, and the sentence
   says what to do.
 

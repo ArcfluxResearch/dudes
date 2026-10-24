@@ -109,6 +109,10 @@ pub enum ChatReason {
     CeilingRequired,
     /// A prior vendor context was invalidated or an acknowledgement no longer matches.
     ContextChanged,
+    /// The agent's control state moved since the Floor's stop that this note follows.
+    StaleControl,
+    /// The stopped turn is still open, so the note cannot follow its stop yet.
+    TurnOpen,
 }
 
 /// The state of one retained pending browser note.

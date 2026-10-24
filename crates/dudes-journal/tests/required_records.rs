@@ -90,7 +90,7 @@ fn unknown_required_kinds_refuse_before_reader_or_writer_mutation() {
 
 /// a reader that does not know a required kind must refuse
 /// the journal before it repairs, rotates or touches a cache, so rolling back to an older release
-/// cannot misread records it never understood. Tag 93 stands for the next required kind after the
+/// cannot misread records it never understood. Tag 94 stands for the next required kind after the
 /// wake, note, worktree, ticket, instruction and recovery kinds, which an older reader meets in this shape.
 #[test]
 fn a_future_required_kind_after_understood_history_refuses_both_opens_and_changes_nothing() {
@@ -109,7 +109,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     drop(writer);
     let path = segment_path(dir.path(), 1);
     let mut bytes = fs::read(&path).unwrap();
-    bytes.extend_from_slice(&raw_frame(2, 93, b"{\"t\":\"future\"}"));
+    bytes.extend_from_slice(&raw_frame(2, 94, b"{\"t\":\"future\"}"));
     fs::write(&path, &bytes).unwrap();
     let cache = dir.path().join("state.redb");
     fs::write(&cache, b"cache witness").unwrap();
@@ -123,7 +123,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     };
     let before = files();
 
-    let expected = "journal required record kind 93 at 1:";
+    let expected = "journal required record kind 94 at 1:";
     let reader_error = Reader::open(dir.path()).unwrap_err().to_string();
     assert!(reader_error.starts_with(expected), "{reader_error}");
     let writer_error = open(dir.path(), JournalOptions::default())
@@ -136,7 +136,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     let cache_before = advanced.export().unwrap();
     assert!(matches!(
         replay(&Reader::new(dir.path()), &mut advanced),
-        Err(Error::RequiredKind { kind: 93, .. })
+        Err(Error::RequiredKind { kind: 94, .. })
     ));
     assert_eq!(advanced.export().unwrap(), cache_before);
 
@@ -349,4 +349,38 @@ fn a_ticket_record_is_a_required_frame_an_older_build_refuses() {
         let (reader, _) = Reader::open(dir.path()).expect("this build understands it");
         assert_eq!(reader.iter_from(Lsn::ZERO).unwrap().count(), 1);
     }
+}
+
+/// The previous release knows record tags 1 to 92. The Floor's stop is tag 93 and a required
+/// frame, so that release stops at it instead of dropping a halt it cannot read and running a
+/// stopped agent's turn again.
+#[test]
+fn a_floor_stop_is_a_required_frame_the_previous_release_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut writer, _) = open(
+        dir.path(),
+        JournalOptions {
+            fsync: Fsync::None,
+            ..JournalOptions::default()
+        },
+    )
+    .unwrap();
+    writer
+        .append(&Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: dudes_proto::record::samples::record(RecordKind::BrowserHalt),
+        })
+        .unwrap();
+    drop(writer);
+    let bytes = fs::read(segment_path(dir.path(), 1)).unwrap();
+    let header = Header::parse(bytes[..12].try_into().unwrap());
+    assert_eq!(header.ver, dudes_journal::frame::REQUIRED_VERSION);
+    assert!(
+        !(1..=92).contains(&header.kind),
+        "tag {} is one the previous release knows",
+        header.kind
+    );
+    assert_eq!(header.kind, RecordKind::BrowserHalt.tag());
+    let (reader, _) = Reader::open(dir.path()).expect("this release understands it");
+    assert_eq!(reader.iter_from(Lsn::ZERO).unwrap().count(), 1);
 }

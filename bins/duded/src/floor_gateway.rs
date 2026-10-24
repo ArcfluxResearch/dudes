@@ -74,7 +74,7 @@ use recovery::RecoveryRoute;
 /// The configured public root for the first static shell.
 pub const BASE_PATH: &str = "/floor/";
 /// The browser-wire generation required by the daemon and its matching Floor bundle.
-pub const BROWSER_WIRE_VERSION: u32 = 6;
+pub const BROWSER_WIRE_VERSION: u32 = 7;
 
 const MANIFEST_NAME: &str = "release-manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -104,6 +104,7 @@ const ANSWER_PATH: &str = "/floor/answer";
 /// Routed only when the operator enabled control; otherwise a POST to either is any
 /// unrouted POST. No path names halt.
 const PAUSE_PATH: &str = "/floor/pause";
+const HALT_PATH: &str = "/floor/halt";
 const RESUME_PATH: &str = "/floor/resume";
 /// Routed only when the operator enabled goal change; otherwise a POST here is any
 /// unrouted POST.
@@ -1234,6 +1235,7 @@ impl ActionRoute {
             RECEIPT_RECOVERY_PATH => Some(Self::Recovery(RecoveryRoute::Receipt)),
             ANSWER_PATH if live.answer => Some(Self::Answer),
             PAUSE_PATH if live.control.pause_resume() => Some(Self::Control(ControlVerb::Pause)),
+            HALT_PATH if live.control.pause_resume() => Some(Self::Control(ControlVerb::Halt)),
             RESUME_PATH if live.control.pause_resume() => Some(Self::Control(ControlVerb::Resume)),
             GOAL_PATH if live.control.goal() => Some(Self::Goal),
             RENEW_PATH if live.control.renew() => Some(Self::Renew),

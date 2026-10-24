@@ -41,6 +41,20 @@ and runs it once first.
 `dudes halt --agent <agent id>` records a halt and requests teardown of the agent's owned
 children. `dudes resume <agent id>` clears that halt, together with pause and automatic hold.
 
+With `floor.control` on, the Floor's agent drawer also has **Stop this turn**, which ends the turn that
+is running and keeps the agent. It records a halt that the Floor marks as its own, so the page says
+"Stopping" while the turn's process is still ending and "Stopped" once no turn is open. Stopping
+ends the turn's whole process tree at once, so it can leave partial edits in the working tree and
+a stale git lock file; check the checkout before you carry on. The agent starts nothing new until
+you press **Resume**, which lifts a stop made from the Floor. The stopped turn is not brought
+back: with a goal, the loop decides afresh, and without one nothing starts until you send a
+message. A turn that was only starting when you pressed Stop may start once more, with its original
+task, after a Resume. **Stop and send** in Chat does both in order: it stops the turn, waits until
+the agent has no turn open, sends your message as a note and then lifts the stop. It is a note, not a new
+goal, and a conversation whose stopped turn left no context to continue answers that the message was
+not sent and offers Resume. The Floor refuses Stop while a person has the agent's terminal open, and it
+never lifts a halt made with `dudes halt`; only `dudes resume` does that.
+
 `dudes retire --agent <agent id>` retires the agent. On an interactive terminal, confirmation
 defaults to no. Scripts and `--json` require explicit `--yes`. Resume cannot undo retirement.
 A halt or retirement acknowledgement confirms the recorded control; owned-child teardown may

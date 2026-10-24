@@ -1,5 +1,5 @@
-//! The Floor's opt-in pause and resume of one agent: the bounded request, its request
-//! digest, the replayable control index, and the finite outcomes the two routes may report.
+//! The Floor's opt-in pause, stop and resume of one agent: the bounded request, its request
+//! digest, the replayable control index, and the finite outcomes the three routes may report.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -24,12 +24,14 @@ pub struct ControlView {}
 /// The one value [`ControlView`] takes.
 pub const CONTROL_VIEW: ControlView = ControlView {};
 
-/// Which of the two routes a request arrived on. The route is the verb: no request member selects
-/// one, and there is no third.
+/// Which of the three routes a request arrived on. The route is the verb: no request member selects
+/// one, and there is no fourth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlVerb {
     /// `POST /floor/pause`.
     Pause,
+    /// `POST /floor/halt`: stop the agent's turn and hold it until the Floor lifts its own halt.
+    Halt,
     /// `POST /floor/resume`.
     Resume,
 }
@@ -39,6 +41,7 @@ impl ControlVerb {
     const fn domain(self) -> &'static [u8] {
         match self {
             Self::Pause => b"dudes.pause.v1\0",
+            Self::Halt => b"dudes.halt.v1\0",
             Self::Resume => b"dudes.resume.v1\0",
         }
     }
@@ -47,6 +50,7 @@ impl ControlVerb {
     pub(crate) const fn applied(self) -> &'static str {
         match self {
             Self::Pause => "paused",
+            Self::Halt => "halted",
             Self::Resume => "resumed",
         }
     }
@@ -70,7 +74,7 @@ impl fmt::Debug for ControlRequest {
     }
 }
 
-/// What an admitted pause or resume may truthfully report once the writer has run it.
+/// What an admitted pause, stop or resume may truthfully report once the writer has run it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlOutcome {
     /// This request's attributed record is durable and indexed, on the first attempt or on a
@@ -89,7 +93,7 @@ pub enum ControlOutcome {
     Refused {
         /// The request identity as the page sent it.
         request_id: String,
-        /// `agent_absent`, `agent_halted` or `stale_control`.
+        /// `agent_absent`, `agent_attached`, `agent_halted`, `stale_control` or `no_running_turn`.
         reason: &'static str,
     },
 }
@@ -165,7 +169,7 @@ impl ControlRequest {
     }
 }
 
-/// SHA-256 over the route's domain (`dudes.pause.v1\0` or `dudes.resume.v1\0`), then `agent` and
+/// SHA-256 over the route's domain (`dudes.pause.v1\0`, `dudes.halt.v1\0` or `dudes.resume.v1\0`), then `agent` and
 /// `control_lsn`, each framed like every Floor request digest; a `null` control identity enters
 /// with zero length. The request identity does not enter it.
 fn request_digest(verb: ControlVerb, agent: &str, control_lsn: &str) -> Hex32 {
@@ -227,6 +231,11 @@ impl ControlIndex {
                 agent,
                 browser: Some(attribution),
             } => (ControlVerb::Resume, agent, attribution),
+            Record::BrowserHalt {
+                agent,
+                browser: attribution,
+                ..
+            } => (ControlVerb::Halt, agent, attribution),
             _ => return Ok(()),
         };
         if self.controls.contains_key(&attribution.request_id) {

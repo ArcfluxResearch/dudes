@@ -377,7 +377,7 @@ test('Attach carries its explanation as a tooltip and description, and a disable
   for (const [offer, words] of [
     [{ kind: 'unavailable', reason: 'running' }, 'Wait for this agent’s current work to finish before opening its CLI\\.'],
     [{ kind: 'unavailable', reason: 'attached' }, 'Someone already has this agent’s CLI open\\.'],
-    [{ kind: 'unavailable', reason: 'halted' }, 'This agent is halted, so its CLI cannot open\\.'],
+    [{ kind: 'unavailable', reason: 'halted' }, 'This agent is halted, so its CLI cannot open\\. Press Resume first if you stopped it from this page\\.'],
     [{ kind: 'unavailable', reason: 'no-session' }, 'This agent does not have a saved CLI session to open yet\\.'],
     [{ kind: 'open-here' }, 'This agent’s CLI is already open\\.'],
     [{ kind: 'open-elsewhere', agent: GRACE }, 'The CLI is open for Grace\\. Detach it before opening this agent’s CLI\\.'],

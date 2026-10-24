@@ -7,13 +7,16 @@ import type { FloorState } from '../floor/store.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { ATTEMPT_ID, mintAttemptId, trimAsciiSpace, utf8Bytes } from '../onboarding/hire.ts';
 import type { AgentRow } from '../scene/cast.ts';
+import { browserControlDeps, getControlState, submitControl } from '../control/control.ts';
+import type { ControlDeps, ControlGate } from '../control/control.ts';
 import { chatReason, exactObject } from './model.ts';
 import { MAX_FILE_BYTES, decodeUpload, filesProblem, messageText, tooBig } from './chatFiles.ts';
 import type { ChatFile } from './chatFiles.ts';
 import type { ChatReason, ChatView, PendingNote } from './model.ts';
 import { floorFetch } from '../../transport.ts';
 
-export type ChatPayload = { readonly request_id: string; readonly agent: string; readonly text: string; readonly context_reset_turn?: string }
+export type ChatPayload = { readonly request_id: string; readonly agent: string; readonly text: string;
+  readonly context_reset_turn?: string; readonly after_stop?: string }
   | { readonly request_id: string; readonly agent: string; readonly note_lsn: string };
 export interface ChatAttempt {
   readonly verb: 'send' | 'cancel';
@@ -47,7 +50,25 @@ export function chatGate(floor: FloorState, row: AgentRow | null): ChatGate {
   return Object.freeze({ open: true, agent: row.id });
 }
 
+/**
+ * A note waiting on the Floor's own stop of the same agent: "Stop and send".
+ *
+ * Step one stops the turn and records the control identity the stop returned; the note itself goes out
+ * as step two, once the page sees the stopped agent has no open turn. Both steps live here, in module
+ * memory, with the request id minted at the press, so a retry of step two repeats the same request.
+ */
+export interface StopSend {
+  readonly agent: string;
+  readonly requestId: string;
+  /** The control identity the stop returned; `null` until the stop is confirmed. */
+  readonly stopLsn: string | null;
+  readonly text: string;
+  readonly draft: ChatDraft | undefined;
+  readonly files: readonly number[];
+}
+
 export interface ChatState {
+  readonly stopSend: StopSend | null;
   readonly drafts: ReadonlyMap<string, ChatDraft>;
   readonly acknowledged: readonly AcknowledgedNote[];
   readonly answerTargets: ReadonlyMap<string, ChatAnswerTarget>;
@@ -61,7 +82,7 @@ export interface ChatState {
   readonly problem: string | null;
 }
 
-const INITIAL = { attempt: null, outcome: null, sending: false, uncertain: false, problem: null };
+const INITIAL = { attempt: null, outcome: null, sending: false, uncertain: false, problem: null, stopSend: null };
 let state: ChatState = Object.freeze({ ...INITIAL, clearing: null, drafts: new Map(), acknowledged: [], answerTargets: new Map(), files: new Map() });
 const listeners = new Set<() => void>();
 
@@ -195,9 +216,74 @@ export async function submitChat(gate: ChatGate, deps: ChatDeps): Promise<void> 
   await start(Object.freeze({ verb: 'send', payload, body: JSON.stringify(payload), draft: state.drafts.get(gate.agent), files }), deps);
 }
 
+/** Whether the next message could go out as "Stop and send": a chat and a stoppable turn, and nothing in flight. */
+export function canStopAndSend(chat: ChatState, gate: ChatGate, control: ControlGate): boolean {
+  return gate.open && control.open && control.stop && control.agent === gate.agent && chat.attempt === null
+    && chat.clearing === null && chat.stopSend === null && !chatUploading(chat, gate.agent)
+    && chatSendProblem(chat, gate.agent) === null;
+}
+
+/**
+ * Stop the agent's turn, then send the note once the turn has ended.
+ *
+ * Step one is an ordinary Stop. The note stays in the draft until it is queued. If the stop is not
+ * confirmed, nothing is sent and the note stays where it is.
+ */
+export async function stopAndSend(gate: ChatGate, control: ControlGate, deps: ChatDeps,
+  controlDeps: ControlDeps = browserControlDeps): Promise<void> {
+  if (!canStopAndSend(state, gate, control) || !gate.open) return;
+  const agent = gate.agent;
+  const pending: StopSend = Object.freeze({ agent, requestId: mintAttemptId(deps.random), stopLsn: null,
+    text: chatNoteText(state, agent), draft: state.drafts.get(agent), files: chatFiles(state, agent).map(file => file.id) });
+  commit({ ...state, stopSend: pending, problem: null });
+  await submitControl('halt', control, controlDeps);
+  if (state.stopSend !== pending) return;
+  const sent = getControlState();
+  const outcome = sent.attempt?.verb === 'halt' && sent.attempt.payload.agent === agent ? sent.outcome : null;
+  if (outcome?.kind !== 'applied') {
+    commit({ ...state, stopSend: null,
+      problem: 'The stop was not confirmed, so your note was not sent. It is still in the box.' });
+    return;
+  }
+  commit({ ...state, stopSend: Object.freeze({ ...pending, stopLsn: outcome.controlLsn }) });
+  await advanceStopAndSend(deps);
+}
+
+/**
+ * Step two of Stop and send, run on every snapshot while one waits: send the note once the stopped
+ * agent has no turn open, and give up, keeping the note, if anything else moved the agent's control state.
+ */
+export async function advanceStopAndSend(deps: ChatDeps): Promise<void> {
+  const pending = state.stopSend;
+  if (pending === null || pending.stopLsn === null || state.attempt !== null) return;
+  const floor = deps.floor();
+  const row = floor.agents.find(candidate => candidate.id === pending.agent) ?? null;
+  if (!chatGate(floor, row).open || row === null) return;
+  // The stop's response can reach the page before the snapshot that shows it: an older position waits.
+  const seen = typeof row.control_lsn === 'string' && canonicalLsn(row.control_lsn) ? BigInt(row.control_lsn) : null;
+  if (seen === null || seen < BigInt(pending.stopLsn)) {
+    if (seen === null && row.control_lsn !== undefined) {
+      commit({ ...state, stopSend: null,
+        problem: 'This agent changed after the stop, so your note was not sent. It is still in the box.' });
+    }
+    return;
+  }
+  if (seen !== BigInt(pending.stopLsn) || row.halted !== true || row.halted_by_floor !== true) {
+    commit({ ...state, stopSend: null,
+      problem: 'This agent changed after the stop, so your note was not sent. It is still in the box.' });
+    return;
+  }
+  if (row.status === 'running') return;
+  const payload = Object.freeze({ request_id: pending.requestId, agent: pending.agent, text: pending.text,
+    after_stop: pending.stopLsn });
+  commit({ ...state, stopSend: null });
+  await start(Object.freeze({ verb: 'send', payload, body: JSON.stringify(payload), draft: pending.draft,
+    files: pending.files }), deps);
+}
+
 export async function startFreshChat(attempt: ChatAttempt, outcome: ChatOutcome, deps: ChatDeps): Promise<void> {
   if (state.attempt !== attempt || state.outcome !== outcome || state.sending || outcome.kind !== 'context_lost'
-    || attempt.verb !== 'send' || !('text' in attempt.payload)) return;
+    || attempt.verb !== 'send' || !('text' in attempt.payload) || 'after_stop' in attempt.payload) return;
   const floor = deps.floor();
   if (!chatGate(floor, floor.agents.find(row => row.id === attempt.payload.agent) ?? null).open) return;
   const requestId = mintAttemptId(deps.random);

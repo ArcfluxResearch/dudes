@@ -274,6 +274,7 @@ fn agent_view(projections: &Projections, row: AgentRow, now: Timestamp) -> Resul
         mode: row.mode,
         paused: row.paused,
         halted: row.halted,
+        halted_by_floor: row.halted_by_floor,
         breaker: row.breaker,
         goal,
         turns: row.turns,

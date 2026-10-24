@@ -55,7 +55,8 @@ export function AgentOverview({ row, cards, fields, control, recovery, goalForm,
   const baseline = baselineOf(goal ?? {});
   const paused = row.paused === true;
   const now = row.retired === true ? 'Retired'
-    : row.halted === true ? 'Halted'
+    : row.halted === true ? (row.halted_by_floor === true
+      ? (row.status === 'running' ? 'Stopping this turn' : 'Stopped. Press Resume to let it work again') : 'Halted')
       : paused ? (row.status === 'running' ? 'Pausing after this turn' : 'Paused')
         : fields.question !== '' ? 'Needs you: answer the waiting question'
           : automaticHold !== null ? 'Needs you: this agent is held'

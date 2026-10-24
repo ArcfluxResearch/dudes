@@ -65,7 +65,8 @@ export function AgentDetail({
   const fields = fieldsOf(row, { live, now: performance.now(), wallNow: Date.now() });
   const status = ticketWord(cards, row, fields.status) ?? fields.status;
   const automaticHold = automaticHoldOf(row);
-  const resumeInOverview = automaticHold !== null || (row.paused === true && row.halted !== true);
+  const resumeInOverview = automaticHold !== null || (row.paused === true && row.halted !== true)
+    || (row.halted === true && row.halted_by_floor === true);
   const panels: readonly { readonly id: DetailTab; readonly label: string; readonly content: ReactNode }[] = [
     { id: 'overview', label: 'Overview', content: <AgentOverview row={row} cards={cards} fields={fields}
       control={resumeInOverview ? control : null} recovery={recovery} goalForm={goalForm} taskForm={taskForm}

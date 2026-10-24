@@ -971,6 +971,14 @@ pub enum Command {
         /// Why, when given.
         text: Option<String>,
     },
+    /// The Floor's stop of one agent's turn.
+    BrowserHalt {
+        /// The agent.
+        agent: AgentId,
+        /// The Floor's attribution, already checked on the writer against the agent's control
+        /// identity.
+        browser: BrowserControl,
+    },
     /// `loop.pause`, or the Floor's pause of one agent.
     Pause {
         /// The agent.

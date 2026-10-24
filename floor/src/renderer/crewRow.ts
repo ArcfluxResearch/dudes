@@ -23,7 +23,7 @@ export interface Activity {
   readonly spoken: string;
 }
 
-/** A standing control flag. A halt outranks a pause, because the Floor can resume a pause but cannot lift a halt. */
+/** A standing control flag. A halt outranks a pause, because the Floor can resume a pause but cannot lift a halt the operator made. */
 export type Hold = 'paused' | 'halted' | 'held';
 
 export interface CrewRow {

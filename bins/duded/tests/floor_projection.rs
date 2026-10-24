@@ -841,6 +841,7 @@ fn snapshot_is_rebuilt_from_journal() {
         mode: Mode::Managed,
         paused: false,
         halted: false,
+        halted_by_floor: false,
         automatic_hold: None,
         breaker: BreakerRung::Healthy,
         goal: None,

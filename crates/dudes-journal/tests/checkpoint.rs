@@ -170,6 +170,7 @@ fn placement(kind: RecordKind) -> Placement {
         | RecordKind::BrowserNoteQueued
         | RecordKind::BrowserNoteCancelled
         | RecordKind::BrowserNoteIssuedCancelled
+        | RecordKind::BrowserHalt
         | RecordKind::BrowserNoteDispatchIntent
         | RecordKind::BrowserNoteReissueCancelled
         | RecordKind::BrowserNoteContextEmitted

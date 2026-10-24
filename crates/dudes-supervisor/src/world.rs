@@ -107,6 +107,8 @@ pub struct AgentRow {
     pub retired: bool,
     /// `loop.halt` is standing (gate 1).
     pub halted: bool,
+    /// The newest standing halt is the Floor's own stop, which the Floor may lift.
+    pub halted_by_floor: bool,
     /// `loop.pause` is standing (gate 1).
     pub paused: bool,
     /// A human holds the keyboard (gate 1).
@@ -1339,6 +1341,7 @@ impl World {
                         ),
                         retired: false,
                         halted: false,
+                        halted_by_floor: false,
                         paused: false,
                         attached: false,
                         control_lsn: None,
@@ -1873,7 +1876,20 @@ impl World {
             Record::Halt { agent, .. } => {
                 if let Some(row) = self.agents.get_mut(agent) {
                     row.halted = true;
+                    row.halted_by_floor = false;
                     row.control_lsn = Some(lsn);
+                }
+            }
+            Record::BrowserHalt {
+                agent, abandons, ..
+            } => {
+                if let Some(row) = self.agents.get_mut(agent) {
+                    row.halted = true;
+                    row.halted_by_floor = true;
+                    row.control_lsn = Some(lsn);
+                }
+                if let Some(turn) = abandons {
+                    self.abandon_turn(lsn, *agent, *turn);
                 }
             }
             Record::Pause { agent, .. } => {
@@ -1889,6 +1905,7 @@ impl World {
                     row.rapid_failure_beat = false;
                     row.pending_launch_failure = None;
                     row.halted = false;
+                    row.halted_by_floor = false;
                     row.paused = false;
                     row.control_lsn = Some(lsn);
                 }
@@ -2399,6 +2416,34 @@ impl World {
                 mcp_grant: None,
             },
         );
+    }
+
+    /// Close an issued turn that no launch began, so nothing relaunches it. A browser note the
+    /// turn carried is cancelled with it.
+    fn abandon_turn(&mut self, lsn: Lsn, agent: AgentId, turn: TurnId) {
+        let Some(row) = self
+            .turns
+            .get_mut(&turn)
+            .filter(|row| row.agent == agent && row.is_issued_not_spawned())
+        else {
+            return;
+        };
+        row.status = TurnStatus::Killed;
+        row.end_lsn = Some(lsn);
+        if let Some(issue) = self.browser_issues.get_mut(&turn)
+            && issue.cancellation.is_none()
+        {
+            issue.cancellation = Some(BrowserIssueCancellation::Clean { lsn });
+            if let Some(note) = self.browser_notes.get_mut(&issue.note_lsn) {
+                note.state = BrowserNoteState::Cancelled;
+            }
+        }
+        if let Some(owner) = self.agents.get_mut(&agent)
+            && owner.open_turn == Some(turn)
+        {
+            owner.open_turn = None;
+            self.open_turn_owners.remove(&agent);
+        }
     }
 
     fn install_managed_turn(&mut self, turn: TurnId, issued: TurnRow) {

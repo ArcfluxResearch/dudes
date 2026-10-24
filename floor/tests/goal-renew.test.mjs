@@ -418,7 +418,7 @@ test('the renewal outcomes read the specified words, and a 200 says only that th
       + 'recorded. The floor is being refreshed.',
     stale_goal: 'This agent’s task changed since this page read it, so nothing was recorded. '
       + 'The floor is being refreshed.',
-    agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
+    agent_halted: 'A halt stands on this agent, so nothing was recorded. Press Resume first if you stopped it from this page; a halt from the command line only the local operator can lift.',
   };
   for (const [reason, text] of Object.entries(said)) {
     resetFloorStore();
