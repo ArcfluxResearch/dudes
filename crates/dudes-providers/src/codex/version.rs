@@ -1,7 +1,7 @@
 //! The Codex release lines whose app-server protocol the streaming reader speaks.
 
-/// Streaming is verified on each of these `major.minor` lines. Their patch releases and
-/// pre-releases keep the protocol.
+/// Streaming is verified on each of these `major.minor` lines. Their patch releases keep the
+/// protocol. Only the second line has verified pre-releases.
 const LINES: [&str; 2] = ["0.160", "0.164"];
 
 /// The installed Codex is outside the supported line, named as it reported itself.
@@ -37,7 +37,7 @@ fn check(reported: &str, version: Option<&str>) -> Result<(), UnsupportedVersion
 }
 
 fn in_line(version: &str) -> bool {
-    LINES.iter().any(|line| {
+    LINES.iter().enumerate().any(|(index, line)| {
         version
             .strip_prefix(line)
             .and_then(|rest| rest.strip_prefix('.'))
@@ -48,13 +48,15 @@ fn in_line(version: &str) -> bool {
                 (patch == "0" || !patch.starts_with('0'))
                     && !patch.is_empty()
                     && patch.bytes().all(|byte| byte.is_ascii_digit())
-                    && pre.is_none_or(|pre| {
-                        !pre.is_empty()
-                            && pre
-                                .bytes()
-                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.')
-                    })
+                    && pre.is_none_or(|pre| index == 1 && dotted_alphanumeric(pre))
             })
+    })
+}
+
+/// Non-empty alphanumeric segments separated by single dots.
+fn dotted_alphanumeric(text: &str) -> bool {
+    text.split('.').all(|segment| {
+        !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_alphanumeric())
     })
 }
 
@@ -77,7 +79,7 @@ mod tests {
             "codex-cli 0.164.0",
             "codex-cli 0.164.3\n",
             "codex-cli 0.164.0-alpha.11.1\n",
-            "codex-cli 0.160.1-alpha.1",
+            "codex-cli 0.164.2-rc1",
         ] {
             assert_eq!(check_cli(output), Ok(()), "{output}");
         }
@@ -88,6 +90,17 @@ mod tests {
             ("codex-cli 0.165.0", "codex-cli 0.165.0".to_owned()),
             ("codex-cli 0.164.0-", "codex-cli 0.164.0-".to_owned()),
             ("codex-cli 0.164.0-a b", "codex-cli 0.164.0-a b".to_owned()),
+            (
+                "codex-cli 0.160.1-alpha.1",
+                "codex-cli 0.160.1-alpha.1".to_owned(),
+            ),
+            (
+                "codex-cli 0.164.0-a..b",
+                "codex-cli 0.164.0-a..b".to_owned(),
+            ),
+            ("codex-cli 0.164.0-.a", "codex-cli 0.164.0-.a".to_owned()),
+            ("codex-cli 0.164.0-a.", "codex-cli 0.164.0-a.".to_owned()),
+            ("codex-cli 0.164.0-a_b", "codex-cli 0.164.0-a_b".to_owned()),
             ("codex-cli 0.159.9", "codex-cli 0.159.9".to_owned()),
             ("codex-cli 1.160.0", "codex-cli 1.160.0".to_owned()),
             ("codex-cli 0.1600.0", "codex-cli 0.1600.0".to_owned()),
