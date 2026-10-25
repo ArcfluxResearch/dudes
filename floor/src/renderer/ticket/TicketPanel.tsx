@@ -32,7 +32,7 @@ import { StuckActions } from './StuckActions.tsx';
 import { AgentMarkdown } from '../chat/markdown.tsx';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
-import { COVERAGE_SUMMARY, coverageText, groupGaps, instructionContextDetails, instructionContextText } from './instructions.ts';
+import { coverageText, groupGaps, instructionContextDetails, instructionContextText } from './instructions.ts';
 import type { InstructionReview } from './instructions.ts';
 
 const TRUNCATED_LABEL: Readonly<Record<TruncatedTicketField, string>> = Object.freeze({
@@ -192,9 +192,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
       {words.place === null ? null : <div><dt>Place</dt><dd>{words.place}</dd></div>}
     </dl>
     {failure === null ? null : <p>{failure}</p>}
-    {shown?.coverage != null && shown.coverage.limits.length > 0
-      ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4>
-        <p>{COVERAGE_SUMMARY}</p><p>{coverageText(shown.coverage)}</p></section> : null}
+    {shown?.coverage != null && shown.coverage.limits.length > 0 ? <p>{coverageText(shown.coverage)}</p> : null}
     </details>
     {failure === null ? null : <p className="ticket-needs" role="note">An earlier engine attempt stopped. Open Details for its result.</p>}
     {card.status === 'blocked' ? <p className="ticket-needs" role="note">{reasonSentence(ticket?.reason ?? null)}</p>
@@ -439,7 +437,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
     {mode === 'edit' && editable !== null ? <EditForm key={`${card.id}:${card.seq}`} floor={floor} card={card}
       detail={editable} onDone={() => setMode('none')} /> : null}
     {mode === 'remove' || mode === 'stop' ? <div className="ticket-confirm" role="group" aria-label={mode === 'remove' ? 'Remove ticket' : 'Stop ticket'}>
-      <p>{mode === 'remove' ? 'Remove this ticket? It leaves the board. Its record stays in the journal.'
+      <p>{mode === 'remove' ? 'Remove this ticket? It leaves the board. Dudes keeps its history.'
         : 'Stop this ticket? The agent finishes its current step before stopping.'}</p>
       <button type="button" className="ticket-remove" disabled={sending || !open || !modeAllowed}
         title={sending ? 'Wait for the current request to finish.' : !open ? 'Reconnect to Dudes before changing this ticket.' : !modeAllowed ? 'This ticket changed. Open its current actions.' : undefined}

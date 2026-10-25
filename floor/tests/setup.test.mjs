@@ -130,9 +130,9 @@ test('the Setup view renders text, offers Retry for missing reads, and holds no 
     MISSING] } });
   const html = setup();
   assert.match(html, /<dt>State directory<\/dt><dd><code>~\/\.local\/share\/dudes<\/code><\/dd>/);
-  assert.match(html, /Found on the daemon’s PATH at <code>&lt;img src=x onerror=alert\(1\)&gt;<\/code>/);
-  assert.match(html, /<code>codex<\/code> is not on the daemon’s PATH\./);
-  assert.match(html, /searches the PATH it started with, which can differ from your shell’s/);
+  assert.match(html, /Dudes found it at <code>&lt;img src=x onerror=alert\(1\)&gt;<\/code>/);
+  assert.match(html, /Dudes could not find <code>codex<\/code>\./);
+  assert.match(html, /searches the same folders it had when it started/);
   assert.match(html, /<button type="button" class="setup-recheck">Recheck<\/button>/);
   for (const report of [null, { providers: 'claude' }]) {
     resetFloorStore();

@@ -91,7 +91,11 @@ Dudes reads no engine's credentials or files.
 
 5. Hire more agents. The Floor offers Claude Code, and Codex or Pi once they are
    turned on. The Engine step also lets you choose the model the agent runs (`dudes hire --model <name>`
-   does the same): Claude Code suggests `opus`, `sonnet` and `haiku`, and any other name may be typed.
+   does the same). The step lists what the engine offers and has a search box over the list: Claude Code
+   lists `opus`, `sonnet` and `haiku` and the models its agents have run, Pi lists what `pi --list-models`
+   prints under your Pi profile, and Codex lists what it answers to `model/list`. A list is what the engine's program says,
+   not what your sign-in may run, and it is kept in memory, so a restart empties it. With `floor.control` on, **Refresh
+   list** asks the engine again (Pi and Codex each run one short helper process, stopped after 5 seconds). Any other name may be typed.
    Left alone, the agent uses the app's own default, or the model your configuration sets for that app.
    If the configuration passes `--model` in Claude Code's extra arguments, that model wins over any other, so
    the Engine step shows it and offers no choice, and a hire that names a model is refused.

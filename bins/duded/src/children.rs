@@ -1734,7 +1734,7 @@ mod tests {
         assert_eq!(
             outcome,
             dudes_proto::TurnOutcome::Failed {
-                reason: "Codex streaming requires codex-cli 0.160.x, but the installed Codex reports dudes/0.161.0".into()
+                reason: "Codex streaming requires codex-cli 0.160.x or 0.164.x, but the installed Codex reports dudes/0.161.0".into()
             }
         );
     }

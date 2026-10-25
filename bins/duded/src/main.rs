@@ -509,24 +509,40 @@ impl PredicateRunner for HostOneShot {
     ) -> io::Result<PredicateCaptured> {
         self.0
             .run_captured(spec, timeout, stdout_cap)
-            .map(|outcome| match outcome {
-                CapturedOutcome::Finished {
-                    exit,
-                    stdout,
-                    truncated,
-                    timed_out,
-                } => PredicateCaptured::Finished {
-                    exit,
-                    stdout,
-                    truncated,
-                    timed_out,
-                },
-                CapturedOutcome::Swept => PredicateCaptured::Swept,
-            })
+            .map(captured_outcome)
+    }
+
+    fn run_captured_until(
+        &self,
+        spec: &LaunchSpec,
+        timeout: Duration,
+        stdout_cap: usize,
+        answered: fn(&[u8]) -> bool,
+    ) -> io::Result<PredicateCaptured> {
+        self.0
+            .run_captured_until(spec, timeout, stdout_cap, answered)
+            .map(captured_outcome)
     }
 
     fn sweep(&self) {
         self.0.sweep();
+    }
+}
+
+fn captured_outcome(outcome: CapturedOutcome) -> PredicateCaptured {
+    match outcome {
+        CapturedOutcome::Finished {
+            exit,
+            stdout,
+            truncated,
+            timed_out,
+        } => PredicateCaptured::Finished {
+            exit,
+            stdout,
+            truncated,
+            timed_out,
+        },
+        CapturedOutcome::Swept => PredicateCaptured::Swept,
     }
 }
 

@@ -918,6 +918,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// `<state dir>/agents`: each agent's own folder is under it, named by its id.
     pub(crate) agents_root: PathBuf,
     pub(crate) running_providers: crate::config::ProviderTables,
+    /// The provider check, which keeps the model ids turns report for the engine report's lists.
+    pub(crate) provider_check: crate::provider_check::ProviderCheck,
     /// The `[mcp.servers]` table this run loaded, for a reload to compare.
     pub(crate) running_mcp: dudes_providers::mcp::DeclaredServers,
     pub(crate) browser_launches: crate::chat_launch::LaunchPreparations,
@@ -2371,6 +2373,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 }
             }
             self.ctx.browser_grants = None;
+        } else if !was.terminal && next.terminal && self.ctx.browser_grants.is_none() {
+            self.ctx.browser_grants = Some(BTreeMap::new());
         }
         self.ctx.switches.store(next);
     }
@@ -7977,7 +7981,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         // decision must read the new goal's spend, not the replaced goal's against the new
         // ceiling.
         let refreshed = match &entry.record {
-            Record::TurnEnded { agent, .. } => self.push_spend(*agent, queue),
+            Record::TurnEnded {
+                agent, model_usage, ..
+            } => {
+                if sup
+                    .world()
+                    .agents
+                    .get(agent)
+                    .is_some_and(|row| row.provider == Provider::Claude)
+                {
+                    self.provider_check
+                        .note_models_seen(model_usage.keys().map(String::as_str));
+                }
+                self.push_spend(*agent, queue)
+            }
             Record::ConversationDispatchUncertain { .. } => sup
                 .world()
                 .agents
@@ -8301,6 +8318,98 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .map(|committed| committed.lsn())
     }
 
+    fn output_notice(&self, record: &Record) -> Result<OutputNotice> {
+        Ok(match record {
+            Record::ConversationTurnIssued { agent, turn, .. }
+            | Record::IdentifiedConversationTurnIssued { agent, turn, .. }
+            | Record::TurnIssued {
+                agent,
+                turn,
+                mode: Mode::Managed,
+                ..
+            }
+            | Record::TurnIssuedWithBrowserNote {
+                agent,
+                turn,
+                mode: Mode::Managed,
+                ..
+            }
+            | Record::NoteOnlyTurnIssued {
+                agent,
+                turn,
+                mode: Mode::Managed,
+                ..
+            }
+            | Record::TaughtNoteOnlyTurnIssued {
+                agent,
+                turn,
+                mode: Mode::Managed,
+                ..
+            }
+            | Record::IdentifiedTaughtNoteOnlyTurnIssued {
+                agent,
+                turn,
+                mode: Mode::Managed,
+                ..
+            } if self
+                .projections
+                .agent(*agent)?
+                .is_some_and(|row| row.mode == Mode::Managed && row.open_turn == Some(*turn)) =>
+            {
+                OutputNotice::Replace {
+                    agent: *agent,
+                    turn: *turn,
+                }
+            }
+            Record::MailWakeOnlyTurnIssued(issue)
+            | Record::IdentifiedMailWakeOnlyTurnIssued(issue)
+                if self.projections.agent(issue.agent)?.is_some_and(|row| {
+                    row.mode == Mode::Managed && row.open_turn == Some(issue.turn)
+                }) =>
+            {
+                OutputNotice::Replace {
+                    agent: issue.agent,
+                    turn: issue.turn,
+                }
+            }
+            Record::SessionLearned {
+                agent,
+                turn,
+                session,
+            } if self.projections.turn(*turn)?.is_some_and(|row| {
+                row.agent == *agent
+                    && row.session_confirmed
+                    && row.session.as_ref() == Some(session)
+            }) && self
+                .projections
+                .agent(*agent)?
+                .is_some_and(|row| row.mode == Mode::Managed && row.open_turn == Some(*turn)) =>
+            {
+                OutputNotice::Confirm {
+                    agent: *agent,
+                    turn: *turn,
+                    session: session.clone(),
+                }
+            }
+            Record::TurnEnded {
+                agent,
+                turn,
+                mode: Mode::Managed,
+                ..
+            }
+            | Record::BrowserHalt {
+                agent,
+                abandons: Some(turn),
+                ..
+            } => OutputNotice::End {
+                agent: *agent,
+                turn: *turn,
+            },
+            Record::AgentRetired { id, .. } => OutputNotice::Retire { agent: *id },
+            _ => OutputNotice::None,
+        })
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "durability, projections and publication retain one visible first-error boundary"
@@ -8372,88 +8481,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             }
             self.last_lsn.store(lsn.0, Ordering::Relaxed);
             self.index_browser_record(lsn, &entry.record)?;
-            let output_notice = match &entry.record {
-                Record::ConversationTurnIssued { agent, turn, .. }
-                | Record::IdentifiedConversationTurnIssued { agent, turn, .. }
-                | Record::TurnIssued {
-                    agent,
-                    turn,
-                    mode: Mode::Managed,
-                    ..
-                }
-                | Record::TurnIssuedWithBrowserNote {
-                    agent,
-                    turn,
-                    mode: Mode::Managed,
-                    ..
-                }
-                | Record::NoteOnlyTurnIssued {
-                    agent,
-                    turn,
-                    mode: Mode::Managed,
-                    ..
-                }
-                | Record::TaughtNoteOnlyTurnIssued {
-                    agent,
-                    turn,
-                    mode: Mode::Managed,
-                    ..
-                }
-                | Record::IdentifiedTaughtNoteOnlyTurnIssued {
-                    agent,
-                    turn,
-                    mode: Mode::Managed,
-                    ..
-                } if self.projections.agent(*agent)?.is_some_and(|row| {
-                    row.mode == Mode::Managed && row.open_turn == Some(*turn)
-                }) =>
-                {
-                    OutputNotice::Replace {
-                        agent: *agent,
-                        turn: *turn,
-                    }
-                }
-                Record::MailWakeOnlyTurnIssued(issue)
-                | Record::IdentifiedMailWakeOnlyTurnIssued(issue)
-                    if self.projections.agent(issue.agent)?.is_some_and(|row| {
-                        row.mode == Mode::Managed && row.open_turn == Some(issue.turn)
-                    }) =>
-                {
-                    OutputNotice::Replace {
-                        agent: issue.agent,
-                        turn: issue.turn,
-                    }
-                }
-                Record::SessionLearned {
-                    agent,
-                    turn,
-                    session,
-                } if self.projections.turn(*turn)?.is_some_and(|row| {
-                    row.agent == *agent
-                        && row.session_confirmed
-                        && row.session.as_ref() == Some(session)
-                }) && self.projections.agent(*agent)?.is_some_and(|row| {
-                    row.mode == Mode::Managed && row.open_turn == Some(*turn)
-                }) =>
-                {
-                    OutputNotice::Confirm {
-                        agent: *agent,
-                        turn: *turn,
-                        session: session.clone(),
-                    }
-                }
-                Record::TurnEnded {
-                    agent,
-                    turn,
-                    mode: Mode::Managed,
-                    ..
-                } => OutputNotice::End {
-                    agent: *agent,
-                    turn: *turn,
-                },
-                Record::AgentRetired { id, .. } => OutputNotice::Retire { agent: *id },
-                _ => OutputNotice::None,
-            };
+            let output_notice = self.output_notice(&entry.record)?;
             if let Some(streams) = self.floor_streams.clone() {
                 let snapshot = self
                     .floor_snapshot()

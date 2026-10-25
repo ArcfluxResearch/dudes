@@ -90,7 +90,7 @@ test('an archived Codex or Pi engine is preselected only where the matched works
   assert.equal(hire.prepareArchiveHire(archived({ provider: 'pi' }), { ...both, daemon: missing }), true);
   assert.equal(hire.getHireState().draft.workspaceId, '');
   assert.equal(hire.getHireState().draft.engine, undefined);
-  assert.match(hire.getHireState().prefill.notes.engine, /^Pi was not found on the daemon’s PATH/);
+  assert.match(hire.getHireState().prefill.notes.engine, /^Dudes could not find Pi when this form opened/);
 
   hire.resetHire();
   assert.equal(hire.prepareArchiveHire(archived({ provider: 'grok' }), both), true);
@@ -103,7 +103,7 @@ test('a missing Claude program leaves the engine unselected while an absent repo
   const missing = decodeDaemonReport({ providers: [{ provider: 'claude', program: 'claude', found: false }] });
   assert.equal(hire.prepareArchiveHire(archived(), floor({ daemon: missing })), true);
   assert.equal(hire.getHireState().draft.workspaceId, '');
-  assert.match(hire.getHireState().prefill.notes.engine, /not found.*install.*check again/i);
+  assert.match(hire.getHireState().prefill.notes.engine, /could not find.*install.*check again/i);
   hire.resetHire();
   assert.equal(hire.prepareArchiveHire(archived(), floor({ daemon: null })), true);
   assert.equal(hire.getHireState().draft.workspaceId, 'parser');

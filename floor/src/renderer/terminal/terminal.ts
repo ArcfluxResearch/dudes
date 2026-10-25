@@ -180,13 +180,19 @@ export type TerminalOffer =
   | { readonly kind: 'attach'; readonly agent: string }
   | { readonly kind: 'open-here' }
   | { readonly kind: 'open-elsewhere'; readonly agent: string }
-  | { readonly kind: 'unavailable'; readonly reason: 'running' | 'attached' | 'halted' | 'no-session' };
+  | { readonly kind: 'unavailable'; readonly reason: 'engine' | 'running' | 'attached' | 'halted' | 'no-session' };
+
+/** The engines whose own terminal Dudes can open. The daemon refuses the rest too; this only saves a failed click. */
+const ATTACHABLE_ENGINES: ReadonlySet<string> = new Set(['claude']);
 
 export function terminalOffer(floor: FloorState, row: AgentRow | null, channel: TerminalChannel): TerminalOffer {
   if (!floor.terminal || floor.phase !== 'live' || floor.stale || floor.snapshotEpoch !== floor.epoch) {
     return { kind: 'none' };
   }
   if (row === null || !floor.agents.some((agent) => agent.id === row.id)) return { kind: 'none' };
+  if (typeof row.provider === 'string' && row.provider !== '' && !ATTACHABLE_ENGINES.has(row.provider)) {
+    return { kind: 'unavailable', reason: 'engine' };
+  }
   if (channel.phase !== 'idle' && channel.phase !== 'ended') {
     return channel.agent === row.id ? { kind: 'open-here' } : { kind: 'open-elsewhere', agent: channel.agent };
   }

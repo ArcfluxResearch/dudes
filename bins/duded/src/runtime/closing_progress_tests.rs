@@ -1,6 +1,7 @@
 use super::work_test_support as common;
 use super::*;
 use crate::floor_stream::QueueRead;
+use crate::output::OutputState;
 use crate::settings::FloorSettings;
 use dudes_supervisor::input::PersistToken;
 
@@ -12,7 +13,7 @@ fn settings(fixture: &common::Fixture) -> crate::Settings {
     settings.floor = Some(FloorSettings {
         assets_dir: PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/floor-release-v7"
+            "/tests/fixtures/floor-release-v8"
         )),
         port: Some(port),
     });
@@ -833,4 +834,55 @@ fn historical_complete_boot_snapshot_has_no_closing_phase_or_progress() {
     assert!(frame["projection"].get("closing_progress").is_none());
     let mut running = common::start(daemon);
     running.stop(ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn a_stop_before_dispatch_ends_that_turns_live_output() {
+    let fixture = common::Fixture::new();
+    let mut daemon = boot_daemon(&fixture);
+    let hired = hire_open(&mut daemon, &fixture);
+    let agent = hired.agent;
+    let turn = TurnId::from_parts(1, 2);
+    let output = daemon.ctx.children.output();
+    output.replace(agent, turn);
+    assert!(matches!(
+        output.snapshot(agent).state,
+        OutputState::Unavailable(crate::output::Unavailable::Unbound)
+    ));
+    let byte = |value: u8| dudes_proto::record::Hex32::new([value; 32]);
+    let stop = |abandons| Record::BrowserHalt {
+        agent,
+        browser: dudes_proto::record::BrowserControl {
+            request_id: byte(1),
+            request_digest: byte(2),
+            control_lsn: None,
+            session_digest: byte(3),
+        },
+        abandons,
+    };
+    daemon
+        .ctx
+        .output_notice(&stop(None))
+        .unwrap()
+        .apply(&output);
+    assert!(
+        matches!(
+            output.snapshot(agent).state,
+            OutputState::Unavailable(crate::output::Unavailable::Unbound)
+        ),
+        "a stop that abandons nothing leaves the output waiting"
+    );
+    daemon
+        .ctx
+        .output_notice(&stop(Some(turn)))
+        .unwrap()
+        .apply(&output);
+    assert!(
+        matches!(
+            output.snapshot(agent).state,
+            OutputState::Ready { ended: true, .. }
+        ),
+        "{:?}",
+        output.snapshot(agent).state
+    );
 }

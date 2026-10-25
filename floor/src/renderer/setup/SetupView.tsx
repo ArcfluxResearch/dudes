@@ -50,17 +50,17 @@ function ProviderEntry({ row }: { readonly row: ProviderRow }) {
         <>
           <p>Found.</p>
           <details className="setup-where"><summary>Where it is</summary>
-            <p>Found on the daemon’s PATH at <code>{row.path ?? 'a path this page cannot show'}</code>.</p>
+            <p>Dudes found it at <code>{row.path ?? 'a path this page cannot show'}</code>.</p>
           </details>
         </>
       ) : (
         <>
           {row.detail === null ? <p>Not found.</p> : <p className="setup-refusal">{row.detail}</p>}
           <details className="setup-where"><summary>Why it was not found</summary>
-            {row.detail === null ? <p><code>{row.program ?? 'Its program'}</code> is not on the daemon’s PATH.</p> : null}
+            {row.detail === null ? <p>Dudes could not find <code>{row.program ?? 'its program'}</code>.</p> : null}
             <p className="setup-note">
-              The daemon searches the PATH it started with, which can differ from your shell’s. A program installed
-              into a directory already on that PATH shows on Recheck; a changed PATH needs a daemon restart.
+              Dudes searches the same folders it had when it started. These may differ from the folders your terminal
+              searches. If you install an app in one of them, press Recheck. If you change the search folders, restart Dudes.
             </p>
           </details>
           {install === undefined ? null : (
