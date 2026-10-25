@@ -339,7 +339,7 @@ exec /bin/sleep 120
         await this.startChrome();
         break;
       } catch (error) {
-        const hung = error.message === 'Chrome Browser.getVersion timed out';
+        const hung = (error.cause ?? error).message === 'Chrome Browser.getVersion timed out';
         if (!hung || attempt === 3) throw error;
         console.error(`smoke: Chrome did not answer, relaunching (attempt ${attempt + 1} of 3)`);
         this.cdp.close();
@@ -371,14 +371,27 @@ exec /bin/sleep 120
       '--disable-extensions', '--disable-crash-reporter', '--metrics-recording-only',
       '--proxy-server=http://127.0.0.1:9', '--proxy-bypass-list=127.0.0.1;localhost',
       '--remote-debugging-pipe', `--user-data-dir=${profile}`, 'about:blank',
-    ], { env: this.env, detached: true, stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
+    ], { env: this.env, detached: true, stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
     this.chromeChild = this.chrome;
     let cdp;
     this.chrome.on('error', () => cdp?.close());
     this.chrome.on('exit', () => cdp?.close());
     cdp = new DevTools(this.chrome.stdio[4], this.chrome.stdio[3]);
     this.cdp = cdp;
-    await this.cdp.send('Browser.getVersion', {}, undefined, 10_000);
+    const stderr = this.chrome.stderr;
+    let startupStderr = '';
+    const rememberStderr = (chunk) => { startupStderr = (startupStderr + chunk).slice(-4096); };
+    stderr.setEncoding('utf8');
+    stderr.on('data', rememberStderr);
+    try {
+      await this.cdp.send('Browser.getVersion', {}, undefined, 10_000);
+    } catch (error) {
+      if (!startupStderr.trim()) throw error;
+      throw new Error(`${error.message}\nChrome startup stderr:\n${startupStderr.trim()}`, { cause: error });
+    } finally {
+      stderr.off('data', rememberStderr);
+      stderr.resume();
+    }
   }
 
   async openFloor(link) {
