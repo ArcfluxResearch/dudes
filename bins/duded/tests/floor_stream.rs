@@ -530,10 +530,16 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
     let column = common::ScriptedColumn::new(dudes_proto::PeerProvenance::NoRecordedAgent);
     let (mut running, addr, tokens, clock) = start_closing_cut(&fixture, &settings, &column);
     let agent = common::hire(&running.handle, fixture.state.path());
-    let goal = common::set_goal(&running.handle, goal_params(agent, &["/usr/bin/true"]));
+    let goal = common::set_goal(
+        &running.handle,
+        goal_params(agent, &[common::true_program()]),
+    );
     closing_participant_spawned(&fixture, goal);
     let unanswered = common::hire(&running.handle, fixture.state.path());
-    let goal = common::set_goal(&running.handle, goal_params(unanswered, &["/usr/bin/true"]));
+    let goal = common::set_goal(
+        &running.handle,
+        goal_params(unanswered, &[common::true_program()]),
+    );
     closing_participant_spawned(&fixture, goal);
     running.handle.doctor().unwrap();
     let issued = issue(&settings);
@@ -881,15 +887,16 @@ fn stream_admission_limits_refuse_then_recover() {
     let probe = daemon.floor_gateway_probe().expect("gateway probe");
     let mut running = common::start(daemon);
 
-    let mut open_sockets = Vec::new();
-    for _ in 0..32 {
-        let mut stream = TcpStream::connect(addr).expect("held TCP connection");
-        stream.write_all(b"GET /floor/ HTTP/1.1\r\nHost:").unwrap();
-        open_sockets.push(stream);
-        if open_sockets.len() == 1 {
-            wait_for_live(&probe, 1);
-        }
-    }
+    let issued = issue(&settings);
+    let page = exchange(addr, &issued.bootstrap, &clock);
+    let open_slots: Vec<_> = (0..31)
+        .map(|_| {
+            probe
+                .hold_connection_slot_for_test()
+                .expect("held admission slot")
+        })
+        .collect();
+    let browser = WebSocket::connect(&page);
     wait_for_live(&probe, 32);
     let mut refused = TcpStream::connect(addr).expect("connection 33 reaches accept");
     refused
@@ -910,7 +917,7 @@ fn stream_admission_limits_refuse_then_recover() {
             ) => {}
         other => panic!("connection 33 was not actively refused before parse: {other:?}"),
     }
-    drop(open_sockets.pop());
+    drop(browser);
     wait_for_live(&probe, 31);
     let mut refill = TcpStream::connect(addr).expect("refill connection");
     refill
@@ -924,11 +931,9 @@ fn stream_admission_limits_refuse_then_recover() {
             .expect("refill response")
             .starts_with("HTTP/1.1 200 OK")
     );
-    drop(open_sockets);
+    drop(open_slots);
     wait_for_live(&probe, 0);
 
-    let issued = issue(&settings);
-    let page = exchange(addr, &issued.bootstrap, &clock);
     let first = WebSocket::connect(&page);
     let second = WebSocket::connect(&page);
     let protocols = signed_protocols(&page, "dudes-floor-v4");

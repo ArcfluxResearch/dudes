@@ -929,6 +929,13 @@ pub struct FloorGatewayProbe {
 }
 
 impl FloorGatewayProbe {
+    /// Own an admission slot without starting a connection worker.
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_connection_slot_for_test(&self) -> Option<impl Drop + use<>> {
+        self.slots.acquire()
+    }
+
     /// Connections that own one of the accepted 32 slots now.
     #[must_use]
     pub fn live_connections(&self) -> usize {
