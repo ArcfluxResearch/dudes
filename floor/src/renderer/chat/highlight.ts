@@ -14,15 +14,17 @@ export type Token = { readonly text: string; readonly cls: TokenClass | null };
 export const LINE_LIMIT = 500;
 const INFO_LIMIT = 64;
 
-const LANGUAGES: ReadonlyMap<string, Language> = new Map<string, Language>([
-  ['ts', 'script'], ['tsx', 'script'], ['typescript', 'script'], ['js', 'script'], ['jsx', 'script'],
-  ['mjs', 'script'], ['cjs', 'script'], ['javascript', 'script'],
-  ['json', 'json'], ['jsonc', 'json'],
-  ['rust', 'rust'], ['rs', 'rust'],
-  ['python', 'python'], ['py', 'python'],
-  ['sh', 'shell'], ['bash', 'shell'], ['zsh', 'shell'], ['shell', 'shell'],
-  ['diff', 'diff'], ['patch', 'diff'],
-]);
+const NAMES: Readonly<Record<Language, string>> = {
+  script: 'ts tsx typescript js jsx mjs cjs javascript',
+  json: 'json jsonc',
+  rust: 'rust rs',
+  python: 'python py',
+  shell: 'sh bash zsh shell',
+  diff: 'diff patch',
+};
+const LANGUAGES: ReadonlyMap<string, Language> = new Map(
+  (Object.keys(NAMES) as Language[]).flatMap((language) => NAMES[language].split(' ').map((name): [string, Language] => [name, language])),
+);
 
 /** The language for a fence info string, or null. Only the first word is read, and only as a lookup key. */
 export function languageOf(info: string): Language | null {
