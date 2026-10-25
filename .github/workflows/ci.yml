@@ -184,3 +184,5 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo xtask gate
+      - name: Agent mail round trip
+        run: ./examples/two-roles/mail.sh
