@@ -330,25 +330,8 @@ exec /bin/sleep 120
     await this.rememberManaged();
   }
 
-  // A healthy Chrome answers its first call in about a second. One that is silent after this long
-  // never answers (a 30 second wait on a cold CI runner failed the same way), so the launch is
-  // abandoned and tried again instead of waiting out the whole timeout on a hung process.
   async launchChrome() {
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        await this.startChrome();
-        break;
-      } catch (error) {
-        const hung = (error.cause ?? error).message === 'Chrome Browser.getVersion timed out';
-        if (!hung || attempt === 3) throw error;
-        console.error(`smoke: Chrome did not answer, relaunching (attempt ${attempt + 1} of 3)`);
-        this.cdp.close();
-        this.signalUnanchoredChrome('SIGKILL');
-        await waitFor(() => this.chrome.exitCode !== null || this.chrome.signalCode !== null,
-          'silent Chrome survived kill', 5000, true);
-        await rm(join(this.root, 'chrome'), { recursive: true, force: true });
-      }
-    }
+    await this.startChrome();
     check(this.chrome.exitCode === null && this.chrome.signalCode === null, 'Chrome exited before ownership was recorded');
     const identity = await this.processInfo(this.chrome.pid);
     check(identity && identity.parent === process.pid && identity.group === this.chrome.pid
