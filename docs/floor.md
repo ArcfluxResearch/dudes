@@ -11,9 +11,14 @@ agent stands in the office:
   the bell. What an agent reports about its own work never rings it.
 
 A new hire walks in through the door, and a retired agent walks out. While every agent is paused,
-the office dims. Click an agent in the office or in **Crew** to open the drawer, which shows its
-goal and status and the Floor actions you turned on, such as answering its question, pausing it or
-changing its goal. The drawer opens to a conversation and a message box.
+the office dims. Click an agent in the office or in the roster beside it to open the drawer, which shows its
+state and the Floor actions you turned on, such as answering its question, pausing it or
+changing its goal. The drawer opens to a conversation and a message box. Its top shows the agent's
+state in the same word and colour as the roster, one sentence about it and the main action, then Pause or
+Stop and the model with its **Change model** button. Retire, Edit look and Open the real CLI are in the **…**
+menu. Once an agent's goal is achieved or abandoned, or its ticket is accepted, **Current work** reads
+"None" and the work is listed under **Last finished** with what happened to it, such as "Done, accepted 13:41".
+The roster's line for that agent starts with "Last finished:".
 You can send the first message without assigning a goal, watch the reply arrive, and send a
 follow-up. A message sent during a turn waits for that turn to finish. Each message to an agent
 without a goal authorizes one turn; messages to an agent with a goal join its next task.
@@ -230,12 +235,41 @@ Set a spending limit when your account bills per use.
   Remove for one in Needs you. Remove for one that is Done, to clear it off the board. Accept is your verdict that the work is what you asked for. The check
   passing only means the daemon's own run passed.
 - **Banner.** The top bar says how many tickets are ready for you or need you, and how many agents
-  working a ticket are asking you a question. Overview lists the tickets under Waiting on you. A
-  turn ending never raises it. While a ticket waits for you, its agent's crew pill and the top
+  working a ticket are asking you a question. The roster's heading says the same. A
+  turn ending never raises it. While a ticket waits for you, its agent's roster row and the top
   bar's count read "ready for you" or "needs you" instead of "done", and the old goal-done notice
   is not shown for it.
 
 [Tickets](tickets.md) covers the same actions from the command line.
+
+## The roster
+
+The roster is the list of agents beside the office. On a phone it is a bottom sheet that opens from its
+heading. Each agent has one row: its face, its name, one state word, one line about what it is doing, and
+the button for what it needs from you. Its heading says in plain words who needs you, such as "1 ready
+for you · 2 need you", or "Nobody needs you".
+
+One rule gives the state word everywhere the Floor shows it: the roster, the **Overview** dialog, the
+top bar's counts in focus mode and the badges over agents in the office.
+
+| State | When |
+| --- | --- |
+| Ready for you | The agent has a ticket waiting for your review. The button is **Review**. |
+| Needs you | The agent is asking a question (**Answer**), has a ticket in Needs you (**Open ticket**, or **Review** when the ticket waits for you to review changed shared instructions), or is paused, stopped or held (**Open**). An agent with both a question and a ticket shows both buttons. |
+| Working | The agent is running a turn. The button is **Talk**. |
+| Waiting | The agent waits on something other than you. |
+| Done | The agent finished its last turn and has nothing waiting for you. |
+| Idle | None of the above. |
+
+Rows with something for you come first, then working, waiting, idle and done agents. While the pointer or
+the keyboard focus is inside the roster, rows stay where they are, so a row never moves under a click;
+they reorder once you leave. From 30 agents the rows group under their state with a count. Role, engine and
+folder are in the agent's panel, under **Details**. **Crew** in the **More** menu hides or shows the roster.
+
+The **Overview** button in the top bar opens a dialog over the office with the number of agents, a line that
+says "Everything is saved." (hover it for the exact journal position), the same roster and the archived
+agents. Escape or the close button closes it and
+returns the keyboard to the button.
 
 ## What the last turn used
 

@@ -690,6 +690,7 @@ struct CodexCase {
     exit: i32,
     thread: &'static str,
     text: &'static [&'static str],
+    reply: &'static str,
     /// `turn.completed.usage` with the cache taken out of the input.
     usage: Usage,
 }
@@ -703,13 +704,14 @@ const fn tokens(input: u64, cache_read: u64, output: u64) -> Usage {
     }
 }
 
-fn codex_cases() -> [CodexCase; 3] {
+fn codex_cases() -> [CodexCase; 4] {
     [
         CodexCase {
             fixture: "c1-success",
             exit: 0,
             thread: "01a0e1d9-3860-7800-a9ff-2994ef3b1c6f",
             text: &["ok"],
+            reply: "ok",
             usage: tokens(3865, 12_288, 5),
         },
         CodexCase {
@@ -717,6 +719,7 @@ fn codex_cases() -> [CodexCase; 3] {
             exit: 0,
             thread: "01a0e1d9-84d5-7bc2-8567-d32735103d71",
             text: &["I\u{2019}ll run `echo ok`.\n", "\nok"],
+            reply: "ok",
             usage: tokens(4106, 28_288, 52),
         },
         CodexCase {
@@ -724,7 +727,19 @@ fn codex_cases() -> [CodexCase; 3] {
             exit: 0,
             thread: "01a0e1d9-3860-7800-a9ff-2994ef3b1c6f",
             text: &["ok"],
+            reply: "ok",
             usage: tokens(4035, 28_288, 10),
+        },
+        CodexCase {
+            fixture: "c4-file-change",
+            exit: 0,
+            thread: "00000000-0000-7000-8000-000000000001",
+            text: &[
+                "I\u{2019}ll follow the requested order and make the two file changes.\n",
+                "\ndone",
+            ],
+            reply: "done",
+            usage: tokens(5224, 77_184, 350),
         },
     ]
 }
@@ -782,7 +797,12 @@ fn every_codex_fixture_reads_to_its_recorded_end() {
             "{}",
             case.fixture
         );
-        assert_eq!(end.last_message.as_deref(), Some("ok"), "{}", case.fixture);
+        assert_eq!(
+            end.last_message.as_deref(),
+            Some(case.reply),
+            "{}",
+            case.fixture
+        );
         assert_eq!(
             end.usage,
             Some(ScopedUsage::Session {

@@ -14,7 +14,7 @@ let SettingsView;
 let ArchivedAgents;
 let OfficeCanvas;
 let StreamNotice;
-let OverviewSummary;
+let OverviewDialog;
 let streamModule;
 let streamStore;
 let awayModule;
@@ -27,7 +27,7 @@ before(async () => {
   ({ ArchivedAgents } = await server.ssrLoadModule('/src/renderer/ArchivedAgents.tsx'));
   ({ OfficeCanvas } = await server.ssrLoadModule('/src/renderer/OfficeCanvas.tsx'));
   ({ StreamNotice } = await server.ssrLoadModule('/src/renderer/StreamNotice.tsx'));
-  ({ OverviewSummary } = await server.ssrLoadModule('/src/renderer/Control.tsx'));
+  ({ OverviewDialog } = await server.ssrLoadModule('/src/renderer/OverviewDialog.tsx'));
   streamModule = await server.ssrLoadModule('/src/renderer/floor/stream.ts');
   streamStore = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   awayModule = await server.ssrLoadModule('/src/renderer/floor/away.ts');
@@ -141,7 +141,7 @@ test('a socket that never opens cannot claim an open connection after silence', 
 });
 
 test('an opened transport is still loading until its first snapshot confirms the view', () => {
-  const rendered = html(OverviewSummary, floor({ phase: 'live', epoch: 1, snapshotEpoch: 0 }));
+  const rendered = html(OverviewDialog, floor({ phase: 'live', epoch: 1, snapshotEpoch: 0 }));
   assert.match(rendered, /Connecting to Dudes/i);
   assert.doesNotMatch(rendered, /Live.*confirmed/);
 });

@@ -54,7 +54,7 @@ test('refused storage getter, reads and writes retain safe defaults and report u
   }
 });
 
-test('Crew and the focus roster each keep this viewer\'s own order behind reorder handles', async () => {
+test('the roster and the focus roster each keep this viewer\'s own order behind reorder handles', async () => {
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const { createServer } = await import('vite');
@@ -65,12 +65,12 @@ test('Crew and the focus roster each keep this viewer\'s own order behind reorde
   globalThis.window = { localStorage: local };
   const server = await createServer({ root: resolve(import.meta.dirname, '..'), server: { middlewareMode: true, hmr: false }, appType: 'custom' });
   try {
-    const { CrewList } = await server.ssrLoadModule('/src/renderer/CrewList.tsx');
+    const { Roster } = await server.ssrLoadModule('/src/renderer/Roster.tsx');
     const { AgentsRoster } = await server.ssrLoadModule('/src/renderer/Control.tsx');
     const agents = [{ id: GRACE, name: 'Grace' }, { id: ADA, name: 'Ada renamed' }];
-    const strip = renderToStaticMarkup(createElement(CrewList, { agents: agents.toReversed(), cards: [], selectedId: ADA, selectable: true, onSelectAgent() {} }));
+    const strip = renderToStaticMarkup(createElement(Roster, { agents: agents.toReversed(), cards: [], selectedId: ADA, selectable: true, stale: false, onSelectAgent() {}, onOpenQuestion() {}, onOpenTicket() {} }));
     const floor = { agents, retiredAgents: [], phase: 'live', stale: false };
-    const focus = renderToStaticMarkup(createElement(AgentsRoster, { floor, selectedId: ADA, onSelectAgent() {} }));
+    const focus = renderToStaticMarkup(createElement(AgentsRoster, { floor, selectedId: ADA, onSelectAgent() {}, onOpenQuestion() {}, onOpenTicket() {} }));
     assert.ok(strip.indexOf(`data-agent-id="${ADA}"`) < strip.indexOf(`data-agent-id="${GRACE}"`));
     assert.ok(focus.indexOf(`data-agent-id="${GRACE}"`) < focus.indexOf(`data-agent-id="${ADA}"`));
     assert.match(focus, /Reorder Grace, position 1 of 2/);

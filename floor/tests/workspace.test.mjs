@@ -51,30 +51,29 @@ test('focus grouping uses ids, keeps all agents, and chooses a stable label afte
     expected.map(({ agents, ...group }) => group));
 });
 
-test('Floor shows recorded labels in Crew, the detail and the focus roster\'s separate groups without paths', async () => {
+test('Floor says the project in the roster\'s description and the detail, without paths', async () => {
   const server = await createServer({ root: resolve(import.meta.dirname, '..'),
     cacheDir: resolve(import.meta.dirname, '../node_modules/.vite-workspaces'),
     server: { middlewareMode: true, hmr: false }, appType: 'custom' });
   try {
-    const { CrewList } = await server.ssrLoadModule('/src/renderer/CrewList.tsx');
+    const { Roster } = await server.ssrLoadModule('/src/renderer/Roster.tsx');
     const { AgentDetail } = await server.ssrLoadModule('/src/renderer/AgentDetail.tsx');
     const { AgentsRoster } = await server.ssrLoadModule('/src/renderer/Control.tsx');
     const render = (component, props) => renderToStaticMarkup(createElement(component, props));
+    const handlers = { onSelectAgent() {}, onOpenQuestion() {}, onOpenTicket() {} };
     const agents = [...rows, { id: '01M31CGZJMEFDYMJ4YBV76DJHR', name: 'Legacy', cwd: '/private/SECRET' }];
-    const strip = render(CrewList, { agents, cards: [], selectedId: ADA, selectable: true, stale: false, onSelectAgent() {} });
+    const strip = render(Roster, { agents, cards: [], selectedId: ADA, selectable: true, stale: false, ...handlers });
     const detail = render(AgentDetail, { row: rows[0] });
-    const roster = render(AgentsRoster, { floor: { retiredAgents: [], agents, phase: 'live', stale: false }, selectedId: GRACE, onSelectAgent() {} });
-    assert.match(strip, new RegExp(`data-agent-id="${ADA}"[^>]*>(?:(?!</button>).)*<small class="crew-workspace" title="Workbench" data-recorded="true">Workbench</small>`));
-    assert.match(strip, /<small class="crew-workspace" title="Project not recorded" data-recorded="false">Project not recorded<\/small>/);
+    const roster = render(AgentsRoster, { floor: { retiredAgents: [], agents, cards: [], stepLabels: {}, phase: 'live', stale: false }, selectedId: GRACE, ...handlers });
     assert.match(strip, new RegExp(`<span id="crew-about-${ADA}" hidden="">[^<]*Project: Workbench</span>`));
+    assert.match(strip, /hidden="">[^<]*Project: Project not recorded<\/span>/);
     assert.match(detail, /<dt>Project<\/dt><dd>Workbench<\/dd>/);
-    assert.equal((roster.match(/<h3[^>]*>Workbench<\/h3>/g) ?? []).length, 2);
-    assert.match(roster, /<h3[^>]*>Project not recorded<\/h3>/);
-    assert.equal((roster.match(/data-agent-id=/g) ?? []).length, 3);
+    assert.equal((roster.match(/<button[^>]*class="crew-row"/g) ?? []).length, 3);
     assert.match(roster, new RegExp(`data-agent-id="${GRACE}"[^>]*aria-pressed="true"`));
+    assert.doesNotMatch(strip, /crew-workspace|Project not recorded<\/small>/);
     for (const html of [strip, detail, roster]) assert.doesNotMatch(html, /private|SECRET|cwd/);
-    const stale = render(AgentsRoster, { floor: { retiredAgents: [], agents, phase: 'live', stale: true }, selectedId: null, onSelectAgent() {} });
-    assert.equal((stale.match(/<button[^>]*class="agents-roster-row"[^>]*disabled=""/g) ?? []).length, 3);
+    const stale = render(AgentsRoster, { floor: { retiredAgents: [], agents, cards: [], stepLabels: {}, phase: 'live', stale: true }, selectedId: null, ...handlers });
+    assert.equal((stale.match(/<button[^>]*class="crew-row"[^>]*disabled=""/g) ?? []).length, 3);
   } finally {
     await server.close();
   }

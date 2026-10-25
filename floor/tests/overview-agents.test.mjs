@@ -38,21 +38,25 @@ async function withViews(run) {
   try {
     const { AgentDetail } = await server.ssrLoadModule('/src/renderer/AgentDetail.tsx');
     const { AgentDrawer } = await server.ssrLoadModule('/src/renderer/AgentDrawer.tsx');
-    const { Control, FocusRoster, OverviewSummary, AgentsRoster } = await server.ssrLoadModule('/src/renderer/Control.tsx');
+    const { FocusRoster, AgentsRoster } = await server.ssrLoadModule('/src/renderer/Control.tsx');
+    const { OverviewDialog } = await server.ssrLoadModule('/src/renderer/OverviewDialog.tsx');
     const drawer = (floor, row, selectedId) => renderToStaticMarkup(createElement(AgentDrawer, {
       floor, row, selectedId, onClose() {}, leaveFocusTo: 'crew-toggle',
     }));
     run({
       detail: (row) => renderToStaticMarkup(createElement(AgentDetail, { row })),
-      monitor: (floor) => renderToStaticMarkup(createElement(OverviewSummary, { floor, selectedId: null, onOpenQuestion() {} })),
+      monitor: (floor) => renderToStaticMarkup(createElement(OverviewDialog, {
+        floor, selectedId: null, onClose() {}, onSelectAgent() {}, onOpenQuestion() {}, onOpenTicket() {},
+      })),
       roster: (floor, selectedId) => renderToStaticMarkup(createElement(AgentsRoster,
-        { floor, selectedId, onSelectAgent() {} })),
-      overview: (floor, selectedId) => renderToStaticMarkup(createElement(Control, {
-        floor, view: 'overview', selectedId, onClose() {}, onView() {}, onOpenQuestion() {},
+        { floor, selectedId, onSelectAgent() {}, onOpenQuestion() {}, onOpenTicket() {} })),
+      overview: (floor, selectedId) => renderToStaticMarkup(createElement(OverviewDialog, {
+        floor, selectedId, onClose() {}, onSelectAgent() {}, onOpenQuestion() {}, onOpenTicket() {},
       })),
       drawer,
       focus: (floor, row, selectedId, collapsed = false) => drawer(floor, row, selectedId)
-        + renderToStaticMarkup(createElement(FocusRoster, { floor, selectedId, onSelectAgent() {}, collapsed, onToggle() {} })),
+        + renderToStaticMarkup(createElement(FocusRoster, { floor, selectedId, onSelectAgent() {}, onOpenQuestion() {},
+          onOpenTicket() {}, collapsed, onToggle() {} })),
     });
   } finally {
     await server.close();
@@ -64,13 +68,13 @@ test('Overview and the drawer report only published stream and selected-agent fa
     const center = (floor, row, id) => overview(floor, id) + drawer(floor, row, id);
     const html = center(live, ada, ADA);
     for (const text of [
-      'Connected.', 'Journal position', 'segment 0 · byte 42', ADA, 'Ada', 'Claude', 'backend engineer',
+      'Connected.', 'Everything is saved.', ADA, 'Ada', 'Claude', 'backend engineer',
       'waiting', 'managed', 'Paused', 'Breaker', 'warn', 'Turns', '7',
       'Review the full release candidate', 'in_progress', '$0.03 · 30 tok',
       'Ship now, or wait for a review?',
     ]) assert.ok(html.includes(text), `Overview or the drawer omitted ${text}`);
-    assert.match(html, /<p class="agent-overview-now-line">Paused<\/p>/);
-    assert.match(html, /<h2 id="control-title" tabindex="-1">Overview<\/h2>/);
+    assert.match(html, /<span class="agent-detail-state-text">Paused<\/span>/);
+    assert.match(html, /<h2 id="overview-title" tabindex="-1">Overview<\/h2>/);
     assert.match(html, /<summary>Archived \(0\)<\/summary>/);
     assert.doesNotMatch(html, /<input|<form|<textarea|contenteditable|Terminal|Workers/);
     const other = center(live, grace, GRACE);
@@ -101,8 +105,7 @@ test('the focus roster preserves the current projection order and selects exactl
     assert.ok(html.indexOf(ADA) < html.indexOf(GRACE));
     for (const text of [
       'Ada', 'Grace', 'backend engineer', 'frontend engineer', 'Claude', 'Codex',
-      'waiting', 'running', 'Review the full release candidate', 'Polish the visible floor',
-      '$0.03 · 30 tok', '$0.11 · 111 tok',
+      'Ship now, or wait for a review?', 'Stopped',
     ]) assert.ok(html.includes(text), `the focus roster omitted ${text}`);
     assert.match(html, new RegExp(`data-agent-id="${GRACE}"[^>]*aria-pressed="true"`));
     assert.match(html, new RegExp(`data-agent-id="${ADA}"[^>]*aria-pressed="false"`));
@@ -139,19 +142,17 @@ test('shell passes one selected AgentId to all views and all selection routes us
   const root = resolve(import.meta.dirname, '../src');
   const shell = await readFile(resolve(root, 'shell.tsx'), 'utf8');
   const canvas = await readFile(resolve(root, 'renderer/OfficeCanvas.tsx'), 'utf8');
-  const strip = await readFile(resolve(root, 'renderer/CrewList.tsx'), 'utf8');
-  const center = await readFile(resolve(root, 'renderer/Control.tsx'), 'utf8');
+  const strip = await readFile(resolve(root, 'renderer/Roster.tsx'), 'utf8');
   assert.match(shell, /const currentSelectedId = displayRow\?\.id \?\? null/);
   assert.match(shell, /selectedId !== null && selectable && floor\.lsn > 0 && selectedRow === null/);
   assert.match(shell, /selectOutputAgent\(null\);\s*setSelectedId\(null\)/);
   assert.match(shell, /selectOutputAgent\(id\);\s*setSelectedId\(id\)/);
   assert.match(shell, /<OfficeCanvas[^>]*selectedId=\{currentSelectedId\} onSelectAgent=\{selectAgent\}/);
-  assert.match(shell, /<CrewList[^>]*selectedId=\{currentSelectedId\}[^>]*onSelectAgent=\{selectAgent\}/);
+  assert.match(shell, /<Roster[^>]*selectedId=\{currentSelectedId\}[^>]*onSelectAgent=\{selectAgent\}/);
   assert.match(shell, /<AgentDrawer floor=\{floor\} row=\{displayRow\} selectedId=\{currentSelectedId\} onClose=\{clearSelection\}/);
   assert.match(shell, /<FocusRoster floor=\{floor\} selectedId=\{currentSelectedId\} onSelectAgent=\{selectAgent\}/);
   assert.match(canvas, /onClick=\{\(\) => onSelectAgent\(id\)\}/);
   assert.match(strip, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);
-  assert.match(center, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);
 });
 
 test('the header keeps enabled controls beside the tabbed agent facts', async () => {
@@ -168,7 +169,7 @@ test('the header keeps enabled controls beside the tabbed agent facts', async ()
 test('a turn without assistant text offers no output toggle while the header retains its status', async () => {
   await withViews(({ drawer: center }) => {
     const output = { ...live.output, targetId: GRACE, status: 'live', chunks: [] };
-    assert.match(center({ ...live, output }, grace, GRACE), /data-status="running"/);
+    assert.match(center({ ...live, output }, grace, GRACE), /<span class="crew-chip" data-state="needs-you">Needs you<\/span>/);
     assert.doesNotMatch(center({ ...live, output }, grace, GRACE), /Show full output/);
     assert.doesNotMatch(center({ ...live, output: { ...output, status: 'ended' } }, grace, GRACE), /Show full output/);
     assert.doesNotMatch(center({ ...live, stale: true, output }, grace, GRACE), /Show full output/);
@@ -194,9 +195,9 @@ test('a recovery-required ticket gives the selected agent and focus roster the s
     title: 'Continue the interrupted task', ticket: { reason: 'recovery_required', round: 1, goal: row.goal.id } };
   await withViews(({ focus }) => {
     const html = focus({ ...live, agents: [row], cards: [card] }, row, ADA);
-    assert.match(html, /<span data-status="needs you">needs you<\/span>/);
+    assert.match(html, /<section class="agent-detail-state" aria-label="State" data-state="needs-you"><p class="agent-detail-state-line"><span class="crew-chip" data-state="needs-you">Needs you<\/span>/);
     assert.match(html, /<dt>Status<\/dt><dd>Needs you<\/dd>/);
-    assert.match(html, /<span>needs you<\/span>/);
+    assert.match(html, /data-state="needs-you"><span class="visually-hidden">Status: <\/span>Needs you<\/span>/);
     assert.doesNotMatch(html, /<span>running<\/span>|data-status="running"/);
   });
 });

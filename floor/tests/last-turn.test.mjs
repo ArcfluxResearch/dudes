@@ -52,9 +52,6 @@ test('a gauge caps at one hundred percent and tiny costs say under a cent', () =
   assert.equal(shown.cost, 'Cost: under $0.01');
 });
 
-test('the card says what the last turn used', async () => {
-  const { crewRowOf } = await import('../src/renderer/crewRow.ts');
-  const row = crewRowOf(claude);
-  assert.equal(row.lastTurn, '3.7k tokens · $0.03 · 25% context');
-  assert.match(row.description, /Last turn: 3.7k tokens/);
+test('the line says what the last turn used', () => {
+  assert.equal(lastTurnOf(claude).line, '3.7k tokens · $0.03 · 25% context');
 });

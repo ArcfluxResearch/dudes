@@ -11,6 +11,12 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.97.1] - 2026-10-25
+
+### Fixes
+
+- When Pi fails a turn, for example because its default model is not available for the signed-in account or a model name matches more than one provider, Chat now shows Pi's own error instead of "No final reply was reported". (#209)
+
 ## [0.97.0] - 2026-10-25
 
 ### Highlights
@@ -418,7 +424,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.97.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.97.1...HEAD
+[0.97.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.97.0...v0.97.1
 [0.97.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.96.0...v0.97.0
 [0.96.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.95.0...v0.96.0
 [0.95.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.94.0...v0.95.0

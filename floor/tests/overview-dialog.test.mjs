@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 
@@ -26,23 +27,21 @@ const idle = (id = ADA, name = 'Ada') => agent(id, name, 'idle', undefined, unde
 
 let server;
 let store;
-let questions;
-let Control;
+let OverviewDialog;
 let ControlNav;
-let WaitingOnYou;
 let CONTROL_VIEWS;
 
 before(async () => {
   server = await createServer({
     root,
-    cacheDir: resolve(root, 'node_modules/.vite-waiting-on-you'),
+    cacheDir: resolve(root, 'node_modules/.vite-overview-dialog'),
     server: { middlewareMode: true, hmr: false },
     appType: 'custom',
     logLevel: 'silent',
   });
   store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
-  questions = await server.ssrLoadModule('/src/renderer/questions.ts');
-  ({ Control, ControlNav, WaitingOnYou, CONTROL_VIEWS } = await server.ssrLoadModule('/src/renderer/Control.tsx'));
+  ({ OverviewDialog } = await server.ssrLoadModule('/src/renderer/OverviewDialog.tsx'));
+  ({ ControlNav, CONTROL_VIEWS } = await server.ssrLoadModule('/src/renderer/Control.tsx'));
 });
 
 after(async () => {
@@ -56,19 +55,13 @@ beforeEach(() => {
 function subscribe(agents) {
   const epoch = store.beginFloorEpoch();
   store.noteTransport('open');
-  store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 12, agents }, answer: SIBLING }), epoch);
+  store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 2199023259734, agents }, answer: SIBLING }), epoch);
 }
 
 function overview() {
-  return renderToStaticMarkup(createElement(Control, {
-    floor: store.getFloorState(), view: 'overview', selectedId: null, onClose() {}, onView() {}, onOpenQuestion() {},
+  return renderToStaticMarkup(createElement(OverviewDialog, {
+    floor: store.getFloorState(), selectedId: null, onClose() {}, onSelectAgent() {}, onOpenQuestion() {}, onOpenTicket() {},
   }));
-}
-
-function find(node, matches) {
-  if (node === null || typeof node !== 'object') return [];
-  if (Array.isArray(node)) return node.flatMap((child) => find(child, matches));
-  return [...(matches(node) ? [node] : []), ...find(node.props?.children, matches)];
 }
 
 test('the top bar lists exactly Overview, Board, Log, Setup and Settings, with no count for a waiting agent', () => {
@@ -82,48 +75,46 @@ test('the top bar lists exactly Overview, Board, Log, Setup and Settings, with n
     ['view-overview', 'Overview'], ['view-board', 'Board'], ['view-log', 'Log'],
     ['view-setup', 'Setup'], ['view-settings', 'Settings'],
   ]);
+  const open = renderToStaticMarkup(createElement(ControlNav, { floor: store.getFloorState(), view: 'overview', onToggle() {} }));
+  assert.match(open, /id="view-overview" aria-pressed="true" aria-controls="overview-dialog"/);
 });
 
-test('Overview opens with a Waiting on you section naming the agent and its question', () => {
+test('Overview is a dialog with the count, the journal in plain words and the roster in place of the old lists', () => {
   subscribe([ada(), idle(GRACE, 'Grace')]);
   const html = overview();
-  assert.match(html, /<section class="waiting-on-you" aria-labelledby="waiting-on-you-title"><h3 id="waiting-on-you-title">Waiting on you<\/h3>/);
-  assert.deepEqual([...html.matchAll(/<li class="waiting-item" data-waiting-kind="question" data-waiting-agent-id="([^"]+)">/g)]
-    .map(([, id]) => id), [ADA]);
-  assert.match(html, /<h4>Ada<\/h4><p>Ship 7f3a9c1e or wait for review\?<\/p><button/);
-  assert.doesNotMatch(html, /waiting-for|waiting \d+ min|under a minute/);
-  assert.ok(html.indexOf('Waiting on you') < html.indexOf('Current agents'), 'the section is not at the top of Overview');
+  assert.match(html, /^<dialog class="overview-dialog" id="overview-dialog" aria-labelledby="overview-title">/);
+  assert.match(html, /<h2 id="overview-title" tabindex="-1">Overview<\/h2><button type="button" class="panel-close" aria-label="Close Overview"/);
+  assert.match(html, /<strong>2<\/strong> agents/);
+  assert.match(html, /<p class="overview-journal" title="Saved up to segment 2 · byte 4182">\s*Everything is saved\.<\/p>/);
+  assert.match(html, /<section class="crew-list roster" id="overview-roster-list" aria-labelledby="overview-roster-title"/);
+  assert.match(html, /<h2 id="overview-roster-title" class="roster-title">1 needs you<\/h2>/);
+  assert.match(html, /<strong class="crew-name"><bdi>Ada<\/bdi>/);
+  assert.match(html, /aria-label="Answer, Ada"/);
+  assert.match(html, /Archived \(0\)/);
+  assert.doesNotMatch(html, /waiting-on-you|Waiting on you|Workers|Current agents|workers-list/);
 });
 
-test('choosing an entry hands that agent to the handler the office question mark also uses', () => {
-  subscribe([ada(), grace()]);
-  const opened = [];
-  const items = questions.waitingOnYou(store.getFloorState().agents);
-  const tree = WaitingOnYou({ items, selectable: true, onOpen: (id) => opened.push(id) });
-  const buttons = find(tree, (node) => node.type === 'button');
-  assert.equal(buttons.length, 2);
-  buttons[1].props.onClick();
-  assert.deepEqual(opened, [ADA]);
-  assert.match(overview(), /<button type="button" class="waiting-open"[^>]*>Answer<\/button>/);
-});
-
-test('an entry cannot be opened while the view is unconfirmed', () => {
+test('an answer cannot be opened while the view is unconfirmed', () => {
   subscribe([ada()]);
   store.noteStale(true);
-  assert.match(overview(), /<button type="button" class="waiting-open" disabled="" title="Reconnect to Dudes before answering.">Answer<\/button>/);
+  assert.match(overview(), /<button type="button" class="roster-act" data-primary="true" disabled="" aria-label="Answer, Ada">Answer<\/button>/);
 });
 
-test('entries come newest question first', () => {
-  subscribe([ada(), grace()]);
-  const html = overview();
-  assert.deepEqual([...html.matchAll(/data-waiting-agent-id="([^"]+)"/g)].map(([, id]) => id), [GRACE, ADA]);
-});
-
-test('with nothing waiting the section is absent and nothing stands in for it', () => {
+test('with nothing waiting the dialog says so plainly', () => {
   subscribe([idle()]);
   const html = overview();
-  assert.doesNotMatch(html, /waiting-on-you|Waiting on you|No agent is waiting|Recent answered/);
-  assert.match(html, /Current agents/);
+  assert.match(html, />Nobody needs you<\/h2>/);
+  assert.doesNotMatch(html, /No agent is waiting|Recent answered/);
+});
+
+test('Escape and the close button end the dialog and focus returns to the Overview button', async () => {
+  const source = await readFile(resolve(root, 'src/renderer/OverviewDialog.tsx'), 'utf8');
+  assert.match(source, /onCancel=\{\(event\) => \{ event\.preventDefault\(\); onClose\(\); \}\}/);
+  assert.match(source, /aria-label="Close Overview" title="Close \(Escape\)" onClick=\{onClose\}/);
+  assert.match(source, /restoreFocusAfterDialog\(opener, node\?\.ownerDocument\.getElementById\(viewButtonId\('overview'\)\) \?\? null\)/);
+  const shell = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
+  assert.match(shell, /\{view === 'overview' && !focused \? <OverviewDialog floor=\{floor\}/);
+  assert.match(shell, /\{view === null \|\| view === 'overview' \|\| focused \? null : <Control /);
 });
 
 test('a stream frame that still carries answered-question history is read without it and without a rejection', () => {

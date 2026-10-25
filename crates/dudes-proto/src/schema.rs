@@ -1469,7 +1469,8 @@ mod tests {
                 "role",
                 "department",
                 "status",
-                "held_card"
+                "held_card",
+                "you"
             ])
         );
     }

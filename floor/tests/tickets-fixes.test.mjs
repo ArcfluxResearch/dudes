@@ -10,7 +10,7 @@
 //   - the wrong-state sentence broken ................................... "the wrong-state sentence…"
 //   - the Give form saying hire while the read loads ................... "the Give form…"
 //   - Edit offered before the read ...................................... "Edit waits…"
-//   - the crew pill reading done for a ready ticket .................... "the crew pill…"
+//   - the roster chip reading done for a ready ticket ............... "the roster chip…"
 
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
@@ -32,7 +32,7 @@ let words;
 let ticket;
 let detail;
 let doneModule;
-let crew;
+let needs;
 let CrewStats;
 let panels;
 let board;
@@ -47,7 +47,7 @@ before(async () => {
   ticket = await server.ssrLoadModule('/src/renderer/ticket/ticket.ts');
   detail = await server.ssrLoadModule('/src/renderer/ticket/detail.ts');
   doneModule = await server.ssrLoadModule('/src/renderer/done.ts');
-  crew = await server.ssrLoadModule('/src/renderer/crewRow.ts');
+  needs = await server.ssrLoadModule('/src/renderer/needs.ts');
   ({ CrewStats } = await server.ssrLoadModule('/src/renderer/CrewTotals.tsx'));
   panels = await server.ssrLoadModule('/src/renderer/ticket/TicketPanel.tsx');
   board = await server.ssrLoadModule('/src/renderer/ticket/TicketBoard.tsx');
@@ -175,16 +175,17 @@ test('Edit waits for the ticket to be read', async () => {
   assert.ok(!/data-action="edit"[^>]*disabled/.test(render()));
 });
 
-test('the crew pill and the top bar say a ticket is ready for you, not done', () => {
+test('the roster chip and the top bar say a ticket is ready for you, not done', () => {
   const row = agent(ADA, 'Ada', { status: 'done' });
   const review = [ticketCard(1, 'review', { claimed_by: ADA })];
-  assert.equal(crew.crewRowOf(row, []).status, 'done');
-  assert.equal(crew.crewRowOf(row, review).status, 'ready for you');
-  assert.equal(crew.crewRowOf(row, [ticketCard(1, 'blocked', { claimed_by: ADA })]).status, 'needs you');
-  assert.equal(crew.crewRowOf(agent(ADA, 'Ada', { status: 'running' }), review).status, 'running', 'a running agent keeps its status');
-  assert.equal(crew.crewRowOf(row, [ticketCard(1, 'done', { claimed_by: ADA })]).status, 'done');
+  const state = (agents, cards) => needs.needsOf(agents, cards)[0].state;
+  assert.equal(state([row], []), 'done');
+  assert.equal(state([row], review), 'ready');
+  assert.equal(state([row], [ticketCard(1, 'blocked', { claimed_by: ADA })]), 'needs-you');
+  assert.equal(state([agent(ADA, 'Ada', { status: 'running' })], []), 'working');
+  assert.equal(state([row], [ticketCard(1, 'done', { claimed_by: ADA })]), 'done');
   const html = renderToStaticMarkup(createElement(CrewStats, { agents: [row], cards: review }));
-  assert.match(html, /data-status="ready for you">1 ready for you</);
+  assert.match(html, /data-status="ready">1 ready for you</);
   assert.ok(!/ done</.test(html));
 });
 

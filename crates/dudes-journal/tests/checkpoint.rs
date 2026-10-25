@@ -177,6 +177,10 @@ fn placement(kind: RecordKind) -> Placement {
         | RecordKind::NoteTurnDecided
         | RecordKind::TaughtNoteTurnDecided
         | RecordKind::TaughtNoteOnlyTurnIssued
+        | RecordKind::IdentifiedConversationTurnDecided
+        | RecordKind::IdentifiedConversationTurnIssued
+        | RecordKind::IdentifiedTaughtNoteTurnDecided
+        | RecordKind::IdentifiedTaughtNoteOnlyTurnIssued
         | RecordKind::NoteOnlyTurnIssued
         | RecordKind::TurnIssuedWithBrowserNote => Placement::Out(
             "matched browser lifecycles have independent prefix and checkpoint equality tests",
@@ -200,7 +204,10 @@ fn placement(kind: RecordKind) -> Placement {
         RecordKind::WorktreeLeased | RecordKind::WorktreeRemoved => Placement::Out(
             "the lease lifecycle needs its own agent and removal order; tests/worktrees.rs replays it with and without checkpoints",
         ),
-        RecordKind::MailWakeTurnDecided | RecordKind::MailWakeOnlyTurnIssued => Placement::Out(
+        RecordKind::MailWakeTurnDecided
+        | RecordKind::MailWakeOnlyTurnIssued
+        | RecordKind::IdentifiedMailWakeTurnDecided
+        | RecordKind::IdentifiedMailWakeOnlyTurnIssued => Placement::Out(
             "matched wake authority uses the checkpointed same-journal rebuild case below; standalone samples do not form valid joins",
         ),
         RecordKind::TicketCreated
