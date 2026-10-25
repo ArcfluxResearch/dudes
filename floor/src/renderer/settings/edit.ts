@@ -192,15 +192,19 @@ export function limitChange(unit: LimitUnit, typed: string, current: string | nu
   return { kind: 'change', value, question };
 }
 
+// A page keeps the policy it was served with, and each refused probe logs a policy violation, so probe once.
+let drawsTerminal: boolean | null = null;
+
 /** Whether this page was served under the policy that lets the terminal draw: it allows inline styles. */
 export function pageDrawsTerminal(): boolean {
   if (typeof document === 'undefined') return true;
+  if (drawsTerminal !== null) return drawsTerminal;
   const probe = document.createElement('style');
   probe.textContent = '.dudes-style-probe{}';
   document.head.append(probe);
-  const allowed = (probe.sheet?.cssRules.length ?? 0) > 0;
+  drawsTerminal = (probe.sheet?.cssRules.length ?? 0) > 0;
   probe.remove();
-  return allowed;
+  return drawsTerminal;
 }
 
 export const RELOAD_FOR_TERMINAL = 'Reload this page to open terminals. It was loaded before Attach terminals was on.';
