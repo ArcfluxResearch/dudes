@@ -96,6 +96,7 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, rec
   }
   const selection = <SelectionBar floor={floor} onClear={onClose} leaveFocusTo={leaveFocusTo} showStatus={row === null} />;
   const switchedOff = switchedOffControls(floor).filter((control) => control !== 'terminal');
+  const attachOff = switchedOffControls(floor).includes('terminal');
   const taskAgents = ticketActionsOpen(floor) && row !== null
     ? freeTaskAgents(floor).filter((agent) => agent.id === row.id) : [];
   const changeGoal = row !== null && goalGate(floor, row).open;
@@ -129,7 +130,9 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, rec
             : <ControlStrip floor={floor} row={row} />}
           recovery={<RecoveryPanel floor={floor} row={row} onReadReceipt={onReadRecoveryReceipt} />}
           retire={switchedOff.includes('retire') ? null : <RetireStrip floor={floor} row={row} />}
-          terminal={<TerminalAttach floor={floor} row={row} />}
+          terminal={attachOff ? null : <TerminalAttach floor={floor} row={row} />}
+          attachNote={attachOff && row.provider === 'claude'
+            ? <p className="agent-attach-note">To open the real CLI, turn on Attach terminals in Settings.</p> : null}
           enable={switchedOff.length === 0 ? null : <details className="enable-controls">
             <summary>Enable more controls <span className="enable-controls-count">{switchedOff.length}</span></summary>
             {switchedOff.map((control) => <UnavailableControls key={control} floor={floor} control={control} />)}

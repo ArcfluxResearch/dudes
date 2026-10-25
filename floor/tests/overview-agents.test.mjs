@@ -68,12 +68,12 @@ test('Overview and the drawer report only published stream and selected-agent fa
     const center = (floor, row, id) => overview(floor, id) + drawer(floor, row, id);
     const html = center(live, ada, ADA);
     for (const text of [
-      'Connected.', 'Everything is saved up to segment 0 · byte 42.', ADA, 'Ada', 'Claude', 'backend engineer',
+      'Connected.', 'Everything is saved.', ADA, 'Ada', 'Claude', 'backend engineer',
       'waiting', 'managed', 'Paused', 'Breaker', 'warn', 'Turns', '7',
       'Review the full release candidate', 'in_progress', '$0.03 · 30 tok',
       'Ship now, or wait for a review?',
     ]) assert.ok(html.includes(text), `Overview or the drawer omitted ${text}`);
-    assert.match(html, /<p class="agent-overview-now-line">Paused<\/p>/);
+    assert.match(html, /<span class="agent-detail-state-text">Paused<\/span>/);
     assert.match(html, /<h2 id="overview-title" tabindex="-1">Overview<\/h2>/);
     assert.match(html, /<summary>Archived \(0\)<\/summary>/);
     assert.doesNotMatch(html, /<input|<form|<textarea|contenteditable|Terminal|Workers/);
@@ -169,7 +169,7 @@ test('the header keeps enabled controls beside the tabbed agent facts', async ()
 test('a turn without assistant text offers no output toggle while the header retains its status', async () => {
   await withViews(({ drawer: center }) => {
     const output = { ...live.output, targetId: GRACE, status: 'live', chunks: [] };
-    assert.match(center({ ...live, output }, grace, GRACE), /data-status="running"/);
+    assert.match(center({ ...live, output }, grace, GRACE), /<span class="crew-chip" data-state="needs-you">Needs you<\/span>/);
     assert.doesNotMatch(center({ ...live, output }, grace, GRACE), /Show full output/);
     assert.doesNotMatch(center({ ...live, output: { ...output, status: 'ended' } }, grace, GRACE), /Show full output/);
     assert.doesNotMatch(center({ ...live, stale: true, output }, grace, GRACE), /Show full output/);
@@ -195,7 +195,7 @@ test('a recovery-required ticket gives the selected agent and focus roster the s
     title: 'Continue the interrupted task', ticket: { reason: 'recovery_required', round: 1, goal: row.goal.id } };
   await withViews(({ focus }) => {
     const html = focus({ ...live, agents: [row], cards: [card] }, row, ADA);
-    assert.match(html, /<span data-status="needs you">needs you<\/span>/);
+    assert.match(html, /<section class="agent-detail-state" aria-label="State" data-state="needs-you"><p class="agent-detail-state-line"><span class="crew-chip" data-state="needs-you">Needs you<\/span>/);
     assert.match(html, /<dt>Status<\/dt><dd>Needs you<\/dd>/);
     assert.match(html, /data-state="needs-you"><span class="visually-hidden">Status: <\/span>Needs you<\/span>/);
     assert.doesNotMatch(html, /<span>running<\/span>|data-status="running"/);
