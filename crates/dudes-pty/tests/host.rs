@@ -76,6 +76,18 @@ fn run_host_scenario() {
             diagnostic_start.elapsed()
         );
     };
+    let windows_console =
+        cfg!(windows) && std::env::var_os("DUDES_PTY_PROBE_UNIX_NEWLINES").is_none();
+    let command = |body: &[u8]| {
+        let mut bytes = body.to_vec();
+        bytes.push(if windows_console { b'\r' } else { b'\n' });
+        bytes
+    };
+    diagnostic(if windows_console {
+        "input mode CR/CRLF"
+    } else {
+        "input mode LF/LF"
+    });
     let temp = tempfile::tempdir().expect("tempdir");
     let executable = std::env::current_exe().expect("current test executable");
     let size = PtySize { cols: 80, rows: 24 };
@@ -105,11 +117,15 @@ fn run_host_scenario() {
     await_beating(&grandchild_beat);
     diagnostic("startup heartbeats observed");
 
-    let input = b"ECHO:exact bytes $() ; | &\n";
-    let written = host.write(opened.id, input).expect("write PTY");
+    let input = command(b"ECHO:exact bytes $() ; | &");
+    let written = host.write(opened.id, &input).expect("write PTY");
     assert_eq!(written, input.len(), "host did not write the exact slice");
     diagnostic("echo input written");
-    let expected_write = format!("WRITE_HEX:{}", hex(input));
+    let mut received = input.clone();
+    if windows_console {
+        received.push(b'\n');
+    }
+    let expected_write = format!("WRITE_HEX:{}", hex(&received));
     let echoed = read_until(&mut opened.reader, expected_write.as_bytes());
     assert_contains(&echoed, expected_write.as_bytes());
     diagnostic("echo output read");
@@ -120,12 +136,13 @@ fn run_host_scenario() {
     };
     host.resize(opened.id, resized).expect("resize PTY");
     diagnostic("resize returned");
-    host.write(opened.id, b"SIZE\n").expect("request size");
+    host.write(opened.id, &command(b"SIZE"))
+        .expect("request size");
     let sized = read_until(&mut opened.reader, b"SIZE:120x40");
     assert_contains(&sized, b"SIZE:120x40");
     diagnostic("resize observed");
 
-    host.write(opened.id, b"BURST:70000\n")
+    host.write(opened.id, &command(b"BURST:70000"))
         .expect("request bounded burst");
     let burst = read_until(&mut opened.reader, b"BURST_END");
     diagnostic("burst output read");
@@ -171,7 +188,7 @@ fn run_host_scenario() {
     read_until(&mut congested.reader, b"READY");
     await_beating(&congested_child);
     await_beating(&congested_grandchild);
-    host.write(congested.id, b"BURST:1000000\n")
+    host.write(congested.id, &command(b"BURST:1000000"))
         .expect("fill bounded output queue");
     thread::sleep(Duration::from_millis(80));
     let congested_close =
@@ -201,7 +218,7 @@ fn run_host_scenario() {
     read_until(&mut natural.reader, b"READY");
     await_beating(&natural_child);
     await_beating(&natural_grandchild);
-    host.write(natural.id, b"EXIT\n")
+    host.write(natural.id, &command(b"EXIT"))
         .expect("request natural exit");
     read_to_eof(&mut natural.reader);
     diagnostic("natural EOF observed");
