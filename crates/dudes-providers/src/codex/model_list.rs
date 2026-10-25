@@ -44,7 +44,8 @@ pub fn argv(command: impl Into<OsString>) -> Vec<OsString> {
         .collect()
 }
 
-/// The three lines the listing process reads, written once and followed by the end of its input.
+/// The three lines the listing process reads. Its input must stay open until [`answered`] holds,
+/// because the app server exits when its input ends, before it answers the third line.
 #[must_use]
 pub fn input() -> Vec<u8> {
     let mut bytes = CodexStartup::initialize().bytes().to_vec();
@@ -53,6 +54,19 @@ pub fn input() -> Vec<u8> {
         format!("{{\"id\":{REQUEST_ID},\"method\":\"model/list\",\"params\":{{}}}}\n").as_bytes(),
     );
     bytes
+}
+
+/// Whether the output so far holds a whole line answering the request, success or error.
+#[must_use]
+pub fn answered(stdout: &[u8]) -> bool {
+    let Some(end) = stdout.iter().rposition(|byte| *byte == b'\n') else {
+        return false;
+    };
+    String::from_utf8_lossy(&stdout[..end]).lines().any(|line| {
+        serde_json::from_str::<serde_json::Value>(line).is_ok_and(|value| {
+            value.get("id").and_then(serde_json::Value::as_u64) == Some(REQUEST_ID)
+        })
+    })
 }
 
 /// The model ids the answer lists, in its order, without the ones it marks hidden. Empty when the
@@ -118,6 +132,17 @@ mod tests {
         assert_eq!(parse(output), ["a", "c"]);
         assert!(parse(b"{\"id\":2,\"error\":{\"message\":\"no\"}}\n").is_empty());
         assert!(parse(b"").is_empty());
+    }
+
+    #[test]
+    fn only_a_whole_line_with_the_request_id_is_an_answer() {
+        assert!(!answered(b""));
+        assert!(!answered(b"{\"id\":1,\"result\":{}}\n"));
+        assert!(!answered(b"{\"id\":2,\"result\":{\"data\":[]}}"));
+        assert!(answered(
+            b"{\"id\":1}\n{\"id\":2,\"result\":{\"data\":[]}}\n"
+        ));
+        assert!(answered(b"{\"id\":2,\"error\":{\"message\":\"no\"}}\n"));
     }
 
     #[test]

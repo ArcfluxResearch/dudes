@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use duded::engine_models::{EngineModels, ItemKind, MAX_ITEMS, Refusal, Source};
+use duded::engine_models::{EngineModels, ItemKind, MAX_ITEMS, Refreshed, Refusal, Source};
 use duded::predicate::{PredicateCaptured, PredicateOutcome, PredicateRunner};
 use dudes_host::{CapturedOutcome, OneShot, OneShotOutcome};
 use dudes_providers::launch::{EnvVar, LaunchSpec};
@@ -54,8 +54,40 @@ impl PredicateRunner for Real {
             })
     }
 
+    fn run_captured_until(
+        &self,
+        spec: &LaunchSpec,
+        timeout: Duration,
+        stdout_cap: usize,
+        answered: fn(&[u8]) -> bool,
+    ) -> std::io::Result<PredicateCaptured> {
+        self.0
+            .run_captured_until(spec, timeout, stdout_cap, answered)
+            .map(|outcome| match outcome {
+                CapturedOutcome::Finished {
+                    exit,
+                    stdout,
+                    truncated,
+                    timed_out,
+                } => PredicateCaptured::Finished {
+                    exit,
+                    stdout,
+                    truncated,
+                    timed_out,
+                },
+                CapturedOutcome::Swept => PredicateCaptured::Swept,
+            })
+    }
+
     fn sweep(&self) {
         self.0.sweep();
+    }
+}
+
+fn listed(refreshed: Result<Refreshed, Refusal>) -> duded::engine_models::ModelList {
+    match refreshed {
+        Ok(Refreshed::Listed(list)) => list,
+        other => panic!("expected a list, got {other:?}"),
     }
 }
 
@@ -123,7 +155,7 @@ echo "openai  gpt-5.1-$PI_CODING_AGENT_DIR  400K  128K  yes  yes"
 echo "openai-codex  gpt-5.1-$PI_CODING_AGENT_DIR  400K  128K  yes  yes""#,
     );
     let (models, _) = lists(dir.path(), Provider::Pi, pi, Duration::from_secs(4), 65_536);
-    let list = models.refresh(Provider::Pi).expect("a list");
+    let list = listed(models.refresh(Provider::Pi));
     let ids: Vec<_> = list
         .items
         .iter()
@@ -153,9 +185,7 @@ fn a_child_that_prints_without_end_is_killed_at_the_cap() {
     );
     let (models, _) = lists(dir.path(), Provider::Pi, pi, Duration::from_secs(4), 65_536);
     let started = Instant::now();
-    let list = models
-        .refresh(Provider::Pi)
-        .expect("the head of the output is a list");
+    let list = listed(models.refresh(Provider::Pi));
     assert!(
         started.elapsed() < Duration::from_secs(4),
         "killed at the cap, not at the deadline"
@@ -223,61 +253,73 @@ fn stopping_the_daemon_mid_listing_leaves_no_child() {
 }
 
 #[test]
-fn a_repeated_refresh_runs_one_child() {
+fn refreshes_with_a_child_running_return_at_once_and_start_none() {
     let dir = tempfile::tempdir().unwrap();
     let count = dir.path().join("count");
     let pi = script(
         dir.path(),
         "pi",
         &format!(
-            "echo x >> {}\nsleep 1\necho 'provider model context'\necho 'p m1 1K'",
+            "echo x >> {}\nsleep 2\necho 'provider model context'\necho 'p m1 1K'",
             count.display()
         ),
     );
     let (models, _) = lists(dir.path(), Provider::Pi, pi, Duration::from_secs(4), 65_536);
-    let threads: Vec<_> = (0..3)
-        .map(|_| {
-            let models = models.clone();
-            std::thread::spawn(move || models.refresh(Provider::Pi))
-        })
-        .collect();
-    let answers: Vec<_> = threads
-        .into_iter()
-        .map(|thread| thread.join().unwrap())
-        .collect();
-    assert!(
-        answers
-            .iter()
-            .all(|answer| answer == &answers[0] && answer.is_ok()),
-        "{answers:?}"
-    );
+    let first = {
+        let models = models.clone();
+        std::thread::spawn(move || models.refresh(Provider::Pi))
+    };
+    let until = Instant::now() + Duration::from_secs(3);
+    while !count.exists() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let started = Instant::now();
+    for _ in 0..5 {
+        assert_eq!(models.refresh(Provider::Pi), Ok(Refreshed::Running));
+    }
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(listed(first.join().unwrap()).items.len(), 1);
     assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 1);
 }
 
+/// Like the real app server, the stand-in exits when its input ends and answers the third line
+/// only if the input is still open when it has read it.
 #[test]
-fn codex_answers_model_list_after_one_write_then_close() {
+fn codex_is_asked_with_its_input_held_open_until_the_answer_arrives() {
     let dir = tempfile::tempdir().unwrap();
     let capture = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../crates/dudes-providers/tests/fixtures/codex/app-server-model-list.jsonl"
     );
+    let pid = dir.path().join("pid");
     let codex = script(
         dir.path(),
         "codex",
         &format!(
-            "[ \"$1\" = app-server ] || exit 2\nread init; read initialized; read list\ncase \"$list\" in *'\"method\":\"model/list\"'*) cat {capture};; *) exit 3;; esac"
+            "[ \"$1\" = app-server ] || exit 2\necho $$ > {pid}\nread init; read initialized; read list\nexec 3<&0\n(read more <&3; echo ended > {ended}) &\nsleep 1\n[ -e {ended} ] && exit 0\ncase \"$list\" in *'\"method\":\"model/list\"'*) cat {capture}; exec sleep 60;; *) exit 3;; esac",
+            pid = pid.display(),
+            ended = dir.path().join("ended").display()
         ),
     );
     let (models, _) = lists(
         dir.path(),
         Provider::Codex,
         codex,
-        Duration::from_secs(4),
+        Duration::from_secs(8),
         65_536,
     );
-    let list = models.refresh(Provider::Codex).expect("a list");
+    let started = Instant::now();
+    let list = listed(models.refresh(Provider::Codex));
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "ended at the answer, not the deadline"
+    );
     assert_eq!(list.items.len(), 7);
     assert_eq!(list.items[1].id, "gpt-6-astra");
+    assert!(
+        gone_within(&pid, Duration::from_secs(3)),
+        "the stand-in is gone"
+    );
 }
 
 #[test]
@@ -289,5 +331,5 @@ fn a_list_never_exceeds_two_hundred_items() {
         "echo 'provider model context'\ni=0\nwhile [ $i -lt 400 ]; do echo \"p m$i 1K\"; i=$((i+1)); done",
     );
     let (models, _) = lists(dir.path(), Provider::Pi, pi, Duration::from_secs(4), 65_536);
-    assert_eq!(models.refresh(Provider::Pi).unwrap().items.len(), MAX_ITEMS);
+    assert_eq!(listed(models.refresh(Provider::Pi)).items.len(), MAX_ITEMS);
 }

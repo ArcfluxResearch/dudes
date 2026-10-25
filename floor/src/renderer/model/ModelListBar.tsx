@@ -24,6 +24,7 @@ export function ModelListBar({ provider, id }: { readonly provider: string; read
     {mine && lists.sending ? <small role="status">Asking the engine…</small> : null}
     {mine && lists.outcome === 'refused' && lists.reason !== null ? <small role="status">{LISTS_REASON_WORDS[lists.reason]}</small> : null}
     {mine && (lists.outcome === 'unavailable' || lists.outcome === 'unknown') ? <small role="status">Dudes could not confirm the list was asked for. Try again.</small> : null}
+    {mine && lists.outcome === 'pending' ? <small role="status">The engine is already being asked. Refresh the list again in a moment.</small> : null}
     {mine && lists.outcome === 'forbidden' ? <small role="status">This Floor session cannot refresh the list. Open a fresh session.</small> : null}
   </div>;
 }

@@ -11,8 +11,11 @@
 //!
 //! A listing child goes through the daemon's one-shot runner, so it has its own process group, is
 //! killed at its deadline or when it has written more than the output cap, and is swept when the
-//! daemon stops. One runs at a time per engine, and a second request for an engine whose child is
-//! running waits for that child's answer instead of starting another.
+//! daemon stops. It runs in an empty scratch folder of its own. One runs at a time per engine, and
+//! a second request for an engine whose child is running starts none and is told so at once.
+//!
+//! The Codex app server exits when its input ends, before it answers, so its input stays open until
+//! the line answering the request has arrived.
 //!
 //! A list is what the engine's own program says, not what the account behind it is allowed to run,
 //! so every list is reported as unchecked. A name typed by hand is never refused for being absent.
@@ -20,7 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dudes_providers::launch::{EnvVar, LaunchInput, LaunchSpec};
@@ -37,6 +40,9 @@ pub const MAX_SEEN: usize = 50;
 pub const DEADLINE: Duration = Duration::from_secs(5);
 /// How much of a listing child's output is read before it is killed.
 pub const OUTPUT_CAP: usize = 64 * 1024;
+
+/// The folder under the daemon's state folder that listing children run in.
+const SCRATCH: &str = "model-listing";
 
 const CLAUDE_ALIASES: [&str; 3] = ["opus", "sonnet", "haiku"];
 
@@ -70,6 +76,15 @@ pub struct ModelList {
     pub checked: bool,
     /// At most [`MAX_ITEMS`] entries.
     pub items: Vec<ModelItem>,
+}
+
+/// What a refresh came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refreshed {
+    /// This request ran the listing and made the list.
+    Listed(ModelList),
+    /// A listing child for the engine was already running; this request started none.
+    Running,
 }
 
 /// Why a refresh produced no list.
@@ -132,20 +147,15 @@ struct Shared {
     deadline: Duration,
     cap: usize,
     state: Mutex<State>,
-    finished: Condvar,
 }
 
 #[derive(Default)]
 struct State {
     lists: BTreeMap<Provider, ModelList>,
-    /// The generation of the listing child running for each engine.
-    running: BTreeMap<Provider, u64>,
-    /// How each engine's newest finished listing ended, by generation.
-    last: BTreeMap<Provider, (u64, Result<ModelList, Refusal>)>,
-    generation: u64,
+    /// The engines with a listing child running.
+    running: BTreeSet<Provider>,
     /// Model ids Claude turns reported, oldest first.
     seen: Vec<String>,
-    seen_at: i64,
 }
 
 fn now_millis() -> i64 {
@@ -157,7 +167,7 @@ fn now_millis() -> i64 {
 }
 
 impl EngineModels {
-    /// Lists for `sources`, with listing children run by `runner` in `cwd`.
+    /// Lists for `sources`, with listing children run by `runner` in a scratch folder under `cwd`.
     #[must_use]
     pub(crate) fn new(
         runner: Arc<dyn PredicateRunner>,
@@ -204,31 +214,22 @@ impl EngineModels {
             codex_profile,
             deadline,
             cap,
-            state: Mutex::new(State {
-                seen_at: now_millis(),
-                ..State::default()
-            }),
-            finished: Condvar::new(),
+            state: Mutex::new(State::default()),
         }))
     }
 
     /// Remember model ids a Claude turn reported, newest last.
     pub fn note_seen<'a>(&self, names: impl IntoIterator<Item = &'a str>) {
         let mut state = self.0.lock();
-        let mut changed = false;
         for name in names {
             if ModelName::parse(name).is_err() {
                 continue;
             }
             state.seen.retain(|seen| seen != name);
             state.seen.push(name.to_owned());
-            changed = true;
         }
-        if changed {
-            let excess = state.seen.len().saturating_sub(MAX_SEEN);
-            state.seen.drain(..excess);
-            state.seen_at = now_millis();
-        }
+        let excess = state.seen.len().saturating_sub(MAX_SEEN);
+        state.seen.drain(..excess);
     }
 
     /// The list held for `provider`, or `None` when it has none.
@@ -246,59 +247,36 @@ impl EngineModels {
     }
 
     /// Ask `provider` for its models again, waiting for the answer. A Claude list needs no child
-    /// and is made at once. When a child is already running for the engine, this waits for that
-    /// child's answer and starts none of its own.
+    /// and is made at once. When a child is already running for the engine, this starts none and
+    /// answers [`Refreshed::Running`] without waiting.
     ///
     /// # Errors
     /// Why no list was made.
-    pub fn refresh(&self, provider: Provider) -> Result<ModelList, Refusal> {
+    pub fn refresh(&self, provider: Provider) -> Result<Refreshed, Refusal> {
         let shared = &self.0;
         let Some(source) = shared.sources.get(&provider) else {
             return Err(Refusal::EngineAbsent);
         };
         if provider == Provider::Claude {
-            return Ok(claude_list(&shared.lock()));
+            return Ok(Refreshed::Listed(claude_list(&shared.lock())));
         }
-        let mut state = shared.lock();
-        if let Some(&running) = state.running.get(&provider) {
-            let give_up = std::time::Instant::now() + shared.deadline + Duration::from_secs(2);
-            loop {
-                if let Some((generation, result)) = state.last.get(&provider)
-                    && *generation >= running
-                {
-                    return result.clone();
-                }
-                let left = give_up.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() {
-                    return Err(Refusal::TimedOut);
-                }
-                state = shared
-                    .finished
-                    .wait_timeout(state, left)
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .0;
-            }
+        if !shared.lock().running.insert(provider) {
+            return Ok(Refreshed::Running);
         }
-        state.generation += 1;
-        let generation = state.generation;
-        state.running.insert(provider, generation);
-        drop(state);
         let mut guard = Running {
             shared,
             provider,
-            generation,
             result: Err(Refusal::Failed),
         };
         guard.result = shared.list_with(provider, source);
-        guard.result.clone()
+        guard.result.clone().map(Refreshed::Listed)
     }
 }
 
-/// Settles a listing on every way out, including a panic, so a waiting request is never left behind.
+/// Settles a listing on every way out, including a panic, so the engine is never left marked as running.
 struct Running<'a> {
     shared: &'a Shared,
     provider: Provider,
-    generation: u64,
     result: Result<ModelList, Refusal>,
 }
 
@@ -309,11 +287,6 @@ impl Drop for Running<'_> {
         if let Ok(list) = &self.result {
             state.lists.insert(self.provider, list.clone());
         }
-        state
-            .last
-            .insert(self.provider, (self.generation, self.result.clone()));
-        drop(state);
-        self.shared.finished.notify_all();
     }
 }
 
@@ -348,13 +321,25 @@ impl Shared {
                 LaunchInput::WriteThenClose(dudes_providers::codex::model_list::input()),
             )
         };
+        let scratch = self.cwd.join(SCRATCH);
+        std::fs::create_dir_all(&scratch).map_err(|_| Refusal::Failed)?;
         let spec = LaunchSpec {
             argv,
             env,
-            cwd: self.cwd.clone(),
+            cwd: scratch,
             stdin,
         };
-        let (stdout, truncated) = match self.runner.run_captured(&spec, self.deadline, self.cap) {
+        let run = if provider == Provider::Pi {
+            self.runner.run_captured(&spec, self.deadline, self.cap)
+        } else {
+            self.runner.run_captured_until(
+                &spec,
+                self.deadline,
+                self.cap,
+                dudes_providers::codex::model_list::answered,
+            )
+        };
+        let (stdout, truncated) = match run {
             Ok(PredicateCaptured::Finished {
                 timed_out: true, ..
             }) => return Err(Refusal::TimedOut),
@@ -413,7 +398,7 @@ fn claude_list(state: &State) -> ModelList {
             kind: ItemKind::Seen,
         });
     ModelList {
-        as_of: state.seen_at,
+        as_of: now_millis(),
         checked: false,
         items: aliases.chain(seen).take(MAX_ITEMS).collect(),
     }
@@ -422,6 +407,7 @@ fn claude_list(state: &State) -> ModelList {
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
+    use std::sync::Condvar;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
@@ -445,17 +431,8 @@ mod tests {
         }
     }
 
-    impl PredicateRunner for Scripted {
-        fn run(&self, _: &LaunchSpec, _: Duration) -> std::io::Result<PredicateOutcome> {
-            Err(std::io::ErrorKind::Unsupported.into())
-        }
-
-        fn run_captured(
-            &self,
-            spec: &LaunchSpec,
-            _: Duration,
-            _: usize,
-        ) -> std::io::Result<PredicateCaptured> {
+    impl Scripted {
+        fn answer(&self, spec: &LaunchSpec) -> std::io::Result<PredicateCaptured> {
             self.runs.fetch_add(1, Ordering::SeqCst);
             self.specs.lock().unwrap().push(spec.clone());
             if let Some((open, changed)) = &self.gate {
@@ -469,6 +446,31 @@ mod tests {
                 .unwrap()
                 .take()
                 .unwrap_or_else(|| Err(std::io::ErrorKind::Other.into()))
+        }
+    }
+
+    impl PredicateRunner for Scripted {
+        fn run(&self, _: &LaunchSpec, _: Duration) -> std::io::Result<PredicateOutcome> {
+            Err(std::io::ErrorKind::Unsupported.into())
+        }
+
+        fn run_captured(
+            &self,
+            spec: &LaunchSpec,
+            _: Duration,
+            _: usize,
+        ) -> std::io::Result<PredicateCaptured> {
+            self.answer(spec)
+        }
+
+        fn run_captured_until(
+            &self,
+            spec: &LaunchSpec,
+            _: Duration,
+            _: usize,
+            _: fn(&[u8]) -> bool,
+        ) -> std::io::Result<PredicateCaptured> {
+            self.answer(spec)
         }
 
         fn sweep(&self) {}
@@ -508,6 +510,13 @@ mod tests {
         )
     }
 
+    fn listed(refreshed: Result<Refreshed, Refusal>) -> ModelList {
+        match refreshed {
+            Ok(Refreshed::Listed(list)) => list,
+            other => panic!("expected a list, got {other:?}"),
+        }
+    }
+
     fn ids(list: &ModelList) -> Vec<(&str, ItemKind)> {
         list.items
             .iter()
@@ -524,7 +533,7 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
         let runner = Arc::new(Scripted::new(Ok(finished(table))));
         let lists = models(&runner, Provider::Pi);
         assert_eq!(lists.list(Provider::Pi), None);
-        let list = lists.refresh(Provider::Pi).expect("a list");
+        let list = listed(lists.refresh(Provider::Pi));
         assert_eq!(
             ids(&list),
             [
@@ -548,7 +557,7 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
         );
         let runner = Arc::new(Scripted::new(Ok(finished(capture))));
         let lists = models(&runner, Provider::Codex);
-        let list = lists.refresh(Provider::Codex).expect("a list");
+        let list = listed(lists.refresh(Provider::Codex));
         assert_eq!(list.items.len(), 7);
         assert_eq!(list.items[0].id, "gpt-6.1-sol");
         let spec = runner.specs.lock().unwrap()[0].clone();
@@ -556,6 +565,8 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
         assert!(
             matches!(spec.stdin, LaunchInput::WriteThenClose(bytes) if bytes.ends_with(b"\"params\":{}}\n"))
         );
+        assert_eq!(spec.cwd, std::env::temp_dir().join("model-listing"));
+        assert!(spec.cwd.read_dir().expect("a folder").next().is_none());
     }
 
     #[test]
@@ -566,9 +577,7 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
         }
         table.push_str("p bad$name 1K\n");
         let runner = Arc::new(Scripted::new(Ok(finished(&table))));
-        let list = models(&runner, Provider::Pi)
-            .refresh(Provider::Pi)
-            .expect("a list");
+        let list = listed(models(&runner, Provider::Pi).refresh(Provider::Pi));
         assert_eq!(list.items.len(), MAX_ITEMS);
         assert_eq!(list.items[199].id, "p/m199");
     }
@@ -611,9 +620,7 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
             truncated: true,
             timed_out: false,
         })));
-        let list = models(&runner, Provider::Pi)
-            .refresh(Provider::Pi)
-            .expect("a list");
+        let list = listed(models(&runner, Provider::Pi).refresh(Provider::Pi));
         assert_eq!(
             ids(&list),
             [("p/m1", ItemKind::Listed), ("p/m2", ItemKind::Listed)]
@@ -639,7 +646,7 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
             "bad name",
             "claude-opus-4-1",
         ]);
-        let list = lists.refresh(Provider::Claude).expect("a list");
+        let list = listed(lists.refresh(Provider::Claude));
         assert_eq!(
             ids(&list),
             [
@@ -659,7 +666,7 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
     }
 
     #[test]
-    fn a_second_refresh_waits_for_the_running_child_and_shares_its_answer() {
+    fn a_refresh_while_a_child_runs_starts_none_and_does_not_wait() {
         let mut scripted = Scripted::new(Ok(finished("provider model context\np m1 1K\n")));
         scripted.gate = Some((Mutex::new(false), Condvar::new()));
         let runner = Arc::new(scripted);
@@ -671,17 +678,26 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
         while runner.runs.load(Ordering::SeqCst) == 0 {
             std::thread::yield_now();
         }
-        let second = {
-            let lists = lists.clone();
-            std::thread::spawn(move || lists.refresh(Provider::Pi))
-        };
-        std::thread::sleep(Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        for _ in 0..8 {
+            assert_eq!(lists.refresh(Provider::Pi), Ok(Refreshed::Running));
+        }
+        assert!(started.elapsed() < Duration::from_secs(1));
         let (open, changed) = runner.gate.as_ref().expect("a gate");
         *open.lock().unwrap() = true;
         changed.notify_all();
-        let (first, second) = (first.join().unwrap(), second.join().unwrap());
-        assert_eq!(first, second);
-        assert_eq!(ids(&first.expect("a list")), [("p/m1", ItemKind::Listed)]);
+        let list = listed(first.join().unwrap());
+        assert_eq!(ids(&list), [("p/m1", ItemKind::Listed)]);
         assert_eq!(runner.runs.load(Ordering::SeqCst), 1);
+        assert_eq!(lists.list(Provider::Pi), Some(list));
+    }
+
+    #[test]
+    fn the_claude_list_is_dated_when_it_is_built() {
+        let runner = Arc::new(Scripted::new(Ok(finished(""))));
+        let lists = models(&runner, Provider::Pi);
+        let before = now_millis();
+        let list = lists.list(Provider::Claude).expect("a list");
+        assert!(list.as_of >= before && list.as_of <= now_millis());
     }
 }

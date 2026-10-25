@@ -365,8 +365,37 @@ impl OneShot {
         stdout_cap: usize,
     ) -> io::Result<CapturedOutcome> {
         let capture = Capture::Head(Arc::new(Mutex::new(Head::new(stdout_cap))));
+        self.captured(spec, timeout, &capture)
+    }
+
+    /// [`OneShot::run_captured`] for a child that exits when its standard input ends, such as an
+    /// app server answering one request. The input is written and the pipe is **held open**, and
+    /// once `answered` says the output so far holds the answer, the child's group is ended as at
+    /// the cap. Nothing is truncated by that. The timeout and the cap still bound the run.
+    ///
+    /// # Errors
+    ///
+    /// As [`OneShot::run`].
+    pub fn run_captured_until(
+        &self,
+        spec: &LaunchSpec,
+        timeout: Duration,
+        stdout_cap: usize,
+        answered: fn(&[u8]) -> bool,
+    ) -> io::Result<CapturedOutcome> {
+        let mut head = Head::new(stdout_cap);
+        head.answered = Some(answered);
+        self.captured(spec, timeout, &Capture::Head(Arc::new(Mutex::new(head))))
+    }
+
+    fn captured(
+        &self,
+        spec: &LaunchSpec,
+        timeout: Duration,
+        capture: &Capture,
+    ) -> io::Result<CapturedOutcome> {
         let bound = Bound::timeout(timeout);
-        let settled = self.run_with(spec, &bound, Stdio::piped, Stdio::null, &capture)?;
+        let settled = self.run_with(spec, &bound, Stdio::piped, Stdio::null, capture)?;
         Ok(match settled {
             None => CapturedOutcome::Swept,
             Some(Settled { exit, timed_out }) => {
@@ -516,7 +545,12 @@ impl OneShot {
 
         // Before the wait and after the pipes: a child whose stdin stays open waits on it, and a
         // predicate that waited on stdin would spend its whole timeout doing so.
-        crate::feed_stdin(&mut child, spec)?;
+        let held = if capture.holds_stdin() {
+            crate::feed_stdin_open(&mut child, spec)?
+        } else {
+            crate::feed_stdin(&mut child, spec)?;
+            None
+        };
 
         let waiter = thread::Builder::new()
             .name(format!("dudes-predicate-{pid}"))
@@ -575,6 +609,7 @@ impl OneShot {
         };
         // The waiter has sent, so this costs nothing and leaves no thread behind.
         let _ = waiter.join();
+        drop(held);
 
         // Descendants of a child that exited on its own are still in the group. Guarded by `quiet`
         // so that the common case — nothing left — sends no signal at all: see the module docs on
@@ -683,6 +718,17 @@ impl Capture {
         }
     }
 
+    fn holds_stdin(&self) -> bool {
+        match self {
+            Self::Head(head) => head
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .answered
+                .is_some(),
+            Self::Tail(_) => false,
+        }
+    }
+
     fn head(&self) -> (Vec<u8>, bool) {
         match self {
             Self::Head(head) => {
@@ -753,6 +799,9 @@ struct Head {
     bytes: Vec<u8>,
     cap: usize,
     truncated: bool,
+    /// Says the bytes so far hold the answer the child was asked for.
+    answered: Option<fn(&[u8]) -> bool>,
+    done: bool,
 }
 
 impl Head {
@@ -761,19 +810,30 @@ impl Head {
             bytes: Vec::new(),
             cap,
             truncated: false,
+            answered: None,
+            done: false,
         }
     }
 
-    /// Keep what fits. `true` the first time something did not.
+    /// Keep what fits. `true` the first time something did not fit, and the first time the bytes
+    /// held the answer.
     fn push(&mut self, chunk: &[u8]) -> bool {
         let room = self.cap - self.bytes.len();
         self.bytes
             .extend_from_slice(&chunk[..chunk.len().min(room)]);
+        let mut wake = false;
         if chunk.len() > room && !self.truncated {
             self.truncated = true;
-            return true;
+            wake = true;
         }
-        false
+        if let Some(answered) = self.answered
+            && !self.done
+            && answered(&self.bytes)
+        {
+            self.done = true;
+            wake = true;
+        }
+        wake
     }
 }
 

@@ -28,6 +28,7 @@ use sha2::{Digest as _, Sha256};
 use dudes_supervisor::Clock;
 
 use crate::engine_login::EngineLogins;
+use crate::engine_models::Refreshed;
 use crate::floor_actions::{OnboardOutcome, OnboardRefusal, OnboardRequest};
 use crate::floor_answer::{AnswerOutcome, AnswerRefusal, AnswerRequest, MAX_ANSWER_BODY_BYTES};
 use crate::floor_chat::{ChatOutcome, ChatRefusal, ChatRequest, ChatVerb, MAX_CHAT_BODY_BYTES};
@@ -2411,7 +2412,8 @@ fn model_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) ->
 
 /// Ask one engine for its models again and wait for the answer, on this connection thread. The
 /// listing child is owned, bounded and one at a time per engine, and it appends nothing, so only
-/// the in-flight guard keeps this request's identity.
+/// the in-flight guard keeps this request's identity. A request that finds the engine's child
+/// already running answers pending at once, and the page reads the report again.
 fn models_refresh_response<'a>(
     session: &SessionIdentity,
     catalog: Catalog<'_>,
@@ -2440,7 +2442,12 @@ fn models_refresh_response<'a>(
         ReserveResult::Forbidden => return error_response(403, "Forbidden"),
     };
     match models.refresh(request.provider) {
-        Ok(_) => action_json(
+        Ok(Refreshed::Running) => action_json(
+            202,
+            "Accepted",
+            &serde_json::json!({ "request_id": request.request_wire, "state": "pending" }),
+        ),
+        Ok(Refreshed::Listed(_)) => action_json(
             200,
             "OK",
             &serde_json::json!({

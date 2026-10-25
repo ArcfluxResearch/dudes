@@ -9501,6 +9501,7 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
 }
 
 /// Claude's row lists the short names it accepts, unchecked, with no child process to ask.
+#[cfg(unix)]
 fn assert_claude_aliases_listed(frame: &Value) {
     let models = &frame["daemon"]["providers"][0]["models"];
     assert_eq!(models["checked"], false);
@@ -9515,6 +9516,7 @@ fn assert_claude_aliases_listed(frame: &Value) {
 }
 
 /// The report's provider rows without their model lists, which other tests read.
+#[cfg(unix)]
 fn without_models(frame: &Value) -> Value {
     let mut rows = frame["daemon"]["providers"].clone();
     for row in rows.as_array_mut().expect("provider rows") {

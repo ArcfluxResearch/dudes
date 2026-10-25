@@ -118,7 +118,7 @@ export async function refreshModels(provider: string, deps: ListsDeps, floor: Fl
     ({ outcome, reason } = decodeRefreshResponse(response.status, await response.text(), requestId, provider));
   } catch { outcome = 'unknown'; }
   commit({ ...state, provider, sending: false, outcome, reason });
-  if (outcome === 'refreshed') deps.refresh();
+  if (outcome === 'refreshed' || outcome === 'pending') deps.refresh();
 }
 
 export function decodeRefreshResponse(status: number, text: string, requestId: string, provider: string):
