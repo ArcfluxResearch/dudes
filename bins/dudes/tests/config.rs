@@ -600,13 +600,6 @@ fn live(config: &Path, switches: &str) -> String {
     )
 }
 
-fn no_restart(config: &Path) -> String {
-    format!(
-        "wrote {}; the running daemon already runs these settings, so no restart is needed\n",
-        config.display()
-    )
-}
-
 /// A `[floor.*]` switch runs at once, with no restart, and runs again when turned off.
 #[test]
 fn a_floor_switch_runs_at_once_in_both_directions() {
@@ -625,10 +618,32 @@ fn a_floor_switch_runs_at_once_in_both_directions() {
     );
 }
 
-/// A terminal the daemon did not start with is named for a restart, and stays named while other
+/// An engine the daemon did not start with is named for a restart, and stays named while other
 /// switches change.
 #[test]
-fn a_terminal_turned_on_needs_a_restart_while_other_switches_run_at_once() {
+fn a_new_engine_needs_a_restart_while_switches_run_at_once() {
+    let fixture = Fixture::new();
+    let home = fixture.state.path().join("home");
+    let config = config_for(&home);
+    let (_running, cli) = running_on(&fixture, &home, RUNNING, &home);
+
+    assert_eq!(
+        set(&cli, "providers.codex", "on"),
+        restart(&config, "providers.codex")
+    );
+    assert_eq!(
+        set(&cli, "floor.answer", "on"),
+        format!(
+            "{}it reads other settings (providers.codex) only when it starts, so restart it to \
+             apply them: `dudes stop`, then `dudes start`\n",
+            live(&config, "floor.answer")
+        )
+    );
+}
+
+/// The terminal runs at once in both directions, even on a daemon that started with it off.
+#[test]
+fn the_terminal_runs_at_once_in_both_directions() {
     let fixture = Fixture::new();
     let home = fixture.state.path().join("home");
     let config = config_for(&home);
@@ -636,35 +651,12 @@ fn a_terminal_turned_on_needs_a_restart_while_other_switches_run_at_once() {
 
     assert_eq!(
         set(&cli, "floor.terminal", "on"),
-        restart(&config, "floor.terminal")
+        live(&config, "floor.terminal")
     );
     assert_eq!(
-        set(&cli, "floor.answer", "on"),
-        format!(
-            "{}it reads other settings (floor.terminal) only when it starts, so restart it to \
-             apply them: `dudes stop`, then `dudes start`\n",
-            live(&config, "floor.answer")
-        )
+        set(&cli, "floor.terminal", "off"),
+        live(&config, "floor.terminal")
     );
-}
-
-/// Turning the unstarted terminal back off needs no restart.
-#[test]
-fn turning_an_unstarted_terminal_off_again_needs_no_restart() {
-    let fixture = Fixture::new();
-    let home = fixture.state.path().join("home");
-    let config = config_for(&home);
-    let (_running, cli) = running_on(&fixture, &home, RUNNING, &home);
-    set(&cli, "floor.terminal", "on");
-    let reload = cli.clone().args(["project", "reload"]).run();
-    assert!(
-        reload
-            .stdout
-            .contains("\nneeds a daemon restart: floor.terminal\n"),
-        "{}",
-        reload.output()
-    );
-    assert_eq!(set(&cli, "floor.terminal", "off"), no_restart(&config));
 }
 
 /// Renewal is a live switch beside a running goal change and Hire.

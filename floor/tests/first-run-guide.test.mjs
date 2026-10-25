@@ -68,9 +68,9 @@ test('Engines is done only when Setup finds a hireable program and offers instal
   assert.match(view('engines'), />Recheck<\/button>/);
   snapshot({ found: true });
   assert.equal(done('engines'), true);
-  assert.match(view('engines'), /Found on the daemon/);
+  assert.match(view('engines'), /Dudes found it at/);
   assert.match(view('engines'), /complete when Dudes finds an app\. Sign in when you hire an agent\./);
-  assert.match(view('engines'), /offers Claude, and Codex and Pi when the daemon turns them on/);
+  assert.match(view('engines'), /Hire offers Claude, plus Codex and Pi when they are enabled in Settings/);
   for (const [provider, ready] of [['codex', true], ['pi', true], ['grok', false]]) {
     const epoch = beginFloorEpoch();
     noteTransport('open');
@@ -129,7 +129,7 @@ test('ACTIONS_SEEN_UNREPORTED mutant: Floor actions is not seen until the switch
   noteTransport('open');
   applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 1, agents: [] } }), epoch);
   const unreported = view('actions');
-  assert.match(unreported, /Settings are not reported/);
+  assert.match(unreported, /Settings are unavailable/);
   assert.equal(indexStatus(unreported, 'Floor actions'), 'Optional');
   snapshot();
   noteStale(true);
@@ -152,7 +152,7 @@ test('the guide shares Settings confirmations and keeps distinct headings', asyn
   try {
     await edit.changeSetting('floor.terminal', 'on');
     assert.match(view('actions'), /aria-label="Turn on Attach terminals"/);
-    assert.match(view('actions'), /takes effect after a restart of Dudes/);
+    assert.match(view('actions'), /It applies at once and does not end running work\./);
     assert.match(view('actions'), />Cancel<\/button>/);
     const html = view('actions') + renderToStaticMarkup(createElement(SettingsView,
       { floor: getFloorState(), onSetup() {} }));

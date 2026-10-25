@@ -28,8 +28,8 @@ dudes config set providers.codex on floor.hire on
 `unset` removes a key, so the daemon's default applies. An edit that breaks the file's own start
 rules is refused and names the key it needs. With a daemon running, an edit to a `floor.*` switch
 applies at once and the command says so. Turning `floor.terminal` off closes open terminals at once.
-Turning it on, like any other setting the daemon reads only at start, is named for a restart:
-`dudes stop`, then `dudes start`.
+A setting the daemon reads only at start, such as an engine, is named for a restart: `dudes stop`, then
+`dudes start`.
 
 - `providers.codex` and `providers.pi`, on or off, turn on those engines. Claude Code is always on.
 - `providers.codex.streaming` opts in to Codex streaming with a separate sign-in home. It defaults

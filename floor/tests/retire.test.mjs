@@ -53,8 +53,8 @@ const FRESH = `${'B'.repeat(42)}E`;
 const SIBLING = Object.freeze({});
 /** The request id `mintAttemptId` makes from 32 bytes of 0x01, the first id each fake daemon hands out. */
 const FIRST_ID = `${'AQEB'.repeat(10)}AQE`;
-const CONSEQUENCES = 'Its running turn stops now, and its terminal closes. It leaves the Floor for good. Only a new '
-  + 'hire can replace it, and a new hire starts without its memory. Its history stays in the journal.';
+const CONSEQUENCES = 'Its current work stops now, and its terminal closes. It leaves the Floor for good. Only a new '
+  + 'hire can replace it, and a new hire starts without its memory. Dudes keeps its history.';
 const HALTED_LINE = 'This agent is halted. Lift the halt from the command line before retiring it from this page.';
 
 /** A Managed agent mid-turn, not paused and not halted. */

@@ -545,11 +545,17 @@ impl OneShot {
 
         // Before the wait and after the pipes: a child whose stdin stays open waits on it, and a
         // predicate that waited on stdin would spend its whole timeout doing so.
-        let held = if capture.holds_stdin() {
-            crate::feed_stdin_open(&mut child, spec)?
+        //
+        // A failed write (the child died at once) does not return from here: the child is still
+        // waited for and its group swept below, and the error is returned after that.
+        let fed = if capture.holds_stdin() {
+            crate::feed_stdin_open(&mut child, spec)
         } else {
-            crate::feed_stdin(&mut child, spec)?;
-            None
+            crate::feed_stdin(&mut child, spec).map(|()| None)
+        };
+        let (held, feed_error) = match fed {
+            Ok(held) => (held, None),
+            Err(error) => (None, Some(error)),
         };
 
         let waiter = thread::Builder::new()
@@ -624,6 +630,9 @@ impl OneShot {
             let _ = handle.join();
         }
 
+        if let Some(error) = feed_error {
+            return Err(error);
+        }
         if cancelled || self.was_swept(pid) {
             return Ok(None);
         }
@@ -1011,6 +1020,53 @@ mod tests {
                 rustix::process::test_kill_process(unix::as_pid(pid).expect("child pid")),
                 Err(Errno::SRCH),
                 "the child at pid {pid} is gone"
+            );
+            assert_eq!(runner.in_flight(), 0);
+        }
+    }
+
+    #[cfg(unix)]
+    mod failed_stdin {
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        use dudes_providers::launch::{LaunchInput, LaunchSpec};
+        use rustix::io::Errno;
+        use rustix::process::{WaitOptions, waitpid};
+
+        use super::AFTER_SPAWN;
+        use crate::{OneShot, unix};
+
+        /// A child that exits without reading its input makes the write fail. The run still reports
+        /// the failure, and the child has been waited for rather than left to become a zombie.
+        #[test]
+        fn a_child_that_dies_before_reading_its_input_is_still_reaped() {
+            let cwd = tempfile::tempdir().expect("working directory");
+            let spec = LaunchSpec {
+                argv: vec!["/bin/sh".into(), "-c".into(), "exit 0".into()],
+                env: Vec::new(),
+                cwd: cwd.path().to_owned(),
+                stdin: LaunchInput::WriteThenClose(vec![0; 1 << 20]),
+            };
+            let pid = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&pid);
+            AFTER_SPAWN.set(Some(Box::new(move |child| {
+                *seen.lock().expect("pid") = Some(child);
+            })));
+            let runner = OneShot::with_grace(Duration::from_millis(200));
+
+            let error = runner
+                .run(&spec, Duration::from_secs(10))
+                .expect_err("the write to a dead child fails");
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+
+            let child = pid.lock().expect("pid").expect("the run spawned a child");
+            assert!(
+                matches!(
+                    waitpid(unix::as_pid(child), WaitOptions::NOHANG),
+                    Err(Errno::CHILD)
+                ),
+                "nothing is left to reap: the run waited for the child"
             );
             assert_eq!(runner.in_flight(), 0);
         }

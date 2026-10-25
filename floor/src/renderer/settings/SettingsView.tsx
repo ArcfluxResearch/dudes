@@ -4,7 +4,7 @@ import { useId, useState, useSyncExternalStore } from 'react';
 
 import {
   cancelSetting, changeSetting, confirmSetting, editLine, getSettingsEditState, limitChange,
-  subscribeToSettingsEdit,
+  pageDrawsTerminal, RELOAD_FOR_TERMINAL, subscribeToSettingsEdit,
 } from './edit.ts';
 import type { LimitUnit } from './edit.ts';
 
@@ -70,7 +70,7 @@ export function UnavailableControls({ floor, control }: {
     return <p className="settings-guidance">Retire is off. Turn on Pause, resume and rename and Retire agents under
       Floor switches in Settings.</p>;
   }
-  return <p className="settings-guidance">To open the real CLI, turn on Attach terminals under Floor switches in Settings, then restart Dudes.</p>;
+  return <p className="settings-guidance">To open the real CLI, turn on Attach terminals under Floor switches in Settings.</p>;
 }
 
 export function SettingsView({ floor, onSetup }: {
@@ -187,6 +187,8 @@ function EditOutcome({ settingKey, label }: { readonly settingKey: string; reado
       {' '}<button type="button" onClick={() => cancelSetting()}>Cancel</button></span> : null}
     {edit.last?.key === settingKey ? <>
       <span role="status"> {editLine(edit.last.result)}</span>
+      {settingKey === 'floor.terminal' && edit.last.value === 'on' && edit.last.result.kind === 'saved' && !pageDrawsTerminal()
+        ? <span role="status"> {RELOAD_FOR_TERMINAL}</span> : null}
       {edit.last.result.kind === 'refused' ? <details><summary>Details</summary>
         <p>Reason: <code>{edit.last.result.reason}</code></p>
         {edit.last.result.detail === null ? null : <p>{edit.last.result.detail}</p>}

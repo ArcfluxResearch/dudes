@@ -28,7 +28,8 @@ without a goal authorizes one turn; messages to an agent with a goal join its ne
 The office is a view of the daemon's state, never a source of truth. The daemon's journal, an append-only log of everything it records, is the
 only record, and the Floor changes that state only through the Floor actions you turn on. `dudes quickstart` turns on hire, pause, answer, change
 goals, retire, recover, tickets and add projects without asking. The changed-file views are on too. The terminal
-stays off until you turn it on with `dudes config set floor.terminal on` and restart.
+stays off until you turn it on in **Settings** under Floor switches, or with `dudes config set floor.terminal on`. It applies at
+once and does not end running work. Opening an agent's own terminal works for Claude Code agents.
 
 The Floor draws the smallest office that seats the whole crew. The Studio has 8 desks, the Workshop
 has 12 and HQ has 16. **Settings** can pin one office in this browser instead. When the office has
