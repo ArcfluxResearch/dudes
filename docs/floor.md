@@ -166,6 +166,14 @@ made with `dudes halt` stays until `dudes resume`. In Chat, **Stop and send** st
 message as a note once the turn has ended and then lifts the stop; it needs `floor.control` on too. This is not the ticket board's
 **Stop**, which ends a ticket. See [Pause, resume, halt and retire](goals-and-stopping.md#pause-resume-halt-and-retire).
 
+## Model, in use and failures
+
+An agent's drawer says which model its latest finished chat turn ran (**In use**, or **Ran** when a turn
+used several). Only Claude Code reports this, so the line is absent for Codex and Pi. When a turn fails,
+Chat shows the engine's own words under **The engine said**, as plain text of at most 2,048 bytes. A reply
+that is the same text is shown once. The words are what the engine printed, after Dudes removes anything
+that looks like a secret.
+
 ## Recover an interrupted goal
 
 **Recover interrupted goal** appears in an eligible agent's drawer when both `floor.recovery` and
