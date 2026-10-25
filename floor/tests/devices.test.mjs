@@ -124,6 +124,27 @@ test('a browser that went is named for a moment, and a removed one is not asked 
   assert.doesNotMatch(notice(), /Chrome on Linux/);
 });
 
+test('the banner holds the waiting sign-ins and the stack holds the departed, each in its own live region', async () => {
+  const held = daemon({ list: [
+    row(HERE, 'Safari on macOS', { this: true }),
+    row(OTHER, 'Chrome on Linux', { new: true }),
+    row('01HQZX3YB7CNEWWTQ6F9N7MMM6', 'Firefox on macOS'),
+  ] });
+  await signedIn(held);
+  await devices.loadDevices();
+  devices.applyDeviceFrame({ type: 'floor.device.removed', device: '01HQZX3YB7CNEWWTQ6F9N7MMM6', reason: 'replaced' });
+  const part = (which) => renderToStaticMarkup(createElement(DeviceNotices, { part: which }));
+  assert.match(part('asking'), /A new browser signed in: <strong>Chrome on Linux<\/strong>/);
+  assert.doesNotMatch(part('asking'), /Firefox on macOS/);
+  assert.match(part('gone'), /<strong>Firefox on macOS<\/strong> was replaced/);
+  assert.doesNotMatch(part('gone'), /Chrome on Linux/);
+  for (const which of ['asking', 'gone']) assert.match(part(which), /^<div class="device-notices" aria-live="polite">/);
+  devices.resetDevices();
+  for (const which of ['asking', 'gone']) {
+    assert.equal(part(which), '<div class="device-notices" aria-live="polite"></div>', 'the region is drawn even when empty');
+  }
+});
+
 test('a browser missing from a fresh list is still named when no frame said why', async () => {
   const list = [row(HERE, 'Safari on macOS', { this: true }), row(OTHER, 'Chrome on Linux')];
   const held = daemon({ list });

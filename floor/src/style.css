@@ -3315,7 +3315,7 @@ samp,
   position: fixed;
   inset: 50% auto auto 50%;
   width: min(30rem, calc(100vw - 2rem));
-  max-height: calc(100dvh - 2 * var(--notice-rail-height) - 2rem);
+  max-height: calc(100dvh - 2rem);
   margin: 0;
   transform: translate(-50%, -50%);
 }
@@ -3569,90 +3569,208 @@ samp,
   cursor: default;
 }
 
-.shell:not(.shell-signed-out) {
-  --notice-rail-height: 5rem;
-  padding-bottom: var(--notice-rail-height);
-}
-
 .top-region {
   position: relative;
 }
 
-.notice-area {
-  position: fixed;
-  right: 0;
-  bottom: 0;
-  left: 0;
+/*
+ * Notices take no room from the page. The banner holds what must stay in view and sits under the top bar.
+ * The stack floats over the bottom-left corner of the stage, away from the agent panel on the right.
+ */
+.notice-banner {
+  position: relative;
   z-index: var(--layer-notices);
   box-sizing: border-box;
-  height: var(--notice-rail-height);
-  padding: 0.5rem 1rem max(0.5rem, env(safe-area-inset-bottom, 0px));
-  border-top: 1px solid var(--line);
-  background: var(--surface-muted);
+}
+
+.notice-banner > :is(.journal-stopped-banner, .closing-time-banner, .stream-notice, .link-refused, .device-notices:not(:empty)) {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.35rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.notice-banner > :is(.journal-stopped-banner, .office-closed, .link-refused) {
+  border-left: 4px solid var(--danger-ink);
+}
+
+.notice-banner > .device-notices:not(:empty) {
+  background: var(--question);
+}
+
+.notice-banner .device-notices ul {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notice-banner .device-notice {
+  max-width: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.notice-banner .device-notice p {
+  flex: 0 1 auto;
+}
+
+.notice-banner :is(.journal-stopped-banner, .closing-time-banner) details {
+  margin: 0;
+}
+
+.notice-area {
+  position: fixed;
+  bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  left: 1rem;
+  z-index: var(--layer-notices);
+  box-sizing: border-box;
+  width: min(26rem, calc(100vw - 2rem));
+  max-height: min(70dvh, 28rem);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: none;
 }
 
 .notice-stack {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  gap: 0.4rem;
+  min-height: 0;
+}
+
+.notice-list {
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
-  box-sizing: border-box;
-  height: 100%;
-  padding: 0.25rem 0.5rem;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-.notice-stack > :is(.done-notices, .device-notices):empty {
-  position: absolute;
-}
-
-.notice-stack:focus-visible {
+.notice-list:focus-visible {
   outline: 2px solid var(--accent-ink);
   outline-offset: 1px;
 }
 
-.shell .hire-dialog,
-.shell .ticket-dialog {
-  height: calc(100dvh - var(--notice-rail-height));
-  max-height: calc(100dvh - var(--notice-rail-height));
+.notice-list > [data-folded] {
+  display: none;
 }
 
-.shell .ticket-dialog[data-composer='true'] {
-  height: fit-content;
-  max-height: calc(100dvh - var(--notice-rail-height) - 4rem);
+.notice-list > :is(.done-notices, .device-notices):empty {
+  position: absolute;
 }
 
-.shell .retire-dialog {
-  position: fixed;
-  inset: 0 0 var(--notice-rail-height);
-  max-height: calc(100dvh - var(--notice-rail-height) - 2rem);
-  margin: auto;
-  overflow-y: auto;
-}
-
-@media (max-width: 800px) {
-  .shell:not(.shell-signed-out) { --notice-rail-height: min(8.5rem, 24dvh); }
-
-  .shell .agent-drawer {
-    bottom: var(--notice-rail-height);
-    max-height: calc(100dvh - var(--notice-rail-height));
-  }
-}
-
-.notice-stack > * {
-  flex: 0 0 auto;
-  box-sizing: border-box;
-  max-width: min(36rem, calc(100vw - 2rem));
+.notice-tools {
+  display: flex;
+  gap: 0.4rem;
   pointer-events: auto;
 }
 
-.notice-stack > .done-notices {
+.notice-tools button,
+.notice-history button {
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.notice-tools button:focus-visible,
+.notice-history button:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+
+.notice-history {
+  display: grid;
+  gap: 0.4rem;
+  max-height: 14rem;
+  padding: 0.5rem 0.7rem;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: var(--surface);
+  box-shadow: 0 8px 28px var(--panel-shadow);
+  font-size: 0.82rem;
+  pointer-events: auto;
+}
+
+.notice-history ol {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notice-history time {
+  color: var(--muted-ink);
+  white-space: nowrap;
+}
+
+.notice-history button {
+  justify-self: start;
+}
+
+dialog > .notice-banner {
+  position: sticky;
+  top: 0;
+}
+
+.hire-dialog > .notice-banner,
+.retire-dialog > .notice-banner {
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+}
+
+@media (max-width: 800px) {
+  .shell:not(.shell-signed-out) { padding-top: var(--banner-height, 0px); }
+
+  .top-region > .notice-banner {
+    position: fixed;
+    top: 0;
+    right: 0;
+    left: 0;
+  }
+
+  .notice-area {
+    right: 0.5rem;
+    left: 0.5rem;
+    width: auto;
+  }
+
+  .shell .agent-drawer {
+    inset: var(--banner-height, 0px) 0 0;
+  }
+}
+
+.notice-list > * {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  max-width: 100%;
+  pointer-events: auto;
+}
+
+.notice-list > .done-notices,
+.notice-list > .device-notices {
   pointer-events: none;
 }
 
-.notice-stack > :is(.link-refused, .stream-notice, .journal-stopped-banner, .closing-time-banner, .ticket-banner),
-.notice-stack .done-notice {
+.notice-list > :is(.link-refused, .stream-notice, .ticket-banner),
+.notice-list .done-notice {
   width: fit-content;
   margin: 0;
   padding: 0.55rem 0.8rem;
@@ -3664,23 +3782,22 @@ samp,
   pointer-events: auto;
 }
 
-.notice-stack > :is(.link-refused, .office-closed, .journal-stopped-banner) {
+.notice-list > :is(.link-refused, .office-closed) {
   border-color: var(--danger-ink);
 }
 
-.notice-stack > .ticket-banner {
+.notice-list > .ticket-banner {
   border-color: var(--accent-ink);
   background: var(--question);
 }
 
-.notice-stack .done-notices {
+.notice-list .done-notices {
   display: flex;
   flex-direction: column;
-  align-items: center;
   gap: 0.4rem;
 }
 
-.notice-stack .done-notices ol {
+.notice-list .done-notices ol {
   display: grid;
   gap: 0.5rem;
   margin: 0;
@@ -3688,7 +3805,7 @@ samp,
   list-style: none;
 }
 
-.notice-stack .done-notice {
+.notice-list .done-notice {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -3697,15 +3814,15 @@ samp,
   background: var(--success-background);
 }
 
-.notice-stack .done-notice:not(:last-child) {
+.notice-list .done-notice:not(:last-child) {
   display: none;
 }
 
-.notice-stack .done-notice p {
+.notice-list .done-notice p {
   margin: 0;
 }
 
-.notice-stack > .device-notices {
+.notice-list > .device-notices {
   pointer-events: none;
 }
 
@@ -3821,7 +3938,7 @@ samp,
   font-weight: 600;
 }
 
-.notice-stack .done-notice-goal {
+.notice-list .done-notice-goal {
   flex: 1 1 8rem;
   min-width: 0;
   overflow: hidden;

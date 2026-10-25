@@ -567,7 +567,7 @@
   }
 }
 
-.notice-stack > .ticket-notice {
+.notice-list > .ticket-notice {
   width: fit-content;
   margin: 0;
   border-radius: 0.4rem;
@@ -589,7 +589,7 @@
   line-height: 1.25;
 }
 
-.notice-stack > .notification-offer { width: min(64rem, 100%); max-width: 100%; }
+.notice-list > .notification-offer { width: 100%; max-width: 100%; }
 .notification-offer p[role='status'] { grid-column: 1 / -1; }
 
 @media (max-width: 800px) {
