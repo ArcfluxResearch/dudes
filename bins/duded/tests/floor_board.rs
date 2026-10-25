@@ -33,7 +33,7 @@ use sha2::{Digest as _, Sha256};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v7"
+    "/tests/fixtures/floor-release-v8"
 );
 
 fn check(id: &str, program: &str) -> EnrolledCheck {

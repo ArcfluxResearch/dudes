@@ -1023,9 +1023,10 @@ pub fn team(
         let card = row
             .held_card
             .map_or_else(|| "none".to_owned(), |id| id.to_string());
+        let you = if row.you { "  (you)" } else { "" };
         writeln!(
             out,
-            "{}  {}  {}  {}  {status}  {card}",
+            "{}  {}  {}  {}  {status}  {card}{you}",
             row.id,
             Escaped(&row.name),
             Escaped(&row.role),
@@ -1033,6 +1034,28 @@ pub fn team(
         )?;
     }
     Ok(())
+}
+
+/// Render the caller's own roster row as JSON or escaped human text.
+///
+/// # Errors
+/// Whatever writing returns.
+pub fn whoami(
+    out: &mut dyn Write,
+    machine: bool,
+    row: &dudes_proto::rpc::team::RosterEntry,
+) -> io::Result<()> {
+    if machine {
+        return json(out, row);
+    }
+    writeln!(
+        out,
+        "You are {} (agent {}), role: {}, department: {}.",
+        Escaped(&row.name),
+        row.id,
+        Escaped(&row.role),
+        Escaped(&row.department)
+    )
 }
 
 /// Report a best-effort pause over the current roster, including each daemon refusal.

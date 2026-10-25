@@ -269,7 +269,7 @@ fn real_stub_seams_with(
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v7"
+    "/tests/fixtures/floor-release-v8"
 );
 
 fn enrolled_settings(fixture: &Fixture) -> duded::Settings {
@@ -9280,6 +9280,25 @@ fn enrollment_reload_ignores_a_symlink_in_an_unchanged_entry() {
 struct ProgramAdapter(OsString);
 
 #[cfg(unix)]
+const PROGRAM_MARKS: &str = "DUDES_TEST_PROGRAM_MARKS";
+
+#[cfg(unix)]
+#[test]
+fn launched_program_records_its_path() {
+    let Some(marks) = std::env::var_os(PROGRAM_MARKS) else {
+        return;
+    };
+    let mut marks = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(marks)
+        .expect("program marks");
+    let program = std::env::args_os().next().expect("the program path");
+    writeln!(marks, "{}", std::path::Path::new(&program).display()).expect("record the path");
+    std::process::exit(0);
+}
+
+#[cfg(unix)]
 impl Adapter for ProgramAdapter {
     fn provider(&self) -> Provider {
         Provider::Claude
@@ -9310,7 +9329,12 @@ impl Adapter for ProgramAdapter {
         _selection: &ModelSelection,
     ) -> Result<LaunchSpec, dudes_providers::launch::LaunchError> {
         Ok(LaunchSpec {
-            argv: vec![self.0.clone()],
+            argv: vec![
+                self.0.clone(),
+                "--exact".into(),
+                "launched_program_records_its_path".into(),
+                "--nocapture".into(),
+            ],
             env: ctx.daemon_env.to_vec(),
             cwd: ctx.cwd.to_path_buf(),
             stdin: dudes_providers::launch::LaunchInput::Null,
@@ -9406,8 +9430,20 @@ const PAST_REUSE: Duration = Duration::from_millis(1_150);
 const SCHEDULER_STALL: Duration = Duration::from_secs(3);
 
 #[cfg(unix)]
-#[test]
-fn browser_daemon_view_reports_the_launch_check_and_home() {
+struct LaunchCheck {
+    home: tempfile::TempDir,
+    _outside: tempfile::TempDir,
+    fixture: Fixture,
+    running: common::Running,
+    page: Arc<Page>,
+    marks: PathBuf,
+    shell_marks: PathBuf,
+    bin_a: PathBuf,
+    bin_b: PathBuf,
+}
+
+#[cfg(unix)]
+fn launch_check() -> LaunchCheck {
     let home = tempfile::tempdir().expect("a home");
     let outside = tempfile::tempdir().expect("a directory outside the home");
     let fixture = Fixture {
@@ -9426,7 +9462,12 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     }
     let bin_a = home.path().join("bin-a");
     let bin_b = outside.path().join("bin-b");
-    install_prog(&bin_a.join("prog"), &marks);
+    std::fs::create_dir_all(&bin_a).expect("bin-a");
+    std::os::unix::fs::symlink(
+        std::env::current_exe().expect("test binary"),
+        bin_a.join("prog"),
+    )
+    .expect("program in bin-a");
     std::fs::create_dir_all(&bin_b).expect("bin-b");
     let mut settings = with_floor(fixture.settings());
     settings.daemon_env = vec![
@@ -9435,23 +9476,24 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
             std::env::join_paths([&markers, &bin_a, &bin_b]).expect("a PATH"),
         ),
         EnvVar::new("HOME", home.path()),
+        EnvVar::new(PROGRAM_MARKS, marks.as_os_str()),
     ];
     let daemon = boot(
         &settings,
-        program_seams(&settings, OsString::from("prog"), 3),
+        program_seams(&settings, OsString::from("prog"), 2),
     )
     .expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
+    let running = common::start(daemon);
     let page = exchange(addr, &issue(&settings).bootstrap);
 
     let (frame, _) = snapshot(&page);
+    assert_claude_aliases_listed(&frame);
+    assert_eq!(frame["daemon"]["state_dir"], "~/state");
     assert_eq!(
-        frame["daemon"],
-        json!({"state_dir":"~/state","providers":[
-            {"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown",
-             "model_change_unsupported":true}
-        ]})
+        without_models(&frame),
+        json!([{"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown",
+            "model_change_unsupported":true}])
     );
     one_launch(&running.handle, &fixture, &home.path().join("work-a"));
     assert_eq!(
@@ -9459,45 +9501,115 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
         format!("{}\n", bin_a.join("prog").display()),
         "the launch ran the file the view reported"
     );
+    LaunchCheck {
+        home,
+        _outside: outside,
+        fixture,
+        running,
+        page,
+        marks,
+        shell_marks,
+        bin_a,
+        bin_b,
+    }
+}
 
-    std::fs::remove_file(bin_a.join("prog")).expect("remove bin-a/prog");
-    install_prog(&bin_b.join("prog"), &marks);
-    std::fs::write(&marks, "").expect("clear the marks");
+#[cfg(unix)]
+#[test]
+fn browser_daemon_view_reports_a_new_launch_path_without_a_restart() {
+    let mut check = launch_check();
+    std::fs::remove_file(check.bin_a.join("prog")).expect("remove bin-a/prog");
+    std::os::unix::fs::symlink(
+        std::env::current_exe().expect("test binary"),
+        check.bin_b.join("prog"),
+    )
+    .expect("program in bin-b");
+    std::fs::write(&check.marks, "").expect("clear the marks");
     std::thread::sleep(PAST_REUSE);
-    let (frame, _) = snapshot(&page);
-    let outside_prog = bin_b.join("prog").to_str().expect("UTF-8").to_owned();
+    let (frame, _) = snapshot(&check.page);
+    let outside_prog = check.bin_b.join("prog").to_str().expect("UTF-8").to_owned();
     assert_eq!(
-        frame["daemon"]["providers"],
+        without_models(&frame),
         json!([{"provider":"claude","program":"prog","found":true,"path":outside_prog,
             "sign_in":"unknown","model_change_unsupported":true}]),
         "a path outside the home is shown in full, with no restart"
     );
-    one_launch(&running.handle, &fixture, &home.path().join("work-b"));
+    one_launch(
+        &check.running.handle,
+        &check.fixture,
+        &check.home.path().join("work-b"),
+    );
     assert_eq!(
-        std::fs::read_to_string(&marks).expect("marks"),
+        std::fs::read_to_string(&check.marks).expect("marks"),
         format!("{outside_prog}\n")
     );
-
-    std::fs::remove_file(bin_b.join("prog")).expect("remove bin-b/prog");
-    std::fs::write(&marks, "").expect("clear the marks");
-    std::thread::sleep(PAST_REUSE);
-    let (frame, _) = snapshot(&page);
     assert_eq!(
-        frame["daemon"]["providers"],
+        std::fs::read_to_string(&check.shell_marks).ok(),
+        None,
+        "no check ran a shell or a lookup tool from the head of the daemon's PATH"
+    );
+    assert_eq!(
+        check.running.stop(ExitCause::ShutdownRpc),
+        ExitCause::ShutdownRpc
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn browser_daemon_view_reports_a_missing_launch_path_without_a_restart() {
+    let mut check = launch_check();
+    std::fs::remove_file(check.bin_a.join("prog")).expect("remove bin-a/prog");
+    std::fs::write(&check.marks, "").expect("clear the marks");
+    std::thread::sleep(PAST_REUSE);
+    let (frame, _) = snapshot(&check.page);
+    assert_eq!(
+        without_models(&frame),
         json!([{"provider":"claude","program":"prog","found":false,"model_change_unsupported":true}])
     );
-    let outcome = one_launch(&running.handle, &fixture, &home.path().join("work-c"));
+    let outcome = one_launch(
+        &check.running.handle,
+        &check.fixture,
+        &check.home.path().join("work-c"),
+    );
     assert!(
         matches!(outcome, TurnOutcome::NotLaunched { .. }),
         "a program the view reports missing is not launched: {outcome:?}"
     );
-    assert_eq!(std::fs::read_to_string(&marks).expect("marks"), "");
+    assert_eq!(std::fs::read_to_string(&check.marks).expect("marks"), "");
     assert_eq!(
-        std::fs::read_to_string(&shell_marks).ok(),
+        std::fs::read_to_string(&check.shell_marks).ok(),
         None,
         "no check ran a shell or a lookup tool from the head of the daemon's PATH"
     );
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    assert_eq!(
+        check.running.stop(ExitCause::ShutdownRpc),
+        ExitCause::ShutdownRpc
+    );
+}
+
+/// Claude's row lists the short names it accepts, unchecked, with no child process to ask.
+#[cfg(unix)]
+fn assert_claude_aliases_listed(frame: &Value) {
+    let models = &frame["daemon"]["providers"][0]["models"];
+    assert_eq!(models["checked"], false);
+    assert_eq!(
+        models["items"],
+        json!([
+            {"id":"opus","kind":"alias"},
+            {"id":"sonnet","kind":"alias"},
+            {"id":"haiku","kind":"alias"}
+        ])
+    );
+}
+
+/// The report's provider rows without their model lists, which other tests read.
+#[cfg(unix)]
+fn without_models(frame: &Value) -> Value {
+    let mut rows = frame["daemon"]["providers"].clone();
+    for row in rows.as_array_mut().expect("provider rows") {
+        row.as_object_mut().expect("a row").remove("models");
+    }
+    rows
 }
 
 /// One shape of `PATH` or configured command, and the file the check must report for it.
@@ -11892,7 +12004,7 @@ fn browser_settings_view_is_an_exact_read_only_allowlist() {
             "workspaces": [{ "workspace_id": "repo_1", "label": "Service workspace",
                 "agent_usd_per_day_micros": "10000000", "agent_tokens_per_day": "123",
                 "goal_usd_micros": "5000000", "goal_tokens": "456" }],
-            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 7 }
+            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 8 }
         })
     );
     let bytes = frame["settings"].to_string();

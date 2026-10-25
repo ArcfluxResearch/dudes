@@ -40,9 +40,12 @@ where
         Record::TurnIssued { turn, .. }
         | Record::TurnIssuedWithBrowserNote { turn, .. }
         | Record::ConversationTurnIssued { turn, .. }
+        | Record::IdentifiedConversationTurnIssued { turn, .. }
         | Record::NoteOnlyTurnIssued { turn, .. }
         | Record::TaughtNoteOnlyTurnIssued { turn, .. }
-        | Record::MailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. }) => {
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued { turn, .. }
+        | Record::MailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. })
+        | Record::IdentifiedMailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. }) => {
             let cache = RecoveryCache::load_planned(&CacheReader(tables.recovery), through, *turn)?;
             if let Some(claim) = cache.state().planned_claim(*turn) {
                 if !matches!(

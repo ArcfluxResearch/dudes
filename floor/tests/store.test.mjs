@@ -333,7 +333,7 @@ test('a jump in position is applied, and is never read as loss', () => {
   assert.equal(state.discarded, 0, 'a jump was treated as something to throw away');
 });
 
-test('a frame that is not browser-wire-v7 is refused', () => {
+test('a frame that is not browser-wire-v8 is refused', () => {
   for (const bad of [
     'not json',
     '[]',

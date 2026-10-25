@@ -1549,8 +1549,17 @@ fn issue_identity(record: &Record) -> Option<(AgentId, TurnId)> {
             mode: Mode::Managed,
             ..
         }
-        | Record::ConversationTurnIssued { agent, turn, .. } => Some((*agent, *turn)),
-        Record::MailWakeOnlyTurnIssued(issue) => Some((issue.agent, issue.turn)),
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued {
+            agent,
+            turn,
+            mode: Mode::Managed,
+            ..
+        }
+        | Record::ConversationTurnIssued { agent, turn, .. }
+        | Record::IdentifiedConversationTurnIssued { agent, turn, .. } => Some((*agent, *turn)),
+        Record::MailWakeOnlyTurnIssued(issue) | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => {
+            Some((issue.agent, issue.turn))
+        }
         _ => None,
     }
 }

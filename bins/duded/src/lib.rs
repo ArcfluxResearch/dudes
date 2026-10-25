@@ -61,6 +61,7 @@ mod condense_output;
 pub mod config;
 pub mod diff_capture;
 mod engine_login;
+pub mod engine_models;
 pub mod enrollment_reload;
 /// The end-to-end gate's crash arms, and nothing else. Absent from every build that does not ask for it —
 /// `cargo build --release --workspace` does not.
@@ -82,6 +83,7 @@ pub mod floor_goal;
 pub mod floor_look;
 pub mod floor_memory;
 pub mod floor_model;
+pub mod floor_models;
 mod floor_peer;
 mod floor_port;
 pub mod floor_project;

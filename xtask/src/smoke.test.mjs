@@ -290,6 +290,36 @@ test('Chrome spawn failure has an error handler before stdio is available', asyn
   }
 });
 
+test('Chrome startup failure includes a bounded stderr tail', async (t) => {
+  const child = new EventEmitter();
+  child.stdio = [null, null, new PassThrough(), new PassThrough(), new PassThrough()];
+  child.stderr = child.stdio[2];
+  let options;
+  t.mock.method(childProcess, 'spawn', (_program, _args, supplied) => {
+    options = supplied;
+    return child;
+  });
+  syncBuiltinESMExports();
+  const run = new ScratchRun('', process.cwd(), '', '', 'chrome-stand-in');
+  try {
+    const failed = run.browser().then(() => null, (error) => error);
+    child.stderr.write('discarded prefix\n' + 'x'.repeat(8192));
+    child.stderr.write('\nChrome startup diagnostic\n');
+    child.emit('exit', 1);
+    const error = await failed;
+    assert.equal(options.stdio[2], 'pipe');
+    assert.match(error.message, /^Chrome connection closed\nChrome startup stderr:\n/);
+    assert.match(error.message, /Chrome startup diagnostic$/);
+    assert.equal(error.message.includes('discarded prefix'), false);
+    assert.ok(error.message.length < 4200);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    run.cdp?.close();
+    child.stderr.destroy();
+  }
+});
+
 test('Chrome exit rejects the handshake while a helper retains the reply pipe', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'dudes-smoke-test-'));
   const program = join(root, 'chrome-stand-in');

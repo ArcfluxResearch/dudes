@@ -4,8 +4,8 @@
 
 use ::proptest::prelude::*;
 use dudes_proto::{
-    AgentBudget, BudgetScope, Ceiling, ExhaustedReason, Gate, GoalBudget, HoldReason, LoopDecision,
-    NoteAdmission, Spend,
+    AgentBudget, BudgetScope, Ceiling, ExhaustedReason, Gate, GoalBudget, HoldReason,
+    IDENTITY_BYTES, LoopDecision, NoteAdmission, Spend, TEACHING_BYTES,
 };
 use dudes_types::{BreakerRung, BreakerSignal, CardId, GoalId, Lsn, Provenance, Tokens, Usd};
 
@@ -191,6 +191,10 @@ fn any_goal() -> impl Strategy<Value = GoalInput> {
         )
 }
 
+fn any_identity() -> dudes_proto::IdentityLine {
+    dudes_proto::IdentityLine::new(dudes_types::AgentId::NIL, "Kim", "backend engineer")
+}
+
 fn any_work() -> impl Strategy<Value = WorkInput> {
     (
         prop::option::of("[a-z ]{1,20}"),
@@ -205,6 +209,7 @@ fn any_work() -> impl Strategy<Value = WorkInput> {
             held_card_context: None,
             unread_mail,
             memory_digest: memory_digest.unwrap_or_default(),
+            identity: Some(any_identity()),
         })
 }
 
@@ -671,8 +676,9 @@ proptest! {
         prop_assert_eq!(&decided.answers[..], &expected[..decided.answers.len()]);
         prop_assert_eq!(decided.answers.is_empty(), input.answers.is_empty());
         for carried in &input.answers[..decided.answers.len()] {
-            // Framing plus the answer, with the question at most 1,024 bytes.
-            if carried.text.len() + 1_024 + 64 + 432 <= 65_536 {
+            // Framing plus the answer, with the question at most 1,024 bytes. The loop keeps room
+            // for the identity line whether or not this agent has one.
+            if carried.text.len() + 1_024 + 64 + TEACHING_BYTES + IDENTITY_BYTES <= 65_536 {
                 prop_assert!(task.contains(carried.text.as_str()), "answer {} cut", carried.lsn.0);
             }
         }
@@ -697,6 +703,7 @@ proptest! {
             GoalId::NIL,
             Lsn(90),
             note,
+            any_identity(),
             CompletedNoteState {
                 control: input.control,
                 last_turn_end: input.last_turn_end,
@@ -713,7 +720,7 @@ proptest! {
         let actual = admit_completed_note(&completed);
         let expected = match ordinary.decision {
             LoopDecision::Continue { .. } | LoopDecision::Exhausted { reason:ExhaustedReason::Hops } =>
-                NoteAdmission::Issue { task:dudes_proto::taught_note_task(&text).unwrap() },
+                NoteAdmission::Issue { task:dudes_proto::identified_taught_note_task(&any_identity(), &text).unwrap() },
             LoopDecision::Wait { question } => NoteAdmission::Wait { question },
             LoopDecision::Hold { reason } => NoteAdmission::Hold { reason },
             LoopDecision::Exhausted { reason } => NoteAdmission::Exhausted { reason },
