@@ -129,12 +129,15 @@ test('the banner holds the waiting sign-ins and the stack holds the departed, ea
     row(HERE, 'Safari on macOS', { this: true }),
     row(OTHER, 'Chrome on Linux', { new: true }),
     row('01HQZX3YB7CNEWWTQ6F9N7MMM6', 'Firefox on macOS'),
+    row('01HQZX3YB7CNEWWTQ6F9N7MMM7', 'Edge on Windows', { new: true }),
   ] });
   await signedIn(held);
   await devices.loadDevices();
   devices.applyDeviceFrame({ type: 'floor.device.removed', device: '01HQZX3YB7CNEWWTQ6F9N7MMM6', reason: 'replaced' });
   const part = (which) => renderToStaticMarkup(createElement(DeviceNotices, { part: which }));
   assert.match(part('asking'), /A new browser signed in: <strong>Chrome on Linux<\/strong>/);
+  assert.doesNotMatch(part('asking'), /Edge on Windows/, 'the banner names one browser at a time');
+  assert.match(part('asking'), /1 more browser is waiting for an answer\./);
   assert.doesNotMatch(part('asking'), /Firefox on macOS/);
   assert.match(part('gone'), /<strong>Firefox on macOS<\/strong> was replaced/);
   assert.doesNotMatch(part('gone'), /Chrome on Linux/);

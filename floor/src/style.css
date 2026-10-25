@@ -3822,10 +3822,6 @@ dialog > .notice-banner {
   margin: 0;
 }
 
-.notice-list > .device-notices {
-  pointer-events: none;
-}
-
 .device-notices ul {
   display: grid;
   gap: 0.5rem;

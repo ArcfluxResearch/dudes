@@ -30,16 +30,20 @@ function Gone({ notice }: { readonly notice: Departed }) {
  * browser that went is named for a few seconds. The region is drawn even when empty, so a screen
  * reader reads out what is added to it. The Floor draws the waiting sign-ins in its banner, which stays
  * until they are answered, and the departed in its floating stack; `part` picks one, and without it both show.
+ * The banner names the first waiting browser and counts the rest, so it stays one line; answering shows the next.
  */
 export function DeviceNotices({ part }: { readonly part?: 'asking' | 'gone' } = {}) {
   const { devices, departed } = useSyncExternalStore(subscribeToDevices, getDevicesState, getDevicesState);
-  const asking = part === 'gone' ? [] : unansweredDevices(devices);
+  const waiting = part === 'gone' ? [] : unansweredDevices(devices);
+  const asking = part === 'asking' ? waiting.slice(0, 1) : waiting;
+  const later = waiting.length - asking.length;
   const gone = part === 'asking' ? [] : departed;
   return (
     <div className="device-notices" aria-live="polite">
       {asking.length === 0 && gone.length === 0 ? null : (
         <ul aria-label="Signed-in browsers">
           {asking.map((device) => <NewBrowser key={device.id} device={device} />)}
+          {later > 0 ? <li className="device-notice device-notice-later"><p>{later === 1 ? '1 more browser is' : `${later} more browsers are`} waiting for an answer.</p></li> : null}
           {gone.map((notice) => <Gone key={notice.key} notice={notice} />)}
         </ul>
       )}
