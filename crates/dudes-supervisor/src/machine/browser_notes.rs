@@ -602,6 +602,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             goal_id,
             completion_lsn,
             note,
+            row.identity_line(agent),
             CompletedNoteState {
                 control: Control {
                     halted: row.halted,
@@ -639,16 +640,16 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(input) = self.completed_note_input_for(agent) else {
             return;
         };
-        let input_digest = match crate::host::taught_note_input_digest(&input) {
+        let input_digest = match crate::host::identified_note_input_digest(&input) {
             Ok(value) => value,
             Err(error) => {
-                tracing::error!(%agent,%error,"taught_note_digest_refused");
+                tracing::error!(%agent,%error,"identified_note_digest_refused");
                 return;
             }
         };
         let decided = dudes_policy::admit_completed_note(&input);
-        if !dudes_proto::valid_taught_decision(&decided.decision, &decided.gate_trace) {
-            tracing::error!(%agent,"taught_note_decision_refused");
+        if !dudes_proto::valid_identified_taught_decision(&decided.decision, &decided.gate_trace) {
+            tracing::error!(%agent,"identified_note_decision_refused");
             return;
         }
         let refusal = budget_refusal_values(
@@ -672,7 +673,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             }),
         };
         self.persist(
-            Record::TaughtNoteTurnDecided {
+            Record::IdentifiedTaughtNoteTurnDecided {
                 agent,
                 goal: input.goal(),
                 note_lsn: input.note_lsn(),

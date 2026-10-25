@@ -78,7 +78,13 @@ fn protocol_fixture() {
                     input["params"]["input"][0]["text"]
                         .as_str()
                         .unwrap()
-                        .starts_with("make the tests pass")
+                        .starts_with("[You are ")
+                );
+                assert!(
+                    input["params"]["input"][0]["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("\n\nmake the tests pass")
                 );
                 assert!(
                     !marker.join("task.sent").exists(),

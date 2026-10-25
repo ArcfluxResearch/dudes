@@ -480,7 +480,7 @@ impl SampleJob {
 type BoundarySample = (InstructionSnapshot, Option<InstructionTicketAssociation>);
 
 pub(crate) struct InstructionSampler {
-    requests: mpsc::SyncSender<QueuedSample>,
+    requests: mpsc::Sender<QueuedSample>,
     now: Arc<dyn Fn() -> Timestamp + Send + Sync>,
 }
 
@@ -502,7 +502,9 @@ impl InstructionSampler {
         handle: Handle,
         now: Arc<dyn Fn() -> Timestamp + Send + Sync>,
     ) -> std::io::Result<Self> {
-        let (requests, manager) = mpsc::sync_channel::<QueuedSample>(1);
+        // Unbounded on purpose: a full queue is not a deadline. Each start is bounded by its ticket,
+        // and a sample that waits too long still ends at its own deadline.
+        let (requests, manager) = mpsc::channel::<QueuedSample>();
         let (work, worker) = mpsc::sync_channel::<Work>(1);
         let (results, completed) = mpsc::channel();
         let worker_now = Arc::clone(&now);
@@ -580,12 +582,8 @@ impl InstructionSampler {
 
     pub(super) fn submit(&self, job: SampleJob) -> Result<(), Box<SampleJob>> {
         self.requests
-            .try_send(self.queued(job))
-            .map_err(|error| match error {
-                mpsc::TrySendError::Full(queued) | mpsc::TrySendError::Disconnected(queued) => {
-                    Box::new(queued.job)
-                }
-            })
+            .send(self.queued(job))
+            .map_err(|error| Box::new(error.0.job))
     }
 
     fn boundary(&self, job: SampleJob) -> BoundarySample {
@@ -595,7 +593,7 @@ impl InstructionSampler {
         let deadline = queued.job.queued + SAMPLE_DEADLINE;
         let ticket = queued.job.ticket;
         let progress = Arc::clone(&queued.progress);
-        if self.requests.try_send(queued).is_ok()
+        if self.requests.send(queued).is_ok()
             && let Ok(result) =
                 endpoint.recv_timeout(deadline.saturating_duration_since(Instant::now()))
         {
@@ -1340,7 +1338,7 @@ mod tests {
 
     #[test]
     fn duplicate_request_numbers_cannot_take_a_previous_jobs_endpoint() {
-        let (requests, _manager) = mpsc::sync_channel(1);
+        let (requests, _manager) = mpsc::channel();
         let sampler = InstructionSampler {
             requests,
             now: Arc::new(|| Timestamp::UNIX_EPOCH),
@@ -1397,39 +1395,41 @@ mod tests {
     }
 
     #[test]
-    fn full_request_queue_returns_unknown_without_replacing_the_pending_job() {
-        let (requests, manager) = mpsc::sync_channel(1);
-        let sampler = InstructionSampler {
-            requests,
-            now: Arc::new(|| Timestamp::UNIX_EPOCH),
-        };
-        let mut pending = job();
-        pending.request = InstructionRequest(17);
-        sampler
-            .requests
-            .try_send(sampler.queued(pending))
-            .unwrap_or_else(|_| panic!("empty queue"));
-        let mut synchronous = job();
-        let ticket = InstructionTicketAssociation {
-            card: dudes_types::CardId::from_parts(1, 1),
-            goal: dudes_types::GoalId::from_parts(1, 1),
-            assignment_lsn: Lsn(3),
-            seq_at_start: dudes_types::Seq(4),
-        };
-        synchronous.ticket = Some(ticket);
-        let (unknown, returned_ticket) = sampler.boundary(synchronous);
-        assert_eq!(returned_ticket, Some(ticket));
-        assert!(unknown.execution_folder.is_none());
-        assert!(
-            unknown
-                .gaps
-                .iter()
-                .any(|gap| gap.reason == InstructionGapKind::Deadline)
-        );
-        assert_eq!(
-            manager.try_recv().unwrap().job.request,
-            InstructionRequest(17)
-        );
+    fn a_burst_of_starts_is_all_sampled_in_order() {
+        let (jobs, inputs) = mpsc::channel();
+        let sampler =
+            InstructionSampler::new(Handle::new(jobs), Arc::new(|| Timestamp::UNIX_EPOCH)).unwrap();
+        for request in 0..8 {
+            let mut burst = job();
+            burst.request = InstructionRequest(request);
+            assert!(sampler.submit(burst).is_ok(), "start {request} was refused");
+        }
+        for request in 0..8 {
+            let crate::ports::Job::Input(input) = inputs
+                .recv_timeout(std::time::Duration::from_secs(4))
+                .expect("every start is sampled")
+            else {
+                panic!("the sampler only sends inputs");
+            };
+            let Input::InstructionSampled {
+                request: got,
+                snapshot,
+                ..
+            } = *input
+            else {
+                panic!("the sampler only reports samples");
+            };
+            assert_eq!(got, InstructionRequest(request));
+            assert!(
+                !snapshot
+                    .gaps
+                    .iter()
+                    .any(|gap| gap.reason == InstructionGapKind::Deadline
+                        && gap.context == InstructionPathContext::Unresolved),
+                "start {request} was guessed: {:?}",
+                snapshot.gaps
+            );
+        }
     }
 
     #[test]

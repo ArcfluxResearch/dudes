@@ -35,7 +35,7 @@ impl Facts<'_, '_> {
             None
         };
         let mut mails = Vec::new();
-        if matches!(record, Record::MailWakeTurnDecided(decision) if matches!(decision.purpose, dudes_proto::MailWakePurpose::FreshPreparation { .. }))
+        if matches!(record, Record::MailWakeTurnDecided(decision) | Record::IdentifiedMailWakeTurnDecided(decision) if matches!(decision.purpose, dudes_proto::MailWakePurpose::FreshPreparation { .. }))
         {
             let start = super::mail::recipient_key(agent, [0; 16]);
             let end = super::mail::recipient_key(agent, [u8::MAX; 16]);
@@ -58,7 +58,9 @@ impl Facts<'_, '_> {
         {
             mails.push(mail);
         }
-        let proposed_turn = if let Record::MailWakeOnlyTurnIssued(issue) = record {
+        let proposed_turn = if let Record::MailWakeOnlyTurnIssued(issue)
+        | Record::IdentifiedMailWakeOnlyTurnIssued(issue) = record
+        {
             Some(issue.turn)
         } else {
             None
@@ -105,8 +107,10 @@ impl Facts<'_, '_> {
                     vec![*from, *to]
                 }
             }
-            Record::MailWakeTurnDecided(decision) => vec![decision.agent],
-            Record::MailWakeOnlyTurnIssued(issue) => vec![issue.agent],
+            Record::MailWakeTurnDecided(decision)
+            | Record::IdentifiedMailWakeTurnDecided(decision) => vec![decision.agent],
+            Record::MailWakeOnlyTurnIssued(issue)
+            | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => vec![issue.agent],
             Record::MailState { id, .. } => get_row::<MailRow>(self.mail, &id.to_bytes())?
                 .and_then(|row| row.wake_fact().map(|value| value.0))
                 .into_iter()
@@ -170,7 +174,9 @@ fn day_key(agent: AgentId, day: UtcDay) -> [u8; 20] {
 }
 
 pub(super) fn normal_carrier(entry: &Entry) -> Option<Entry> {
-    let Record::MailWakeOnlyTurnIssued(issue) = &entry.record else {
+    let (Record::MailWakeOnlyTurnIssued(issue) | Record::IdentifiedMailWakeOnlyTurnIssued(issue)) =
+        &entry.record
+    else {
         return None;
     };
     Some(Entry {

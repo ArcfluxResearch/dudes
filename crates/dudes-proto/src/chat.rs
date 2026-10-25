@@ -209,7 +209,24 @@ pub struct ChatTurnView {
     #[serde(deserialize_with = "required_nullable")]
     #[schemars(with = "ExplicitNullable<bool>")]
     pub truncated: Option<bool>,
+    /// The engine's own words for why the turn failed, as plain text of at most
+    /// [`MAX_CHAT_FAILURE_BYTES`] bytes, cut on a character boundary. Never a reply.
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(with = "ExplicitNullable<String>")]
+    pub failure: Option<String>,
+    /// The models the provider attributed the turn's usage to, at most [`MAX_CHAT_RAN_MODELS`],
+    /// as reported. Empty when the provider reported none.
+    pub ran_models: Vec<String>,
 }
+
+/// Longest `failure` text of a [`ChatTurnView`], in bytes.
+pub const MAX_CHAT_FAILURE_BYTES: usize = 2_048;
+
+/// Most model names a [`ChatTurnView`] lists in `ran_models`.
+pub const MAX_CHAT_RAN_MODELS: usize = 4;
+
+/// Longest model name kept in `ran_models`, in bytes.
+pub const MAX_CHAT_RAN_MODEL_BYTES: usize = 128;
 
 /// Exact fields of the bounded `ChatContextView` browser object.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -309,7 +326,8 @@ pub fn conversation_answer_task(question: &str, answer: &str) -> String {
         end -= 1;
     }
     format!(
-        "[answer to your question]\nquestion: {}\nanswer:\n{answer}\n\n[The question is answered. Continue your reply without asking it again.]",
-        &question[..end]
+        "[answer to your question]\nquestion: {}\nanswer:\n{answer}{}",
+        &question[..end],
+        crate::task::ANSWER_CLOSING
     )
 }

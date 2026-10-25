@@ -8,7 +8,7 @@
 export const DUDES_COMMANDS = [
   'agents', 'ask', 'board', 'closing', 'config', 'devices', 'floor', 'goal', 'halt', 'hire', 'login', 'look',
   'mail', 'mcp', 'memory', 'model', 'open', 'pause', 'ping', 'project', 'quickstart', 'recovery', 'rename', 'resume',
-  'retire', 'start', 'status', 'stop', 'tail', 'team', 'ticket', 'uninstall', 'upgrade', 'why', 'workspace',
+  'retire', 'start', 'status', 'stop', 'tail', 'team', 'ticket', 'uninstall', 'upgrade', 'whoami', 'why', 'workspace',
   'worktree',
 ];
 
