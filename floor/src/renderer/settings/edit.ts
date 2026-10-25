@@ -19,7 +19,7 @@ export interface SettingsEditState {
   readonly sending: string | null;
   /** The change the page is asking about before it writes. */
   readonly asking: { readonly key: string; readonly value: string; readonly question: string; readonly confirm: string } | null;
-  readonly last: { readonly key: string; readonly result: SettingsEditResult } | null;
+  readonly last: { readonly key: string; readonly value?: string; readonly result: SettingsEditResult } | null;
   readonly pendingDailyCeilingClear: boolean;
 }
 
@@ -101,7 +101,7 @@ export async function saveSetting(
 /** What the page says before it writes this switch, or `null` when the switch needs no question. */
 export function confirmation(key: string, value: string): string | null {
   if (key === 'floor.terminal' && value === 'on') {
-    return 'This lets this page open a terminal inside an agent\'s checkout. It takes effect after a restart of Dudes.';
+    return 'This lets this page open a terminal inside an agent\'s checkout. It applies at once and does not end running work.';
   }
   if (key === 'floor.retire' && value === 'off') return 'Without this, the page can no longer retire agents.';
   if (key === 'floor.control' && value === 'off') {
@@ -113,7 +113,7 @@ export function confirmation(key: string, value: string): string | null {
 async function write(key: string, value: string): Promise<void> {
   commit({ ...state, sending: key, asking: null, last: null });
   const result = await saveSetting(key, value);
-  commit({ ...state, sending: null, asking: null, last: { key, result } });
+  commit({ ...state, sending: null, asking: null, last: { key, value, result } });
   if (result.kind === 'saved') refreshFloorSnapshot();
 }
 
@@ -191,6 +191,23 @@ export function limitChange(unit: LimitUnit, typed: string, current: string | nu
     : next > BigInt(current) ? `This raises the limit from ${show(BigInt(current))} to ${show(next)}.` : null;
   return { kind: 'change', value, question };
 }
+
+// A page keeps the policy it was served with, and each refused probe logs a policy violation, so probe once.
+let drawsTerminal: boolean | null = null;
+
+/** Whether this page was served under the policy that lets the terminal draw: it allows inline styles. */
+export function pageDrawsTerminal(): boolean {
+  if (typeof document === 'undefined') return true;
+  if (drawsTerminal !== null) return drawsTerminal;
+  const probe = document.createElement('style');
+  probe.textContent = '.dudes-style-probe{}';
+  document.head.append(probe);
+  drawsTerminal = (probe.sheet?.cssRules.length ?? 0) > 0;
+  probe.remove();
+  return drawsTerminal;
+}
+
+export const RELOAD_FOR_TERMINAL = 'Reload this page to open terminals. It was loaded before Attach terminals was on.';
 
 /** The sentence under a switch after its request. */
 export function editLine(result: SettingsEditResult): string {

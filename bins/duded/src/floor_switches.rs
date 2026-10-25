@@ -31,8 +31,7 @@ pub struct Switches {
     pub recovery: bool,
     /// `[floor.board]`.
     pub board: bool,
-    /// `[floor.terminal]`. A daemon started with the terminal off cannot turn it on without a
-    /// restart, so this is the file's value only while the daemon holds terminal grants.
+    /// `[floor.terminal]`.
     pub terminal: bool,
     /// `[floor.git]`.
     pub git: bool,

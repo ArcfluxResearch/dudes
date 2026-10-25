@@ -11,7 +11,7 @@ use std::io::{self, Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use common::{Fixture, SharedHost, TestClock};
@@ -146,13 +146,21 @@ impl PtyHostPort for RealPty {
         let pid = self.host.pid(opened.id).expect("the child's pid");
         let (sink, output) = duded::pty_output::channel();
         let mut reader = opened.reader;
+        let (ready, started) = mpsc::sync_channel(1);
         let drain = std::thread::spawn(move || {
+            let mut ready = Some(ready);
             while let Ok(dudes_pty::PtyRead::Data(bytes)) = reader.read() {
                 sink.push(&bytes);
+                if bytes.contains(&b'\n')
+                    && let Some(ready) = ready.take()
+                {
+                    let _ = ready.send(());
+                }
             }
         });
         self.drains.insert(opened.id, drain);
         self.outputs.insert(opened.id, output);
+        started.recv_timeout(WAIT).expect("the login is ready");
         Ok(OpenedPty {
             pty: opened.id,
             child: PtyChild { pid },
@@ -521,23 +529,12 @@ fn the_time_limit_ends_the_login_and_the_daemon_typed_nothing() {
     );
     let mut floor = floor(&fixture, &bin, Duration::from_millis(1_500));
     let page = session(&floor);
-    // On a machine too busy to start the stand-in inside the limit there is no child to follow, so
-    // the sign-in is asked for again.
-    for _ in 0..3 {
-        let mut login = Socket::open(&page, "/floor/engine-login", PROTOCOL);
-        login.send(&json!({"type": "login.start", "engine": "claude", "cols": 80, "rows": 24}));
-        assert_eq!(login.until("login.ended")["outcome"], "timed_out");
-        if !login.shown.contains("child=") {
-            continue;
-        }
-        let child = child_of(&login);
-        await_gone(child);
-        // A terminal echoes what it is given, so anything the daemon wrote would be in what it showed.
-        assert_eq!(login.shown, format!("child={child}\r\n"));
-        stop(&mut floor);
-        return;
-    }
-    panic!("the stand-in never started inside the limit");
+    let mut login = start(&page, "child=");
+    let child = child_of(&login);
+    assert_eq!(login.until("login.ended")["outcome"], "timed_out");
+    await_gone(child);
+    assert_eq!(login.shown, format!("child={child}\r\n"));
+    stop(&mut floor);
 }
 
 #[test]

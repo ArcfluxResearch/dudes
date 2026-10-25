@@ -178,7 +178,7 @@ const EARLIER = {
       boundary: { state: 'unsettled' }, acknowledgment: { state: 'none' } }] } },
 };
 const EARLIER_WORDS = [/The earlier note/, /The earlier summary/, /the earlier check/, /Last check/, /Exit status: 7/,
-  /shortened in this view/, /What Dudes could not see/, /<h4>Instruction review<\/h4>/, /Review the recovered attempt/];
+  /shortened in this view/, /Dudes cannot see Codex&#x27;s plugins\./, /<h4>Instruction review<\/h4>/, /Review the recovered attempt/];
 
 test('a ticket that moved on shows nothing from its earlier reading until the next read answers', async () => {
   await open(EARLIER);
@@ -320,13 +320,15 @@ test('the decoder keeps exactly the daemon\'s members and refuses the rest', asy
   assert.equal(decode({ state: 'ok', card: { id: NEW } }), null);
 });
 
-test('a ready or held ticket names what Dudes could not see', async () => {
+test('a ready or held ticket keeps standing limits in Details without a warning', async () => {
   const coverage = { provider: 'codex', limits: ['configuration_unknown', 'fallback_unknown', 'root_marker_unknown'], saw_no_change: true };
   await open({ coverage });
   const html = panel();
   const defaultView = html.replace(/<details[^>]*>[^]*?<\/details>/g, '');
   assert.doesNotMatch(defaultView, /What Dudes could not see/);
-  assert.match(html, /<h4>What Dudes could not see<\/h4>\s*<p>Dudes could not check every file this agent may have followed\. Look at the result yourself before you accept it\.<\/p><p>Dudes cannot see Codex&#x27;s settings in its home folder, fallback file names or root markers\. It saw no change to the instruction and settings files it can read\.<\/p>/);
+  assert.doesNotMatch(html, /What Dudes could not see|Look at the result yourself before you accept it/);
+  const facts = html.match(/<details class="ticket-facts">([^]*?)<\/details>/)?.[1];
+  assert.match(facts, /<p>Dudes cannot see Codex&#x27;s settings in its home folder, fallback file names or root markers\. It saw no change to the instruction and settings files it can read\.<\/p>/);
   detail.resetDetail();
   store.resetFloorStore();
   await open({ coverage: { ...coverage, provider: 'claude', limits: ['plugin_unknown'], saw_no_change: false } });

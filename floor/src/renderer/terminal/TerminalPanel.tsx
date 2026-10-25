@@ -47,6 +47,7 @@ function nameOf(floor: FloorState, agent: string): string {
 const ATTACH_HINT = 'Open this agent’s real CLI. Automatic work waits while you type. Detach returns control to Dudes.';
 
 const UNAVAILABLE: Readonly<Record<Extract<TerminalOffer, { kind: 'unavailable' }>['reason'], string>> = Object.freeze({
+  engine: 'Opening this engine’s own terminal is not supported yet.',
   running: 'Wait for this agent’s current work to finish before opening its CLI.',
   attached: 'Someone already has this agent’s CLI open.',
   halted: 'This agent is halted, so its CLI cannot open. Press Resume first if you stopped it from this page.',
@@ -105,7 +106,7 @@ export function TerminalAttachView({ floor, offer }: { readonly floor: FloorStat
       {confirming && target !== null && claudeTrust ? <AttachConfirmation name={nameOf(floor, target)}
         onCancel={() => setConfirming(false)}
         onConfirm={() => { setConfirming(false); attachTerminal(target, browserTerminalPorts()); }} /> : null}
-      <span className="visually-hidden" id="terminal-hint">{hint}</span>
+      <span className={offer.kind === 'unavailable' && offer.reason === 'engine' ? 'agent-attach-note' : 'visually-hidden'} id="terminal-hint">{hint}</span>
     </div>
   );
 }

@@ -318,12 +318,12 @@ test('answered shows the answer as recorded, never a running turn; continuation 
   assert.match(html, /<blockquote class="answer-text">use main<\/blockquote>/);
   assert.match(html, /data-answer-continuation="open"/);
   assert.doesNotMatch(html, /moved on/, 'the 200 alone was shown as the agent moving on');
-  assert.match(form(), /Your answer to this question is in the journal/);
+  assert.match(form(), /Your answer is saved\. Waiting for this question to close\./);
   assert.match(form(), /class="answer-send" aria-disabled="true"/);
   // The form's own store subscription reads the state this test drove: one module instance.
   assert.match(renderToStaticMarkup(createElement(Form,
     { floor: getFloorState(), row: rowOf(), leaveFocusTo: 'agent-detail-title' })),
-    /Your answer to this question is in the journal/, 'the view reads a different answer module from the test');
+    /Your answer is saved\. Waiting for this question to close\./, 'the view reads a different answer module from the test');
   assert.match(html, /<h3 id="answer-status-title" tabindex="-1">/);
   assert.match(form(), /<textarea[^>]*data-focus-on-leave="answer-status-title"/,
     'when the question closes, the field does not hand the keyboard to this answer’s heading');

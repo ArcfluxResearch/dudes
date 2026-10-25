@@ -58,7 +58,7 @@ function drawer({ off = [], fields = {} } = {}) {
 
 const actionsOf = (html) => /<div class="agent-detail-actions"[^>]*>([\s\S]*?)<\/aside>/.exec(html)?.[1] ?? '';
 
-test('Pause stays in view, and Retire and Attach sit in the More actions menu', () => {
+test('Pause stays in view, Retire sits in the More actions menu, and Attach sits by the model', () => {
   const html = drawer();
   assert.match(html, /<div class="agent-detail-actions"/, 'no action row');
   const block = actionsOf(html);
@@ -66,9 +66,9 @@ test('Pause stays in view, and Retire and Attach sit in the More actions menu', 
   assert.equal(labels[0], 'Pause');
   const menu = /<details class="agent-more"><summary aria-label="More actions" title="More actions">…<\/summary>([\s\S]*?)<\/details>/.exec(block)?.[1] ?? '';
   assert.deepEqual([...menu.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label).filter((label) => label !== 'Edit look'),
-    ['Open the real CLI', 'Retire']);
-  const between = block.slice(block.indexOf('class="control-pause"'), block.indexOf('>Open the real CLI<'));
-  assert.doesNotMatch(between, /<p\b/);
+    ['Retire']);
+  assert.ok(html.indexOf('class="terminal-attach"') > html.indexOf('class="agent-model'), 'Attach follows the model');
+  assert.doesNotMatch(menu, /Open the real CLI/);
   assert.doesNotMatch(block, /trust this folder/);
 });
 
