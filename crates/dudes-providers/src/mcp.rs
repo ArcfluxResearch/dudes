@@ -971,12 +971,12 @@ mod tests {
         ] {
             assert!(!url_allowed(url), "{url}");
         }
-        let command = toml::Value::String(
-            std::env::temp_dir()
-                .join("mcp-example")
-                .display()
-                .to_string(),
-        );
+        let command = if cfg!(windows) {
+            r"C:\tools\mcp-example.exe"
+        } else {
+            "/usr/local/bin/mcp-example"
+        };
+        let command = toml::Value::String(command.to_owned());
         let program = declared(&format!(
             "[a]\ncommand = {command}\n[b]\nurl = \"https://h.example\""
         ));
