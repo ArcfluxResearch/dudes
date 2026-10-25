@@ -72,6 +72,29 @@ fn engine_logins() -> EngineLogins {
     )
 }
 
+/// Model lists that start nothing: these tests look at admission, not at the engines.
+fn engine_models() -> crate::engine_models::EngineModels {
+    struct Never;
+    impl crate::predicate::PredicateRunner for Never {
+        fn run(
+            &self,
+            _: &dudes_providers::launch::LaunchSpec,
+            _: std::time::Duration,
+        ) -> std::io::Result<crate::predicate::PredicateOutcome> {
+            Err(std::io::ErrorKind::Unsupported.into())
+        }
+
+        fn sweep(&self) {}
+    }
+    crate::engine_models::EngineModels::with_limits(
+        Arc::new(Never),
+        std::env::temp_dir(),
+        [],
+        std::time::Duration::from_secs(1),
+        1_024,
+    )
+}
+
 fn outside() -> PeerGate {
     gate(owner(&[(4000, 4000), (1, 1)]))
 }
@@ -181,6 +204,7 @@ fn drive(request: &[u8], sessions: &FloorSessions, peer: &PeerGate) -> Driven {
     let board = TicketLimits::new();
     let switches = SharedSwitches::new(all_on());
     let logins = engine_logins();
+    let models = engine_models();
     let catalog = Catalog {
         assets: &assets,
         manifest: &[],
@@ -188,6 +212,7 @@ fn drive(request: &[u8], sessions: &FloorSessions, peer: &PeerGate) -> Driven {
         git: None,
         diff: None,
         logins: Some(&logins),
+        models: Some(&models),
         board: &board,
         memory: &memory,
         peer,
@@ -357,6 +382,7 @@ fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_
     let (assets, memory, board) = everything_on();
     let switches = SharedSwitches::new(all_on());
     let logins = engine_logins();
+    let models = engine_models();
     let catalog = Catalog {
         assets: &assets,
         manifest: &[],
@@ -364,6 +390,7 @@ fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_
         git: None,
         diff: None,
         logins: Some(&logins),
+        models: Some(&models),
         board: &board,
         memory: &memory,
         peer: &outside(),
@@ -402,11 +429,24 @@ fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_
         PAUSE_PATH,
         GOAL_PATH,
         RETIRE_PATH,
+        MODELS_REFRESH_PATH,
         INSPECT_RECOVERY_PATH,
         "/floor/ticket",
     ] {
         assert!(Route::of("POST", path, switched_off).is_none(), "{path}");
     }
+    assert!(
+        Route::of(
+            "POST",
+            MODELS_REFRESH_PATH,
+            Catalog {
+                models: None,
+                ..catalog
+            }
+        )
+        .is_none(),
+        "no lists, no refresh route"
+    );
     assert!(Route::of("GET", TERMINAL_PATH, switched_off).is_none());
     assert!(
         Route::of("GET", ENGINE_LOGIN_PATH, switched_off).is_some(),
@@ -433,6 +473,7 @@ fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_
             ENGINE_LOGIN_PATH,
             Catalog {
                 logins: None,
+                models: None,
                 ..catalog
             }
         )
@@ -443,6 +484,7 @@ fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_
 fn max_body_of(path: &str) -> usize {
     let (assets, memory, board) = everything_on();
     let switches = SharedSwitches::new(all_on());
+    let models = engine_models();
     let catalog = Catalog {
         assets: &assets,
         manifest: &[],
@@ -450,6 +492,7 @@ fn max_body_of(path: &str) -> usize {
         git: None,
         diff: None,
         logins: None,
+        models: Some(&models),
         board: &board,
         memory: &memory,
         peer: &outside(),
@@ -692,6 +735,7 @@ fn a_request_id_works_once_and_a_forged_request_does_not_spend_one() {
         git: None,
         diff: None,
         logins: None,
+        models: None,
         board: &board,
         memory: &memory,
         peer: &peer,
@@ -857,6 +901,7 @@ fn a_script_path_the_daemon_does_not_serve_is_a_404_and_never_the_page() {
             git: None,
             diff: None,
             logins: None,
+            models: None,
             board: &board,
             memory: &memory,
             peer: &peer,
@@ -1217,6 +1262,7 @@ fn the_guard_admits_a_clean_request_from_outside_every_agent() {
         git: None,
         diff: None,
         logins: None,
+        models: None,
         board: &board,
         memory: &memory,
         peer: &peer,
@@ -1265,6 +1311,7 @@ fn the_pages_style_policy_follows_the_live_switches() {
         git: None,
         diff: None,
         logins: None,
+        models: None,
         board: &board,
         memory: &memory,
         peer: &peer,
