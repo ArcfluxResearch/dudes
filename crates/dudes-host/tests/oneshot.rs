@@ -580,3 +580,42 @@ fn a_captured_child_has_the_address_space_limit_on_linux() {
         "control: a plain run has no limit"
     );
 }
+
+/// A child that exits when its input ends is asked with the input held open, and is ended once the
+/// output holds the answer. The stand-in exits without answering if its input has closed by the time
+/// it has waited, so an answer in the output is the held pipe's doing, and a thirty-second `sleep`
+/// after it means a run that ends in seconds was ended by the answer.
+#[test]
+fn a_captured_run_holds_its_input_open_until_the_output_answers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ended = dir.path().join("ended");
+    let runner = OneShot::with_grace(GRACE);
+    let sh = program(&["/bin/sh"]);
+    let script = format!(
+        "read line; exec 3<&0; (read more <&3; echo ended > '{ended}') & sleep 1; [ -e '{ended}' ] && exit 0; echo \"answer $line\"; exec sleep 30",
+        ended = ended.display()
+    );
+    let mut spec = spec(
+        &[sh.as_os_str(), "-c".as_ref(), script.as_ref()],
+        dir.path(),
+    );
+    spec.stdin = dudes_providers::launch::LaunchInput::WriteThenClose(b"ask\n".to_vec());
+    let started = std::time::Instant::now();
+    let CapturedOutcome::Finished {
+        stdout,
+        truncated,
+        timed_out,
+        ..
+    } = runner
+        .run_captured_until(&spec, GENEROUS, 1024, |bytes| {
+            bytes.windows(7).any(|window| window == b"answer ") && bytes.ends_with(b"\n")
+        })
+        .expect("the run answers")
+    else {
+        panic!("nothing swept this run");
+    };
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(stdout, b"answer ask\n");
+    assert!(!truncated && !timed_out);
+    assert_eq!(runner.in_flight(), 0);
+}

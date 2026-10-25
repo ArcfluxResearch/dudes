@@ -52,7 +52,7 @@ use common::{Cli, Fixture, OpenRunner, Run, SharedHost, seams, start};
 /// the bytes — only that a gateway which has them answers, and one without them does not start.
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../duded/tests/fixtures/floor-release-v7"
+    "/../duded/tests/fixtures/floor-release-v8"
 );
 
 /// The repository root, for the two cross-language pins below.

@@ -15,7 +15,7 @@ const empty = () => ({ enabled: true, max_text_bytes: 4096, pending: [], turns: 
 const pending = (patch = {}) => ({ agent_id: A, note_lsn: '7', goal_id: G, text: 'Please check.',
   state: 'queued', turn_id: null, cancellable: true, reason: null, ...patch });
 const turn = (patch = {}) => ({ agent_id: A, turn_id: T, note_lsn: '7', text: 'Please check.',
-  state: 'ended', reply: 'Looks good…', truncated: null, reissued: false, ...patch });
+  state: 'ended', reply: 'Looks good…', truncated: null, failure: null, ran_models: [], reissued: false, ...patch });
 
 test('Chat accepts the exact bounded value and preserves natural ellipses and unknown completeness', () => {
   const value = { ...empty(), turns: [turn()], context_sent: [{ agent_id: B, note_lsn: '8', state: 'sent_as_context' }] };
@@ -93,6 +93,26 @@ test('Managed goal-free reservations and 64 KiB final replies use the new explic
   const complete = turn({ reply: '🙂'.repeat(16384), truncated: false });
   assert.deepEqual(decodeChat({ ...empty(), turns: [complete] }, agents)?.turns, [complete]);
   assert.equal(decodeChat({ ...empty(), turns: [turn({ reply: '🙂'.repeat(16385), truncated: false })] }, agents), null);
+});
+
+test('a failure is plain text of at most 2,048 bytes on a failed turn, and ran_models lists at most four names', () => {
+  const failed = turn({ state: 'failed', reply: null, failure: 'model_not_found: no such model', ran_models: ['gpt-9'] });
+  assert.deepEqual(decodeChat({ ...empty(), turns: [failed] }, agents)?.turns, [failed]);
+  const cut = turn({ state: 'failed', reply: null, failure: 'é'.repeat(1024) });
+  assert.deepEqual(decodeChat({ ...empty(), turns: [cut] }, agents)?.turns, [cut]);
+  for (const bad of [
+    turn({ state: 'failed', reply: null, failure: 'é'.repeat(1025) }),
+    turn({ state: 'failed', reply: null, failure: '' }),
+    turn({ state: 'ended', failure: 'not a failed turn' }),
+    turn({ ran_models: ['a', 'b', 'c', 'd', 'e'] }),
+    { ...turn(), failure: undefined },
+  ]) assert.equal(decodeChat({ ...empty(), turns: [bad] }, agents), null);
+});
+
+test('a model name that cannot be shown is dropped from the turn, and the chat still decodes', () => {
+  const mixed = turn({ ran_models: ['claude-opus-4-1', 'bad\u0007name', 'x'.repeat(129), 'ok'] });
+  assert.deepEqual(decodeChat({ ...empty(), turns: [mixed] }, agents)?.turns, [turn({ ran_models: ['claude-opus-4-1', 'ok'] })]);
+  assert.deepEqual(decodeChat({ ...empty(), turns: [turn({ ran_models: [''] })] }, agents)?.turns, [turn({ ran_models: [] })]);
 });
 
 test('older queued messages can report a changed conversation context without being delivered', () => {

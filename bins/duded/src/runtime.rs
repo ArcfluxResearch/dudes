@@ -918,6 +918,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// `<state dir>/agents`: each agent's own folder is under it, named by its id.
     pub(crate) agents_root: PathBuf,
     pub(crate) running_providers: crate::config::ProviderTables,
+    /// The provider check, which keeps the model ids turns report for the engine report's lists.
+    pub(crate) provider_check: crate::provider_check::ProviderCheck,
     /// The `[mcp.servers]` table this run loaded, for a reload to compare.
     pub(crate) running_mcp: dudes_providers::mcp::DeclaredServers,
     pub(crate) browser_launches: crate::chat_launch::LaunchPreparations,
@@ -7977,7 +7979,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         // decision must read the new goal's spend, not the replaced goal's against the new
         // ceiling.
         let refreshed = match &entry.record {
-            Record::TurnEnded { agent, .. } => self.push_spend(*agent, queue),
+            Record::TurnEnded {
+                agent, model_usage, ..
+            } => {
+                if sup
+                    .world()
+                    .agents
+                    .get(agent)
+                    .is_some_and(|row| row.provider == Provider::Claude)
+                {
+                    self.provider_check
+                        .note_models_seen(model_usage.keys().map(String::as_str));
+                }
+                self.push_spend(*agent, queue)
+            }
             Record::ConversationDispatchUncertain { .. } => sup
                 .world()
                 .agents

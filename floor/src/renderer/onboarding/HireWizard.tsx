@@ -16,11 +16,13 @@ import { copyToClipboard } from '../setup/SetupView.tsx';
 import { noProjects, viewConfirmed } from '../ticket/model.ts';
 import { AddProject, projectAddOn } from '../project/AddProject.tsx';
 import { EngineSignIn } from '../login/EngineSignIn.tsx';
-import type { ProviderRow } from '../setup/daemon.ts';
+import type { ModelItem, ProviderRow } from '../setup/daemon.ts';
+import { ModelListBar } from '../model/ModelListBar.tsx';
+import { modelItems, searchModels } from '../model/lists.ts';
 import { HIRE_ENGINES, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
 import {
-  LIMITS, MODEL_SUGGESTIONS, NO_PROJECT_LIST, agentsIn, checkHireStatus, lengthNote, ownCopyOffer, SECTIONS, browserHireDeps, chosenWorkspace,
+  LIMITS, NO_PROJECT_LIST, agentsIn, checkHireStatus, lengthNote, ownCopyOffer, SECTIONS, browserHireDeps, chosenWorkspace,
   chosenEngine, editDraft, freshSince, getHireState, moveSection, presenceOf, problemsIn, releasable,
   releaseAttempt, submitHire, TICKETS_OFF_AFTER, ticketsOff,
   sessionAfterRefusal, showSection, startAnotherHire, subscribeToHire,
@@ -137,8 +139,10 @@ function OwnCopyChoice({ copy, workspace, names, frozen }: {
 }
 
 /** Which model the agent runs: the engine's own default, a suggestion, or any name typed. */
-function ModelChoice({ engine, draft, frozen, configured, fixed, invalid }: {
+function ModelChoice({ engine, items, draft, frozen, configured, fixed, invalid }: {
   readonly engine: HireEngine;
+  /** What the daemon says the engine offers, or the short list the page falls back to. */
+  readonly items: readonly ModelItem[];
   readonly draft: HireDraft;
   readonly frozen: boolean;
   /** The model the daemon's configuration gives every agent of this engine, if it does. */
@@ -153,13 +157,12 @@ function ModelChoice({ engine, draft, frozen, configured, fixed, invalid }: {
         : `The configuration sets this engine\u2019s model to ${configured}, so it cannot be chosen here.`}
     </p>;
   }
-  const suggestions = MODEL_SUGGESTIONS[engine];
   const chosen = draft.model ?? '';
-  const typed = suggestions.includes(chosen) ? '' : chosen;
+  const { shown, more } = searchModels(items, chosen);
   return <div className="hire-model" data-hire-model="true">
-    <fieldset className="hire-choices" disabled={frozen}>
+    <fieldset className="hire-choices model-choices" disabled={frozen}>
       <legend>Which model?</legend>
-      {['', ...suggestions].map((name) => (
+      {['', ...shown.map((item) => item.id)].map((name) => (
         <label key={name} className="hire-choice">
           <input type="radio" name="model" value={name} checked={chosen === name}
             onChange={() => editDraft({ model: name })} />
@@ -167,17 +170,19 @@ function ModelChoice({ engine, draft, frozen, configured, fixed, invalid }: {
         </label>
       ))}
     </fieldset>
+    {more === 0 ? null : <p className="hire-count">{more} more models match. Keep typing to narrow the list.</p>}
     <div className="hire-field">
-      <label htmlFor="hire-model-name">Another model name</label>
+      <label htmlFor="hire-model-name">Search the list, or type another model name</label>
       <input id="hire-model-name" name="model_name" type="text" autoComplete="off" spellCheck={false}
         placeholder="Leave empty to use the app's default model"
-        value={typed} disabled={frozen} aria-invalid={invalid}
+        value={chosen} disabled={frozen} aria-invalid={invalid}
         aria-describedby={invalid ? 'hire-problem' : undefined}
         onChange={(event) => editDraft({ model: event.target.value })} />
       <p className="hire-count">{configured === null
         ? `Leave empty and ${HIRE_ENGINES[engine]} chooses its default model.`
         : `Leave empty to use the configured model, ${configured}.`} The engine checks the name when the agent first runs. You can change it later from the agent panel.</p>
     </div>
+    <ModelListBar provider={engine} id="hire-model-list" />
   </div>;
 }
 
@@ -371,7 +376,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
                   ))}
                 </fieldset>
               )}
-              {engine === null ? null : <ModelChoice engine={engine} draft={hire.draft} frozen={frozen}
+              {engine === null ? null : <ModelChoice engine={engine} items={modelItems(floor, engine)} draft={hire.draft} frozen={frozen}
                 configured={row?.configuredModel ?? null} fixed={row?.modelFixed === true} invalid={invalid('model')} />}
               {workspace === null ? null
                 : <OwnCopyChoice copy={copy} workspace={workspace} names={sharing} frozen={frozen} />}

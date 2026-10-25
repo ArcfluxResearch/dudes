@@ -1787,14 +1787,23 @@ mod tests {
         rename_then_deliver(&mut harness, agent, request);
     }
 
-    fn issues_in(effects: &[crate::testing::Seen]) -> usize {
-        effects
-            .iter()
-            .filter_map(crate::testing::Seen::record)
+    fn decisions_for(harness: &Harness, agent: AgentId) -> usize {
+        harness
+            .records()
+            .filter(|record| matches!(record, Record::LoopDecided { agent: decided, .. } if *decided == agent))
+            .count()
+    }
+
+    fn issues_for(harness: &Harness, agent: AgentId) -> usize {
+        harness
+            .records()
             .filter(|record| {
                 matches!(
                     record,
-                    Record::TurnIssued { .. } | Record::TurnIssuedWithBrowserNote { .. }
+                    Record::TurnIssued { agent: issued, .. }
+                        | Record::TurnIssuedWithBrowserNote { agent: issued, .. }
+                        | Record::IdentifiedTaughtNoteOnlyTurnIssued { agent: issued, .. }
+                    if *issued == agent
                 )
             })
             .count()
@@ -1816,22 +1825,45 @@ mod tests {
                 _ => None,
             })
             .expect("the rename is persisted behind the observation record");
-        let mut issues = issues_in(&acknowledge_actual_persist(&mut harness, &started));
-        assert_eq!(issues, 1, "the issue was emitted from the old name");
+        acknowledge_actual_persist(&mut harness, &started);
+        assert_eq!(
+            issues_for(&harness, agent),
+            1,
+            "the issue was emitted from the old name"
+        );
         let lsn = Lsn(harness.supervisor.world().last_applied_lsn.unwrap().0 + 1);
         harness.journal.push(rename_entry);
         let mut effects = harness.step(harness.persisted(rename_token, lsn));
         for _ in 0..8 {
-            issues += issues_in(&effects);
-            if !effects
+            let sample = effects.iter().find_map(|effect| match effect {
+                crate::testing::Seen::SampleInstructions {
+                    request,
+                    baseline: None,
+                    ..
+                } => Some(*request),
+                _ => None,
+            });
+            if let Some(request) = sample {
+                effects = sample_delayed_start(&mut harness, request);
+            } else if effects
                 .iter()
                 .any(|effect| matches!(effect, crate::testing::Seen::Persist { .. }))
             {
+                effects = acknowledge_actual_persist(&mut harness, &effects);
+            } else {
                 break;
             }
-            effects = acknowledge_actual_persist(&mut harness, &effects);
         }
-        assert_eq!(issues, 1, "no second turn is issued for the agent");
+        assert_eq!(
+            issues_for(&harness, agent),
+            1,
+            "no second turn is issued for the agent"
+        );
+        assert_eq!(
+            decisions_for(&harness, agent),
+            1,
+            "no second decision is journaled while the first issue is still launching"
+        );
     }
 
     #[test]
