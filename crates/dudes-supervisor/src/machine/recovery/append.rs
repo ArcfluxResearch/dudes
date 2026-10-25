@@ -161,9 +161,14 @@ fn issued_turn(record: &Record) -> Option<TurnId> {
         Record::TurnIssued { turn, .. }
         | Record::TurnIssuedWithBrowserNote { turn, .. }
         | Record::ConversationTurnIssued { turn, .. }
+        | Record::IdentifiedConversationTurnIssued { turn, .. }
         | Record::NoteOnlyTurnIssued { turn, .. }
         | Record::TaughtNoteOnlyTurnIssued { turn, .. }
-        | Record::MailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. }) => Some(*turn),
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued { turn, .. }
+        | Record::MailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. })
+        | Record::IdentifiedMailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. }) => {
+            Some(*turn)
+        }
         _ => None,
     }
 }

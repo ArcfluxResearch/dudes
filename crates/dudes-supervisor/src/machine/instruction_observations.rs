@@ -203,8 +203,11 @@ fn issue_goal(record: &Record) -> Option<GoalId> {
         Record::TurnIssued { goal, .. }
         | Record::TurnIssuedWithBrowserNote { goal, .. }
         | Record::NoteOnlyTurnIssued { goal, .. }
-        | Record::TaughtNoteOnlyTurnIssued { goal, .. } => Some(*goal),
-        Record::MailWakeOnlyTurnIssued(issue) => Some(issue.goal),
+        | Record::TaughtNoteOnlyTurnIssued { goal, .. }
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued { goal, .. } => Some(*goal),
+        Record::MailWakeOnlyTurnIssued(issue) | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => {
+            Some(issue.goal)
+        }
         _ => None,
     }
 }
@@ -1165,7 +1168,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 }
                 self.instructions.ready_turns.insert(turn);
                 let Entry { at, record } = *entry;
-                let at = if matches!(&record, Record::MailWakeOnlyTurnIssued(_)) {
+                let at = if matches!(
+                    &record,
+                    Record::MailWakeOnlyTurnIssued(_) | Record::IdentifiedMailWakeOnlyTurnIssued(_)
+                ) {
                     at
                 } else {
                     self.clock.now()
@@ -1207,6 +1213,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 context_lsn,
                 task,
                 ..
+            }
+            | Record::IdentifiedConversationTurnIssued {
+                note_lsn,
+                context_lsn,
+                task,
+                ..
             } => self.conversation_input_for(agent).is_some_and(|input| {
                 input.note_lsn == *note_lsn
                     && input.context_lsn == *context_lsn
@@ -1224,11 +1236,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 note_lsn,
                 task,
                 ..
+            }
+            | Record::IdentifiedTaughtNoteOnlyTurnIssued {
+                goal,
+                note_lsn,
+                task,
+                ..
             } => self.completed_note_input_for(agent).is_some_and(|input| {
                 input.goal() == *goal
                     && input.note_lsn() == *note_lsn
                     && match &entry.record {
-                        Record::TaughtNoteOnlyTurnIssued { completion_lsn, .. } => {
+                        Record::TaughtNoteOnlyTurnIssued { completion_lsn, .. }
+                        | Record::IdentifiedTaughtNoteOnlyTurnIssued { completion_lsn, .. } => {
                             input.completion_lsn() == *completion_lsn
                         }
                         _ => true,
@@ -1236,7 +1255,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     && matches!(dudes_policy::admit_completed_note(&input).decision,
                         dudes_proto::NoteAdmission::Issue { task: current } if current == *task)
             }),
-            Record::MailWakeOnlyTurnIssued(issue) => {
+            Record::MailWakeOnlyTurnIssued(issue)
+            | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => {
                 self.delayed_mail_wake_admitted(issue, entry.at, self.clock.now())
             }
             _ => false,
@@ -1624,6 +1644,68 @@ mod tests {
         let effects = acknowledge_actual_persist(&mut harness, &effects);
         let request = actual_pending_request(&effects);
         assert_exact_delayed_issue(&mut harness, request);
+    }
+
+    #[test]
+    fn a_rename_during_sampling_drops_the_conversation_issue_and_decides_again() {
+        let mut harness = Harness::new();
+        let agent = harness.hire();
+        harness.step(Input::Spend {
+            agent,
+            view: SpendView::default(),
+        });
+        let context_lsn = harness.supervisor.world().agents[&agent].context_lsn;
+        let effects = harness.step(Input::Command(Command::ConversationMessageQueued {
+            agent,
+            text: "whole finite message".into(),
+            browser: browser_attribution(),
+            context_lsn,
+            context_reset_turn: None,
+        }));
+        let effects = acknowledge_actual_persist(&mut harness, &effects);
+        let effects = acknowledge_actual_persist(&mut harness, &effects);
+        let request = actual_pending_request(&effects);
+        let effects = harness.step(Input::Command(Command::Rename {
+            agent,
+            name: "Rowan".into(),
+            browser_rename: None,
+        }));
+        acknowledge_actual_persist(&mut harness, &effects);
+
+        let mut effects = deliver_delayed_start(&mut harness, request);
+        assert!(effects.iter().all(|effect| !matches!(
+            effect,
+            crate::testing::Seen::Persist {
+                entry: Entry {
+                    record: Record::IdentifiedConversationTurnIssued { .. },
+                    ..
+                },
+                ..
+            }
+        )));
+        let mut renamed_decision = None;
+        for _ in 0..8 {
+            if effects.iter().any(|effect| {
+                matches!(effect, crate::testing::Seen::Persist { entry, .. }
+                    if matches!(&entry.record, Record::IdentifiedConversationTurnDecided {
+                        decision: dudes_proto::NoteAdmission::Issue { task }, ..
+                    } if task.contains("[You are Rowan (agent")))
+            }) {
+                renamed_decision = Some(());
+                break;
+            }
+            if !effects
+                .iter()
+                .any(|effect| matches!(effect, crate::testing::Seen::Persist { .. }))
+            {
+                break;
+            }
+            effects = acknowledge_actual_persist(&mut harness, &effects);
+        }
+        assert!(
+            renamed_decision.is_some(),
+            "the message is decided again under the new name"
+        );
     }
 
     #[test]
@@ -2123,7 +2205,7 @@ mod tests {
         };
         assert!(matches!(
             entry.record,
-            Record::TaughtNoteOnlyTurnIssued { .. }
+            Record::IdentifiedTaughtNoteOnlyTurnIssued { .. }
         ));
         assert_exact_delayed_issue(&mut harness, request);
     }

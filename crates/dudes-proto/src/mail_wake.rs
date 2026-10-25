@@ -10,6 +10,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::record::Hex32;
+use crate::task::TaskContract;
 use crate::{Entry, ExhaustedReason, Gate, GateStep, HoldReason, MailTo, Record};
 
 const CARRIER_BYTES: usize = crate::rpc::MAX_FRAME_BYTES / 16;
@@ -72,10 +73,16 @@ impl TryFrom<TargetFields> for MailWakeTarget {
 pub struct MailWakeTask(#[serde(deserialize_with = "exact_task")] String);
 
 impl MailWakeTask {
-    /// Build the exact task for an unread count in one through thirty-two.
+    /// Build the exact legacy task for an unread count in one through thirty-two.
     #[must_use]
     pub fn new(unread: u8) -> Option<Self> {
         crate::task::mail_wake_task(unread).map(Self)
+    }
+
+    /// Build the exact identified task: the agent's line, then the notice and instructions.
+    #[must_use]
+    pub fn identified(line: &crate::task::IdentityLine, unread: u8) -> Option<Self> {
+        crate::task::identified_mail_wake_task(line, unread).map(Self)
     }
 
     /// The immutable launch bytes.
@@ -87,7 +94,22 @@ impl MailWakeTask {
     /// The complete unread snapshot carried by this task.
     #[must_use]
     pub fn unread_count(&self) -> u8 {
-        crate::task::recognize_mail_wake_task(&self.0).expect("validated mail-only task")
+        crate::task::recognize_mail_wake_task(&self.0)
+            .or_else(|| {
+                crate::task::recognize_identified_mail_wake_task(&self.0, None)
+                    .map(|(_, count)| count)
+            })
+            .expect("validated mail-only task")
+    }
+
+    /// Which exact bytes this task is.
+    #[must_use]
+    pub fn contract(&self) -> TaskContract {
+        if crate::task::recognize_mail_wake_task(&self.0).is_some() {
+            TaskContract::Legacy
+        } else {
+            TaskContract::Identified
+        }
     }
 }
 
@@ -99,7 +121,11 @@ impl JsonSchema for MailWakeTask {
         let tasks: Vec<_> = (1..=32)
             .map(|count| crate::task::mail_wake_task(count).expect("bounded task"))
             .collect();
-        schemars::json_schema!({"type":"string","enum":tasks})
+        let suffix = crate::task::schema_suffix();
+        schemars::json_schema!({"oneOf":[
+            {"type":"string","enum":tasks},
+            {"type":"string","pattern":format!("^\\[You are [^\\]]+\\]\\n\\n\\[(?:[1-9]|[12][0-9]|3[0-2]) unread mail\\]{suffix}$")}
+        ]})
     }
 }
 
@@ -291,6 +317,16 @@ struct DecisionFields {
 }
 
 impl MailWakeDecision {
+    /// The contract of the task this decision carries, when it carries one.
+    #[must_use]
+    pub fn contract(&self) -> Option<TaskContract> {
+        match (&self.purpose, &self.decision) {
+            (MailWakePurpose::FreshPreparation { plan }, _) => Some(plan.task.contract()),
+            (_, MailWakeAdmission::Issue { task }) => Some(task.contract()),
+            _ => None,
+        }
+    }
+
     /// Whether its bounded payload, purpose, task, domain and firing trace agree.
     #[must_use]
     pub fn valid(&self) -> bool {
@@ -542,10 +578,53 @@ fn positive_lsn<'de, D: Deserializer<'de>>(d: D) -> Result<Lsn, D::Error> {
 
 fn exact_task<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     let task = String::deserialize(d)?;
-    if crate::task::recognize_mail_wake_task(&task).is_none() {
+    if crate::task::recognize_mail_wake_task(&task).is_none()
+        && crate::task::recognize_identified_mail_wake_task(&task, None).is_none()
+    {
         return Err(serde::de::Error::custom("invalid exact mail-only task"));
     }
     Ok(task)
+}
+
+fn contract_of<'de, D: Deserializer<'de>, T>(
+    d: D,
+    wanted: TaskContract,
+    found: impl FnOnce(&T) -> Option<TaskContract>,
+) -> Result<T, D::Error>
+where
+    T: Deserialize<'de>,
+{
+    let value = T::deserialize(d)?;
+    if found(&value).is_some_and(|contract| contract != wanted) {
+        return Err(serde::de::Error::custom(
+            "mail-wake task does not match its record kind",
+        ));
+    }
+    Ok(value)
+}
+
+pub(crate) fn legacy_decision<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<MailWakeDecision, D::Error> {
+    contract_of(d, TaskContract::Legacy, MailWakeDecision::contract)
+}
+
+pub(crate) fn identified_decision<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<MailWakeDecision, D::Error> {
+    contract_of(d, TaskContract::Identified, MailWakeDecision::contract)
+}
+
+pub(crate) fn legacy_issue<'de, D: Deserializer<'de>>(d: D) -> Result<MailWakeIssue, D::Error> {
+    contract_of(d, TaskContract::Legacy, |issue: &MailWakeIssue| {
+        Some(issue.task.contract())
+    })
+}
+
+pub(crate) fn identified_issue<'de, D: Deserializer<'de>>(d: D) -> Result<MailWakeIssue, D::Error> {
+    contract_of(d, TaskContract::Identified, |issue: &MailWakeIssue| {
+        Some(issue.task.contract())
+    })
 }
 
 fn bounded_session<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SessionId>, D::Error> {
@@ -954,10 +1033,45 @@ impl MailWakeState {
                 }
             }
             Record::MailWakeTurnDecided(decision) if decision.agent == agent => {
-                row.decide(context, wakes_today, lsn, entry.at, decision)?;
+                row.decide(
+                    context,
+                    wakes_today,
+                    lsn,
+                    entry.at,
+                    decision,
+                    TaskContract::Legacy,
+                )?;
+            }
+            Record::IdentifiedMailWakeTurnDecided(decision) if decision.agent == agent => {
+                row.decide(
+                    context,
+                    wakes_today,
+                    lsn,
+                    entry.at,
+                    decision,
+                    TaskContract::Identified,
+                )?;
             }
             Record::MailWakeOnlyTurnIssued(issue) if issue.agent == agent => {
-                row.issue(context, wakes_today, lsn, entry.at, issue)?;
+                row.issue(
+                    context,
+                    wakes_today,
+                    lsn,
+                    entry.at,
+                    issue,
+                    TaskContract::Legacy,
+                )?;
+                issued = true;
+            }
+            Record::IdentifiedMailWakeOnlyTurnIssued(issue) if issue.agent == agent => {
+                row.issue(
+                    context,
+                    wakes_today,
+                    lsn,
+                    entry.at,
+                    issue,
+                    TaskContract::Identified,
+                )?;
                 issued = true;
             }
             _ => {}
@@ -977,8 +1091,12 @@ impl MailWakeState {
         lsn: Lsn,
         at: Timestamp,
         decision: &MailWakeDecision,
+        contract: TaskContract,
     ) -> Result<(), MailWakeError> {
-        if !decision.valid() || decision.completion_lsn >= lsn {
+        if !decision.valid()
+            || decision.completion_lsn >= lsn
+            || decision.contract().is_some_and(|found| found != contract)
+        {
             return Err(MailWakeError::Contract);
         }
         if !Self::completion_matches(context, decision.goal, decision.completion_lsn) {
@@ -1011,6 +1129,9 @@ impl MailWakeState {
             }
             MailWakePurpose::ExistingPreparation { root_lsn } => {
                 let preparation = self.preparation.as_ref().ok_or(MailWakeError::Root)?;
+                if preparation.plan.task.contract() != contract {
+                    return Err(MailWakeError::Contract);
+                }
                 if preparation.root_lsn != *root_lsn
                     || *root_lsn >= lsn
                     || (preparation.goal, preparation.completion_lsn)
@@ -1125,8 +1246,9 @@ impl MailWakeState {
         lsn: Lsn,
         at: Timestamp,
         issue: &MailWakeIssue,
+        contract: TaskContract,
     ) -> Result<(), MailWakeError> {
-        if !issue.valid() {
+        if !issue.valid() || issue.task.contract() != contract {
             return Err(MailWakeError::Contract);
         }
         if !Self::completion_matches(context, issue.goal, issue.completion_lsn) {

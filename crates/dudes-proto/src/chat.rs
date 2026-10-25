@@ -309,7 +309,8 @@ pub fn conversation_answer_task(question: &str, answer: &str) -> String {
         end -= 1;
     }
     format!(
-        "[answer to your question]\nquestion: {}\nanswer:\n{answer}\n\n[The question is answered. Continue your reply without asking it again.]",
-        &question[..end]
+        "[answer to your question]\nquestion: {}\nanswer:\n{answer}{}",
+        &question[..end],
+        crate::task::ANSWER_CLOSING
     )
 }

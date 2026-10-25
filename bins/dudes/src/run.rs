@@ -526,7 +526,7 @@ fn dispatch(
 
     let mut client = connect(env)?;
 
-    if invocation.command == Command::Team {
+    if matches!(invocation.command, Command::Team | Command::Whoami) {
         let response = if let Some(token) = env.agent_token() {
             client.call(
                 Method::TeamRoster,
@@ -540,6 +540,9 @@ fn dispatch(
                 operator_credential(env)?,
             )?
         };
+        if invocation.command == Command::Whoami {
+            return whoami_answer(invocation, response, out);
+        }
         return render_answer(invocation, Method::TeamRoster, response, out);
     }
 
@@ -2209,6 +2212,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         | Command::ClosingAck { .. }
         | Command::Memory(_)
         | Command::Team
+        | Command::Whoami
         | Command::Tail { .. }
         | Command::Workspace(_)
         | Command::Worktree(_)
@@ -2802,6 +2806,22 @@ fn answer_result(response: Response) -> Result<Value, Failure> {
 }
 
 /// A result value as the contract's type, or a failure naming what did not fit.
+/// `dudes whoami`: the roster row the daemon marked as the caller's own, or a plain refusal.
+fn whoami_answer(
+    invocation: &Invocation,
+    response: Response,
+    out: &mut dyn Write,
+) -> Result<u8, Failure> {
+    let rows = typed::<Vec<dudes_proto::rpc::team::RosterEntry>>(answer_result(response)?)?;
+    let Some(row) = rows.into_iter().find(|row| row.you) else {
+        return Err(local(
+            "whoami: no agent matches this process. Run it from an agent's own process, which inherits DUDES_TOKEN; `dudes team` lists everyone.",
+        ));
+    };
+    render::whoami(out, invocation.json, &row).map_err(local)?;
+    Ok(exit::SUCCESS)
+}
+
 fn typed<T: DeserializeOwned>(result: Value) -> Result<T, Failure> {
     serde_json::from_value(result).map_err(|error| {
         Failure::Other(Message::Local(format!(

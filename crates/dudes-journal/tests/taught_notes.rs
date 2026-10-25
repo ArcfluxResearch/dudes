@@ -38,12 +38,20 @@ fn seed() -> Vec<Entry> {
         serde_json::from_value(json!({"at":0,"t":"browser_note_queued","agent":agent(),"text":"whole note","destination":{"kind":"managed_goal","goal":goal()},"browser":{"request_id_digest":"11".repeat(32),"request_digest":"22".repeat(32),"session_digest":"33".repeat(32)}})).unwrap(),
     ]
 }
+fn line() -> dudes_proto::IdentityLine {
+    dudes_proto::IdentityLine::new(agent(), "Owned", "test")
+}
+fn task(contract: NoteContract) -> String {
+    match contract {
+        NoteContract::Raw => "whole note".into(),
+        NoteContract::Taught => dudes_proto::taught_note_task("whole note").unwrap(),
+        NoteContract::IdentifiedTaught => {
+            dudes_proto::identified_taught_note_task(&line(), "whole note").unwrap()
+        }
+    }
+}
 fn decision(contract: NoteContract) -> Record {
-    let task = if contract == NoteContract::Raw {
-        "whole note".into()
-    } else {
-        dudes_proto::taught_note_task("whole note").unwrap()
-    };
+    let task = task(contract);
     let value = NoteAdmission::Issue { task };
     match contract {
         NoteContract::Raw => Record::NoteTurnDecided {
@@ -64,11 +72,25 @@ fn decision(contract: NoteContract) -> Record {
             gate_trace: trace(),
             decision: value,
         },
+        NoteContract::IdentifiedTaught => Record::IdentifiedTaughtNoteTurnDecided {
+            agent: agent(),
+            goal: goal(),
+            note_lsn: Lsn(4),
+            completion_lsn: Lsn(3),
+            input_digest: "identified".into(),
+            gate_trace: trace(),
+            decision: value,
+        },
     }
 }
 fn issue(contract: NoteContract) -> Record {
-    serde_json::from_value(json!({"t":if contract==NoteContract::Raw { "note_only_turn_issued" } else { "taught_note_only_turn_issued" },
-        "agent":agent(),"turn":turn(),"goal":goal(),"task":if contract==NoteContract::Raw { "whole note".to_owned() } else { dudes_proto::taught_note_task("whole note").unwrap() },
+    let name = match contract {
+        NoteContract::Raw => "note_only_turn_issued",
+        NoteContract::Taught => "taught_note_only_turn_issued",
+        NoteContract::IdentifiedTaught => "identified_taught_note_only_turn_issued",
+    };
+    serde_json::from_value(json!({"t":name,
+        "agent":agent(),"turn":turn(),"goal":goal(),"task":task(contract),
         "session":null,"mode":"managed","model_selection":{},"lsn_of_decision":5,"answers":[],"note_lsn":4,"completion_lsn":3})).unwrap()
 }
 fn projected(history: &[Entry]) -> Projections {
@@ -80,9 +102,14 @@ fn projected(history: &[Entry]) -> Projections {
 }
 
 #[test]
-fn raw_and_taught_decision_issue_contracts_must_match() {
-    for decision_contract in [NoteContract::Raw, NoteContract::Taught] {
-        for issue_contract in [NoteContract::Raw, NoteContract::Taught] {
+fn raw_taught_and_identified_decision_issue_contracts_must_match() {
+    const ALL: [NoteContract; 3] = [
+        NoteContract::Raw,
+        NoteContract::Taught,
+        NoteContract::IdentifiedTaught,
+    ];
+    for decision_contract in ALL {
+        for issue_contract in ALL {
             let mut history = seed();
             history.push(entry(decision(decision_contract)));
             let mut p = projected(&history);
@@ -96,15 +123,11 @@ fn raw_and_taught_decision_issue_contracts_must_match() {
                 );
                 assert_eq!(p.goal(goal()).unwrap().unwrap().turns_on_goal, 1);
                 assert_eq!(p.chat().unwrap().turns[0].text, "whole note");
-                assert!(
-                    p.export()
-                        .unwrap()
-                        .contains(if decision_contract == NoteContract::Raw {
-                            "\"raw\""
-                        } else {
-                            "\"taught\""
-                        })
-                );
+                assert!(p.export().unwrap().contains(match decision_contract {
+                    NoteContract::Raw => "\"raw\"",
+                    NoteContract::Taught => "\"taught\"",
+                    NoteContract::IdentifiedTaught => "\"identified_taught\"",
+                }));
                 let before = p.export().unwrap();
                 assert!(p.apply(Lsn(7), 0, &entry(issue(issue_contract))).is_err());
                 assert_eq!(p.export().unwrap(), before);
@@ -183,12 +206,21 @@ fn append_joined_note_history(
     }
     let completion = writer.append(&history[2]).unwrap();
     let note = writer.append(&history[3]).unwrap();
-    let mut decided = decision(NoteContract::Taught);
-    let Record::TaughtNoteTurnDecided {
+    let mut decided = decision(if issue_contract == NoteContract::IdentifiedTaught {
+        NoteContract::IdentifiedTaught
+    } else {
+        NoteContract::Taught
+    });
+    let (Record::TaughtNoteTurnDecided {
         note_lsn,
         completion_lsn,
         ..
-    } = &mut decided
+    }
+    | Record::IdentifiedTaughtNoteTurnDecided {
+        note_lsn,
+        completion_lsn,
+        ..
+    }) = &mut decided
     else {
         unreachable!()
     };
@@ -204,6 +236,12 @@ fn append_joined_note_history(
             ..
         }
         | Record::TaughtNoteOnlyTurnIssued {
+            note_lsn,
+            completion_lsn,
+            lsn_of_decision,
+            ..
+        }
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued {
             note_lsn,
             completion_lsn,
             lsn_of_decision,
@@ -283,6 +321,31 @@ fn taught_only_valid_prefix_rebuilds_from_the_first_record() {
     assert_eq!(replay(&reader, &mut projected).unwrap().applied, 6);
     assert_eq!(projected.goal(goal()).unwrap().unwrap().turns_on_goal, 1);
     assert_eq!(projected.turn(turn()).unwrap().unwrap().goal, Some(goal()));
+}
+
+#[test]
+fn identified_valid_prefix_rebuilds_from_the_first_record() {
+    let owned = tempfile::tempdir().unwrap();
+    let journal = owned.path().join("journal");
+    append_joined_note_history(&journal, NoteContract::IdentifiedTaught);
+    let reader = Reader::open(&journal).unwrap().0;
+    let mut projected = Projections::in_memory().unwrap();
+    assert_eq!(replay(&reader, &mut projected).unwrap().applied, 6);
+    assert_eq!(projected.goal(goal()).unwrap().unwrap().turns_on_goal, 1);
+    let frames: Vec<_> = reader
+        .iter_from(Lsn::ZERO)
+        .unwrap()
+        .map(|item| item.unwrap().1.record.kind())
+        .collect();
+    let new = [
+        dudes_proto::RecordKind::IdentifiedTaughtNoteTurnDecided,
+        dudes_proto::RecordKind::IdentifiedTaughtNoteOnlyTurnIssued,
+    ];
+    assert_eq!(frames.iter().filter(|kind| new.contains(kind)).count(), 2);
+    assert!(
+        new.iter()
+            .all(|kind| kind.requires_required_frame() && kind.tag() > 94)
+    );
 }
 
 #[test]
