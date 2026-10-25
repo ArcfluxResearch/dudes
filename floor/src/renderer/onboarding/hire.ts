@@ -394,7 +394,7 @@ export function prepareArchiveHire(row: RetiredAgentRow, floor: FloorState): boo
   const engineNote = archived === null
     ? `The archived ${row.provider} engine cannot be hired from the browser. No engine was preselected.`
     : missingEngine
-      ? `${HIRE_ENGINES[archived]} was not found on the daemon’s PATH when this form was prepared. No engine was preselected; install it and check again.`
+      ? `Dudes could not find ${HIRE_ENGINES[archived]} when this form opened. No app was preselected. Install it and check again.`
       : engine !== null
         ? `${HIRE_ENGINES[archived]}, the archived engine, is preselected. Review the engine choice.`
         : match === null

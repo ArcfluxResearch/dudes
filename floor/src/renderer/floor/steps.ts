@@ -202,7 +202,16 @@ export function decodeStepResult(raw: Record<string, unknown>): { readonly stepI
 
 /** Whether a finished step has text worth asking the daemon for: a result, or an edit cut to fit. */
 export function hasKeptText(step: StepItem): boolean {
-  if (step.status === 'running' || step.kind === 'plan' || step.withheld !== null) return false;
-  if (step.kind === 'edit' || step.kind === 'write') return step.edit?.cut === true;
-  return step.kind === 'mcp' || (step.resultBytes ?? 0) > 0;
+  if (step.status === 'running' || step.withheld !== null
+    || step.tool === 'BashOutput' || step.tool === 'KillShell') return false;
+  switch (step.kind) {
+    case 'edit':
+    case 'write': return step.edit?.cut === true;
+    case 'command':
+    case 'read':
+    case 'search':
+    case 'web':
+    case 'subagent': return (step.resultBytes ?? 0) > 0;
+    default: return false;
+  }
 }
