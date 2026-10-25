@@ -1209,6 +1209,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn short(id: &str) -> &str {
         id.rsplit('-').next().unwrap_or(id)
     }
