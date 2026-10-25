@@ -2,7 +2,7 @@
 
 The Floor is the browser view the daemon serves at `/floor/`. It shows the daemon's agents, board
 and activity, and the daemon's journal stays the only record of them. Screenshots of the office,
-**Crew** and the drawer are in the project documentation under [The Floor](../docs/floor.md).
+the roster and the drawer are in the project documentation under [The Floor](../docs/floor.md).
 
 During closing time, the banner shows how many participants acknowledged, how many are settled
 (nothing left to save), how many still owe an acknowledgement, and how many still have running

@@ -9,6 +9,13 @@ export function journalPosition(value: string | number): string {
   return `segment ${position >> 40n} · byte ${position & ((1n << 40n) - 1n)}`;
 }
 
+export function journalSaved(value: string | number): string {
+  const position = journalPosition(value);
+  if (position === 'Position unavailable') return 'The journal position is unavailable.';
+  if (position === 'journal has no records yet') return 'Nothing is saved to the journal yet.';
+  return `Everything is saved up to ${position}.`;
+}
+
 export function plural(count: number, one: string, many: string): string {
   return `${count.toLocaleString()} ${count === 1 ? one : many}`;
 }

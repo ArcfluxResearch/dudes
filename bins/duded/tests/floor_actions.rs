@@ -9446,27 +9446,12 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     let page = exchange(addr, &issue(&settings).bootstrap);
 
     let (frame, _) = snapshot(&page);
-    let mut report = frame["daemon"].clone();
-    let models = report["providers"][0]
-        .as_object_mut()
-        .expect("a provider row")
-        .remove("models")
-        .expect("Claude's list needs no child, so it is always there");
-    assert_eq!(models["checked"], false);
+    assert_claude_aliases_listed(&frame);
+    assert_eq!(frame["daemon"]["state_dir"], "~/state");
     assert_eq!(
-        models["items"],
-        json!([
-            {"id":"opus","kind":"alias"},
-            {"id":"sonnet","kind":"alias"},
-            {"id":"haiku","kind":"alias"}
-        ])
-    );
-    assert_eq!(
-        report,
-        json!({"state_dir":"~/state","providers":[
-            {"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown",
-             "model_change_unsupported":true}
-        ]})
+        without_models(&frame),
+        json!([{"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown",
+            "model_change_unsupported":true}])
     );
     one_launch(&running.handle, &fixture, &home.path().join("work-a"));
     assert_eq!(
@@ -9513,6 +9498,20 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
         "no check ran a shell or a lookup tool from the head of the daemon's PATH"
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// Claude's row lists the short names it accepts, unchecked, with no child process to ask.
+fn assert_claude_aliases_listed(frame: &Value) {
+    let models = &frame["daemon"]["providers"][0]["models"];
+    assert_eq!(models["checked"], false);
+    assert_eq!(
+        models["items"],
+        json!([
+            {"id":"opus","kind":"alias"},
+            {"id":"sonnet","kind":"alias"},
+            {"id":"haiku","kind":"alias"}
+        ])
+    );
 }
 
 /// The report's provider rows without their model lists, which other tests read.

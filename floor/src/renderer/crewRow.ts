@@ -6,22 +6,18 @@ import { accentOf } from './appearance.ts';
 import { ASKING, fieldsOf } from './scene/label.ts';
 import { activeCard } from './board.ts';
 import type { CardRow } from './board.ts';
+import { engineName } from './engines.ts';
 import { workspaceLabel } from './workspace.ts';
-import { ticketWord } from './ticket/model.ts';
-import { checkoutOf, SHARED_DIRECTORY_TEXT } from './worktree.ts';
-import type { CheckoutOwnership } from './worktree.ts';
 import type { LiveActivityContext } from './liveActivity.ts';
-import { lastTurnOf } from './lastTurn.ts';
 
 /**
  * `line` is what the row shows, and CSS cuts it to the row's width. `text`
- * is the whole question or goal for hover. `spoken` is the description's words.
+ * is the whole question or goal for hover.
  */
 export interface Activity {
   readonly kind: 'question' | 'goal' | 'none' | 'hold';
   readonly line: string;
   readonly text: string | undefined;
-  readonly spoken: string;
 }
 
 /** A standing control flag. A halt outranks a pause, because the Floor can resume a pause but cannot lift a halt the operator made. */
@@ -33,17 +29,10 @@ export interface CrewRow {
   readonly role: string;
   readonly engine: string;
   readonly workspace: string;
-  /** The record's own status token, as the office panel draws it. */
-  readonly status: string;
   readonly activity: Activity;
   readonly liveActivity: string | null;
-  /** What the newest ended turn used, in one line, or `null` before any turn has ended. */
-  readonly lastTurn: string | null;
   readonly activeCard: CardRow | null;
   readonly hold: Hold | null;
-  readonly checkout: CheckoutOwnership;
-  /** Everything the row says but its name, and what it leaves out, in full, for `aria-describedby`. */
-  readonly description: string;
 }
 
 function shown(value: unknown): string {
@@ -52,43 +41,34 @@ function shown(value: unknown): string {
 
 function activityOf(question: string, goal: string): Activity {
   if (question !== '') {
-    return { kind: 'question', line: `${ASKING}${question}`, text: question, spoken: `Waiting question: ${question}` };
+    return { kind: 'question', line: `${ASKING}${question}`, text: question };
   }
-  if (goal !== '') return { kind: 'goal', line: goal, text: goal, spoken: `Goal: ${goal}` };
-  return { kind: 'none', line: 'No goal', text: undefined, spoken: 'No goal' };
+  if (goal !== '') return { kind: 'goal', line: goal, text: goal };
+  return { kind: 'none', line: 'No goal', text: undefined };
 }
 
-/** The Crew row for one projection row. It reads nothing from the office, so it draws with no canvas at all. */
+/** The facts one roster row draws from a projection row. It reads nothing from the office, so it draws with no canvas at all. */
 export function crewRowOf(row: AgentRow, cards: readonly CardRow[] = [], context?: LiveActivityContext): CrewRow {
   const fields = fieldsOf(row, context);
   const automaticHold = automaticHoldOf(row);
   const reason = automaticHold === null ? null : automaticHoldText(automaticHold, row.provider);
   const activity: Activity = reason === null ? activityOf(fields.question, fields.goal)
-    : { kind: 'hold', line: reason, text: reason, spoken: reason };
+    : { kind: 'hold', line: reason, text: reason };
   const hold = row.halted === true ? 'halted' : row.paused === true ? 'paused'
     : automaticHold === null ? null : 'held';
   const task = activeCard(cards, row.id);
-  const engine = shown(row.provider);
+  const engine = typeof row.provider === 'string' && row.provider !== '' ? engineName(row.provider) : '—';
   const workspace = workspaceLabel(row);
-  const status = ticketWord(cards, row, fields.status) ?? fields.status;
   const liveActivity = fields.liveActivity;
-  const checkout = checkoutOf(row);
-  const lastTurn = lastTurnOf(row)?.line ?? null;
-  const facts = [fields.role, engine === '—' ? '' : engine, status, `${fields.usd} spent today`, hold ?? '']
-    .filter((fact) => fact !== '');
   return {
     name: shown(row.name),
     colour: accentOf(row),
     role: shown(fields.role),
     engine,
     workspace,
-    status: shown(status),
     activity,
     liveActivity,
-    lastTurn,
     activeCard: task,
     hold,
-    checkout,
-    description: `${facts.join(', ')}. ${activity.spoken}${liveActivity === null ? '' : `. ${liveActivity}`}${lastTurn === null ? '' : `. Last turn: ${lastTurn}`}${task === null ? '' : `. Active card: ${task.title}`}. Project: ${workspace}${checkout.worktree === null ? '' : `. ${checkout.worktree}`}${checkout.shared ? `. ${SHARED_DIRECTORY_TEXT}` : ''}`,
   };
 }

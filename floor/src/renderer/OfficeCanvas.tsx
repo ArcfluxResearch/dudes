@@ -39,11 +39,11 @@ import { castFrom } from './scene/cast.ts';
 import { cardNotesAt, placeCardNotes, planCardNotes } from './scene/cardNotes.ts';
 import type { CardNoteMotion, NoteAnchors } from './scene/cardNotes.ts';
 import { fieldsOf } from './scene/label.ts';
-import { NEED_LABEL, needsOf } from './needs.ts';
+import { NEED_LABEL, awaitingReviewOf, needsOf } from './needs.ts';
 import type { CastMotion } from './scene/motion.ts';
 import { activeEnvelopes, envelopesAt, planEnvelopes } from './scene/mailEnvelopes.ts';
 import type { EnvelopeMotion } from './scene/mailEnvelopes.ts';
-import { charactersAt, planCast, planExit } from './scene/motion.ts';
+import { charactersAt, planCast, planExit, roamOn } from './scene/motion.ts';
 import { followMode, officeModeOf } from './scene/officeMode.ts';
 import type { OfficeModeView } from './scene/officeMode.ts';
 import { applyTransitions, arrivalTransitions, inOffice, rosterTransitions } from './scene/presence.ts';
@@ -268,7 +268,7 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
     // A new office is a new room: everyone starts at their place in it rather than walking from the old one.
     const moved = previous !== null && previous.office !== office;
     if (!force && !moved && previous !== null && previous.floor.epoch === current.epoch
-      && previous.floor.agents === current.agents && previous.expiry === expiryRef.current
+      && previous.floor.agents === current.agents && previous.floor.cards === current.cards && previous.expiry === expiryRef.current
       && (previous.floor.phase === 'live' && !previous.floor.stale) === currentLive) return;
     planInputsRef.current = { floor: current, expiry: expiryRef.current, office };
     const now = Date.now();
@@ -277,7 +277,8 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
     rosterRef.current = applyTransitions(rosterRef.current, changes);
     if (moved) dropExits();
     motionsRef.current = planCast(current.agents, desksOf(current.agents, office), office.plan, {
-      activity: { live: currentLive, now: performance.now(), wallNow: now },
+      activity: { live: currentLive, now: performance.now(), wallNow: now,
+        awaitingReview: awaitingReviewOf(current.agents, current.cards) },
       previous: moved ? [] : motionsRef.current,
       update,
       now,
@@ -340,7 +341,8 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
       envelopesRef.current = planEnvelopes(envelopesRef.current, event, deskFeet,
         performance.now(), reducedMotionRef.current);
       const rows = new Map(event.floor.agents.map((row) => [row.id, row]));
-      const activity = { live: event.floor.phase === 'live' && !event.floor.stale, now: performance.now(), wallNow: Date.now() };
+      const activity = { live: event.floor.phase === 'live' && !event.floor.stale, now: performance.now(), wallNow: Date.now(),
+        awaitingReview: awaitingReviewOf(event.floor.agents, event.floor.cards) };
       huddlesRef.current = planHuddles(huddlesRef.current, event, deskFeet,
         new Map(charactersAt(motionsRef.current, Date.now(), reducedMotionRef.current).map((posed) => [posed.agentId, posed.foot])),
         office.plan, Date.now(), rows, activity,
@@ -356,7 +358,7 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
 
   useEffect(() => {
     planMotion(floor, 'delta');
-  }, [floor.agents, live, activityExpiry]);
+  }, [floor.agents, floor.cards, live, activityExpiry]);
 
   useEffect(() => {
     const next = followFull(fullShownRef.current, full, fallback === null, floor);
@@ -378,10 +380,11 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
     const now = performance.now();
     return new Map(floor.agents.map((row) => [row.id, fieldsOf(row, { live, now, wallNow: Date.now() })] as const));
   }, [floor.agents, live, activityExpiry]);
+  const awaiting = useMemo(() => awaitingReviewOf(floor.agents, floor.cards), [floor.agents, floor.cards]);
   const states = useMemo(() => {
-    const activity = { live, now: performance.now(), wallNow: Date.now() };
+    const activity = { live, now: performance.now(), wallNow: Date.now(), awaitingReview: awaiting };
     return new Map(floor.agents.map((row) => [row.id, officeStateOf(row, activity)] as const));
-  }, [floor.agents, live, activityExpiry]);
+  }, [floor.agents, awaiting, live, activityExpiry]);
   const asking = useMemo(() => {
     const activity = { live, now: performance.now(), wallNow: Date.now() };
     return new Set(floor.agents.filter((row) => asksOpenQuestion(row, activity)).map((row) => row.id));
@@ -395,7 +398,8 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
     const members = floor.agents.map((row) => {
       const station = STATIONS[states.get(row.id) ?? 'idle'].badge;
       return { id: row.id, look: lookOf(row), accessory: accessoryOf(row.role),
-        badge: station === null && needWords.has(row.id) ? 'review' as const : station };
+        badge: (station === null && needWords.has(row.id)) || (station === 'done' && needWords.get(row.id) === NEED_LABEL.ready)
+          ? 'review' as const : station };
     });
     crewRef.current = { members, goals, shipped: shelfParcels(shelf) };
     drawCrew();
@@ -483,13 +487,16 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
       const clock = performance.now();
       const crew = crewRef.current;
       settle(now, reduced);
+      const roamPlan = planInputsRef.current?.office.plan;
+      if (!reduced && roamPlan !== undefined) motionsRef.current = roamOn(motionsRef.current, roamPlan, now);
       envelopesRef.current = activeEnvelopes(envelopesRef.current, clock, reduced);
       if (visitsRef.current.length > 0 || huddlesRef.current.length > 0) {
         const plannedFloor = planInputsRef.current?.floor;
         const rows = new Map(plannedFloor?.agents.map((row) => [row.id, row]) ?? []);
         const seated = new Set(motionsRef.current.map((motion) => motion.desk.agentId));
         const activity = { live: plannedFloor !== undefined && plannedFloor.phase === 'live' && !plannedFloor.stale,
-          now: clock, wallNow: now };
+          now: clock, wallNow: now,
+          awaitingReview: plannedFloor === undefined ? undefined : awaitingReviewOf(plannedFloor.agents, plannedFloor.cards) };
         visitsRef.current = activeVisits(visitsRef.current, now, rows, seated, activity);
         huddlesRef.current = activeHuddles(huddlesRef.current, now, rows, seated, activity);
       }

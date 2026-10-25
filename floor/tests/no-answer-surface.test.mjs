@@ -68,7 +68,7 @@
 //      outside ADMITTED_HANDLERS turns "every handler prop other than onClick
 //      on a lowercase intrinsic tag…" red, naming the file, the handler (or
 //      `{...}`) and the element it was found on; a capitalized tag is treated
-//      as a component and not scanned; CrewList.tsx's onFocus is admitted
+//      as a component and not scanned; Roster.tsx's onFocus is admitted
 //      only on a `<button>` and only as `() => reveal(row.id)`; onClick is
 //      checked by "the only activators are…", which counts `onclick=` per
 //      file and matches expression text, not the element that carries it;
@@ -296,6 +296,7 @@ const MODEL_MODULE = 'src/renderer/model/model.ts';
 const MODEL_PANEL = 'src/renderer/model/ModelEditor.tsx';
 const LISTS_MODULE = 'src/renderer/model/lists.ts';
 const LISTS_BAR = 'src/renderer/model/ModelListBar.tsx';
+const NOTICE_STACK = 'src/renderer/notices/NoticeStack.tsx';
 const ADMITTED_IN_GOAL_FORM = Object.freeze(['a textarea', 'an input', 'a change handler']);
 const SETUP_VIEW = 'src/renderer/setup/SetupView.tsx';
 const FIRST_RUN_GUIDE = 'src/renderer/setup/FirstRunGuide.tsx';
@@ -402,7 +403,8 @@ const TERMINAL_HEADER_KEYS = `(event) => {
  * pattern names, such as an `onKeyDown`, also needs that kind in its file's
  * `ADMITTED` entry, in the two forms and outside them.
  */
-const CREW_LIST = 'src/renderer/CrewList.tsx';
+const CREW_LIST = 'src/renderer/Roster.tsx';
+const OVERVIEW_DIALOG = 'src/renderer/OverviewDialog.tsx';
 const ADMITTED_HANDLERS = [
   { file: 'src/renderer/AgentDetail.tsx', tag: 'button', className: 'agent-detail-tab', handler: 'onFocus', expression: '() => setFocusedSection(id)' },
   { file: 'src/renderer/AgentDetail.tsx', tag: 'button', className: 'agent-detail-tab', handler: 'onBlur', expression: '() => setFocusedSection(null)' },
@@ -494,6 +496,8 @@ const ADMITTED_HANDLERS = [
   // TerminalPanel.tsx: the same for the Attach confirmation, which opens nothing.
   { file: TERMINAL_PANEL, tag: 'dialog', className: 'retire-dialog', handler: 'onCancel', expression: 'onCancel' },
   { file: CREW_LIST, tag: 'button', handler: 'onFocus', expression: '() => reveal(row.id)' },
+  { file: OVERVIEW_DIALOG, tag: 'dialog', className: 'overview-dialog', handler: 'onCancel',
+    expression: '(event) => { event.preventDefault(); onClose(); }' },
   // ArchivedAgents.tsx: the Memory disclosure mounts its panel only while open, so closing it forgets what was read.
   { file: ARCHIVED_AGENTS, tag: 'details', className: 'archive-memory', handler: 'onToggle',
     expression: '(event) => setOpen(event.currentTarget.open)' },
@@ -538,7 +542,7 @@ for (const { file, tag, handler } of ADMITTED_HANDLERS) {
   }
 }
 
-test("CrewList.tsx's top-level imports include its live activity expiry hook, it binds reveal once, "
+test("Roster.tsx's top-level imports include its live activity expiry hook, it binds reveal once, "
   + "and reveal's body is one scrollIntoView statement", async () => {
   const text = await readFile(resolve(floor, CREW_LIST), 'utf8');
   const syntax = parsedByExtension(text, CREW_LIST);
@@ -550,10 +554,10 @@ test("CrewList.tsx's top-level imports include its live activity expiry hook, it
     }
     ts.forEachChild(node, collect);
   })(syntax);
-  assert.deepEqual(specifiers.sort(), ['./AgentOrder.tsx', './Portrait.tsx', './board.ts', './crewRow.ts', './scene/cast.ts', './useLiveActivityExpiry.ts', './workspace.ts', './worktree.ts', 'react'],
-    "CrewList.tsx's top-level imports changed; inspect any new path for an answer input");
+  assert.deepEqual(specifiers.sort(), ['./AgentOrder.tsx', './Portrait.tsx', './appearance.ts', './board.ts', './needs.ts', './needs.ts', './scene/cast.ts', './useHeldLayout.ts', './useHeldLayout.ts', './useLiveActivityExpiry.ts', './view.ts', 'react', 'react'],
+    "Roster.tsx's top-level imports changed; inspect any new path for an answer input");
   assert.equal(bindingNamesIn(syntax).filter(({ name }) => name === 'reveal').length, 1,
-    'CrewList.tsx binds reveal more than once, so the pinned body may not be the one onFocus calls');
+    'Roster.tsx binds reveal more than once, so the pinned body may not be the one onFocus calls');
   assert.deepEqual(revealBody, ["buttons.current.get(id)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });"],
     "reveal's body is no longer its one scrollIntoView statement");
 });
@@ -1112,7 +1116,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
   assert.match(form, /const choose = \(choice: CheckChoice\) => \{\s*if \(!blocked\) chooseGoalCheck\(gate\.agent, gate\.goal, choice\);\s*\};/);
 });
 
-test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Stop this turn, Stop and send, Pause all, resume, goal change, look edit, model change and dismiss buttons, Overview Answer, Review work, Review ticket and Change navigation, a step\'s Show the output, '
+test('the only activators are named selection, retry, view, Hire, answer, Chat, the roster\'s row, action and sheet buttons, pause, Stop this turn, Stop and send, Pause all, resume, goal change, look edit, model change and dismiss buttons, the notice stack\'s fold, History and Clear buttons, Overview Answer, Review work, Review ticket and Change navigation, a step\'s Show the output, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation, '
@@ -1128,10 +1132,10 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   const expected = [
     'src/renderer/AgentDetail.tsx',
     ...Array(4).fill('src/renderer/AgentOverview.tsx'),
-    ...Array(2).fill('src/renderer/CrewList.tsx'),
-    ...Array(3).fill('src/renderer/NeedsStrip.tsx'),
+    ...Array(4).fill('src/renderer/Roster.tsx'),
+    'src/renderer/OverviewDialog.tsx',
     ...Array(3).fill(ARCHIVED_AGENTS),
-    ...Array(7).fill('src/renderer/Control.tsx'),
+    ...Array(4).fill('src/renderer/Control.tsx'),
     'src/renderer/DoneNotices.tsx',
     ...Array(3).fill('src/renderer/LiveWork.tsx'),
     'src/renderer/BoardNotes.tsx',
@@ -1162,6 +1166,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(LOOK_PANEL),
     ...Array(5).fill(MODEL_PANEL),
     LISTS_BAR,
+    ...Array(3).fill(NOTICE_STACK),
     ...Array(3).fill(SETUP_VIEW),
     ...Array(10).fill(SETTINGS_VIEW),
     ...Array(5).fill(FIRST_RUN_GUIDE),
@@ -1261,7 +1266,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(shell, /onHireAgain=\{hireAgain\}/);
   assert.match(shell, /function hireAgain\(row: RetiredAgentRow, opener: HTMLButtonElement\): void \{\s*backdropPress\.current = null;\s*hireOpener\.current = opener;\s*setArchiveHireKept\(!prepareArchiveHire\(row, floor\)\);\s*setGuide\('closed'\);\s*setHiring\(true\);\s*\}/);
   const canvas = await readFile(resolve(source, 'renderer/OfficeCanvas.tsx'), 'utf8');
-  const strip = await readFile(resolve(source, 'renderer/CrewList.tsx'), 'utf8');
+  const strip = await readFile(resolve(source, 'renderer/Roster.tsx'), 'utf8');
   const center = await readFile(resolve(source, 'renderer/Control.tsx'), 'utf8');
   assert.match(canvas, /type="button"/);
   assert.match(canvas, /className="agent-select"/);
@@ -1276,17 +1281,16 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(center, /onSelect=\{openCard\}/);
   assert.match(strip, /className="crew-row"/);
   assert.match(strip, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);
-  assert.match(strip, /className="crew-card-note"/);
-  assert.match(strip, /className="crew-card-note"[\s\S]*?disabled=\{!selectable\}/);
-  assert.match(strip, /onClick=\{\(\) => \{\s*if \(crew\.activeCard !== null\) onOpenCard\(crew\.activeCard\.id\);\s*\}\}/);
+  assert.match(strip, /className="roster-act"/);
+  assert.match(strip, /className="roster-act"[\s\S]*?disabled=\{!selectable\}/);
   assert.deepEqual(clicksIn(strip).map((handler) => handler.replace(/\s+/g, ' ')), [
     '() => onSelectAgent(row.id)',
-    '() => { if (crew.activeCard !== null) onOpenCard(crew.activeCard.id); }',
+    '() => act(row.action, row.id)',
+    '() => { if (row.second !== null) act(row.second, row.id); }',
+    '() => setOpen((current) => !current)',
   ]);
-  assert.match(center, /className="agents-roster-row"/);
-  assert.match(center, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);
-  assert.deepEqual(clicksIn(center), ['() => onSelectAgent(row.id)', 'onToggle', '() => onOpen(item.agentId)',
-    '() => onOpenTicket?.(item.card)', '() => onToggle(entry.view)', 'onClose', 'closeOverlay']);
+  assert.deepEqual(clicksIn(center), ['onToggle', '() => onToggle(entry.view)', 'onClose', 'closeOverlay']);
+  assert.deepEqual(clicksIn(await readFile(resolve(source, 'renderer/OverviewDialog.tsx'), 'utf8')), ['onClose']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, NOTIFICATION_OFFER), 'utf8')), [
     '() => { void desktopNotificationPreference.setEnabled(true); }', 'desktopNotificationPreference.dismissOffer',
   ]);
@@ -2728,6 +2732,10 @@ const ADMITTED_LISTENERS = Object.freeze([
   { path: 'src/renderer/chat/ChatPanel.tsx', line: "viewport.addEventListener('scroll', fit);" },
   { path: 'src/renderer/desktopNotifications.ts', line: "notification.addEventListener('click', () => {" },
   { path: 'src/renderer/floor/stream.ts', line: "document.addEventListener('visibilitychange', listener);" },
+  { path: 'src/renderer/useHeldLayout.ts', line: "list.addEventListener('pointerenter', enter);" },
+  { path: 'src/renderer/useHeldLayout.ts', line: "list.addEventListener('pointerleave', leave);" },
+  { path: 'src/renderer/useHeldLayout.ts', line: "list.addEventListener('focusin', focusIn);" },
+  { path: 'src/renderer/useHeldLayout.ts', line: "list.addEventListener('focusout', focusOut);" },
   { path: 'src/shell.tsx', line: "preference.addEventListener('change', onThemePreference);" },
   { path: 'src/shell.tsx', line: "document.addEventListener('keydown', onShortcut);" },
   { path: 'src/signer.ts', line: "target.addEventListener(success, () => resolve(), { once: true });" },
@@ -2915,7 +2923,7 @@ test('with the same Waiting row but no answer sibling, no answer form renders', 
   assert.ok(html.includes(QUESTION), 'the Waiting question is not displayed, so this proves nothing');
   assert.doesNotMatch(html, /<textarea|name="answer"|Send answer|data-answer-/);
   const asking = center(floorWith(waiting(), undefined), 'overview');
-  assert.match(asking, new RegExp(`<li class="waiting-item" data-waiting-kind="question" data-waiting-agent-id="${ADA}">`));
+  assert.match(asking, new RegExp(`<button type="button" class="roster-act" data-primary="true"[^>]*aria-label="Answer, Ada"`));
   assert.ok(asking.includes(QUESTION), 'Overview does not list the Waiting question, so this proves nothing');
   assert.doesNotMatch(asking, /<textarea|name="answer"|Send answer|data-answer-/);
   // Nor for an agent a person is attached to, even with answering on.
@@ -3191,13 +3199,16 @@ const APPEND_ELSEWHERE = ' (URLSearchParams, Headers and FormData have an append
  * canvas element itself is never bound to a name. Its context can be, though,
  * and that context's `canvas` property still reaches the element; this scan
  * does not follow a bound context's `canvas` read back to it. The shell
- * creates one empty notice container and moves it into native dialogs;
- * React renders its children through a portal.
+ * creates two empty notice containers, the floating stack and the banner, and moves them into native dialogs;
+ * React renders their children through a portal.
  */
 const ADMITTED_BUILDS = [
   { file: 'src/renderer/figurePortrait.ts', expression: "document.createElement('canvas').getContext('webgl2')" },
   { file: 'src/shell.tsx', expression: "document.createElement('div')" },
   { file: 'src/shell.tsx', expression: 'host.append(noticeArea)' },
+  { file: 'src/shell.tsx', expression: "document.createElement('section')" },
+  { file: 'src/shell.tsx', expression: 'modal.prepend(noticeBanner)' },
+  { file: 'src/shell.tsx', expression: 'top.append(noticeBanner)' },
 ];
 /**
  * Names that turn an HTML string into elements. `setHTML` and `parseHTML`
@@ -3440,7 +3451,8 @@ test('no control is built without JSX', async () => {
   assert.deepEqual(carrying, [], 'a control is built without JSX');
   assert.deepEqual(admitted, [
     "src/renderer/figurePortrait.ts: document.createElement('canvas').getContext('webgl2')",
-    "src/shell.tsx: document.createElement('div')", 'src/shell.tsx: host.append(noticeArea)',
+    "src/shell.tsx: document.createElement('div')", "src/shell.tsx: document.createElement('section')",
+    'src/shell.tsx: host.append(noticeArea)', 'src/shell.tsx: modal.prepend(noticeBanner)', 'src/shell.tsx: top.append(noticeBanner)',
   ], 'each admitted build must occur exactly once');
   assert.equal(terminals, 2, 'the floor does not build its two grids, so the fontFamily check measured nothing');
 });
@@ -3559,7 +3571,11 @@ test('the notice portal admits only its empty container and exact relocation', (
   const admitted = builtWithoutJsx("const area = document.createElement('div'); host.append(noticeArea);", file);
   assert.deepEqual(admitted.found, []);
   assert.deepEqual(admitted.admitted, ["document.createElement('div')", 'host.append(noticeArea)']);
-  for (const source of ["document.createElement('input');", 'host.append(field);', 'host.append(noticeArea, field);']) {
+  const banner = builtWithoutJsx("const b = document.createElement('section'); modal.prepend(noticeBanner); top.append(noticeBanner);", file);
+  assert.deepEqual(banner.found, []);
+  assert.deepEqual(banner.admitted, ["document.createElement('section')", 'modal.prepend(noticeBanner)', 'top.append(noticeBanner)']);
+  for (const source of ["document.createElement('input');", 'host.append(field);', 'host.append(noticeArea, field);',
+    'modal.prepend(field);', 'top.append(noticeBanner, field);']) {
     assert.ok(builtWithoutJsx(source, file).found.length > 0, source);
   }
   assert.ok(builtWithoutJsx("document.createElement('div'); host.append(noticeArea);", 'other.tsx').found.length > 0);

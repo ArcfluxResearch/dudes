@@ -14,7 +14,7 @@ async function render(symbol, props) {
   const server = await createServer({ root, cacheDir: resolve(root, 'node_modules/.vite-hire-entry'),
     server: { middlewareMode: true, hmr: false }, appType: 'custom' });
   try {
-    const paths = { CrewList: '/src/renderer/CrewList.tsx', OfficeCanvas: '/src/renderer/OfficeCanvas.tsx',
+    const paths = { Roster: '/src/renderer/Roster.tsx', OfficeCanvas: '/src/renderer/OfficeCanvas.tsx',
       AgentsRoster: '/src/renderer/Control.tsx' };
     const module = await server.ssrLoadModule(paths[symbol]);
     return renderToStaticMarkup(createElement(module[symbol], props));
@@ -51,7 +51,7 @@ test('HIRE_OFF_TEXT mutant explains an explicit off switch even if the frame als
   } finally { await server.close(); }
 });
 
-test('STRIP_ENTRY mutant shows Add agent at the end of Crew only with Hire on', async () => {
+test('STRIP_ENTRY mutant shows Add agent at the end of the roster only with Hire on', async () => {
   const props = { agents: [], cards: [], selectedId: null, selectable: true, stale: false,
     castVariants: null, onSelectAgent() {}, onOpenCard() {} };
   const server = await createServer({ root, cacheDir: resolve(root, 'node_modules/.vite-hire-entry'),
@@ -60,20 +60,20 @@ test('STRIP_ENTRY mutant shows Add agent at the end of Crew only with Hire on', 
   try { ({ HireEntry } = await server.ssrLoadModule('/src/renderer/onboarding/HireEntry.tsx')); }
   finally { await server.close(); }
   const entry = (floor) => createElement(HireEntry, { floor, id: 'hire-open-strip', onAddAgent() {} });
-  const enabled = await render('CrewList', { ...props, addAgent: entry(on) });
+  const enabled = await render('Roster', { ...props, addAgent: entry(on) });
   assert.match(enabled, /id="hire-open-strip"[^>]*>Add agent<\/button>/);
   assert.ok(enabled.indexOf('hire-open-strip') > enabled.indexOf('crew-empty'));
-  const occupied = await render('CrewList', { ...props,
+  const occupied = await render('Roster', { ...props,
     agents: [{ id: '01ARZ3NDEKTSV4RRFFQ69G5FAV', name: 'Ada' },
       { id: '01M31CGZJMEFDYMJ4YBV76DJHQ', name: 'Grace' }], addAgent: entry(on) });
   assert.ok(occupied.indexOf('data-agent-id="01M31CGZJMEFDYMJ4YBV76DJHQ"')
     < occupied.indexOf('id="hire-open-strip"'));
-  const disabled = await render('CrewList', { ...props, addAgent: entry(off) });
+  const disabled = await render('Roster', { ...props, addAgent: entry(off) });
   assert.doesNotMatch(disabled, /id="hire-open-strip"/);
   assert.match(disabled, /Hire is off/);
 });
 
-test('Crew folds the Hire reason behind a chip that names it, with the reason\'s words unchanged', async () => {
+test('the roster folds the Hire reason behind a chip that names it, with the reason\'s words unchanged', async () => {
   const server = await createServer({ root, cacheDir: resolve(root, 'node_modules/.vite-hire-entry'),
     server: { middlewareMode: true, hmr: false }, appType: 'custom' });
   try {
@@ -89,7 +89,7 @@ test('Crew folds the Hire reason behind a chip that names it, with the reason\'s
   } finally { await server.close(); }
 });
 
-test('an empty Floor has one way into Hire, the header and the first-task card, not the office or Crew', async () => {
+test('an empty Floor has one way into Hire, the header and the first-task card, not the office or the roster', async () => {
   const shell = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
   assert.match(shell, /addAgent=\{floor\.agents\.length === 0 && hireSwitchOn\(floor\) \? null/);
   const props = { floor: on, selectedId: null, onSelectAgent() {}, onOpenTasks() {}, onAddAgent() {} };

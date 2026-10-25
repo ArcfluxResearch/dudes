@@ -358,7 +358,7 @@ test('notes and final replies render inert HTML, command and link text without a
 });
 
 test('fenced code preserves indentation and stays inert in final and unfinished live replies', () => {
-  const text = 'Run this:\n```sh\n  npm run typecheck\n<script>alert(1)</script>\n```\nThen read the result.';
+  const text = 'Run this:\n```text\n  npm run typecheck\n<script>alert(1)</script>\n```\nThen read the result.';
   const html = render({ ...view(), turns: [turn({ reply: text })] });
   assert.match(html, /<pre class="chat-code"><code>  npm run typecheck\n&lt;script&gt;alert\(1\)&lt;\/script&gt;<\/code><\/pre>/);
   assert.match(html, /Then read the result/);
