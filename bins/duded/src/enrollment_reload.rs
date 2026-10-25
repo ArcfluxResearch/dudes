@@ -342,12 +342,7 @@ pub(crate) fn decide(
         .map_err(|error| ConfigError::catalog(&read.path, error))?;
 
     let marked = !added.is_empty() || !changed.is_empty();
-    // A daemon started without the terminal cannot serve it until it restarts, whatever the file
-    // says. `not_applied` names that case.
-    let switches = Switches {
-        terminal: read.config.terminal_enabled && running_switches.terminal,
-        ..Switches::from_operator(&read.config)
-    };
+    let switches = Switches::from_operator(&read.config);
     let switches_changed = running_switches.differing(switches);
     let resync = match (added.is_empty(), removed.is_empty() && changed.is_empty()) {
         (false, true) => Resync::Coalesced,
@@ -441,10 +436,6 @@ fn not_applied(
             running.providers.codex != file.providers.codex,
         ),
         ("providers.pi", running.providers.pi != file.providers.pi),
-        (
-            "floor.terminal",
-            file.terminal_enabled && !running.terminal_enabled,
-        ),
         ("mcp.servers", running.mcp_servers != file.mcp_servers),
         (
             "memory",
@@ -759,7 +750,7 @@ mod tests {
     }
 
     /// A start-time section the file sets differently from the running daemon is named once, by
-    /// its table, and a file that matches names none. The terminal needs a restart only to turn on.
+    /// its table, and a file that matches names none.
     #[test]
     fn each_start_time_section_that_differs_needs_a_restart() {
         let running = OperatorConfig {
@@ -775,28 +766,13 @@ mod tests {
         file_read.config = running.clone();
         assert!(not_applied(&running, MemoryCondenseConfig::default(), &file_read).is_empty());
         file_read.config.terminal_enabled = true;
-        assert_eq!(
-            not_applied(&running, MemoryCondenseConfig::default(), &file_read),
-            ["floor.terminal"]
-        );
-        let started_with_terminal = OperatorConfig {
-            terminal_enabled: true,
-            ..running.clone()
-        };
-        file_read.config = running.clone();
         assert!(
-            not_applied(
-                &started_with_terminal,
-                MemoryCondenseConfig::default(),
-                &file_read
-            )
-            .is_empty(),
-            "turning the terminal off is a switch, not a restart"
+            not_applied(&running, MemoryCondenseConfig::default(), &file_read).is_empty(),
+            "turning the terminal on is a switch, not a restart"
         );
     }
 
-    /// An applied reload carries every `[floor.*]` switch the file changes, by its key, and a
-    /// terminal the daemon did not start with stays off.
+    /// An applied reload carries every `[floor.*]` switch the file changes, by its key.
     #[test]
     fn a_reload_runs_the_switches_the_file_changes() {
         let running = read(1, "", false, (&[], &[], &[]));
@@ -826,12 +802,13 @@ mod tests {
                 "floor.answer",
                 "floor.control",
                 "floor.goal",
+                "floor.terminal",
                 "floor.project"
             ]
         );
-        assert_eq!(decision.result.not_applied, ["floor.terminal"]);
+        assert!(decision.result.not_applied.is_empty());
         assert!(decision.switches.answer && decision.switches.project);
-        assert!(!decision.switches.terminal, "no restart, no terminal");
+        assert!(decision.switches.terminal);
         assert_eq!(decision.resync, Resync::Now);
     }
 
