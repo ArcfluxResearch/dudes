@@ -332,7 +332,7 @@ test('the first page shows the fixed heading, the summary, each entry and the wi
   assert.equal(textOf(one(older, 'memory-badge')), 'Condensed');
   assert.equal(classed(newer, 'memory-badge').length, 0);
   const refused = one(host, 'memory-withheld');
-  assert.ok(textOf(refused).startsWith('Refused appends1 append to this memory was refused. Dudes kept none of the text.'));
+  assert.ok(textOf(refused).startsWith('Entries not savedDudes did not save 1 entry. It kept none of the text.'));
   const sealed = one(refused, 'memory-withheld-marker');
   assert.match(textOf(sealed), / · A process outside every agent · 3 bytesDetails.*2026.* · segment 0 · byte 11/);
   const sentence = sealed.childNodes.at(-1);
@@ -359,14 +359,14 @@ test('each writer, reason and state reads its own fixed words', async () => {
   const panel = await mount({ agent: ADA, active: true, crew, deps });
   const host = panel.host;
   assert.deepEqual(classed(host, 'memory-notice').map(textOf), [
-    'This agent has retired. Its memory is read from the journal.',
+    'This agent has retired. Its saved memory is still available.',
     'Dudes stopped memory work after an integrity failure. The summary may be out of date until Dudes restarts.',
   ]);
   assert.match(textOf(one(host, 'memory-summary')),
     /^SummarySummary written by a model\. It is a model’s prose about the memory, not the memory itself\. It covers 3 sections and 1,200 bytes of memory\./);
   assert.match(textOf(one(host, 'memory-entry')), / · Writer not recordedDetails.* · segment 0 · byte 10e10$/);
   assert.ok(textOf(one(host, 'memory-withheld')).startsWith(
-    'Refused appends12 appends to this memory were refused. Dudes kept none of the text. Only the newest 6 are listed.'));
+    'Entries not savedDudes did not save 12 entries. It kept none of the text. Only the newest 6 are listed.'));
   assert.deepEqual(classed(host, 'memory-withheld-marker').map((item) => [
     textOf(item.childNodes[1]).replace(/^Details.* · segment 0 · byte /, '') + ' · '
       + textOf(item.childNodes[0]).replace(/^.*? · /, ''), textOf(item.childNodes[2])]), [

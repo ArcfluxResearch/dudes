@@ -482,25 +482,25 @@ test('200 promises only the cause; a stopped or started turn is shown from proje
   let html = status();
   assert.match(html, /<p class="control-success" role="status">Pause recorded\. Dudes will start no new work for this agent\. That is not the same as the agent stopping\.<\/p>/);
   assert.deepEqual(wordingsIn(strip()), [], 'the 200 drew a pause the projection has not shown');
-  assert.match(html, /data-control-continuation="running">A turn is still running; it runs to its end\./);
+  assert.match(html, /data-control-continuation="running">The agent is still working on its current request\./);
 
   delta([agent({ paused: true, control_lsn: NEXT })], 10);
   assert.deepEqual(wordingsIn(strip()), [['pausing', PAUSING]]);
   delta([agent({ paused: true, status: 'idle', control_lsn: NEXT })], 11);
   assert.deepEqual(wordingsIn(strip()), [['paused', 'Paused']]);
-  assert.match(status(), /data-control-continuation="idle">No turn is running now; the agent is idle\./);
+  assert.match(status(), /data-control-continuation="idle">No work is running now\. The agent is idle\./);
 
   await press(daemon(APPLIED), 'resume');
   html = status();
   assert.match(html, /Resume recorded\. The pause or stop is lifted\. That is not the same as new work starting\./);
-  assert.match(html, /data-control-continuation="waiting">No new turn has appeared yet\./);
+  assert.match(html, /data-control-continuation="waiting">New work has not started yet\./);
   assert.deepEqual(wordingsIn(strip()), [['paused', 'Paused']], 'the 200 lifted a pause the projection still holds');
   delta([agent({ status: 'idle', control_lsn: '1099511628301' })], 12);
   assert.deepEqual(wordingsIn(strip()), []);
   assert.match(status(), /data-control-continuation="waiting"/);
   delta([agent({ turns: 4, control_lsn: '1099511628301' })], 13);
   assert.match(status(),
-    /data-control-continuation="continued">A new turn started: its turn count went from 3 to 4, and it is running\./);
+    /data-control-continuation="continued">New work has started\. The agent is running\./);
 });
 
 test('stale_control says the agent changed since the page read it, and refreshes from the projection', async () => {
