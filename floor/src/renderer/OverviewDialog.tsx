@@ -6,7 +6,7 @@ import { ArchivedAgents } from './ArchivedAgents.tsx';
 import type { RetiredAgentRow } from './archive.ts';
 import { viewButtonId } from './Control.tsx';
 import type { FloorState } from './floor/store.ts';
-import { journalSaved } from './format.ts';
+import { JOURNAL_SAVED as SAVED, journalPosition, journalSaved } from './format.ts';
 import { restoreFocusAfterDialog } from './focus.ts';
 import { StreamReadStatus } from './ReadError.tsx';
 import { Roster } from './Roster.tsx';
@@ -54,7 +54,8 @@ export function OverviewDialog({ floor, selectedId, onClose, onSelectAgent, onOp
           <strong>{floor.agents.length}</strong> {floor.agents.length === 1 ? 'agent' : 'agents'}
           {checkouts === null ? null : <> · {checkouts}</>}
         </p>
-        <p className="overview-journal">{journalSaved(floor.lsn)}</p>
+        <p className="overview-journal" title={journalSaved(floor.lsn) === SAVED ? `Saved up to ${journalPosition(floor.lsn)}` : undefined}>
+          {journalSaved(floor.lsn)}</p>
         <Roster base="overview-roster" agents={floor.agents} cards={floor.cards} stepLabels={floor.stepLabels}
           selectedId={selectedId} selectable={selectable} stale={floor.stale}
           onSelectAgent={onSelectAgent} onOpenQuestion={onOpenQuestion} onOpenTicket={onOpenTicket} />

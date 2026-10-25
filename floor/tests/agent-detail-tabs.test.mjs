@@ -89,19 +89,19 @@ test('the header retains identity and actions outside every panel', () => {
     retire: createElement('button', null, 'Retire'), terminal: createElement('button', null, 'Attach') });
   const header = html.match(/<header class="agent-detail-head">([\s\S]*?)<\/header>/)?.[1];
   assert.ok(header);
-  for (const exact of ['Ada', 'Builder', 'idle', 'Pause', 'Retire', 'Attach', 'agent-detail-portrait']) {
+  for (const exact of ['Ada', 'Builder', 'Idle', 'Pause', 'Retire', 'Attach', 'agent-detail-portrait']) {
     assert.ok(header.includes(exact), `header omitted ${exact}`);
   }
 });
 
 test('Overview follows the current ticket from work to a hold and keeps its draft when changing tabs', async () => {
   const idle = render({ task: createElement('form', null, 'Task form') });
-  assert.match(idle, /<p class="agent-overview-now-line">Idle, ready for a task<\/p>/);
+  assert.match(idle, /<span class="agent-detail-state-text">Idle, ready for a task<\/span>/);
   assert.match(idle, /<details class="agent-overview-task"><summary>Give a task<\/summary>/);
   assert.match(idle, /<details class="agent-overview-details"><summary>Details<\/summary>/);
   assert.doesNotMatch(idle, /aria-label="Needs you"/);
   assert.match(render({ row: { ...row, status: 'unavailable' } }),
-    /<p class="agent-overview-now-line">Status: unavailable<\/p>/);
+    /<span class="agent-detail-state-text">Status: unavailable<\/span>/);
   const page = fakePage();
   const text = node => node.nodeType === 3 ? node.nodeValue : node.childNodes.map(text).join('');
   const buttons = node => node.childNodes.flatMap(child => child.nodeType === 1
@@ -121,24 +121,24 @@ test('Overview follows the current ticket from work to a hold and keeps its draf
   })));
   try {
     await show(ticket);
-    assert.equal(text(page.host.querySelector('[class="agent-overview-now-line"]')), 'Working on Fix the parser ticket');
+    assert.equal(text(page.host.querySelector('[class="agent-detail-state-text"]')), 'Working on Fix the parser ticket');
     assert.equal(text(page.host.querySelector('[class="agent-overview-work-text"]')), 'Fix the parser ticket');
     assert.ok(!text(page.host).includes('Old ticket'));
     await act(() => press(buttons(page.host).find(button => text(button) === 'Change')));
     assert.deepEqual(opened, [ticket.id]);
     const held = { ...ticket, status: 'blocked', ticket: { ...ticket.ticket, reason: 'recovery_required' } };
     await show(held);
-    assert.equal(text(page.host.querySelector('[class="agent-overview-now-line"]')), 'Needs you: current work is held');
+    assert.equal(text(page.host.querySelector('[class="agent-detail-state-text"]')), 'Needs you: current work is held');
     assert.ok(text(page.host.querySelector('[aria-label="Needs you"]')).includes('This work was interrupted.'));
     assert.ok(text(page.host.querySelector('[class="agent-overview-shared"]')).includes('Shared directory'));
     const draft = page.host.querySelector('[aria-label="Recovery draft"]');
-    await act(() => press(buttons(page.host).find(button => text(button) === 'Review held work')));
+    await act(() => press(buttons(page.host).find(button => text(button) === 'Open ticket')));
     assert.deepEqual(opened, [ticket.id, ticket.id]);
     await show(held, 'chat');
     assert.equal(page.host.querySelector('[aria-label="Recovery draft"]'), draft);
     assert.equal(page.host.querySelector('[id="agent-detail-panel-overview"]').getAttribute('hidden'), '');
     await show(held, 'overview', { ...goal, id: '01ARZ3NDEKTSV4RRFFQ69G5FB0', text: 'Start another task' });
-    assert.equal(text(page.host.querySelector('[class="agent-overview-now-line"]')), 'Needs you: held work needs review');
+    assert.equal(text(page.host.querySelector('[class="agent-detail-state-text"]')), 'Needs you: held work needs review');
     assert.equal(text(page.host.querySelector('[class="agent-overview-work-text"]')), 'Start another task');
     assert.ok(text(page.host.querySelector('[aria-label="Needs you"]')).includes('Fix the parser ticket'));
     await act(() => press(buttons(page.host).find(button => text(button) === 'Review ticket')));
@@ -383,43 +383,46 @@ test('the header names the turn an output state is about, so a waiting agent nev
   }
 });
 
-test('with the terminal switch off, the header says how to turn it on', async () => {
+test('with the terminal switch off, a Claude agent’s header says how to turn it on', async () => {
   const { center } = await drawer();
   const settings = {
     folder_picker: false, switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
-    providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 8 },
+    providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 8 },
   };
-  const hint = /<p class="settings-guidance">To open the real CLI, turn on Attach terminals under Floor switches in Settings, then restart Dudes\.<\/p>/;
-  assert.match(header(center({ settings, terminal: false })), hint);
+  const claude = { ...row, provider: 'claude' };
+  const hint = /<p class="agent-attach-note">To open the real CLI, turn on Attach terminals in Settings\.<\/p>/;
+  assert.match(header(center({ settings, terminal: false }, claude)), hint);
+  assert.doesNotMatch(header(center({ settings, terminal: false })), /agent-attach-note|Attach terminals/, 'a Pi agent has no real CLI to open');
   const on = { ...settings, switches: { ...settings.switches, terminal: true } };
-  assert.doesNotMatch(center({ settings: on, terminal: true }), hint);
-  assert.doesNotMatch(center({ settings: null, terminal: false }), hint);
+  assert.doesNotMatch(center({ settings: on, terminal: true }, claude), hint);
+  assert.doesNotMatch(center({ settings: null, terminal: false }, claude), hint);
 });
 
-test('terminal guidance stays visible while other switched-off controls fold into Enable more controls', async () => {
+test('the Attach note does not fold into Enable more controls, which keeps the other switched-off controls', async () => {
   const { center } = await drawer();
   const settings = {
     folder_picker: false, switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
-    providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 8 },
+    providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 8 },
   };
+  const claude = { ...row, provider: 'claude' };
   const DISCLOSURE = /<details class="enable-controls"><summary>Enable more controls <span class="enable-controls-count">(\d)<\/span><\/summary>([\s\S]*?)<\/details>/;
-  const hints = (html) => [...html.matchAll(/<p class="settings-guidance">([\s\S]*?)<\/p>/g)]
+  const notes = (html) => [...html.matchAll(/<p class="(?:settings-guidance|agent-attach-note)">([\s\S]*?)<\/p>/g)]
     .map(([, words]) => words.replace(/<[^>]+>/g, '').replace(/\s+/g, ' '));
   const RETIRE = 'Retire is off. Turn on Pause, resume and rename and Retire agents under Floor switches in Settings.';
-  const TERMINAL = 'To open the real CLI, turn on Attach terminals under Floor switches in Settings, then restart Dudes.';
+  const TERMINAL = 'To open the real CLI, turn on Attach terminals in Settings.';
 
-  const both = header(center({ settings, retire: false, terminal: false }));
+  const both = header(center({ settings, retire: false, terminal: false }, claude));
   const [, count, inside] = DISCLOSURE.exec(both) ?? [];
   assert.equal(count, '1');
-  assert.deepEqual(hints(inside ?? ''), [RETIRE]);
-  assert.deepEqual(hints(both.replace(DISCLOSURE, '')), [TERMINAL], 'the terminal guidance stays visible');
+  assert.deepEqual(notes(inside ?? ''), [RETIRE]);
+  assert.deepEqual(notes(both.replace(DISCLOSURE, '')), [TERMINAL], 'the Attach note stays outside the menu');
 
-  const terminalOnly = header(center({ settings, retire: true, terminal: false }));
+  const terminalOnly = header(center({ settings, retire: true, terminal: false }, claude));
   assert.doesNotMatch(terminalOnly, DISCLOSURE);
-  assert.deepEqual(hints(terminalOnly), [TERMINAL]);
+  assert.deepEqual(notes(terminalOnly), [TERMINAL]);
 
-  assert.doesNotMatch(center({ settings, retire: true, terminal: true }), /enable-controls/);
-  assert.doesNotMatch(center({ settings: null, retire: false, terminal: false }), /enable-controls/);
+  assert.doesNotMatch(center({ settings, retire: true, terminal: true }, claude), /enable-controls/);
+  assert.doesNotMatch(center({ settings: null, retire: false, terminal: false }, claude), /enable-controls/);
 });

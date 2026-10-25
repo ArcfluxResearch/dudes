@@ -12,8 +12,13 @@ agent stands in the office:
 
 A new hire walks in through the door, and a retired agent walks out. While every agent is paused,
 the office dims. Click an agent in the office or in the roster beside it to open the drawer, which shows its
-goal and status and the Floor actions you turned on, such as answering its question, pausing it or
-changing its goal. The drawer opens to a conversation and a message box.
+state and the Floor actions you turned on, such as answering its question, pausing it or
+changing its goal. The drawer opens to a conversation and a message box. Its top shows the agent's
+state in the same word and colour as the roster, one sentence about it and the main action, then Pause or
+Stop and the model with its **Change model** button. Retire, Edit look and Open the real CLI are in the **…**
+menu. Once an agent's goal is achieved or abandoned, or its ticket is accepted, **Current work** reads
+"None" and the work is listed under **Last finished** with what happened to it, such as "Done, accepted 13:41".
+The roster's line for that agent starts with "Last finished:".
 You can send the first message without assigning a goal, watch the reply arrive, and send a
 follow-up. A message sent during a turn waits for that turn to finish. Each message to an agent
 without a goal authorizes one turn; messages to an agent with a goal join its next task.
@@ -269,8 +274,9 @@ the keyboard focus is inside the roster, rows stay where they are, so a row neve
 they reorder once you leave. From 30 agents the rows group under their state with a count. Role, engine and
 folder are in the agent's panel, under **Details**. **Crew** in the **More** menu hides or shows the roster.
 
-The **Overview** button in the top bar opens a dialog over the office with the number of agents, where the
-journal is saved up to, the same roster and the archived agents. Escape or the close button closes it and
+The **Overview** button in the top bar opens a dialog over the office with the number of agents, a line that
+says "Everything is saved." (hover it for the exact journal position), the same roster and the archived
+agents. Escape or the close button closes it and
 returns the keyboard to the button.
 
 ## What the last turn used

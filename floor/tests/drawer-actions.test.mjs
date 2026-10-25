@@ -58,12 +58,15 @@ function drawer({ off = [], fields = {} } = {}) {
 
 const actionsOf = (html) => /<div class="agent-detail-actions"[^>]*>([\s\S]*?)<\/aside>/.exec(html)?.[1] ?? '';
 
-test('Pause, Retire and Attach share one row with no paragraph between them', () => {
+test('Pause stays in view, and Retire and Attach sit in the More actions menu', () => {
   const html = drawer();
   assert.match(html, /<div class="agent-detail-actions"/, 'no action row');
   const block = actionsOf(html);
   const labels = [...block.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label);
-  assert.deepEqual(labels.slice(0, 3), ['Pause', 'Retire', 'Open the real CLI']);
+  assert.equal(labels[0], 'Pause');
+  const menu = /<details class="agent-more"><summary aria-label="More actions" title="More actions">…<\/summary>([\s\S]*?)<\/details>/.exec(block)?.[1] ?? '';
+  assert.deepEqual([...menu.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label).filter((label) => label !== 'Edit look'),
+    ['Open the real CLI', 'Retire']);
   const between = block.slice(block.indexOf('class="control-pause"'), block.indexOf('>Open the real CLI<'));
   assert.doesNotMatch(between, /<p\b/);
   assert.doesNotMatch(block, /trust this folder/);
@@ -85,7 +88,7 @@ test('the Attach explanation is the button’s description and tooltip, and a wa
 test('a switched-off terminal explains how to open the real CLI without a disclosure', () => {
   const block = actionsOf(drawer({ off: ['terminal'] }));
   assert.doesNotMatch(block, /terminal-attach|enable-controls/);
-  assert.match(block, /<p class="settings-guidance">To open the real CLI, turn on Attach terminals under Floor switches in Settings, then restart Dudes\.<\/p>/);
+  assert.match(block, /<p class="agent-attach-note">To open the real CLI, turn on Attach terminals in Settings\.<\/p>/);
   assert.equal((block.match(/Attach terminals/g) ?? []).length, 1);
 });
 
@@ -100,7 +103,7 @@ test('the Pause explanation is the button’s description and tooltip, not a par
 
 test('the header is one status line and the old heading is gone', () => {
   const html = drawer();
-  assert.match(html, /<p class="agent-detail-status">docs writer · Claude · [\s\S]*?<span class="stream-state" role="status">[^<]*<\/span><\/p>/);
+  assert.match(html, /<p class="agent-detail-status">docs writer · Claude · <span class="stream-state" role="status">[^<]*<\/span><\/p>/);
   assert.doesNotMatch(html, /<p class="stream-state"/);
 });
 

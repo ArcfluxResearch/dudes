@@ -1130,8 +1130,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     clicks.push(...[...text.matchAll(/\bonclick\s*=/gi)].map(() => relative));
   }
   const expected = [
-    'src/renderer/AgentDetail.tsx',
-    ...Array(4).fill('src/renderer/AgentOverview.tsx'),
+    ...Array(4).fill('src/renderer/AgentDetail.tsx'),
+    ...Array(3).fill('src/renderer/AgentOverview.tsx'),
     ...Array(4).fill('src/renderer/Roster.tsx'),
     'src/renderer/OverviewDialog.tsx',
     ...Array(3).fill(ARCHIVED_AGENTS),
@@ -1232,12 +1232,15 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   ]) assert.throws(() => expectHistoryLinks(changed));
   assert.notDeepEqual(clicksIn(recovered.replace('section.open = true', "void fetch('/floor/recovery/submit')")), [historyClick]);
   assert.deepEqual(clicksIn(await readFile(resolve(source, 'renderer/AgentOverview.tsx'), 'utf8')), [
+    '() => onOpenTicket(card.id)', '() => onOpenTicket(ticket.id)', '() => onOpenTicket(ticket.id)',
+  ]);
+  assert.deepEqual(clicksIn(await readFile(resolve(source, 'renderer/AgentDetail.tsx'), 'utf8')).filter((click) => click !== '() => onTabChange(id)'), [
     `(event) => {
-        const question = event.currentTarget.closest('.agent-detail')?.querySelector<HTMLElement>('.agent-detail-question');
-        question?.focus();
-        question?.scrollIntoView({ block: 'nearest' });
-      }`,
-    '() => onOpenTicket(ticket.id)', '() => onOpenTicket(card.id)', '() => onOpenTicket(ticket.id)',
+      const question = event.currentTarget.closest('.agent-detail')?.querySelector<HTMLElement>('.agent-detail-question');
+      question?.focus();
+      question?.scrollIntoView({ block: 'nearest' });
+    }`,
+    '() => onOpenTicket(action.card)', "() => onTabChange('chat')",
   ]);
   assert.deepEqual(clicksIn(readError), ['onRetry']);
   assert.match(readError, /onRetry = refreshFloorSnapshot/);
@@ -3076,7 +3079,7 @@ test('Attach renders when the snapshot carries the terminal sibling', () => {
   // The positive control for the absence checks below: with the terminal on, Attach is there.
   const html = center(floorWith(resting(), undefined, undefined, undefined, TERMINAL));
   assert.match(html,
-    /<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<div class="agent-detail-actions"><div class="agent-detail-terminal" data-terminal-offer="attach"><button type="button" class="terminal-attach"[^>]*>Open the real CLI<\/button>/);
+    /<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<details class="agent-more">[\s\S]*?<div class="agent-detail-terminal" data-terminal-offer="attach"><button type="button" class="terminal-attach"[^>]*>Open the real CLI<\/button>/);
 });
 
 test('the terminal offer stays none without the sibling, a live confirmed view, or the agent on the floor', () => {
