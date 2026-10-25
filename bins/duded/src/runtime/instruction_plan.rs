@@ -1206,7 +1206,7 @@ mod tests {
         let home = folder.join("operator-home");
         let agent_dir = folder.join("agent");
         let env = [dudes_providers::launch::EnvVar::new(
-            "HOME",
+            if cfg!(windows) { "USERPROFILE" } else { "HOME" },
             home.as_os_str(),
         )];
         let ctx = AgentCtx {
