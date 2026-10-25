@@ -6,9 +6,9 @@ use dudes_proto::{
     MAX_CHAT_CONTEXT, MAX_CHAT_CONTEXT_BYTES, MAX_CHAT_CONTEXT_PER_AGENT, MAX_CHAT_PENDING,
     MAX_CHAT_PENDING_BYTES, MAX_CHAT_PENDING_PER_AGENT, MAX_CHAT_TEXT_BYTES, MAX_CHAT_TURN_BYTES,
     MAX_CHAT_TURN_BYTES_PER_AGENT, MAX_CHAT_TURNS, MAX_CHAT_TURNS_PER_AGENT, NoteAdmission,
-    NoteContract, Record, TurnOutcome,
+    NoteContract, Record, TaskContract, TurnOutcome,
 };
-use dudes_types::{AgentId, GoalId, Lsn, TurnId};
+use dudes_types::{AgentId, GoalId, Lsn, ModelName, TurnId};
 use redb::{ReadableTable, Table};
 use serde::{Deserialize, Serialize};
 
@@ -84,6 +84,8 @@ struct Decisions {
     ordinary: Option<(Lsn, GoalId, bool)>,
     #[serde(default)]
     conversation: Option<(Lsn, Lsn, Lsn, bool)>,
+    #[serde(default)]
+    conversation_identified: bool,
     note: Option<NoteDecision>,
 }
 
@@ -134,6 +136,20 @@ fn note(table: &impl ReadableTable<u64, &'static [u8]>, lsn: Lsn) -> Result<Note
         .map(|value| serde_json::from_slice(value.value()).map_err(|source| Error::Row { source }))
         .transpose()?
         .ok_or_else(invalid)
+}
+
+fn conversation_task_matches(value: &Note, agent: AgentId, identified: bool, task: &str) -> bool {
+    let contract = if identified {
+        TaskContract::Identified
+    } else {
+        TaskContract::Legacy
+    };
+    contract.conversation_task_matches(
+        agent,
+        value.task.as_ref().unwrap_or(&value.text),
+        value.answer_to.is_some(),
+        task,
+    )
 }
 
 fn windows(table: &impl ReadableTable<&'static str, &'static [u8]>) -> Result<Windows> {
@@ -501,9 +517,20 @@ pub(super) fn apply(
             context_lsn,
             decision,
             ..
+        }
+        | Record::IdentifiedConversationTurnDecided {
+            agent,
+            note_lsn,
+            context_lsn,
+            decision,
+            ..
         } => {
+            let identified = matches!(
+                entry.record,
+                Record::IdentifiedConversationTurnDecided { .. }
+            );
             let value = conversation_note(tables, agents, *agent, *note_lsn, *context_lsn)?;
-            if matches!(decision, NoteAdmission::Issue { task } if task != value.task.as_ref().unwrap_or(&value.text))
+            if matches!(decision, NoteAdmission::Issue { task } if !conversation_task_matches(&value, *agent, identified, task))
             {
                 return Err(invalid());
             }
@@ -515,6 +542,7 @@ pub(super) fn apply(
                 *context_lsn,
                 matches!(decision, NoteAdmission::Issue { .. }),
             ));
+            decisions.conversation_identified = identified;
             put_row(&mut tables.decisions, &agent.to_bytes(), &decisions)?;
         }
         Record::ConversationTurnIssued {
@@ -525,7 +553,20 @@ pub(super) fn apply(
             task,
             lsn_of_decision,
             ..
+        }
+        | Record::IdentifiedConversationTurnIssued {
+            agent,
+            turn,
+            note_lsn,
+            context_lsn,
+            task,
+            lsn_of_decision,
+            ..
         } => {
+            let identified = matches!(
+                entry.record,
+                Record::IdentifiedConversationTurnIssued { .. }
+            );
             if get_row::<super::TurnRow>(turns, &turn.to_bytes())?.is_some() {
                 return Err(invalid());
             }
@@ -551,9 +592,10 @@ pub(super) fn apply(
             let decisions =
                 get_row::<Decisions>(&tables.decisions, &agent.to_bytes())?.ok_or_else(invalid)?;
             let current = get_row::<AgentRow>(agents, &agent.to_bytes())?.ok_or_else(invalid)?;
-            if value.task.as_ref().unwrap_or(&value.text) != task
+            if !conversation_task_matches(&value, *agent, identified, task)
                 || current.open_turn.is_some()
                 || decisions.conversation != Some((*lsn_of_decision, *note_lsn, *context_lsn, true))
+                || decisions.conversation_identified != identified
             {
                 return Err(invalid());
             }
@@ -631,17 +673,29 @@ pub(super) fn apply(
             completion_lsn,
             decision,
             ..
+        }
+        | Record::IdentifiedTaughtNoteTurnDecided {
+            agent,
+            goal,
+            note_lsn,
+            completion_lsn,
+            decision,
+            ..
         } => {
-            let contract = if matches!(entry.record, Record::TaughtNoteTurnDecided { .. }) {
-                NoteContract::Taught
-            } else {
-                NoteContract::Raw
+            let contract = match entry.record {
+                Record::TaughtNoteTurnDecided { .. } => NoteContract::Taught,
+                Record::IdentifiedTaughtNoteTurnDecided { .. } => NoteContract::IdentifiedTaught,
+                _ => NoteContract::Raw,
             };
-            if contract == NoteContract::Taught {
-                let Record::TaughtNoteTurnDecided { gate_trace, .. } = &entry.record else {
-                    unreachable!()
+            if let Record::TaughtNoteTurnDecided { gate_trace, .. }
+            | Record::IdentifiedTaughtNoteTurnDecided { gate_trace, .. } = &entry.record
+            {
+                let valid = if contract == NoteContract::Taught {
+                    dudes_proto::valid_taught_decision(decision, gate_trace)
+                } else {
+                    dudes_proto::valid_identified_taught_decision(decision, gate_trace)
                 };
-                if !dudes_proto::valid_taught_decision(decision, gate_trace) {
+                if !valid {
                     return Err(invalid());
                 }
             }
@@ -654,7 +708,9 @@ pub(super) fn apply(
                     != Some(*goal)
                 || matches!(decision, NoteAdmission::Issue { task } if match contract {
                     NoteContract::Raw => task != value.task.as_ref().unwrap_or(&value.text),
-                    NoteContract::Taught => !contract.task_matches(&value.text, task),
+                    NoteContract::Taught | NoteContract::IdentifiedTaught => {
+                        !contract.task_matches(*agent, &value.text, task)
+                    }
                 })
             {
                 return Err(invalid());
@@ -702,16 +758,30 @@ pub(super) fn apply(
             lsn_of_decision,
             answers,
             ..
+        }
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued {
+            agent,
+            turn,
+            goal,
+            task,
+            note_lsn,
+            completion_lsn,
+            lsn_of_decision,
+            answers,
+            ..
         } => {
-            let contract = if matches!(entry.record, Record::TaughtNoteOnlyTurnIssued { .. }) {
-                NoteContract::Taught
-            } else {
-                NoteContract::Raw
+            let contract = match entry.record {
+                Record::TaughtNoteOnlyTurnIssued { .. } => NoteContract::Taught,
+                Record::IdentifiedTaughtNoteOnlyTurnIssued { .. } => NoteContract::IdentifiedTaught,
+                _ => NoteContract::Raw,
             };
-            if contract == NoteContract::Taught
+            if contract.is_taught()
                 && !matches!(
                     entry.record,
                     Record::TaughtNoteOnlyTurnIssued {
+                        mode: dudes_types::Mode::Managed,
+                        ..
+                    } | Record::IdentifiedTaughtNoteOnlyTurnIssued {
                         mode: dudes_types::Mode::Managed,
                         ..
                     }
@@ -719,7 +789,7 @@ pub(super) fn apply(
             {
                 return Err(invalid());
             }
-            if contract == NoteContract::Taught
+            if contract.is_taught()
                 && (get_row::<super::TurnRow>(turns, &turn.to_bytes())?.is_some()
                     || get_row::<AgentRow>(agents, &agent.to_bytes())?
                         .is_some_and(|row| row.open_turn.is_some()))
@@ -743,7 +813,9 @@ pub(super) fn apply(
             let value = note(&tables.notes, *note_lsn)?;
             if match contract {
                 NoteContract::Raw => task != value.task.as_ref().unwrap_or(&value.text),
-                NoteContract::Taught => !contract.task_matches(&value.text, task),
+                NoteContract::Taught | NoteContract::IdentifiedTaught => {
+                    !contract.task_matches(*agent, &value.text, task)
+                }
             } {
                 return Err(invalid());
             }
@@ -962,6 +1034,7 @@ pub(super) fn apply(
             provenance,
             outcome,
             exit,
+            model_usage,
             ..
         } => {
             if final_reply.as_ref().is_some_and(|reply| {
@@ -1005,6 +1078,18 @@ pub(super) fn apply(
                     } else {
                         ChatTurnState::Ended
                     };
+                    view.failure = match outcome {
+                        Some(TurnOutcome::Failed { reason }) => {
+                            cut(reason, dudes_proto::MAX_CHAT_FAILURE_BYTES)
+                        }
+                        _ => None,
+                    };
+                    view.ran_models = model_usage
+                        .keys()
+                        .filter(|name| ModelName::parse(name).is_ok())
+                        .take(dudes_proto::MAX_CHAT_RAN_MODELS)
+                        .cloned()
+                        .collect();
                     view.reply = final_reply
                         .as_ref()
                         .map(|reply| reply.text.clone())
@@ -1161,6 +1246,8 @@ fn reserve(
         state: ChatTurnState::Reserved,
         reply: None,
         truncated: None,
+        failure: None,
+        ran_models: Vec::new(),
     };
     if array_bytes(std::slice::from_ref(&view))? <= MAX_CHAT_TURN_BYTES_PER_AGENT {
         window.turns.push(TurnHistory {
@@ -1169,6 +1256,15 @@ fn reserve(
         });
     }
     Ok(())
+}
+
+/// `text` cut to at most `limit` bytes on a character boundary, or `None` when it is empty.
+fn cut(text: &str, limit: usize) -> Option<String> {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (end > 0).then(|| text[..end].to_owned())
 }
 
 fn update_history(window: &mut Windows, turn: TurnId, change: impl FnOnce(&mut ChatTurnView)) {

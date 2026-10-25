@@ -670,7 +670,7 @@ mod tests {
         assert_eq!(
             profile.login_home(Some(Path::new("/fake/codex"))),
             ProviderLoginHome::Unavailable {
-                reason: "Codex streaming requires codex-cli 0.160.x, but the installed Codex reports codex-cli 0.161.0".into()
+                reason: "Codex streaming requires codex-cli 0.160.x or 0.164.x, but the installed Codex reports codex-cli 0.161.0".into()
             }
         );
     }

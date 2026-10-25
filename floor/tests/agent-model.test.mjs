@@ -125,7 +125,8 @@ test('the change control needs the Floor control switch and a managed agent', ()
   const markup = html(base);
   assert.match(markup, /Default model/);
   assert.match(markup, /opus/);
-  assert.match(markup, /Another model name/);
+  assert.match(markup, /Search the list, or type another model name/);
+  assert.match(markup, /Refresh list/);
 });
 
 test('a save sends the override the page saw, retains the attempt when lost, and a clear sends null', async () => {

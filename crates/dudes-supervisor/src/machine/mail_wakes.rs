@@ -11,7 +11,7 @@ use dudes_policy::{
 use dudes_proto::mail_wake::{MAX_WAKE_TARGETS, MailWakeProgress};
 use dudes_proto::{
     MailWakeAdmission, MailWakeDecision, MailWakeDigest, MailWakeIssue, MailWakePlan,
-    MailWakePurpose, MailWakeTarget, MailWakeTask,
+    MailWakePurpose, MailWakeTarget, MailWakeTask, TaskContract,
 };
 
 #[derive(Clone, Debug)]
@@ -216,7 +216,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 trigger: candidate.trigger,
                 frontier: candidate.frontier,
                 unread_count,
-                task: MailWakeTask::new(unread_count)?,
+                task: MailWakeTask::identified(&row.identity_line(agent), unread_count)?,
                 targets,
             };
             (
@@ -442,7 +442,30 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if !decision.valid() {
             return;
         }
-        self.persist_at(at, Record::MailWakeTurnDecided(decision), then);
+        let legacy = match decision.contract() {
+            Some(contract) => contract == TaskContract::Legacy,
+            None => {
+                matches!(
+                    decision.purpose,
+                    MailWakePurpose::ExistingPreparation { .. }
+                ) && self.keeps_legacy_wake(agent)
+            }
+        };
+        let record = if legacy {
+            Record::MailWakeTurnDecided(decision)
+        } else {
+            Record::IdentifiedMailWakeTurnDecided(decision)
+        };
+        self.persist_at(at, record, then);
+    }
+
+    /// Whether the agent's standing preparation was made before agents were told who they are, so
+    /// its remaining decisions and its issue keep that contract.
+    fn keeps_legacy_wake(&self, agent: AgentId) -> bool {
+        self.world
+            .mail_wake_state(agent)
+            .and_then(|state| state.preparation.as_ref())
+            .is_some_and(|preparation| preparation.plan.task.contract() == TaskContract::Legacy)
     }
 
     fn notify_next_mail_target(&mut self, agent: AgentId) {
@@ -534,9 +557,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if !issue.valid() {
             return;
         }
+        let record = match issue.task.contract() {
+            TaskContract::Legacy => Record::MailWakeOnlyTurnIssued(issue),
+            TaskContract::Identified => Record::IdentifiedMailWakeOnlyTurnIssued(issue),
+        };
         self.persist_at(
             at,
-            Record::MailWakeOnlyTurnIssued(issue),
+            record,
             Then::Spawn {
                 agent,
                 turn,
@@ -643,6 +670,14 @@ mod tests {
                 goal,
                 mail: MailId::from_parts(3, 1),
             }
+        }
+        fn wake_task(&self, count: u8) -> MailWakeTask {
+            let row = &self.h.supervisor.world().agents[&self.agent];
+            MailWakeTask::identified(
+                &dudes_proto::IdentityLine::new(self.agent, &row.name, &row.role),
+                count,
+            )
+            .unwrap()
         }
         fn restarted(&self, entries: &[Entry]) -> Self {
             let mut restarted = Self {
@@ -761,7 +796,7 @@ mod tests {
                 issued.as_slice(),
                 [Seen::Persist {
                     entry: Entry {
-                        record: Record::MailWakeOnlyTurnIssued(_),
+                        record: Record::IdentifiedMailWakeOnlyTurnIssued(_),
                         ..
                     },
                     ..
@@ -903,7 +938,7 @@ mod tests {
                 root.as_slice(),
                 [Seen::Persist {
                     entry: Entry {
-                        record: Record::MailWakeTurnDecided(MailWakeDecision {
+                        record: Record::IdentifiedMailWakeTurnDecided(MailWakeDecision {
                             purpose: MailWakePurpose::FreshPreparation { .. },
                             ..
                         }),
@@ -1024,7 +1059,7 @@ mod tests {
                     .iter()
                     .filter(|entry| matches!(
                         entry.record,
-                        Record::MailWakeTurnDecided(MailWakeDecision {
+                        Record::IdentifiedMailWakeTurnDecided(MailWakeDecision {
                             purpose: MailWakePurpose::FreshPreparation { .. },
                             ..
                         })
@@ -1036,7 +1071,10 @@ mod tests {
                 self.h
                     .journal
                     .iter()
-                    .filter(|entry| matches!(entry.record, Record::MailWakeOnlyTurnIssued(_)))
+                    .filter(|entry| matches!(
+                        entry.record,
+                        Record::IdentifiedMailWakeOnlyTurnIssued(_)
+                    ))
                     .count(),
                 usize::from(issues)
             );
@@ -1081,7 +1119,7 @@ mod tests {
                 decision.as_slice(),
                 [Seen::Persist {
                     entry: Entry {
-                        record: Record::MailWakeTurnDecided(MailWakeDecision {
+                        record: Record::IdentifiedMailWakeTurnDecided(MailWakeDecision {
                             purpose: MailWakePurpose::ExistingPreparation { .. },
                             ..
                         }),
@@ -1143,7 +1181,7 @@ mod tests {
                 Seen::Persist {
                     entry:
                         Entry {
-                            record: Record::MailWakeOnlyTurnIssued(issue),
+                            record: Record::IdentifiedMailWakeOnlyTurnIssued(issue),
                             ..
                         },
                     ..
@@ -1166,7 +1204,10 @@ mod tests {
             assert_eq!(
                 f.h.journal
                     .iter()
-                    .filter(|entry| matches!(entry.record, Record::MailWakeOnlyTurnIssued(_)))
+                    .filter(|entry| matches!(
+                        entry.record,
+                        Record::IdentifiedMailWakeOnlyTurnIssued(_)
+                    ))
                     .count(),
                 1
             );
@@ -1214,7 +1255,7 @@ mod tests {
                 refused.as_slice(),
                 [Seen::Persist {
                     entry: Entry {
-                        record: Record::MailWakeTurnDecided(MailWakeDecision {
+                        record: Record::IdentifiedMailWakeTurnDecided(MailWakeDecision {
                             decision: MailWakeAdmission::Exhausted { .. },
                             ..
                         }),
@@ -1250,7 +1291,7 @@ mod tests {
                     refreshed.as_slice(),
                     [Seen::Persist {
                         entry: Entry {
-                            record: Record::MailWakeTurnDecided(MailWakeDecision {
+                            record: Record::IdentifiedMailWakeTurnDecided(MailWakeDecision {
                                 decision: MailWakeAdmission::Issue { .. },
                                 ..
                             }),
@@ -1265,9 +1306,10 @@ mod tests {
             outcomes.push((checkpoint, status, replay_status, requested, issued_again));
             assert!(f.h.host.spawned.is_empty());
             assert!(
-                f.h.journal
-                    .iter()
-                    .all(|entry| !matches!(entry.record, Record::MailWakeOnlyTurnIssued(_)))
+                f.h.journal.iter().all(|entry| !matches!(
+                    entry.record,
+                    Record::IdentifiedMailWakeOnlyTurnIssued(_)
+                ))
             );
         }
         assert_eq!(
@@ -1346,7 +1388,10 @@ mod tests {
             assert_eq!(
                 f.h.journal
                     .iter()
-                    .filter(|entry| matches!(entry.record, Record::MailWakeOnlyTurnIssued(_)))
+                    .filter(|entry| matches!(
+                        entry.record,
+                        Record::IdentifiedMailWakeOnlyTurnIssued(_)
+                    ))
                     .count(),
                 1
             );
@@ -1365,7 +1410,7 @@ mod tests {
                 entry:
                     Entry {
                         at: stamp,
-                        record: Record::MailWakeOnlyTurnIssued(carrier),
+                        record: Record::IdentifiedMailWakeOnlyTurnIssued(carrier),
                     },
                 ..
             },
@@ -1374,7 +1419,7 @@ mod tests {
             panic!("freshly checked mail carrier");
         };
         assert_eq!(*stamp, at(1));
-        assert_eq!(carrier.task, MailWakeTask::new(1).unwrap());
+        assert_eq!(carrier.task, f.wake_task(1));
         assert_eq!(carrier.goal, f.goal);
         assert!(carrier.answers.is_empty());
         assert_eq!(
@@ -1438,7 +1483,7 @@ mod tests {
                 entry:
                     Entry {
                         at: stamp,
-                        record: Record::MailWakeOnlyTurnIssued(issue),
+                        record: Record::IdentifiedMailWakeOnlyTurnIssued(issue),
                     },
                 ..
             },
@@ -1476,7 +1521,7 @@ mod tests {
         assert_eq!(
             f.h.journal
                 .iter()
-                .filter(|entry| matches!(entry.record, Record::MailWakeOnlyTurnIssued(_)))
+                .filter(|entry| matches!(entry.record, Record::IdentifiedMailWakeOnlyTurnIssued(_)))
                 .count(),
             1
         );
@@ -1497,7 +1542,7 @@ mod tests {
                 entry:
                     Entry {
                         record:
-                            Record::MailWakeTurnDecided(MailWakeDecision {
+                            Record::IdentifiedMailWakeTurnDecided(MailWakeDecision {
                                 purpose: MailWakePurpose::FreshPreparation { plan },
                                 ..
                             }),
@@ -1510,7 +1555,7 @@ mod tests {
             panic!("a fresh preparation despite forty pending mails");
         };
         assert_eq!(plan.unread_count, 32);
-        assert_eq!(plan.task, MailWakeTask::new(32).unwrap());
+        assert_eq!(plan.task, f.wake_task(32));
         let expected: Vec<_> = (1..=32u128).map(|n| MailId::from_parts(3, n)).collect();
         let planned: Vec<_> = plan.targets.iter().map(|target| target.mail.id).collect();
         assert_eq!(planned, expected);
@@ -1530,7 +1575,8 @@ mod tests {
             seen,
             Seen::Persist {
                 entry: Entry {
-                    record: Record::MailWakeTurnDecided(_) | Record::MailWakeOnlyTurnIssued(_),
+                    record: Record::IdentifiedMailWakeTurnDecided(_)
+                        | Record::IdentifiedMailWakeOnlyTurnIssued(_),
                     ..
                 },
                 ..
@@ -1559,7 +1605,7 @@ mod tests {
             .iter()
             .find(|effect| matches!(effect, Seen::Persist { .. }))
         {
-            if let Record::TaughtNoteOnlyTurnIssued { turn, .. } = &entry.record {
+            if let Record::IdentifiedTaughtNoteOnlyTurnIssued { turn, .. } = &entry.record {
                 note_turn = Some(*turn);
             }
             persisted += 1;
@@ -1583,14 +1629,18 @@ mod tests {
         assert!(
             f.h.journal.iter().all(|entry| !matches!(
                 entry.record,
-                Record::MailWakeTurnDecided(_) | Record::MailWakeOnlyTurnIssued(_)
+                Record::IdentifiedMailWakeTurnDecided(_)
+                    | Record::IdentifiedMailWakeOnlyTurnIssued(_)
             )),
             "no mail-wake record while the note is in flight"
         );
         assert_eq!(
             f.h.journal
                 .iter()
-                .filter(|entry| matches!(entry.record, Record::TaughtNoteOnlyTurnIssued { .. }))
+                .filter(|entry| matches!(
+                    entry.record,
+                    Record::IdentifiedTaughtNoteOnlyTurnIssued { .. }
+                ))
                 .count(),
             1
         );
@@ -1601,7 +1651,7 @@ mod tests {
                 effect,
                 Seen::Persist {
                     entry: Entry {
-                        record: Record::MailWakeTurnDecided(_),
+                        record: Record::IdentifiedMailWakeTurnDecided(_),
                         ..
                     },
                     ..
@@ -1621,7 +1671,7 @@ mod tests {
         let Some(Seen::Persist {
             entry:
                 Entry {
-                    record: Record::MailWakeOnlyTurnIssued(carrier),
+                    record: Record::IdentifiedMailWakeOnlyTurnIssued(carrier),
                     ..
                 },
             ..
@@ -1665,7 +1715,10 @@ mod tests {
                         .h
                         .journal
                         .iter()
-                        .filter(|entry| matches!(entry.record, Record::MailWakeOnlyTurnIssued(_)))
+                        .filter(|entry| matches!(
+                            entry.record,
+                            Record::IdentifiedMailWakeOnlyTurnIssued(_)
+                        ))
                         .count(),
                     1
                 );
@@ -1681,7 +1734,7 @@ mod tests {
                         continuation.as_slice(),
                         [Seen::Persist {
                             entry: Entry {
-                                record: Record::MailWakeTurnDecided(MailWakeDecision {
+                                record: Record::IdentifiedMailWakeTurnDecided(MailWakeDecision {
                                     decision: MailWakeAdmission::Issue { .. },
                                     ..
                                 }),
@@ -1714,7 +1767,10 @@ mod tests {
                 panic!("new current admission");
             };
             assert_eq!(entry.at, at(current));
-            assert!(matches!(entry.record, Record::MailWakeTurnDecided(_)));
+            assert!(matches!(
+                entry.record,
+                Record::IdentifiedMailWakeTurnDecided(_)
+            ));
             assert_eq!(
                 f.h.supervisor
                     .world
@@ -1753,7 +1809,7 @@ mod tests {
                 Seen::Persist {
                     entry:
                         Entry {
-                            record: Record::MailWakeTurnDecided(value),
+                            record: Record::IdentifiedMailWakeTurnDecided(value),
                             ..
                         },
                     ..
@@ -1865,7 +1921,7 @@ mod tests {
         let decided = f.refresh(&consumed, at(1), SpendView::default());
         assert!(matches!(
             decided.as_slice(),
-            [Seen::Persist { entry: Entry { record: Record::MailWakeTurnDecided(MailWakeDecision {
+            [Seen::Persist { entry: Entry { record: Record::IdentifiedMailWakeTurnDecided(MailWakeDecision {
                 purpose: MailWakePurpose::ExistingPreparation { root_lsn },
                 decision: MailWakeAdmission::Issue { .. }, ..
             }), .. }, .. }] if *root_lsn == preparation.root_lsn
@@ -1877,7 +1933,7 @@ mod tests {
                 Seen::Spawn { .. }
                     | Seen::Persist {
                         entry: Entry {
-                            record: Record::MailWakeOnlyTurnIssued(_),
+                            record: Record::IdentifiedMailWakeOnlyTurnIssued(_),
                             ..
                         },
                         ..
@@ -1902,7 +1958,7 @@ mod tests {
             Seen::Persist {
                 entry:
                     Entry {
-                        record: Record::MailWakeOnlyTurnIssued(issue),
+                        record: Record::IdentifiedMailWakeOnlyTurnIssued(issue),
                         ..
                     },
                 ..
@@ -1914,14 +1970,7 @@ mod tests {
         let issue = issue.clone();
         assert_eq!(issue.root_lsn, preparation.root_lsn);
         assert_eq!(issue.task, preparation.plan.task);
-        assert_eq!(
-            issue.task.as_str(),
-            format!(
-                "[1 unread mail]{}{}",
-                dudes_proto::MEMORY_INSTRUCTION,
-                dudes_proto::MAIL_INSTRUCTION
-            )
-        );
+        assert_eq!(issue.task, f.wake_task(1));
         assert_eq!(issue.lsn_of_decision, decision_lsn);
         assert_eq!(Some((issue.goal, issue.completion_lsn)), completion);
         assert!(issue.answers.is_empty());
@@ -1965,7 +2014,7 @@ mod tests {
                 Seen::Persist {
                     entry:
                         Entry {
-                            record: Record::MailWakeTurnDecided(decision),
+                            record: Record::IdentifiedMailWakeTurnDecided(decision),
                             ..
                         },
                     ..
@@ -2053,7 +2102,7 @@ mod tests {
         assert!(
             matches!(
                 decided.as_slice(),
-                [Seen::Persist { entry: Entry { record: Record::MailWakeTurnDecided(MailWakeDecision {
+                [Seen::Persist { entry: Entry { record: Record::IdentifiedMailWakeTurnDecided(MailWakeDecision {
                     purpose: MailWakePurpose::ExistingPreparation { root_lsn },
                     decision: MailWakeAdmission::Issue { .. }, ..
                 }), .. }, .. }] if *root_lsn == preparation.root_lsn
@@ -2068,7 +2117,7 @@ mod tests {
             Seen::Persist {
                 entry:
                     Entry {
-                        record: Record::MailWakeOnlyTurnIssued(issue),
+                        record: Record::IdentifiedMailWakeOnlyTurnIssued(issue),
                         ..
                     },
                 ..
@@ -2122,7 +2171,7 @@ mod tests {
             Seen::Persist {
                 entry:
                     Entry {
-                        record: Record::MailWakeTurnDecided(value),
+                        record: Record::IdentifiedMailWakeTurnDecided(value),
                         ..
                     },
                 ..

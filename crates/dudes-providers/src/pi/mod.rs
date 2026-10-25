@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod managed;
+pub mod models;
 mod steps;
 pub mod stream;
 

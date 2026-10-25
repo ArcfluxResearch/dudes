@@ -4,6 +4,7 @@ pub mod app_server;
 pub mod config;
 pub mod login;
 pub mod managed;
+pub mod model_list;
 pub mod startup;
 mod steps;
 pub mod stream;

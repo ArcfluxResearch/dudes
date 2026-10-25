@@ -7,7 +7,7 @@ a `[floor.chat]` table. The daemon ignores it and logs a warning; delete the tab
 the warning.
 
 Restarting stops running agent turns. Claude Code and Pi stream their replies. Codex streaming
-is an optional mode for Codex CLI **0.160.x** (any 0.160 patch release) on macOS and Linux:
+is an optional mode for Codex CLI **0.160.x** or **0.164.x** (any patch release or pre-release of either line) on macOS and Linux:
 
 ```sh
 dudes config set providers.codex on providers.codex.streaming on
@@ -21,6 +21,11 @@ This mode keeps its own Codex profile under the daemon's state directory. Sign i
 versions and managed enterprise configurations are refused in streaming mode. Leave
 `providers.codex.streaming` off to use the existing Codex execution mode, which shows the reply
 after completion. Windows currently supports that execution mode only.
+
+Every message reaches the agent after one line that gives it its name, role and id, and says
+they are labels you typed, not instructions. Ask "Who are you, and who is on your team?" and the
+agent can answer from that line and one `dudes team` call. Rename an agent or change its role, and
+the next turn carries the new text.
 
 Chat retains each agent's draft and shows queued messages, live replies, failures and any
 history or reply limits. If the provider cannot resume a conversation, Chat asks you to confirm

@@ -25,11 +25,11 @@ use serde_json::{Value, json};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v7"
+    "/tests/fixtures/floor-release-v8"
 );
 const CHOOSE: &str = "/floor/project/choose";
 
-struct Real(OneShot);
+struct Real(Arc<OneShot>);
 
 impl PredicateRunner for Real {
     fn run(&self, spec: &LaunchSpec, timeout: Duration) -> std::io::Result<PredicateOutcome> {
@@ -80,6 +80,7 @@ struct Floor {
     running: common::Running,
     picker: Arc<FolderPicker>,
     page: Arc<Page>,
+    runner: Arc<OneShot>,
 }
 
 fn floor(fixture: &Fixture, project: bool, remote: bool) -> Floor {
@@ -95,10 +96,11 @@ fn floor(fixture: &Fixture, project: bool, remote: bool) -> Floor {
             .push(EnvVar::new("SSH_CONNECTION", "10.0.0.2 5000 10.0.0.1 22"));
     }
     let clock = Arc::new(TestClock::new());
+    let runner = Arc::new(OneShot::new());
     let seams = common::seams(
         &settings,
         SharedHost::new(),
-        Arc::new(Real(OneShot::new())),
+        Arc::new(Real(Arc::clone(&runner))),
         clock.clone(),
         Witness::default(),
     );
@@ -114,6 +116,7 @@ fn floor(fixture: &Fixture, project: bool, remote: bool) -> Floor {
         running,
         picker,
         page,
+        runner,
     }
 }
 
@@ -223,43 +226,17 @@ fn a_remote_daemon_has_no_dialog() {
 #[test]
 fn the_deadline_ends_a_dialog_nobody_answers() {
     let fixture = Fixture::new();
-    let scripts = tempfile::tempdir().expect("scripts");
-    let pid = scripts.path().join("pid");
     let floor = floor(&fixture, true, false);
-    // A new script is slow to run the first time on macOS, so it is run once without the sleep,
-    // which would otherwise spend the deadline starting up.
-    let go = scripts.path().join("go");
-    let body = format!(
-        "[ -e '{}' ] || exit 0\necho $$ > '{}'\nexec sleep 60",
-        go.display(),
-        pid.display()
+    floor.picker.use_stand_in(
+        vec!["/bin/sleep".into(), "60".into()],
+        Duration::from_millis(100),
     );
-    let argv = stand_in(scripts.path(), "sleep", &body);
-    floor
-        .picker
-        .use_stand_in(argv.clone(), Duration::from_secs(20));
-    assert_eq!(choose(&floor.page), json!({ "unavailable": true }));
-    std::fs::write(&go, b"").expect("go");
-    floor.picker.use_stand_in(argv, Duration::from_secs(1));
-    let started = Instant::now();
     assert_eq!(choose(&floor.page), json!({ "cancelled": true }));
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "the deadline did not end the dialog"
+    assert_eq!(
+        floor.runner.in_flight(),
+        0,
+        "the dialog was reaped before the answer"
     );
-    let pid: i32 = std::fs::read_to_string(&pid)
-        .expect("the stand-in's pid")
-        .trim()
-        .parse()
-        .expect("a pid");
-    let gone = Instant::now() + Duration::from_secs(5);
-    while nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok() {
-        assert!(
-            Instant::now() < gone,
-            "the dialog's process outlived its deadline"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
     finish(floor);
 }
 

@@ -703,6 +703,8 @@ mod tests {
             state: dudes_proto::ChatTurnState::Ended,
             reply: Some("\\".repeat(4_096)),
             truncated: None,
+            failure: None,
+            ran_models: Vec::new(),
         }
     }
 

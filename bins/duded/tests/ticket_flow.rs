@@ -233,6 +233,13 @@ fn enrolled(fixture: &Fixture) -> (duded::Settings, PathBuf) {
     (settings, repo)
 }
 
+/// A task as the ticket assertions read it, without the identity line every task opens with.
+fn without_identity_line(task: &str) -> String {
+    task.strip_prefix("[You are ")
+        .and_then(|rest| rest.split_once("]\n\n"))
+        .map_or_else(|| task.to_owned(), |(_, rest)| rest.to_owned())
+}
+
 struct Flow {
     tokens: dudes_supervisor::testing::FakeTokens,
     running: common::Running,
@@ -474,7 +481,7 @@ impl Flow {
                     goal,
                     task,
                     ..
-                } => Some((turn, agent, goal, task)),
+                } => Some((turn, agent, goal, without_identity_line(&task))),
                 _ => None,
             })
             .collect()
