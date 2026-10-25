@@ -1525,6 +1525,14 @@ mod tests {
         harness: &mut Harness,
         request: InstructionRequest,
     ) -> Vec<crate::testing::Seen> {
+        let effects = sample_delayed_start(harness, request);
+        acknowledge_actual_persist(harness, &effects)
+    }
+
+    fn sample_delayed_start(
+        harness: &mut Harness,
+        request: InstructionRequest,
+    ) -> Vec<crate::testing::Seen> {
         let Some(Awaiting::Start(starting)) =
             harness.supervisor.instructions.awaiting.get(&request)
         else {
@@ -1558,7 +1566,7 @@ mod tests {
                 .filter_map(crate::testing::Seen::record)
                 .any(|record| matches!(record, Record::InstructionObservationStarted { .. }))
         );
-        acknowledge_actual_persist(harness, &effects)
+        effects
     }
 
     #[test]
@@ -1731,6 +1739,99 @@ mod tests {
         let effects = acknowledge_actual_persist(&mut harness, &effects);
         let request = actual_pending_request(&effects);
         assert_exact_delayed_issue(&mut harness, request);
+    }
+
+    fn rename_then_deliver(harness: &mut Harness, agent: AgentId, request: InstructionRequest) {
+        let effects = harness.step(Input::Command(Command::Rename {
+            agent,
+            name: "Rowan".into(),
+            browser_rename: None,
+        }));
+        acknowledge_actual_persist(harness, &effects);
+        let mut effects = deliver_delayed_start(harness, request);
+        let mut decided_again = false;
+        for _ in 0..8 {
+            for record in effects.iter().filter_map(crate::testing::Seen::record) {
+                assert!(
+                    !matches!(record, Record::TurnIssued { task, .. }
+                        if task.contains("[You are Hector (agent")),
+                    "the stale line must not be issued"
+                );
+                decided_again |= matches!(record, Record::TurnIssued { task, .. } if task.contains("[You are Rowan (agent"))
+                    || format!("{record:?}").contains("[You are Rowan (agent");
+            }
+            if decided_again
+                || !effects
+                    .iter()
+                    .any(|effect| matches!(effect, crate::testing::Seen::Persist { .. }))
+            {
+                break;
+            }
+            effects = acknowledge_actual_persist(harness, &effects);
+        }
+        assert!(
+            decided_again,
+            "the agent is decided again under the new name"
+        );
+    }
+
+    #[test]
+    fn a_rename_during_sampling_drops_the_ordinary_issue_and_decides_again() {
+        let (mut harness, agent, _, _, request, _) = delayed_board_sample();
+        rename_then_deliver(&mut harness, agent, request);
+    }
+
+    #[test]
+    fn a_rename_during_sampling_drops_the_closing_issue_and_decides_again() {
+        let (mut harness, agent, _, request) = actual_saving_sample(false);
+        rename_then_deliver(&mut harness, agent, request);
+    }
+
+    fn issues_in(effects: &[crate::testing::Seen]) -> usize {
+        effects
+            .iter()
+            .filter_map(crate::testing::Seen::record)
+            .filter(|record| {
+                matches!(
+                    record,
+                    Record::TurnIssued { .. } | Record::TurnIssuedWithBrowserNote { .. }
+                )
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_rename_folding_after_an_issue_was_emitted_cannot_issue_a_second_turn() {
+        let (mut harness, agent, _, _, request, _) = delayed_board_sample();
+        let started = sample_delayed_start(&mut harness, request);
+        let renamed = harness.step(Input::Command(Command::Rename {
+            agent,
+            name: "Rowan".into(),
+            browser_rename: None,
+        }));
+        let (rename_token, rename_entry) = renamed
+            .iter()
+            .find_map(|effect| match effect {
+                crate::testing::Seen::Persist { token, entry } => Some((*token, entry.clone())),
+                _ => None,
+            })
+            .expect("the rename is persisted behind the observation record");
+        let mut issues = issues_in(&acknowledge_actual_persist(&mut harness, &started));
+        assert_eq!(issues, 1, "the issue was emitted from the old name");
+        let lsn = Lsn(harness.supervisor.world().last_applied_lsn.unwrap().0 + 1);
+        harness.journal.push(rename_entry);
+        let mut effects = harness.step(harness.persisted(rename_token, lsn));
+        for _ in 0..8 {
+            issues += issues_in(&effects);
+            if !effects
+                .iter()
+                .any(|effect| matches!(effect, crate::testing::Seen::Persist { .. }))
+            {
+                break;
+            }
+            effects = acknowledge_actual_persist(&mut harness, &effects);
+        }
+        assert_eq!(issues, 1, "no second turn is issued for the agent");
     }
 
     #[test]
