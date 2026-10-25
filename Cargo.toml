@@ -134,7 +134,7 @@ widestring = "=1.2.1"
 
 # Test-only. `jsonschema` without its default features: those pull reqwest and a TLS stack, which
 # dudes-proxy alone may link (invariant 9); the tests only need the in-memory validator.
-jsonschema = { version = "0.58.6", default-features = false }
+jsonschema = { version = "0.59.0", default-features = false }
 # `proptest` without `fork`/`timeout`: the policy and journal properties need neither, and the smaller tree
 # keeps the `cargo deny` surface small.
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }

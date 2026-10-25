@@ -9,7 +9,7 @@ const direct = new Map([
   ['node_modules/react', '19.3.1'],
   ['node_modules/react-dom', '19.3.1'],
   ['node_modules/three', '0.186.1'],
-  ['node_modules/vite', '8.3.4'],
+  ['node_modules/vite', '8.3.5'],
   ['node_modules/@vitejs/plugin-react', '6.1.2'],
   ['node_modules/typescript', '6.0.2'],
   ['node_modules/@types/react', '19.3.0'],
