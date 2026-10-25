@@ -68,7 +68,7 @@ test('a restart question and a "takes a restart" line go once the daemon has com
     store.beginFloorEpoch();
     store.noteTransport('open');
     await edit.changeSetting('floor.terminal', 'on');
-    assert.match(edit.getSettingsEditState().asking.question, /restart of Dudes/);
+    assert.match(edit.getSettingsEditState().asking.question, /applies at once and does not end running work/);
     store.noteTransport('open');
     assert.notEqual(edit.getSettingsEditState().asking, null, 'a stream that never dropped is not a restart');
     store.noteTransport('close');

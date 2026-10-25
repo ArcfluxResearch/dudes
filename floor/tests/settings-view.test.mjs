@@ -74,7 +74,7 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.match(renewOn, /<dt>Start new tasks<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
     const hint = (control) => renderToStaticMarkup(createElement(UnavailableControls, { floor: floor(), control }));
     assert.match(hint('retire'), /Turn on Pause, resume and rename and Retire agents under\s+Floor switches in Settings/);
-    assert.match(hint('terminal'), /turn on Attach terminals under Floor switches in Settings, then restart Dudes/);
+    assert.match(hint('terminal'), /turn on Attach terminals under Floor switches in Settings\./);
 
     assert.match(html, /Manage engines, projects and spending/);
     assert.match(html, /Check which engines Dudes can find\. Sign in when you hire an agent\./);
@@ -154,7 +154,7 @@ test('Settings asks on the page before the terminal goes on or retire or control
     await edit.changeSetting('floor.terminal', 'on');
     assert.equal(edit.getSettingsEditState().asking?.key, 'floor.terminal');
     assert.equal(edit.getSettingsEditState().sending, null, 'nothing was sent yet');
-    assert.match(view(), /aria-label="Turn on Attach terminals"> [^<]*takes effect after a restart of Dudes\. <button type="button">Turn on<\/button> <button type="button">Cancel<\/button>/);
+    assert.match(view(), /aria-label="Turn on Attach terminals"> [^<]*It applies at once and does not end running work\. <button type="button">Turn on<\/button> <button type="button">Cancel<\/button>/);
     edit.cancelSetting();
     assert.equal(edit.getSettingsEditState().asking, null);
     assert.doesNotMatch(view(), /aria-label="Turn (on|off) floor\./);

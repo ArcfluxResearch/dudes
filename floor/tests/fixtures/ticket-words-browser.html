@@ -1,0 +1,59 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<html lang="en">
+  <head><meta charset="UTF-8"><title>Ticket review</title></head>
+  <body>
+    <main class="shell" data-theme="light" style="display:block">
+      <div style="max-width:48rem;margin:auto;padding:2rem">
+        <h1>Ticket review</h1>
+        <nav aria-label="Example tickets">
+          <button id="ready-ticket" type="button">Ready ticket</button>
+          <button id="held-ticket" type="button">Ticket that needs review</button>
+        </nav>
+        <div id="root"></div>
+      </div>
+    </main>
+    <script type="module">
+      import { createElement } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import { TicketPanel } from '../../src/renderer/ticket/TicketPanel.tsx';
+      import * as store from '../../src/renderer/floor/store.ts';
+      import * as detail from '../../src/renderer/ticket/detail.ts';
+      import { ADA, advance, agent, cardId, daemon, instructionReview, instructionSummary, json, subscribe, ticketCard } from '../helpers/tickets.mjs';
+      import '../../src/style.css';
+
+      const card = cardId(1);
+      let root;
+      async function show(held) {
+        root?.unmount();
+        store.resetFloorStore();
+        detail.resetDetail();
+        const status = held ? 'blocked' : 'review';
+        const ticket = held ? { reason: 'shared_instructions_unknown', instruction_review: instructionSummary({ changed_paths: 0 }) } : {};
+        subscribe(store, { agents: [agent(ADA, 'Ada', { provider: 'codex' })],
+          cards: [ticketCard(1, status, { title: 'Update the service', claimed_by: ADA }, ticket)] });
+        advance(store, '20');
+        const review = held ? instructionReview({ changed_paths: [], gaps: [{
+          reason: 'read_failed', context: { kind: 'shared_input', source: 'import' }, agent: ADA,
+          path: { encoding: 'utf8', value: '/project/AGENTS.md' }, display: '/project/AGENTS.md',
+          display_truncated: false, origin: 'observed', holds: true,
+        }] }) : null;
+        const reply = {
+          state: 'ok', card: { id: card, title: 'Update the service', status, seq: 3, claimed_by: ADA },
+          ticket: { note: 'Keep the existing API.', project: 'service', check: { id: 'default', label: 'default passes' },
+            round: 1, reason: held ? 'shared_instructions_unknown' : null, summary: 'The service is updated.',
+            check_result: { pass: true, exit: 0, at: Date.now() }, position: null, waiting: null,
+            coverage: { provider: 'codex', limits: ['configuration_unknown', 'fallback_unknown', 'root_marker_unknown'], saw_no_change: !held },
+            instruction_review: review },
+        };
+        await detail.loadDetail(store.getFloorState().cards[0], daemon(() => json(200, reply)).deps);
+        root = createRoot(document.getElementById('root'));
+        root.render(createElement(TicketPanel, { floor: store.getFloorState(), card: store.getFloorState().cards[0] }));
+      }
+      document.getElementById('ready-ticket').addEventListener('click', () => void show(false));
+      document.getElementById('held-ticket').addEventListener('click', () => void show(true));
+      window.ticketFixture = { show };
+      await show(false);
+    </script>
+  </body>
+</html>

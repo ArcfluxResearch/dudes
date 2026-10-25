@@ -2373,6 +2373,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 }
             }
             self.ctx.browser_grants = None;
+        } else if !was.terminal && next.terminal && self.ctx.browser_grants.is_none() {
+            self.ctx.browser_grants = Some(BTreeMap::new());
         }
         self.ctx.switches.store(next);
     }

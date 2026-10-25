@@ -163,10 +163,11 @@ export function AgentDetail({
           {resumeInOverview ? null : control}
           <details className="agent-more">
             <summary aria-label="More actions" title="More actions">…</summary>
-            <div className="agent-more-body"><LookEditor row={row} />{terminal}{retire}{enable}</div>
+            <div className="agent-more-body"><LookEditor row={row} />{retire}{enable}</div>
           </details>
         </div>
         <ModelEditor row={row} />
+        {terminal}
         {attachNote}
         {fields.question === '' ? null : (
           <section className="agent-detail-question" aria-label="Waiting question" tabIndex={-1}>
