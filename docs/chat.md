@@ -7,7 +7,7 @@ a `[floor.chat]` table. The daemon ignores it and logs a warning; delete the tab
 the warning.
 
 Restarting stops running agent turns. Claude Code and Pi stream their replies. Codex streaming
-is an optional mode for Codex CLI **0.160.x** (any 0.160 patch release) on macOS and Linux:
+is an optional mode for Codex CLI **0.160.x** or **0.164.x** (any patch release or pre-release of either line) on macOS and Linux:
 
 ```sh
 dudes config set providers.codex on providers.codex.streaming on

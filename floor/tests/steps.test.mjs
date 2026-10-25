@@ -120,7 +120,7 @@ function view(list) {
     selectionEpoch: 1, reply: { revision: '1', text: 'done soon', gap: null }, steps: list };
   const chat = { enabled: true, max_text_bytes: 4096, pending: [], context_sent: [], turns: [
     { agent_id: A, turn_id: TURN, note_lsn: '7', text: 'Please check', state: 'running', reply: null,
-      truncated: null, reissued: false }] };
+      truncated: null, failure: null, ran_models: [], reissued: false }] };
   const floor = { ...base, epoch: 1, snapshotEpoch: 1, phase: 'live', stale: false, agents: [row], chat, output };
   return renderToStaticMarkup(createElement(ChatPanelView, { floor, row, action: chatModule.getChatState() }));
 }
