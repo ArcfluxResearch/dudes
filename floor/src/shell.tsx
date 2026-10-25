@@ -41,6 +41,7 @@ import { useDesktopNotifications } from './renderer/useDesktopNotifications';
 import { requestCardSelection } from './renderer/BoardPanel';
 import { OpenCommand, SignInExpired } from './renderer/SignInExpired';
 import { StreamNotice } from './renderer/StreamNotice';
+import { NoticeStack } from './renderer/notices/NoticeStack';
 import './failure.css';
 import {
   DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH,
@@ -183,19 +184,38 @@ function SignedInShell() {
     area.className = 'notice-area';
     return area;
   });
+  const [noticeBanner] = useState(() => {
+    if (typeof document === 'undefined') return null;
+    const banner = document.createElement('section');
+    banner.className = 'notice-banner';
+    banner.setAttribute('aria-label', 'Floor status');
+    return banner;
+  });
   useLayoutEffect(() => {
     const shell = shellRef.current;
-    if (shell === null || noticeArea === null) return;
+    if (shell === null || noticeArea === null || noticeBanner === null) return;
+    const sync = () => {
+      const pinned = noticeBanner.parentElement?.classList.contains('top-region') === true;
+      shell.style.setProperty('--banner-height', `${pinned ? noticeBanner.offsetHeight : 0}px`);
+    };
     const update = () => {
       const dialogs = shell.querySelectorAll<HTMLDialogElement>('.hire-dialog:modal, .retire-dialog:modal, .ticket-dialog:modal');
-      const host = dialogs.item(dialogs.length - 1) ?? shell;
+      const modal = dialogs.item(dialogs.length - 1);
+      const host = modal ?? shell;
       if (noticeArea.parentElement !== host) host.append(noticeArea);
+      const top = shell.querySelector('.top-region');
+      if (modal !== null) {
+        if (noticeBanner.parentElement !== modal) modal.prepend(noticeBanner);
+      } else if (top !== null && noticeBanner.parentElement !== top) top.append(noticeBanner);
+      sync();
     };
     const observer = new MutationObserver(update);
     observer.observe(shell, { childList: true, subtree: true, attributes: true, attributeFilter: ['open'] });
+    const height = new ResizeObserver(sync);
+    height.observe(noticeBanner);
     update();
-    return () => { observer.disconnect(); noticeArea.remove(); };
-  }, [noticeArea]);
+    return () => { observer.disconnect(); height.disconnect(); noticeArea.remove(); noticeBanner.remove(); };
+  }, [noticeArea, noticeBanner]);
   const selectedRow = selectedAgentRow(floor.agents, selectedId, floor.phase, floor.stale);
   const focusedId = focused ? focusAgentId(floor, selectedId) : null;
   const displayRow = focused ? selectedAgentRow(floor.agents, focusedId, floor.phase, floor.stale) : selectedRow;
@@ -463,19 +483,25 @@ function SignedInShell() {
     leaveFocusTo={leaveDrawerTo} recoveryRequested={recoveryAsked} onRecoveryShown={() => setRecoveryAsked(null)}
     onReadRecoveryReceipt={readRecoveryReceipt} onOpenTicket={openCard} />;
 
+  const banner = (
+    <>
+      <JournalStoppedBanner stopped={floor.journalStopped} />
+      <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
+      <StreamNotice floor={floor} placement="banner" />
+      <DeviceNotices part="asking" />
+    </>
+  );
   const notices = (
-    <div className="notice-stack" ref={setNoticeStack} id="floor-notices" role="region" aria-label="Floor notices" tabIndex={0}>
+    <NoticeStack host={setNoticeStack}>
       <PastedLinkNotice />
       {view === 'board' ? null : <TicketNotice floor={floor} />}
       <NotificationOffer onBoard={view === 'board'} leaveFocusTo="floor-notices" />
       {signOutFailed ? <p className="link-refused" role="alert">Could not sign out, so this browser is still signed in. Try again.</p> : null}
-      <JournalStoppedBanner stopped={floor.journalStopped} />
-      <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
       {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
-      <StreamNotice floor={floor} />
-      <DeviceNotices />
+      <StreamNotice floor={floor} placement="stack" />
+      <DeviceNotices part="gone" />
       <DoneNotices notices={floor.doneNotices} leaveFocusTo="floor-notices" />
-    </div>
+    </NoticeStack>
   );
 
   return (
@@ -575,6 +601,7 @@ function SignedInShell() {
           }} /> : null}
       </div>
       {noticeArea === null ? null : createPortal(notices, noticeArea)}
+      {noticeBanner === null ? null : createPortal(banner, noticeBanner)}
       <RetireDialog floor={floor} />
       {hiring ? <dialog className="hire-dialog" ref={hireDialog}
         aria-labelledby="hire-title" onCancel={(event) => { event.preventDefault(); closeHire(); }}

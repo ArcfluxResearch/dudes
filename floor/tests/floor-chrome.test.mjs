@@ -247,9 +247,9 @@ test('an expanded terminal takes the stage under the top bar and its banners, ab
 
 test('a Done notice keeps its goal text beside the agent name and Dismiss', async () => {
   const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
-  const goal = declared(rulesAt(css, 1440), (selector) => selector === '.notice-stack .done-notice-goal', 'text-overflow');
+  const goal = declared(rulesAt(css, 1440), (selector) => selector === '.notice-list .done-notice-goal', 'text-overflow');
   assert.equal(goal, 'ellipsis', 'long goals cover Dismiss');
-  assert.equal(declared(rulesAt(css, 1440), (selector) => selector === '.notice-stack .done-notice-goal', 'clip-path'), undefined,
+  assert.equal(declared(rulesAt(css, 1440), (selector) => selector === '.notice-list .done-notice-goal', 'clip-path'), undefined,
     'the goal is visually hidden');
 });
 
