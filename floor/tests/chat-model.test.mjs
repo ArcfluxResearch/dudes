@@ -105,10 +105,14 @@ test('a failure is plain text of at most 2,048 bytes on a failed turn, and ran_m
     turn({ state: 'failed', reply: null, failure: '' }),
     turn({ state: 'ended', failure: 'not a failed turn' }),
     turn({ ran_models: ['a', 'b', 'c', 'd', 'e'] }),
-    turn({ ran_models: [''] }),
-    turn({ ran_models: ['x'.repeat(129)] }),
     { ...turn(), failure: undefined },
   ]) assert.equal(decodeChat({ ...empty(), turns: [bad] }, agents), null);
+});
+
+test('a model name that cannot be shown is dropped from the turn, and the chat still decodes', () => {
+  const mixed = turn({ ran_models: ['claude-opus-4-1', 'bad\u0007name', 'x'.repeat(129), 'ok'] });
+  assert.deepEqual(decodeChat({ ...empty(), turns: [mixed] }, agents)?.turns, [turn({ ran_models: ['claude-opus-4-1', 'ok'] })]);
+  assert.deepEqual(decodeChat({ ...empty(), turns: [turn({ ran_models: [''] })] }, agents)?.turns, [turn({ ran_models: [] })]);
 });
 
 test('older queued messages can report a changed conversation context without being delivered', () => {

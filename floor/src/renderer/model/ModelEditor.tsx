@@ -4,6 +4,7 @@ import { useSyncExternalStore } from 'react';
 
 import { floorSessionGeneration } from '../../session.ts';
 import { getFloorState, subscribeToFloor } from '../floor/store.ts';
+import { visibleFailure } from '../chat/EngineSaid.tsx';
 import type { AgentRow } from '../scene/cast.ts';
 import { ModelListBar } from './ModelListBar.tsx';
 import { modelItems, ranModels, searchModels } from './lists.ts';
@@ -32,7 +33,7 @@ export function ModelEditor({ row }: { readonly row: AgentRow }) {
       {view.pinned ? ' (set in the configuration, so the next turn uses it)' : ''}
     </p>
     {ran.length === 0 ? null : <p className="agent-model-line" data-model-ran={ran.join(' ')}>
-      {ran.length === 1 ? <>In use: <strong>{ran[0]}</strong></> : <>Ran: <strong>{ran.join(', ')}</strong></>}
+      {ran.length === 1 ? <>In use: <strong>{visibleFailure(ran[0])}</strong></> : <>Ran: <strong>{ran.map(visibleFailure).join(', ')}</strong></>}
     </p>}
     {!available ? null : view.pinned ? <button type="button" disabled={blocked}
       onClick={() => { void removeOverride(row, browserModelDeps); }}>Remove my override</button> : editing ? <form onSubmit={(event) => { event.preventDefault(); void submitModel(row, browserModelDeps); }}

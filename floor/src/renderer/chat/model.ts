@@ -75,9 +75,13 @@ function failureText(value: unknown): boolean {
   return value === null || (typeof value === 'string' && value.length > 0 && !/\p{Cs}/u.test(value) && utf8Bytes(value) <= 2048);
 }
 
-function ranModels(value: unknown): boolean {
-  return Array.isArray(value) && value.length <= 4
-    && value.every(name => typeof name === 'string' && name.length > 0 && !/\p{Cc}|\p{Cs}/u.test(name) && utf8Bytes(name) <= 128);
+function ranModel(name: unknown): name is string {
+  return typeof name === 'string' && name.length > 0 && !/\p{Cc}|\p{Cs}/u.test(name) && utf8Bytes(name) <= 128;
+}
+
+/** The names a turn ran, a name that cannot be shown dropped; `null` when the list is not a short array. */
+function ranModels(value: unknown): readonly string[] | null {
+  return Array.isArray(value) && value.length <= 4 ? value.filter(ranModel) : null;
 }
 
 function boundedRows(rows: readonly { readonly agent_id: string }[], perAgent: number, count: number,
@@ -119,11 +123,11 @@ export function decodeChat(value: unknown, agents: readonly { readonly id: strin
       || typeof row.state !== 'string'
       || !['reserved', 'running', 'ended', 'failed', 'cancelled', 'delivery_uncertain', 'reissue_cancelled'].includes(row.state)
       || (row.reply !== null && !text(row.reply)) || (row.truncated !== null && typeof row.truncated !== 'boolean')
-      || typeof row.reissued !== 'boolean' || !failureText(row.failure) || !ranModels(row.ran_models)
+      || typeof row.reissued !== 'boolean' || !failureText(row.failure) || ranModels(row.ran_models) === null
       || (row.failure !== null && row.state !== 'failed')
       || (row.reply === null && row.truncated !== null)
       || (row.state !== 'ended' && row.state !== 'failed' && (row.reply !== null || row.truncated !== null))) return null;
-    turns.push(Object.freeze({ ...row }) as unknown as ChatTurn);
+    turns.push(Object.freeze({ ...row, ran_models: Object.freeze(ranModels(row.ran_models)) }) as unknown as ChatTurn);
   }
   for (const row of value.context_sent) {
     if (!exactObject(row, ['agent_id', 'note_lsn', 'state']) || !identity(row.agent_id)

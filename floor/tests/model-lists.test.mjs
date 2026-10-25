@@ -107,6 +107,8 @@ test('the agent panel says which model the latest ended turn ran', () => {
   assert.match(html(claude), /In use: <strong>claude-opus-4-1<\/strong>/);
   snapshot(claude, on, { chat: view([turn('ended', ['a', 'b'])]) });
   assert.match(html(claude), /Ran: <strong>a, b<\/strong>/);
+  snapshot(claude, on, { chat: view([turn('ended', ['a\u200bb'])]) });
+  assert.match(html(claude), /In use: <strong>a\[U\+200B\]b<\/strong>/, 'a hidden character is drawn as its code point');
   snapshot(claude, on, { chat: view([turn('ended', ['old']), turn('failed', [])]) });
   assert.doesNotMatch(html(claude), /In use|Ran:/, 'the latest ended turn named none');
   snapshot(claude, on, { chat: view([turn('running', ['x'])]) });

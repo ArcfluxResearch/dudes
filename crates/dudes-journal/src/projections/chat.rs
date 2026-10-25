@@ -8,7 +8,7 @@ use dudes_proto::{
     MAX_CHAT_TURN_BYTES_PER_AGENT, MAX_CHAT_TURNS, MAX_CHAT_TURNS_PER_AGENT, NoteAdmission,
     NoteContract, Record, TurnOutcome,
 };
-use dudes_types::{AgentId, GoalId, Lsn, TurnId};
+use dudes_types::{AgentId, GoalId, Lsn, ModelName, TurnId};
 use redb::{ReadableTable, Table};
 use serde::{Deserialize, Serialize};
 
@@ -1014,8 +1014,9 @@ pub(super) fn apply(
                     };
                     view.ran_models = model_usage
                         .keys()
+                        .filter(|name| ModelName::parse(name).is_ok())
                         .take(dudes_proto::MAX_CHAT_RAN_MODELS)
-                        .filter_map(|name| cut(name, dudes_proto::MAX_CHAT_RAN_MODEL_BYTES))
+                        .cloned()
                         .collect();
                     view.reply = final_reply
                         .as_ref()

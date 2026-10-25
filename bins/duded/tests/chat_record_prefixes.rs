@@ -550,11 +550,16 @@ fn reply_truncation_is_utf8_safe_and_exact_length_never_invents_completeness() {
 fn a_failed_turn_shows_the_engines_words_cut_on_a_character_boundary_and_the_models_that_ran() {
     let mut p = Prefix::new();
     let done = p.complete();
-    let cases: [(u64, String, &[&str]); 4] = [
+    let cases: [(u64, String, &[&str]); 5] = [
         (40, "model_not_found: no such model".to_owned(), &["gpt-9"]),
         (41, "🦀".repeat(600), &[]),
         (42, "a".repeat(2_048), &["m1", "m2", "m3", "m4", "m5"]),
         (43, String::new(), &[]),
+        (
+            45,
+            "bad names".to_owned(),
+            &["bad\u{7}name", "good-1", "two words", ""],
+        ),
     ];
     for (id, reason, models) in &cases {
         let note = p.queue("failure test", false);
@@ -593,6 +598,7 @@ fn a_failed_turn_shows_the_engines_words_cut_on_a_character_boundary_and_the_mod
                 ["m1", "m2", "m3", "m4"].map(str::to_owned).to_vec()
             ),
             (ChatTurnState::Failed, None, vec![]),
+            (ChatTurnState::Failed, Some(9), vec!["good-1".to_owned()]),
             (ChatTurnState::Ended, None, vec![]),
         ]
     );
