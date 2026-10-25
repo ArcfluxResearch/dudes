@@ -102,6 +102,13 @@ impl MailWakeTask {
             .expect("validated mail-only task")
     }
 
+    /// Whether this task is legacy or carries the identity line of `agent`.
+    #[must_use]
+    pub fn names_agent(&self, agent: AgentId) -> bool {
+        self.contract() == TaskContract::Legacy
+            || crate::task::recognize_identified_mail_wake_task(&self.0, Some(agent)).is_some()
+    }
+
     /// Which exact bytes this task is.
     #[must_use]
     pub fn contract(&self) -> TaskContract {
@@ -324,6 +331,15 @@ impl MailWakeDecision {
             (MailWakePurpose::FreshPreparation { plan }, _) => Some(plan.task.contract()),
             (_, MailWakeAdmission::Issue { task }) => Some(task.contract()),
             _ => None,
+        }
+    }
+
+    /// Whether the task it carries, if any, names `agent`.
+    fn task_names_agent(&self) -> bool {
+        match (&self.purpose, &self.decision) {
+            (MailWakePurpose::FreshPreparation { plan }, _) => plan.task.names_agent(self.agent),
+            (_, MailWakeAdmission::Issue { task }) => task.names_agent(self.agent),
+            _ => true,
         }
     }
 
@@ -1096,6 +1112,7 @@ impl MailWakeState {
         if !decision.valid()
             || decision.completion_lsn >= lsn
             || decision.contract().is_some_and(|found| found != contract)
+            || !decision.task_names_agent()
         {
             return Err(MailWakeError::Contract);
         }
@@ -1248,7 +1265,10 @@ impl MailWakeState {
         issue: &MailWakeIssue,
         contract: TaskContract,
     ) -> Result<(), MailWakeError> {
-        if !issue.valid() || issue.task.contract() != contract {
+        if !issue.valid()
+            || issue.task.contract() != contract
+            || !issue.task.names_agent(issue.agent)
+        {
             return Err(MailWakeError::Contract);
         }
         if !Self::completion_matches(context, issue.goal, issue.completion_lsn) {
@@ -1476,9 +1496,19 @@ mod tests {
         original_count: u8,
         digest: u8,
     ) -> Record {
-        assert_eq!(context.mails.len(), usize::from(unread_count));
         let task = MailWakeTask::new(unread_count).unwrap();
-        Record::MailWakeTurnDecided(MailWakeDecision {
+        Record::MailWakeTurnDecided(preparation_with(context, original_count, digest, task))
+    }
+
+    fn preparation_with(
+        context: &MailWakeContext,
+        original_count: u8,
+        digest: u8,
+        task: MailWakeTask,
+    ) -> MailWakeDecision {
+        let unread_count = task.unread_count();
+        assert_eq!(context.mails.len(), usize::from(unread_count));
+        MailWakeDecision {
             agent: actor(),
             goal: goal(),
             completion_lsn: Lsn(1),
@@ -1512,7 +1542,7 @@ mod tests {
                 })
                 .collect(),
             decision: MailWakeAdmission::Issue { task },
-        })
+        }
     }
 
     /// A goal installed over the agent's completed goal retires the wake candidate it owed, whether
@@ -1693,6 +1723,37 @@ mod tests {
         assert!(!result.issued);
         assert_eq!(result.state.covered_frontier, Lsn(2));
         assert_eq!(result.state.candidate, row.candidate);
+    }
+
+    #[test]
+    fn an_identified_wake_must_name_its_own_agent() {
+        use crate::task::IdentityLine;
+        let mut context = MailWakeContext {
+            completion: Some((goal(), Lsn(1))),
+            ..MailWakeContext::default()
+        };
+        let mut row = MailWakeState::default();
+        emit(&mut row, &mut context, 2, mail(1));
+        let own = IdentityLine::new(actor(), "Alex", "builder");
+        let other = IdentityLine::new(AgentId::from_parts(9, 9), "Alex", "builder");
+        let decided = |line: &IdentityLine| {
+            Record::IdentifiedMailWakeTurnDecided(preparation_with(
+                &context,
+                0,
+                9,
+                MailWakeTask::identified(line, 1).unwrap(),
+            ))
+        };
+        let entry = |record| Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record,
+        };
+        let refused = row.apply(actor(), &context, 0, Lsn(3), &entry(decided(&other)));
+        assert!(matches!(refused, Err(MailWakeError::Contract)));
+        assert!(
+            row.apply(actor(), &context, 0, Lsn(3), &entry(decided(&own)))
+                .is_ok()
+        );
     }
 
     #[test]
