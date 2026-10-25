@@ -23,7 +23,7 @@ test('every Floor fact maps to the place, pose and badge of the approved table',
   for (const [fields, expected] of [
     [{ status: 'running' }, { place: 'desk', pose: 'type', badge: 'working' }],
     [{ status: 'idle', goal: goal('in_progress') }, { place: 'board', pose: 'point', badge: 'checking' }],
-    [{ status: 'done', goal: goal('achieved') }, { place: 'bell', pose: 'ring', badge: 'done' }],
+    [{ status: 'done', goal: goal('achieved') }, { place: 'desk', pose: 'wander', badge: 'done' }],
     [{ status: 'waiting', question: 'Which timeout?' }, { place: 'lounge', pose: 'raise', badge: 'question' }],
     [{ status: 'idle', automatic_hold: { kind: 'launch_failed', reason: 'no binary' } },
       { place: 'lounge', pose: 'sit', badge: 'held' }],
@@ -43,8 +43,17 @@ test('STATUS_BEFORE_CONTROL and HALT_OVER_PAUSE mutants: a control flag freezes 
   assert.equal(officeStateOf(row({ status: 'running', paused: false, halted: false }), LIVE), 'working');
 });
 
+test('a finished agent rings the bell only while its work waits for review, then roams', () => {
+  const waiting = { ...LIVE, awaitingReview: new Set([ADA]) };
+  assert.deepEqual(station({ status: 'done', goal: goal('achieved') }, waiting), { place: 'bell', pose: 'ring', badge: 'done' });
+  assert.deepEqual(station({ status: 'idle' }, waiting), { place: 'bell', pose: 'ring', badge: 'done' });
+  assert.deepEqual(station({ status: 'running' }, waiting), { place: 'desk', pose: 'type', badge: 'working' });
+  assert.deepEqual(station({ status: 'done', goal: goal('achieved') }, { ...LIVE, awaitingReview: new Set() }),
+    { place: 'desk', pose: 'wander', badge: 'done' });
+});
+
 test('ACTIVITY_OVER_STATUS mutant: a journaled status outranks a recent activity', () => {
-  for (const [status, expected] of [['done', 'done'], ['waiting', 'question'], ['exhausted', 'exhausted'], ['attached', 'attached']]) {
+  for (const [status, expected] of [['done', 'finished'], ['waiting', 'question'], ['exhausted', 'exhausted'], ['attached', 'attached']]) {
     assert.equal(officeStateOf(row({ status, live_activity: activity('compacting') }), LIVE), expected, status);
   }
   assert.equal(officeStateOf(row({ status: 'idle', automatic_hold: { kind: 'launch_refused', reason: 'x' },

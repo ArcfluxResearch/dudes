@@ -341,7 +341,7 @@ samp,
   flex-direction: column;
   gap: 0.4rem;
   width: min(16.5rem, 40vw);
-  padding: 1rem 0.8rem 1rem 0.4rem;
+  padding: 1rem 0.6rem;
 }
 
 .control-panel {
@@ -670,10 +670,6 @@ samp,
   overflow: auto;
 }
 
-.focus-roster .agents-roster-row {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 /* Between the narrow layout and 1200 pixels a Control view covers Crew, so Crew leaves the tab order too. */
 @media (min-width: 801px) and (max-width: 1199px) {
   .control-panel {
@@ -753,7 +749,6 @@ samp,
   }
 }
 
-
 .office-canvas {
   display: block;
   width: 100%;
@@ -789,7 +784,6 @@ samp,
   color: var(--ink);
   font-weight: 700;
 }
-
 
 .office-tag {
   position: absolute;
@@ -983,7 +977,6 @@ samp,
   box-shadow: 0 0 0 7px var(--surface);
 }
 
-
 .agent-detail,
 .done-notice {
   padding: 0.9rem;
@@ -1105,7 +1098,6 @@ samp,
 .usage-gauge { display: block; height: .5rem; border: 1px solid var(--line); border-radius: .3rem; background: var(--surface-muted); overflow: hidden; }
 .usage-gauge > span { display: block; height: 100%; background: var(--accent-ink); }
 .usage-gauge > span[data-high='true'] { background: var(--status-waiting); }
-.crew-who .crew-last-turn { color: var(--muted-ink); overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 .ticket-digest h4 { margin: 0 0 .3rem; }
 .ticket-digest p { margin: 0 0 .3rem; }
 .ticket-digest .ticket-digest-note { color: var(--muted-ink); font-size: inherit; }
@@ -1287,8 +1279,7 @@ samp,
   outline-offset: 2px;
 }
 
-.agent-detail-question,
-.waiting-item {
+.agent-detail-question {
   margin: 0 0 0.8rem;
   padding: 0.7rem 0.85rem;
   border-radius: 3px;
@@ -1298,9 +1289,7 @@ samp,
 }
 
 .agent-detail-question h3,
-.agent-detail-question p,
-.waiting-item h4,
-.waiting-item p {
+.agent-detail-question p {
   margin: 0;
 }
 
@@ -1308,44 +1297,8 @@ samp,
   font-size: 0.95rem;
 }
 
-.agent-detail-question p,
-.waiting-item p {
+.agent-detail-question p {
   margin-top: 0.4rem;
-}
-
-.waiting-on-you {
-  margin: 0 0 1rem;
-}
-
-.waiting-on-you h3 {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
-}
-
-.waiting-on-you ol {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.waiting-open {
-  margin-top: 0.5rem;
-  padding: 0.3rem 0.7rem;
-  border: 1px solid var(--accent-ink);
-  background: var(--button-background);
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-
-.waiting-open:focus-visible {
-  outline: 2px solid var(--accent-ink);
-  outline-offset: 2px;
-}
-
-.waiting-open:disabled {
-  cursor: default;
-  opacity: 0.6;
 }
 
 .crew-list h2 {
@@ -1363,19 +1316,6 @@ samp,
   font-size: 0.8rem;
 }
 
-.crew-checkouts {
-  margin: 0 0.25rem 0.6rem;
-  color: var(--muted-ink);
-  font-size: 0.78rem;
-  font-weight: 600;
-}
-
-.crew-who .crew-checkout {
-  color: var(--ink);
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
 .crew-rows {
   display: grid;
   gap: 0.25rem;
@@ -1389,10 +1329,6 @@ samp,
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   column-gap: 0.1rem;
-}
-
-.crew-entry > .crew-card-note {
-  grid-column: 2;
 }
 
 .crew-entry .add-project {
@@ -1461,7 +1397,7 @@ samp,
 
 .crew-row {
   display: grid;
-  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
   align-items: center;
   gap: 0.6rem;
   width: 100%;
@@ -1481,20 +1417,6 @@ samp,
   background: var(--card-background);
 }
 
-/* The Crew colour mixed with 15% black, so white initials read at 4.5:1 on every one of them. */
-.crew-dot {
-  display: grid;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
-  border-radius: 50%;
-  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--line);
-  font-family: var(--font-head);
-  font-size: 0.95rem;
-  font-weight: 700;
-  text-shadow: 0 1px 1px rgb(0 0 0 / 45%);
-}
-
 .crew-who {
   display: grid;
   min-width: 0;
@@ -1505,11 +1427,6 @@ samp,
   font-family: var(--font-head);
   font-size: 1rem;
   font-weight: 600;
-}
-
-/* An unrecorded workspace is said once the row is selected; the drawer says it too. */
-.crew-row[aria-pressed='false'] .crew-workspace[data-recorded='false'] {
-  display: none;
 }
 
 .crew-name,
@@ -1529,15 +1446,8 @@ samp,
   font-weight: 600;
 }
 
-.crew-state {
-  display: grid;
-  justify-items: end;
-  gap: 0.2rem;
-}
-
-/* The chip's word says the status, so no reader depends on its colour. */
-.crew-chip,
-.crew-hold {
+/* The chip's word says the state, so no reader depends on its colour. */
+.crew-chip {
   --status-ink: var(--status-idle);
   padding: 0.05rem 0.45rem;
   border: 1px solid var(--status-ink);
@@ -1549,31 +1459,23 @@ samp,
   white-space: nowrap;
 }
 
-.crew-chip[data-status='running'],
-.crew-stats [data-status='running'] {
+.crew-chip[data-state='working'],
+.crew-stats [data-status='working'] {
   --status-ink: var(--status-running);
 }
 
-.crew-chip[data-status='waiting'],
-.crew-chip[data-status='held'],
-.crew-stats [data-status='waiting'],
-.crew-stats [data-status='held'] {
+.crew-chip[data-state='needs-you'],
+.crew-chip[data-state='waiting'],
+.crew-stats [data-status='needs-you'],
+.crew-stats [data-status='waiting'] {
   --status-ink: var(--status-waiting);
 }
 
-.crew-chip[data-status='done'],
+.crew-chip[data-state='ready'],
+.crew-chip[data-state='done'],
+.crew-stats [data-status='ready'],
 .crew-stats [data-status='done'] {
   --status-ink: var(--status-done);
-}
-
-.crew-chip[data-status='exhausted'],
-.crew-stats [data-status='exhausted'] {
-  --status-ink: var(--status-exhausted);
-}
-
-.crew-chip[data-status='attached'],
-.crew-stats [data-status='attached'] {
-  --status-ink: var(--status-attached);
 }
 
 .agent-portrait {
@@ -1598,7 +1500,6 @@ samp,
 }
 
 /* After `.agent-portrait`, whose paper background would hide the Crew colour. Darkened so white reads at 4.5:1 on amber. */
-.crew-dot,
 .portrait-badge {
   background: color-mix(in srgb, var(--agent) 85%, #000000);
   color: #ffffff;
@@ -1610,31 +1511,18 @@ samp,
   box-shadow: 0 6px 14px -8px var(--panel-shadow), 0 0 0 1px var(--accent-ink);
 }
 
-.agents-roster-row[aria-pressed='true'] {
-  border-color: var(--ink);
-  background: var(--selected);
-  box-shadow: inset 0 0 0 2px var(--accent-ink);
-}
-
-.crew-row:focus-visible,
-.agents-roster-row:focus-visible {
+.crew-row:focus-visible {
   outline: 2px solid var(--accent-ink);
   outline-offset: 1px;
 }
 
-.crew-row:disabled,
-.agents-roster-row:disabled {
+.crew-row:disabled {
   cursor: default;
 }
 
 .crew-empty {
   margin: 0.25rem 0.3rem;
   color: var(--muted-ink);
-}
-
-.crew-list > .hire-entry {
-  align-self: start;
-  margin: 0.4rem 0.3rem 0;
 }
 
 .hire-entry {
@@ -1767,7 +1655,6 @@ samp,
   user-select: text;
 }
 
-.overview-summary,
 .agents-roster,
 .setup-view {
   height: 100%;
@@ -1831,66 +1718,6 @@ samp,
   margin-bottom: 0.5rem;
   color: var(--muted-ink);
   font-size: 0.8rem;
-}
-
-.overview-summary dl {
-  display: flex;
-  gap: 1.5rem;
-  margin: 0;
-}
-
-.overview-summary dt {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-}
-
-.overview-summary dd {
-  margin: 0.15rem 0 0;
-  font-weight: 700;
-}
-
-.overview-summary > p:last-child {
-  max-width: 35rem;
-}
-
-.agents-roster ul {
-  display: grid;
-  gap: 0.4rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.agents-roster-row {
-  display: grid;
-  grid-template-columns: minmax(7rem, 1fr) minmax(10rem, 1.5fr) minmax(8rem, 1fr) minmax(5rem, 0.6fr) minmax(10rem, 2fr) auto;
-  align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  padding: 0.4rem;
-  border: 1px solid var(--line);
-  background: var(--surface-muted);
-  color: var(--ink);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.agents-roster-row span {
-  overflow-wrap: anywhere;
-}
-
-.workspace-roster-group + .workspace-roster-group {
-  margin-top: 1rem;
-}
-
-.workspace-roster-group h3 {
-  margin: 0 0 0.5rem;
-  overflow-wrap: anywhere;
-}
-
-.workspace-roster-note {
-  font-size: 0.75rem;
 }
 
 .no-selection {
@@ -3115,7 +2942,6 @@ samp,
 .step-plan li[data-plan-status='completed'] > span:not(.step-plan-mark) { text-decoration: line-through; color: var(--muted-ink); }
 .step-plan li { margin: .15rem 0; }
 .step-plan small { color: var(--muted-ink); }
-.crew-step-label { color: var(--muted-ink); }
 .chat-compose { flex: 0 0 auto; border-top: 1px solid var(--line); padding-top: .75rem; }
 .agent-drawer[data-chat-short='true'] .agent-detail[data-detail-tab='chat'] { display: grid; grid-template-rows: minmax(0, auto) minmax(0, 1fr) auto auto; }
 .agent-drawer[data-chat-short='true'] .agent-detail[data-detail-tab='chat'] > .agent-detail-context { display: block; grid-row: 1; min-height: 0; overflow-y: auto; }
@@ -3252,31 +3078,6 @@ samp,
 .agent-detail-actions .retire-dialog button { flex: none; padding: 0.3rem 0.7rem; }
 .agent-detail-status .stream-state { font-weight: inherit; }
 
-.workers-list {
-  margin: 0 0 1rem;
-}
-
-.workers-list ul {
-  display: grid;
-  gap: 0.6rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.workers-list li {
-  overflow-wrap: anywhere;
-}
-
-.workers-list dl {
-  flex-wrap: wrap;
-  gap: 0.2rem 1.5rem;
-}
-
-.workers-list dd {
-  font-weight: 400;
-}
-
 .shell-signed-out {
   align-content: start;
 }
@@ -3315,7 +3116,7 @@ samp,
   position: fixed;
   inset: 50% auto auto 50%;
   width: min(30rem, calc(100vw - 2rem));
-  max-height: calc(100dvh - 2 * var(--notice-rail-height) - 2rem);
+  max-height: calc(100dvh - 2rem);
   margin: 0;
   transform: translate(-50%, -50%);
 }
@@ -3397,262 +3198,446 @@ samp,
   display: block;
 }
 
-/* Who needs you: one card per agent under the office, the ones that need the operator first. */
-.needs-strip {
-  z-index: var(--layer-panels);
-  flex: 0 0 auto;
-  box-sizing: border-box;
-  padding: 0.6rem 0.8rem 0.8rem;
-  border-top: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--ink);
+/* The roster: one row per agent, the ones that need the operator first. */
+.crew-list.roster {
+  gap: 0.5rem;
+  width: min(20rem, 42vw);
 }
 
-.needs-strip-title {
-  margin: 0 0 0.45rem;
-  font-size: 0.8rem;
-  font-weight: 700;
+.roster-title {
+  line-height: 1.3;
 }
 
-.needs-strip[data-waiting='0'] .needs-strip-title {
+.crew-list.roster[data-waiting='false'] .roster-title {
   color: var(--muted-ink);
-  font-weight: 600;
 }
 
-.needs-cards {
+.roster-body {
   display: flex;
-  gap: 0.6rem;
-  margin: 0;
-  padding: 0 0 0.2rem;
-  overflow-x: auto;
-  list-style: none;
-}
-
-.needs-card {
-  --state-ink: var(--status-idle);
-  display: flex;
-  flex: 1 0 12.5rem;
-  max-width: 17rem;
   flex-direction: column;
-  gap: 0.4rem;
-  box-sizing: border-box;
-  min-width: 0;
-  padding: 0.55rem;
-  border: 1px solid var(--line);
+  gap: 0.5rem;
+}
+
+.roster-group h3 {
+  margin: 0.4rem 0.25rem 0.3rem;
+  color: var(--muted-ink);
+  font-size: 0.8rem;
+}
+
+.roster-group h3 span {
+  margin-left: 0.3rem;
+  font-weight: 400;
+}
+
+.roster-entry {
+  grid-template-columns: minmax(0, 1fr) auto 1.1rem;
+  border: 1px solid transparent;
   border-radius: var(--radius);
-  background: var(--card-background);
 }
 
-.needs-card[data-state='working'] { --state-ink: var(--status-running); }
-.needs-card[data-state='ready'] { --state-ink: var(--status-done); }
-.needs-card[data-state='needs-you'] { --state-ink: var(--status-waiting); }
-
-.needs-card[data-state='ready'],
-.needs-card[data-state='needs-you'] {
-  border-color: var(--state-ink);
-  box-shadow: 0 0 0 1px var(--state-ink);
+.roster-entry[data-state='needs-you'] {
+  border-color: var(--status-waiting);
+  background: var(--question);
 }
 
-.needs-card[data-state='ready'] { background: var(--success-background); }
-.needs-card[data-state='needs-you'] { background: var(--question); }
-
-.needs-card[data-selected='true'] {
-  outline: 2px solid var(--accent-ink);
-  outline-offset: 1px;
+.roster-entry[data-state='ready'] {
+  border-color: var(--status-done);
+  background: var(--success-background);
 }
 
-.needs-main {
-  display: grid;
-  grid-template-columns: 2.6rem minmax(0, 1fr);
-  grid-template-areas: 'face who' 'doing doing';
-  gap: 0.3rem 0.55rem;
-  align-items: center;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.needs-main:disabled {
-  cursor: default;
-}
-
-.needs-main:focus-visible,
-.needs-act:focus-visible {
-  outline: 2px solid var(--accent-ink);
-  outline-offset: 2px;
-}
-
-.needs-face {
-  grid-area: face;
-  width: 2.6rem;
-  height: 2.6rem;
+.roster-face {
+  width: 2.25rem;
+  height: 2.25rem;
   border-radius: 50%;
   background-color: var(--surface);
   box-shadow: inset 0 0 0 2px var(--agent, var(--line));
 }
 
-.needs-who {
+.roster-line {
   display: flex;
-  grid-area: who;
-  flex-direction: column;
-  gap: 0.15rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.1rem 0.4rem;
   min-width: 0;
 }
 
-.needs-name {
-  overflow: hidden;
-  font-size: 0.9rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.crew-live-activity::after {
+  content: ' · ';
 }
 
-.needs-chip {
-  align-self: flex-start;
-  padding: 0.05rem 0.5rem;
-  border: 1px solid var(--state-ink);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--state-ink);
-  font-size: 0.7rem;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.needs-doing {
-  display: -webkit-box;
-  grid-area: doing;
-  overflow: hidden;
-  font-size: 0.78rem;
-  line-height: 1.3;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow-wrap: anywhere;
-}
-
-.needs-acts {
+.roster-acts {
   display: flex;
-  gap: 0.4rem;
-  margin-top: auto;
+  flex-direction: column;
+  gap: 0.2rem;
 }
 
-.needs-act {
-  flex: 1 1 auto;
-  min-height: 2.25rem;
-  padding: 0.35rem 0.7rem;
+.roster-act {
+  min-height: 1.6rem;
+  padding: 0.15rem 0.6rem;
   border: 1px solid var(--line);
   border-radius: 0.4rem;
   background: var(--button-background);
   color: var(--ink);
   font: inherit;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.needs-chat {
-  flex: 0 0 auto;
-}
-
-.needs-act[data-primary='true'] {
+.roster-act[data-primary='true'] {
   border-color: var(--accent-ink);
   background: var(--accent-ink);
   color: var(--on-accent);
 }
 
-.needs-act:disabled {
+.roster-act:focus-visible,
+.roster-sheet-toggle:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 1px;
+}
+
+.roster-act:disabled {
   opacity: 0.6;
   cursor: default;
 }
 
-.shell:not(.shell-signed-out) {
-  --notice-rail-height: 5rem;
-  padding-bottom: var(--notice-rail-height);
+.roster-sheet-toggle {
+  display: none;
+}
+
+.agents-roster .crew-list.roster,
+.overview-dialog .crew-list.roster {
+  width: auto;
+  padding: 0;
+  overflow: visible;
+  border-width: 0;
+  background: none;
+}
+
+.overview-dialog {
+  box-sizing: border-box;
+  width: min(44rem, calc(100vw - 2rem));
+  max-height: min(46rem, calc(100vh - 2rem));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 8px 28px var(--panel-shadow);
+}
+
+.overview-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.overview-dialog::backdrop {
+  background: rgba(20, 17, 15, 0.55);
+}
+
+.overview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.8rem 1.1rem 0.4rem;
+}
+
+.overview-head h2 {
+  margin: 0;
+  font-family: var(--font-head);
+  font-size: 1.15rem;
+}
+
+.overview-head h2:focus {
+  outline: none;
+}
+
+.overview-body {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0 1.1rem 1rem;
+  overflow: auto;
+}
+
+.overview-body p {
+  margin: 0;
+}
+
+.overview-journal {
+  color: var(--muted-ink);
+  font-size: 0.85rem;
+}
+
+/* Below 1100 pixels the roster narrows and drops each row's second line, but keeps names and actions. */
+@media (min-width: 801px) and (max-width: 1099px) {
+  .crew-list.roster {
+    width: 15rem;
+  }
+
+  .crew-list.roster .crew-activity {
+    display: none;
+  }
+}
+
+/* On a phone the roster is a bottom sheet that opens from its heading. */
+@media (max-width: 800px) {
+  .crew-list.roster[data-sheet] {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: var(--layer-top-bar);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    align-content: start;
+    gap: 0.4rem;
+    box-sizing: border-box;
+    width: auto;
+    max-height: min(70vh, 34rem);
+    margin: 0;
+    padding: 0.6rem 0.7rem;
+    border-width: 1px 0 0;
+    border-radius: 0.8rem 0.8rem 0 0;
+    box-shadow: 0 -10px 24px -14px var(--panel-shadow);
+  }
+
+  .crew-list.roster[data-sheet] > .roster-body {
+    grid-column: 1 / -1;
+  }
+
+  .crew-list.roster[data-sheet='closed'] > .roster-body {
+    display: none;
+  }
+
+  .roster-sheet-toggle {
+    display: block;
+    min-height: 2.5rem;
+    padding: 0.3rem 0.8rem;
+    border: 1px solid var(--line);
+    border-radius: 0.4rem;
+    background: var(--button-background);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+
+  .shell:has(.roster[data-sheet]) {
+    padding-bottom: 4rem;
+  }
+
+  .roster-act {
+    min-height: 2.5rem;
+  }
+
+  .roster-face {
+    flex: none;
+  }
 }
 
 .top-region {
   position: relative;
 }
 
-.notice-area {
-  position: fixed;
-  right: 0;
-  bottom: 0;
-  left: 0;
+/*
+ * Notices take no room from the page. The banner holds what must stay in view and sits under the top bar.
+ * The stack floats over the bottom-left corner of the stage, away from the agent panel on the right.
+ */
+.notice-banner {
+  position: relative;
   z-index: var(--layer-notices);
   box-sizing: border-box;
-  height: var(--notice-rail-height);
-  padding: 0.5rem 1rem max(0.5rem, env(safe-area-inset-bottom, 0px));
-  border-top: 1px solid var(--line);
-  background: var(--surface-muted);
+}
+
+.notice-banner > :is(.journal-stopped-banner, .closing-time-banner, .stream-notice, .link-refused, .device-notices:not(:empty)) {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.35rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.notice-banner > :is(.journal-stopped-banner, .office-closed, .link-refused) {
+  border-left: 4px solid var(--danger-ink);
+}
+
+.notice-banner > .device-notices:not(:empty) {
+  background: var(--question);
+}
+
+.notice-banner .device-notices ul {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notice-banner .device-notice {
+  max-width: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.notice-banner .device-notice p {
+  flex: 0 1 auto;
+}
+
+.notice-banner :is(.journal-stopped-banner, .closing-time-banner) details {
+  margin: 0;
+}
+
+.notice-area {
+  position: fixed;
+  bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  left: 1rem;
+  z-index: var(--layer-notices);
+  box-sizing: border-box;
+  width: min(26rem, calc(100vw - 2rem));
+  max-height: min(70dvh, 28rem);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: none;
 }
 
 .notice-stack {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  gap: 0.4rem;
+  min-height: 0;
+}
+
+.notice-list {
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
-  box-sizing: border-box;
-  height: 100%;
-  padding: 0.25rem 0.5rem;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-.notice-stack > :is(.done-notices, .device-notices):empty {
-  position: absolute;
-}
-
-.notice-stack:focus-visible {
+.notice-list:focus-visible {
   outline: 2px solid var(--accent-ink);
   outline-offset: 1px;
 }
 
-.shell .hire-dialog,
-.shell .ticket-dialog {
-  height: calc(100dvh - var(--notice-rail-height));
-  max-height: calc(100dvh - var(--notice-rail-height));
+.notice-list > [data-folded] {
+  display: none;
 }
 
-.shell .ticket-dialog[data-composer='true'] {
-  height: fit-content;
-  max-height: calc(100dvh - var(--notice-rail-height) - 4rem);
+.notice-list > :is(.done-notices, .device-notices):empty {
+  position: absolute;
 }
 
-.shell .retire-dialog {
-  position: fixed;
-  inset: 0 0 var(--notice-rail-height);
-  max-height: calc(100dvh - var(--notice-rail-height) - 2rem);
-  margin: auto;
-  overflow-y: auto;
-}
-
-@media (max-width: 800px) {
-  .shell:not(.shell-signed-out) { --notice-rail-height: min(8.5rem, 24dvh); }
-
-  .shell .agent-drawer {
-    bottom: var(--notice-rail-height);
-    max-height: calc(100dvh - var(--notice-rail-height));
-  }
-}
-
-.notice-stack > * {
-  flex: 0 0 auto;
-  box-sizing: border-box;
-  max-width: min(36rem, calc(100vw - 2rem));
+.notice-tools {
+  display: flex;
+  gap: 0.4rem;
   pointer-events: auto;
 }
 
-.notice-stack > .done-notices {
+.notice-tools button,
+.notice-history button {
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.notice-tools button:focus-visible,
+.notice-history button:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+
+.notice-history {
+  display: grid;
+  gap: 0.4rem;
+  max-height: 14rem;
+  padding: 0.5rem 0.7rem;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: var(--surface);
+  box-shadow: 0 8px 28px var(--panel-shadow);
+  font-size: 0.82rem;
+  pointer-events: auto;
+}
+
+.notice-history ol {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notice-history time {
+  color: var(--muted-ink);
+  white-space: nowrap;
+}
+
+.notice-history button {
+  justify-self: start;
+}
+
+dialog > .notice-banner {
+  position: sticky;
+  top: 0;
+}
+
+.hire-dialog > .notice-banner,
+.retire-dialog > .notice-banner,
+.overview-dialog > .notice-banner {
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+}
+
+@media (max-width: 800px) {
+  .shell:not(.shell-signed-out) { padding-top: var(--banner-height, 0px); }
+
+  .top-region > .notice-banner {
+    position: fixed;
+    top: 0;
+    right: 0;
+    left: 0;
+  }
+
+  .notice-area {
+    right: 0.5rem;
+    left: 0.5rem;
+    width: auto;
+  }
+
+  .shell .agent-drawer {
+    inset: var(--banner-height, 0px) 0 0;
+  }
+}
+
+.notice-list > * {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  max-width: 100%;
+  pointer-events: auto;
+}
+
+.notice-list > .done-notices,
+.notice-list > .device-notices {
   pointer-events: none;
 }
 
-.notice-stack > :is(.link-refused, .stream-notice, .journal-stopped-banner, .closing-time-banner, .ticket-banner),
-.notice-stack .done-notice {
+.notice-list > :is(.link-refused, .stream-notice, .ticket-banner),
+.notice-list .done-notice {
   width: fit-content;
   margin: 0;
   padding: 0.55rem 0.8rem;
@@ -3664,23 +3649,22 @@ samp,
   pointer-events: auto;
 }
 
-.notice-stack > :is(.link-refused, .office-closed, .journal-stopped-banner) {
+.notice-list > :is(.link-refused, .office-closed) {
   border-color: var(--danger-ink);
 }
 
-.notice-stack > .ticket-banner {
+.notice-list > .ticket-banner {
   border-color: var(--accent-ink);
   background: var(--question);
 }
 
-.notice-stack .done-notices {
+.notice-list .done-notices {
   display: flex;
   flex-direction: column;
-  align-items: center;
   gap: 0.4rem;
 }
 
-.notice-stack .done-notices ol {
+.notice-list .done-notices ol {
   display: grid;
   gap: 0.5rem;
   margin: 0;
@@ -3688,7 +3672,7 @@ samp,
   list-style: none;
 }
 
-.notice-stack .done-notice {
+.notice-list .done-notice {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -3697,16 +3681,12 @@ samp,
   background: var(--success-background);
 }
 
-.notice-stack .done-notice:not(:last-child) {
+.notice-list .done-notice:not(:last-child) {
   display: none;
 }
 
-.notice-stack .done-notice p {
+.notice-list .done-notice p {
   margin: 0;
-}
-
-.notice-stack > .device-notices {
-  pointer-events: none;
 }
 
 .device-notices ul {
@@ -3821,7 +3801,7 @@ samp,
   font-weight: 600;
 }
 
-.notice-stack .done-notice-goal {
+.notice-list .done-notice-goal {
   flex: 1 1 8rem;
   min-width: 0;
   overflow: hidden;
@@ -3994,36 +3974,13 @@ samp,
   min-height: 24px;
 }
 
-/* On a phone the panels follow the office down the page: the strip becomes a stacked list, and the sheets cover the screen. */
+/* On a phone the panels follow the office down the page, and the sheets cover the screen. */
 @media (max-width: 800px) {
-  .needs-strip {
-    order: -1;
-    margin: 0;
-  }
-
   .office-area > .first-task {
     position: static;
     width: auto;
     max-height: none;
     margin: 0.5rem;
-  }
-
-  .needs-cards {
-    flex-direction: column;
-    overflow-x: visible;
-  }
-
-  .needs-card {
-    flex: 0 0 auto;
-    max-width: none;
-  }
-
-  .needs-act {
-    min-height: 2.75rem;
-  }
-
-  .floor-stage:has(> .crew-list) .needs-strip {
-    display: none;
   }
 
   .stage-side:has(.agent-drawer) {
@@ -4089,16 +4046,6 @@ samp,
     background: var(--accent-ink);
     color: var(--on-accent);
   }
-}
-
-/* The strip and the office tags say what each agent is doing, so Crew rows show a name until one is selected. */
-.crew-row[aria-pressed='false'] .crew-meta,
-.crew-row[aria-pressed='false'] .crew-workspace,
-.crew-row[aria-pressed='false'] .crew-checkout,
-.crew-row[aria-pressed='false'] .crew-activity:not([data-activity='question']),
-.crew-row[aria-pressed='false'] .crew-live-activity,
-.crew-row[aria-pressed='false'] .crew-last-turn {
-  display: none;
 }
 
 .shell[data-page] {
