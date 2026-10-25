@@ -69,6 +69,10 @@ fi
 
 printf '{"type":"system","subtype":"init","session_id":"%s","tools":[]}\n' "$session"
 
+if [ "${DUDES_EXAMPLE_MODE:-}" = mail ]; then
+	exec python3 "$(dirname "$0")/../mail.py" agent "$session"
+fi
+
 # --- which run this is -------------------------------------------------------------------------
 # One child at a time is the daemon's own rule for a managed agent, so counting the marks the
 # earlier runs left is enough and needs no lock.
