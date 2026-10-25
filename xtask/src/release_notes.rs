@@ -749,6 +749,39 @@ Each archive and `SHA256SUMS` also carry a build provenance attestation. `gh att
     }
 
     #[test]
+    fn released_notes_keep_the_authored_sections_without_an_empty_changes_block() {
+        let changelog = include_str!("../../CHANGELOG.md");
+        let authors = BTreeMap::new();
+        for version in ["0.96.0", "0.97.0", "0.97.1"] {
+            let inputs = Inputs {
+                version,
+                from: None,
+                repo: "example/dudes",
+                run_url: "u",
+                sha: "s",
+                sums: "x",
+                maintainer: "m",
+                authors: &authors,
+                preview: false,
+            };
+            let section = changelog_section(changelog, version, false).expect("a released section");
+            let body = render_body(&[], changelog, &inputs).expect("a released body");
+            assert!(!body.contains("### Changes\n"), "{version}: {body}");
+            assert!(
+                !body.contains("No new capabilities in this release."),
+                "{version}: {body}"
+            );
+            for (heading, text) in section.blocks {
+                assert_eq!(
+                    body.matches(&text).count(),
+                    1,
+                    "{version} keeps {heading} once"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn an_empty_changes_block_and_no_previous_tag_read_plainly() {
         let authors = BTreeMap::new();
         let inputs = Inputs {
