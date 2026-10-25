@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { hashId } from '../appearance.ts';
 import type { LiveActivityContext } from '../liveActivity.ts';
 import type { Cell, Facing, PlanPoint } from '../office3d/layout.ts';
 import type { OfficePlan, StationSpot } from '../office3d/plan.ts';
@@ -16,10 +15,14 @@ export interface Behavior {
   readonly pose: Pose;
 }
 
-const DESK_MS = 4_000;
 /** How long one grid step takes to walk. `visits.ts` reuses this so a colleague visit paces like any other walk. */
 export const STEP_MS = 420;
-const BREAK_MS = 2_000;
+/** How long an idle agent stays at a spot before it picks the next: a few seconds. */
+const STAY_MIN_MS = 4_000;
+const STAY_SPAN_MS = 5_000;
+/** The wait at a desk before the first walk of a freshly planned idle agent. */
+const FIRST_STAY_MIN_MS = 1_500;
+const FIRST_STAY_SPAN_MS = 3_500;
 /** How long the bell rings after a walk to it. */
 export const RING_MS = 1_400;
 
@@ -40,9 +43,8 @@ export interface CastMotion {
   readonly startedAt: number;
   readonly arrivalAt: number;
   readonly route: readonly Point[];
-  readonly outboundEnd: number;
-  readonly returnEnd: number;
-  readonly offset: number;
+  /** For an idle agent, when it has stayed long enough at `station` to pick its next spot. */
+  readonly roamUntil: number;
 }
 
 /** One agent at one instant, ready to draw. */
@@ -68,6 +70,8 @@ export interface CastPlanOptions {
   readonly entering?: ReadonlySet<string>;
   /** Walks the plan keeps clear of without planning them, such as retired agents on their way out. */
   readonly passing?: readonly CastMotion[];
+  /** The random source for an idle agent's first wait. Production passes none and gets real randomness. */
+  readonly random?: () => number;
 }
 
 interface Target {
@@ -189,30 +193,6 @@ function routeClearOfNewDesks(motion: CastMotion, now: number, newDeskTiles: Rea
     && motion.route.every((point) => !newDeskTiles.has(tileKey(point)));
 }
 
-function shortRoute(desk: Desk, plan: OfficePlan, occupied: ReadonlySet<string>,
-  reserved: ReadonlySet<string>, transit: ReadonlySet<string>): readonly Point[] {
-  const start = cellOf(desk.foot);
-  const options: { x: number; y: number }[] = [];
-  for (let y = 0; y < plan.height; y += 1) {
-    for (let x = 0; x < plan.width; x += 1) {
-      const distance = Math.abs(x - start.x) + Math.abs(y - start.y);
-      if (distance >= 2 && distance <= 4) options.push({ x, y });
-    }
-  }
-  const rotation = hashId(desk.agentId) % options.length;
-  const available = walkableFrom(desk, plan, occupied);
-  const walkable = (x: number, y: number) => available(x, y)
-    && !reserved.has(`${x},${y}`) && !transit.has(`${x},${y}`);
-  for (let index = 0; index < options.length; index += 1) {
-    const goal = options[(index + rotation) % options.length];
-    const path = findPath(start, goal, walkable, plan);
-    if (path !== null && path.length >= 3 && path.length <= 7) {
-      return [desk.foot, ...path.slice(1).map((tile) => centreOf(tile.x, tile.y))];
-    }
-  }
-  return [desk.foot];
-}
-
 export function planCast(
   rows: readonly AgentRow[],
   desks: readonly Desk[],
@@ -220,6 +200,7 @@ export function planCast(
   options?: CastPlanOptions,
 ): readonly CastMotion[] {
   const now = options?.now ?? 0;
+  const random = options?.random ?? Math.random;
   const entering = options?.entering ?? new Set<string>();
   const door = { foot: plan.door.spot, facing: plan.door.facing };
   const prior = options?.previous ?? [];
@@ -239,14 +220,6 @@ export function planCast(
   const newDeskTiles = new Set(desks.map((desk) => tileKey(desk.foot)).filter((tile) => !oldDeskTiles.has(tile)));
   for (const character of posedById.values()) occupied.add(tileKey(character.foot));
   const currentById = new Map(desks.map((desk) => [desk.agentId, desk]));
-  for (const old of previous) {
-    const row = byId.get(old.desk.agentId);
-    const desk = currentById.get(old.desk.agentId);
-    if (row === undefined || desk === undefined || old.behavior.pose !== 'wander'
-      || stationChoice(row, options?.activity).pose !== 'wander'
-      || !samePoint(old.desk.foot, desk.foot)) continue;
-    for (const point of old.route.slice(1)) occupied.add(tileKey(point));
-  }
   const reserved = new Set<string>();
   const transit = new Set<string>();
   const assigned: CastMotion[] = [...(options?.passing ?? [])];
@@ -258,8 +231,10 @@ export function planCast(
     if (row === undefined || old === undefined || old.strandedAt !== null
       || !samePoint(old.desk.foot, desk.foot)) continue;
     const choice = stationChoice(row, options?.activity);
-    if (choice.place === 'desk' || choice.place === 'stay' || old.place !== choice.place
-      || old.behavior.pose !== choice.pose) continue;
+    const roaming = choice.pose === 'wander' && old.behavior.pose === 'wander';
+    const keeps = roaming ? !samePoint(old.station, desk.foot)
+      : choice.place !== 'desk' && choice.place !== 'stay' && old.place === choice.place && old.behavior.pose === choice.pose;
+    if (!keeps) continue;
     if (deskOccupied.has(tileKey(old.station))) continue;
     stableTargets.set(desk.agentId, { spot: old.station, approach: old.approach, seat: old.seat, facing: old.facing });
     reserved.add(tileKey(old.station));
@@ -311,20 +286,14 @@ export function planCast(
       const travel = path ?? [!fromActivity || rosterChanged ? station : from ?? station];
       const startedAt = departureAt(travel, now, assigned);
       const arrivalAt = startedAt + (travel.length - 1) * STEP_MS;
-      const route = pose === 'wander' ? shortRoute(desk, plan, occupied, reserved, transit) : [station];
-      const offset = arrivalAt + hashId(desk.agentId) % DESK_MS;
-      const idleTravel = (route.length - 1) * STEP_MS;
+      const roamUntil = pose === 'wander'
+        ? arrivalAt + FIRST_STAY_MIN_MS + Math.floor(random() * FIRST_STAY_SPAN_MS) : arrivalAt;
       const facing = target.facing ?? (requestedPlace === 'stay' ? posed?.facing ?? null : null);
       planned = { desk, place, station, approach: target.approach, seat: target.seat, facing, strandedAt,
-        behavior, travel, startedAt, arrivalAt, route, offset,
-        outboundEnd: offset + DESK_MS + idleTravel,
-        returnEnd: offset + DESK_MS + idleTravel + BREAK_MS + idleTravel };
+        behavior, travel, startedAt, arrivalAt, route: [station], roamUntil };
     }
     if (place !== 'desk' && !samePoint(station, desk.foot)) reserved.add(tileKey(station));
     for (const point of [...planned.travel, ...planned.route]) transit.add(tileKey(point));
-    if (pose === 'wander') {
-      for (const point of planned.route.slice(1)) occupied.add(tileKey(point));
-    }
     assigned.push(planned);
     return [planned];
   });
@@ -339,8 +308,7 @@ export function planExit(from: Posed, plan: OfficePlan, now: number, others: rea
   const startedAt = departureAt(travel, now, others);
   const arrivalAt = startedAt + (travel.length - 1) * STEP_MS;
   return { desk, place: 'door', station: travel.at(-1) ?? spot, approach, seat: null, facing: null, strandedAt: null,
-    behavior: { pose: 'still' }, travel, startedAt, arrivalAt, route: [spot], offset: arrivalAt, outboundEnd: arrivalAt,
-    returnEnd: arrivalAt };
+    behavior: { pose: 'still' }, travel, startedAt, arrivalAt, route: [spot], roamUntil: arrivalAt };
 }
 
 /** Where a walk along `route` stands after `elapsed` milliseconds. Shared with `visits.ts`. */
@@ -362,10 +330,14 @@ export function lastFacing(route: readonly Point[]): Facing {
 }
 
 function poseAt(motion: CastMotion, now: number, reducedMotion: boolean): Posed {
-  const { desk, behavior, route, station } = motion;
+  const { desk, behavior, station } = motion;
   const still: Posed = { agentId: desk.agentId, foot: station, facing: motion.facing ?? lastFacing(motion.travel),
     walking: false, seat: motion.seat, pose: behavior.pose, ringing: false };
-  if (reducedMotion) return still;
+  if (reducedMotion) {
+    return behavior.pose === 'wander'
+      ? { ...still, foot: desk.foot, facing: desk.seat?.facing ?? still.facing, seat: desk.seat?.seat ?? null }
+      : still;
+  }
   if (motion.strandedAt !== null) return { ...still, foot: motion.strandedAt, seat: null };
   if (motion.travel.length > 1 && now < motion.arrivalAt) {
     return { ...still, ...walk(motion.travel, Math.max(0, now - motion.startedAt)), walking: true, seat: null };
@@ -373,17 +345,65 @@ function poseAt(motion: CastMotion, now: number, reducedMotion: boolean): Posed 
   if (behavior.pose === 'ring') {
     return { ...still, ringing: motion.travel.length > 1 && now - motion.arrivalAt < RING_MS };
   }
-  if (behavior.pose !== 'wander' || route.length < 2 || now < motion.offset) return still;
-  const outbound = motion.outboundEnd - motion.offset;
-  const breakEnd = outbound + BREAK_MS;
-  const cycle = motion.returnEnd - motion.offset;
-  const phase = (now - motion.offset) % cycle;
-  if (phase < DESK_MS) return still;
-  if (phase < outbound) return { ...still, ...walk(route, phase - DESK_MS), walking: true, seat: null };
-  if (phase < breakEnd) return { ...still, foot: route.at(-1) ?? station, facing: lastFacing(route), seat: null };
-  return { ...still, ...walk([...route].reverse(), phase - breakEnd), walking: true, seat: null };
+  return still;
 }
 
 export function charactersAt(motions: readonly CastMotion[], now: number, reducedMotion: boolean): readonly Posed[] {
   return motions.map((motion) => poseAt(motion, now, reducedMotion));
+}
+
+const BEHIND: Readonly<Record<Facing, Point>> = Object.freeze({
+  north: { x: 0, y: 1 }, east: { x: -1, y: 0 }, south: { x: 0, y: -1 }, west: { x: 1, y: 0 },
+});
+
+/** The spots an idle agent may pick: the room's named spots, then a colleague's desk, then its own desk. */
+function roamTargets(motion: CastMotion, motions: readonly CastMotion[], plan: OfficePlan): readonly Target[] {
+  const named = plan.roam.map((spot) => ({ spot: spot.spot, approach: spot.approach, seat: null, facing: spot.facing }));
+  const colleagues = motions.flatMap((other): Target[] => {
+    const seat = other.desk.seat;
+    if (other === motion || seat === null) return [];
+    const behind = cellOf(seat.spot);
+    const cell = { x: behind.x + BEHIND[seat.facing].x, y: behind.y + BEHIND[seat.facing].y };
+    return isBlocked(plan, cell.x, cell.y) ? [] : [{ spot: centreOf(cell.x, cell.y), approach: cell, seat: null, facing: seat.facing }];
+  });
+  return [...named, ...colleagues, deskTarget(motion.desk)];
+}
+
+/**
+ * Sends every idle agent that has stayed long enough at its spot to the next one: a spot picked at random that
+ * nobody else stands at or walks to, reached by a route found once here and not again per frame. Returns the same
+ * array when nobody moves. `random` is the only source of chance, so a test passes a fixed one.
+ */
+export function roamOn(motions: readonly CastMotion[], plan: OfficePlan, now: number,
+  random: () => number = Math.random): readonly CastMotion[] {
+  if (!motions.some((motion) => motion.behavior.pose === 'wander' && motion.strandedAt === null && now >= motion.roamUntil)) {
+    return motions;
+  }
+  const deskTiles = new Set(motions.map((motion) => tileKey(motion.desk.foot)));
+  const taken = new Map(motions.map((motion) => [motion.desk.agentId, tileKey(motion.station)] as const));
+  return motions.map((motion) => {
+    if (motion.behavior.pose !== 'wander' || motion.strandedAt !== null || now < motion.roamUntil) return motion;
+    const others = new Set([...taken].filter(([id]) => id !== motion.desk.agentId).map(([, tile]) => tile));
+    const targets = roamTargets(motion, motions, plan);
+    const from = rotation(targets.length, random);
+    const entry = entryOf(motion.station, plan, motion.approach);
+    for (const index of from) {
+      const target = targets[index];
+      if (others.has(tileKey(target.spot)) || samePoint(target.spot, motion.station)) continue;
+      const travel = routeTo(motion.station, entry, target, motion.desk, plan, deskTiles, others);
+      if (travel === null || travel.length < 2) continue;
+      const arrivalAt = now + (travel.length - 1) * STEP_MS;
+      taken.set(motion.desk.agentId, tileKey(target.spot));
+      return { ...motion, station: target.spot, approach: target.approach, seat: target.seat, facing: target.facing,
+        travel, startedAt: now, arrivalAt, route: [target.spot],
+        roamUntil: arrivalAt + STAY_MIN_MS + Math.floor(random() * STAY_SPAN_MS) };
+    }
+    return { ...motion, roamUntil: now + STAY_MIN_MS };
+  });
+}
+
+/** Every index below `count`, starting at a random one. */
+function rotation(count: number, random: () => number): readonly number[] {
+  const start = Math.floor(random() * count);
+  return Array.from({ length: count }, (_, step) => (start + step) % count);
 }
