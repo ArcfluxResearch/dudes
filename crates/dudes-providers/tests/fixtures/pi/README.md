@@ -11,6 +11,17 @@ and a failed call after HTTP 401. No account or paid model was used. The retry i
 `entry_appended` event; it must neither end the turn nor charge a call. Several other runs also
 retried an initial connection error before the successful stub call.
 
+Files prefixed `p` were captured from **Pi 1.4.0** on 25 October 2026 with the flags Dudes passes
+(`--mode json --no-extensions --no-skills --no-prompt-templates --no-approve --session-dir <scratch> --`
+and the task). Pi 1.4.0 adds a `system` message with `sections`, and an `aborted` field on
+`agent_settled`. The captures replace the working directory with `/work` and each long system prompt
+section with a short placeholder, and keep every other byte. `p1-model-error.jsonl` ran with the
+OpenAI Codex provider on a ChatGPT account, which rejects the model: the one assistant message has
+empty `content`, `stopReason: "error"` and an `errorMessage` that holds the provider's JSON body,
+and the process still exits 0. `p2-bash-tool.jsonl` ran with the `openai` provider, model
+`gpt-6.1-sol`, and shows one `bash` call and a final reply of `there are 3 files`; 85 of its 100
+`message_update` lines are dropped to keep the file small.
+
 Each run ran in a throwaway working directory. The runs captured on 2026-09-27 passed `--mode json
 --no-extensions --no-skills --no-prompt-templates --no-approve --no-context-files` and ended their
 argv with `--` and the task as one element. `h1-retry` was captured on 2026-09-16 with `--mode json
