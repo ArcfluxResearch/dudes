@@ -1,4 +1,4 @@
-# Two roles, one goal, and a daemon killed mid-turn
+# Two-agent examples
 
 These scripts run two managed agents toward a goal with an unpaid stand-in provider. The crash
 arms kill a real daemon around native launch, restart it, and require explicit operator consent
@@ -46,6 +46,32 @@ a later run does not overwrite an earlier failed submission's logs.
 
 The arms are ordered. `crash.sh --no-crash` compares its own run against the artefacts the crashed
 run left, and says so plainly if you have not run `crash.sh` first.
+
+## Rehearse agent mail
+
+After the same release build, run the mail example independently:
+
+```sh
+./examples/two-roles/mail.sh
+```
+
+Kim receives a goal and sends Leo a request. Leo has no goal yet, so the request reaches his
+mailbox without starting a turn. After Kim's goal reaches Done, the script checks that Leo has
+neither an issued nor a spawned turn, then gives him a goal.
+
+Leo uses `dudes mail read`, replies with the delivered mail id, and acknowledges the request with
+`dudes mail done`. Reading alone does not acknowledge mail. The reply wakes Kim once after his
+goal has finished; he reads and acknowledges it. An agent hired without a goal is never woken by
+mail, so give it a goal before expecting that automatic response.
+
+The stopped daemon's journal must contain exactly two mail records on one thread, numbered 1
+and 2, with both marked acknowledged. It must also contain one mail-only wake and three issued
+turns with three matching spawns. Both goals' saved results must point to observed passing
+predicate records before their Done decisions. The daily wake and per-item notification counts
+must stay within their caps.
+
+The script uses a scratch home and state, removes them afterward, and needs no vendor account.
+`DUDED`, `DUDES_CLI` and `DUDES_XTASK` can select binaries from another build directory.
 
 ## What each arm proves
 
