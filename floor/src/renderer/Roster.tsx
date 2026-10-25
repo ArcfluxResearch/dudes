@@ -15,7 +15,6 @@ import { useHeldLayout } from './useHeldLayout.ts';
 import type { Placed } from './useHeldLayout.ts';
 import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
 
-/** From this many agents the roster groups its rows by state, with a count on each heading. */
 export const GROUP_FROM = 30;
 
 export function crewRowId(agent: string, base = 'crew'): string {
@@ -145,7 +144,7 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
     );
   }
 
-  const groups: readonly (readonly [NeedState, readonly Placed[]])[] = NEED_STATES
+  const groups: readonly (readonly [NeedState, readonly Placed[]])[] = !grouped ? [] : NEED_STATES
     .map((state) => [state, placed.filter((place) => place.group === state)] as const)
     .filter(([, members]) => members.length > 0);
 

@@ -100,7 +100,6 @@ export function needsOf(agents: readonly AgentRow[], cards: readonly CardRow[],
     .map(({ row }) => row);
 }
 
-/** How many agents wait on the operator, split into tickets ready to accept and everything else that needs them. */
 function waitingCounts(rows: readonly Pick<NeedRow, 'state'>[]): { readonly ready: number; readonly needing: number } {
   return {
     ready: rows.filter((row) => row.state === 'ready').length,
@@ -108,7 +107,6 @@ function waitingCounts(rows: readonly Pick<NeedRow, 'state'>[]): { readonly read
   };
 }
 
-/** The roster's header: who needs the operator, in plain words. */
 export function waitingHeading(rows: readonly Pick<NeedRow, 'state'>[]): string {
   const { ready, needing } = waitingCounts(rows);
   if (ready + needing === 0) return 'Nobody needs you';

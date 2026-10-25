@@ -5,7 +5,6 @@ import type { CardRow } from './board.ts';
 import { NEED_LABEL, NEED_STATES, needsOf } from './needs.ts';
 import type { NeedState } from './needs.ts';
 
-/** Each state some agent is in, with how many, in the order the roster lists them. Read from the one shared rule. */
 export function crewStatuses(agents: readonly AgentRow[], cards: readonly CardRow[] = []): readonly {
   readonly status: NeedState; readonly label: string; readonly count: number;
 }[] {

@@ -9,7 +9,6 @@ export function journalPosition(value: string | number): string {
   return `segment ${position >> 40n} · byte ${position & ((1n << 40n) - 1n)}`;
 }
 
-/** Where the journal is saved up to, in a sentence. */
 export function journalSaved(value: string | number): string {
   const position = journalPosition(value);
   if (position === 'Position unavailable') return 'The journal position is unavailable.';

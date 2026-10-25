@@ -22,7 +22,6 @@ import { isPageView } from '../navigation.ts';
 
 export type ControlView = 'overview' | 'board' | 'log' | 'setup' | 'settings';
 
-/** The views that fill a panel beside the office. Overview is a dialog over it instead. */
 export type PanelView = Exclude<ControlView, 'overview'>;
 
 /** Control's views, in top bar order. Setup and Settings take a fresh snapshot when they open. */
@@ -54,7 +53,6 @@ function focusOnArrival(node: HTMLHeadingElement | null): void {
   node?.focus();
 }
 
-/** Focus mode's roster: every current agent, the ones that need the operator first. */
 export function AgentsRoster({ floor, selectedId, onSelectAgent, onOpenQuestion, onOpenTicket, onHireAgain, onAddAgent }: {
   readonly floor: FloorState;
   readonly selectedId: string | null;
