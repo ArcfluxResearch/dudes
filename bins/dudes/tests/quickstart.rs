@@ -34,10 +34,6 @@ use common::{Cli, Run, run_program};
 
 const SPAWN_MARKER: &str = "quickstart started duded pid ";
 const CAPTURE_DEADLINE: Duration = Duration::from_secs(45);
-#[cfg(windows)]
-const PARKED_STDOUT_SENTINEL: &str = "planted parked stdout";
-#[cfg(windows)]
-const PARKED_STDERR_SENTINEL: &str = "planted parked stderr";
 
 fn daemon_binary() -> PathBuf {
     let mut daemon = PathBuf::from(env!("CARGO_BIN_EXE_dudes"));
@@ -172,48 +168,6 @@ fn taskkill(pid: u32) -> Run {
             OsString::from("/F"),
         ],
     )
-}
-
-/// Compile a no-argument process that remains alive until the test kills it.
-///
-/// The native test already runs inside the pinned Rust toolchain, so this avoids depending on a
-/// desktop application or on whether that application delegates to another process. The source is
-/// deliberately self-contained and the compiler receives typed arguments without a shell.
-#[cfg(windows)]
-fn parked_daemon(root: &Path) -> PathBuf {
-    let source = root.join("parked-daemon.rs");
-    let executable = root.join("parked-duded.exe");
-    std::fs::write(
-        &source,
-        "use std::io::Write as _;\n\
-         fn main() {\n\
-             let mut stdout = std::io::stdout();\n\
-             stdout.write_all(b\"planted parked stdout\\n\").unwrap();\n\
-             stdout.flush().unwrap();\n\
-             let mut stderr = std::io::stderr();\n\
-             stderr.write_all(b\"planted parked stderr\\n\").unwrap();\n\
-             stderr.flush().unwrap();\n\
-             loop { std::thread::sleep(std::time::Duration::from_secs(60)); }\n\
-         }\n",
-    )
-    .expect("write the parked daemon source");
-    let rustc = std::env::var_os("RUSTC").map_or_else(|| PathBuf::from("rustc"), PathBuf::from);
-    let build = run_program(
-        &rustc,
-        &[
-            source.into_os_string(),
-            OsString::from("--edition=2024"),
-            OsString::from("-o"),
-            executable.as_os_str().to_owned(),
-        ],
-    );
-    assert_eq!(
-        build.code(),
-        0,
-        "the parked daemon did not build: {build:?}"
-    );
-    assert!(executable.is_file(), "{} is absent", executable.display());
-    executable
 }
 
 struct DaemonGuard(Option<u32>);
@@ -1433,47 +1387,6 @@ fn a_quickstarted_daemons_managed_child_sees_its_uids_user_name() {
     guard.stop();
 }
 
-/// A Windows startup timeout kills and waits for the process quickstart spawned.
-///
-/// The test compiles an absolute, no-argument process that stays parked and cannot answer
-/// `system.ping`, so the production deadline reaches the cleanup branch. `taskkill` is both the
-/// process-table probe and the mutation cleanup: it exits nonzero after the candidate's
-/// `Child::kill` + `wait`, but succeeds and removes the survivor when that one cleanup call is
-/// deleted.
-#[cfg(windows)]
-#[test]
-fn a_timed_out_windows_quickstart_kills_the_spawned_daemon() {
-    let root = tempfile::tempdir().expect("a timeout home");
-    let daemon = parked_daemon(root.path());
-
-    let run = cli(root.path(), &daemon).args(["quickstart"]).run();
-    let pids = spawned_pids(root.path());
-    assert_eq!(pids.len(), 1, "quickstart created {pids:?}: {run:?}");
-    let survivor = taskkill(pids[0]);
-
-    assert_eq!(run.code(), dudes::exit::OTHER, "{run:?}");
-    assert!(run.stdout.is_empty(), "a timeout printed a triple: {run:?}");
-    assert!(
-        run.stderr.contains("within 30 seconds"),
-        "the run did not reach the timeout branch: {run:?}"
-    );
-    assert_ne!(
-        survivor.code(),
-        dudes::exit::SUCCESS,
-        "the timed-out quickstart left pid {} alive; taskkill removed it: {survivor:?}",
-        pids[0]
-    );
-    let log = std::fs::read_to_string(log_path(root.path())).expect("the parked daemon log");
-    assert!(
-        log.contains(PARKED_STDOUT_SENTINEL),
-        "the detached daemon's stdout handle did not reach its log:\n{log}"
-    );
-    assert!(
-        log.contains(PARKED_STDERR_SENTINEL),
-        "the detached daemon's stderr handle did not reach its log:\n{log}"
-    );
-}
-
 struct DaemonLogsInTree(Option<PathBuf>);
 
 impl DaemonLogsInTree {
@@ -1508,7 +1421,12 @@ impl Drop for DaemonLogsInTree {
 #[cfg(windows)]
 #[test]
 fn windows_quickstart_without_home_uses_profile_storage_and_reuses_the_daemon() {
+    let diagnostic_start = Instant::now();
     for _ in 0..5 {
+        eprintln!(
+            "[DEBUG-windows-lifecycle] profile cycle start {:?}",
+            diagnostic_start.elapsed()
+        );
         let root = tempfile::tempdir().expect("isolated profile quickstart");
         let mut owned = DaemonLogsInTree(Some(root.path().to_path_buf()));
         let profile = root.path().join("profile with spaces");
@@ -1530,6 +1448,10 @@ fn windows_quickstart_without_home_uses_profile_storage_and_reuses_the_daemon() 
             true,
         );
         let mut guard = DaemonGuard::from_log(&log);
+        eprintln!(
+            "[DEBUG-windows-lifecycle] first quickstart returned {:?}",
+            diagnostic_start.elapsed()
+        );
         assert_eq!(first.code(), dudes::exit::SUCCESS, "{first:?}");
         assert!(begun.elapsed() < Duration::from_secs(30));
         let first_ping: dudes_proto::rpc::system::PingResult = first.json();
@@ -1549,6 +1471,10 @@ fn windows_quickstart_without_home_uses_profile_storage_and_reuses_the_daemon() 
         let pids = spawned_pids_in_log(&log);
         assert_eq!(pids.len(), 1);
         assert!(process_is_alive(pids[0]), "the started daemon is not alive");
+        eprintln!(
+            "[DEBUG-windows-lifecycle] live process observed {:?}",
+            diagnostic_start.elapsed()
+        );
         let second = captured_with_log_deadline(
             session.clone().args(["--json", "quickstart"]),
             &log,
@@ -1556,17 +1482,29 @@ fn windows_quickstart_without_home_uses_profile_storage_and_reuses_the_daemon() 
             false,
         );
         assert_eq!(second.code(), dudes::exit::SUCCESS, "{second:?}");
+        eprintln!(
+            "[DEBUG-windows-lifecycle] second quickstart returned {:?}",
+            diagnostic_start.elapsed()
+        );
         let second_ping: dudes_proto::rpc::system::PingResult = second.json();
         assert_eq!(second_ping.socket, endpoint);
         assert_eq!(spawned_pids_in_log(&log), pids);
         let stopped = session.clone().args(["stop"]).run();
         assert_eq!(stopped.code(), dudes::exit::SUCCESS, "{stopped:?}");
+        eprintln!(
+            "[DEBUG-windows-lifecycle] stop returned {:?}",
+            diagnostic_start.elapsed()
+        );
         let deadline = Instant::now() + Duration::from_secs(10);
         while process_is_alive(pids[0]) {
             assert!(Instant::now() < deadline, "the daemon survived stop");
             thread::sleep(Duration::from_millis(20));
         }
         guard.0 = None;
+        eprintln!(
+            "[DEBUG-windows-lifecycle] stopped process observed {:?}",
+            diagnostic_start.elapsed()
+        );
         let after = session.args(["ping"]).run();
         assert_ne!(
             after.code(),
@@ -1574,6 +1512,10 @@ fn windows_quickstart_without_home_uses_profile_storage_and_reuses_the_daemon() 
             "daemon answers after stop"
         );
         owned.0 = None;
+        eprintln!(
+            "[DEBUG-windows-lifecycle] profile cycle finished {:?}",
+            diagnostic_start.elapsed()
+        );
     }
 }
 

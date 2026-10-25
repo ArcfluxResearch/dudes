@@ -15,7 +15,9 @@ use dudes_providers::codex::startup::CodexStartup;
 use dudes_providers::launch::{EnvVar, LaunchInput, LaunchSpec};
 use dudes_providers::protocol::ProtocolAction;
 use dudes_providers::stream::TurnReader as _;
-use dudes_supervisor::host::{AdoptionKey, Liveness, ProcessHost, SpawnResult};
+use dudes_supervisor::host::{
+    AdoptionKey, Liveness, OwnedTargetState, OwnedTargetsStatus, ProcessHost, SpawnResult,
+};
 
 mod common;
 
@@ -346,10 +348,24 @@ fn app_server_turn(fast_exit: bool) {
     if fast_exit {
         wait_file(&directory.path().join("terminal-buffered"));
         let deadline = Instant::now() + Duration::from_secs(5);
-        while host.alive(&key) != Liveness::Gone {
+        loop {
+            let evidence = host.owned_targets(1);
+            assert_eq!(evidence.status, OwnedTargetsStatus::Complete);
+            let [target] = evidence.targets.as_slice() else {
+                panic!("expected the one retained protocol child: {evidence:?}");
+            };
+            let observed = target.key.as_ref().expect("spawned child has a key");
+            assert_eq!(
+                (observed.pid, observed.start_time, observed.boot.as_ref()),
+                (key.pid, key.start_time, key.boot.as_ref())
+            );
+            if target.state == OwnedTargetState::NativeBoundaryAbsent {
+                break;
+            }
             assert!(
                 Instant::now() < deadline,
-                "child was not reaped before final parsing"
+                "child was not reaped before final parsing: {:?}",
+                target.state
             );
             std::thread::sleep(Duration::from_millis(5));
         }

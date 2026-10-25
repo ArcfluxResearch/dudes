@@ -133,12 +133,21 @@ pub(crate) fn run(
     }
     let mut child = spawn_daemon(env)?;
     let deadline = Instant::now() + START_DEADLINE;
+    wait_for_daemon(env, &mut child, ping, deadline)
+}
+
+fn wait_for_daemon(
+    env: &Environment,
+    child: &mut Child,
+    mut ping: impl FnMut() -> Option<PingResult>,
+    deadline: Instant,
+) -> Result<PingResult, Error> {
     loop {
         if let Some(answer) = ping() {
             return match validate_answer(env, answer) {
                 Ok(answer) => Ok(answer),
                 Err(error) => {
-                    stop_spawned(&mut child);
+                    stop_spawned(child);
                     Err(error)
                 }
             };
@@ -147,12 +156,12 @@ pub(crate) fn run(
             Ok(Some(status)) => return Err(Error::Exited(status)),
             Ok(None) => {}
             Err(error) => {
-                stop_spawned(&mut child);
+                stop_spawned(child);
                 return Err(Error::Wait(error));
             }
         }
         if Instant::now() >= deadline {
-            stop_spawned(&mut child);
+            stop_spawned(child);
             return Err(Error::TimedOut);
         }
         std::thread::sleep(POLL_INTERVAL);
@@ -387,6 +396,50 @@ mod tests {
     use std::io::Write;
 
     use super::write_spawn_marker;
+
+    #[test]
+    fn a_timed_out_quickstart_kills_the_spawned_daemon() {
+        use std::time::Instant;
+
+        use super::{Error, spawn_daemon, stop_spawned, wait_for_daemon};
+        use crate::Environment;
+
+        #[cfg(unix)]
+        let root = tempfile::tempdir_in("/tmp").expect("short timeout home");
+        #[cfg(windows)]
+        let root = tempfile::tempdir().expect("isolated timeout home");
+        let mut daemon = std::env::current_exe().expect("test executable");
+        daemon.pop();
+        daemon.pop();
+        daemon.push(format!("duded{}", std::env::consts::EXE_SUFFIX));
+        assert!(
+            daemon.is_file(),
+            "build sibling daemon before filtered tests"
+        );
+        let env = Environment::resolve(|name| match name {
+            "DUDES_DAEMON" => Some(daemon.clone().into_os_string()),
+            "HOME" | "USERPROFILE" => Some(root.path().as_os_str().to_owned()),
+            "DUDES_RUNTIME_DIR" => Some(root.path().join("run").into_os_string()),
+            "DUDES_STATE_DIR" => Some(root.path().join("state").into_os_string()),
+            "APPDATA" | "XDG_CONFIG_HOME" => Some(root.path().join("config").into_os_string()),
+            "PATH" | "SystemRoot" | "windir" | "TEMP" | "TMP" | "TMPDIR" | "LANG" => {
+                std::env::var_os(name)
+            }
+            _ => None,
+        });
+        let mut child = spawn_daemon(&env).expect("spawn detached daemon");
+        let alive_before_timeout = matches!(child.try_wait(), Ok(None));
+        let timed_out = wait_for_daemon(&env, &mut child, || None, Instant::now());
+        let stopped = child.try_wait();
+        stop_spawned(&mut child);
+
+        assert!(alive_before_timeout, "daemon was not alive before timeout");
+        assert!(matches!(timed_out, Err(Error::TimedOut)), "{timed_out:?}");
+        assert!(
+            matches!(stopped, Ok(Some(_))),
+            "timeout did not kill and reap the daemon: {stopped:?}"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

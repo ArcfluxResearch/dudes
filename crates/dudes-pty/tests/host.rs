@@ -336,7 +336,9 @@ fn run_pty_helper() {
     writeln!(
         output,
         "CWD:{}",
-        std::env::current_dir().expect("cwd").display()
+        fs::canonicalize(std::env::current_dir().expect("cwd"))
+            .expect("canonical child cwd")
+            .display()
     )
     .expect("cwd marker");
     writeln!(output, "READY").expect("ready marker");

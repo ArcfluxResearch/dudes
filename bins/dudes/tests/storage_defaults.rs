@@ -117,6 +117,11 @@ impl Scenario {
     }
 
     fn assert_ready(&self, daemon: &mut OwnedDaemon) {
+        let diagnostic_start = Instant::now();
+        eprintln!(
+            "[DEBUG-windows-lifecycle] storage readiness start {:?}",
+            diagnostic_start.elapsed()
+        );
         let resolved = dudes::Environment::resolve(|name| self.env.get(OsStr::new(name)).cloned());
         assert_eq!(resolved.runtime_dir(), Ok(self.runtime.as_path()));
         assert_eq!(resolved.socket(), Ok(self.expected_endpoint().as_path()));
@@ -159,7 +164,15 @@ impl Scenario {
             !self.cwd.join(".local").exists(),
             "default storage borrowed cwd"
         );
+        eprintln!(
+            "[DEBUG-windows-lifecycle] storage ready {:?}",
+            diagnostic_start.elapsed()
+        );
         daemon.stop(self);
+        eprintln!(
+            "[DEBUG-windows-lifecycle] storage stopped {:?}",
+            diagnostic_start.elapsed()
+        );
     }
 }
 
