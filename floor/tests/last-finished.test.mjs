@@ -76,3 +76,12 @@ test('an abandoned goal reads Abandoned, and work still under way stays Current 
   assert.doesNotMatch(adaHtml, /Last finished/);
   assert.match(adaHtml, /<span class="agent-detail-state-text">Working on Fix the parser<\/span>/);
 });
+
+test('a ticket queued for an agent with no goal reads the same in the panel and the roster', () => {
+  const queued = ticketCard(3, 'claimed', { claimed_by: ADA, title: 'Draft the release notes' },
+    { position: 1, round: 0, reason: null, stopping: false });
+  const { floor, panel, roster } = office([agent(ADA, 'Ada', { status: 'idle' })], [queued]);
+  assert.match(panel(floor.agents[0]), /<p class="agent-overview-work-text">Draft the release notes<\/p>/);
+  assert.match(roster, /Draft the release notes/);
+  assert.doesNotMatch(panel(floor.agents[0]), /Last finished/);
+});

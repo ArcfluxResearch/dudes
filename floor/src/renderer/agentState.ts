@@ -4,6 +4,7 @@
 // this adds what that state means for this agent.
 
 import { automaticHoldOf } from './automaticHold.ts';
+import { activeCard } from './board.ts';
 import type { CardRow } from './board.ts';
 import { goalIdOf } from './goal/goal.ts';
 import { finishedOf } from './needs.ts';
@@ -15,13 +16,18 @@ export function currentTicketOf(row: AgentRow, cards: readonly CardRow[]): CardR
   return goal === null ? null : cards.find((card) => card.claimed_by === row.id && card.ticket?.goal === goal) ?? null;
 }
 
+/** The work the agent holds now: its goal's ticket, else its goal, else a ticket queued for it before any goal was set. */
+export function currentWorkOf(row: AgentRow, cards: readonly CardRow[], fields: AgentFields): string {
+  if (finishedOf(row, cards) !== null) return '';
+  return currentTicketOf(row, cards)?.title ?? (fields.goal !== '' ? fields.goal : activeCard(cards, row.id)?.title ?? '');
+}
+
 export function stateSentenceOf(row: AgentRow, cards: readonly CardRow[], fields: AgentFields): string {
   const ticket = currentTicketOf(row, cards);
   const held = ticket?.status === 'blocked';
   const heldTickets = cards.filter((card) => card.claimed_by === row.id && card.ticket !== null && card.status === 'blocked');
-  const finished = finishedOf(row, cards) !== null;
-  const text = finished ? '' : ticket?.title ?? fields.goal;
-  const idleWords = finished ? 'Ready for a new task' : 'Idle, ready for a task';
+  const text = currentWorkOf(row, cards, fields);
+  const idleWords = finishedOf(row, cards) !== null ? 'Ready for a new task' : 'Idle, ready for a task';
   return row.retired === true ? 'Retired'
     : row.halted === true ? (row.halted_by_floor === true
       ? (row.status === 'running' ? 'Stopping this turn' : 'Stopped. Press Resume to let it work again') : 'Halted')

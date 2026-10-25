@@ -90,10 +90,12 @@ export function AgentDetail({
     }}>{action.label}</button>;
     if (action.kind === 'ticket') return onOpenTicket === undefined ? null
       : <button type="button" onClick={() => onOpenTicket(action.card)}>{action.label}</button>;
-    if (tab !== 'chat' && panels.some((panel) => panel.id === 'chat' && panel.content !== null)) {
-      return <button type="button" onClick={() => onTabChange('chat')}>{action.label}</button>;
-    }
-    return taskForm === null ? null : <details className="agent-overview-task"><summary>Give a task</summary>{taskForm}</details>;
+    if (action.label !== 'Talk') return null;
+    return <>
+      {tab !== 'chat' && panels.some((panel) => panel.id === 'chat' && panel.content !== null)
+        ? <button type="button" onClick={() => onTabChange('chat')}>{action.label}</button> : null}
+      {taskForm === null ? null : <details className="agent-overview-task"><summary>Give a task</summary>{taskForm}</details>}
+    </>;
   }
   const available = panels.filter((panel) => panel.content !== null);
   const tabs = available.map((panel) => panel.id);

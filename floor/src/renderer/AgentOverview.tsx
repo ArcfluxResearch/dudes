@@ -11,7 +11,7 @@ import { goalResultOf } from './goal/result.ts';
 import { HIRE_ENGINES } from './onboarding/catalog.ts';
 import type { AgentRow } from './scene/cast.ts';
 import type { AgentFields } from './scene/label.ts';
-import { currentTicketOf } from './agentState.ts';
+import { currentTicketOf, currentWorkOf } from './agentState.ts';
 import { finishedOf, finishedWords } from './needs.ts';
 import { reasonSentence, stateName } from './ticket/words.ts';
 import { lastTurnOf } from './lastTurn.ts';
@@ -45,7 +45,7 @@ export function AgentOverview({ row, cards, fields, recovery, goalForm, liveOutp
   const automaticHold = automaticHoldOf(row);
   const heldTickets = cards.filter((card) => card.claimed_by === row.id && card.ticket !== null && card.status === 'blocked');
   const needsYou = automaticHold !== null || heldTickets.length > 0;
-  const text = finished === null ? ticket?.title ?? fields.goal : '';
+  const text = currentWorkOf(row, cards, fields);
   const worktree = decodeWorktree(row.worktree);
   const completionCheck = completionCheckOf(goal ?? {});
   const baseline = baselineOf(goal ?? {});
