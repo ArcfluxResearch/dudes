@@ -377,9 +377,14 @@ fn temporary_storage_refusal_names_directory_step_and_recovery() {
     let missing = root.path().join("missing");
     let file = root.path().join("file");
     fs::write(&file, b"not a directory").unwrap();
+    let file_refusal = if cfg!(windows) {
+        "scratch:resolve scratch directory"
+    } else {
+        "scratch:create anonymous file"
+    };
     for (scratch, expected) in [
         (&missing, "scratch:resolve scratch directory"),
-        (&file, "scratch:create anonymous file"),
+        (&file, file_refusal),
         (&journal, "scratch:check journal isolation"),
     ] {
         for operation in ["reader", "writer", "replay"] {
