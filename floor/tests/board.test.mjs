@@ -43,7 +43,7 @@ test('cards enter through snapshots and deltas and leave with their subscription
   assert.deepEqual(getFloorState().cards, []);
 });
 
-test('Crew chooses current work', async () => {
+test('the roster chooses current work', async () => {
   const { activeCard } = await import('../src/renderer/board.ts');
   const rows = [card(A, 'todo'), card(B, 'claimed'), card(C, 'doing'), card(D, 'review'), card(E, 'blocked'), card(F, 'done')];
   assert.equal(activeCard(rows, A)?.id, C);
@@ -83,15 +83,14 @@ test('Board shows counts and its detail keeps card text inert', async () => {
   assert.doesNotMatch(detail, /Operator peer|16496/);
 });
 
-test('Crew shows the active card and the office notes open Board', async () => {
+test('the roster shows the active card and the office notes open Board', async () => {
   const rows = [card(B, 'doing', 'Build the board')];
-  const strip = await renderModule('/src/renderer/CrewList.tsx', 'CrewList', {
+  const strip = await renderModule('/src/renderer/Roster.tsx', 'Roster', {
     agents: [{ id: A, name: 'Ada', status: 'running' }], cards: rows, selectedId: null,
-    selectable: true, stale: false, castVariants: null, onSelectAgent() {},
+    selectable: true, stale: false, castVariants: null, onSelectAgent() {}, onOpenQuestion() {}, onOpenTicket() {},
   });
-  assert.ok(strip.includes('Build the board'));
-  assert.match(strip, /<button[^>]*class="crew-card-note"[^>]*aria-label="Open card Build the board for Ada"/);
-  assert.doesNotMatch(strip.match(/<button[^>]*class="crew-row".*?<\/button>/)[0], /crew-card-note/);
+  assert.match(strip, /<small class="crew-activity" data-activity="none" title="Build the board">Build the board<\/small>/);
+  assert.doesNotMatch(strip, /crew-card-note/);
   const notes = await renderModule('/src/renderer/BoardNotes.tsx', 'BoardNotes', { count: 1, hidden: 0, onOpenTasks() {} });
   assert.match(notes, /<button type="button" class="board-select" aria-label="1 card, open Board" aria-controls="control-panel" title="1 card on Board">/);
   assert.ok(notes.includes('>1 card</span>'), 'one card is one card');

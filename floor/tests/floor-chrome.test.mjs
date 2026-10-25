@@ -7,7 +7,6 @@
 //   STATS_COUNT      count `idle` as running in crewStatuses ..... "the top bar names the floor and counts…"
 //   CREW_UNFOLDED    drop `folded` from Crew's HireEntry ......... "the top bar names the floor and counts…"
 //   DRAWER_END_AUTO  the drawer's office rule back to `grid-column: 3`  "the office takes the columns the docked panels…"
-//   WORKSPACE_ALWAYS drop `[aria-pressed='false']` from the hide rule "a Crew row says its workspace is not recorded…"
 //   CLOSE_HANDLED    drop `!event.defaultPrevented` in closesPanel "Escape closes a panel unless…"
 //   CLOSE_COMPOSING  drop the isComposing check in closesPanel ... "Escape closes a panel unless…"
 //   PANEL_HANDBACK   hand a closing view's focus to crew-toggle .. "each Control view opens under its own heading…"
@@ -98,9 +97,9 @@ test('the top bar names the floor and counts the crew by status', () => {
   const stats = bar.match(/<ul class="crew-stats" aria-label="Crew by status">([\s\S]*?)<\/ul>/)[1];
   assert.deepEqual([...stats.matchAll(/<li([^>]*)>([^<]*)<\/li>/g)].map(([, attrs, words]) => [attrs.trim(), words]), [
     ['class="crew-stats-total"', '3 crew'],
-  ], 'the strip under the office says each status, so the top bar keeps only the count');
+  ], 'the roster beside the office says each state, so the top bar keeps only the count');
   assert.doesNotMatch(bar, /hire-entry-off/, 'the top bar still carries the Hire reason that Crew folds');
-  const crew = html.match(/<section class="crew-list"[\s\S]*?<\/section>/)?.[0] ?? '';
+  const crew = html.match(/<section class="crew-list roster"[\s\S]*?<\/section>/)?.[0] ?? '';
   assert.match(crew, /<details class="hire-off"><summary>Hire is unavailable<\/summary><p class="hire-entry-off">Hire is unavailable\. Check Engines and Projects in Settings\./);
   const actions = bar.match(/<div class="top-bar-actions" role="group" aria-label="Floor actions">[\s\S]*<\/div>/)[0];
   assert.match(actions, /<button type="button" class="crew-toggle" id="crew-toggle" aria-pressed="true" aria-controls="crew-list">Crew<\/button>/);
@@ -119,7 +118,7 @@ test('the top bar reaches every Control view, and the office opens with Crew bes
     ['view-setup', 'Setup'],
     ['view-settings', 'Settings'],
   ]);
-  assert.match(html, /<section class="crew-list" id="crew-list" aria-labelledby="crew-title"/);
+  assert.match(html, /<section class="crew-list roster" id="crew-list" aria-labelledby="crew-title"/);
   assert.doesNotMatch(html, /id="control-panel"/, 'a Control view is open before any was asked for');
   assert.doesNotMatch(html, /id="selected-agent-detail"/, 'the drawer is open before any agent was selected');
 });
@@ -393,24 +392,8 @@ test('seven detail tabs keep to one row and scroll sideways, with no scrollbar t
   assert.ok(!hang.startsWith('-'), `a tab hangs ${hang} below the row, so the row scrolls up and down by that much`);
 });
 
-test('a Crew row says its workspace is not recorded only while it is selected', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
-  const hidden = (pressed, recorded) => rulesAt(css, 1440).some(({ selectors, body }) => /display:\s*none/.test(body)
-    && selectors.split(',').map((selector) => selector.trim()).some((selector) => {
-      const parts = selector.split(/\s+/);
-      if (!parts.at(-1).startsWith('.crew-workspace')) return false;
-      const conditions = [...selector.matchAll(/\[([a-z-]+)='([^']*)'\]/g)].map(([, name, value]) => [name, value]);
-      return parts.every((part) => /^\.(crew-row|crew-workspace)\b/.test(part)) && conditions.every(([name, value]) =>
-        (name === 'aria-pressed' && value === String(pressed)) || (name === 'data-recorded' && value === String(recorded)));
-    }));
-  assert.equal(hidden(false, false), true, 'an unselected row still says Project not recorded');
-  assert.equal(hidden(true, false), false, 'the selected row hides Project not recorded');
-  assert.equal(hidden(false, true), true, 'a recorded workspace waits for the row to be selected');
-  assert.equal(hidden(true, true), false, 'a recorded workspace is hidden on the selected row');
-});
-
 test('closing the drawer hands focus to the Crew row only while Crew is open and no view covers it', async () => {
-  const { drawerHandBack } = await server.ssrLoadModule('/src/renderer/CrewList.tsx');
+  const { drawerHandBack } = await server.ssrLoadModule('/src/renderer/Roster.tsx');
   const handBack = (state) => drawerHandBack({ agent: ADA, focused: false, crewOpen: true, viewOpen: false, ...state });
   assert.equal(handBack({}), `crew-row-${ADA}`);
   assert.equal(handBack({ viewOpen: true }), 'crew-toggle');
