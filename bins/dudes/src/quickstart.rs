@@ -414,7 +414,8 @@ mod tests {
         daemon.push(format!("duded{}", std::env::consts::EXE_SUFFIX));
         assert!(
             daemon.is_file(),
-            "build sibling daemon before filtered tests"
+            "{} is absent; run `cargo build -p duded --locked` before filtered library tests",
+            daemon.display()
         );
         let env = Environment::resolve(|name| match name {
             "DUDES_DAEMON" => Some(daemon.clone().into_os_string()),
