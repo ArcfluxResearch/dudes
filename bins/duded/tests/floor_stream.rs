@@ -889,6 +889,7 @@ fn stream_admission_limits_refuse_then_recover() {
 
     let issued = issue(&settings);
     let page = exchange(addr, &issued.bootstrap, &clock);
+    wait_for_live(&probe, 0);
     let open_slots: Vec<_> = (0..31)
         .map(|_| {
             probe
