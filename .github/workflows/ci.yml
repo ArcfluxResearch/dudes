@@ -61,13 +61,12 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   chrome-startup-probe:
-    name: chrome startup (${{ matrix.binary }}, ${{ matrix.sample }})
+    name: chrome startup (${{ matrix.sample }})
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        binary: [stock, native]
         sample: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,7 +74,6 @@ jobs:
           persist-credentials: false
       - name: Cold Chrome pipe smoke
         env:
-          CHROME_PROBE_BINARY: ${{ matrix.binary }}
           DUDES_SMOKE_REQUIRE_CHROME: "1"
         run: |
           set -o pipefail
@@ -86,13 +84,9 @@ jobs:
           printf 'launcher=%s\nnative=%s\n' "$launcher" "$native"
           stat --format='%n %s bytes mode=%a' "$resolved_launcher" "$native"
           sed -n '1,100p' "$resolved_launcher"
-          if [ "$CHROME_PROBE_BINARY" = native ]; then
-            export DUDES_SMOKE_CHROME="$native"
-          else
-            export DUDES_SMOKE_CHROME="$launcher"
-          fi
+          export DUDES_SMOKE_CHROME="$launcher"
           node --version
-          node --test --test-reporter=tap --test-name-pattern='Chrome drives the page over pipes without a DevTools TCP endpoint' xtask/src/smoke.test.mjs | tee "$RUNNER_TEMP/chrome-pipe-smoke.tap"
+          node --import ./.github/chrome-startup-probe.mjs --test --test-reporter=tap --test-name-pattern='Chrome drives the page over pipes without a DevTools TCP endpoint' xtask/src/smoke.test.mjs | tee "$RUNNER_TEMP/chrome-pipe-smoke.tap"
           grep -E '^ok [0-9]+ - Chrome drives the page over pipes without a DevTools TCP endpoint$' "$RUNNER_TEMP/chrome-pipe-smoke.tap"
 
   test:
