@@ -120,7 +120,7 @@ function view(list) {
     selectionEpoch: 1, reply: { revision: '1', text: 'done soon', gap: null }, steps: list };
   const chat = { enabled: true, max_text_bytes: 4096, pending: [], context_sent: [], turns: [
     { agent_id: A, turn_id: TURN, note_lsn: '7', text: 'Please check', state: 'running', reply: null,
-      truncated: null, reissued: false }] };
+      truncated: null, failure: null, ran_models: [], reissued: false }] };
   const floor = { ...base, epoch: 1, snapshotEpoch: 1, phase: 'live', stale: false, agents: [row], chat, output };
   return renderToStaticMarkup(createElement(ChatPanelView, { floor, row, action: chatModule.getChatState() }));
 }
@@ -204,6 +204,20 @@ const done = (id, extra = {}) => wire(id, { status: 'done', result_bytes: 40, en
 const shown = () => view(store.getFloorState().output.steps.map((step) => item(step.id, { ...step,
   resultBytes: step.resultBytes, startedAt: step.startedAt, endedAt: step.endedAt })));
 
+test('only steps whose output can be fetched offer to show it', () => {
+  const unsupported = [
+    item('connected', { kind: 'mcp', tool: 'mcp__server__query', resultBytes: 40 }),
+    item('unknown', { kind: 'other', tool: 'NewTool', resultBytes: 40 }),
+    item('background', { tool: 'BashOutput', resultBytes: 40 }),
+    item('cancelled', { tool: 'KillShell', resultBytes: 40 }),
+  ];
+  assert.doesNotMatch(view(unsupported), /Show the output/);
+  assert.equal(view([
+    item('command', { resultBytes: 40 }),
+    item('read', { kind: 'read', tool: 'Read', resultBytes: 40 }),
+  ]).match(/Show the output/g)?.length, 2);
+});
+
 test('expanding a finished step asks the daemon once and shows the answer as plain text', () => {
   const { live, stop } = open();
   try {
@@ -263,7 +277,7 @@ test('a withheld, refused, evicted or waiting answer says what happened and show
     live.emit('message', answer('toolu_4', { state: 'waiting' }));
     const html = shown();
     assert.match(html, /Output is hidden: the step names a sensitive path\./);
-    assert.match(html, /The daemon would not send this: this page has not selected that step\./);
+    assert.match(html, /This output is unavailable: this page has not selected that step\./);
     assert.match(html, /This text is no longer kept\./);
     assert.match(html, /This step is still running\./);
     assert.doesNotMatch(html, /step-output|Loading/);

@@ -1,0 +1,64 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<html lang="en">
+  <head><meta charset="UTF-8"><title>Agent steps</title></head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      import { createElement, useSyncExternalStore } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import { Steps } from '../../src/renderer/chat/Steps.tsx';
+      import { getFloorState, selectOutputAgent, subscribeToFloor } from '../../src/renderer/floor/store.ts';
+      import { openFloorStream } from '../../src/renderer/floor/stream.ts';
+      import '../../src/style.css';
+
+      const agent = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
+      const turn = '01JBQ8XK2M3N4P5Q6R7S8T9VWZ';
+      const listeners = new Map();
+      const requests = [];
+      const emit = (type, value) => listeners.get(type)?.(type === 'message' ? { data: JSON.stringify(value) } : undefined);
+      const live = {
+        addEventListener(type, listener) { listeners.set(type, listener); },
+        close() {},
+        send(text) {
+          const request = JSON.parse(text);
+          if (request.type !== 'floor.output.fetch') return;
+          requests.push(request);
+          queueMicrotask(() => emit('message', {
+            type: 'floor.output.step', selection_epoch: 1, agent_id: agent, turn_id: turn, step_id: request.step_id,
+            ...(request.step_id === 'command'
+              ? { state: 'ready', result: { text: 'Visible command output' } }
+              : { state: 'withheld', reason: 'this tool has no output to show' }),
+          }));
+        },
+      };
+      const stop = openFloorStream({ device: 'fixture' }, window.location, () => live,
+        { now: () => 0, repeat: () => () => {}, after: () => () => {} });
+      emit('open');
+      emit('message', { type: 'floor.snapshot', projection: { lsn: 3,
+        agents: [{ id: agent, mode: 'managed', name: 'Ada' }] } });
+      selectOutputAgent(agent, false, 'reply');
+      emit('message', { type: 'floor.output.reply', selection_epoch: 1, agent_id: agent, turn_id: turn,
+        revision: '1', text: 'working', truncated: false, gap: null, ended: false });
+      const step = (id, kind, tool, command) => ({ id, kind, tool, status: 'done', started_at: 1000, ended_at: 1250,
+        result_bytes: 40, args: command ? [{ key: 'command', value: command }] : [] });
+      emit('message', { type: 'floor.output.steps', selection_epoch: 1, agent_id: agent, turn_id: turn,
+        truncated: false, gap: null, steps: [
+          step('connected', 'mcp', 'mcp__calendar__events'),
+          step('unknown', 'other', 'UnknownTool'),
+          step('background', 'command', 'BashOutput', 'background output'),
+          step('cancelled', 'command', 'KillShell', 'cancel background command'),
+          step('command', 'command', 'Bash', 'printf hello'),
+        ] });
+      function App() {
+        const { output } = useSyncExternalStore(subscribeToFloor, getFloorState);
+        return createElement('div', { className: 'shell', 'data-theme': 'light', style: { display: 'block' } },
+          createElement('main', { style: { maxWidth: '44rem', margin: 'auto', padding: '2rem' } },
+            createElement('h1', null, 'Agent steps'),
+            createElement(Steps, { steps: output.steps, truncated: false, stopped: false, results: output.stepResults })));
+      }
+      createRoot(document.getElementById('root')).render(createElement(App));
+      window.stepFixture = { requests, stop };
+    </script>
+  </body>
+</html>

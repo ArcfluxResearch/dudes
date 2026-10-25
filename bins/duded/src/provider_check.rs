@@ -94,6 +94,7 @@ struct Shared {
     home: Home,
     state_dir: PathBuf,
     codex_profile: Option<Arc<crate::codex_profile::CodexProfile>>,
+    models: Option<crate::engine_models::EngineModels>,
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -135,6 +136,7 @@ impl ProviderCheck {
         daemon_env: &[EnvVar],
         state_dir: PathBuf,
         codex_profile: Option<Arc<crate::codex_profile::CodexProfile>>,
+        models: Option<crate::engine_models::EngineModels>,
     ) -> std::io::Result<Self> {
         let shared = Arc::new(Shared {
             providers,
@@ -142,6 +144,7 @@ impl ProviderCheck {
             home: Home::of(daemon_env),
             state_dir,
             codex_profile,
+            models,
             state: Mutex::default(),
             changed: Condvar::new(),
         });
@@ -168,6 +171,13 @@ impl ProviderCheck {
             sign_in.annotate_for_page(&mut rows, busy);
         }
         serde_json::to_vec(&shared.view(&found, &rows)).ok()
+    }
+
+    /// Remember the model ids a Claude turn reported, for the model list the report carries.
+    pub(crate) fn note_models_seen<'a>(&self, names: impl IntoIterator<Item = &'a str>) {
+        if let Some(models) = &self.0.0.models {
+            models.note_seen(names);
+        }
     }
 
     /// `system.doctor`'s provider rows.
@@ -363,6 +373,10 @@ impl Shared {
                         .iter()
                         .find(|configured| configured.provider == found.provider)
                         .and_then(|configured| configured.model.clone()),
+                    models: self
+                        .models
+                        .as_ref()
+                        .and_then(|models| models.list(found.provider)),
                     path: found
                         .resolved
                         .as_ref()
@@ -396,6 +410,8 @@ struct ProviderView {
     found: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     configured_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    models: Option<crate::engine_models::ModelList>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     model_fixed: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -780,6 +796,7 @@ mod tests {
     fn view_of(home: Home, state_dir: &str, rows: &[Found]) -> Value {
         let shared = Shared {
             codex_profile: None,
+            models: None,
             providers: Vec::new(),
             path: None,
             home,
@@ -823,6 +840,7 @@ mod tests {
 
         let shared = Shared {
             codex_profile: None,
+            models: None,
             providers: vec![Configured {
                 provider: Provider::Claude,
                 program: OsString::from("claude"),
@@ -845,6 +863,65 @@ mod tests {
             view["providers"][0]["model_change_unsupported"], true,
             "an engine not confirmed to continue under a changed model says so"
         );
+    }
+
+    /// An engine's row carries the list held for it, with the fields the page reads, and an engine
+    /// with no list carries none.
+    #[test]
+    fn the_report_carries_the_model_list_held_for_an_engine() {
+        struct Never;
+        impl crate::predicate::PredicateRunner for Never {
+            fn run(
+                &self,
+                _: &dudes_providers::launch::LaunchSpec,
+                _: Duration,
+            ) -> std::io::Result<crate::predicate::PredicateOutcome> {
+                Err(std::io::ErrorKind::Unsupported.into())
+            }
+
+            fn sweep(&self) {}
+        }
+        let models = crate::engine_models::EngineModels::with_limits(
+            Arc::new(Never),
+            PathBuf::from("/s"),
+            [crate::engine_models::Source {
+                provider: Provider::Claude,
+                program: OsString::from("claude"),
+                env: Vec::new(),
+            }],
+            Duration::from_secs(1),
+            1_024,
+        );
+        models.note_seen(["claude-opus-4-1"]);
+        let shared = Shared {
+            codex_profile: None,
+            models: Some(models),
+            providers: Vec::new(),
+            path: None,
+            home: Home::default(),
+            state_dir: PathBuf::from("/s"),
+            state: Mutex::default(),
+            changed: Condvar::new(),
+        };
+        let rows = [
+            found(Provider::Claude, "claude", None),
+            found(Provider::Pi, "pi", None),
+        ];
+        let probes: Vec<ProviderProbe> = rows.iter().map(probe).collect();
+        let view = serde_json::to_value(shared.view(&rows, &probes)).expect("the view serializes");
+        let listed = &view["providers"][0]["models"];
+        assert_eq!(listed["checked"], false);
+        assert!(listed["as_of"].as_i64().is_some_and(|at| at > 0));
+        assert_eq!(
+            listed["items"],
+            serde_json::json!([
+                {"id": "opus", "kind": "alias"},
+                {"id": "sonnet", "kind": "alias"},
+                {"id": "haiku", "kind": "alias"},
+                {"id": "claude-opus-4-1", "kind": "seen"},
+            ])
+        );
+        assert!(view["providers"][1].get("models").is_none());
     }
 
     #[test]

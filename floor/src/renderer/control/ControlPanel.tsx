@@ -216,22 +216,21 @@ const RECORDED: Readonly<Record<ControlVerb, string>> = Object.freeze({
 function continuationText(next: Continuation): string {
   switch (next.kind) {
     case 'unconfirmed':
-      return 'Waiting for the floor to confirm the agent.';
+      return 'Waiting for Dudes to confirm the agent.';
     case 'absent':
-      return 'The agent is no longer on the floor.';
+      return 'The agent is no longer on the Floor.';
     case 'running':
-      return 'A turn is still running; it runs to its end.';
+      return 'The agent is still working on its current request.';
     case 'idle':
-      return `No turn is running now; the agent is ${next.status || 'idle'}.`;
+      return `No work is running now. The agent is ${next.status || 'idle'}.`;
     case 'stopping':
-      return 'The turn’s process is still being ended.';
+      return 'Dudes is still stopping the current work.';
     case 'stopped':
-      return `The turn has ended; the agent is ${next.status || 'idle'}. ${PARTIAL_EDITS_NOTE}`;
+      return `The current work has stopped. The agent is ${next.status || 'idle'}. ${PARTIAL_EDITS_NOTE}`;
     case 'waiting':
-      return 'No new turn has appeared yet.';
+      return 'New work has not started yet.';
     case 'continued':
-      return `A new turn started: its turn count went from ${next.from} to ${next.to}, and it is `
-        + `${next.status || 'idle'}.`;
+      return `New work has started. The agent is ${next.status || 'idle'}.`;
   }
 }
 

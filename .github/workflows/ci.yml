@@ -31,7 +31,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
@@ -55,7 +55,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -78,10 +78,10 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-nextest
       - run: cargo nextest run --workspace --locked --no-fail-fast
@@ -106,6 +106,11 @@ jobs:
           DUDES_SMOKE_REQUIRE_CHROME: "1"
         run: |
           set -o pipefail
+          chrome_launcher=$(command -v google-chrome)
+          chrome_package=$(dirname "$(readlink -f "$chrome_launcher")")
+          # Cold browser file faults can spend the handshake deadline before its pipes start.
+          find "$chrome_package" -type f -exec cat {} + > /dev/null
+          export DUDES_SMOKE_CHROME="$chrome_launcher"
           node --test --test-reporter=tap --test-name-pattern='Chrome drives the page over pipes without a DevTools TCP endpoint' xtask/src/smoke.test.mjs | tee "$RUNNER_TEMP/chrome-pipe-smoke.tap"
           grep -E '^ok [0-9]+ - Chrome drives the page over pipes without a DevTools TCP endpoint$' "$RUNNER_TEMP/chrome-pipe-smoke.tap"
 
@@ -124,7 +129,7 @@ jobs:
       - run: rustup toolchain install "$MSRV" --profile minimal
         env:
           MSRV: ${{ steps.msrv.outputs.version }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The environment variable outranks rust-toolchain.toml.
@@ -139,7 +144,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-deny
       - run: cargo deny --locked check
@@ -180,7 +185,9 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo xtask gate
+      - name: Agent mail round trip
+        run: ./examples/two-roles/mail.sh

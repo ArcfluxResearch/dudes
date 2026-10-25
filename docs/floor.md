@@ -28,7 +28,8 @@ without a goal authorizes one turn; messages to an agent with a goal join its ne
 The office is a view of the daemon's state, never a source of truth. The daemon's journal, an append-only log of everything it records, is the
 only record, and the Floor changes that state only through the Floor actions you turn on. `dudes quickstart` turns on hire, pause, answer, change
 goals, retire, recover, tickets and add projects without asking. The changed-file views are on too. The terminal
-stays off until you turn it on with `dudes config set floor.terminal on` and restart.
+stays off until you turn it on in **Settings** under Floor switches, or with `dudes config set floor.terminal on`. It applies at
+once and does not end running work. Opening an agent's own terminal works for Claude Code agents.
 
 The Floor draws the smallest office that seats the whole crew. The Studio has 8 desks, the Workshop
 has 12 and HQ has 16. **Settings** can pin one office in this browser instead. When the office has
@@ -170,6 +171,14 @@ Floor refuses a stop while a person has the agent's terminal open. **Resume** li
 made with `dudes halt` stays until `dudes resume`. In Chat, **Stop and send** stops the turn, sends your
 message as a note once the turn has ended and then lifts the stop; it needs `floor.control` on too. This is not the ticket board's
 **Stop**, which ends a ticket. See [Pause, resume, halt and retire](goals-and-stopping.md#pause-resume-halt-and-retire).
+
+## Model, in use and failures
+
+An agent's drawer says which model its latest finished chat turn ran (**In use**, or **Ran** when a turn
+used several). Only Claude Code reports this, so the line is absent for Codex and Pi. When a turn fails,
+Chat shows the engine's own words under **The engine said**, as plain text of at most 2,048 bytes. A reply
+that is the same text is shown once. The words are what the engine printed, after Dudes removes anything
+that looks like a secret.
 
 ## Recover an interrupted goal
 
