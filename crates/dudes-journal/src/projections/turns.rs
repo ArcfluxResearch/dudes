@@ -202,6 +202,13 @@ pub(crate) fn apply(
             session,
             model_selection,
             ..
+        }
+        | Record::IdentifiedConversationTurnIssued {
+            agent,
+            turn,
+            session,
+            model_selection,
+            ..
         } => {
             let row = TurnRow {
                 turn: *turn,
@@ -250,6 +257,15 @@ pub(crate) fn apply(
             ..
         }
         | Record::TaughtNoteOnlyTurnIssued {
+            agent,
+            turn,
+            goal,
+            session,
+            mode,
+            model_selection,
+            ..
+        }
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued {
             agent,
             turn,
             goal,

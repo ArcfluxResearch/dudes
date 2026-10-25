@@ -5065,6 +5065,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         department: row.department,
                         status: row.status.into(),
                         held_card: held.get(&row.id).copied(),
+                        you: caller == Some(row.id),
                     })
                     .collect();
                 Ok(Answered::Roster(rows))
@@ -7219,7 +7220,9 @@ fn mail_acknowledged_by_effect(effect: &Effect) -> bool {
                 Record::Mail { .. }
                     | Record::MailState { .. }
                     | Record::MailWakeTurnDecided(_)
+                    | Record::IdentifiedMailWakeTurnDecided(_)
                     | Record::MailWakeOnlyTurnIssued(_)
+                    | Record::IdentifiedMailWakeOnlyTurnIssued(_)
             )
         })
 }
@@ -8329,7 +8332,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             Record::Mail { .. }
                 | Record::MailState { .. }
                 | Record::MailWakeTurnDecided(_)
+                | Record::IdentifiedMailWakeTurnDecided(_)
                 | Record::MailWakeOnlyTurnIssued(_)
+                | Record::IdentifiedMailWakeOnlyTurnIssued(_)
         ) {
             anyhow::ensure!(
                 !self.mail_progression_fenced(),
@@ -8384,6 +8389,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             self.index_browser_record(lsn, &entry.record)?;
             let output_notice = match &entry.record {
                 Record::ConversationTurnIssued { agent, turn, .. }
+                | Record::IdentifiedConversationTurnIssued { agent, turn, .. }
                 | Record::TurnIssued {
                     agent,
                     turn,
@@ -8407,6 +8413,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     turn,
                     mode: Mode::Managed,
                     ..
+                }
+                | Record::IdentifiedTaughtNoteOnlyTurnIssued {
+                    agent,
+                    turn,
+                    mode: Mode::Managed,
+                    ..
                 } if self.projections.agent(*agent)?.is_some_and(|row| {
                     row.mode == Mode::Managed && row.open_turn == Some(*turn)
                 }) =>
@@ -8417,6 +8429,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     }
                 }
                 Record::MailWakeOnlyTurnIssued(issue)
+                | Record::IdentifiedMailWakeOnlyTurnIssued(issue)
                     if self.projections.agent(issue.agent)?.is_some_and(|row| {
                         row.mode == Mode::Managed && row.open_turn == Some(issue.turn)
                     }) =>
@@ -9490,7 +9503,7 @@ mod mail_wake_fence_tests {
                 .unwrap();
             let root = one(owned.daemon.sup.take_effects());
             assert!(
-                matches!(root.entry().map(|entry| &entry.record), Some(Record::MailWakeTurnDecided(value)) if matches!(value.purpose, MailWakePurpose::FreshPreparation { .. }))
+                matches!(root.entry().map(|entry| &entry.record), Some(Record::IdentifiedMailWakeTurnDecided(value)) if matches!(value.purpose, MailWakePurpose::FreshPreparation { .. }))
             );
             let acknowledged = owned.execute(&root);
             owned
@@ -9814,7 +9827,7 @@ mod mail_wake_fence_tests {
                 .records()
                 .into_iter()
                 .find_map(|record| match record {
-                    Record::MailWakeOnlyTurnIssued(issue) => Some(issue),
+                    Record::IdentifiedMailWakeOnlyTurnIssued(issue) => Some(issue),
                     _ => None,
                 })
         };
@@ -9835,14 +9848,22 @@ mod mail_wake_fence_tests {
             }
         }
         let issue = issued(&owned).expect("a mail wake issue from the live mailbox pass");
-        assert_eq!(issue.task, dudes_proto::MailWakeTask::new(1).unwrap());
+        let row = &owned.daemon.sup.world().agents[&owned.agent];
+        assert_eq!(
+            issue.task,
+            dudes_proto::MailWakeTask::identified(
+                &dudes_proto::IdentityLine::new(owned.agent, &row.name, &row.role),
+                1
+            )
+            .unwrap()
+        );
         assert_eq!(issue.agent, owned.agent);
         let records = owned.fixture.records();
         let position = |wanted: &dyn Fn(&Record) -> bool| {
             records.iter().position(wanted).expect("record in journal")
         };
         let root = position(&|record| {
-            matches!(record, Record::MailWakeTurnDecided(decision)
+            matches!(record, Record::IdentifiedMailWakeTurnDecided(decision)
                 if matches!(decision.purpose, MailWakePurpose::FreshPreparation { .. }))
         });
         let advance = position(&|record| {
@@ -9854,7 +9875,8 @@ mod mail_wake_fence_tests {
                 }
             )
         });
-        let issue_at = position(&|record| matches!(record, Record::MailWakeOnlyTurnIssued(_)));
+        let issue_at =
+            position(&|record| matches!(record, Record::IdentifiedMailWakeOnlyTurnIssued(_)));
         let spawn = position(
             &|record| matches!(record, Record::TurnSpawned { turn, .. } if *turn == issue.turn),
         );
@@ -10053,7 +10075,7 @@ mod mail_wake_fence_tests {
                     .find_map(|(lsn, entry)| {
                         matches!(
                             entry.record,
-                            Record::MailWakeTurnDecided(dudes_proto::MailWakeDecision {
+                            Record::IdentifiedMailWakeTurnDecided(dudes_proto::MailWakeDecision {
                                 purpose: MailWakePurpose::FreshPreparation { .. },
                                 ..
                             })
@@ -10250,7 +10272,7 @@ mod mail_wake_fence_tests {
             .entries()
             .into_iter()
             .find_map(|(lsn, entry)| {
-                if let Record::MailWakeTurnDecided(dudes_proto::MailWakeDecision {
+                if let Record::IdentifiedMailWakeTurnDecided(dudes_proto::MailWakeDecision {
                     purpose: MailWakePurpose::FreshPreparation { plan },
                     ..
                 }) = entry.record
@@ -10333,7 +10355,7 @@ mod mail_wake_fence_tests {
             .entries()
             .into_iter()
             .find_map(|(lsn, entry)| {
-                if let Record::MailWakeTurnDecided(dudes_proto::MailWakeDecision {
+                if let Record::IdentifiedMailWakeTurnDecided(dudes_proto::MailWakeDecision {
                     purpose: MailWakePurpose::FreshPreparation { plan },
                     ..
                 }) = entry.record
@@ -10353,7 +10375,7 @@ mod mail_wake_fence_tests {
                     let lsn = append.lsn();
                     reached += 1;
                     assert!(fixture.entries().iter().any(|(position, entry)| *position == lsn && matches!(&entry.record,
-                        Record::MailWakeTurnDecided(value) if matches!(value.purpose, MailWakePurpose::ExistingPreparation { root_lsn: root } if root == root_lsn)
+                        Record::IdentifiedMailWakeTurnDecided(value) if matches!(value.purpose, MailWakePurpose::ExistingPreparation { root_lsn: root } if root == root_lsn)
                             && matches!(value.decision, dudes_proto::MailWakeAdmission::Hold { reason: dudes_proto::HoldReason::Paused }))));
                     assert_eq!(daemon.ctx.projections.last_applied_lsn(), lsn);
                     assert!(daemon.ctx.writer.poisoned().is_none());

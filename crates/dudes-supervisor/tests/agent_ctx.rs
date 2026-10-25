@@ -437,18 +437,30 @@ fn neither_recorded_limit_reaches_the_decide_input() {
         FakeHost::wall_clock_anchored(),
         move || Box::new(recorder.clone()),
     );
+    // The agent's own id is part of the identity line, so equal agents still differ there; the
+    // line is taken out and every other input has to match byte for byte.
     let digest_after_hire = |harness: &mut Harness, limits: (Option<u32>, Option<Usd>)| {
         let agent = hire_with_limits(harness, "/repo/same", None, limits.0, limits.1);
         harness.set_goal(agent, &["npm", "test"]);
-        harness
+        assert!(
+            harness.supervisor.world().agents[&agent]
+                .last_input_digest
+                .is_some(),
+            "the goal decided, so a digest was journaled"
+        );
+        let mut input = harness
             .supervisor
             .world()
-            .agents
-            .get(&agent)
-            .expect("the hire was journaled")
-            .last_input_digest
-            .clone()
-            .expect("the goal decided, so a digest was journaled")
+            .loop_input(
+                agent,
+                dudes_supervisor::SpendView::default(),
+                WorkInput::default(),
+                None,
+                Spend::DEFAULT_PER_TURN_FLOOR,
+            )
+            .expect("the goal is live");
+        input.work.identity = None;
+        input_digest(&input).expect("the input encodes")
     };
 
     let uncapped = digest_after_hire(&mut harness, (None, None));

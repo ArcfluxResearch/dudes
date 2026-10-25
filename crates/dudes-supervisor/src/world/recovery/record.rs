@@ -71,6 +71,10 @@ impl PreparedRecovery<'_> {
 }
 
 impl World {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per record kind the recovery state follows"
+    )]
     pub(in crate::world) fn prepare_recovery_record<'a>(
         &self,
         lsn: Lsn,
@@ -104,9 +108,14 @@ impl World {
             Record::TurnIssued { turn, .. }
             | Record::TurnIssuedWithBrowserNote { turn, .. }
             | Record::ConversationTurnIssued { turn, .. }
+            | Record::IdentifiedConversationTurnIssued { turn, .. }
             | Record::NoteOnlyTurnIssued { turn, .. }
             | Record::TaughtNoteOnlyTurnIssued { turn, .. }
-            | Record::MailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. }) => {
+            | Record::IdentifiedTaughtNoteOnlyTurnIssued { turn, .. }
+            | Record::MailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. })
+            | Record::IdentifiedMailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue {
+                turn, ..
+            }) => {
                 let Some(claim) = self.recovery_state.planned_claim(*turn) else {
                     return Ok(None);
                 };

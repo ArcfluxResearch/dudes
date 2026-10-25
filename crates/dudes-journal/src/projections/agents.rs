@@ -341,6 +341,7 @@ fn completed_goal_for_settlement(
         | Record::BrowserHalt { agent, .. }
         | Record::NoteOnlyTurnIssued { agent, .. }
         | Record::TaughtNoteOnlyTurnIssued { agent, .. }
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued { agent, .. }
         | Record::TurnIssuedWithBrowserNote { agent, .. } => {
             let agent = get_row::<AgentRow>(table, &agent.to_bytes())?;
             match agent.and_then(|row| row.goal) {
@@ -378,8 +379,10 @@ fn apply_flow(
         // survive: it is what stops a second turn being issued while one is open.
         Record::TurnIssued { agent, turn, .. }
         | Record::ConversationTurnIssued { agent, turn, .. }
+        | Record::IdentifiedConversationTurnIssued { agent, turn, .. }
         | Record::NoteOnlyTurnIssued { agent, turn, .. }
         | Record::TaughtNoteOnlyTurnIssued { agent, turn, .. }
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued { agent, turn, .. }
         | Record::TurnIssuedWithBrowserNote { agent, turn, .. } => {
             update(table, lsn, *agent, record, |a| {
                 a.turns += 1;
@@ -506,26 +509,34 @@ fn apply_flow(
         Record::ConversationTurnDecided {
             agent, decision, ..
         }
+        | Record::IdentifiedConversationTurnDecided {
+            agent, decision, ..
+        }
         | Record::NoteTurnDecided {
             agent, decision, ..
         }
         | Record::TaughtNoteTurnDecided {
+            agent, decision, ..
+        }
+        | Record::IdentifiedTaughtNoteTurnDecided {
             agent, decision, ..
         } => update(table, lsn, *agent, record, |a| match decision {
             dudes_proto::NoteAdmission::Wait { .. } => a.status = AgentStatus::Waiting,
             dudes_proto::NoteAdmission::Exhausted { .. } => a.status = AgentStatus::Exhausted,
             dudes_proto::NoteAdmission::Issue { .. } | dudes_proto::NoteAdmission::Hold { .. } => {}
         }),
-        Record::MailWakeTurnDecided(decision) => update(table, lsn, decision.agent, record, |a| {
-            match decision.decision {
-                dudes_proto::MailWakeAdmission::Wait { .. } => a.status = AgentStatus::Waiting,
-                dudes_proto::MailWakeAdmission::Exhausted { .. } => {
-                    a.status = AgentStatus::Exhausted;
+        Record::MailWakeTurnDecided(decision) | Record::IdentifiedMailWakeTurnDecided(decision) => {
+            update(table, lsn, decision.agent, record, |a| {
+                match decision.decision {
+                    dudes_proto::MailWakeAdmission::Wait { .. } => a.status = AgentStatus::Waiting,
+                    dudes_proto::MailWakeAdmission::Exhausted { .. } => {
+                        a.status = AgentStatus::Exhausted;
+                    }
+                    dudes_proto::MailWakeAdmission::Issue { .. }
+                    | dudes_proto::MailWakeAdmission::Hold { .. } => {}
                 }
-                dudes_proto::MailWakeAdmission::Issue { .. }
-                | dudes_proto::MailWakeAdmission::Hold { .. } => {}
-            }
-        }),
+            })
+        }
         Record::LoopDecided {
             agent, decision, ..
         } => update(table, lsn, *agent, record, |a| match decision {

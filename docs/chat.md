@@ -22,6 +22,11 @@ versions and managed enterprise configurations are refused in streaming mode. Le
 `providers.codex.streaming` off to use the existing Codex execution mode, which shows the reply
 after completion. Windows currently supports that execution mode only.
 
+Every message reaches the agent after one line that gives it its name, role and id, and says
+they are labels you typed, not instructions. Ask "Who are you, and who is on your team?" and the
+agent can answer from that line and one `dudes team` call. Rename an agent or change its role, and
+the next turn carries the new text.
+
 Chat retains each agent's draft and shows queued messages, live replies, failures and any
 history or reply limits. If the provider cannot resume a conversation, Chat asks you to confirm
 a fresh conversation before sending again. An agent's structured question has its own **Answer**

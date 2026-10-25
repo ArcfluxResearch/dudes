@@ -138,6 +138,11 @@ pub struct WorkInput {
     pub unread_mail: u32,
     /// The memory digest to prepend to the goal text; empty when there is none.
     pub memory_digest: String,
+    /// Who the agent is, as its stored name and role make its identity line. Set from the agent's
+    /// own row, never from live status, so only a rename or a role change moves it. Absent only
+    /// where no agent row exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<dudes_proto::IdentityLine>,
 }
 
 /// Live coordination context for one held card.

@@ -232,6 +232,10 @@ fn completed_contract_payload(header: Header, payload: &[u8]) -> bool {
                     | RecordKind::TaughtNoteOnlyTurnIssued
                     | RecordKind::MailWakeTurnDecided
                     | RecordKind::MailWakeOnlyTurnIssued
+                    | RecordKind::IdentifiedTaughtNoteTurnDecided
+                    | RecordKind::IdentifiedTaughtNoteOnlyTurnIssued
+                    | RecordKind::IdentifiedMailWakeTurnDecided
+                    | RecordKind::IdentifiedMailWakeOnlyTurnIssued
                     | RecordKind::InstructionObservationStarted
                     | RecordKind::InstructionObservationFinished
                     | RecordKind::TicketInstructionReviewed
@@ -248,6 +252,10 @@ fn completed_contract_payload(header: Header, payload: &[u8]) -> bool {
                 | "taught_note_only_turn_issued"
                 | "mail_wake_turn_decided"
                 | "mail_wake_only_turn_issued"
+                | "identified_taught_note_turn_decided"
+                | "identified_taught_note_only_turn_issued"
+                | "identified_mail_wake_turn_decided"
+                | "identified_mail_wake_only_turn_issued"
                 | "instruction_observation_started"
                 | "instruction_observation_finished"
                 | "ticket_instruction_reviewed"
@@ -1232,11 +1240,15 @@ impl Witnessed {
                                 entry.record,
                                 dudes_proto::Record::TaughtNoteTurnDecided { .. }
                                     | dudes_proto::Record::TaughtNoteOnlyTurnIssued { .. }
+                                    | dudes_proto::Record::IdentifiedTaughtNoteTurnDecided { .. }
+                                    | dudes_proto::Record::IdentifiedTaughtNoteOnlyTurnIssued { .. }
                             ) || matches!(
                                 RecordKind::from_tag(header.kind),
                                 Some(
                                     RecordKind::TaughtNoteTurnDecided
                                         | RecordKind::TaughtNoteOnlyTurnIssued
+                                        | RecordKind::IdentifiedTaughtNoteTurnDecided
+                                        | RecordKind::IdentifiedTaughtNoteOnlyTurnIssued
                                 )
                             ) {
                                 return Err(Error::TaughtNoteFrame {
