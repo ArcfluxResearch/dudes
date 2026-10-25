@@ -2432,8 +2432,19 @@ pub(crate) fn command(spec: &LaunchSpec) -> io::Result<Command> {
 
 /// Deliver `spec.stdin` and close the pipe. A child whose stdin stays open waits on it.
 pub(crate) fn feed_stdin(child: &mut Child, spec: &LaunchSpec) -> io::Result<()> {
+    feed_stdin_open(child, spec).map(drop)
+}
+
+/// Deliver `spec.stdin` and hand back the pipe still open, for a child that exits when its input
+/// ends and so must be held until its answer arrives. `None` when the spec carries no input.
+pub(crate) fn feed_stdin_open(
+    child: &mut Child,
+    spec: &LaunchSpec,
+) -> io::Result<Option<ChildStdin>> {
+    use std::io::Write as _;
+
     let bytes = match &spec.stdin {
-        dudes_providers::launch::LaunchInput::Null => return Ok(()),
+        dudes_providers::launch::LaunchInput::Null => return Ok(None),
         dudes_providers::launch::LaunchInput::WriteThenClose(bytes) => bytes,
         dudes_providers::launch::LaunchInput::Protocol(_) => {
             return Err(io::Error::new(
@@ -2442,10 +2453,11 @@ pub(crate) fn feed_stdin(child: &mut Child, spec: &LaunchSpec) -> io::Result<()>
             ));
         }
     };
-    if let Some(pipe) = child.stdin.take() {
-        write_stdin(pipe, bytes)?;
-    }
-    Ok(())
+    let Some(mut pipe) = child.stdin.take() else {
+        return Ok(None);
+    };
+    pipe.write_all(bytes)?;
+    Ok(Some(pipe))
 }
 
 /// Write every byte to a child's standard input, then close it.

@@ -10,7 +10,7 @@ const REPORT = {
   providers: ['claude', 'codex'],
   workspaces: [{ workspace_id: 'repo_1', label: '<Service>', agent_usd_per_day_micros: '10000000',
     agent_tokens_per_day: null, goal_usd_micros: '5000000', goal_tokens: '456' }],
-  about: { daemon_version: '0.12.3', browser_wire_version: 7 },
+  about: { daemon_version: '0.12.3', browser_wire_version: 8 },
 };
 
 test('settings carries no Chat switch because Chat is always on', () => {

@@ -39,7 +39,7 @@ const STEP_SECRET: &str = "STEPS_API_TOKEN";
 const SECRET_VALUE: &str = "synthetic-steps-token-0123456789abcdef";
 const ASSETS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v7"
+    "/tests/fixtures/floor-release-v8"
 );
 
 #[test]
