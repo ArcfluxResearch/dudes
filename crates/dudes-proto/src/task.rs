@@ -92,9 +92,9 @@ impl IdentityLine {
         while let Some(found) = body[from..].find(IDENTITY_AGENT) {
             let start = from + found;
             let id_at = start + IDENTITY_AGENT.len();
-            from = id_at;
+            from = start + 1;
             let Some(id) = body.get(id_at..id_at + 26) else {
-                break;
+                continue;
             };
             let Ok(id) = AgentId::parse(id) else {
                 continue;
@@ -649,6 +649,72 @@ mod tests {
             let task = format!("{text}\n\nnote [with] brackets");
             let (found, rest) = IdentityLine::split(&task, Some(agent)).unwrap();
             assert_eq!((found, rest), (line, "\n\nnote [with] brackets"));
+        }
+    }
+
+    #[test]
+    fn fake_markers_in_a_name_never_hide_the_real_split() {
+        let agent = AgentId::NIL;
+        let id = agent.to_string();
+        for name in [
+            "x (agent aaaaaaaaaaaaaaaaaaaaaaaaa\u{e9}".to_owned(),
+            "x (agent a\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}".to_owned(),
+            "p (agent q (agent r (agent \u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}".to_owned(),
+            format!("x (agent {id}), role: y (agent "),
+            format!("x (agent {id}"),
+            "x (agent".to_owned(),
+        ] {
+            let line = IdentityLine::new(agent, &name, "r");
+            assert_eq!(
+                IdentityLine::recognize(line.as_str(), Some(agent)).as_ref(),
+                Some(&line),
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn any_label_the_cleaner_accepts_is_recognized_back() {
+        let agent = AgentId::NIL;
+        let pieces = [
+            " (agent ",
+            "), role: ",
+            "]",
+            "[",
+            "\u{e9}",
+            "\u{1f600}",
+            "a",
+            "0",
+            "Z",
+            " ",
+            "\n",
+            "\u{202e}",
+            "\u{200b}",
+            "01JBK3Q8M4X7Z2V9N5T6R1W0YA",
+            "\u{3042}",
+        ];
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as usize
+        };
+        for _ in 0..2000 {
+            let name_len = 1 + next() % 12;
+            let name: String = (0..name_len)
+                .map(|_| pieces[next() % pieces.len()])
+                .collect();
+            let role_len = next() % 12;
+            let role: String = (0..role_len)
+                .map(|_| pieces[next() % pieces.len()])
+                .collect();
+            let line = IdentityLine::new(agent, &name, &role);
+            assert_eq!(
+                IdentityLine::recognize(line.as_str(), Some(agent)).as_ref(),
+                Some(&line),
+                "{name:?} {role:?}"
+            );
         }
     }
 
