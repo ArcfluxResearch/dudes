@@ -101,12 +101,12 @@ test('DUPLICATE_PROJECTION_PLAN and RESYNC_GAP mutants keep the route from one u
   const code = ts.transpile(planner.getText(syntax), { target: ts.ScriptTarget.ES2022 });
   const plan = Function('choiceFor', 'built', 'motionsRef', 'planInputsRef', 'expiryRef', 'Date', 'performance',
     'planCast', 'desksOf', 'scheduleRef', 'charactersAt', 'rosterTransitions', 'applyTransitions', 'rosterRef', 'walkOut',
-    'exitMotions', 'drawingRef', 'settle', 'dropExits', `${code}; return planMotion;`)(() => ({ id: 'chosen' }), () => office, motionsRef,
+    'exitMotions', 'drawingRef', 'settle', 'dropExits', 'awaitingReviewOf', `${code}; return planMotion;`)(() => ({ id: 'chosen' }), () => office, motionsRef,
     planInputsRef, expiryRef, { now: () => now }, { now: () => now }, (...args) => {
       count += 1;
       return planCast(...args);
     }, (agents, chosen) => castFrom(agents, chosen.plan), { current() {} }, charactersAt, rosterTransitions, applyTransitions,
-    { current: new Map() }, () => {}, () => [], { current: true }, () => {}, () => {});
+    { current: new Map() }, () => {}, () => [], { current: true }, () => {}, () => {}, () => new Set());
   const floor = { epoch: 1, snapshotEpoch: 1, phase: 'live', stale: false,
     agents: [{ id, status: 'running' }] };
   plan(floor, 'snapshot');
@@ -186,6 +186,7 @@ async function presencePlanner(drawing, pin = () => null) {
   assert.equal(bodies.length, wanted.length);
   const code = ts.transpile(bodies.join('\n'), { target: ts.ScriptTarget.ES2022 });
   const motion = await import('../src/renderer/scene/motion.ts');
+  const { awaitingReviewOf } = await import('../src/renderer/needs.ts');
   const presence = await import('../src/renderer/scene/presence.ts');
   const { castFrom } = await import('../src/renderer/scene/cast.ts');
   const { officePlan } = await import('../src/renderer/office3d/plan.ts');
@@ -199,7 +200,7 @@ async function presencePlanner(drawing, pin = () => null) {
   const leavers = [];
   const scope = { ...refs, BUILT: new Map(), officeOf, officePlan, furnish, chooseOffice, getOfficePin: pin,
     Date: { now: () => now }, performance: { now: () => now },
-    castFrom, ...motion, ...presence, setLeavers: (rows) => leavers.push(rows.map((row) => row.id)) };
+    castFrom, awaitingReviewOf, ...motion, ...presence, setLeavers: (rows) => leavers.push(rows.map((row) => row.id)) };
   const names = Object.keys(scope);
   const { planMotion, choiceFor } = Function(...names, `${code}; return { planMotion, choiceFor };`)(...names.map((name) => scope[name]));
   return { planMotion, choiceFor, refs, leavers };

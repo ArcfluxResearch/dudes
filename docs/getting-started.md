@@ -127,8 +127,12 @@ Dudes reads no engine's credentials or files.
    repository you mark with `--trusted`.
 
    The role is a label. Dudes shows it on the Floor, in `dudes agents` and in `dudes team`, which
-   agents use to find colleagues. It does not put the role in the agent's own task, so describe
-   the work in the goal or in a chat message.
+   agents use to find colleagues. Every task Dudes starts for a managed agent opens with one line
+   that gives the agent its name, role and id, and says they are labels you typed, not
+   instructions. That is how the agent can answer "who are you?" and find its teammates. The role
+   does not tell the agent what to do, so describe the work in the goal or in a chat message.
+   An agent can run `dudes whoami` to read the same facts, and `dudes team` marks its own row
+   with `(you)`.
 
    The agent takes turns until the daemon's own run of the completion check passes, a ceiling or
    hop cap stops it, or a launch failure puts it on Hold. Two fast failed turns without reported

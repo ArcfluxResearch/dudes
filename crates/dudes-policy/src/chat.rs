@@ -81,6 +81,7 @@ pub struct CompletedNoteState {
 pub struct CompletedNoteInput {
     completion: CompletedGoalProof,
     note: BrowserNoteInput,
+    identity: dudes_proto::IdentityLine,
     /// Recomputed common admission values.
     pub state: CompletedNoteState,
 }
@@ -96,6 +97,7 @@ impl CompletedNoteInput {
         current_goal: GoalId,
         completion_lsn: Lsn,
         note: BrowserNoteInput,
+        identity: dudes_proto::IdentityLine,
         state: CompletedNoteState,
     ) -> Option<Self> {
         if completion_lsn.0 == 0 || note.goal != current_goal {
@@ -107,8 +109,15 @@ impl CompletedNoteInput {
                 done_lsn: completion_lsn,
             },
             note,
+            identity,
             state,
         })
+    }
+
+    /// The identity line the task opens with.
+    #[must_use]
+    pub const fn identity(&self) -> &dudes_proto::IdentityLine {
+        &self.identity
     }
 
     /// The unchanged completed original goal.
@@ -150,8 +159,12 @@ pub struct ConversationInput {
     pub note_lsn: Lsn,
     /// Immutable captured context generation.
     pub context_lsn: Lsn,
-    /// Exact normalized input.
+    /// Exact normalized input, or the answer continuation when `answer` is set.
     pub text: String,
+    /// Whether `text` is an answer continuation, which the identity line follows the answer in.
+    pub answer: bool,
+    /// The identity line the task carries.
+    pub identity: dudes_proto::IdentityLine,
     /// Current control flags.
     pub control: Control,
     /// Most recent terminal provenance.
@@ -182,6 +195,10 @@ mod tests {
     use crate::r#loop::tests::idle;
     use crate::{admit_completed_note, decide_with_browser_note};
 
+    fn identity() -> dudes_proto::IdentityLine {
+        dudes_proto::IdentityLine::new(dudes_types::AgentId::NIL, "Kim", "backend engineer")
+    }
+
     fn note(text: &str) -> BrowserNoteInput {
         BrowserNoteInput::new(Lsn(91), GoalId::NIL, text.to_owned()).unwrap()
     }
@@ -201,7 +218,7 @@ mod tests {
     }
 
     fn completed(input: &LoopInput, text: &str) -> CompletedNoteInput {
-        CompletedNoteInput::new(GoalId::NIL, Lsn(90), note(text), state(input)).unwrap()
+        CompletedNoteInput::new(GoalId::NIL, Lsn(90), note(text), identity(), state(input)).unwrap()
     }
 
     #[test]
@@ -219,7 +236,11 @@ mod tests {
         assert_eq!(
             decided.decision,
             NoteAdmission::Issue {
-                task: dudes_proto::taught_note_task("ship café\nkeep the branch").unwrap(),
+                task: dudes_proto::identified_taught_note_task(
+                    &identity(),
+                    "ship café\nkeep the branch"
+                )
+                .unwrap(),
             }
         );
         assert_eq!(
@@ -288,7 +309,8 @@ mod tests {
             (
                 Gate::Work,
                 NoteAdmission::Issue {
-                    task: dudes_proto::taught_note_task("next note").unwrap(),
+                    task: dudes_proto::identified_taught_note_task(&identity(), "next note")
+                        .unwrap(),
                 },
             ),
         ];
@@ -421,7 +443,7 @@ mod tests {
         assert_eq!(
             admit_completed_note(&input).decision,
             NoteAdmission::Issue {
-                task: dudes_proto::taught_note_task("no new cap").unwrap()
+                task: dudes_proto::identified_taught_note_task(&identity(), "no new cap").unwrap()
             }
         );
     }
@@ -442,7 +464,7 @@ mod tests {
             assert_eq!(
                 decided.decision,
                 NoteAdmission::Issue {
-                    task: dudes_proto::taught_note_task("x").unwrap()
+                    task: dudes_proto::identified_taught_note_task(&identity(), "x").unwrap()
                 }
             );
             assert!(
@@ -459,16 +481,36 @@ mod tests {
     #[test]
     fn completion_constructor_refuses_absent_proof_and_changed_goal_note() {
         assert!(
-            CompletedNoteInput::new(GoalId::NIL, Lsn(0), note("queued"), state(&idle())).is_none()
+            CompletedNoteInput::new(
+                GoalId::NIL,
+                Lsn(0),
+                note("queued"),
+                identity(),
+                state(&idle())
+            )
+            .is_none()
         );
         let other_goal = "00000000000000000000000001".parse().unwrap();
         assert!(
-            CompletedNoteInput::new(other_goal, Lsn(90), note("queued"), state(&idle())).is_none()
+            CompletedNoteInput::new(
+                other_goal,
+                Lsn(90),
+                note("queued"),
+                identity(),
+                state(&idle())
+            )
+            .is_none()
         );
         assert_eq!(
-            CompletedNoteInput::new(GoalId::NIL, Lsn(90), note("queued"), state(&idle()))
-                .unwrap()
-                .completion_lsn(),
+            CompletedNoteInput::new(
+                GoalId::NIL,
+                Lsn(90),
+                note("queued"),
+                identity(),
+                state(&idle())
+            )
+            .unwrap()
+            .completion_lsn(),
             Lsn(90)
         );
     }
@@ -525,6 +567,12 @@ mod tests {
                 text: "later answer".into(),
             },
         ];
+        let widest = dudes_proto::IdentityLine::new(
+            dudes_types::AgentId::NIL,
+            &"n".repeat(128),
+            &"r".repeat(160),
+        );
+        input.work.identity = Some(widest.clone());
         let note_text = "é".repeat(2_048);
         let Decided {
             decision: LoopDecision::Continue { task },
@@ -534,7 +582,13 @@ mod tests {
         else {
             panic!("ordinary note is admitted")
         };
-        assert_eq!(task.len(), 65_536);
+        assert_eq!(widest.as_str().len(), 457);
+        assert_eq!(task.len(), 65_536 - 1);
+        assert!(task.contains(&format!(
+            "…\n\n{}{}",
+            widest.as_str(),
+            dudes_proto::MEMORY_INSTRUCTION
+        )));
         assert!(task.starts_with("[answer to your question]\nquestion: which?\nanswer:\na"));
         assert!(task.ends_with(&format!(
             "\n\n[browser note]\n{note_text}\n[end browser note]"
@@ -606,6 +660,12 @@ mod conversation_tests {
             note_lsn: Lsn(2),
             context_lsn: Lsn(1),
             text: "Hello".into(),
+            answer: false,
+            identity: dudes_proto::IdentityLine::new(
+                dudes_types::AgentId::NIL,
+                "Kim",
+                "backend engineer",
+            ),
             control: Control {
                 halted: false,
                 paused: false,
@@ -632,7 +692,7 @@ mod conversation_tests {
         assert_eq!(
             crate::admit_conversation(&value).decision,
             NoteAdmission::Issue {
-                task: "Hello".into()
+                task: format!("{}\n\nHello", value.identity.as_str())
             }
         );
         value.agent_budget.usd_per_day = Some(Usd::ZERO);
@@ -730,7 +790,7 @@ mod conversation_tests {
         assert_eq!(
             decided.decision,
             NoteAdmission::Issue {
-                task: "[1 unread mail]".into()
+                task: format!("{}\n\n[1 unread mail]", value.identity.as_str())
             }
         );
         assert_eq!(

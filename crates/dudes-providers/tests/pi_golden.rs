@@ -7,6 +7,7 @@ use std::path::Path;
 
 use dudes_proto::{ExitStatus, TurnOutcome};
 use dudes_providers::pi::stream::TurnStream;
+use dudes_providers::steps::{StepEvent, StepKind};
 use dudes_providers::stream::{LineRead, ScopedUsage, TurnEnd, TurnReader};
 use dudes_types::{SessionId, Usage};
 
@@ -117,16 +118,37 @@ fn cases() -> Vec<Case> {
             session: "2439c96e-3d6b-7654-a096-3f4fa43a1bc2",
             outcome: TurnOutcome::Failed {
                 reason: concat!(
-                    "error: OAuth refresh failed for openai-codex: OpenAI Codex token refresh ",
-                    "failed (401): {\n  \"error\": {\n    \"message\": \"Your session has ended. ",
-                    "Please log in again.\",\n    \"type\": \"invalid_request_error\",\n    ",
-                    "\"param\": null,\n    \"code\": \"refresh_token_invalidated\"\n  }\n}"
+                    "Pi reported an error: OAuth refresh failed for openai-codex: OpenAI Codex ",
+                    "token refresh failed (401): Your session has ended. Please log in again. ",
+                    "(refresh_token_invalidated)"
                 )
                 .to_owned(),
             },
             last_message: None,
             tokens: None,
             models: &[],
+        },
+        Case {
+            fixture: "p1-model-error.jsonl",
+            session: "01a17058-f280-7101-9040-058259d463c7",
+            outcome: TurnOutcome::Failed {
+                reason: concat!(
+                    "Pi reported an error: OpenAI API error (400): The 'gpt-5.5' model is not ",
+                    "supported when using Codex with a ChatGPT account. (model_not_found)"
+                )
+                .to_owned(),
+            },
+            last_message: None,
+            tokens: None,
+            models: &[],
+        },
+        Case {
+            fixture: "p2-bash-tool.jsonl",
+            session: "01a1705b-b2db-75ad-bd5f-256c3ebda947",
+            outcome: TurnOutcome::Completed,
+            last_message: Some("there are 3 files"),
+            tokens: Some([1255 + 146, 22 + 49, 1152, 0]),
+            models: &["gpt-6.1-sol"],
         },
     ];
     cases.extend(pi_v1_cases());
@@ -187,11 +209,7 @@ fn pi_v1_cases() -> [Case; 7] {
             fixture: "v1-e1-failed.jsonl",
             session: "14958ae9-0c30-7f42-bfd3-f08b68b2de7b",
             outcome: TurnOutcome::Failed {
-                reason: concat!(
-                    "error: 401: {\"message\":\"probe sink: unauthorized\",",
-                    "\"type\":\"invalid_request_error\"}"
-                )
-                .to_owned(),
+                reason: "Pi reported an error: 401: probe sink: unauthorized".to_owned(),
             },
             last_message: None,
             tokens: None,
@@ -253,6 +271,75 @@ fn every_run_reads_to_its_recorded_end() {
             case.fixture
         );
     }
+}
+
+/// Pi 1.4.0 emits a system message and several `message_update` and `tool_execution_update` lines
+/// around one `bash` call. The call opens once and closes once, without failing.
+#[test]
+fn a_pi_1_4_bash_call_is_one_command_step_that_ends_done() {
+    let (reads, _) = read("p2-bash-tool.jsonl");
+    let steps: Vec<_> = reads.iter().flat_map(|read| &read.steps).collect();
+    let [
+        StepEvent::Open { step, .. },
+        StepEvent::Close { id, failed, .. },
+    ] = steps[..]
+    else {
+        panic!("expected one open and one close, got {steps:?}");
+    };
+    assert_eq!((step.kind, step.tool.as_str()), (StepKind::Command, "bash"));
+    assert_eq!(&step.id, id);
+    assert!(!failed);
+}
+
+/// Pi 1.4.0 reports a rejected model as an assistant message with `stopReason` "error" and exits 0.
+/// Its own words reach the turn's reason and its reply, which is what a Chat page shows.
+#[test]
+fn a_model_the_account_cannot_use_fails_the_turn_in_pi_s_words() {
+    let (_, end) = read("p1-model-error.jsonl");
+    let said = "Pi reported an error: OpenAI API error (400): The 'gpt-5.5' model is not supported \
+        when using Codex with a ChatGPT account. (model_not_found)";
+    assert_eq!(
+        end.outcome,
+        TurnOutcome::Failed {
+            reason: said.to_owned()
+        }
+    );
+    assert_eq!(
+        end.final_reply.map(|reply| reply.text).as_deref(),
+        Some(said)
+    );
+    assert_eq!(end.last_message, None);
+}
+
+/// With an ambiguous `--model`, Pi prints one line to standard error, writes no JSON and exits 1.
+/// The terminal merges the two streams, so the line reaches the reader as an unreadable line.
+#[test]
+fn a_start_up_error_on_stderr_fails_the_turn_in_pi_s_words() {
+    let stderr = "Error: Model \"gpt-6.1-sol\" is ambiguous across providers: azure/gpt-6.1-sol, \
+        openai/gpt-6.1-sol. More than one matching provider is authenticated. Use --provider or \
+        provider/model.";
+    let (_, end) = read_lines([stderr], 1);
+    let said = "Pi reported an error: Model \"gpt-6.1-sol\" is ambiguous across providers: \
+        azure/gpt-6.1-sol, openai/gpt-6.1-sol. More than one matching provider is authenticated. \
+        Use --provider or provider/model.";
+    assert_eq!(
+        end.outcome,
+        TurnOutcome::Failed {
+            reason: said.to_owned()
+        }
+    );
+    assert_eq!(
+        end.final_reply.map(|reply| reply.text).as_deref(),
+        Some(said)
+    );
+}
+
+/// A line of noise from a process that exited 0 without a result is still no result.
+#[test]
+fn stray_text_without_a_failed_exit_is_no_result() {
+    let (_, end) = read_lines(["warming up"], 0);
+    assert_eq!(end.outcome, TurnOutcome::NoResult);
+    assert!(end.final_reply.is_none());
 }
 
 /// The session header, and only the header, opens the session.

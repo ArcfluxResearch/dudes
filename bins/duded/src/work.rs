@@ -116,6 +116,7 @@ mod tests {
             unread_mail: 9,
             memory_digest: "stale".to_owned(),
             held_card_context: None,
+            identity: None,
         };
         let first = compose(&projection, &memory, |_| seed.clone()).unwrap();
         let view = &first[&agent];

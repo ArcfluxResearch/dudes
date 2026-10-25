@@ -16,9 +16,17 @@ export function NotConnected() {
   return <p className="stream-state" role="alert">Not connected to Dudes, so this may be out of date. <Reconnect /></p>;
 }
 
-export function StreamNotice({ floor }: { readonly floor: FloorState }) {
+/**
+ * What the connection to Dudes says, if anything. A lost or ended connection stays in the Floor's banner
+ * until it is back. The plain wait for the first snapshot is a passing line for the stack. Without
+ * `placement` every line shows.
+ */
+export function StreamNotice({ floor, placement }: { readonly floor: FloorState; readonly placement?: 'banner' | 'stack' }) {
   const retry = useSyncExternalStore(subscribeToStreamRetry, getStreamRetry, getStreamRetry);
   const away = useSyncExternalStore(subscribeToAway, getAway, getAway);
+  const passing = away.kind === 'present' && floor.phase !== 'closed' && floor.phase !== 'resyncing'
+    && !(floor.phase === 'live' && floor.stale) && (floor.phase === 'connecting' || floor.snapshotEpoch !== floor.epoch);
+  if (placement !== undefined && (placement === 'stack') !== passing) return null;
   if (away.kind === 'watching') return <p className="office-closed stream-notice" role="status">
     Dudes stopped answering. This page keeps checking and will ask you to reload when it is back.
   </p>;
