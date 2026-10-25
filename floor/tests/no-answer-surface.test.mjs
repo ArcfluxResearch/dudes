@@ -294,6 +294,7 @@ const LOOK_MODULE = 'src/renderer/look/look.ts';
 const LOOK_PANEL = 'src/renderer/look/LookEditor.tsx';
 const MODEL_MODULE = 'src/renderer/model/model.ts';
 const MODEL_PANEL = 'src/renderer/model/ModelEditor.tsx';
+const NOTICE_STACK = 'src/renderer/notices/NoticeStack.tsx';
 const ADMITTED_IN_GOAL_FORM = Object.freeze(['a textarea', 'an input', 'a change handler']);
 const SETUP_VIEW = 'src/renderer/setup/SetupView.tsx';
 const FIRST_RUN_GUIDE = 'src/renderer/setup/FirstRunGuide.tsx';
@@ -1110,7 +1111,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
   assert.match(form, /const choose = \(choice: CheckChoice\) => \{\s*if \(!blocked\) chooseGoalCheck\(gate\.agent, gate\.goal, choice\);\s*\};/);
 });
 
-test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Stop this turn, Stop and send, Pause all, resume, goal change, look edit, model change and dismiss buttons, Overview Answer, Review work, Review ticket and Change navigation, a step\'s Show the output, '
+test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Stop this turn, Stop and send, Pause all, resume, goal change, look edit, model change and dismiss buttons, the notice stack\'s fold, History and Clear buttons, Overview Answer, Review work, Review ticket and Change navigation, a step\'s Show the output, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation, '
@@ -1159,6 +1160,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(6).fill(ADD_PROJECT_FORM),
     ...Array(4).fill(LOOK_PANEL),
     ...Array(5).fill(MODEL_PANEL),
+    ...Array(3).fill(NOTICE_STACK),
     ...Array(3).fill(SETUP_VIEW),
     ...Array(10).fill(SETTINGS_VIEW),
     ...Array(5).fill(FIRST_RUN_GUIDE),
@@ -3183,13 +3185,16 @@ const APPEND_ELSEWHERE = ' (URLSearchParams, Headers and FormData have an append
  * canvas element itself is never bound to a name. Its context can be, though,
  * and that context's `canvas` property still reaches the element; this scan
  * does not follow a bound context's `canvas` read back to it. The shell
- * creates one empty notice container and moves it into native dialogs;
- * React renders its children through a portal.
+ * creates two empty notice containers, the floating stack and the banner, and moves them into native dialogs;
+ * React renders their children through a portal.
  */
 const ADMITTED_BUILDS = [
   { file: 'src/renderer/figurePortrait.ts', expression: "document.createElement('canvas').getContext('webgl2')" },
   { file: 'src/shell.tsx', expression: "document.createElement('div')" },
   { file: 'src/shell.tsx', expression: 'host.append(noticeArea)' },
+  { file: 'src/shell.tsx', expression: "document.createElement('section')" },
+  { file: 'src/shell.tsx', expression: 'modal.prepend(noticeBanner)' },
+  { file: 'src/shell.tsx', expression: 'top.append(noticeBanner)' },
 ];
 /**
  * Names that turn an HTML string into elements. `setHTML` and `parseHTML`
@@ -3432,7 +3437,8 @@ test('no control is built without JSX', async () => {
   assert.deepEqual(carrying, [], 'a control is built without JSX');
   assert.deepEqual(admitted, [
     "src/renderer/figurePortrait.ts: document.createElement('canvas').getContext('webgl2')",
-    "src/shell.tsx: document.createElement('div')", 'src/shell.tsx: host.append(noticeArea)',
+    "src/shell.tsx: document.createElement('div')", "src/shell.tsx: document.createElement('section')",
+    'src/shell.tsx: host.append(noticeArea)', 'src/shell.tsx: modal.prepend(noticeBanner)', 'src/shell.tsx: top.append(noticeBanner)',
   ], 'each admitted build must occur exactly once');
   assert.equal(terminals, 2, 'the floor does not build its two grids, so the fontFamily check measured nothing');
 });
@@ -3551,7 +3557,11 @@ test('the notice portal admits only its empty container and exact relocation', (
   const admitted = builtWithoutJsx("const area = document.createElement('div'); host.append(noticeArea);", file);
   assert.deepEqual(admitted.found, []);
   assert.deepEqual(admitted.admitted, ["document.createElement('div')", 'host.append(noticeArea)']);
-  for (const source of ["document.createElement('input');", 'host.append(field);', 'host.append(noticeArea, field);']) {
+  const banner = builtWithoutJsx("const b = document.createElement('section'); modal.prepend(noticeBanner); top.append(noticeBanner);", file);
+  assert.deepEqual(banner.found, []);
+  assert.deepEqual(banner.admitted, ["document.createElement('section')", 'modal.prepend(noticeBanner)', 'top.append(noticeBanner)']);
+  for (const source of ["document.createElement('input');", 'host.append(field);', 'host.append(noticeArea, field);',
+    'modal.prepend(field);', 'top.append(noticeBanner, field);']) {
     assert.ok(builtWithoutJsx(source, file).found.length > 0, source);
   }
   assert.ok(builtWithoutJsx("document.createElement('div'); host.append(noticeArea);", 'other.tsx').found.length > 0);
