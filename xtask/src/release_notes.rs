@@ -321,6 +321,7 @@ fn plural(count: usize, one: &str, many: &str) -> String {
 fn render_body(subjects: &[String], changelog: &str, inputs: &Inputs<'_>) -> Result<String> {
     let Inputs { version, repo, .. } = *inputs;
     let mut section = changelog_section(changelog, version, inputs.preview)?;
+    let empty_section = section.is_empty();
     let entries: Vec<Entry> = subjects.iter().map(|s| parse_subject(s)).collect();
     let numbered: Vec<(u32, &Entry)> = entries
         .iter()
@@ -352,12 +353,14 @@ fn render_body(subjects: &[String], changelog: &str, inputs: &Inputs<'_>) -> Res
         let _ = writeln!(out, "### Highlights\n\n{highlights}\n");
     }
     let _ = writeln!(out, "### Install\n\n{}\n", install_text(repo));
-    let changes = if changes.is_empty() {
-        "No new capabilities in this release."
-    } else {
-        &changes
-    };
-    let _ = writeln!(out, "### Changes\n\n{changes}\n");
+    if !changes.is_empty() || empty_section {
+        let changes = if changes.is_empty() {
+            "No new capabilities in this release."
+        } else {
+            &changes
+        };
+        let _ = writeln!(out, "### Changes\n\n{changes}\n");
+    }
     let fixes = if fixes.is_empty() {
         "No fixes in this release."
     } else {
@@ -746,6 +749,39 @@ Put the archive for your machine and `SHA256SUMS` in one directory, then run `sh
 Each archive and `SHA256SUMS` also carry a build provenance attestation. `gh attestation verify <archive> --repo example/dudes` checks that this repository's release workflow built the file.
 "
         );
+    }
+
+    #[test]
+    fn released_notes_keep_the_authored_sections_without_an_empty_changes_block() {
+        let changelog = include_str!("../../CHANGELOG.md");
+        let authors = BTreeMap::new();
+        for version in ["0.96.0", "0.97.0", "0.97.1"] {
+            let inputs = Inputs {
+                version,
+                from: None,
+                repo: "example/dudes",
+                run_url: "u",
+                sha: "s",
+                sums: "x",
+                maintainer: "m",
+                authors: &authors,
+                preview: false,
+            };
+            let section = changelog_section(changelog, version, false).expect("a released section");
+            let body = render_body(&[], changelog, &inputs).expect("a released body");
+            assert!(!body.contains("### Changes\n"), "{version}: {body}");
+            assert!(
+                !body.contains("No new capabilities in this release."),
+                "{version}: {body}"
+            );
+            for (heading, text) in section.blocks {
+                assert_eq!(
+                    body.matches(&text).count(),
+                    1,
+                    "{version} keeps {heading} once"
+                );
+            }
+        }
     }
 
     #[test]

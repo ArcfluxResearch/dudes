@@ -1631,68 +1631,114 @@ fn browser_retire_lost_permit_closes_nothing() {
     floor.stop();
 }
 
-/// Turning the terminal off in the operator file, then reloading, revokes a live grant and closes
-/// its socket with no restart. The terminal is then an unrouted path, and turning it back on
-/// needs a restart.
-#[test]
-fn turning_the_terminal_off_revokes_a_live_grant() {
-    const HIRE: &str = "[floor.hire]\nenabled = true\n";
-    const ON: &str = "[floor.hire]\nenabled = true\n[floor.terminal]\nenabled = true\n";
-    let fixture = Fixture::new();
-    let root = tempfile::tempdir().expect("operator config root");
-    let config = root.path().join("config.toml");
-    std::fs::write(&config, ON).expect("operator config");
-    let mut floor = floor_reading(&fixture, true, FloorControl::Off, Some(config.clone()));
-    let agent = attachable(&floor, &fixture);
-    let page = session(&floor);
-    let mut terminal = Socket::terminal(&page);
-    terminal.attach(agent);
-    let pty = newest_pty(&floor.ptys);
+const HIRE: &str = "[floor.hire]\nenabled = true\n";
+const ON: &str = "[floor.hire]\nenabled = true\n[floor.terminal]\nenabled = true\n";
 
-    let reload = |text: &str| {
-        std::fs::write(&config, text).expect("operator config");
-        let sha256 = Sha256::digest(text.as_bytes())
-            .iter()
-            .fold(String::new(), |hex, byte| format!("{hex}{byte:02x}"));
-        let mut client = Client::connect(floor.settings.socket()).expect("daemon socket");
-        let reply = client
-            .call_as_operator(
-                Method::FloorEnrollmentReload,
-                Some(json!({"apply": {
-                    "sha256": sha256, "added": [], "removed": [], "changed": []
-                }})),
-                OperatorCredential::new(credential(&floor.settings)).expect("credential"),
-            )
-            .expect("reload response");
-        reply.result.expect("a reload result")
-    };
-    let result = reload(HIRE);
-    assert_eq!(result["applied"], json!(true), "{result}");
-    assert_eq!(result["switches"], json!(["floor.terminal"]), "{result}");
+/// Rewrites the operator file with `text` and reloads it into the running daemon.
+fn reload_config(floor: &Floor, config: &std::path::Path, text: &str) -> Value {
+    std::fs::write(config, text).expect("operator config");
+    let sha256 = Sha256::digest(text.as_bytes())
+        .iter()
+        .fold(String::new(), |hex, byte| format!("{hex}{byte:02x}"));
+    let mut client = Client::connect(floor.settings.socket()).expect("daemon socket");
+    let reply = client
+        .call_as_operator(
+            Method::FloorEnrollmentReload,
+            Some(json!({"apply": {
+                "sha256": sha256, "added": [], "removed": [], "changed": []
+            }})),
+            OperatorCredential::new(credential(&floor.settings)).expect("credential"),
+        )
+        .expect("reload response");
+    reply.result.expect("a reload result")
+}
 
-    terminal.expect_terminal_closed();
-    await_system_detach(&fixture, agent, 1);
-    assert!(
-        floor.ptys.closes().contains(&pty),
-        "the host closed the PTY"
-    );
+fn expect_unrouted(floor: &Floor, page: &Page) {
     let refused = raw_response(
         floor.addr,
-        &upgrade(&page, "/floor/terminal", "dudes-terminal-v1"),
+        &upgrade(page, "/floor/terminal", "dudes-terminal-v1"),
     );
     assert!(
         String::from_utf8_lossy(&refused).starts_with("HTTP/1.1 400 Bad Request"),
         "{}",
         String::from_utf8_lossy(&refused)
     );
+}
 
-    let result = reload(ON);
-    assert!(
-        result["not_applied"]
-            .as_array()
-            .is_some_and(|names| names.contains(&json!("floor.terminal"))),
-        "{result}"
-    );
-    assert_eq!(result["switches"], json!([]), "{result}");
+/// A daemon that starts with the terminal off serves it once the file turns it on and a reload
+/// applies it, with no restart. Turning it off again revokes the live grant and closes its socket,
+/// and each further off and on behaves the same.
+#[test]
+fn the_terminal_turns_on_and_off_by_reload_without_a_restart() {
+    let fixture = Fixture::new();
+    let root = tempfile::tempdir().expect("operator config root");
+    let config = root.path().join("config.toml");
+    std::fs::write(&config, HIRE).expect("operator config");
+    let mut floor = floor_reading(&fixture, false, FloorControl::Off, Some(config.clone()));
+    let agent = attachable(&floor, &fixture);
+    let page = session(&floor);
+    expect_unrouted(&floor, &page);
+
+    for round in 1..=2 {
+        let result = reload_config(&floor, &config, ON);
+        assert_eq!(result["applied"], json!(true), "{result}");
+        assert_eq!(result["switches"], json!(["floor.terminal"]), "{result}");
+        assert!(
+            !result["not_applied"]
+                .as_array()
+                .is_some_and(|names| names.contains(&json!("floor.terminal"))),
+            "{result}"
+        );
+
+        let mut terminal = Socket::terminal(&page);
+        terminal.attach(agent);
+        let pty = newest_pty(&floor.ptys);
+
+        let result = reload_config(&floor, &config, HIRE);
+        assert_eq!(result["switches"], json!(["floor.terminal"]), "{result}");
+        terminal.expect_terminal_closed();
+        await_system_detach(&fixture, agent, round);
+        assert!(
+            floor.ptys.closes().contains(&pty),
+            "the host closed the PTY"
+        );
+        expect_unrouted(&floor, &page);
+    }
+    floor.stop();
+}
+
+/// Attaches that arrive while the switch is flipping are served or refused, and the daemon
+/// stays up to stop cleanly.
+#[test]
+fn an_attach_racing_the_terminal_switch_is_served_or_refused() {
+    let fixture = Fixture::new();
+    let root = tempfile::tempdir().expect("operator config root");
+    let config = root.path().join("config.toml");
+    std::fs::write(&config, HIRE).expect("operator config");
+    let mut floor = floor_reading(&fixture, false, FloorControl::Off, Some(config.clone()));
+    let agent = attachable(&floor, &fixture);
+    let page = session(&floor);
+
+    let racing = {
+        let page = Arc::clone(&page);
+        std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < until {
+                let Ok(mut socket) = Socket::open(&page, "/floor/terminal", "dudes-terminal-v1")
+                else {
+                    continue;
+                };
+                socket.send(
+                    &json!({"type": "terminal.attach", "agent": agent, "cols": 80, "rows": 24}),
+                );
+                let _ = socket.next_within(Duration::from_millis(100));
+            }
+        })
+    };
+    for _ in 0..6 {
+        reload_config(&floor, &config, ON);
+        reload_config(&floor, &config, HIRE);
+    }
+    racing.join().expect("the racing client did not panic");
     floor.stop();
 }

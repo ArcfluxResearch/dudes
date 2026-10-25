@@ -3207,6 +3207,8 @@ const APPEND_ELSEWHERE = ' (URLSearchParams, Headers and FormData have an append
  */
 const ADMITTED_BUILDS = [
   { file: 'src/renderer/figurePortrait.ts', expression: "document.createElement('canvas').getContext('webgl2')" },
+  { file: 'src/renderer/settings/edit.ts', expression: "document.createElement('style')" },
+  { file: 'src/renderer/settings/edit.ts', expression: 'document.head.append(probe)' },
   { file: 'src/shell.tsx', expression: "document.createElement('div')" },
   { file: 'src/shell.tsx', expression: 'host.append(noticeArea)' },
   { file: 'src/shell.tsx', expression: "document.createElement('section')" },
@@ -3454,6 +3456,8 @@ test('no control is built without JSX', async () => {
   assert.deepEqual(carrying, [], 'a control is built without JSX');
   assert.deepEqual(admitted, [
     "src/renderer/figurePortrait.ts: document.createElement('canvas').getContext('webgl2')",
+    "src/renderer/settings/edit.ts: document.createElement('style')",
+    'src/renderer/settings/edit.ts: document.head.append(probe)',
     "src/shell.tsx: document.createElement('div')", "src/shell.tsx: document.createElement('section')",
     'src/shell.tsx: host.append(noticeArea)', 'src/shell.tsx: modal.prepend(noticeBanner)', 'src/shell.tsx: top.append(noticeBanner)',
   ], 'each admitted build must occur exactly once');

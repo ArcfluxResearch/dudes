@@ -63,10 +63,14 @@ pub fn answered(stdout: &[u8]) -> bool {
         return false;
     };
     String::from_utf8_lossy(&stdout[..end]).lines().any(|line| {
-        serde_json::from_str::<serde_json::Value>(line).is_ok_and(|value| {
-            value.get("id").and_then(serde_json::Value::as_u64) == Some(REQUEST_ID)
-        })
+        serde_json::from_str::<serde_json::Value>(line).is_ok_and(|value| is_answer(&value))
     })
+}
+
+/// A line with a top-level `method` is a request from the engine, even when it reuses our id.
+fn is_answer(value: &serde_json::Value) -> bool {
+    value.get("method").is_none()
+        && value.get("id").and_then(serde_json::Value::as_u64) == Some(REQUEST_ID)
 }
 
 /// The model ids the answer lists, in its order, without the ones it marks hidden. Empty when the
@@ -77,7 +81,7 @@ pub fn parse(stdout: &[u8]) -> Vec<String> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if value.get("id").and_then(serde_json::Value::as_u64) != Some(REQUEST_ID) {
+        if !is_answer(&value) {
             continue;
         }
         let Some(data) = value
@@ -143,6 +147,13 @@ mod tests {
             b"{\"id\":1}\n{\"id\":2,\"result\":{\"data\":[]}}\n"
         ));
         assert!(answered(b"{\"id\":2,\"error\":{\"message\":\"no\"}}\n"));
+    }
+
+    #[test]
+    fn a_request_from_the_engine_with_our_id_is_not_the_answer() {
+        let request = b"{\"id\":2,\"method\":\"item/tool/call\",\"params\":{}}\n";
+        assert!(!answered(request));
+        assert!(parse(request).is_empty());
     }
 
     #[test]

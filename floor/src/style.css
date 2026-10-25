@@ -3087,6 +3087,7 @@ samp,
 .agent-more > summary::-webkit-details-marker { display: none; }
 .agent-more-body { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .4rem; }
 .agent-more-body > .agent-look-editor { flex: 1 1 100%; }
+.agent-detail-head > .agent-detail-terminal { grid-column: 1 / -1; margin: 0; }
 .agent-attach-note { grid-column: 1 / -1; margin: 0; color: var(--muted-ink); font-size: .8rem; }
 .agent-overview-finished-words { margin: .2rem 0 0; color: var(--muted-ink); font-size: .85rem; }
 
