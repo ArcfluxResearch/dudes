@@ -40,7 +40,7 @@ const MIN_STANDING = 2;
 
 /** The station states in which an agent is on the free floor, so it can stand in a huddle. Every other state
  * is the daemon wanting the agent somewhere else or needing a human, and ends that member's place in it. */
-const FREE_STATES: ReadonlySet<OfficeState> = new Set(['idle', 'working', 'between-turns', 'done']);
+const FREE_STATES: ReadonlySet<OfficeState> = new Set(['idle', 'working', 'between-turns', 'done', 'finished']);
 
 export interface HuddleMember {
   readonly agentId: string;

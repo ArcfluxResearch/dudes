@@ -47,7 +47,7 @@ impl Fold {
         let completion = world
             .completed_goal(agent)
             .filter(|(goal, _)| world.goals.get(goal).is_some_and(|row| row.agent == agent));
-        let mails = if matches!(record, Record::MailWakeTurnDecided(decision) if matches!(decision.purpose, dudes_proto::MailWakePurpose::FreshPreparation { .. }))
+        let mails = if matches!(record, Record::MailWakeTurnDecided(decision) | Record::IdentifiedMailWakeTurnDecided(decision) if matches!(decision.purpose, dudes_proto::MailWakePurpose::FreshPreparation { .. }))
         {
             self.receipts(agent)
         } else if let Record::MailState { id, .. } = record {
@@ -65,7 +65,7 @@ impl Fold {
             retired: owner.is_none_or(|row| row.retired),
             attached: owner.is_some_and(|row| row.attached),
             open_turn: owner.and_then(|row| row.open_turn),
-            turn_exists: matches!(record, Record::MailWakeOnlyTurnIssued(issue) if world.turns.contains_key(&issue.turn)),
+            turn_exists: matches!(record, Record::MailWakeOnlyTurnIssued(issue) | Record::IdentifiedMailWakeOnlyTurnIssued(issue) if world.turns.contains_key(&issue.turn)),
             receipt_exists: matches!(record, Record::Mail { id, .. } if self.mail.contains_key(id)),
             question_lsn: owner.and_then(|row| row.question_lsn),
             mails,
@@ -91,8 +91,10 @@ impl Fold {
                     vec![*from, *to]
                 }
             }
-            Record::MailWakeTurnDecided(decision) => vec![decision.agent],
-            Record::MailWakeOnlyTurnIssued(issue) => vec![issue.agent],
+            Record::MailWakeTurnDecided(decision)
+            | Record::IdentifiedMailWakeTurnDecided(decision) => vec![decision.agent],
+            Record::MailWakeOnlyTurnIssued(issue)
+            | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => vec![issue.agent],
             Record::MailState { id, .. } => self
                 .mail
                 .get(id)
@@ -124,14 +126,19 @@ impl Fold {
             if lsn > state.last_lsn
                 && matches!(
                     entry.record,
-                    Record::MailWakeTurnDecided(_) | Record::MailWakeOnlyTurnIssued(_)
+                    Record::MailWakeTurnDecided(_)
+                        | Record::IdentifiedMailWakeTurnDecided(_)
+                        | Record::MailWakeOnlyTurnIssued(_)
+                        | Record::IdentifiedMailWakeOnlyTurnIssued(_)
                 )
             {
                 self.accepted_lsn = Some(lsn);
             }
             self.states.insert(agent, applied.state);
             if applied.issued {
-                let Record::MailWakeOnlyTurnIssued(issue) = &entry.record else {
+                let (Record::MailWakeOnlyTurnIssued(issue)
+                | Record::IdentifiedMailWakeOnlyTurnIssued(issue)) = &entry.record
+                else {
                     unreachable!();
                 };
                 self.by_day.insert(key, count + 1);
@@ -202,6 +209,16 @@ mod tests {
         Usage, Usd,
     };
     use std::ffi::OsStr;
+
+    /// The identified wake task the live flow prepares for `agent` with `count` unread.
+    fn wake_task(world: &World, agent: AgentId, count: u8) -> MailWakeTask {
+        let row = &world.agents[&agent];
+        MailWakeTask::identified(
+            &dudes_proto::IdentityLine::new(agent, &row.name, &row.role),
+            count,
+        )
+        .unwrap()
+    }
 
     #[test]
     fn recipient_index_keeps_only_accepted_nonterminal_canonical_receipts() {
@@ -745,7 +762,7 @@ mod tests {
         let arrival = one(mail_journaled(h, mail_record(prefix, &MailState::Durable)));
         let root = one(refresh(h, &arrival));
         assert!(
-            matches!(root.record(), Some(Record::MailWakeTurnDecided(value))
+            matches!(root.record(), Some(Record::IdentifiedMailWakeTurnDecided(value))
             if matches!(value.purpose, MailWakePurpose::FreshPreparation { .. }))
         );
         let ready = one(acknowledge(h, root));
@@ -764,7 +781,7 @@ mod tests {
         ));
         let decision = one(refresh(h, &notified));
         assert!(
-            matches!(decision.record(), Some(Record::MailWakeTurnDecided(value))
+            matches!(decision.record(), Some(Record::IdentifiedMailWakeTurnDecided(value))
             if matches!(value.purpose, MailWakePurpose::ExistingPreparation { .. }))
         );
         let checking = one(acknowledge(h, decision));
@@ -774,12 +791,15 @@ mod tests {
             [Seen::SampleInstructions { baseline: None, .. }]
         ));
         let issue = one(instruction_work(h, sampled));
-        let Some(Record::MailWakeOnlyTurnIssued(carrier)) = issue.record() else {
+        let Some(Record::IdentifiedMailWakeOnlyTurnIssued(carrier)) = issue.record() else {
             panic!("expected the actual post-baseline mail issue")
         };
         assert_eq!(carrier.goal, prefix.goal);
         assert_eq!(carrier.completion_lsn, prefix.completion);
-        assert_eq!(carrier.task, MailWakeTask::new(1).unwrap());
+        assert_eq!(
+            carrier.task,
+            wake_task(h.supervisor.world(), prefix.agent, 1)
+        );
         prefix.turn = carrier.turn;
         let armed = one(acknowledge(h, issue));
         assert!(
@@ -871,9 +891,14 @@ mod tests {
         )));
         assert!(h.host.spawned.is_empty());
         assert_eq!(h.open_turn(prefix.agent), Some(prefix.turn));
-        assert_eq!(
-            h.supervisor.world().turns[&prefix.turn].task,
-            MailWakeTask::new(1).unwrap().as_str()
+        assert!(
+            [
+                MailWakeTask::new(1).unwrap(),
+                wake_task(h.supervisor.world(), prefix.agent, 1)
+            ]
+            .iter()
+            .any(|task| task.as_str() == h.supervisor.world().turns[&prefix.turn].task),
+            "the issued task is the legacy or the identified wake task"
         );
         assert_eq!(
             h.supervisor.world().turns[&prefix.turn].model_selection,
@@ -883,7 +908,8 @@ mod tests {
             h.journal
                 .iter()
                 .filter(|entry| matches!(&entry.record,
-            Record::MailWakeOnlyTurnIssued(issue) if issue.turn == prefix.turn))
+            Record::MailWakeOnlyTurnIssued(issue)
+                | Record::IdentifiedMailWakeOnlyTurnIssued(issue) if issue.turn == prefix.turn))
                 .count(),
             1
         );
@@ -1674,7 +1700,7 @@ mod tests {
         let at = prefix
             .entries
             .iter()
-            .find(|entry| matches!(entry.record, Record::MailWakeOnlyTurnIssued(_)))
+            .find(|entry| matches!(entry.record, Record::IdentifiedMailWakeOnlyTurnIssued(_)))
             .unwrap()
             .at;
         assert!(

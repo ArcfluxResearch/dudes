@@ -29,7 +29,10 @@
 //!
 //! JSON mode exits 0 even when the final call failed, so the exit status alone cannot show a
 //! failure. A final `stopReason` of `stop` with exit 0 completes the turn. Any other `stopReason`
-//! fails it, with Pi's `errorMessage` when there is one, and so does a non-zero exit.
+//! fails it, with Pi's `errorMessage` when there is one, and so does a non-zero exit. A provider's
+//! JSON error body is reduced to its message and code.
+//! The cause is also the failed turn's reply. A run that exits non-zero before any JSON, as Pi does for
+//! a bad `--model`, fails with the first line it wrote.
 //!
 //! # The session id must fit Pi's own grammar
 //!
@@ -66,6 +69,7 @@ pub struct TurnStream {
     compacting: bool,
     unreported: bool,
     unreadable: u64,
+    diagnostic: Option<String>,
     layout: TextLayout,
     pending_tools: BTreeMap<String, PendingTool>,
     completed_servers: BTreeSet<String>,
@@ -379,6 +383,9 @@ impl TurnReader for TurnStream {
         }
         let Some(event) = Event::parse(text) else {
             self.unreadable += 1;
+            if self.phase == Phase::BeforeHeader && self.diagnostic.is_none() {
+                self.diagnostic = diagnostic_line(text);
+            }
             return LineRead::default();
         };
         match event {
@@ -473,9 +480,15 @@ impl TurnReader for TurnStream {
         let settled = turn.phase == Phase::Settled;
         let (outcome, final_reply) = match turn.last.as_ref().filter(|_| settled) {
             Some(last) => outcome(last, exit),
-            None => (TurnOutcome::NoResult, None),
+            None => match turn.diagnostic.take().filter(|_| !exit.is_success()) {
+                Some(line) => failure(&line),
+                None => (TurnOutcome::NoResult, None),
+            },
         };
-        let last_message = final_reply.as_ref().map(|reply| reply.text.clone());
+        let last_message = final_reply
+            .as_ref()
+            .filter(|_| outcome == TurnOutcome::Completed)
+            .map(|reply| reply.text.clone());
         TurnEnd {
             report: dudes_proto::TurnReport::default(),
             final_observation: (!turn.completed_servers.is_empty()).then(|| SessionObservation {
@@ -526,12 +539,80 @@ fn outcome(last: &AssistantMessage, exit: ExitStatus) -> (TurnOutcome, Option<Fi
         ),
         other => {
             let signal = other.unwrap_or("no stop reason");
-            let reason = match last.error_message.as_deref() {
-                Some(message) if !message.is_empty() => format!("{signal}: {message}"),
-                _ => signal.to_owned(),
-            };
-            (TurnOutcome::Failed { reason }, None)
+            match last
+                .error_message
+                .as_deref()
+                .filter(|message| !message.is_empty())
+            {
+                Some(message) => {
+                    let message = plain_error(message);
+                    failure(&if signal == "error" {
+                        message
+                    } else {
+                        format!("{signal}: {message}")
+                    })
+                }
+                None => (
+                    TurnOutcome::Failed {
+                        reason: signal.to_owned(),
+                    },
+                    None,
+                ),
+            }
         }
+    }
+}
+
+/// A failed turn whose cause Pi stated. The reason is also the turn's reply, so a Chat page shows
+/// it; the daemon scrubs and bounds both before they are journaled.
+fn failure(cause: &str) -> (TurnOutcome, Option<FinalReply>) {
+    let reason = format!("Pi reported an error: {cause}");
+    let reply = FinalReply::new(&reason);
+    (TurnOutcome::Failed { reason }, Some(reply))
+}
+
+/// The first line a process wrote that is not JSON, which is how Pi reports a start-up error. The
+/// leading `Error: ` and control characters are dropped, and the line is cut to a readable length.
+fn diagnostic_line(text: &str) -> Option<String> {
+    let line: String = text.chars().filter(|c| !c.is_control()).collect();
+    let line = line.trim();
+    let line = line.strip_prefix("Error: ").unwrap_or(line);
+    (!line.is_empty() && !line.starts_with(['{', '[']))
+        .then(|| line.chars().take(DIAGNOSTIC_CHARS).collect())
+}
+
+const DIAGNOSTIC_CHARS: usize = 400;
+
+/// Pi passes a provider's error through as `<prefix>: <json body>`. When the body is JSON with a
+/// `message`, show that message and the error's `code` instead of the raw body.
+fn plain_error(text: &str) -> String {
+    let Some(start) = text.find('{') else {
+        return text.to_owned();
+    };
+    let Ok(body) = serde_json::from_str::<Value>(&text[start..]) else {
+        return text.to_owned();
+    };
+    let error = body
+        .get("error")
+        .filter(|error| error.is_object())
+        .unwrap_or(&body);
+    let field = |key| {
+        error
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+    };
+    let Some(message) = field("message") else {
+        return text.to_owned();
+    };
+    let prefix = text[..start].trim_end();
+    let code = field("code")
+        .map(|code| format!(" ({code})"))
+        .unwrap_or_default();
+    if prefix.is_empty() {
+        format!("{message}{code}")
+    } else {
+        format!("{prefix} {message}{code}")
     }
 }
 
@@ -945,7 +1026,7 @@ mod tests {
         assert_eq!(
             end.outcome,
             TurnOutcome::Failed {
-                reason: "error: 401: session ended".to_owned()
+                reason: "Pi reported an error: 401: session ended".to_owned()
             }
         );
         assert_eq!(end.last_message, None);

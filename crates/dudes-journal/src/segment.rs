@@ -309,7 +309,8 @@ mod tests {
             }
             Record::McpLaunchGranted { policy_lsn, .. } => vec![*policy_lsn],
             Record::TurnSpawned { mcp_grant, .. } => mcp_grant.iter().copied().collect(),
-            Record::MailWakeTurnDecided(decision) => {
+            Record::MailWakeTurnDecided(decision)
+            | Record::IdentifiedMailWakeTurnDecided(decision) => {
                 let mut refs = vec![decision.completion_lsn];
                 match &decision.purpose {
                     dudes_proto::MailWakePurpose::FreshPreparation { plan } => {
@@ -328,7 +329,8 @@ mod tests {
                 }
                 refs
             }
-            Record::MailWakeOnlyTurnIssued(issue) => {
+            Record::MailWakeOnlyTurnIssued(issue)
+            | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => {
                 vec![issue.completion_lsn, issue.root_lsn, issue.lsn_of_decision]
             }
             Record::TurnIssued {
@@ -385,6 +387,15 @@ mod tests {
                 input_digest: _,
                 gate_trace: _,
                 decision: _,
+            }
+            | Record::IdentifiedTaughtNoteTurnDecided {
+                agent: _,
+                goal: _,
+                note_lsn,
+                completion_lsn,
+                input_digest: _,
+                gate_trace: _,
+                decision: _,
             } => vec![*note_lsn, *completion_lsn],
             Record::NoteOnlyTurnIssued {
                 agent: _,
@@ -400,6 +411,19 @@ mod tests {
                 completion_lsn,
             }
             | Record::TaughtNoteOnlyTurnIssued {
+                agent: _,
+                turn: _,
+                goal: _,
+                task: _,
+                session: _,
+                mode: _,
+                model_selection: _,
+                lsn_of_decision,
+                answers,
+                note_lsn,
+                completion_lsn,
+            }
+            | Record::IdentifiedTaughtNoteOnlyTurnIssued {
                 agent: _,
                 turn: _,
                 goal: _,
@@ -494,8 +518,19 @@ mod tests {
                 note_lsn,
                 context_lsn,
                 ..
+            }
+            | Record::IdentifiedConversationTurnDecided {
+                note_lsn,
+                context_lsn,
+                ..
             } => vec![*note_lsn, *context_lsn],
             Record::ConversationTurnIssued {
+                note_lsn,
+                context_lsn,
+                lsn_of_decision,
+                ..
+            }
+            | Record::IdentifiedConversationTurnIssued {
                 note_lsn,
                 context_lsn,
                 lsn_of_decision,
@@ -606,7 +641,7 @@ mod tests {
 
     #[test]
     fn no_sample_lsn_is_below_the_first_segment() {
-        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 62;
+        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 79;
 
         let mut swept = 0_usize;
         let mut lsns = 0_usize;

@@ -5,7 +5,7 @@
 // steps into a spot. Pure; the crew's routing reads only this.
 
 import { BELL, SEAT_TO_DESK, furnitureModel } from './catalog.ts';
-import type { Area, Cell, Facing, OfficeLayoutDefinition, Partition, PlanPoint, Seat, Spot } from './layout.ts';
+import type { Area, Cell, Facing, FurnitureKind, OfficeLayoutDefinition, Partition, PlanPoint, Seat, Spot } from './layout.ts';
 
 const STEP: Readonly<Record<Facing, PlanPoint>> = Object.freeze({
   north: { x: 0, y: -1 }, east: { x: 1, y: 0 }, south: { x: 0, y: 1 }, west: { x: -1, y: 0 },
@@ -23,6 +23,11 @@ export interface StationSpot {
 
 export const DESK_SEAT_HEIGHT = 0.46;
 export const LOUNGE_SEAT_HEIGHT = 0.53;
+
+/** Somewhere to stand and idle by something in the room, such as the water cooler or a window. */
+export interface RoamSpot extends StationSpot {
+  readonly name: string;
+}
 
 export type AwayPlace = 'board' | 'lounge' | 'kitchen' | 'bell';
 
@@ -43,6 +48,8 @@ export interface OfficePlan {
   /** Each away place's spots, in the order they fill. */
   readonly places: Readonly<Record<AwayPlace, readonly StationSpot[]>>;
   readonly door: StationSpot;
+  /** Where an idle agent can wander to, apart from the lounge seats and a colleague's desk. */
+  readonly roam: readonly RoamSpot[];
   /** Where a group thread's members stand together. */
   readonly meetings: readonly MeetingPlace[];
   /** Where agents past the last desk wait, nearest the door first. */
@@ -206,6 +213,44 @@ function cellsOf(area: Area, facing: Facing, blocked: (x: number, y: number) => 
   return spots;
 }
 
+const ROAM_FURNITURE: Readonly<Partial<Record<FurnitureKind, string>>> = Object.freeze({
+  'water-cooler': 'water cooler', bookshelf: 'bookshelf', plant: 'plant', tree: 'tree', printer: 'printer',
+});
+
+const OPPOSITE: Readonly<Record<Facing, Facing>> = Object.freeze({ north: 'south', east: 'west', south: 'north', west: 'east' });
+
+/** Furniture models face south, so the cell in front of one is tried first. */
+const FRONT_FIRST: readonly Facing[] = ['south', 'east', 'west', 'north'];
+
+function roamSpots(layout: OfficeLayoutDefinition, grid: Pick<OfficePlan, 'width' | 'height' | 'blocked'>): readonly RoamSpot[] {
+  const spots: RoamSpot[] = [];
+  const add = (name: string, cell: Cell, facing: Facing): boolean => {
+    if (isBlocked(grid, cell.x, cell.y) || spots.some((spot) => spot.approach.x === cell.x && spot.approach.y === cell.y)) return false;
+    spots.push({ name, spot: centreOf(cell.x, cell.y), approach: cell, seat: null, facing });
+    return true;
+  };
+  for (const item of layout.furniture) {
+    const name = ROAM_FURNITURE[item.kind];
+    if (name === undefined) continue;
+    const model = furnitureModel(item.kind);
+    const print = footprintAt(item.at, model.width, model.depth, item.facing ?? 'south');
+    const midX = print.x + Math.floor(print.width / 2);
+    const midY = print.y + Math.floor(print.height / 2);
+    const beside: Readonly<Record<Facing, Cell>> = {
+      south: { x: midX, y: print.y + print.height }, east: { x: print.x + print.width, y: midY },
+      west: { x: print.x - 1, y: midY }, north: { x: midX, y: print.y - 1 },
+    };
+    for (const side of FRONT_FIRST) if (add(name, beside[side], OPPOSITE[side])) break;
+  }
+  for (const decor of layout.decor) {
+    if (!decor.kind.endsWith('window')) continue;
+    const along = Math.floor(decor.along);
+    if (decor.wall === 'north') add('window', { x: along, y: 0 }, 'north');
+    else add('window', { x: 0, y: along }, 'west');
+  }
+  return spots;
+}
+
 export function officePlan(layout: OfficeLayoutDefinition): OfficePlan {
   const blocked = Array.from({ length: layout.width * layout.depth }, () => false);
   for (const print of footprints(layout)) {
@@ -240,6 +285,7 @@ export function officePlan(layout: OfficeLayoutDefinition): OfficePlan {
     desks,
     places,
     door,
+    roam: roamSpots(layout, grid),
     meetings,
     queue,
     overflow,

@@ -134,22 +134,6 @@ export function viewConfirmed(floor: FloorState): boolean {
   return floor.phase === 'live' && !floor.stale && floor.snapshotEpoch === floor.epoch;
 }
 
-/**
- * The ticket's wait label for a finished or interrupted agent. `null` when its own status stands.
- */
-export function ticketWord(cards: readonly CardRow[] | undefined, row: AgentRow, status: string): string | null {
-  const held = tickets(cards).filter((card) => card.claimed_by === row.id);
-  const goal = row.goal;
-  const goalId = goalIdOf(row);
-  if (status === 'running' && row.mode === 'managed' && row.paused !== true && row.halted !== true
-    && typeof goal === 'object' && goal !== null && 'status' in goal
-    && (goal.status === 'set' || goal.status === 'in_progress') && goalId !== null
-    && held.some((card) => card.status === 'blocked' && card.ticket?.reason === 'recovery_required' && card.ticket.goal === goalId)) return 'needs you';
-  if (status !== 'done' && status !== 'idle') return null;
-  if (held.some((card) => card.status === 'blocked')) return 'needs you';
-  return held.some((card) => card.status === 'review') ? 'ready for you' : null;
-}
-
 /** The ticket that holds an agent's project, if one does: its title names the wait. */
 export function holdingTicket(floor: FloorState, agent: string): CardRow | null {
   const project = decodeWorkspace(agentRow(floor, agent)?.workspace)?.id;

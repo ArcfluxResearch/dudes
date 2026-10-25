@@ -7,6 +7,8 @@
 // take part: the control flags, the status, an automatic hold, the goal's own
 // status and a fresh live activity. A recent activity only refines a running
 // or idle agent; a journaled status such as `done` or `waiting` outranks it.
+// A finished agent rings the bell while its work waits for the operator to
+// accept it, then roams like an idle one.
 
 import { automaticHoldOf } from '../automaticHold.ts';
 import { liveActivityKind } from '../liveActivity.ts';
@@ -15,7 +17,7 @@ import type { AgentRow } from './cast.ts';
 import { fieldsOf } from './label.ts';
 
 export type OfficeState = 'halted' | 'paused' | 'attached' | 'question' | 'held' | 'exhausted' | 'done'
-  | 'compacting' | 'working' | 'between-turns' | 'idle';
+  | 'compacting' | 'working' | 'between-turns' | 'idle' | 'finished';
 
 /** `stay` keeps the agent where it is standing now. */
 export type Place = 'desk' | 'board' | 'lounge' | 'kitchen' | 'bell' | 'stay';
@@ -41,6 +43,7 @@ export const STATIONS: Readonly<Record<OfficeState, Station>> = Object.freeze({
   held: { place: 'lounge', pose: 'sit', badge: 'held' },
   exhausted: { place: 'lounge', pose: 'sit', badge: 'exhausted' },
   done: { place: 'bell', pose: 'ring', badge: 'done' },
+  finished: { place: 'desk', pose: 'wander', badge: 'done' },
   compacting: { place: 'kitchen', pose: 'ponder', badge: 'working' },
   working: { place: 'desk', pose: 'type', badge: 'working' },
   'between-turns': { place: 'board', pose: 'point', badge: 'checking' },
@@ -69,12 +72,14 @@ function read(row: AgentRow, context: LiveActivityContext | undefined): Reading 
   if (status === 'waiting') return fact('question');
   if (automaticHoldOf(row) !== null) return fact('held');
   if (status === 'exhausted') return fact('exhausted');
-  if (status === 'done') return fact('done');
+  const awaiting = context?.awaitingReview?.has(row.id) === true;
+  if (status === 'done') return fact(awaiting ? 'done' : 'finished');
   const kind = context === undefined ? null : liveActivityKind(row, context);
   const activity = kind === 'working' || kind === 'using_tool' ? 'working'
     : kind === 'compacting' ? 'compacting' : kind === 'waiting' ? 'question' : null;
   if (activity !== null) return { state: activity, fromActivity: true };
   if (status === 'running') return fact('working');
+  if (awaiting) return fact('done');
   return fact(openGoal(row) ? 'between-turns' : 'idle');
 }
 

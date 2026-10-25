@@ -82,6 +82,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             note_lsn,
             context_lsn: row.context_lsn,
             text: note.task.as_ref().unwrap_or(&note.text).clone(),
+            answer: note.answer_to.is_some(),
+            identity: row.identity_line(agent),
             control: Control {
                 halted: row.halted,
                 paused: row.paused,
@@ -142,7 +144,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             _ => Then::Fold,
         };
         self.persist(
-            Record::ConversationTurnDecided {
+            Record::IdentifiedConversationTurnDecided {
                 agent,
                 note_lsn: input.note_lsn,
                 context_lsn: input.context_lsn,
@@ -184,6 +186,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if row.open_turn.is_some() || row.paused || row.halted {
             return;
         }
+        if !self
+            .world
+            .conversation_task_is_current(agent, &row, note_lsn, task)
+        {
+            return;
+        }
         let turn = TurnId::from_ulid(self.rng.ulid());
         let session = self.announce_session(agent, false);
         let Some(selection) = self.model_selection(&row) else {
@@ -207,7 +215,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             }
         };
         self.persist(
-            Record::ConversationTurnIssued {
+            Record::IdentifiedConversationTurnIssued {
                 agent,
                 turn,
                 note_lsn,
