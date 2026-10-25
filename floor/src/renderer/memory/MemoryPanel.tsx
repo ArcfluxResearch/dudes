@@ -118,7 +118,7 @@ function Shown({ shown, agent, crew, reading, onRead }: {
 }) {
   const older = shown.older;
   return <>
-    {shown.retired ? <p className="memory-notice">This agent has retired. Its memory is read from the journal.</p> : null}
+    {shown.retired ? <p className="memory-notice">This agent has retired. Its saved memory is still available.</p> : null}
     {shown.fenced ? <p className="memory-notice">
       Dudes stopped memory work after an integrity failure. The summary may be out of date until Dudes restarts.
     </p> : null}
@@ -157,10 +157,10 @@ function Summary({ summary }: { readonly summary: MemorySummary }) {
 function Refused({ withheld, agent, crew }: { readonly withheld: Withheld; readonly agent: string; readonly crew: Crew }) {
   const { count, newest } = withheld;
   return <section className="memory-withheld">
-    <h4>Refused appends</h4>
+    <h4>Entries not saved</h4>
     <p className="memory-note">
-      {count === 0 ? 'No append to this memory has been refused.'
-        : `${plural(count, 'append to this memory was', 'appends to this memory were')} refused. Dudes kept none of the text.`}
+      {count === 0 ? 'No memory entries were refused.'
+        : `Dudes did not save ${plural(count, 'entry', 'entries')}. It kept none of the text.`}
       {count > newest.length ? ` Only the newest ${newest.length} are listed.` : ''}
     </p>
     {newest.length === 0 ? null : <ol>
