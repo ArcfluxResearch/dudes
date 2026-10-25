@@ -291,9 +291,11 @@ fn only_the_run_owner_and_the_test_constructors_make_a_secret_set() {
         })
         .map(|path| {
             path.strip_prefix(&root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .replace("../", "")
+                .expect("source below the repository root")
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
         })
         .collect();
     makers.sort();

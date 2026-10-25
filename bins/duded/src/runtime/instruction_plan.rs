@@ -1203,14 +1203,16 @@ mod tests {
     ) -> InstructionParticipant {
         use dudes_providers::adapter::AgentCtx;
         use dudes_types::{Mode, ModelSelection};
+        let home = folder.join("operator-home");
+        let agent_dir = folder.join("agent");
         let env = [dudes_providers::launch::EnvVar::new(
-            "HOME",
-            "/home/operator",
+            if cfg!(windows) { "USERPROFILE" } else { "HOME" },
+            home.as_os_str(),
         )];
         let ctx = AgentCtx {
             agent: agent(),
             cwd: folder,
-            agent_dir: Path::new("/state/agents/owner"),
+            agent_dir: &agent_dir,
             daemon_env: &env,
             sandbox: None,
             trusted: true,
@@ -1241,7 +1243,10 @@ mod tests {
         let adapters: [Box<dyn dudes_providers::adapter::Adapter>; 4] = [
             Box::new(ClaudeAdapter::new(ClaudeConfig::default())),
             Box::new(CodexAdapter::new(CodexConfig::default())),
-            Box::new(CodexAdapter::new(streaming).with_managed_home("/state/codex-home".into())),
+            Box::new(
+                CodexAdapter::new(streaming)
+                    .with_managed_home(Path::new(FOLDER).join("codex-home")),
+            ),
             Box::new(PiAdapter::default()),
         ];
         for adapter in adapters {

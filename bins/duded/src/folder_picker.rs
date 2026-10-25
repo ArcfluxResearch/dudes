@@ -334,7 +334,9 @@ mod tests {
             "no program on the path"
         );
         for name in ["kdialog", "zenity"] {
-            let file = directory.path().join(name);
+            let file = directory
+                .path()
+                .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
             std::fs::write(&file, b"#!/bin/sh\n").expect("a program");
             #[cfg(unix)]
             {
@@ -345,7 +347,7 @@ mod tests {
         }
         let argv = command(Platform::Linux, &displayed, Some(&path)).expect("a dialog");
         assert!(
-            argv[0].to_string_lossy().ends_with("zenity"),
+            std::path::Path::new(&argv[0]).file_stem() == Some("zenity".as_ref()),
             "zenity comes first: {argv:?}"
         );
         assert_eq!(
@@ -367,21 +369,27 @@ mod tests {
 
     #[test]
     fn only_one_absolute_path_with_one_line_break_is_a_choice() {
-        assert_eq!(
-            path_of(b"/work/kim/app/\n").as_deref(),
-            Some("/work/kim/app/")
+        let folder = std::env::temp_dir().join("picker-choice");
+        let path = format!(
+            "{}{separator}",
+            folder.display(),
+            separator = std::path::MAIN_SEPARATOR
         );
-        assert_eq!(path_of(b"/tmp/a").as_deref(), Some("/tmp/a"));
+        assert_eq!(
+            path_of(format!("{path}\n").as_bytes()).as_deref(),
+            Some(path.as_str())
+        );
+        assert_eq!(path_of(path.as_bytes()).as_deref(), Some(path.as_str()));
         for junk in [
-            &b""[..],
-            b"\n",
-            b"relative/path\n",
-            b"/tmp/a\n\n",
-            b"/tmp/a\nb\n",
-            b"\xff/tmp\n",
-            b"/tmp/\x1b[2J\n",
+            Vec::new(),
+            b"\n".to_vec(),
+            b"relative/path\n".to_vec(),
+            format!("{path}\n\n").into_bytes(),
+            format!("{path}\nb\n").into_bytes(),
+            [b"\xff".as_slice(), path.as_bytes(), b"\n"].concat(),
+            format!("{path}\x1b[2J\n").into_bytes(),
         ] {
-            assert_eq!(path_of(junk), None, "{junk:?}");
+            assert_eq!(path_of(&junk), None, "{junk:?}");
         }
     }
 }

@@ -971,8 +971,15 @@ mod tests {
         ] {
             assert!(!url_allowed(url), "{url}");
         }
-        let program =
-            declared("[a]\ncommand = \"/usr/local/bin/x\"\n[b]\nurl = \"https://h.example\"");
+        let command = if cfg!(windows) {
+            r"C:\tools\mcp-example.exe"
+        } else {
+            "/usr/local/bin/mcp-example"
+        };
+        let command = toml::Value::String(command.to_owned());
+        let program = declared(&format!(
+            "[a]\ncommand = {command}\n[b]\nurl = \"https://h.example\""
+        ));
         assert!(matches!(program[&names(&["a"])[0]], McpServer::Program(_)));
         assert!(matches!(
             program[&names(&["b"])[0]],

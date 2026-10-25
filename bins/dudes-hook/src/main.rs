@@ -12,8 +12,9 @@ use serde_json::Value;
 
 const FAILURE: &str = "dudes-hook: hook delivery failed\n";
 const OVERLOAD_BLOCK: &str = "dudes-hook: daemon overloaded; control step blocked; retry, and restart duded if this persists\n";
-const UNANSWERED_BLOCK: &str = "dudes-hook: daemon accepted the connection but did not answer; control step blocked; retry, and restart duded if this persists\n";
+const UNANSWERED_BLOCK: &str = "dudes-hook: daemon connection ended before an answer; control step blocked; retry, and restart duded if this persists\n";
 const FAIL_OPEN: i32 = 0;
+const WINDOWS_PIPE_NOT_CONNECTED: i32 = 233;
 
 fn main() {
     let stdin = std::io::stdin();
@@ -41,11 +42,14 @@ fn run(input: impl Read, out: &mut impl Write, err: &mut impl Write) -> Result<i
     );
     let params = serde_json::to_value(HookEventParams { token, raw }).map_err(|_| ())?;
 
-    let mut client = LocalClient::connect(endpoint).map_err(|_| ())?;
-    let response = match client.call(Method::HookEvent, Some(params)) {
+    let response = match LocalClient::connect(endpoint) {
+        Ok(mut client) => client.call(Method::HookEvent, Some(params)),
+        Err(error) if windows_pipe_disconnected(&error) => Err(ClientError::Io(error)),
+        Err(_) => return Err(()),
+    };
+    let response = match response {
         Ok(response) => response,
-        // A daemon at its connection cap accepts one more connection and drops it unanswered, so
-        // an ended connection cannot mean "no daemon": that case fails at connect above.
+        // A full daemon cap can close a pipe before client setup or a write finishes.
         Err(error) if control && ended_unanswered(&error) => {
             let _ = err.write_all(UNANSWERED_BLOCK.as_bytes());
             return Ok(2);
@@ -76,10 +80,14 @@ fn ended_unanswered(error: &ClientError) -> bool {
             matches!(
                 error.kind(),
                 BrokenPipe | NotConnected | ConnectionReset | UnexpectedEof
-            )
+            ) || windows_pipe_disconnected(error)
         }
         _ => false,
     }
+}
+
+fn windows_pipe_disconnected(error: &std::io::Error) -> bool {
+    cfg!(windows) && error.raw_os_error() == Some(WINDOWS_PIPE_NOT_CONNECTED)
 }
 
 fn environment() -> Result<(PathBuf, HookToken), ()> {
@@ -149,5 +157,28 @@ mod tests {
         assert!(!ended_unanswered(&ClientError::Frame(FrameError::NotUtf8)));
         let malformed = serde_json::from_str::<Response>("{").unwrap_err();
         assert!(!ended_unanswered(&ClientError::Malformed(malformed)));
+    }
+
+    #[test]
+    fn a_native_windows_pipe_close_is_unanswered_without_classifying_other_errors() {
+        for (code, expected) in [(233, cfg!(windows)), (2, false), (5, false), (234, false)] {
+            assert_eq!(
+                windows_pipe_disconnected(&Error::from_raw_os_error(code)),
+                expected,
+                "connection setup error {code}"
+            );
+            assert_eq!(
+                ended_unanswered(&ClientError::Io(Error::from_raw_os_error(code))),
+                expected,
+                "native error {code}"
+            );
+            assert_eq!(
+                ended_unanswered(&ClientError::Frame(FrameError::Io(
+                    Error::from_raw_os_error(code)
+                ))),
+                expected,
+                "framed native error {code}"
+            );
+        }
     }
 }

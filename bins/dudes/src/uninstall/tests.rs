@@ -44,7 +44,9 @@ impl Fixture {
         }
         std::fs::write(runtime.join("duded.log"), b"log").expect("a log");
         std::fs::write(config_folder.join("config.toml"), b"[floor]\n").expect("a config");
-        for name in PROGRAMS {
+        let programs = ["duded", "dudes", "dudes-hook"]
+            .map(|name| format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        for name in &programs {
             std::fs::write(bin.join(name), vec![0_u8; 2048]).expect("a program");
         }
         let layout = Layout {
@@ -53,7 +55,7 @@ impl Fixture {
             runtime_dir: runtime,
             config: config_folder.join("config.toml"),
             config_overridden: false,
-            executable: bin.join("dudes"),
+            executable: bin.join(&programs[1]),
             lock_wait: Duration::from_millis(300),
             codex_home: None,
         };
@@ -142,15 +144,17 @@ fn the_plan_lists_every_path_with_its_size() {
          \x20 runtime directory           {runtime}  (3 B)\n\
          \x20 state directory             {state}  (5 B)\n\
          \x20 operator file folder        {config}  (8 B, only the files Dudes writes there)\n\
-         \x20 program                     {bin}/duded  (2.0 KiB)\n\
-         \x20 program                     {bin}/dudes  (2.0 KiB)\n\
-         \x20 program                     {bin}/dudes-hook  (2.0 KiB)\n\
+         \x20 program                     {daemon}  (2.0 KiB)\n\
+         \x20 program                     {cli}  (2.0 KiB)\n\
+         \x20 program                     {hook}  (2.0 KiB)\n\
          \n\
          This was a dry run. Nothing was deleted.\n",
         runtime = l.runtime_dir.display(),
         state = l.state_dir.display(),
         config = l.config.parent().unwrap().display(),
-        bin = bin.display(),
+        daemon = bin.join(PROGRAMS[0]).display(),
+        cli = bin.join(PROGRAMS[1]).display(),
+        hook = bin.join(PROGRAMS[2]).display(),
     );
     assert_eq!(
         (code, out.as_str(), err.as_str()),
@@ -474,9 +478,9 @@ fn a_full_delete_leaves_nothing_behind_and_prints_what_it_cannot_do() {
         &l.state_dir,
         &l.runtime_dir,
         l.config.parent().unwrap(),
-        &bin.join("duded"),
-        &bin.join("dudes"),
-        &bin.join("dudes-hook"),
+        &bin.join(PROGRAMS[0]),
+        &bin.join(PROGRAMS[1]),
+        &bin.join(PROGRAMS[2]),
     ] {
         assert!(!gone.exists(), "{} should be gone", gone.display());
     }
@@ -505,7 +509,7 @@ fn other_prefix(fixture: &mut Fixture) -> PathBuf {
     for name in PROGRAMS {
         std::fs::write(prefix.join("bin").join(name), "x").unwrap();
     }
-    fixture.layout.executable = prefix.join("bin/dudes");
+    fixture.layout.executable = prefix.join("bin").join(PROGRAMS[1]);
     prefix
 }
 
@@ -544,13 +548,13 @@ fn a_share_folder_with_a_foreign_file_keeps_the_folder_and_the_file() {
 #[test]
 fn a_copy_install_sh_did_not_make_keeps_its_programs_and_says_how_to_remove_them() {
     let mut fixture = Fixture::new();
-    let installed = fixture.bin().join("dudes");
+    let installed = fixture.bin().join(PROGRAMS[1]);
     let dist = fixture.base().join("checkout/target/dist");
     std::fs::create_dir_all(&dist).unwrap();
     for name in PROGRAMS {
         std::fs::write(dist.join(name), "x").unwrap();
     }
-    fixture.layout.executable = dist.join("dudes");
+    fixture.layout.executable = dist.join(PROGRAMS[1]);
     let (code, out, _) = fixture.run(yes(), None, &Fake::default());
     assert_eq!(code, exit::SUCCESS);
     assert!(
@@ -572,7 +576,7 @@ fn a_copy_install_sh_did_not_make_keeps_its_programs_and_says_how_to_remove_them
 #[test]
 fn a_symbolic_link_to_dudes_is_not_an_install() {
     let mut fixture = Fixture::new();
-    let real = fixture.bin().join("dudes");
+    let real = fixture.bin().join(PROGRAMS[1]);
     let link = fixture.base().join("linked-dudes");
     std::os::unix::fs::symlink(&real, &link).unwrap();
     fixture.layout.executable = link.clone();
@@ -607,8 +611,12 @@ fn the_home_directory_and_its_parents_and_root_are_never_deleted() {
         &fixture,
         "is the home directory or a parent of it, which Dudes never deletes",
     );
-    fixture.layout.runtime_dir = PathBuf::from("/");
-    refused(&fixture, "/ is the filesystem root");
+    let root = fixture.base().ancestors().last().unwrap().to_path_buf();
+    fixture.layout.runtime_dir = root.clone();
+    refused(
+        &fixture,
+        &format!("{} is the filesystem root", root.display()),
+    );
 }
 
 #[test]
@@ -781,11 +789,11 @@ fn a_partial_failure_lists_what_remains_keeps_the_programs_and_a_rerun_finishes(
         "The programs were kept so you can run dudes uninstall again once the cause is fixed.\n"
     ));
     assert!(out.contains(&format!("removed {}\n", l.runtime_dir.display())));
-    assert!(fixture.bin().join("dudes").exists());
+    assert!(fixture.bin().join(PROGRAMS[1]).exists());
     assert!(NOTICES.iter().all(|name| l.state_dir.join(name).exists()));
     let (code, out, err) = fixture.run(yes(), None, &Fake::default());
     assert_eq!((code, err.as_str()), (exit::SUCCESS, ""), "{out}");
-    assert!(!l.state_dir.exists() && !fixture.bin().join("dudes").exists());
+    assert!(!l.state_dir.exists() && !fixture.bin().join(PROGRAMS[1]).exists());
 }
 
 #[cfg(unix)]

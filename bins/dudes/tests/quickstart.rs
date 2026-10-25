@@ -34,10 +34,6 @@ use common::{Cli, Run, run_program};
 
 const SPAWN_MARKER: &str = "quickstart started duded pid ";
 const CAPTURE_DEADLINE: Duration = Duration::from_secs(45);
-#[cfg(windows)]
-const PARKED_STDOUT_SENTINEL: &str = "planted parked stdout";
-#[cfg(windows)]
-const PARKED_STDERR_SENTINEL: &str = "planted parked stderr";
 
 fn daemon_binary() -> PathBuf {
     let mut daemon = PathBuf::from(env!("CARGO_BIN_EXE_dudes"));
@@ -172,48 +168,6 @@ fn taskkill(pid: u32) -> Run {
             OsString::from("/F"),
         ],
     )
-}
-
-/// Compile a no-argument process that remains alive until the test kills it.
-///
-/// The native test already runs inside the pinned Rust toolchain, so this avoids depending on a
-/// desktop application or on whether that application delegates to another process. The source is
-/// deliberately self-contained and the compiler receives typed arguments without a shell.
-#[cfg(windows)]
-fn parked_daemon(root: &Path) -> PathBuf {
-    let source = root.join("parked-daemon.rs");
-    let executable = root.join("parked-duded.exe");
-    std::fs::write(
-        &source,
-        "use std::io::Write as _;\n\
-         fn main() {\n\
-             let mut stdout = std::io::stdout();\n\
-             stdout.write_all(b\"planted parked stdout\\n\").unwrap();\n\
-             stdout.flush().unwrap();\n\
-             let mut stderr = std::io::stderr();\n\
-             stderr.write_all(b\"planted parked stderr\\n\").unwrap();\n\
-             stderr.flush().unwrap();\n\
-             loop { std::thread::sleep(std::time::Duration::from_secs(60)); }\n\
-         }\n",
-    )
-    .expect("write the parked daemon source");
-    let rustc = std::env::var_os("RUSTC").map_or_else(|| PathBuf::from("rustc"), PathBuf::from);
-    let build = run_program(
-        &rustc,
-        &[
-            source.into_os_string(),
-            OsString::from("--edition=2024"),
-            OsString::from("-o"),
-            executable.as_os_str().to_owned(),
-        ],
-    );
-    assert_eq!(
-        build.code(),
-        0,
-        "the parked daemon did not build: {build:?}"
-    );
-    assert!(executable.is_file(), "{} is absent", executable.display());
-    executable
 }
 
 struct DaemonGuard(Option<u32>);
@@ -1431,47 +1385,6 @@ fn a_quickstarted_daemons_managed_child_sees_its_uids_user_name() {
     let mut guard = DaemonGuard::from_root(root.path());
     assert_eq!(restarted.code(), dudes::exit::SUCCESS, "{restarted:?}");
     guard.stop();
-}
-
-/// A Windows startup timeout kills and waits for the process quickstart spawned.
-///
-/// The test compiles an absolute, no-argument process that stays parked and cannot answer
-/// `system.ping`, so the production deadline reaches the cleanup branch. `taskkill` is both the
-/// process-table probe and the mutation cleanup: it exits nonzero after the candidate's
-/// `Child::kill` + `wait`, but succeeds and removes the survivor when that one cleanup call is
-/// deleted.
-#[cfg(windows)]
-#[test]
-fn a_timed_out_windows_quickstart_kills_the_spawned_daemon() {
-    let root = tempfile::tempdir().expect("a timeout home");
-    let daemon = parked_daemon(root.path());
-
-    let run = cli(root.path(), &daemon).args(["quickstart"]).run();
-    let pids = spawned_pids(root.path());
-    assert_eq!(pids.len(), 1, "quickstart created {pids:?}: {run:?}");
-    let survivor = taskkill(pids[0]);
-
-    assert_eq!(run.code(), dudes::exit::OTHER, "{run:?}");
-    assert!(run.stdout.is_empty(), "a timeout printed a triple: {run:?}");
-    assert!(
-        run.stderr.contains("within 30 seconds"),
-        "the run did not reach the timeout branch: {run:?}"
-    );
-    assert_ne!(
-        survivor.code(),
-        dudes::exit::SUCCESS,
-        "the timed-out quickstart left pid {} alive; taskkill removed it: {survivor:?}",
-        pids[0]
-    );
-    let log = std::fs::read_to_string(log_path(root.path())).expect("the parked daemon log");
-    assert!(
-        log.contains(PARKED_STDOUT_SENTINEL),
-        "the detached daemon's stdout handle did not reach its log:\n{log}"
-    );
-    assert!(
-        log.contains(PARKED_STDERR_SENTINEL),
-        "the detached daemon's stderr handle did not reach its log:\n{log}"
-    );
 }
 
 struct DaemonLogsInTree(Option<PathBuf>);

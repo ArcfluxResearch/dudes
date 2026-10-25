@@ -304,7 +304,7 @@ impl Fixture {
         let inputs = Inputs {
             windows: false,
             current: "0.85.0".to_owned(),
-            executable: prefix.join("bin/dudes"),
+            executable: prefix.join("bin").join(PROGRAMS[1]),
             temp_dir: base.join("tmp"),
             child_env: Vec::new(),
             state_dir: base.join("state"),
@@ -534,7 +534,7 @@ fn a_lock_that_outlives_the_stop_is_reported_with_the_recovery_command() {
     lock.lock().unwrap();
     let daemon = running();
     let (code, _, err) = fixture.run(none(), &FakeRunner::default(), &daemon);
-    let bin = format!("{}/bin/dudes", fixture.prefix().display());
+    let bin = fixture.prefix().join("bin/dudes").display().to_string();
     assert_eq!(code, exit::OTHER);
     assert_eq!(
         err,
@@ -579,7 +579,10 @@ fn a_full_upgrade_runs_exactly_three_commands_with_their_limits_and_restarts_the
         scripted.starts_with(fixture.inputs.temp_dir.to_str().unwrap()),
         "{scripted}"
     );
-    assert!(scripted.ends_with("/install.sh"));
+    assert_eq!(
+        Path::new(&scripted).file_name(),
+        Some("install.sh".as_ref())
+    );
     assert_eq!(calls[0].0, Path::new("/usr/bin/curl"));
     assert_eq!(calls[0].1[0], "-q");
     assert_eq!(
@@ -628,8 +631,8 @@ fn without_a_daemon_it_installs_and_says_how_to_start() {
     assert_eq!(code, 0);
     assert!(
         out.ends_with(&format!(
-            "0.85.0 → 0.86.0\nNo daemon was running. Start it with: {}/bin/dudes start\n",
-            fixture.prefix().display()
+            "0.85.0 → 0.86.0\nNo daemon was running. Start it with: {} start\n",
+            fixture.prefix().join("bin/dudes").display()
         )),
         "{out}"
     );
@@ -719,7 +722,7 @@ fn a_relative_temporary_directory_is_refused() {
 #[test]
 fn a_restart_that_fails_prints_the_recovery_command() {
     let fixture = Fixture::new();
-    let bin = format!("{}/bin/dudes", fixture.prefix().display());
+    let bin = fixture.prefix().join("bin/dudes").display().to_string();
     let daemon = Fake {
         start_fails: true,
         ..running()
@@ -747,7 +750,7 @@ fn a_restart_that_fails_prints_the_recovery_command() {
 #[test]
 fn a_daemon_that_answers_with_another_version_is_an_error() {
     let fixture = Fixture::new();
-    let bin = format!("{}/bin/dudes", fixture.prefix().display());
+    let bin = fixture.prefix().join("bin/dudes").display().to_string();
     let daemon = Fake {
         started_as: Some("0.85.0"),
         ..running()

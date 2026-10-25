@@ -449,9 +449,7 @@ fn candidates(layout: &Layout, prefix: Option<&Path>) -> Vec<Entry> {
         for name in PROGRAMS {
             list.push(Entry {
                 kind: Kind::Program,
-                path: prefix
-                    .join("bin")
-                    .join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
+                path: prefix.join("bin").join(name),
                 removal: Removal::File,
                 content: Content::Any,
                 operator_file: false,
