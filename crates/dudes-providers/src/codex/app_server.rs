@@ -981,7 +981,7 @@ mod tests {
         assert_eq!(
             Box::new(reader).end(EXIT_0).outcome,
             TurnOutcome::Failed {
-                reason: "Codex streaming requires codex-cli 0.160.x, but the installed Codex reports dudes/0.161.0".into()
+                reason: "Codex streaming requires codex-cli 0.160.x or 0.164.x, but the installed Codex reports dudes/0.161.0".into()
             }
         );
     }
@@ -1230,9 +1230,7 @@ mod tests {
         let mut summary = Vec::new();
         let mut text = String::new();
         for line in fixture.lines() {
-            // The capture is from a newer Codex line than the one streaming admits, so its
-            // user agent is swapped for an admitted one to read the rest of the turn.
-            let read = reader.line(&line.replace("dudes/0.164.0-alpha.11.1", "dudes/0.160.0"));
+            let read = reader.line(line);
             text.extend(read.text.iter().map(|fragment| fragment.text.as_str()));
             summary.extend(read.steps.iter().map(|event| match event {
                 StepEvent::Open { step, .. } => {
