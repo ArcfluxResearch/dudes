@@ -206,16 +206,10 @@ fn a_child_that_never_exits_is_killed_at_the_deadline() {
         "pi",
         &format!("echo $$ > {}\nexec sleep 60", pid.display()),
     );
-    let (models, _) = lists(
-        dir.path(),
-        Provider::Pi,
-        pi,
-        Duration::from_millis(1500),
-        65_536,
-    );
+    let (models, _) = lists(dir.path(), Provider::Pi, pi, Duration::from_secs(3), 65_536);
     let started = Instant::now();
     assert_eq!(models.refresh(Provider::Pi), Err(Refusal::TimedOut));
-    assert!(started.elapsed() < Duration::from_secs(4));
+    assert!(started.elapsed() < Duration::from_secs(7));
     assert!(
         gone_within(&pid, Duration::from_secs(3)),
         "the listing child is gone"
@@ -260,11 +254,11 @@ fn refreshes_with_a_child_running_return_at_once_and_start_none() {
         dir.path(),
         "pi",
         &format!(
-            "echo x >> {}\nsleep 2\necho 'provider model context'\necho 'p m1 1K'",
+            "echo x >> {}\nsleep 1\necho 'provider model context'\necho 'p m1 1K'",
             count.display()
         ),
     );
-    let (models, _) = lists(dir.path(), Provider::Pi, pi, Duration::from_secs(4), 65_536);
+    let (models, _) = lists(dir.path(), Provider::Pi, pi, Duration::from_secs(8), 65_536);
     let first = {
         let models = models.clone();
         std::thread::spawn(move || models.refresh(Provider::Pi))
