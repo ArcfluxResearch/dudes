@@ -204,6 +204,20 @@ const done = (id, extra = {}) => wire(id, { status: 'done', result_bytes: 40, en
 const shown = () => view(store.getFloorState().output.steps.map((step) => item(step.id, { ...step,
   resultBytes: step.resultBytes, startedAt: step.startedAt, endedAt: step.endedAt })));
 
+test('only steps whose output can be fetched offer to show it', () => {
+  const unsupported = [
+    item('connected', { kind: 'mcp', tool: 'mcp__server__query', resultBytes: 40 }),
+    item('unknown', { kind: 'other', tool: 'NewTool', resultBytes: 40 }),
+    item('background', { tool: 'BashOutput', resultBytes: 40 }),
+    item('cancelled', { tool: 'KillShell', resultBytes: 40 }),
+  ];
+  assert.doesNotMatch(view(unsupported), /Show the output/);
+  assert.equal(view([
+    item('command', { resultBytes: 40 }),
+    item('read', { kind: 'read', tool: 'Read', resultBytes: 40 }),
+  ]).match(/Show the output/g)?.length, 2);
+});
+
 test('expanding a finished step asks the daemon once and shows the answer as plain text', () => {
   const { live, stop } = open();
   try {
