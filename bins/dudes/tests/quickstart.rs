@@ -1421,12 +1421,7 @@ impl Drop for DaemonLogsInTree {
 #[cfg(windows)]
 #[test]
 fn windows_quickstart_without_home_uses_profile_storage_and_reuses_the_daemon() {
-    let diagnostic_start = Instant::now();
     for _ in 0..5 {
-        eprintln!(
-            "[DEBUG-windows-lifecycle] profile cycle start {:?}",
-            diagnostic_start.elapsed()
-        );
         let root = tempfile::tempdir().expect("isolated profile quickstart");
         let mut owned = DaemonLogsInTree(Some(root.path().to_path_buf()));
         let profile = root.path().join("profile with spaces");
@@ -1448,10 +1443,6 @@ fn windows_quickstart_without_home_uses_profile_storage_and_reuses_the_daemon() 
             true,
         );
         let mut guard = DaemonGuard::from_log(&log);
-        eprintln!(
-            "[DEBUG-windows-lifecycle] first quickstart returned {:?}",
-            diagnostic_start.elapsed()
-        );
         assert_eq!(first.code(), dudes::exit::SUCCESS, "{first:?}");
         assert!(begun.elapsed() < Duration::from_secs(30));
         let first_ping: dudes_proto::rpc::system::PingResult = first.json();
@@ -1471,10 +1462,6 @@ fn windows_quickstart_without_home_uses_profile_storage_and_reuses_the_daemon() 
         let pids = spawned_pids_in_log(&log);
         assert_eq!(pids.len(), 1);
         assert!(process_is_alive(pids[0]), "the started daemon is not alive");
-        eprintln!(
-            "[DEBUG-windows-lifecycle] live process observed {:?}",
-            diagnostic_start.elapsed()
-        );
         let second = captured_with_log_deadline(
             session.clone().args(["--json", "quickstart"]),
             &log,
@@ -1482,29 +1469,17 @@ fn windows_quickstart_without_home_uses_profile_storage_and_reuses_the_daemon() 
             false,
         );
         assert_eq!(second.code(), dudes::exit::SUCCESS, "{second:?}");
-        eprintln!(
-            "[DEBUG-windows-lifecycle] second quickstart returned {:?}",
-            diagnostic_start.elapsed()
-        );
         let second_ping: dudes_proto::rpc::system::PingResult = second.json();
         assert_eq!(second_ping.socket, endpoint);
         assert_eq!(spawned_pids_in_log(&log), pids);
         let stopped = session.clone().args(["stop"]).run();
         assert_eq!(stopped.code(), dudes::exit::SUCCESS, "{stopped:?}");
-        eprintln!(
-            "[DEBUG-windows-lifecycle] stop returned {:?}",
-            diagnostic_start.elapsed()
-        );
         let deadline = Instant::now() + Duration::from_secs(10);
         while process_is_alive(pids[0]) {
             assert!(Instant::now() < deadline, "the daemon survived stop");
             thread::sleep(Duration::from_millis(20));
         }
         guard.0 = None;
-        eprintln!(
-            "[DEBUG-windows-lifecycle] stopped process observed {:?}",
-            diagnostic_start.elapsed()
-        );
         let after = session.args(["ping"]).run();
         assert_ne!(
             after.code(),
@@ -1512,10 +1487,6 @@ fn windows_quickstart_without_home_uses_profile_storage_and_reuses_the_daemon() 
             "daemon answers after stop"
         );
         owned.0 = None;
-        eprintln!(
-            "[DEBUG-windows-lifecycle] profile cycle finished {:?}",
-            diagnostic_start.elapsed()
-        );
     }
 }
 
