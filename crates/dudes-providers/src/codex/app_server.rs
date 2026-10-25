@@ -362,6 +362,9 @@ impl AppServerReader {
                     read.actions.push(ProtocolAction::Close);
                     read
                 } else {
+                    if self.refusal.is_none() {
+                        self.refusal = turn.error.as_ref().and_then(engine_words);
+                    }
                     self.fail()
                 }
             }
@@ -460,7 +463,10 @@ impl TurnReader for AppServerReader {
             if envelope.method.is_some() {
                 return self.fail();
             }
-            if envelope.error.is_some() {
+            if let Some(error) = &envelope.error {
+                if self.refusal.is_none() {
+                    self.refusal = engine_words(error);
+                }
                 return self.fail();
             }
             return id
@@ -527,6 +533,25 @@ impl TurnReader for AppServerReader {
             unreadable: self.unreadable,
         }
     }
+}
+
+/// What the longest an engine's own failure message is kept, in bytes.
+const MAX_ENGINE_WORDS: usize = 2_048;
+
+/// The message the engine gave for a failed request or turn: the `message` of its error object,
+/// or the error itself when it is a string.
+fn engine_words(error: &serde_json::Value) -> Option<String> {
+    let text = error
+        .get("message")
+        .unwrap_or(error)
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())?;
+    let mut end = text.len().min(MAX_ENGINE_WORDS);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(text[..end].to_owned())
 }
 
 fn valid_id(id: &str) -> bool {
@@ -1101,6 +1126,46 @@ mod tests {
         assert!(matches!(end.outcome, TurnOutcome::Failed { .. }));
         assert!(end.session.is_none());
         assert!(end.final_reply.is_none());
+    }
+
+    #[test]
+    fn a_failed_turn_and_a_refused_request_carry_the_engines_own_message() {
+        let mut reader = reader();
+        ready(&mut reader);
+        let failed = read(
+            &mut reader,
+            json!({"method":"turn/completed","params":{"threadId":THREAD,"turn":{"id":TURN,"status":"failed","error":{"message":"The model `gpt-9` does not exist","codexErrorInfo":"other","additionalDetails":null},"items":[]}}}),
+        );
+        assert_eq!(failed.actions, [ProtocolAction::Fail]);
+        assert_eq!(
+            Box::new(reader).end(EXIT_0).outcome,
+            TurnOutcome::Failed {
+                reason: "The model `gpt-9` does not exist".into()
+            }
+        );
+
+        let mut reader = super::tests::reader();
+        reader.start();
+        read(
+            &mut reader,
+            json!({"id":1,"result":{"userAgent":"dudes/0.164.0 (test)","codexHome":"/data/providers/codex"}}),
+        );
+        read(
+            &mut reader,
+            json!({"id":2,"error":{"code":-32600,"message":"  invalid model  "}}),
+        );
+        assert_eq!(
+            Box::new(reader).end(EXIT_0).outcome,
+            TurnOutcome::Failed {
+                reason: "invalid model".into()
+            }
+        );
+        assert_eq!(
+            engine_words(&json!({"message":"é".repeat(2_000)})).map(|text| text.len()),
+            Some(2_048)
+        );
+        assert_eq!(engine_words(&json!({"message":""})), None);
+        assert_eq!(engine_words(&json!("plain")), Some("plain".into()));
     }
 
     fn tool(method: &str, item: &Value) -> Value {
