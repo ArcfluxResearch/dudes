@@ -4,6 +4,8 @@ export interface LiveActivityContext {
   readonly live: boolean;
   readonly now: number;
   readonly wallNow: number;
+  /** Agents whose finished work still waits for the operator to accept it. They stay at the bell. */
+  readonly awaitingReview?: ReadonlySet<string>;
 }
 
 const MAX_LIFETIME_MS = 60_000;
