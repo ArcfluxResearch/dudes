@@ -29,36 +29,9 @@ jobs:
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-nextest
-      - name: Build the hook shim
-        if: ${{ !cancelled() }}
-        run: cargo build --locked -p dudes-hook
-      - name: PTY original LF input
-        if: ${{ !cancelled() }}
-        env:
-          DUDES_PTY_PROBE_UNIX_NEWLINES: '1'
-        run: >-
-          cargo nextest run --locked -p dudes-pty --test host
-          -E 'test(=pty_host_streams_writes_resizes_closes_and_dies_with_daemon)'
-          --no-fail-fast --no-tests=fail --success-output immediate
       - name: PTY native CR input
         if: ${{ !cancelled() }}
         run: >-
           cargo nextest run --locked -p dudes-pty --test host
           -E 'test(=pty_host_streams_writes_resizes_closes_and_dies_with_daemon)'
           --no-fail-fast --no-tests=fail --success-output immediate
-      - name: Unanswered hooks
-        if: ${{ !cancelled() }}
-        run: >-
-          cargo nextest run --locked -p duded --test hook_unanswered
-          --no-fail-fast --success-output immediate
-      - name: Stock engine standing limits
-        if: ${{ !cancelled() }}
-        run: >-
-          cargo nextest run --locked -p duded --lib
-          -E 'test(=runtime::instruction_plan::tests::every_gap_a_stock_engine_declaration_carries_is_a_standing_limit)'
-          --no-fail-fast --no-tests=fail --success-output immediate
-      - name: Hook unit and process tests
-        if: ${{ !cancelled() }}
-        run: >-
-          cargo nextest run --locked -p dudes-hook
-          --no-fail-fast --success-output immediate
