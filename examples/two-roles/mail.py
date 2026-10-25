@@ -30,7 +30,10 @@ def failure_snapshot(records, work):
                  if key in record}
         if record["t"] == "turn_ended":
             outcome = record["outcome"]
-            event["outcome"] = {key: outcome[key] for key in ("outcome", "code", "signal") if key in outcome}
+            event["outcome"] = outcome["kind"]
+            exited = record.get("exit")
+            if isinstance(exited, dict):
+                event["exit"] = {key: exited[key] for key in ("code", "signal") if key in exited}
         if record["t"] == "loop_decided":
             event["decision"] = record["decision"]["kind"]
         events.append(event)
