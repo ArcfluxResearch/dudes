@@ -68,6 +68,14 @@ fn pty_grandchild_probe() {
     reason = "one end-to-end scenario keeps the exact acceptance seam in one place"
 )]
 fn run_host_scenario() {
+    let diagnostic_start = Instant::now();
+    let diagnostic = |phase: &str| {
+        let _ = writeln!(
+            std::io::stderr(),
+            "[DEBUG-windows-pty] {phase} {:?}",
+            diagnostic_start.elapsed()
+        );
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let executable = std::env::current_exe().expect("current test executable");
     let size = PtySize { cols: 80, rows: 24 };
@@ -75,6 +83,7 @@ fn run_host_scenario() {
 
     let child_beat = temp.path().join("child.beat");
     let grandchild_beat = temp.path().join("grandchild.beat");
+    diagnostic("first open");
     let mut opened = host
         .open(
             helper_spec(&executable, temp.path(), &child_beat, &grandchild_beat),
@@ -82,7 +91,9 @@ fn run_host_scenario() {
         )
         .expect("open PTY");
 
+    diagnostic("first open returned");
     let startup = read_until(&mut opened.reader, b"READY");
+    diagnostic("startup read");
     assert_contains(&startup, b"ENV_OK");
     assert_contains(&startup, b"ARGV_OK");
     let expected_cwd = fs::canonicalize(temp.path()).expect("canonical test cwd");
@@ -92,26 +103,32 @@ fn run_host_scenario() {
     );
     await_beating(&child_beat);
     await_beating(&grandchild_beat);
+    diagnostic("startup heartbeats observed");
 
     let input = b"ECHO:exact bytes $() ; | &\n";
     let written = host.write(opened.id, input).expect("write PTY");
     assert_eq!(written, input.len(), "host did not write the exact slice");
+    diagnostic("echo input written");
     let expected_write = format!("WRITE_HEX:{}", hex(input));
     let echoed = read_until(&mut opened.reader, expected_write.as_bytes());
     assert_contains(&echoed, expected_write.as_bytes());
+    diagnostic("echo output read");
 
     let resized = PtySize {
         cols: 120,
         rows: 40,
     };
     host.resize(opened.id, resized).expect("resize PTY");
+    diagnostic("resize returned");
     host.write(opened.id, b"SIZE\n").expect("request size");
     let sized = read_until(&mut opened.reader, b"SIZE:120x40");
     assert_contains(&sized, b"SIZE:120x40");
+    diagnostic("resize observed");
 
     host.write(opened.id, b"BURST:70000\n")
         .expect("request bounded burst");
     let burst = read_until(&mut opened.reader, b"BURST_END");
+    diagnostic("burst output read");
     let longest_z_run = burst
         .split(|byte| *byte != b'Z')
         .map(<[u8]>::len)
@@ -125,6 +142,7 @@ fn run_host_scenario() {
     let first_close =
         call_and_publish_return(&[&child_beat, &grandchild_beat], || host.close(opened.id))
             .expect("close PTY");
+    diagnostic("first close returned");
     assert_eq!(first_close, CloseOutcome::Closed);
     assert_eq!(
         host.close(opened.id).expect("repeat close"),
@@ -134,6 +152,7 @@ fn run_host_scenario() {
     assert_stopped_at_return(&grandchild_beat);
 
     assert_return_event_rejects_premature_return(&mut host, &executable, temp.path(), size);
+    diagnostic("premature return control completed");
 
     let congested_child = temp.path().join("congested.beat");
     let congested_grandchild = temp.path().join("congested-grandchild.beat");
@@ -148,6 +167,7 @@ fn run_host_scenario() {
             size,
         )
         .expect("open congested PTY");
+    diagnostic("congested open returned");
     read_until(&mut congested.reader, b"READY");
     await_beating(&congested_child);
     await_beating(&congested_grandchild);
@@ -159,6 +179,7 @@ fn run_host_scenario() {
             host.close(congested.id)
         })
         .expect("close congested PTY");
+    diagnostic("congested close returned");
     assert_eq!(congested_close, CloseOutcome::Closed);
     assert_stopped_at_return(&congested_child);
     assert_stopped_at_return(&congested_grandchild);
@@ -176,16 +197,19 @@ fn run_host_scenario() {
             size,
         )
         .expect("open natural-exit PTY");
+    diagnostic("natural open returned");
     read_until(&mut natural.reader, b"READY");
     await_beating(&natural_child);
     await_beating(&natural_grandchild);
     host.write(natural.id, b"EXIT\n")
         .expect("request natural exit");
     read_to_eof(&mut natural.reader);
+    diagnostic("natural EOF observed");
     let natural_close = call_and_publish_return(&[&natural_child, &natural_grandchild], || {
         host.close(natural.id)
     })
     .expect("clean natural exit");
+    diagnostic("natural close returned");
     assert_eq!(
         natural_close,
         CloseOutcome::Closed,
@@ -200,6 +224,7 @@ fn run_host_scenario() {
 
     let mut shutdown_beats = Vec::new();
     for index in 0..2 {
+        diagnostic("shutdown fixture opening");
         let child = temp.path().join(format!("shutdown-{index}.beat"));
         let grandchild = temp
             .path()
@@ -216,16 +241,19 @@ fn run_host_scenario() {
         await_beating(&child);
         await_beating(&grandchild);
         shutdown_beats.push((child, grandchild, reader));
+        diagnostic("shutdown fixture ready");
     }
     let shutdown_paths: Vec<&Path> = shutdown_beats
         .iter()
         .flat_map(|(child, grandchild, _)| [child.as_path(), grandchild.as_path()])
         .collect();
     call_and_publish_return(&shutdown_paths, || host.shutdown()).expect("shutdown every PTY");
+    diagnostic("shutdown returned");
     for (child, grandchild, _reader) in shutdown_beats {
         assert_stopped_at_return(&child);
         assert_stopped_at_return(&grandchild);
     }
+    diagnostic("all ownership checks completed");
 }
 
 fn assert_return_event_rejects_premature_return(
