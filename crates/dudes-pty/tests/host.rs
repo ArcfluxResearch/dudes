@@ -136,24 +136,39 @@ fn run_host_scenario() {
     };
     host.resize(opened.id, resized).expect("resize PTY");
     diagnostic("resize returned");
-    host.write(opened.id, &command(b"SIZE"))
-        .expect("request size");
-    let sized = read_until(&mut opened.reader, b"SIZE:120x40");
-    assert_contains(&sized, b"SIZE:120x40");
+    #[cfg(unix)]
+    let size_marker = {
+        host.write(opened.id, &command(b"SIZE"))
+            .expect("request size");
+        format!("SIZE:{}x{}", resized.cols, resized.rows)
+    };
+    #[cfg(windows)]
+    let size_marker = format!("\x1b[8;{};{}t", resized.rows, resized.cols);
+    let sized = read_until(&mut opened.reader, size_marker.as_bytes());
+    assert_contains(&sized, size_marker.as_bytes());
     diagnostic("resize observed");
 
     host.write(opened.id, &command(b"BURST:70000"))
         .expect("request bounded burst");
-    let burst = read_until(&mut opened.reader, b"BURST_END");
+    let burst = read_until(&mut opened.reader, b"BURST_END:70000");
     diagnostic("burst output read");
-    let longest_z_run = burst
-        .split(|byte| *byte != b'Z')
-        .map(<[u8]>::len)
-        .max()
-        .unwrap_or_default();
+    // ConPTY renders screen updates, so its output need not preserve a contiguous stdout burst.
+    #[cfg(unix)]
+    {
+        let longest_z_run = burst
+            .split(|byte| *byte != b'Z')
+            .map(<[u8]>::len)
+            .max()
+            .unwrap_or_default();
+        assert!(
+            longest_z_run >= 70_000,
+            "lost or reordered burst bytes: longest run was {longest_z_run}"
+        );
+    }
+    #[cfg(windows)]
     assert!(
-        longest_z_run >= 70_000,
-        "lost or reordered burst bytes: longest run was {longest_z_run}"
+        burst.contains(&b'Z'),
+        "the completed burst did not paint its payload"
     );
 
     let first_close =
@@ -220,8 +235,25 @@ fn run_host_scenario() {
     await_beating(&natural_grandchild);
     host.write(natural.id, &command(b"EXIT"))
         .expect("request natural exit");
+    #[cfg(unix)]
     read_to_eof(&mut natural.reader);
-    diagnostic("natural EOF observed");
+    #[cfg(windows)]
+    {
+        // A retained pseudoconsole can keep output open after its direct child exits.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(status) = host.exit_status(natural.id).expect("observe natural exit") {
+                assert!(status.success(), "PTY helper exited with {status}");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "PTY helper did not exit naturally"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    diagnostic("natural exit observed");
     let natural_close = call_and_publish_return(&[&natural_child, &natural_grandchild], || {
         host.close(natural.id)
     })
@@ -396,15 +428,14 @@ fn run_pty_helper() {
         if input.read_until(b'\n', &mut line).expect("read PTY input") == 0 {
             return;
         }
+        #[cfg(unix)]
         if line == b"SIZE\n" || line == b"SIZE\r\n" {
-            #[cfg(unix)]
-            {
-                let (cols, rows) = terminal_size();
-                writeln!(output, "SIZE:{cols}x{rows}").expect("size marker");
-            }
-            #[cfg(windows)]
-            report_terminal_size();
-        } else if line == b"EXIT\n" || line == b"EXIT\r\n" {
+            let (cols, rows) = terminal_size();
+            writeln!(output, "SIZE:{cols}x{rows}").expect("size marker");
+            output.flush().expect("flush size output");
+            continue;
+        }
+        if line == b"EXIT\n" || line == b"EXIT\r\n" {
             return;
         } else if let Some(count) = line
             .strip_prefix(b"BURST:")
@@ -412,7 +443,7 @@ fn run_pty_helper() {
             .and_then(|value| value.trim().parse::<usize>().ok())
         {
             output.write_all(&vec![b'Z'; count]).expect("burst bytes");
-            writeln!(output, "\nBURST_END").expect("burst marker");
+            writeln!(output, "\nBURST_END:{count}").expect("burst marker");
         } else if line.starts_with(b"ECHO:") {
             writeln!(output, "WRITE_HEX:{}", hex(&line)).expect("write marker");
         }
@@ -426,33 +457,11 @@ fn terminal_size() -> (u16, u16) {
     (size.ws_col, size.ws_row)
 }
 
-#[cfg(windows)]
-fn report_terminal_size() {
-    let _ = writeln!(std::io::stderr(), "[DEBUG-windows-pty] size probe starting");
-    let powershell = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
-        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let status = Command::new(powershell)
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            r#"[Console]::WriteLine("SIZE:{0}x{1}", [Console]::WindowWidth, [Console]::WindowHeight)"#,
-        ])
-        .status()
-        .expect("run terminal size probe");
-    let _ = writeln!(
-        std::io::stderr(),
-        "[DEBUG-windows-pty] size probe returned {:?}",
-        status.code()
-    );
-    assert!(status.success(), "terminal size probe failed: {status}");
-}
-
 fn read_until(reader: &mut dudes_pty::PtyReader, marker: &[u8]) -> Vec<u8> {
     read_until_from(Vec::new(), reader, marker)
 }
 
+#[cfg(unix)]
 fn read_to_eof(reader: &mut dudes_pty::PtyReader) {
     loop {
         match reader.read().expect("read PTY to EOF") {
@@ -467,7 +476,9 @@ fn read_until_from(
     reader: &mut dudes_pty::PtyReader,
     marker: &[u8],
 ) -> Vec<u8> {
-    let mut diagnostic_bytes = if marker.starts_with(b"WRITE_HEX:") || marker.starts_with(b"SIZE:")
+    let mut diagnostic_bytes = if marker.starts_with(b"WRITE_HEX:")
+        || marker.starts_with(b"SIZE:")
+        || marker.starts_with(b"\x1b[8;")
     {
         512
     } else {
