@@ -85,7 +85,7 @@ test('Overview is a dialog with the count, the journal in plain words and the ro
   assert.match(html, /^<dialog class="overview-dialog" id="overview-dialog" aria-labelledby="overview-title">/);
   assert.match(html, /<h2 id="overview-title" tabindex="-1">Overview<\/h2><button type="button" class="panel-close" aria-label="Close Overview"/);
   assert.match(html, /<strong>2<\/strong> agents/);
-  assert.match(html, /Everything is saved up to segment 2 · byte 4182\./);
+  assert.match(html, /<p class="overview-journal" title="Saved up to segment 2 · byte 4182">\s*Everything is saved\.<\/p>/);
   assert.match(html, /<section class="crew-list roster" id="overview-roster-list" aria-labelledby="overview-roster-title"/);
   assert.match(html, /<h2 id="overview-roster-title" class="roster-title">1 needs you<\/h2>/);
   assert.match(html, /<strong class="crew-name"><bdi>Ada<\/bdi>/);
