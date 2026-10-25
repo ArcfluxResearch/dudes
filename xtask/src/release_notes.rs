@@ -321,6 +321,7 @@ fn plural(count: usize, one: &str, many: &str) -> String {
 fn render_body(subjects: &[String], changelog: &str, inputs: &Inputs<'_>) -> Result<String> {
     let Inputs { version, repo, .. } = *inputs;
     let mut section = changelog_section(changelog, version, inputs.preview)?;
+    let empty_section = section.is_empty();
     let entries: Vec<Entry> = subjects.iter().map(|s| parse_subject(s)).collect();
     let numbered: Vec<(u32, &Entry)> = entries
         .iter()
@@ -352,12 +353,14 @@ fn render_body(subjects: &[String], changelog: &str, inputs: &Inputs<'_>) -> Res
         let _ = writeln!(out, "### Highlights\n\n{highlights}\n");
     }
     let _ = writeln!(out, "### Install\n\n{}\n", install_text(repo));
-    let changes = if changes.is_empty() {
-        "No new capabilities in this release."
-    } else {
-        &changes
-    };
-    let _ = writeln!(out, "### Changes\n\n{changes}\n");
+    if !changes.is_empty() || empty_section {
+        let changes = if changes.is_empty() {
+            "No new capabilities in this release."
+        } else {
+            &changes
+        };
+        let _ = writeln!(out, "### Changes\n\n{changes}\n");
+    }
     let fixes = if fixes.is_empty() {
         "No fixes in this release."
     } else {
