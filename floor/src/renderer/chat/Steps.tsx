@@ -108,7 +108,7 @@ function Kept({ step, kept }: { readonly step: StepItem; readonly kept: StepResu
     case 'waiting': return <p className="step-result">This step is still running.</p>;
     case 'gone': return <p className="step-result">This text is no longer kept.</p>;
     case 'withheld': return <p className="step-withheld">Output is hidden: {kept.reason ?? 'it may hold a secret'}.</p>;
-    case 'refused': return <p className="step-withheld">The daemon would not send this: {kept.reason ?? 'the request was refused'}.</p>;
+    case 'refused': return <p className="step-withheld">This output is unavailable: {kept.reason ?? 'the request was refused'}.</p>;
     case 'ready':
       if (kept.edit !== null) {
         return <Diff old={kept.edit.old?.text ?? null} next={kept.edit.new.text}

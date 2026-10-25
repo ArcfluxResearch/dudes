@@ -277,7 +277,7 @@ test('a withheld, refused, evicted or waiting answer says what happened and show
     live.emit('message', answer('toolu_4', { state: 'waiting' }));
     const html = shown();
     assert.match(html, /Output is hidden: the step names a sensitive path\./);
-    assert.match(html, /The daemon would not send this: this page has not selected that step\./);
+    assert.match(html, /This output is unavailable: this page has not selected that step\./);
     assert.match(html, /This text is no longer kept\./);
     assert.match(html, /This step is still running\./);
     assert.doesNotMatch(html, /step-output|Loading/);
