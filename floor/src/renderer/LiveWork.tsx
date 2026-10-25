@@ -22,7 +22,7 @@ export function streamStatus(floor: FloorState): string {
     case 'selecting': return 'Selecting — waiting for output';
     case 'reconnecting': return 'Reconnecting — waiting for output';
     case 'waiting': return output.reason === 'unbound' ? 'Waiting — this agent has no work running yet'
-      : 'Waiting — no output since Dudes last started';
+      : 'Idle — output from before Dudes restarted is not kept';
     case 'live': return output.truncated ? 'Turn in progress — earlier output truncated' : 'Turn in progress';
     case 'ended': return output.truncated ? 'Last turn ended — earlier output truncated' : 'Last turn ended';
     case 'gap': return 'Gap — output incomplete; retry to load it again';

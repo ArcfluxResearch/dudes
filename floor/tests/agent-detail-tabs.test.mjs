@@ -356,6 +356,7 @@ test('the stream status is one live region in the header, outside every tab pane
     [{ status: 'live', chunks: ['Actual assistant output'] }, 'Turn in progress'],
     [{ status: 'gap' }, 'Gap — output incomplete; retry to load it again'],
     [{ status: 'waiting', reason: 'unbound' }, 'Waiting — this agent has no work running yet'],
+    [{ status: 'waiting', reason: 'no_run_output' }, 'Idle — output from before Dudes restarted is not kept'],
   ]) {
     const html = center({ output: { ...output, ...patch } });
     const detail = html.slice(html.indexOf('id="selected-agent-detail"'));
