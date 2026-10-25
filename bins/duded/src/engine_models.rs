@@ -327,32 +327,26 @@ impl Shared {
         let program =
             crate::program::resolve(&source.program, path).map_err(|_| Refusal::EngineAbsent)?;
         let mut env = source.env.clone();
-        let (argv, stdin) = match provider {
-            Provider::Pi => (
-                std::iter::once(program.into_os_string())
-                    .chain(
-                        dudes_providers::pi::models::LIST_ARGS
-                            .iter()
-                            .map(OsString::from),
-                    )
-                    .collect(),
-                LaunchInput::Null,
-            ),
-            _ => {
-                if let Some(profile) = &self.codex_profile
-                    && let dudes_proto::rpc::system::ProviderLoginHome::Ready { path } =
-                        profile.login_home(Some(&program))
-                {
-                    env.retain(|var| var.name() != "CODEX_HOME");
-                    env.push(EnvVar::new("CODEX_HOME", path.as_os_str()));
-                }
-                let mut argv = dudes_providers::codex::model_list::argv("");
-                argv[0] = program.into_os_string();
-                (
-                    argv,
-                    LaunchInput::WriteThenClose(dudes_providers::codex::model_list::input()),
-                )
+        let (argv, stdin) = if provider == Provider::Pi {
+            let mut argv = vec![program.into_os_string()];
+            argv.extend(
+                dudes_providers::pi::models::LIST_ARGS
+                    .iter()
+                    .map(OsString::from),
+            );
+            (argv, LaunchInput::Null)
+        } else {
+            if let Some(profile) = &self.codex_profile
+                && let dudes_proto::rpc::system::ProviderLoginHome::Ready { path } =
+                    profile.login_home(Some(&program))
+            {
+                env.retain(|var| var.name() != "CODEX_HOME");
+                env.push(EnvVar::new("CODEX_HOME", path.as_os_str()));
             }
+            (
+                dudes_providers::codex::model_list::argv(program.into_os_string()),
+                LaunchInput::WriteThenClose(dudes_providers::codex::model_list::input()),
+            )
         };
         let spec = LaunchSpec {
             argv,
@@ -427,6 +421,7 @@ fn claude_list(state: &State) -> ModelList {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
@@ -479,13 +474,13 @@ mod tests {
         fn sweep(&self) {}
     }
 
-    fn finished(stdout: &str) -> std::io::Result<PredicateCaptured> {
-        Ok(PredicateCaptured::Finished {
+    fn finished(stdout: &str) -> PredicateCaptured {
+        PredicateCaptured::Finished {
             exit: Some(0),
             stdout: stdout.as_bytes().to_vec(),
             truncated: false,
             timed_out: false,
-        })
+        }
     }
 
     fn models(runner: &Arc<Scripted>, provider: Provider) -> EngineModels {
@@ -526,7 +521,7 @@ mod tests {
 openai  gpt-5.1  400K  128K  yes  yes\n\
 openai-codex  gpt-5.1  400K  128K  yes  yes\n\
 openai  gpt-5.1  400K  128K  yes  yes\n";
-        let runner = Arc::new(Scripted::new(finished(table)));
+        let runner = Arc::new(Scripted::new(Ok(finished(table))));
         let lists = models(&runner, Provider::Pi);
         assert_eq!(lists.list(Provider::Pi), None);
         let list = lists.refresh(Provider::Pi).expect("a list");
@@ -551,7 +546,7 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
         let capture = include_str!(
             "../../../crates/dudes-providers/tests/fixtures/codex/app-server-model-list.jsonl"
         );
-        let runner = Arc::new(Scripted::new(finished(capture)));
+        let runner = Arc::new(Scripted::new(Ok(finished(capture))));
         let lists = models(&runner, Provider::Codex);
         let list = lists.refresh(Provider::Codex).expect("a list");
         assert_eq!(list.items.len(), 7);
@@ -567,10 +562,10 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
     fn a_list_holds_at_most_two_hundred_valid_distinct_ids() {
         let mut table = String::from("provider model context\n");
         for number in 0..300 {
-            table.push_str(&format!("p m{number} 1K\n"));
+            let _ = writeln!(table, "p m{number} 1K");
         }
         table.push_str("p bad$name 1K\n");
-        let runner = Arc::new(Scripted::new(finished(&table)));
+        let runner = Arc::new(Scripted::new(Ok(finished(&table))));
         let list = models(&runner, Provider::Pi)
             .refresh(Provider::Pi)
             .expect("a list");
@@ -592,8 +587,8 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
             ),
             (Ok(PredicateCaptured::Swept), Refusal::Stopping),
             (Err(std::io::ErrorKind::Other.into()), Refusal::Failed),
-            (finished("No models available.\n"), Refusal::Unreadable),
-            (finished(""), Refusal::Unreadable),
+            (Ok(finished("No models available.\n")), Refusal::Unreadable),
+            (Ok(finished("")), Refusal::Unreadable),
         ];
         for (outcome, refusal) in cases {
             let runner = Arc::new(Scripted::new(outcome));
@@ -602,7 +597,7 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
                 Err(refusal)
             );
         }
-        let runner = Arc::new(Scripted::new(finished("")));
+        let runner = Arc::new(Scripted::new(Ok(finished(""))));
         let lists = models(&runner, Provider::Pi);
         assert_eq!(lists.refresh(Provider::Codex), Err(Refusal::EngineAbsent));
         assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
@@ -627,7 +622,7 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
 
     #[test]
     fn claude_lists_its_aliases_then_the_ids_seen_newest_first_and_needs_no_child() {
-        let runner = Arc::new(Scripted::new(finished("")));
+        let runner = Arc::new(Scripted::new(Ok(finished(""))));
         let lists = models(&runner, Provider::Pi);
         assert_eq!(
             ids(&lists.list(Provider::Claude).expect("a list")),
@@ -665,7 +660,7 @@ openai  gpt-5.1  400K  128K  yes  yes\n";
 
     #[test]
     fn a_second_refresh_waits_for_the_running_child_and_shares_its_answer() {
-        let mut scripted = Scripted::new(finished("provider model context\np m1 1K\n"));
+        let mut scripted = Scripted::new(Ok(finished("provider model context\np m1 1K\n")));
         scripted.gate = Some((Mutex::new(false), Condvar::new()));
         let runner = Arc::new(scripted);
         let lists = models(&runner, Provider::Pi);

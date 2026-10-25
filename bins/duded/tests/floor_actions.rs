@@ -9446,8 +9446,23 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     let page = exchange(addr, &issue(&settings).bootstrap);
 
     let (frame, _) = snapshot(&page);
+    let mut report = frame["daemon"].clone();
+    let models = report["providers"][0]
+        .as_object_mut()
+        .expect("a provider row")
+        .remove("models")
+        .expect("Claude's list needs no child, so it is always there");
+    assert_eq!(models["checked"], false);
     assert_eq!(
-        frame["daemon"],
+        models["items"],
+        json!([
+            {"id":"opus","kind":"alias"},
+            {"id":"sonnet","kind":"alias"},
+            {"id":"haiku","kind":"alias"}
+        ])
+    );
+    assert_eq!(
+        report,
         json!({"state_dir":"~/state","providers":[
             {"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown",
              "model_change_unsupported":true}
@@ -9467,7 +9482,7 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     let (frame, _) = snapshot(&page);
     let outside_prog = bin_b.join("prog").to_str().expect("UTF-8").to_owned();
     assert_eq!(
-        frame["daemon"]["providers"],
+        without_models(&frame),
         json!([{"provider":"claude","program":"prog","found":true,"path":outside_prog,
             "sign_in":"unknown","model_change_unsupported":true}]),
         "a path outside the home is shown in full, with no restart"
@@ -9483,7 +9498,7 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     std::thread::sleep(PAST_REUSE);
     let (frame, _) = snapshot(&page);
     assert_eq!(
-        frame["daemon"]["providers"],
+        without_models(&frame),
         json!([{"provider":"claude","program":"prog","found":false,"model_change_unsupported":true}])
     );
     let outcome = one_launch(&running.handle, &fixture, &home.path().join("work-c"));
@@ -9498,6 +9513,15 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
         "no check ran a shell or a lookup tool from the head of the daemon's PATH"
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// The report's provider rows without their model lists, which other tests read.
+fn without_models(frame: &Value) -> Value {
+    let mut rows = frame["daemon"]["providers"].clone();
+    for row in rows.as_array_mut().expect("provider rows") {
+        row.as_object_mut().expect("a row").remove("models");
+    }
+    rows
 }
 
 /// One shape of `PATH` or configured command, and the file the check must report for it.

@@ -92,13 +92,12 @@ fn lists(
 }
 
 fn alive(pid_file: &Path) -> bool {
-    let pid = std::fs::read_to_string(pid_file).expect("the stand-in wrote its pid");
-    std::process::Command::new("kill")
-        .args(["-0", pid.trim()])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .expect("kill runs")
-        .success()
+    let pid: i32 = std::fs::read_to_string(pid_file)
+        .expect("the stand-in wrote its pid")
+        .trim()
+        .parse()
+        .expect("a pid");
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
 }
 
 fn gone_within(pid_file: &Path, bound: Duration) -> bool {

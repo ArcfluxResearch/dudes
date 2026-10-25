@@ -38,10 +38,9 @@ const REQUEST_ID: u64 = 2;
 
 /// The arguments of the listing process, program first.
 #[must_use]
-pub fn argv(command: &str) -> Vec<OsString> {
-    std::iter::once(command)
-        .chain(APP_SERVER_ARGS.iter().copied())
-        .map(OsString::from)
+pub fn argv(command: impl Into<OsString>) -> Vec<OsString> {
+    std::iter::once(command.into())
+        .chain(APP_SERVER_ARGS.iter().map(OsString::from))
         .collect()
 }
 
