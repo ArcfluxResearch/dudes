@@ -155,7 +155,7 @@ fn unanswered_shape(result: Result<Response, ClientError>) -> String {
         matches!(
             error.kind(),
             BrokenPipe | NotConnected | ConnectionReset | UnexpectedEof
-        ),
+        ) || (cfg!(windows) && error.raw_os_error() == Some(233)),
         "unclassified {label} error: kind {:?}, raw OS code {:?}",
         error.kind(),
         error.raw_os_error()

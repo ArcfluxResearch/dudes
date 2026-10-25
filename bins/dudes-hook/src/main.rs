@@ -14,6 +14,7 @@ const FAILURE: &str = "dudes-hook: hook delivery failed\n";
 const OVERLOAD_BLOCK: &str = "dudes-hook: daemon overloaded; control step blocked; retry, and restart duded if this persists\n";
 const UNANSWERED_BLOCK: &str = "dudes-hook: daemon accepted the connection but did not answer; control step blocked; retry, and restart duded if this persists\n";
 const FAIL_OPEN: i32 = 0;
+const WINDOWS_PIPE_NOT_CONNECTED: i32 = 233;
 
 fn main() {
     let stdin = std::io::stdin();
@@ -76,7 +77,7 @@ fn ended_unanswered(error: &ClientError) -> bool {
             matches!(
                 error.kind(),
                 BrokenPipe | NotConnected | ConnectionReset | UnexpectedEof
-            )
+            ) || (cfg!(windows) && error.raw_os_error() == Some(WINDOWS_PIPE_NOT_CONNECTED))
         }
         _ => false,
     }
@@ -149,5 +150,23 @@ mod tests {
         assert!(!ended_unanswered(&ClientError::Frame(FrameError::NotUtf8)));
         let malformed = serde_json::from_str::<Response>("{").unwrap_err();
         assert!(!ended_unanswered(&ClientError::Malformed(malformed)));
+    }
+
+    #[test]
+    fn a_native_windows_pipe_close_is_unanswered_without_classifying_other_errors() {
+        for (code, expected) in [(233, cfg!(windows)), (5, false), (234, false)] {
+            assert_eq!(
+                ended_unanswered(&ClientError::Io(Error::from_raw_os_error(code))),
+                expected,
+                "native error {code}"
+            );
+            assert_eq!(
+                ended_unanswered(&ClientError::Frame(FrameError::Io(
+                    Error::from_raw_os_error(code)
+                ))),
+                expected,
+                "framed native error {code}"
+            );
+        }
     }
 }
