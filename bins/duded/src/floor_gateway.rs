@@ -40,6 +40,7 @@ use crate::floor_goal::{GoalOutcome, GoalRefusal, GoalRequest, MAX_GOAL_BODY_BYT
 use crate::floor_look::{LookOutcome, LookRefusal, LookRequest, MAX_LOOK_BODY_BYTES};
 use crate::floor_memory::{MAX_MEMORY_BODY_BYTES, MemoryReads, MemoryRequest, MemoryRoute};
 use crate::floor_model::{MAX_MODEL_BODY_BYTES, ModelOutcome, ModelRefusal, ModelRequest};
+use crate::floor_models::{MAX_REFRESH_BODY_BYTES, RefreshRequest};
 use crate::floor_peer::{AgentRoots, PeerGate};
 use crate::floor_project::{
     MAX_PROJECT_BODY_BYTES, ProjectAnswer, ProjectRequest, Refusal as ProjectRefusal,
@@ -116,6 +117,7 @@ const RENEW_PATH: &str = "/floor/renew";
 const RENAME_PATH: &str = "/floor/rename";
 const LOOK_PATH: &str = "/floor/look";
 const MODEL_PATH: &str = "/floor/model";
+const MODELS_REFRESH_PATH: &str = "/floor/models/refresh";
 /// Routed only when the operator enabled retiring; otherwise a POST here is any
 /// unrouted POST.
 const RETIRE_PATH: &str = "/floor/retire";
@@ -273,6 +275,8 @@ pub struct PreparedAssets {
     switches: SharedSwitches,
     /// The engine sign-ins, served only while `[floor.hire]` is on.
     logins: Option<EngineLogins>,
+    /// The model lists the refresh route asks again.
+    models: Option<crate::engine_models::EngineModels>,
     /// The Git route's reader and limits, served only while `[floor.git]` is on.
     git: Option<Arc<GitReads>>,
     /// The diff route's reader, served only while `[floor.git]` and `[floor.diff]` are on.
@@ -551,6 +555,14 @@ impl PreparedAssets {
         self
     }
 
+    /// Serve `POST /floor/models/refresh` over `models` while `[floor.control]` allows pause,
+    /// resume and rename.
+    #[must_use]
+    pub(crate) fn with_engine_models(mut self, models: crate::engine_models::EngineModels) -> Self {
+        self.models = Some(models);
+        self
+    }
+
     /// Serve `POST /floor/git` over `reads` while `[floor.git]` is on.
     #[must_use]
     pub(crate) fn with_git(mut self, reads: Arc<GitReads>) -> Self {
@@ -722,6 +734,7 @@ impl PreparedAssets {
         let git = self.git;
         let diff = self.diff;
         let logins = self.logins;
+        let models = self.models;
         let board = self.board;
         let tickets = Some(Arc::clone(&board));
         let peer = self.peer;
@@ -759,6 +772,7 @@ impl PreparedAssets {
                             git: git.as_deref(),
                             diff: diff.as_deref(),
                             logins: logins.as_ref(),
+                            models: models.as_ref(),
                             board: &board,
                             memory: &memory,
                             peer: &peer,
@@ -1150,6 +1164,7 @@ struct Catalog<'a> {
     git: Option<&'a GitReads>,
     diff: Option<&'a DiffReads>,
     logins: Option<&'a EngineLogins>,
+    models: Option<&'a crate::engine_models::EngineModels>,
     board: &'a TicketLimits,
     memory: &'a MemoryReads,
     peer: &'a PeerGate,
@@ -1204,6 +1219,7 @@ enum ActionRoute {
     Rename,
     Look,
     Model,
+    ModelsRefresh,
     Retire,
     Settings,
     Project(ProjectVerb),
@@ -1248,6 +1264,9 @@ impl ActionRoute {
             RENAME_PATH if live.control.pause_resume() => Some(Self::Rename),
             LOOK_PATH if live.control.pause_resume() => Some(Self::Look),
             MODEL_PATH if live.control.pause_resume() => Some(Self::Model),
+            MODELS_REFRESH_PATH if live.control.pause_resume() && catalog.models.is_some() => {
+                Some(Self::ModelsRefresh)
+            }
             RETIRE_PATH if live.control.retire() => Some(Self::Retire),
             SETTINGS_PATH => Some(Self::Settings),
             PROJECT_PREVIEW_PATH if live.project => Some(Self::Project(ProjectVerb::Preview)),
@@ -1273,6 +1292,7 @@ impl ActionRoute {
             Self::Rename => MAX_RENAME_BODY_BYTES,
             Self::Look => MAX_LOOK_BODY_BYTES,
             Self::Model => MAX_MODEL_BODY_BYTES,
+            Self::ModelsRefresh => MAX_REFRESH_BODY_BYTES,
             Self::Retire => MAX_RETIRE_BODY_BYTES,
             Self::Settings => MAX_SETTINGS_BODY_BYTES,
             Self::Project(_) | Self::ChooseFolder => MAX_PROJECT_BODY_BYTES,
@@ -1571,6 +1591,9 @@ fn dispatch<'a>(
                 }
                 (ActionRoute::Model, Admitted::Session(session)) => {
                     model_response(session, handle, body)
+                }
+                (ActionRoute::ModelsRefresh, Admitted::Session(session)) => {
+                    models_refresh_response(&session, catalog, body)
                 }
                 (ActionRoute::Retire, Admitted::Session(session)) => {
                     retire_response(session, handle, body)
@@ -2383,6 +2406,54 @@ fn model_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) ->
             error_response(503, "Service Unavailable")
         }
         Err(ModelRefusal::UnavailableNoEffect) => error_response(503, "Service Unavailable"),
+    }
+}
+
+/// Ask one engine for its models again and wait for the answer, on this connection thread. The
+/// listing child is owned, bounded and one at a time per engine, and it appends nothing, so only
+/// the in-flight guard keeps this request's identity.
+fn models_refresh_response<'a>(
+    session: &SessionIdentity,
+    catalog: Catalog<'_>,
+    body: &[u8],
+) -> Response<'a> {
+    let Some(models) = catalog.models else {
+        return error_response(403, "Forbidden");
+    };
+    let Ok(request) = RefreshRequest::parse(body) else {
+        return error_response(400, "Bad Request");
+    };
+    let _reservation = match session.reserve(
+        ActionKind::ModelsRefresh,
+        request.request_id,
+        request.request_digest,
+    ) {
+        ReserveResult::Owner(reservation) => reservation,
+        ReserveResult::Pending => {
+            return action_json(
+                202,
+                "Accepted",
+                &serde_json::json!({ "request_id": request.request_wire, "state": "pending" }),
+            );
+        }
+        ReserveResult::Conflict => return error_response(409, "Conflict"),
+        ReserveResult::Forbidden => return error_response(403, "Forbidden"),
+    };
+    match models.refresh(request.provider) {
+        Ok(_) => action_json(
+            200,
+            "OK",
+            &serde_json::json!({
+                "request_id": request.request_wire, "state": "refreshed", "provider": request.provider
+            }),
+        ),
+        Err(refusal) => action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({
+                "request_id": request.request_wire, "state": "refused", "reason": refusal.name()
+            }),
+        ),
     }
 }
 
@@ -3651,6 +3722,7 @@ pub fn prepare(settings: &FloorSettings) -> Result<PreparedAssets> {
         remembered: None,
         switches: SharedSwitches::default(),
         logins: None,
+        models: None,
         git: None,
         diff: None,
         board: Arc::new(TicketLimits::new()),
@@ -3988,6 +4060,7 @@ mod tests {
             git: None,
             diff: None,
             logins: None,
+            models: None,
             board: &BOARD,
             memory: &MEMORY,
             peer: open_gate(),
