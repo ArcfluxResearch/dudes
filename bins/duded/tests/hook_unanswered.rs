@@ -156,8 +156,9 @@ fn unanswered_shape(result: Result<Response, ClientError>) -> String {
             error.kind(),
             BrokenPipe | NotConnected | ConnectionReset | UnexpectedEof
         ),
-        "unclassified kind {:?}",
-        error.kind()
+        "unclassified {label} error: kind {:?}, raw OS code {:?}",
+        error.kind(),
+        error.raw_os_error()
     );
     format!("{label} {:?}", error.kind())
 }
