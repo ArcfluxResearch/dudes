@@ -9,7 +9,9 @@ import { AgentOverview } from './AgentOverview.tsx';
 import { detailTabSelection, detailTabTarget, revealedTabScroll } from './detailTabs.ts';
 import type { DetailTab } from './detailTabs.ts';
 import type { CardRow } from './board.ts';
-import { ticketWord } from './ticket/model.ts';
+import { stateSentenceOf } from './agentState.ts';
+import { NEED_LABEL, needsOf } from './needs.ts';
+import type { NeedAction } from './needs.ts';
 import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
 import { HIRE_ENGINES } from './onboarding/catalog.ts';
 import { NameEditor } from './rename/NameEditor.tsx';
@@ -30,7 +32,7 @@ function value(value: unknown): string {
 }
 
 export function AgentDetail({
-  row, cards = [], selection = null, streamState = null, control = null, recovery = null, retire = null, terminal = null, enable = null, answer = null, goal: goalForm = null, task: taskForm = null, onOpenTicket,
+  row, cards = [], selection = null, streamState = null, control = null, recovery = null, retire = null, terminal = null, enable = null, attachNote = null, answer = null, goal: goalForm = null, task: taskForm = null, onOpenTicket,
   messages = null, chat = null, liveOutput = null, git = null, memory = null, tab = 'overview', onTabChange = () => {}, live = false,
 }: {
   readonly row: AgentRow;
@@ -44,6 +46,8 @@ export function AgentDetail({
   readonly terminal?: ReactNode;
   /** How to turn on the controls the daemon reports off. */
   readonly enable?: ReactNode;
+  /** One short line beside the model, for a control the agent's engine needs and the Floor has off. */
+  readonly attachNote?: ReactNode;
   readonly answer?: ReactNode;
   readonly goal?: ReactNode;
   readonly task?: ReactNode;
@@ -64,19 +68,33 @@ export function AgentDetail({
   const rows = useMemo(() => [row], [row]);
   useLiveActivityExpiry(rows, live);
   const fields = fieldsOf(row, { live, now: performance.now(), wallNow: Date.now() });
-  const status = ticketWord(cards, row, fields.status) ?? fields.status;
+  const need = needsOf([row], cards, { live, now: performance.now(), wallNow: Date.now() })[0]!;
+  const sentence = stateSentenceOf(row, cards, fields);
   const automaticHold = automaticHoldOf(row);
   const resumeInOverview = automaticHold !== null || (row.paused === true && row.halted !== true)
     || (row.halted === true && row.halted_by_floor === true);
   const panels: readonly { readonly id: DetailTab; readonly label: string; readonly content: ReactNode }[] = [
     { id: 'overview', label: 'Overview', content: <AgentOverview row={row} cards={cards} fields={fields}
-      control={resumeInOverview ? control : null} recovery={recovery} goalForm={goalForm} taskForm={taskForm}
+      recovery={recovery} goalForm={goalForm}
       liveOutput={liveOutput} onOpenTicket={onOpenTicket} /> },
     { id: 'chat', label: 'Chat', content: chat },
     { id: 'git', label: 'Git', content: git },
     { id: 'memory', label: 'Memory', content: memory },
     { id: 'messages', label: 'Messages', content: messages },
   ];
+  function act(action: NeedAction): ReactNode {
+    if (action.kind === 'question') return <button type="button" onClick={(event) => {
+      const question = event.currentTarget.closest('.agent-detail')?.querySelector<HTMLElement>('.agent-detail-question');
+      question?.focus();
+      question?.scrollIntoView({ block: 'nearest' });
+    }}>{action.label}</button>;
+    if (action.kind === 'ticket') return onOpenTicket === undefined ? null
+      : <button type="button" onClick={() => onOpenTicket(action.card)}>{action.label}</button>;
+    if (tab !== 'chat' && panels.some((panel) => panel.id === 'chat' && panel.content !== null)) {
+      return <button type="button" onClick={() => onTabChange('chat')}>{action.label}</button>;
+    }
+    return taskForm === null ? null : <details className="agent-overview-task"><summary>Give a task</summary>{taskForm}</details>;
+  }
   const available = panels.filter((panel) => panel.content !== null);
   const tabs = available.map((panel) => panel.id);
   const selected = detailTabSelection(tabs, tab, focusedSection);
@@ -118,7 +136,6 @@ export function AgentDetail({
         <Portrait className="agent-portrait agent-detail-portrait" look={lookOf(row)} accessory={accessoryOf(row.role)}
           name={row.name} />
         <div className="agent-detail-identity">
-          <p className="agent-detail-kicker">Selected agent</p>
           <div className="agent-detail-name">
             <h2 id={AGENT_DETAIL_HEADING_ID} tabIndex={-1} onDoubleClick={() => beginRename(`detail:${row.id}`, row)}>{value(row.name)}</h2>
             <NameEditor row={row} surface="detail" showName={false} />
@@ -126,15 +143,29 @@ export function AgentDetail({
           <p className="agent-detail-status">
             {value(row.role)}
             {typeof row.provider === 'string' && row.provider !== '' ? ` · ${providerLabel(row.provider)}` : ''}
-            {' · '}<span data-status={status}>{value(status)}</span>
             {fields.liveActivity === null ? null : <>{' · '}<span data-live-activity={fields.liveActivity}>{fields.liveActivity}</span></>}
             {streamState === null ? null : <>{' · '}<span className="stream-state" role="status">{streamState}</span></>}
           </p>
         </div>
         {selection}
-        <div className="agent-detail-actions">{resumeInOverview ? null : control}{retire}{terminal}{enable}</div>
-        <LookEditor row={row} />
+        <section className="agent-detail-state" aria-label="State" data-state={need.state}>
+          <p className="agent-detail-state-line"><span className="crew-chip" data-state={need.state}>{NEED_LABEL[need.state]}</span>
+            {' '}<span className="agent-detail-state-text">{sentence}</span></p>
+          <div className="agent-detail-primary">
+            {resumeInOverview ? control : null}
+            {act(need.action)}
+            {need.second === null ? null : act(need.second)}
+          </div>
+        </section>
+        <div className="agent-detail-actions">
+          {resumeInOverview ? null : control}
+          <details className="agent-more">
+            <summary aria-label="More actions" title="More actions">…</summary>
+            <div className="agent-more-body"><LookEditor row={row} />{terminal}{retire}{enable}</div>
+          </details>
+        </div>
         <ModelEditor row={row} />
+        {attachNote}
         {fields.question === '' ? null : (
           <section className="agent-detail-question" aria-label="Waiting question" tabIndex={-1}>
             <h3>Waiting question</h3>

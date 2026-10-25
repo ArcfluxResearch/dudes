@@ -1067,11 +1067,6 @@ samp,
 .agent-overview h3, .agent-overview p { margin: 0; }
 .agent-overview > section { min-width: 0; }
 .agent-overview h3 { margin-bottom: .4rem; font-size: 1rem; }
-.agent-overview-now-line { font-size: .95rem; overflow-wrap: anywhere; }
-.agent-overview-now > button, .agent-overview-now > .agent-detail-control { margin-top: .6rem; }
-.agent-overview-now .agent-detail-control { padding: 0; border: 0; }
-.agent-overview-now .agent-detail-pause { margin-bottom: .5rem; }
-.agent-overview-now .control-actions { margin: 0; }
 .agent-overview-needs { padding: .75rem; border: 1px solid var(--line); border-radius: .4rem; background: var(--card-background); }
 .agent-overview-held { display: grid; gap: .5rem; margin-top: .6rem; }
 .agent-overview-held > button { justify-self: start; }
@@ -3077,6 +3072,23 @@ samp,
 .agent-detail-actions .retire-dialog p { flex: none; margin: 0 0 0.75rem; }
 .agent-detail-actions .retire-dialog button { flex: none; padding: 0.3rem 0.7rem; }
 .agent-detail-status .stream-state { font-weight: inherit; }
+
+.agent-detail-head > .agent-detail-state { grid-column: 1 / -1; padding: .5rem 0 0; border-top: 1px solid var(--line); }
+.agent-detail-state-line { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin: 0 0 .5rem; font-size: .95rem; overflow-wrap: anywhere; }
+.agent-detail-primary { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.agent-detail-primary:empty { display: none; }
+.agent-detail-primary .agent-detail-control { padding: 0; border: 0; }
+.agent-detail-primary .agent-detail-pause { margin: 0 0 .5rem; }
+.agent-detail-primary .control-actions { margin: 0; }
+.agent-detail-actions .agent-more { flex: 0 0 auto; }
+.agent-detail-actions .agent-more[open] { flex-basis: 100%; }
+.agent-more > summary { display: inline-block; padding: .3rem .7rem; border: 1px solid var(--line); border-radius: var(--radius);
+  cursor: pointer; list-style: none; user-select: none; }
+.agent-more > summary::-webkit-details-marker { display: none; }
+.agent-more-body { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .4rem; }
+.agent-more-body > .agent-look-editor { flex: 1 1 100%; }
+.agent-attach-note { grid-column: 1 / -1; margin: 0; color: var(--muted-ink); font-size: .8rem; }
+.agent-overview-finished-words { margin: .2rem 0 0; color: var(--muted-ink); font-size: .85rem; }
 
 .shell-signed-out {
   align-content: start;

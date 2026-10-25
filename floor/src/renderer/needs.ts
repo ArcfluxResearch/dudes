@@ -3,9 +3,11 @@
 // The one rule for what each agent is doing for the operator and whether it needs them. The roster, the
 // Overview dialog, the top bar's counts and the office's badges all read it, so no two places can disagree.
 
+import { activeCard } from './board.ts';
 import type { CardRow, TicketReason } from './board.ts';
 import { crewRowOf } from './crewRow.ts';
 import type { CrewRow } from './crewRow.ts';
+import { clockTime } from './format.ts';
 import type { LiveActivityContext } from './liveActivity.ts';
 import type { AgentRow } from './scene/cast.ts';
 import { tickets } from './ticket/model.ts';
@@ -40,6 +42,49 @@ const ORDER: Readonly<Record<NeedState, number>> = Object.freeze({
 
 export const NEED_STATES: readonly NeedState[] = Object.freeze(
   (Object.keys(ORDER) as NeedState[]).sort((a, b) => ORDER[a] - ORDER[b]));
+
+export interface Finished {
+  readonly text: string;
+  readonly outcome: 'done' | 'abandoned';
+  /** The ticket was accepted, so the operator has seen the work. */
+  readonly accepted: boolean;
+  /** When the work's last turn ended, in epoch milliseconds, or `null` when no ticket recorded it. */
+  readonly at: number | null;
+}
+
+function goalOf(row: AgentRow): Record<string, unknown> {
+  return typeof row.goal === 'object' && row.goal !== null ? row.goal as Record<string, unknown> : {};
+}
+
+/**
+ * The work an agent closed, once it holds nothing new: its goal is achieved or abandoned, or it has no goal and an
+ * accepted ticket. The roster's line, the agent panel and its Overview all read this, so none can print finished
+ * work as current.
+ */
+export function finishedOf(row: AgentRow, cards: readonly CardRow[]): Finished | null {
+  if (activeCard(cards, row.id) !== null) return null;
+  const goal = goalOf(row);
+  const status = typeof goal.status === 'string' ? goal.status : '';
+  const closed = status === 'achieved' || status === 'abandoned';
+  if (!closed && status !== '') return null;
+  const goalId = typeof goal.id === 'string' ? goal.id : null;
+  const accepted = tickets(cards).filter((card) => card.claimed_by === row.id && card.status === 'done')
+    .sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+  const ticket = accepted.find((card) => goalId !== null && card.ticket?.goal === goalId) ?? (closed ? null : accepted[0] ?? null);
+  const goalText = typeof goal.text === 'string' ? goal.text : '';
+  const text = ticket?.title ?? goalText;
+  if (!closed && ticket === null) return null;
+  if (text === '') return null;
+  return { text, outcome: status === 'abandoned' ? 'abandoned' : 'done', accepted: ticket !== null,
+    at: ticket?.ticket?.last_turn_end?.at ?? null };
+}
+
+/** What happened to finished work, in one phrase, such as `Done, accepted 13:41`. */
+export function finishedWords(finished: Finished): string {
+  const clock = finished.at === null ? '' : ` ${clockTime(finished.at)}`;
+  if (finished.outcome === 'abandoned') return `Abandoned${clock}`;
+  return `${finished.accepted ? 'Done, accepted' : 'Done'}${clock}`;
+}
 
 function shortReason(reason: TicketReason | null): string {
   return reason === 'recovery_required' ? 'Interrupted. Open it to continue.' : 'Open it to see what it needs.';
@@ -88,7 +133,10 @@ function needOf(row: AgentRow, cards: readonly CardRow[], context: LiveActivityC
     return { ...base, state: 'working', doing: steps[row.id] ?? task ?? 'Working', action: talk, second: null };
   }
   const state: NeedState = status === 'waiting' ? 'waiting' : status === 'done' ? 'done' : 'idle';
-  return { ...base, state, doing: task ?? 'Nothing assigned', action: talk, second: null };
+  const finished = state === 'waiting' ? null : finishedOf(row, cards);
+  const doing = finished === null ? task ?? 'Nothing assigned'
+    : `${finished.outcome === 'abandoned' ? 'Abandoned' : 'Last finished'}: ${finished.text}`;
+  return { ...base, state, doing, action: talk, second: null };
 }
 
 /** Every agent: tickets ready to accept first, then the ones that need the operator. Within a state the given order stands. */
