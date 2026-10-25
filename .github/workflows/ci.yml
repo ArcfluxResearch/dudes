@@ -110,6 +110,7 @@ jobs:
           chrome_package=$(dirname "$(readlink -f "$chrome_launcher")")
           # Cold browser file faults can spend the handshake deadline before its pipes start.
           find "$chrome_package" -type f -exec cat {} + > /dev/null
+          export DUDES_SMOKE_CHROME="$chrome_launcher"
           node --test --test-reporter=tap --test-name-pattern='Chrome drives the page over pipes without a DevTools TCP endpoint' xtask/src/smoke.test.mjs | tee "$RUNNER_TEMP/chrome-pipe-smoke.tap"
           grep -E '^ok [0-9]+ - Chrome drives the page over pipes without a DevTools TCP endpoint$' "$RUNNER_TEMP/chrome-pipe-smoke.tap"
 
