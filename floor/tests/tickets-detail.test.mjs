@@ -178,7 +178,7 @@ const EARLIER = {
       boundary: { state: 'unsettled' }, acknowledgment: { state: 'none' } }] } },
 };
 const EARLIER_WORDS = [/The earlier note/, /The earlier summary/, /the earlier check/, /Last check/, /Exit status: 7/,
-  /shortened in this view/, /What Dudes could not see/, /<h4>Instruction review<\/h4>/, /Review the recovered attempt/];
+  /shortened in this view/, /Dudes cannot see Codex&#x27;s plugins\./, /<h4>Instruction review<\/h4>/, /Review the recovered attempt/];
 
 test('a ticket that moved on shows nothing from its earlier reading until the next read answers', async () => {
   await open(EARLIER);

@@ -10,7 +10,7 @@ import { refreshFloorSnapshot } from '../floor/stream.ts';
 
 function FloorActions({ floor }: { readonly floor: FloorState }) {
   const report = floor.settings;
-  if (report === null) return <p role="status">Settings are not reported. Recheck to ask for a fresh snapshot.</p>;
+  if (report === null) return <p role="status">Settings are unavailable. Recheck to try again.</p>;
   if (!guideSnapshotConfirmed(floor)) return null;
   return <>
     <p>These actions are optional. Turn on the ones you want to use from this page.</p>
@@ -44,17 +44,17 @@ export function FirstRunGuideView({ floor, step, onStep, onClose }: {
     <div className="guide-body">
       <h3>{current.label}</h3>
       {step === 'welcome' ? null : <p className="guide-status" role="status">{current.status}</p>}
-      {!confirmed ? <p role="status">Waiting for a confirmed snapshot from the daemon. Recheck to try again.</p> : null}
+      {!confirmed ? <p role="status">Waiting for current information from Dudes. Recheck to try again.</p> : null}
       {step === 'welcome' ? <p>Dudes supervises coding agents while they work towards a goal.
         The Floor shows their current state and offers the actions you enable locally.</p> : null}
       {step === 'engines' ? <>
         <p>This step is complete when Dudes finds an app. Sign in when you hire an agent.</p>
-        <p>The browser Hire wizard offers Claude, and Codex and Pi when the daemon turns them on. The other
-          registered engines are shown for inspection.</p>
+        <p>Hire offers Claude, plus Codex and Pi when they are enabled in Settings. Other apps are listed
+          so you can check their setup.</p>
         <SetupView floor={floor} />
       </> : null}
-      {step === 'workspaces' ? floor.settings === null ? <p>Settings are not reported. Recheck to ask again.</p> : <>
-        <p>Enroll a repository locally. The list updates when the running daemon adopts the enrollment.</p>
+      {step === 'workspaces' ? floor.settings === null ? <p>Settings are unavailable. Recheck to try again.</p> : <>
+        <p>Add a project. The list updates after Dudes loads the change.</p>
         <WorkspaceSettings report={floor.settings} floor={floor} headingId="guide-workspaces" />
       </> : null}
       {step === 'actions' ? <FloorActions floor={floor} /> : null}

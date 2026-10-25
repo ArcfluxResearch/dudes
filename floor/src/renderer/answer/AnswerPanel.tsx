@@ -68,8 +68,8 @@ export function AnswerFormView({ answer, floor, row, leaveFocusTo, compact = fal
       {!blocked || answer.sending ? null : (
         <p className="hire-note" role="status">
           {mine && answer.outcome?.kind === 'answered'
-            ? 'Your answer to this question is in the journal; the floor has not shown the question closing yet.'
-            : 'An earlier answer is not settled yet. Its status is shown in the request receipt.'}
+            ? 'Your answer is saved. Waiting for this question to close.'
+            : 'An earlier answer is not confirmed yet. Check its status.'}
         </p>
       )}
       <div className="answer-actions">
@@ -84,8 +84,8 @@ export function AnswerFormView({ answer, floor, row, leaveFocusTo, compact = fal
         </button>
       </div>
       {compact ? null : <p className="hire-note">
-        This page keeps an answer only in memory. After a reload it shows only what the journal says is still
-        open, and it never sends anything by itself.
+        Your draft stays in this tab until you reload or close it. Reloading shows open questions and never
+        sends an answer.
       </p>}
     </div>
   );
