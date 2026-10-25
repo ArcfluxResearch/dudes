@@ -428,6 +428,7 @@ fn terminal_size() -> (u16, u16) {
 
 #[cfg(windows)]
 fn report_terminal_size() {
+    let _ = writeln!(std::io::stderr(), "[DEBUG-windows-pty] size probe starting");
     let powershell = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
     let status = Command::new(powershell)
@@ -440,6 +441,11 @@ fn report_terminal_size() {
         ])
         .status()
         .expect("run terminal size probe");
+    let _ = writeln!(
+        std::io::stderr(),
+        "[DEBUG-windows-pty] size probe returned {:?}",
+        status.code()
+    );
     assert!(status.success(), "terminal size probe failed: {status}");
 }
 
@@ -461,10 +467,26 @@ fn read_until_from(
     reader: &mut dudes_pty::PtyReader,
     marker: &[u8],
 ) -> Vec<u8> {
+    let mut diagnostic_bytes = if marker.starts_with(b"WRITE_HEX:") || marker.starts_with(b"SIZE:")
+    {
+        512
+    } else {
+        0
+    };
     loop {
         match reader.read().expect("read PTY output") {
             PtyRead::Data(bytes) => {
                 assert!(bytes.len() <= MAX_READ_BYTES, "oversized PTY read");
+                let captured = diagnostic_bytes.min(bytes.len());
+                if captured != 0 {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "[DEBUG-windows-pty] output for {marker:?}, chunk {} bytes, first {captured} as hex {}",
+                        bytes.len(),
+                        hex(&bytes[..captured])
+                    );
+                    diagnostic_bytes -= captured;
+                }
                 received.extend_from_slice(&bytes);
                 if received
                     .windows(marker.len())
