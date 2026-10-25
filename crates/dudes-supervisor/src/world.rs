@@ -40,7 +40,7 @@ use dudes_proto::instruction::{
 };
 use dudes_proto::{
     AgentBudget, BrowserNoteDestination, Entry, GateStep, Goal, LoopDecision, NoteAdmission,
-    NoteContract, Predicate, Record, TurnOutcome,
+    NoteContract, Predicate, Record, TaskContract, TurnOutcome,
 };
 use dudes_types::{
     AgentId, AgentStatus, BreakerRung, CardId, GoalId, Lsn, ModelSelection, Provenance, Provider,
@@ -191,6 +191,15 @@ pub struct AgentRow {
     /// decision or when the goal changes. An exhausted goal is not finished: the loop decides it
     /// again when its limit resets.
     pub exhausted: Option<dudes_proto::ExhaustedReason>,
+}
+
+impl AgentRow {
+    /// The identity line a task for this agent opens with, from the name and role the row holds
+    /// now.
+    #[must_use]
+    pub fn identity_line(&self, agent: AgentId) -> dudes_proto::IdentityLine {
+        dudes_proto::IdentityLine::new(agent, &self.name, &self.role)
+    }
 }
 
 /// One answer waiting for a spawned turn to carry it.
@@ -1019,11 +1028,27 @@ impl World {
                 context_lsn,
                 decision,
                 ..
+            }
+            | Record::IdentifiedConversationTurnDecided {
+                input_digest,
+                agent,
+                note_lsn,
+                context_lsn,
+                decision,
+                ..
             } => {
+                let contract = if matches!(
+                    entry.record,
+                    Record::IdentifiedConversationTurnDecided { .. }
+                ) {
+                    TaskContract::Identified
+                } else {
+                    TaskContract::Legacy
+                };
                 if self
                     .conversation_message(*agent, *note_lsn, *context_lsn)
                     .is_some()
-                    && !matches!(decision, NoteAdmission::Issue { task } if self.browser_notes[note_lsn].task.as_deref().unwrap_or(&self.browser_notes[note_lsn].text) != task)
+                    && !matches!(decision, NoteAdmission::Issue { task } if !self.conversation_task_matches(contract, *agent, *note_lsn, task))
                 {
                     self.conversation_decisions.insert(
                         *agent,
@@ -1047,8 +1072,28 @@ impl World {
                 model_selection,
                 lsn_of_decision,
                 ..
+            }
+            | Record::IdentifiedConversationTurnIssued {
+                agent,
+                turn,
+                note_lsn,
+                context_lsn,
+                task,
+                session,
+                model_selection,
+                lsn_of_decision,
+                ..
             } => {
-                let admitted = self.conversation_message(*agent, *note_lsn, *context_lsn).is_some_and(|note| note.task.as_deref().unwrap_or(&note.text) == task)
+                let contract = if matches!(
+                    entry.record,
+                    Record::IdentifiedConversationTurnIssued { .. }
+                ) {
+                    TaskContract::Identified
+                } else {
+                    TaskContract::Legacy
+                };
+                let admitted = self.conversation_message(*agent, *note_lsn, *context_lsn).is_some()
+                    && self.conversation_task_matches(contract, *agent, *note_lsn, task)
                     && self.eligible_browser_note(*agent, &BrowserNoteDestination::ManagedConversation { context_lsn: *context_lsn }).is_some_and(|(next, _)| next == *note_lsn)
                     && self.agents.get(agent).is_some_and(|row| row.open_turn.is_none())
                     && self.conversation_decisions.get(agent).is_some_and(|(at, note, context, decision, _)|
@@ -1132,15 +1177,33 @@ impl World {
                 input_digest,
                 gate_trace,
                 decision,
+            }
+            | Record::IdentifiedTaughtNoteTurnDecided {
+                agent,
+                goal,
+                note_lsn,
+                completion_lsn,
+                input_digest,
+                gate_trace,
+                decision,
             } => {
-                let contract = if matches!(entry.record, Record::TaughtNoteTurnDecided { .. }) {
-                    NoteContract::Taught
-                } else {
-                    NoteContract::Raw
+                let contract = match entry.record {
+                    Record::TaughtNoteTurnDecided { .. } => NoteContract::Taught,
+                    Record::IdentifiedTaughtNoteTurnDecided { .. } => {
+                        NoteContract::IdentifiedTaught
+                    }
+                    _ => NoteContract::Raw,
                 };
-                let taught_valid=contract==NoteContract::Raw || (dudes_proto::valid_taught_decision(decision,gate_trace)
-                    && self.browser_notes.get(note_lsn).is_some_and(|note|
-                        !matches!(decision,NoteAdmission::Issue{task} if !contract.task_matches(&note.text,task))));
+                let taught_valid = match contract {
+                    NoteContract::Raw => true,
+                    NoteContract::Taught => dudes_proto::valid_taught_decision(decision, gate_trace),
+                    NoteContract::IdentifiedTaught => {
+                        dudes_proto::valid_identified_taught_decision(decision, gate_trace)
+                    }
+                } && (contract == NoteContract::Raw
+                    || self.browser_notes.get(note_lsn).is_some_and(|note| {
+                        !matches!(decision, NoteAdmission::Issue { task } if !contract.task_matches(*agent, &note.text, task))
+                    }));
                 if taught_valid
                     && self.completed_goal(*agent) == Some((*goal, *completion_lsn))
                     && self.browser_notes.get(note_lsn).is_some_and(|note| {
@@ -1167,6 +1230,7 @@ impl World {
             }
             Record::NoteOnlyTurnIssued { .. }
             | Record::TaughtNoteOnlyTurnIssued { .. }
+            | Record::IdentifiedTaughtNoteOnlyTurnIssued { .. }
             | Record::TurnIssuedWithBrowserNote { .. } => {
                 self.fold_browser_issue(lsn, &entry.record);
             }
@@ -1458,8 +1522,9 @@ impl World {
                     },
                 );
             }
-            Record::MailWakeTurnDecided(_) => {}
-            Record::MailWakeOnlyTurnIssued(issue) => {
+            Record::MailWakeTurnDecided(_) | Record::IdentifiedMailWakeTurnDecided(_) => {}
+            Record::MailWakeOnlyTurnIssued(issue)
+            | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => {
                 if self.mail_wakes.accepted(lsn) {
                     self.install_managed_turn(
                         issue.turn,
@@ -2281,6 +2346,44 @@ impl World {
         .then_some(note)
     }
 
+    /// Whether `task` is the identified task for the queued message with the name and role the
+    /// agent's row holds now. A rename since the decision makes it false.
+    #[must_use]
+    pub fn conversation_task_is_current(
+        &self,
+        agent: AgentId,
+        row: &AgentRow,
+        note_lsn: Lsn,
+        task: &str,
+    ) -> bool {
+        self.browser_notes.get(&note_lsn).is_some_and(|note| {
+            dudes_proto::identified_conversation_task(
+                &row.identity_line(agent),
+                note.task.as_deref().unwrap_or(&note.text),
+                note.answer_to.is_some(),
+            ) == task
+        })
+    }
+
+    /// Whether `task` is exactly what the queued message carries under `contract`, for `agent`.
+    #[must_use]
+    pub fn conversation_task_matches(
+        &self,
+        contract: TaskContract,
+        agent: AgentId,
+        note_lsn: Lsn,
+        task: &str,
+    ) -> bool {
+        self.browser_notes.get(&note_lsn).is_some_and(|note| {
+            contract.conversation_task_matches(
+                agent,
+                note.task.as_deref().unwrap_or(&note.text),
+                note.answer_to.is_some(),
+                task,
+            )
+        })
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one contract-qualified lifecycle join validates ownership before installing and charging the turn"
@@ -2302,6 +2405,19 @@ impl World {
                     ..
                 }
                 | Record::TaughtNoteOnlyTurnIssued {
+                    agent,
+                    turn,
+                    goal,
+                    task,
+                    session,
+                    model_selection,
+                    lsn_of_decision,
+                    answers,
+                    note_lsn,
+                    completion_lsn,
+                    ..
+                }
+                | Record::IdentifiedTaughtNoteOnlyTurnIssued {
                     agent,
                     turn,
                     goal,
@@ -2356,7 +2472,12 @@ impl World {
                 mode: dudes_types::Mode::Managed,
                 ..
             } => Some(NoteContract::Taught),
-            Record::TaughtNoteOnlyTurnIssued { .. } => return,
+            Record::IdentifiedTaughtNoteOnlyTurnIssued {
+                mode: dudes_types::Mode::Managed,
+                ..
+            } => Some(NoteContract::IdentifiedTaught),
+            Record::TaughtNoteOnlyTurnIssued { .. }
+            | Record::IdentifiedTaughtNoteOnlyTurnIssued { .. } => return,
             _ => None,
         };
         if self.turns.contains_key(&turn) || self.browser_issues.contains_key(&turn) {
@@ -2376,7 +2497,7 @@ impl World {
             return;
         }
         let admitted = match completion {
-            Some(done) => answers.is_empty() && contract.is_some_and(|kind| kind.task_matches(&note.text,task)) && self.completed_goals.get(&goal) == Some(&done)
+            Some(done) => answers.is_empty() && contract.is_some_and(|kind| kind.task_matches(agent, &note.text, task)) && self.completed_goals.get(&goal) == Some(&done)
                 && self.note_decisions.get(&agent).is_some_and(|row| row.lsn == decision && row.note_lsn == note_lsn && row.goal == goal
                     && row.completion_lsn == done && Some(row.contract)==contract && matches!(&row.decision, NoteAdmission::Issue { task: issued } if issued == task)),
             None => !self.completed_goals.contains_key(&goal) && self.ordinary_continues.get(&decision) == Some(&(agent, goal)),
@@ -2630,7 +2751,10 @@ impl World {
             // the mailbox and the memory projection; each is a crate this one does not depend on
             // and must not. Whatever was last pushed on `Input::Work`, or the default when
             // nothing has been: no card, no mail, no digest, which is the goal text alone.
-            work,
+            work: WorkInput {
+                identity: Some(row.identity_line(agent)),
+                ..work
+            },
             answers: row
                 .pending_answers
                 .iter()

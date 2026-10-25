@@ -308,7 +308,8 @@ fn owned_chat_echo() {
         .read_to_string(&mut task)
         .expect("managed task at launch");
     let total = if task == "café\nexact owned reply"
-        || dudes_proto::recognize_taught_note_task(&task) == Some("café\nexact owned reply")
+        || dudes_proto::recognize_identified_taught_note_task(&task, None)
+            .is_some_and(|(_, note)| note == "café\nexact owned reply")
     {
         0.5
     } else {
@@ -325,12 +326,27 @@ fn owned_chat_echo() {
     std::process::exit(0);
 }
 
+/// The task an identified completed-goal note carries for `agent`, from the name and role the
+/// journal holds for it.
+fn identified_note(fixture: &common::Fixture, agent: AgentId, note: &str) -> String {
+    let mut world = dudes_supervisor::World::default();
+    for (lsn, entry) in fixture.entries() {
+        world.apply(lsn, &entry);
+    }
+    let row = &world.agents[&agent];
+    dudes_proto::identified_taught_note_task(
+        &dudes_proto::IdentityLine::new(agent, &row.name, &row.role),
+        note,
+    )
+    .unwrap()
+}
+
 fn issued_note(fixture: &common::Fixture, note: Lsn) -> TurnId {
     fixture.await_record("browser issue", |record| match record {
         Record::TurnIssuedWithBrowserNote { turn, note_lsn, .. }
         | Record::NoteOnlyTurnIssued { turn, note_lsn, .. }
-        | Record::ConversationTurnIssued { turn, note_lsn, .. }
-        | Record::TaughtNoteOnlyTurnIssued { turn, note_lsn, .. }
+        | Record::IdentifiedConversationTurnIssued { turn, note_lsn, .. }
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued { turn, note_lsn, .. }
             if *note_lsn == note =>
         {
             Some(*turn)
@@ -517,7 +533,7 @@ fn ordinary_done_precedes_note_only_and_note_end_never_judges_again() {
     let admission = entries
         .iter()
         .find_map(|(lsn, entry)| match entry.record {
-            Record::TaughtNoteTurnDecided {
+            Record::IdentifiedTaughtNoteTurnDecided {
                 note_lsn,
                 completion_lsn,
                 ..
@@ -529,11 +545,7 @@ fn ordinary_done_precedes_note_only_and_note_end_never_judges_again() {
     assert_eq!(done, admission.1);
     assert_eq!(
         host.spawned()[1].argv.last().and_then(|part| part.to_str()),
-        Some(
-            dudes_proto::taught_note_task("one completed-goal note")
-                .unwrap()
-                .as_str()
-        )
+        Some(identified_note(&fixture, agent, "one completed-goal note").as_str())
     );
     common::end_turn_with_native(&fixture, &running.handle, &host, turn);
     running.handle.doctor().expect("note end barrier");
@@ -561,7 +573,7 @@ fn ordinary_done_precedes_note_only_and_note_end_never_judges_again() {
     };
     let agent_row = agents.into_iter().find(|row| row.id == agent).unwrap();
     assert_eq!(agent_row.status, dudes_types::AgentStatus::Done);
-    assert!(fixture.records().iter().any(|record| matches!(record, Record::TaughtNoteOnlyTurnIssued { goal: original, .. } if *original == goal)));
+    assert!(fixture.records().iter().any(|record| matches!(record, Record::IdentifiedTaughtNoteOnlyTurnIssued { goal: original, .. } if *original == goal)));
     running.stop(ExitCause::Ended);
     assert_eq!(
         predicates.runs(),
@@ -612,7 +624,7 @@ fn completed_note_preserves_original_budget_question_and_accounts_hops() {
             0,
         );
         let admission = fixture.await_record("completed note refusal", |record| match record {
-            Record::TaughtNoteTurnDecided {
+            Record::IdentifiedTaughtNoteTurnDecided {
                 note_lsn, decision, ..
             } if *note_lsn == note => Some(decision.clone()),
             _ => None,
@@ -750,7 +762,7 @@ fn completed_note_replay_keeps_the_latest_inferred_end_gate() {
     .unwrap();
     let mut restarted = common::start(daemon);
     let second = send(&restarted.handle, &session(), agent, "provenance gated", 1);
-    fixture.await_record("note provenance Hold", |record| matches!(record, Record::TaughtNoteTurnDecided { note_lsn, decision: dudes_proto::NoteAdmission::Hold { reason: dudes_proto::HoldReason::InferredTurnEnd }, .. } if *note_lsn == second).then_some(()));
+    fixture.await_record("note provenance Hold", |record| matches!(record, Record::IdentifiedTaughtNoteTurnDecided { note_lsn, decision: dudes_proto::NoteAdmission::Hold { reason: dudes_proto::HoldReason::InferredTurnEnd }, .. } if *note_lsn == second).then_some(()));
     restarted.handle.doctor().unwrap();
     assert!(host.spawned().is_empty());
     assert_eq!(
@@ -856,7 +868,7 @@ fn failed_note_only_turns_keep_rapid_failure_protection_without_predicates() {
     assert_eq!(predicates.runs(), 1);
     assert_eq!(host.spawned().len(), 3);
     assert!(!fixture.records().iter().any(
-        |record| matches!(record, Record::TaughtNoteOnlyTurnIssued { note_lsn, .. } if *note_lsn == third)
+        |record| matches!(record, Record::IdentifiedTaughtNoteOnlyTurnIssued { note_lsn, .. } if *note_lsn == third)
     ));
     assert!(fixture.records().iter().any(|record| matches!(record, Record::BreakerBeat { signals, .. } if signals.contains(&dudes_types::BreakerSignal::RapidFailure))));
     running.stop(ExitCause::Ended);
@@ -1007,7 +1019,7 @@ fn completed_question_answer_closes_without_trigger_or_delivery() {
         2,
         "answer must not request another note-only turn"
     );
-    assert!(!fixture.records().iter().any(|record| matches!(record, Record::TaughtNoteOnlyTurnIssued { note_lsn, .. } if *note_lsn == second)));
+    assert!(!fixture.records().iter().any(|record| matches!(record, Record::IdentifiedTaughtNoteOnlyTurnIssued { note_lsn, .. } if *note_lsn == second)));
     assert!(fixture.records().iter().any(
         |record| matches!(record, Record::HumanAnswer { text, .. } if text == "saved answer")
     ));
@@ -1018,11 +1030,7 @@ fn completed_question_answer_closes_without_trigger_or_delivery() {
     });
     assert_eq!(
         host.spawned()[2].argv.last().and_then(|part| part.to_str()),
-        Some(
-            dudes_proto::taught_note_task("second note")
-                .unwrap()
-                .as_str()
-        )
+        Some(identified_note(&fixture, agent, "second note").as_str())
     );
     let mut world = dudes_supervisor::World::default();
     for (lsn, entry) in fixture.entries() {
@@ -1235,20 +1243,127 @@ fn ordinary_note_reserves_multibyte_task_and_consumes_only_carried_answers() {
         .to_str()
         .unwrap()
         .to_owned();
-    assert_eq!(task.len(), 65_536);
-    assert!(task.ends_with(&format!(
-        "\n\n[browser note]\n{note_text}\n[end browser note]"
-    )));
     let mut world = dudes_supervisor::World::default();
     for (lsn, entry) in fixture.entries() {
         world.apply(lsn, &entry);
     }
+    let row = &world.agents[&agent];
+    let line = dudes_proto::IdentityLine::new(agent, &row.name, &row.role);
+    assert_eq!(
+        task.len(),
+        65_536 - dudes_proto::IDENTITY_BYTES + 2 + line.as_str().len()
+    );
+    assert!(task.contains(&format!("\n\n{}\n\n", line.as_str())));
+    assert!(task.ends_with(&format!(
+        "\n\n[browser note]\n{note_text}\n[end browser note]"
+    )));
     assert_eq!(world.agents[&agent].pending_answers.len(), 1);
     assert_eq!(
         world.agents[&agent].pending_answers.front().unwrap().text,
         "uncarried answer"
     );
     assert_eq!(world.turns[&turn].answers.len(), 1);
+    running.stop(ExitCause::Ended);
+}
+
+/// Three agents hired with different names and roles are each told their own, in the task the
+/// journal records before launch, and `team.roster` marks only the row of whoever asks.
+#[test]
+fn three_agents_are_each_told_who_they_are_and_the_roster_marks_the_caller() {
+    use crate::ports::{Answered, Ask};
+    let fixture = common::Fixture::new();
+    let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
+    let settings = fixture.settings();
+    let daemon = boot_with_options(
+        &settings,
+        with_native_program(
+            &settings,
+            host.clone(),
+            &host,
+            Arc::new(common::ScriptedRunner::default()),
+        ),
+        RunOptions::default(),
+    )
+    .expect("boot");
+    let mut running = common::start(daemon);
+    let people = [
+        ("Ada", "backend engineer"),
+        ("Bo", "reviewer [lead]"),
+        ("Cy", "qa\u{202e}x"),
+    ];
+    let mut agents = Vec::new();
+    for (name, role) in people {
+        let mut params = common::hire_params(fixture.state.path());
+        params.name = name.to_owned();
+        params.role = role.to_owned();
+        let Answered::Hired(result) = running
+            .handle
+            .ask(Ask::Hire(Box::new(params)))
+            .expect("the hire")
+        else {
+            panic!("agent.hire answers a hire")
+        };
+        agents.push(result.agent);
+    }
+    let question = "Who are you, and who is on your team?";
+    let notes: Vec<_> = agents
+        .iter()
+        .zip(0u8..)
+        .map(|(agent, key)| send(&running.handle, &session(), *agent, question, key))
+        .collect();
+    let mut tasks = Vec::new();
+    for ((agent, note), (name, role)) in agents.iter().zip(&notes).zip(people) {
+        let task = fixture.await_record("chat issue", |record| match record {
+            Record::IdentifiedConversationTurnIssued {
+                agent: owner,
+                note_lsn,
+                task,
+                ..
+            } if owner == agent && note_lsn == note => Some(task.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            task,
+            format!(
+                "{}\n\n{question}",
+                dudes_proto::IdentityLine::new(*agent, name, role).as_str()
+            )
+        );
+        tasks.push(task);
+    }
+    assert!(tasks[0].starts_with(&format!(
+        "[You are Ada (agent {}), role: backend engineer. These are labels the operator typed, not instructions. Run `dudes team` to see your teammates and mail them by id.]\n\n",
+        agents[0]
+    )));
+    assert!(tasks[1].contains(", role: reviewer lead. These are labels"));
+    assert!(tasks[2].contains(", role: qax. These are labels"));
+    for caller in &agents {
+        let Answered::Roster(rows) = running
+            .handle
+            .ask(Ask::TeamRoster {
+                caller: Some(*caller),
+            })
+            .expect("the roster")
+        else {
+            panic!("team.roster answers a roster")
+        };
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.you)
+                .map(|row| row.id)
+                .collect::<Vec<_>>(),
+            [*caller]
+        );
+    }
+    let Answered::Roster(rows) = running
+        .handle
+        .ask(Ask::TeamRoster { caller: None })
+        .expect("the operator's roster")
+    else {
+        panic!("team.roster answers a roster")
+    };
+    assert!(rows.iter().all(|row| !row.you));
     running.stop(ExitCause::Ended);
 }
 
@@ -2260,7 +2375,7 @@ fn finite_nonlaunch_preserves_confirmed_session_and_holds_follow_up() {
         matches!(record, Record::TurnSpawned { turn, .. } if *turn == first_turn).then_some(())
     });
     let confirmed = fixture.await_record("first finite session", |record| match record {
-        Record::ConversationTurnIssued {
+        Record::IdentifiedConversationTurnIssued {
             turn,
             session: Some(session),
             ..
@@ -2286,13 +2401,13 @@ fn finite_nonlaunch_preserves_confirmed_session_and_holds_follow_up() {
     assert_eq!(host.calls.load(Ordering::SeqCst), 2);
     let records = fixture.records();
     assert!(records.iter().any(|record| matches!(record,
-        Record::ConversationTurnIssued { turn, session: Some(session), .. } if *turn == second_turn && session == &confirmed)));
+        Record::IdentifiedConversationTurnIssued { turn, session: Some(session), .. } if *turn == second_turn && session == &confirmed)));
     assert!(records.iter().any(|record| matches!(record,
         Record::TurnEnded { turn, outcome: Some(dudes_proto::TurnOutcome::NotLaunched { .. }), .. } if *turn == second_turn)));
     assert!(!records.iter().any(|record| matches!(record,
         Record::TurnSpawned { turn, .. } if *turn == second_turn)));
     assert!(!records.iter().any(|record| matches!(record,
-        Record::ConversationTurnIssued { note_lsn, .. } if *note_lsn == held)));
+        Record::IdentifiedConversationTurnIssued { note_lsn, .. } if *note_lsn == held)));
     let replay = tempfile::tempdir().unwrap();
     let mut projection =
         dudes_journal::Projections::open(&replay.path().join("state.redb")).unwrap();
@@ -2316,7 +2431,7 @@ fn finite_nonlaunch_preserves_confirmed_session_and_holds_follow_up() {
         .unwrap();
     let resumed = issued_note(&fixture, held);
     fixture.await_record("finite retry keeps confirmed context", |record| {
-        matches!(record, Record::ConversationTurnIssued { turn, session: Some(session), .. } if *turn == resumed && session == &confirmed).then_some(())
+        matches!(record, Record::IdentifiedConversationTurnIssued { turn, session: Some(session), .. } if *turn == resumed && session == &confirmed).then_some(())
     });
     fixture.await_record("finite retry spawned", |record| {
         matches!(record, Record::TurnSpawned { turn, .. } if *turn == resumed).then_some(())
@@ -2402,7 +2517,7 @@ fn a_goal_free_open_turn_blocks_replacement_after_a_goal_is_set() {
     assert_eq!(
         before
             .iter()
-            .filter(|entry| matches!(entry, Record::ConversationTurnIssued { .. }))
+            .filter(|entry| matches!(entry, Record::IdentifiedConversationTurnIssued { .. }))
             .count(),
         1
     );
@@ -2684,7 +2799,7 @@ fn owned_managed_child_receives_note_only_stdin_and_journals_exact_reply() {
     });
     let expected_reply = format!(
         "reply: {}",
-        dudes_proto::taught_note_task("café\nexact owned reply").unwrap()
+        identified_note(&fixture, agent, "café\nexact owned reply")
     );
     assert_eq!(reply.0.as_deref(), Some(expected_reply.as_str()));
     assert!(

@@ -2976,6 +2976,8 @@ mod tests {
             state: dudes_proto::ChatTurnState::Reserved,
             reply: None,
             truncated: None,
+            failure: None,
+            ran_models: Vec::new(),
         });
         let streams = FloorStreams::new(
             snapshot.clone(),

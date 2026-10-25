@@ -124,8 +124,13 @@ pub use record::{
 pub use reply::{HookDecision, HookReply, VendorReply};
 pub use rpc::hook::{HookToken, InvalidHookToken};
 pub use task::{
-    MAIL_INSTRUCTION, MEMORY_INSTRUCTION, NoteContract, TEACHING_BYTES, normalized_browser_note,
-    recognize_taught_note_task, taught_note_task, valid_taught_admission, valid_taught_decision,
+    ANSWER_CLOSING, IDENTITY_BYTES, IdentityLine, MAIL_INSTRUCTION, MEMORY_INSTRUCTION,
+    NoteContract, TEACHING_BYTES, TaskContract, identified_conversation_task,
+    identified_mail_wake_task, identified_taught_note_task, normalized_browser_note,
+    recognize_identified_conversation_task, recognize_identified_mail_wake_task,
+    recognize_identified_taught_note_task, recognize_taught_note_task, taught_note_task,
+    valid_identified_taught_admission, valid_identified_taught_decision, valid_taught_admission,
+    valid_taught_decision,
 };
 pub use ticket::{
     QueueClass, QueueKey, TicketCheck, TicketCheckResult, TicketReason, TicketRefusal, TicketRow,
@@ -143,8 +148,9 @@ pub use dudes_types as types;
 pub use chat::{
     ChatContextState, ChatContextView, ChatPendingState, ChatPendingView, ChatReason, ChatReply,
     ChatReplyCompleteness, ChatTurnState, ChatTurnView, ChatView, MAX_CHAT_BYTES, MAX_CHAT_CONTEXT,
-    MAX_CHAT_CONTEXT_BYTES, MAX_CHAT_CONTEXT_PER_AGENT, MAX_CHAT_PENDING, MAX_CHAT_PENDING_BYTES,
-    MAX_CHAT_PENDING_PER_AGENT, MAX_CHAT_REPLY_BYTES, MAX_CHAT_TEXT_BYTES, MAX_CHAT_TURN_BYTES,
+    MAX_CHAT_CONTEXT_BYTES, MAX_CHAT_CONTEXT_PER_AGENT, MAX_CHAT_FAILURE_BYTES, MAX_CHAT_PENDING,
+    MAX_CHAT_PENDING_BYTES, MAX_CHAT_PENDING_PER_AGENT, MAX_CHAT_RAN_MODEL_BYTES,
+    MAX_CHAT_RAN_MODELS, MAX_CHAT_REPLY_BYTES, MAX_CHAT_TEXT_BYTES, MAX_CHAT_TURN_BYTES,
     MAX_CHAT_TURN_BYTES_PER_AGENT, MAX_CHAT_TURNS, MAX_CHAT_TURNS_PER_AGENT,
     conversation_answer_task, normalized_chat_text,
 };

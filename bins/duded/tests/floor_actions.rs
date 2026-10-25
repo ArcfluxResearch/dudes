@@ -269,7 +269,7 @@ fn real_stub_seams_with(
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v7"
+    "/tests/fixtures/floor-release-v8"
 );
 
 fn enrolled_settings(fixture: &Fixture) -> duded::Settings {
@@ -9488,12 +9488,12 @@ fn launch_check() -> LaunchCheck {
     let page = exchange(addr, &issue(&settings).bootstrap);
 
     let (frame, _) = snapshot(&page);
+    assert_claude_aliases_listed(&frame);
+    assert_eq!(frame["daemon"]["state_dir"], "~/state");
     assert_eq!(
-        frame["daemon"],
-        json!({"state_dir":"~/state","providers":[
-            {"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown",
-             "model_change_unsupported":true}
-        ]})
+        without_models(&frame),
+        json!([{"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown",
+            "model_change_unsupported":true}])
     );
     one_launch(&running.handle, &fixture, &home.path().join("work-a"));
     assert_eq!(
@@ -9529,7 +9529,7 @@ fn browser_daemon_view_reports_a_new_launch_path_without_a_restart() {
     let (frame, _) = snapshot(&check.page);
     let outside_prog = check.bin_b.join("prog").to_str().expect("UTF-8").to_owned();
     assert_eq!(
-        frame["daemon"]["providers"],
+        without_models(&frame),
         json!([{"provider":"claude","program":"prog","found":true,"path":outside_prog,
             "sign_in":"unknown","model_change_unsupported":true}]),
         "a path outside the home is shown in full, with no restart"
@@ -9563,7 +9563,7 @@ fn browser_daemon_view_reports_a_missing_launch_path_without_a_restart() {
     std::thread::sleep(PAST_REUSE);
     let (frame, _) = snapshot(&check.page);
     assert_eq!(
-        frame["daemon"]["providers"],
+        without_models(&frame),
         json!([{"provider":"claude","program":"prog","found":false,"model_change_unsupported":true}])
     );
     let outcome = one_launch(
@@ -9585,6 +9585,31 @@ fn browser_daemon_view_reports_a_missing_launch_path_without_a_restart() {
         check.running.stop(ExitCause::ShutdownRpc),
         ExitCause::ShutdownRpc
     );
+}
+
+/// Claude's row lists the short names it accepts, unchecked, with no child process to ask.
+#[cfg(unix)]
+fn assert_claude_aliases_listed(frame: &Value) {
+    let models = &frame["daemon"]["providers"][0]["models"];
+    assert_eq!(models["checked"], false);
+    assert_eq!(
+        models["items"],
+        json!([
+            {"id":"opus","kind":"alias"},
+            {"id":"sonnet","kind":"alias"},
+            {"id":"haiku","kind":"alias"}
+        ])
+    );
+}
+
+/// The report's provider rows without their model lists, which other tests read.
+#[cfg(unix)]
+fn without_models(frame: &Value) -> Value {
+    let mut rows = frame["daemon"]["providers"].clone();
+    for row in rows.as_array_mut().expect("provider rows") {
+        row.as_object_mut().expect("a row").remove("models");
+    }
+    rows
 }
 
 /// One shape of `PATH` or configured command, and the file the check must report for it.
@@ -11979,7 +12004,7 @@ fn browser_settings_view_is_an_exact_read_only_allowlist() {
             "workspaces": [{ "workspace_id": "repo_1", "label": "Service workspace",
                 "agent_usd_per_day_micros": "10000000", "agent_tokens_per_day": "123",
                 "goal_usd_micros": "5000000", "goal_tokens": "456" }],
-            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 7 }
+            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 8 }
         })
     );
     let bytes = frame["settings"].to_string();

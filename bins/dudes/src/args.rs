@@ -86,6 +86,8 @@ pub enum Command {
     Agents,
     /// `team.roster`, using the inherited agent token or operator credential.
     Team,
+    /// `team.roster`, then the one row the daemon marked as the caller's own.
+    Whoami,
     /// `agent.list`, then one `loop.pause` for each current agent without a standing pause or halt.
     PauseAll,
     /// Hold future issuance for one agent.
@@ -598,6 +600,7 @@ COMMANDS
     tail        Read or follow the journal.
     board       Create, list, claim or move board cards.
     team        List colleagues and their current work.
+    whoami      Show your own name, role and id.
     ask         Ask the human from an agent process.
     memory      Append, read or search agent memory.
     mail        Send, read or acknowledge agent mail.
@@ -804,7 +807,15 @@ const TEAM_HELP: &str = "\
 USAGE
     dudes team
         Colleagues: id, name, role, department, public status and first unfinished card.
+        With DUDES_TOKEN, your own row ends in (you).
         Uses DUDES_TOKEN when inherited, otherwise the operator credential.
+";
+
+const WHOAMI_HELP: &str = "\
+USAGE
+    dudes whoami
+        Your own name, role, department and id, as the daemon holds them.
+        Needs DUDES_TOKEN, which an agent's process inherits. An operator has no row.
 ";
 
 const PAUSE_HELP: &str = "\
@@ -1220,6 +1231,7 @@ fn command_help(word: &OsStr) -> Option<&'static str> {
         "closing" => CLOSING_HELP,
         "agents" => AGENTS_HELP,
         "team" => TEAM_HELP,
+        "whoami" => WHOAMI_HELP,
         "pause" => PAUSE_HELP,
         "resume" => RESUME_HELP,
         "halt" => HALT_HELP,
@@ -1345,6 +1357,7 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
             Command::Agents
         }
         "team" => team(tail, payload)?,
+        "whoami" => whoami(tail, payload)?,
         "pause" | "resume" => {
             targeted_control(command_word.to_string_lossy().as_ref(), tail, payload, json)?
         }
@@ -1686,6 +1699,14 @@ fn team(tail: &[OsString], payload: Option<&[OsString]>) -> Result<Command, ArgE
         return Err(ArgError::UnknownFlag("team takes no payload".to_owned()));
     }
     Ok(Command::Team)
+}
+
+fn whoami(tail: &[OsString], payload: Option<&[OsString]>) -> Result<Command, ArgError> {
+    reject_leftovers(tail)?;
+    if payload.is_some() {
+        return Err(ArgError::UnknownFlag("whoami takes no payload".to_owned()));
+    }
+    Ok(Command::Whoami)
 }
 
 fn stop(tail: &[OsString]) -> Result<Command, ArgError> {

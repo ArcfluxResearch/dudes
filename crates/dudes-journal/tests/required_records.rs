@@ -109,7 +109,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     drop(writer);
     let path = segment_path(dir.path(), 1);
     let mut bytes = fs::read(&path).unwrap();
-    bytes.extend_from_slice(&raw_frame(2, 95, b"{\"t\":\"future\"}"));
+    bytes.extend_from_slice(&raw_frame(2, 101, b"{\"t\":\"future\"}"));
     fs::write(&path, &bytes).unwrap();
     let cache = dir.path().join("state.redb");
     fs::write(&cache, b"cache witness").unwrap();
@@ -123,7 +123,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     };
     let before = files();
 
-    let expected = "journal required record kind 95 at 1:";
+    let expected = "journal required record kind 101 at 1:";
     let reader_error = Reader::open(dir.path()).unwrap_err().to_string();
     assert!(reader_error.starts_with(expected), "{reader_error}");
     let writer_error = open(dir.path(), JournalOptions::default())
@@ -136,7 +136,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     let cache_before = advanced.export().unwrap();
     assert!(matches!(
         replay(&Reader::new(dir.path()), &mut advanced),
-        Err(Error::RequiredKind { kind: 95, .. })
+        Err(Error::RequiredKind { kind: 101, .. })
     ));
     assert_eq!(advanced.export().unwrap(), cache_before);
 
@@ -423,4 +423,83 @@ fn a_floor_stop_is_a_required_frame_an_older_build_refuses() {
     );
     let (reader, _) = Reader::open(dir.path()).expect("this build understands it");
     assert_eq!(reader.iter_from(Lsn::ZERO).unwrap().count(), 1);
+}
+
+/// A build from before agents were told who they are knows tags 1 to 94. Each identified turn
+/// record is a required frame of a later tag, so that build stops at the first one, before it
+/// repairs the journal, replays it or opens a cache, rather than reading a Chat turn, a note or a
+/// mail wake whose task it cannot check.
+#[test]
+fn identified_turn_records_are_required_frames_an_older_build_refuses() {
+    let before_identity: Vec<u16> = RecordKind::KNOWN[..94]
+        .iter()
+        .map(|kind| kind.tag())
+        .collect();
+    for (offset, kind) in [
+        RecordKind::IdentifiedConversationTurnDecided,
+        RecordKind::IdentifiedConversationTurnIssued,
+        RecordKind::IdentifiedTaughtNoteTurnDecided,
+        RecordKind::IdentifiedTaughtNoteOnlyTurnIssued,
+        RecordKind::IdentifiedMailWakeTurnDecided,
+        RecordKind::IdentifiedMailWakeOnlyTurnIssued,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(usize::from(kind.tag()), 95 + offset);
+        let record = dudes_proto::record::samples::record(kind);
+        let dir = tempfile::tempdir().unwrap();
+        let (mut writer, _) = open(
+            dir.path(),
+            JournalOptions {
+                fsync: Fsync::None,
+                ..JournalOptions::default()
+            },
+        )
+        .unwrap();
+        writer
+            .append(&Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: record.clone(),
+            })
+            .unwrap();
+        drop(writer);
+        let path = segment_path(dir.path(), 1);
+        let bytes = fs::read(&path).unwrap();
+        let header = Header::parse(bytes[..12].try_into().unwrap());
+        assert_eq!(header.kind, kind.tag());
+        assert_eq!(header.ver, dudes_journal::frame::REQUIRED_VERSION);
+        assert!(!before_identity.contains(&header.kind), "{kind:?}");
+        if matches!(
+            kind,
+            RecordKind::IdentifiedConversationTurnDecided
+                | RecordKind::IdentifiedConversationTurnIssued
+        ) {
+            let (reader, _) = Reader::open(dir.path()).expect("this build understands it");
+            let read: Vec<_> = reader
+                .iter_from(Lsn::ZERO)
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(read.len(), 1);
+            assert_eq!(read[0].1.record, record);
+        }
+
+        let old_build = dir.path().join("old");
+        fs::create_dir(&old_build).unwrap();
+        let payload = &bytes[12..];
+        fs::write(
+            segment_path(&old_build, 1),
+            raw_frame(header.ver, 200 + header.kind, payload),
+        )
+        .unwrap();
+        let error = Reader::open(&old_build).unwrap_err().to_string();
+        assert!(
+            error.starts_with(&format!(
+                "journal required record kind {} at 1:",
+                200 + header.kind
+            )),
+            "{error}"
+        );
+    }
 }
