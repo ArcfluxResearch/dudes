@@ -282,7 +282,10 @@ fn only_the_run_owner_and_the_test_constructors_make_a_secret_set() {
     }
     let mut makers: Vec<String> = files
         .iter()
-        .filter(|path| !path.components().any(|part| part.as_os_str() == "tests"))
+        .filter(|path| {
+            !path.components().any(|part| part.as_os_str() == "tests")
+                && path.file_name().is_none_or(|name| name != "tests.rs")
+        })
         .filter(|path| {
             std::fs::read_to_string(path).is_ok_and(|text| text.contains("Redactor::for_run("))
         })
@@ -301,7 +304,7 @@ fn only_the_run_owner_and_the_test_constructors_make_a_secret_set() {
         [
             "bins/duded/src/children.rs",
             "bins/duded/src/git_read/diff/reader.rs",
-            "bins/duded/src/output.rs",
+            "bins/duded/src/output/registry.rs",
             "crates/dudes-supervisor/src/machine.rs",
         ],
     );

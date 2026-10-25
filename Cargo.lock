@@ -291,9 +291,9 @@ checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
 name = "crypto-bigint"
-version = "0.7.6"
+version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bb08299a6046833a879ace115697f12fd2bd6c8d3e93c909ffc9e0738e7cae0"
+checksum = "d811ea23fdfbcce2e2d5132344d471abdb8f901ac496a0893a3df92e70525e52"
 dependencies = [
  "cpubits",
  "ctutils",
@@ -362,7 +362,7 @@ checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
 
 [[package]]
 name = "duded"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "dudes"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "chrono",
  "duded",
@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-config"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "dudes-proto",
  "dudes-types",
@@ -441,7 +441,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-hook"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "dudes-host",
  "dudes-proto",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-host"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "dudes-providers",
  "dudes-supervisor",
@@ -468,7 +468,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-journal"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "blake3",
  "crc",
@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-policy"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "dudes-proto",
  "dudes-types",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-proto"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "dudes-types",
  "jsonschema",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-providers"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "dudes-proto",
  "dudes-types",
@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-pty"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "dudes-proto",
  "dudes-providers",
@@ -536,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-rpc"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "base64",
  "blake3",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-supervisor"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "aho-corasick",
  "blake3",
@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-types"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "regex",
  "schemars",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "dudes-win"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "tempfile",
  "windows-sys",
@@ -910,9 +910,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.58.6"
+version = "0.59.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f622c574a29fb3034a0a90645afee194dfedc75fc124228801b6e77041075bd1"
+checksum = "1b320ad34c177093d21622edc9215bb608294c2333ff296672c0c8265a5ee60c"
 dependencies = [
  "ahash",
  "bytecount",
@@ -938,18 +938,18 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.58.6"
+version = "0.59.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a968fffd387b2ab005bf00c1851f5d26e90df05b6f7ad609ed0d620033cca5e7"
+checksum = "1472f7be79026f79e01a9b172263311e829d7c210d57b39cb57037abc0ce0500"
 dependencies = [
  "regex-syntax",
 ]
 
 [[package]]
 name = "jsonschema-value"
-version = "0.58.6"
+version = "0.59.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39b7670345e5ce87371339d13705dbb9276b7e3e934bbe1efa2c6734a1f65a96"
+checksum = "e5a7550a7a84787e715ead0b47e01fa8c6bb7c3413630f91a8f2094c06c2078a"
 dependencies = [
  "ahash",
  "bytecount",
@@ -1367,9 +1367,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.58.6"
+version = "0.59.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "558f3855529c0a7e78a48e409fa653456e55f1b167eab4109c16a255b7727e3f"
+checksum = "473f4dcca28ead7ee0f8e5b5d0bbae2549f4fc4c958fb20af328961b6c174be3"
 dependencies = [
  "ahash",
  "fluent-uri",
@@ -1681,7 +1681,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys",
@@ -2109,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.97.1"
+version = "0.98.0"
 dependencies = [
  "anyhow",
  "dudes-journal",
