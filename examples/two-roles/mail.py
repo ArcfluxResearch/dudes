@@ -14,7 +14,7 @@ import traceback
 def command(argv, env=None):
     result = subprocess.run(argv, env=env, text=True, capture_output=True, timeout=10)
     if result.returncode:
-        raise subprocess.CalledProcessError(result.returncode, argv)
+        raise subprocess.CalledProcessError(result.returncode, argv, stderr=result.stderr)
     return result.stdout
 
 
@@ -44,8 +44,14 @@ def failure_snapshot(records, work):
             lines = source.read(4096).splitlines()
         for line in lines[:4]:
             error = json.loads(line)
-            safe = {key: error[key] for key in ("exception", "line", "returncode") if key in error}
+            safe = {key: error[key] for key in ("exception", "line", "returncode", "errno", "io_reason") if key in error}
             print("FAIL stand-in exception " + json.dumps(safe), file=sys.stderr)
+    for path in sorted((work / "agents").glob("*/ready.*.json"))[:4]:
+        with path.open() as source:
+            ready = json.loads(source.read(256))
+        safe = {key: ready[key] for key in ("outbox_at_start", "outbox_after_wait", "inbox_at_read", "inbox_after_wait")
+                if isinstance(ready.get(key), bool)}
+        print("FAIL mailbox readiness " + json.dumps(safe), file=sys.stderr)
 
 
 def wait_for(description, read, predicate, work):
@@ -109,6 +115,11 @@ def run(cli, runtime, work, home, config):
                 if record["t"] in ("turn_issued", "turn_spawned", "mail_wake_only_turn_issued")
                 and record["agent"] == recipient], "mail never wakes an agent with no goal"
     assert not (work / "agents" / recipient / "started.1").exists()
+    ready = json.loads((work / "agents" / sender / "ready.1.json").read_text())
+    if ready["outbox_at_start"]:
+        print("PASS the sender's outbox was ready before its first send")
+    else:
+        print("PASS the sender waited for the daemon's outbox before its first send")
     agents["recipient_goal"] = goal(recipient)
     wait_for("the reply was acknowledged after one mail wake", journal,
              lambda records: done(records, recipient) is not None
@@ -116,6 +127,9 @@ def run(cli, runtime, work, home, config):
              and len([record for record in rows(records, "mail_state")
                       if record["state"]["state"] == "acked"]) == 2
              and len(rows(records, "turn_ended")) == 3, work)
+    readiness = [json.loads(path.read_text()) for path in (work / "agents").glob("*/ready.*.json")]
+    if any(ready.get("inbox_at_read") is False for ready in readiness):
+        print("PASS mail reads waited for the daemon's delivered inbox markers")
     (work / "actors.json").write_text(json.dumps(agents))
     print("PASS mail to an agent with no goal created no turn before its goal was assigned")
 
@@ -194,10 +208,28 @@ def agent(session):
     while (directory / f"started.{run_number}").exists():
         run_number += 1
     (directory / f"started.{run_number}").write_text(str(os.getpid()))
+    outbox = Path(os.environ["DUDES_MAILBOX"]) / "outbox"
+    ready = {"outbox_at_start": outbox.is_dir()}
+    readiness = directory / f"ready.{run_number}.json"
+    readiness.write_text(json.dumps(ready))
+    deadline = time.monotonic() + 15
+    while not outbox.is_dir():
+        assert time.monotonic() < deadline, "the daemon created the agent's outbox"
+        time.sleep(0.01)
+    ready["outbox_after_wait"] = True
+    readiness.write_text(json.dumps(ready))
     if plan["role"] == "sender" and run_number == 1:
         command([cli, "mail", "send", "--to", plan["peer"], "--act", "message",
                  "--subject", "round trip request", "--body", "Please reply when you read this."])
     else:
+        inbox = Path(os.environ["DUDES_MAILBOX"]) / "inbox"
+        ready["inbox_at_read"] = any(inbox.glob("*.json"))
+        readiness.write_text(json.dumps(ready))
+        while not any(inbox.glob("*.json")):
+            assert time.monotonic() < deadline, "the daemon delivered an inbox marker"
+            time.sleep(0.01)
+        ready["inbox_after_wait"] = True
+        readiness.write_text(json.dumps(ready))
         read = command([cli, "mail", "read"])
         (directory / "read.txt").write_text(read)
         delivered = re.search(r"^mail ([0-9A-Z]{26})$", read, re.MULTILINE)
@@ -231,6 +263,12 @@ if __name__ == "__main__":
             details = {"exception": type(error).__name__, "line": where.lineno}
             if isinstance(error, subprocess.CalledProcessError):
                 details["returncode"] = error.returncode
+                text = error.stderr or ""
+                errno = re.search(r"\(os error ([0-9]+)\)", text)
+                if errno:
+                    details["errno"] = int(errno.group(1))
+                if "entity not found" in text or "No such file or directory" in text:
+                    details["io_reason"] = "not_found"
             with (Path(os.environ["DUDES_EXAMPLE_WORK"]) / "agent-errors.jsonl").open("a") as out:
                 out.write(json.dumps(details) + "\n")
         message = (f"stand-in command exited {error.returncode}" if isinstance(error, subprocess.CalledProcessError)

@@ -64,6 +64,10 @@ Leo uses `dudes mail read`, replies with the delivered mail id, and acknowledges
 goal has finished; he reads and acknowledges it. An agent hired without a goal is never woken by
 mail, so give it a goal before expecting that automatic response.
 
+Mailbox files update asynchronously. The stand-in waits for the daemon-created outbox before
+sending and for a delivered inbox marker before its single read. It does not assume that a
+journaled receipt is already readable through the mailbox files.
+
 The stopped daemon's journal must contain exactly two mail records on one thread, numbered 1
 and 2, with both marked acknowledged. It must also contain one mail-only wake and three issued
 turns with three matching spawns. Both goals' saved results must point to observed passing
