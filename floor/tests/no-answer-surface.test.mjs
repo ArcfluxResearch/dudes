@@ -294,6 +294,8 @@ const LOOK_MODULE = 'src/renderer/look/look.ts';
 const LOOK_PANEL = 'src/renderer/look/LookEditor.tsx';
 const MODEL_MODULE = 'src/renderer/model/model.ts';
 const MODEL_PANEL = 'src/renderer/model/ModelEditor.tsx';
+const LISTS_MODULE = 'src/renderer/model/lists.ts';
+const LISTS_BAR = 'src/renderer/model/ModelListBar.tsx';
 const ADMITTED_IN_GOAL_FORM = Object.freeze(['a textarea', 'an input', 'a change handler']);
 const SETUP_VIEW = 'src/renderer/setup/SetupView.tsx';
 const FIRST_RUN_GUIDE = 'src/renderer/setup/FirstRunGuide.tsx';
@@ -1159,6 +1161,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(6).fill(ADD_PROJECT_FORM),
     ...Array(4).fill(LOOK_PANEL),
     ...Array(5).fill(MODEL_PANEL),
+    LISTS_BAR,
     ...Array(3).fill(SETUP_VIEW),
     ...Array(10).fill(SETTINGS_VIEW),
     ...Array(5).fill(FIRST_RUN_GUIDE),
@@ -1633,6 +1636,11 @@ const REQUESTS = {
     methods: ['POST'],
     fetches: ['floorFetch', 'fetch', 'floorFetch', "deps.fetch('/floor/model')"],
   },
+  [LISTS_MODULE]: {
+    paths: ['/floor/models/refresh', 'application/json'],
+    methods: ['POST'],
+    fetches: ['floorFetch', 'fetch', 'floorFetch', "deps.fetch('/floor/models/refresh')"],
+  },
   [RENAME_MODULE]: {
     paths: ['/floor/rename', 'application/json'],
     methods: ['POST'],
@@ -1870,7 +1878,7 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
     Object.fromEntries([...reaching].sort().map(([name, files]) => [name, [...files].sort()])),
     {
       WebSocket: ['src/renderer/floor/stream.ts'],
-      fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, MODEL_MODULE, 'src/renderer/onboarding/hire.ts', ADD_PROJECT_MODULE, RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE,
+      fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, LISTS_MODULE, MODEL_MODULE, 'src/renderer/onboarding/hire.ts', ADD_PROJECT_MODULE, RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE,
         SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
     },
     'the page reaches the network somewhere new',
@@ -1972,7 +1980,7 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
 
   const fetching = reaching.get('fetch') ?? [];
   assert.deepEqual(fetching.sort(),
-    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, MODEL_MODULE, 'src/renderer/onboarding/hire.ts', ADD_PROJECT_MODULE, RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE, SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
+    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, LISTS_MODULE, MODEL_MODULE, 'src/renderer/onboarding/hire.ts', ADD_PROJECT_MODULE, RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE, SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
     'something other than the admitted action, read, session and transport modules fetches');
   assert.deepEqual(calling.sort(), fetching,
     'a module other than those six calls fetch with a space before the parenthesis');

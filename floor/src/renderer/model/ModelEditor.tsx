@@ -4,9 +4,9 @@ import { useSyncExternalStore } from 'react';
 
 import { floorSessionGeneration } from '../../session.ts';
 import { getFloorState, subscribeToFloor } from '../floor/store.ts';
-import { MODEL_SUGGESTIONS } from '../onboarding/hire.ts';
-import { isHireEngine } from '../onboarding/catalog.ts';
 import type { AgentRow } from '../scene/cast.ts';
+import { ModelListBar } from './ModelListBar.tsx';
+import { modelItems, ranModels, searchModels } from './lists.ts';
 import { ENGINE_OWN, REFUSAL_WORDS, browserModelDeps, beginModel, cancelModel, checkModel, editModel, getModelState,
   modelAvailable, modelBlocked, modelProblem, modelView, removeOverride, submitModel, subscribeToModel } from './model.ts';
 
@@ -16,7 +16,9 @@ export function ModelEditor({ row }: { readonly row: AgentRow }) {
   const state = useSyncExternalStore(subscribeToModel, getModelState, getModelState);
   const view = modelView(floor, row);
   const mine = state.attempt?.payload.agent === row.id;
-  const suggestions = isHireEngine(row.provider) ? MODEL_SUGGESTIONS[row.provider] : [];
+  const items = modelItems(floor, row.provider);
+  const { shown, more } = searchModels(items, state.draft);
+  const ran = ranModels(floor, row.id);
   const name = typeof row.name === 'string' ? row.name : row.id;
   const available = modelAvailable(floor, row);
   const blocked = modelBlocked(state, floorSessionGeneration());
@@ -29,21 +31,26 @@ export function ModelEditor({ row }: { readonly row: AgentRow }) {
         : <>Model this turn: <strong>{view.current}</strong>{view.differs ? <> · next turn: <strong>{next}</strong></> : null}</>}
       {view.pinned ? ' (set in the configuration, so the next turn uses it)' : ''}
     </p>
+    {ran.length === 0 ? null : <p className="agent-model-line" data-model-ran={ran.join(' ')}>
+      {ran.length === 1 ? <>In use: <strong>{ran[0]}</strong></> : <>Ran: <strong>{ran.join(', ')}</strong></>}
+    </p>}
     {!available ? null : view.pinned ? <button type="button" disabled={blocked}
       onClick={() => { void removeOverride(row, browserModelDeps); }}>Remove my override</button> : editing ? <form onSubmit={(event) => { event.preventDefault(); void submitModel(row, browserModelDeps); }}
       onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelModel(); } }}>
-      <fieldset className="hire-choices">
+      <fieldset className="hire-choices model-choices">
         <legend>Model for the next turn</legend>
-        {['', ...suggestions].map((choice) => <label key={choice} className="hire-choice">
+        {['', ...shown.map((item) => item.id)].map((choice) => <label key={choice} className="hire-choice">
           <input type="radio" name="agent-model" value={choice} checked={state.draft === choice}
             onChange={() => editModel(choice)} />
           <span className="hire-choice-label">{choice === '' ? 'Default model' : choice}</span>
         </label>)}
       </fieldset>
-      <label htmlFor="agent-model-name">Another model name</label>
+      {more === 0 ? null : <small>{more} more models match. Keep typing to narrow the list.</small>}
+      <label htmlFor="agent-model-name">Search the list, or type another model name</label>
       <input id="agent-model-name" type="text" autoComplete="off" spellCheck={false}
-        value={suggestions.includes(state.draft) ? '' : state.draft} aria-invalid={modelProblem(state.draft) !== null}
+        value={state.draft} aria-invalid={modelProblem(state.draft) !== null}
         onChange={(event) => editModel(event.currentTarget.value)} />
+      <ModelListBar provider={String(row.provider)} id="agent-model-list" />
       <button type="submit" disabled={modelProblem(state.draft) !== null}>Save</button>
       <button type="button" onClick={cancelModel}>Cancel</button>
       <small>A run already under way keeps its model. Dudes checks only the spelling; the app reports a name it does not know when the agent next runs.</small>
