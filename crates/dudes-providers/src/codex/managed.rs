@@ -236,35 +236,11 @@ impl Adapter for CodexAdapter {
                 session.clone(),
                 selection.clone(),
             );
-            let argv = [
-                self.config.command.as_str(),
-                "app-server",
-                "--listen",
-                "stdio://",
-                "--strict-config",
-                "-c",
-                "features.hooks=false",
-                "-c",
-                "features.plugins=false",
-                "-c",
-                "features.apps=false",
-                "-c",
-                "features.shell_snapshot=false",
-                "-c",
-                "approval_policy=\"never\"",
-                "-c",
-                "sandbox_mode=\"workspace-write\"",
-                "-c",
-                "sandbox_workspace_write.exclude_tmpdir_env_var=true",
-                "-c",
-                "sandbox_workspace_write.exclude_slash_tmp=true",
-                "-c",
-                "sandbox_workspace_write.network_access=false",
-            ]
-            .into_iter()
-            .map(OsString::from)
-            .chain(declared)
-            .collect();
+            let argv = std::iter::once(self.config.command.as_str())
+                .chain(super::model_list::APP_SERVER_ARGS.iter().copied())
+                .map(OsString::from)
+                .chain(declared)
+                .collect();
             return Ok(LaunchSpec {
                 argv,
                 env,

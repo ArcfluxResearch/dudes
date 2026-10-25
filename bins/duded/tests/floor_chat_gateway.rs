@@ -30,7 +30,7 @@ const REQUEST_ID: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const CANCEL_ID: &str = "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v7"
+    "/tests/fixtures/floor-release-v8"
 );
 
 struct Browser {
@@ -968,7 +968,9 @@ fn conversation_replies_once_then_resumes_confirmed_session_for_follow_up() {
     let issued: Vec<_> = records
         .iter()
         .filter_map(|record| match record {
-            Record::ConversationTurnIssued { turn, session, .. } => Some((*turn, session)),
+            Record::IdentifiedConversationTurnIssued { turn, session, .. } => {
+                Some((*turn, session))
+            }
             _ => None,
         })
         .collect();
@@ -1029,7 +1031,7 @@ fn conversation_captures_the_no_goal_revision_and_remains_cancellable_when_stale
         !fixture
             .records()
             .iter()
-            .any(|record| matches!(record, Record::ConversationTurnIssued { .. }))
+            .any(|record| matches!(record, Record::IdentifiedConversationTurnIssued { .. }))
     );
     running.stop(duded::ExitCause::Signal);
 }
@@ -1054,7 +1056,7 @@ fn conversation_refuses_a_zero_agent_budget_before_issuance() {
     fixture.await_record("finite budget refusal", |record| {
         matches!(
             record,
-            Record::ConversationTurnDecided {
+            Record::IdentifiedConversationTurnDecided {
                 decision: dudes_proto::NoteAdmission::Exhausted {
                     reason: dudes_proto::ExhaustedReason::AgentBudget
                 },
@@ -1068,7 +1070,7 @@ fn conversation_refuses_a_zero_agent_budget_before_issuance() {
         !fixture
             .records()
             .iter()
-            .any(|record| matches!(record, Record::ConversationTurnIssued { .. }))
+            .any(|record| matches!(record, Record::IdentifiedConversationTurnIssued { .. }))
     );
     let snapshot = browser.snapshot();
     let row = snapshot["projection"]["agents"]
@@ -1169,18 +1171,27 @@ fn conversation_answer_binds_question_and_precedes_unrelated_messages() {
         conversation_answer_end(first),
     );
     fixture.await_record("answer continuation", |record| match record {
-        Record::ConversationTurnIssued { turn, task, .. } if *turn != first => Some(task.clone()),
+        Record::IdentifiedConversationTurnIssued { turn, task, .. } if *turn != first => {
+            Some(task.clone())
+        }
         _ => None,
     });
     let tasks: Vec<_> = fixture
         .records()
         .into_iter()
         .filter_map(|record| match record {
-            Record::ConversationTurnIssued { task, .. } => Some(task),
+            Record::IdentifiedConversationTurnIssued { task, .. } => Some(task),
             _ => None,
         })
         .collect();
-    assert_eq!(tasks, ["Help me choose".to_owned(), queued.1]);
+    assert_eq!(tasks.len(), 2);
+    assert!(tasks[0].starts_with("[You are ") && tasks[0].ends_with("]\n\nHelp me choose"));
+    assert!(
+        dudes_proto::recognize_identified_conversation_task(&tasks[1], &queued.1, true, agent)
+            .is_some(),
+        "the line follows the answer text and precedes the closing sentence: {}",
+        tasks[1]
+    );
     assert_eq!(
         fixture
             .records()
@@ -1210,12 +1221,14 @@ fn conversation_issued(
     task_text: &str,
 ) -> (dudes_types::TurnId, Option<dudes_types::SessionId>) {
     let issued = fixture.await_record("finite issue", |record| match record {
-        Record::ConversationTurnIssued {
+        Record::IdentifiedConversationTurnIssued {
             turn,
             session,
             task,
             ..
-        } if task == task_text => Some((*turn, session.clone())),
+        } if task.starts_with("[You are ") && task.ends_with(&format!("\n\n{task_text}")) => {
+            Some((*turn, session.clone()))
+        }
         _ => None,
     });
     fixture.await_record("finite spawn", |record| {
@@ -1377,7 +1390,7 @@ fn conversation_context_loss_after(outcome: dudes_proto::TurnOutcome) {
         fixture
             .records()
             .iter()
-            .filter(|record| matches!(record, Record::ConversationTurnIssued { .. }))
+            .filter(|record| matches!(record, Record::IdentifiedConversationTurnIssued { .. }))
             .count(),
         3
     );
@@ -1387,7 +1400,7 @@ fn conversation_context_loss_after(outcome: dudes_proto::TurnOutcome) {
         third,
         dudes_proto::TurnOutcome::Completed,
     );
-    assert!(!fixture.records().iter().any(|record| matches!(record, Record::ConversationTurnIssued { task, .. } if task == "queued before loss")));
+    assert!(!fixture.records().iter().any(|record| matches!(record, Record::IdentifiedConversationTurnIssued { task, .. } if task.ends_with("\n\nqueued before loss"))));
     running.stop(duded::ExitCause::Signal);
 }
 
@@ -1539,7 +1552,7 @@ fn conversation_daily_budget_refresh_reconsiders_a_pending_message() {
         fixture
             .records()
             .iter()
-            .filter(|record| matches!(record, Record::ConversationTurnIssued { .. }))
+            .filter(|record| matches!(record, Record::IdentifiedConversationTurnIssued { .. }))
             .count(),
         2
     );
@@ -1605,7 +1618,7 @@ fn conversation_repeated_fast_failure_keeps_the_existing_hold_guard() {
         fixture
             .records()
             .iter()
-            .filter(|record| matches!(record, Record::ConversationTurnIssued { .. }))
+            .filter(|record| matches!(record, Record::IdentifiedConversationTurnIssued { .. }))
             .count(),
         2
     );

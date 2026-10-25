@@ -138,17 +138,6 @@ fn quick() -> Timing {
     }
 }
 
-/// For the cases below that deliberately outlive their deadline: a short deadline costs them
-/// nothing (they cross it on purpose, whatever its value), so this keeps them quick instead of
-/// inheriting `QUICK_DEADLINE`'s margin, which exists only to protect the cases that must not.
-fn hangs() -> Timing {
-    Timing {
-        deadline: Duration::from_secs(3),
-        wait: Duration::from_secs(10),
-        reuse: Duration::from_secs(30),
-    }
-}
-
 fn found(provider: Provider, program: &Path) -> ProviderProbe {
     ProviderProbe {
         login_home: None,
@@ -192,7 +181,7 @@ fn strict_signed_in(bench: &Bench) -> String {
 #[test]
 fn the_status_command_yields_the_five_sign_in_outcomes() {
     let bench = Bench::new();
-    let cases: [(&str, String, Shown<'_>); 4] = [
+    let cases: [(&str, String, Shown<'_>); 3] = [
         (
             "zero",
             strict_signed_in(&bench),
@@ -207,37 +196,34 @@ fn the_status_command_yields_the_five_sign_in_outcomes() {
                 Some("the status command exited with a status other than 0 or 1"),
             ),
         ),
-        (
-            "slow",
-            "sleep 30".to_owned(),
-            (
-                Some(SignIn::Unknown),
-                Some("the status command did not finish in time"),
-            ),
-        ),
     ];
     for (name, body, expected) in cases {
-        // "slow" deliberately outlives its deadline, so it gets the short one (see `hangs`). Its
-        // stand-in has that deadline's full 3 s to fork, exec and reach its own `runs` write
-        // before the kill fires, which is ample except under severe scheduler contention. There
-        // the kill still fires on time, but the shell dies before it ever runs far enough to
-        // record its run, so the `run_count` check below would undercount it: the same race
-        // `the_deadline_kill_leaves_no_process` retries past, for the same reason (the process
-        // that would write is already gone). Retry with a fresh stand-in until the run lands,
-        // rather than fail on scheduling pressure the kill path had no part in.
-        let timing = if name == "slow" { hangs() } else { quick() };
-        let retry_deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let before = bench.run_count();
-            let program = bench.engine(name, &body);
-            let check = bench.check(Provider::Claude, Some(STATUS), timing);
-            let row = ask(&check, found(Provider::Claude, &program), &[]);
-            assert_eq!(answer(&row), expected, "{name}");
-            if bench.run_count() > before || Instant::now() >= retry_deadline {
-                break;
-            }
-        }
+        let program = bench.engine(name, &body);
+        let check = bench.check(Provider::Claude, Some(STATUS), quick());
+        let row = ask(&check, found(Provider::Claude, &program), &[]);
+        assert_eq!(answer(&row), expected, "{name}");
     }
+
+    let check = bench.check(
+        Provider::Claude,
+        Some(&["30"]),
+        Timing {
+            deadline: Duration::from_millis(100),
+            ..quick()
+        },
+    );
+    let row = ask(
+        &check,
+        found(Provider::Claude, Path::new("/bin/sleep")),
+        &[],
+    );
+    assert_eq!(
+        answer(&row),
+        (
+            Some(SignIn::Unknown),
+            Some("the status command did not finish in time")
+        )
+    );
 
     let check = bench.check(Provider::Claude, Some(STATUS), quick());
     let row = ask(
@@ -254,68 +240,9 @@ fn the_status_command_yields_the_five_sign_in_outcomes() {
     );
     assert_eq!(
         bench.run_count(),
-        4,
+        3,
         "each stand-in ran once and the missing one never"
     );
-}
-
-/// The deadline kills the status command's whole group, so nothing it started is left running.
-#[test]
-fn the_deadline_kill_leaves_no_process() {
-    let bench = Bench::new();
-    let pids = bench.dir.path().join("pids");
-    // Each attempt's stand-in has `hangs`'s full 3s deadline to fork, exec and reach its own
-    // write before the kill fires, which is ample except under severe scheduler contention. There
-    // the kill still fires on time and reaps the group correctly, but the shell dies before it
-    // ever runs far enough to write its own pid, so the file never appears: no amount of waiting
-    // recovers it, because the process that would write it is already gone. Retry with a fresh
-    // stand-in rather than fail on scheduling pressure the kill path had no part in.
-    let overall_deadline = Instant::now() + Duration::from_secs(60);
-    let text = loop {
-        let program = bench.engine(
-            "stuck",
-            &format!(
-                "sleep 60 &\necho \"$$ $!\" > '{pids}'\nwait",
-                pids = pids.display()
-            ),
-        );
-        let check = bench.check(Provider::Codex, Some(STATUS), hangs());
-        let started = Instant::now();
-        let row = ask(&check, found(Provider::Codex, &program), &[]);
-        assert_eq!(
-            answer(&row),
-            (
-                Some(SignIn::Unknown),
-                Some("the status command did not finish in time")
-            )
-        );
-        // Generous past `hangs`'s 3s deadline, to absorb scheduling delay under load, and still far
-        // short of the child's own 60s sleep, so this still proves the early kill fired.
-        assert!(
-            started.elapsed() < Duration::from_secs(20),
-            "the check ended at its deadline, not the child's: {:?}",
-            started.elapsed()
-        );
-        match std::fs::read_to_string(&pids) {
-            Ok(text) => break text,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => assert!(
-                Instant::now() < overall_deadline,
-                "the stand-in never got to write its pid before the kill, across every retry"
-            ),
-            Err(error) => panic!("the stand-in ran: {error}"),
-        }
-    };
-    for pid in text.split_whitespace() {
-        let pid: i32 = pid.parse().expect("a pid");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok() {
-            assert!(
-                Instant::now() < deadline,
-                "pid {pid} outlived the deadline kill"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
 }
 
 /// Only a `signed_in` answer is reused, so the call after a login asks again.

@@ -1772,9 +1772,124 @@ pub enum Record {
         completion_lsn: Lsn,
     },
     /// Required mail-wake preparation or current admission authority.
-    MailWakeTurnDecided(crate::mail_wake::MailWakeDecision),
+    MailWakeTurnDecided(
+        #[serde(deserialize_with = "crate::mail_wake::legacy_decision")]
+        crate::mail_wake::MailWakeDecision,
+    ),
     /// Required mail-only managed issue under its exact preparation.
-    MailWakeOnlyTurnIssued(crate::mail_wake::MailWakeIssue),
+    MailWakeOnlyTurnIssued(
+        #[serde(deserialize_with = "crate::mail_wake::legacy_issue")]
+        crate::mail_wake::MailWakeIssue,
+    ),
+    /// Identified-contract pure finite admission evidence, never goal completion.
+    IdentifiedConversationTurnDecided {
+        /// Owning agent.
+        agent: AgentId,
+        /// Exact accepted message.
+        note_lsn: Lsn,
+        /// Captured context generation.
+        context_lsn: Lsn,
+        /// Immutable budget scope.
+        charge_scope: ConversationChargeScope,
+        /// Digest of the complete finite admission input.
+        input_digest: String,
+        /// Ordered consulted gates.
+        gate_trace: Vec<GateStep>,
+        /// Finite verdict with no Done variant.
+        #[serde(
+            deserialize_with = "non_mail_note_admission",
+            serialize_with = "serialize_non_mail_note_admission"
+        )]
+        #[schemars(with = "NonMailNoteAdmissionSchema")]
+        decision: NoteAdmission,
+    },
+    /// Identified-contract issue authority for exactly one owned finite turn.
+    IdentifiedConversationTurnIssued {
+        /// Owning agent.
+        agent: AgentId,
+        /// Single logical turn identity retained during crash recovery.
+        turn: TurnId,
+        /// Exact accepted message.
+        note_lsn: Lsn,
+        /// Captured context generation.
+        context_lsn: Lsn,
+        /// Immutable budget scope.
+        charge_scope: ConversationChargeScope,
+        /// Exact task, persisted before launch, opening with the agent's identity line.
+        task: String,
+        /// Explicit launch session or null.
+        #[serde(deserialize_with = "crate::chat::required_nullable")]
+        #[schemars(with = "crate::chat::ExplicitNullable<SessionId>")]
+        session: Option<SessionId>,
+        /// Explicit prelaunch model selection.
+        model_selection: ModelSelection,
+        /// Exact admitted decision.
+        lsn_of_decision: Lsn,
+    },
+    /// The `IdentifiedTaughtNoteTurnDecided` record.
+    IdentifiedTaughtNoteTurnDecided {
+        /// The owning agent.
+        agent: AgentId,
+        /// The original charged goal.
+        goal: GoalId,
+        /// The exact `BrowserNoteQueued` identity.
+        note_lsn: Lsn,
+        /// The durable ordinary goal Done identity.
+        completion_lsn: Lsn,
+        /// The separately typed completed-note admission digest.
+        input_digest: String,
+        /// The existing ordered admission gate trace.
+        #[serde(deserialize_with = "crate::task::taught_trace")]
+        #[schemars(length(min = 1, max = 7))]
+        gate_trace: Vec<GateStep>,
+        /// A verdict that cannot represent Done.
+        #[serde(deserialize_with = "crate::task::identified_taught_admission")]
+        #[schemars(with = "crate::task::IdentifiedTaughtAdmissionSchema")]
+        decision: NoteAdmission,
+    },
+    /// The `IdentifiedTaughtNoteOnlyTurnIssued` record.
+    IdentifiedTaughtNoteOnlyTurnIssued {
+        /// The owning agent.
+        agent: AgentId,
+        /// The exact issued turn identity.
+        turn: TurnId,
+        /// The original charged goal.
+        goal: GoalId,
+        /// The exact immutable task persisted before launch.
+        #[serde(deserialize_with = "crate::task::identified_taught_task")]
+        #[schemars(with = "crate::task::IdentifiedTaughtTaskSchema")]
+        task: String,
+        /// The explicitly recorded announced session, or null.
+        #[serde(deserialize_with = "crate::chat::required_nullable")]
+        #[schemars(with = "crate::chat::ExplicitNullable<SessionId>")]
+        session: Option<SessionId>,
+        /// Managed issuance only.
+        #[serde(deserialize_with = "managed_mode")]
+        #[schemars(with = "ManagedModeSchema")]
+        mode: Mode,
+        /// The explicit prelaunch model selection.
+        model_selection: ModelSelection,
+        /// The exact taught completed-note decision identity.
+        lsn_of_decision: Lsn,
+        /// The exact carried answer identities, empty on a note-only turn.
+        #[serde(deserialize_with = "no_answers")]
+        #[schemars(length(max = 0))]
+        answers: Vec<Lsn>,
+        /// The exact `BrowserNoteQueued` identity.
+        note_lsn: Lsn,
+        /// The durable ordinary goal Done identity.
+        completion_lsn: Lsn,
+    },
+    /// Identified-contract mail-wake preparation or current admission authority.
+    IdentifiedMailWakeTurnDecided(
+        #[serde(deserialize_with = "crate::mail_wake::identified_decision")]
+        crate::mail_wake::MailWakeDecision,
+    ),
+    /// Identified-contract mail-only managed issue under its exact preparation.
+    IdentifiedMailWakeOnlyTurnIssued(
+        #[serde(deserialize_with = "crate::mail_wake::identified_issue")]
+        crate::mail_wake::MailWakeIssue,
+    ),
     /// A git worktree leased for one agent, appended and fsynced before
     /// `git worktree add` runs, so a crash after the add leaves a recorded tree rather than an
     /// unrecorded one. The lease is pending until an `AgentHired` names it.
@@ -2410,6 +2525,22 @@ impl Record {
             Self::TaughtNoteOnlyTurnIssued { .. } => RecordKind::TaughtNoteOnlyTurnIssued,
             Self::MailWakeTurnDecided(_) => RecordKind::MailWakeTurnDecided,
             Self::MailWakeOnlyTurnIssued(_) => RecordKind::MailWakeOnlyTurnIssued,
+            Self::IdentifiedConversationTurnDecided { .. } => {
+                RecordKind::IdentifiedConversationTurnDecided
+            }
+            Self::IdentifiedConversationTurnIssued { .. } => {
+                RecordKind::IdentifiedConversationTurnIssued
+            }
+            Self::IdentifiedTaughtNoteTurnDecided { .. } => {
+                RecordKind::IdentifiedTaughtNoteTurnDecided
+            }
+            Self::IdentifiedTaughtNoteOnlyTurnIssued { .. } => {
+                RecordKind::IdentifiedTaughtNoteOnlyTurnIssued
+            }
+            Self::IdentifiedMailWakeTurnDecided(_) => RecordKind::IdentifiedMailWakeTurnDecided,
+            Self::IdentifiedMailWakeOnlyTurnIssued(_) => {
+                RecordKind::IdentifiedMailWakeOnlyTurnIssued
+            }
             Self::WorktreeLeased { .. } => RecordKind::WorktreeLeased,
             Self::WorktreeRemoved { .. } => RecordKind::WorktreeRemoved,
             Self::AgentMcpServersChanged { .. } => RecordKind::AgentMcpServersChanged,
@@ -2656,6 +2787,18 @@ pub enum RecordKind {
     AgentModelChanged = 93,
     /// [`Record::BrowserHalt`].
     BrowserHalt = 94,
+    /// [`Record::IdentifiedConversationTurnDecided`].
+    IdentifiedConversationTurnDecided = 95,
+    /// [`Record::IdentifiedConversationTurnIssued`].
+    IdentifiedConversationTurnIssued = 96,
+    /// [`Record::IdentifiedTaughtNoteTurnDecided`].
+    IdentifiedTaughtNoteTurnDecided = 97,
+    /// [`Record::IdentifiedTaughtNoteOnlyTurnIssued`].
+    IdentifiedTaughtNoteOnlyTurnIssued = 98,
+    /// [`Record::IdentifiedMailWakeTurnDecided`].
+    IdentifiedMailWakeTurnDecided = 99,
+    /// [`Record::IdentifiedMailWakeOnlyTurnIssued`].
+    IdentifiedMailWakeOnlyTurnIssued = 100,
 }
 
 impl RecordKind {
@@ -2712,8 +2855,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 94] {
-        let mut kinds = [Self::AgentHired; 94];
+    const fn known_kinds() -> [Self; 100] {
+        let mut kinds = [Self::AgentHired; 100];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2767,6 +2910,12 @@ impl RecordKind {
         kinds[91] = Self::FloorDeviceKeyEnrolled;
         kinds[92] = Self::AgentModelChanged;
         kinds[93] = Self::BrowserHalt;
+        kinds[94] = Self::IdentifiedConversationTurnDecided;
+        kinds[95] = Self::IdentifiedConversationTurnIssued;
+        kinds[96] = Self::IdentifiedTaughtNoteTurnDecided;
+        kinds[97] = Self::IdentifiedTaughtNoteOnlyTurnIssued;
+        kinds[98] = Self::IdentifiedMailWakeTurnDecided;
+        kinds[99] = Self::IdentifiedMailWakeOnlyTurnIssued;
         kinds
     }
 
@@ -2795,6 +2944,12 @@ impl RecordKind {
                 | Self::TaughtNoteOnlyTurnIssued
                 | Self::MailWakeTurnDecided
                 | Self::MailWakeOnlyTurnIssued
+                | Self::IdentifiedConversationTurnDecided
+                | Self::IdentifiedConversationTurnIssued
+                | Self::IdentifiedTaughtNoteTurnDecided
+                | Self::IdentifiedTaughtNoteOnlyTurnIssued
+                | Self::IdentifiedMailWakeTurnDecided
+                | Self::IdentifiedMailWakeOnlyTurnIssued
                 | Self::AgentMcpServersChanged
                 | Self::AgentModelChanged
                 | Self::WorkspaceTrustSet
@@ -3067,6 +3222,10 @@ pub mod samples {
     use crate::decision::Gate;
     use crate::goal::Predicate;
 
+    pub(crate) fn identity() -> crate::IdentityLine {
+        crate::IdentityLine::new(agent(), "Kim", "backend engineer")
+    }
+
     pub(crate) fn agent() -> AgentId {
         AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap()
     }
@@ -3160,6 +3319,87 @@ pub mod samples {
     #[allow(clippy::too_many_lines)] // one arm per variant; a table, not logic
     pub fn record(kind: RecordKind) -> Record {
         match kind {
+            RecordKind::IdentifiedMailWakeTurnDecided => {
+                let Record::MailWakeTurnDecided(mut decision) =
+                    record(RecordKind::MailWakeTurnDecided)
+                else {
+                    unreachable!("sample kind")
+                };
+                let task = crate::MailWakeTask::identified(&identity(), 1).unwrap();
+                if let crate::MailWakePurpose::FreshPreparation { plan } = &mut decision.purpose {
+                    plan.task = task.clone();
+                }
+                decision.decision = crate::MailWakeAdmission::Issue { task };
+                Record::IdentifiedMailWakeTurnDecided(decision)
+            }
+            RecordKind::IdentifiedMailWakeOnlyTurnIssued => {
+                let Record::MailWakeOnlyTurnIssued(mut issue) =
+                    record(RecordKind::MailWakeOnlyTurnIssued)
+                else {
+                    unreachable!("sample kind")
+                };
+                issue.task = crate::MailWakeTask::identified(&identity(), 1).unwrap();
+                Record::IdentifiedMailWakeOnlyTurnIssued(issue)
+            }
+            RecordKind::IdentifiedTaughtNoteTurnDecided => Record::IdentifiedTaughtNoteTurnDecided {
+                agent: agent(),
+                goal: goal(),
+                note_lsn: Lsn::from_parts(1, 100).unwrap(),
+                completion_lsn: Lsn::from_parts(1, 200).unwrap(),
+                input_digest: "note-input".into(),
+                gate_trace: Gate::ORDER
+                    .into_iter()
+                    .map(|gate| GateStep {
+                        gate,
+                        fired: gate == Gate::Work,
+                        note: None,
+                    })
+                    .collect(),
+                decision: NoteAdmission::Issue {
+                    task: crate::identified_taught_note_task(&identity(), "run the tests").unwrap(),
+                },
+            },
+            RecordKind::IdentifiedTaughtNoteOnlyTurnIssued => {
+                Record::IdentifiedTaughtNoteOnlyTurnIssued {
+                    agent: agent(),
+                    turn: turn(),
+                    goal: goal(),
+                    task: crate::identified_taught_note_task(&identity(), "run the tests").unwrap(),
+                    session: None,
+                    mode: Mode::Managed,
+                    model_selection: ModelSelection::default(),
+                    lsn_of_decision: Lsn::from_parts(1, 300).unwrap(),
+                    answers: Vec::new(),
+                    note_lsn: Lsn::from_parts(1, 100).unwrap(),
+                    completion_lsn: Lsn::from_parts(1, 200).unwrap(),
+                }
+            }
+            RecordKind::IdentifiedConversationTurnDecided => {
+                Record::IdentifiedConversationTurnDecided {
+                    agent: agent(),
+                    note_lsn: Lsn::from_parts(1, 200).unwrap(),
+                    context_lsn: Lsn::from_parts(1, 100).unwrap(),
+                    charge_scope: ConversationChargeScope::AgentAndFloor,
+                    input_digest: "digest".into(),
+                    gate_trace: Vec::new(),
+                    decision: NoteAdmission::Issue {
+                        task: crate::identified_conversation_task(&identity(), "hello", false),
+                    },
+                }
+            }
+            RecordKind::IdentifiedConversationTurnIssued => {
+                Record::IdentifiedConversationTurnIssued {
+                    agent: agent(),
+                    turn: turn(),
+                    note_lsn: Lsn::from_parts(1, 200).unwrap(),
+                    context_lsn: Lsn::from_parts(1, 100).unwrap(),
+                    charge_scope: ConversationChargeScope::AgentAndFloor,
+                    task: crate::identified_conversation_task(&identity(), "hello", false),
+                    session: None,
+                    model_selection: ModelSelection::default(),
+                    lsn_of_decision: Lsn::from_parts(1, 300).unwrap(),
+                }
+            }
             RecordKind::MailWakeTurnDecided => {
                 let mail = crate::MailRef {
                     id: mail(),
@@ -4171,8 +4411,11 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 94);
-        for &kind in &RecordKind::KNOWN[46..66] {
+        assert_eq!(RecordKind::KNOWN.len(), 100);
+        for &kind in RecordKind::KNOWN[46..66]
+            .iter()
+            .chain(&RecordKind::KNOWN[94..])
+        {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {
                 let mut missing = value.clone();
@@ -4676,7 +4919,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            94,
+            100,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -5757,8 +6000,53 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 94);
-        assert_eq!(RecordKind::from_tag(95), None);
+        assert_eq!(RecordKind::KNOWN.len(), 100);
+        assert_eq!(RecordKind::from_tag(101), None);
+    }
+
+    #[test]
+    fn identified_kinds_take_the_next_tags_as_required_frames() {
+        for (kind, tag, name) in [
+            (
+                RecordKind::IdentifiedConversationTurnDecided,
+                95,
+                "identified_conversation_turn_decided",
+            ),
+            (
+                RecordKind::IdentifiedConversationTurnIssued,
+                96,
+                "identified_conversation_turn_issued",
+            ),
+            (
+                RecordKind::IdentifiedTaughtNoteTurnDecided,
+                97,
+                "identified_taught_note_turn_decided",
+            ),
+            (
+                RecordKind::IdentifiedTaughtNoteOnlyTurnIssued,
+                98,
+                "identified_taught_note_only_turn_issued",
+            ),
+            (
+                RecordKind::IdentifiedMailWakeTurnDecided,
+                99,
+                "identified_mail_wake_turn_decided",
+            ),
+            (
+                RecordKind::IdentifiedMailWakeOnlyTurnIssued,
+                100,
+                "identified_mail_wake_only_turn_issued",
+            ),
+        ] {
+            assert_eq!(kind.tag(), tag);
+            assert_eq!(RecordKind::from_tag(tag), Some(kind));
+            assert!(kind.requires_required_frame());
+            let record = samples::record(kind);
+            assert_eq!(record.kind(), kind);
+            let encoded = serde_json::to_value(&record).unwrap();
+            assert_eq!(encoded["t"], name);
+            assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
+        }
     }
 
     const TICKET_KINDS: [(RecordKind, u16); 5] = [
@@ -6135,6 +6423,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(95), None);
+        assert_eq!(RecordKind::from_tag(101), None);
     }
 }

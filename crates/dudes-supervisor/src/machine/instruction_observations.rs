@@ -203,8 +203,11 @@ fn issue_goal(record: &Record) -> Option<GoalId> {
         Record::TurnIssued { goal, .. }
         | Record::TurnIssuedWithBrowserNote { goal, .. }
         | Record::NoteOnlyTurnIssued { goal, .. }
-        | Record::TaughtNoteOnlyTurnIssued { goal, .. } => Some(*goal),
-        Record::MailWakeOnlyTurnIssued(issue) => Some(issue.goal),
+        | Record::TaughtNoteOnlyTurnIssued { goal, .. }
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued { goal, .. } => Some(*goal),
+        Record::MailWakeOnlyTurnIssued(issue) | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => {
+            Some(issue.goal)
+        }
         _ => None,
     }
 }
@@ -1165,7 +1168,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 }
                 self.instructions.ready_turns.insert(turn);
                 let Entry { at, record } = *entry;
-                let at = if matches!(&record, Record::MailWakeOnlyTurnIssued(_)) {
+                let at = if matches!(
+                    &record,
+                    Record::MailWakeOnlyTurnIssued(_) | Record::IdentifiedMailWakeOnlyTurnIssued(_)
+                ) {
                     at
                 } else {
                     self.clock.now()
@@ -1207,6 +1213,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 context_lsn,
                 task,
                 ..
+            }
+            | Record::IdentifiedConversationTurnIssued {
+                note_lsn,
+                context_lsn,
+                task,
+                ..
             } => self.conversation_input_for(agent).is_some_and(|input| {
                 input.note_lsn == *note_lsn
                     && input.context_lsn == *context_lsn
@@ -1224,11 +1236,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 note_lsn,
                 task,
                 ..
+            }
+            | Record::IdentifiedTaughtNoteOnlyTurnIssued {
+                goal,
+                note_lsn,
+                task,
+                ..
             } => self.completed_note_input_for(agent).is_some_and(|input| {
                 input.goal() == *goal
                     && input.note_lsn() == *note_lsn
                     && match &entry.record {
-                        Record::TaughtNoteOnlyTurnIssued { completion_lsn, .. } => {
+                        Record::TaughtNoteOnlyTurnIssued { completion_lsn, .. }
+                        | Record::IdentifiedTaughtNoteOnlyTurnIssued { completion_lsn, .. } => {
                             input.completion_lsn() == *completion_lsn
                         }
                         _ => true,
@@ -1236,7 +1255,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     && matches!(dudes_policy::admit_completed_note(&input).decision,
                         dudes_proto::NoteAdmission::Issue { task: current } if current == *task)
             }),
-            Record::MailWakeOnlyTurnIssued(issue) => {
+            Record::MailWakeOnlyTurnIssued(issue)
+            | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => {
                 self.delayed_mail_wake_admitted(issue, entry.at, self.clock.now())
             }
             _ => false,
@@ -1505,6 +1525,14 @@ mod tests {
         harness: &mut Harness,
         request: InstructionRequest,
     ) -> Vec<crate::testing::Seen> {
+        let effects = sample_delayed_start(harness, request);
+        acknowledge_actual_persist(harness, &effects)
+    }
+
+    fn sample_delayed_start(
+        harness: &mut Harness,
+        request: InstructionRequest,
+    ) -> Vec<crate::testing::Seen> {
         let Some(Awaiting::Start(starting)) =
             harness.supervisor.instructions.awaiting.get(&request)
         else {
@@ -1538,7 +1566,7 @@ mod tests {
                 .filter_map(crate::testing::Seen::record)
                 .any(|record| matches!(record, Record::InstructionObservationStarted { .. }))
         );
-        acknowledge_actual_persist(harness, &effects)
+        effects
     }
 
     #[test]
@@ -1627,6 +1655,68 @@ mod tests {
     }
 
     #[test]
+    fn a_rename_during_sampling_drops_the_conversation_issue_and_decides_again() {
+        let mut harness = Harness::new();
+        let agent = harness.hire();
+        harness.step(Input::Spend {
+            agent,
+            view: SpendView::default(),
+        });
+        let context_lsn = harness.supervisor.world().agents[&agent].context_lsn;
+        let effects = harness.step(Input::Command(Command::ConversationMessageQueued {
+            agent,
+            text: "whole finite message".into(),
+            browser: browser_attribution(),
+            context_lsn,
+            context_reset_turn: None,
+        }));
+        let effects = acknowledge_actual_persist(&mut harness, &effects);
+        let effects = acknowledge_actual_persist(&mut harness, &effects);
+        let request = actual_pending_request(&effects);
+        let effects = harness.step(Input::Command(Command::Rename {
+            agent,
+            name: "Rowan".into(),
+            browser_rename: None,
+        }));
+        acknowledge_actual_persist(&mut harness, &effects);
+
+        let mut effects = deliver_delayed_start(&mut harness, request);
+        assert!(effects.iter().all(|effect| !matches!(
+            effect,
+            crate::testing::Seen::Persist {
+                entry: Entry {
+                    record: Record::IdentifiedConversationTurnIssued { .. },
+                    ..
+                },
+                ..
+            }
+        )));
+        let mut renamed_decision = None;
+        for _ in 0..8 {
+            if effects.iter().any(|effect| {
+                matches!(effect, crate::testing::Seen::Persist { entry, .. }
+                    if matches!(&entry.record, Record::IdentifiedConversationTurnDecided {
+                        decision: dudes_proto::NoteAdmission::Issue { task }, ..
+                    } if task.contains("[You are Rowan (agent")))
+            }) {
+                renamed_decision = Some(());
+                break;
+            }
+            if !effects
+                .iter()
+                .any(|effect| matches!(effect, crate::testing::Seen::Persist { .. }))
+            {
+                break;
+            }
+            effects = acknowledge_actual_persist(&mut harness, &effects);
+        }
+        assert!(
+            renamed_decision.is_some(),
+            "the message is decided again under the new name"
+        );
+    }
+
+    #[test]
     fn an_unchanged_ordinary_browser_issue_keeps_its_exact_note_after_sampling() {
         let mut harness = Harness::new();
         let agent = harness.hire();
@@ -1649,6 +1739,131 @@ mod tests {
         let effects = acknowledge_actual_persist(&mut harness, &effects);
         let request = actual_pending_request(&effects);
         assert_exact_delayed_issue(&mut harness, request);
+    }
+
+    fn rename_then_deliver(harness: &mut Harness, agent: AgentId, request: InstructionRequest) {
+        let effects = harness.step(Input::Command(Command::Rename {
+            agent,
+            name: "Rowan".into(),
+            browser_rename: None,
+        }));
+        acknowledge_actual_persist(harness, &effects);
+        let mut effects = deliver_delayed_start(harness, request);
+        let mut decided_again = false;
+        for _ in 0..8 {
+            for record in effects.iter().filter_map(crate::testing::Seen::record) {
+                assert!(
+                    !matches!(record, Record::TurnIssued { task, .. }
+                        if task.contains("[You are Hector (agent")),
+                    "the stale line must not be issued"
+                );
+                decided_again |= matches!(record, Record::TurnIssued { task, .. } if task.contains("[You are Rowan (agent"))
+                    || format!("{record:?}").contains("[You are Rowan (agent");
+            }
+            if decided_again
+                || !effects
+                    .iter()
+                    .any(|effect| matches!(effect, crate::testing::Seen::Persist { .. }))
+            {
+                break;
+            }
+            effects = acknowledge_actual_persist(harness, &effects);
+        }
+        assert!(
+            decided_again,
+            "the agent is decided again under the new name"
+        );
+    }
+
+    #[test]
+    fn a_rename_during_sampling_drops_the_ordinary_issue_and_decides_again() {
+        let (mut harness, agent, _, _, request, _) = delayed_board_sample();
+        rename_then_deliver(&mut harness, agent, request);
+    }
+
+    #[test]
+    fn a_rename_during_sampling_drops_the_closing_issue_and_decides_again() {
+        let (mut harness, agent, _, request) = actual_saving_sample(false);
+        rename_then_deliver(&mut harness, agent, request);
+    }
+
+    fn decisions_for(harness: &Harness, agent: AgentId) -> usize {
+        harness
+            .records()
+            .filter(|record| matches!(record, Record::LoopDecided { agent: decided, .. } if *decided == agent))
+            .count()
+    }
+
+    fn issues_for(harness: &Harness, agent: AgentId) -> usize {
+        harness
+            .records()
+            .filter(|record| {
+                matches!(
+                    record,
+                    Record::TurnIssued { agent: issued, .. }
+                        | Record::TurnIssuedWithBrowserNote { agent: issued, .. }
+                        | Record::IdentifiedTaughtNoteOnlyTurnIssued { agent: issued, .. }
+                    if *issued == agent
+                )
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_rename_folding_after_an_issue_was_emitted_cannot_issue_a_second_turn() {
+        let (mut harness, agent, _, _, request, _) = delayed_board_sample();
+        let started = sample_delayed_start(&mut harness, request);
+        let renamed = harness.step(Input::Command(Command::Rename {
+            agent,
+            name: "Rowan".into(),
+            browser_rename: None,
+        }));
+        let (rename_token, rename_entry) = renamed
+            .iter()
+            .find_map(|effect| match effect {
+                crate::testing::Seen::Persist { token, entry } => Some((*token, entry.clone())),
+                _ => None,
+            })
+            .expect("the rename is persisted behind the observation record");
+        acknowledge_actual_persist(&mut harness, &started);
+        assert_eq!(
+            issues_for(&harness, agent),
+            1,
+            "the issue was emitted from the old name"
+        );
+        let lsn = Lsn(harness.supervisor.world().last_applied_lsn.unwrap().0 + 1);
+        harness.journal.push(rename_entry);
+        let mut effects = harness.step(harness.persisted(rename_token, lsn));
+        for _ in 0..8 {
+            let sample = effects.iter().find_map(|effect| match effect {
+                crate::testing::Seen::SampleInstructions {
+                    request,
+                    baseline: None,
+                    ..
+                } => Some(*request),
+                _ => None,
+            });
+            if let Some(request) = sample {
+                effects = sample_delayed_start(&mut harness, request);
+            } else if effects
+                .iter()
+                .any(|effect| matches!(effect, crate::testing::Seen::Persist { .. }))
+            {
+                effects = acknowledge_actual_persist(&mut harness, &effects);
+            } else {
+                break;
+            }
+        }
+        assert_eq!(
+            issues_for(&harness, agent),
+            1,
+            "no second turn is issued for the agent"
+        );
+        assert_eq!(
+            decisions_for(&harness, agent),
+            1,
+            "no second decision is journaled while the first issue is still launching"
+        );
     }
 
     #[test]
@@ -2123,7 +2338,7 @@ mod tests {
         };
         assert!(matches!(
             entry.record,
-            Record::TaughtNoteOnlyTurnIssued { .. }
+            Record::IdentifiedTaughtNoteOnlyTurnIssued { .. }
         ));
         assert_exact_delayed_issue(&mut harness, request);
     }

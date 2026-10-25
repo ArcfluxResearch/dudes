@@ -31,7 +31,7 @@ fn start(
     settings.floor = Some(FloorSettings {
         assets_dir: PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/floor-release-v7"
+            "/tests/fixtures/floor-release-v8"
         )),
         port: Some(0),
     });
@@ -113,11 +113,21 @@ fn complete_goal(fixture: &Fixture, running: &common::Running, host: &SharedHost
     }
 }
 
+/// The identity line the journal's hire gives `agent`.
+fn identity_line(fixture: &Fixture, agent: AgentId) -> dudes_proto::IdentityLine {
+    let mut world = dudes_supervisor::World::default();
+    for (lsn, entry) in fixture.entries() {
+        world.apply(lsn, &entry);
+    }
+    let row = &world.agents[&agent];
+    dudes_proto::IdentityLine::new(agent, &row.name, &row.role)
+}
+
 fn taught_issue(fixture: &Fixture, completed: &Completed, note_lsn: Lsn, note: &str) -> TurnId {
     let issue = fixture.await_record("taught completed-note issue", |record| {
-        matches!(record, Record::TaughtNoteOnlyTurnIssued { note_lsn: queued, .. } if *queued == note_lsn).then(|| record.clone())
+        matches!(record, Record::IdentifiedTaughtNoteOnlyTurnIssued { note_lsn: queued, .. } if *queued == note_lsn).then(|| record.clone())
     });
-    let Record::TaughtNoteOnlyTurnIssued {
+    let Record::IdentifiedTaughtNoteOnlyTurnIssued {
         agent,
         turn,
         goal,
@@ -136,10 +146,14 @@ fn taught_issue(fixture: &Fixture, completed: &Completed, note_lsn: Lsn, note: &
     assert_eq!(completion_lsn, completed.completion_lsn);
     assert_eq!(mode, Mode::Managed);
     assert!(answers.is_empty());
-    assert_eq!(task.len(), 4_528);
+    let line = identity_line(fixture, completed.agent);
+    assert_eq!(task.len(), 4_528 + line.as_str().len() + 2);
     assert_eq!(
         task,
-        format!("{note}{MEMORY_INSTRUCTION}{MAIL_INSTRUCTION}")
+        format!(
+            "{}\n\n{note}{MEMORY_INSTRUCTION}{MAIL_INSTRUCTION}",
+            line.as_str()
+        )
     );
     let entries = fixture.entries();
     assert!(entries.iter().any(|(lsn, entry)| *lsn == note_lsn && matches!(&entry.record,
@@ -147,7 +161,7 @@ fn taught_issue(fixture: &Fixture, completed: &Completed, note_lsn: Lsn, note: &
             if *agent == completed.agent && text == note && text.len() == 4_096 && *goal == completed.goal
     )));
     assert!(entries.iter().any(|(lsn, entry)| *lsn == lsn_of_decision && matches!(&entry.record,
-        Record::TaughtNoteTurnDecided { agent, goal, note_lsn: queued, completion_lsn, decision: NoteAdmission::Issue { task: decided_task }, .. }
+        Record::IdentifiedTaughtNoteTurnDecided { agent, goal, note_lsn: queued, completion_lsn, decision: NoteAdmission::Issue { task: decided_task }, .. }
             if *agent == completed.agent && *goal == completed.goal && *queued == note_lsn
                 && *completion_lsn == completed.completion_lsn && decided_task == &task
     )));
@@ -156,7 +170,7 @@ fn taught_issue(fixture: &Fixture, completed: &Completed, note_lsn: Lsn, note: &
         .iter()
         .find_map(|(lsn, entry)| {
             matches!(entry.record,
-                Record::TaughtNoteOnlyTurnIssued { turn: issued, .. } if issued == turn
+                Record::IdentifiedTaughtNoteOnlyTurnIssued { turn: issued, .. } if issued == turn
             )
             .then_some(*lsn)
         })
@@ -203,7 +217,10 @@ fn assert_completed_history(fixture: &Fixture, completed: &Completed, note_turn:
     assert_eq!(
         entries
             .iter()
-            .filter(|(_, entry)| matches!(entry.record, Record::TaughtNoteOnlyTurnIssued { .. }))
+            .filter(|(_, entry)| matches!(
+                entry.record,
+                Record::IdentifiedTaughtNoteOnlyTurnIssued { .. }
+            ))
             .count(),
         1
     );
@@ -260,7 +277,10 @@ fn completed_note_exact_utf8_boundary_is_issued_and_survives_restart() {
     });
     let launches = host.spawned();
     assert_eq!(launches.len() - initial_launches, 1);
-    let expected_task = format!("{note}{MEMORY_INSTRUCTION}{MAIL_INSTRUCTION}");
+    let expected_task = format!(
+        "{}\n\n{note}{MEMORY_INSTRUCTION}{MAIL_INSTRUCTION}",
+        identity_line(&fixture, completed.agent).as_str()
+    );
     assert_eq!(
         launches[1]
             .argv

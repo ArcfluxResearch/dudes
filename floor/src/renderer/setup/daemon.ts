@@ -34,6 +34,22 @@ export interface ProviderRow {
   readonly modelFixed?: true;
   /** Present when the daemon has not confirmed that this engine continues a session under another model. */
   readonly modelChangeUnsupported?: true;
+  /** What the engine offered, when the daemon holds a list. Never checked against the account behind the engine. */
+  readonly models?: ModelListView;
+}
+
+/** How a listed model came to be listed. */
+export type ModelItemKind = 'listed' | 'alias' | 'seen';
+
+export interface ModelItem {
+  readonly id: string;
+  readonly kind: ModelItemKind;
+}
+
+export interface ModelListView {
+  /** Milliseconds since the Unix epoch when the daemon made the list. */
+  readonly asOf: number;
+  readonly items: readonly ModelItem[];
 }
 
 export interface DaemonReport {
@@ -58,7 +74,10 @@ const CONTROL = /\p{Cc}/u;
 const UTF8 = new TextEncoder();
 const REPORT_KEYS = Object.freeze(['state_dir', 'providers']);
 const ROW_KEYS = Object.freeze(['provider', 'program', 'found', 'path', 'detail', 'sign_in', 'configured_model', 'model_fixed',
-  'model_change_unsupported']);
+  'model_change_unsupported', 'models']);
+const MODEL_ID = /^[A-Za-z0-9._:/@[\]][A-Za-z0-9._:/@[\]-]{0,63}$/;
+const MAX_MODEL_ITEMS = 200;
+const ITEM_KINDS: readonly ModelItemKind[] = Object.freeze(['listed', 'alias', 'seen']);
 const SIGN_IN_STATES: readonly SignInState[] = Object.freeze(['signed_in', 'signed_out', 'unknown']);
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -77,6 +96,22 @@ function text(value: unknown, max: number): string | null | undefined {
   return bytes >= 1 && bytes <= max ? value : undefined;
 }
 
+/** The model list of a row, or `undefined` when it is absent or malformed. A bad list never costs the row. */
+function modelList(value: unknown): ModelListView | undefined {
+  if (!object(value) || !within(value, ['as_of', 'checked', 'items']) || value.checked !== false
+    || typeof value.as_of !== 'number' || !Number.isSafeInteger(value.as_of) || value.as_of < 0
+    || !Array.isArray(value.items) || value.items.length > MAX_MODEL_ITEMS) return undefined;
+  const items: ModelItem[] = [];
+  const seen = new Set<string>();
+  for (const item of value.items as unknown[]) {
+    if (!object(item) || !within(item, ['id', 'kind']) || typeof item.id !== 'string' || !MODEL_ID.test(item.id)
+      || !ITEM_KINDS.some((kind) => kind === item.kind) || seen.has(item.id)) return undefined;
+    seen.add(item.id);
+    items.push(Object.freeze({ id: item.id, kind: item.kind as ModelItemKind }));
+  }
+  return Object.freeze({ asOf: value.as_of, items: Object.freeze(items) });
+}
+
 function row(value: unknown): ProviderRow | null {
   if (!object(value) || !within(value, ROW_KEYS)) return null;
   const provider = PROVIDERS.find((name) => name === value.provider);
@@ -92,7 +127,9 @@ function row(value: unknown): ProviderRow | null {
   const configured = value.configured_model === undefined ? null : text(value.configured_model, MAX_MODEL_BYTES);
   if (configured === undefined || (value.model_fixed !== undefined && value.model_fixed !== true)
     || (value.model_change_unsupported !== undefined && value.model_change_unsupported !== true)) return null;
+  const models = value.models === undefined ? undefined : modelList(value.models);
   return Object.freeze({ provider, program, found: value.found, path, detail, signIn,
+    ...(models === undefined ? {} : { models }),
     ...(configured === null ? {} : { configuredModel: configured }),
     ...(value.model_fixed === true ? { modelFixed: true as const } : {}),
     ...(value.model_change_unsupported === true ? { modelChangeUnsupported: true as const } : {}) });

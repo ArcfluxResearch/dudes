@@ -40,7 +40,7 @@ pub use appearance::{
 pub use boot::HostBoot;
 pub use display_name::{
     DisplayName, DisplayRole, InvalidDisplayName, InvalidDisplayRole, MAX_DISPLAY_NAME_BYTES,
-    MAX_DISPLAY_ROLE_BYTES,
+    MAX_DISPLAY_ROLE_BYTES, MAX_IDENTITY_ROLE_BYTES, identity_name, identity_role,
 };
 pub use escaped::Escaped;
 pub use id::{

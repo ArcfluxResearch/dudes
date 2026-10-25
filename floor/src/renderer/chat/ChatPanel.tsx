@@ -19,6 +19,7 @@ import { conversationEntries } from './thread.ts';
 import type { ChatEntry } from './thread.ts';
 import { ChatText } from './ChatText.tsx';
 import { Steps } from './Steps.tsx';
+import { EngineSaid } from './EngineSaid.tsx';
 import { FullOutput } from '../LiveWork.tsx';
 
 export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
@@ -250,7 +251,8 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
           {status === null ? null : <p className="chat-message-state" role="status">{status}</p>}
           {turn !== null && stepsMatch(floor, row, turn)
             ? <Steps steps={floor.output.steps} truncated={floor.output.stepsTruncated} stopped={floor.output.stepsStopped} results={floor.output.stepResults} /> : null}
-          {turn?.reply == null ? null : <div className="chat-message chat-assistant">
+          {turn?.failure == null ? null : <EngineSaid failure={turn.failure} />}
+          {turn?.reply == null || turn.reply === turn.failure ? null : <div className="chat-message chat-assistant">
             <p className="chat-speaker">{name}</p>
             <ChatText text={turn.reply} final mode="agent" />
             {turn.truncated ? <p className="chat-warning">Final reply was truncated.</p> : null}
@@ -360,7 +362,7 @@ function turnText(turn: ChatTurn, output: OutputStatus | null): string | null {
     case 'reserved': return 'Next to be sent. Delivery has not started.';
     case 'running': return output === 'ended' ? 'Waiting for reply status' : 'Replying…';
     case 'ended': return turn.reply === null ? 'No final reply was reported' : null;
-    case 'failed': return turn.reply === null ? 'Turn failed. No final reply was reported' : 'Turn failed.';
+    case 'failed': return turn.reply === null && turn.failure === null ? 'Turn failed. No final reply was reported' : 'Turn failed.';
     case 'cancelled': return 'Cancelled before delivery. The agent did not receive this note.';
     case 'delivery_uncertain': return 'Delivery before restart is unknown.';
     case 'reissue_cancelled': return 'Future reissue stopped. Delivery before restart is unknown.';
