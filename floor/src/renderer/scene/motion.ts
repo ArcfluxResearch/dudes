@@ -385,9 +385,9 @@ export function roamOn(motions: readonly CastMotion[], plan: OfficePlan, now: nu
     if (motion.behavior.pose !== 'wander' || motion.strandedAt !== null || now < motion.roamUntil) return motion;
     const others = new Set([...taken].filter(([id]) => id !== motion.desk.agentId).map(([, tile]) => tile));
     const targets = roamTargets(motion, motions, plan);
-    const from = rotation(targets.length, random);
+    const order = rotation(targets.length, random);
     const entry = entryOf(motion.station, plan, motion.approach);
-    for (const index of from) {
+    for (const index of order) {
       const target = targets[index];
       if (others.has(tileKey(target.spot)) || samePoint(target.spot, motion.station)) continue;
       const travel = routeTo(motion.station, entry, target, motion.desk, plan, deskTiles, others);
