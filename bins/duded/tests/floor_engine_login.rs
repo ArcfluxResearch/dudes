@@ -148,15 +148,13 @@ impl PtyHostPort for RealPty {
         let mut reader = opened.reader;
         let (ready, started) = mpsc::sync_channel(1);
         let drain = std::thread::spawn(move || {
-            let mut first_line = Vec::new();
             let mut ready = Some(ready);
             while let Ok(dudes_pty::PtyRead::Data(bytes)) = reader.read() {
                 sink.push(&bytes);
-                if ready.is_some() {
-                    first_line.extend_from_slice(&bytes);
-                    if first_line.contains(&b'\n') {
-                        let _ = ready.take().expect("the first line").send(());
-                    }
+                if bytes.contains(&b'\n')
+                    && let Some(ready) = ready.take()
+                {
+                    let _ = ready.send(());
                 }
             }
         });
