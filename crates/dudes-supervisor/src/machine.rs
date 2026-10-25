@@ -4579,16 +4579,25 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 character,
                 accent,
                 browser_look,
-            } => self.persist(
-                Record::AgentLookChanged {
-                    id: agent,
-                    role,
-                    character,
-                    accent,
-                    browser_look,
-                },
-                Then::Decide { agent },
-            ),
+            } => {
+                let then = if self.world.agents.get(&agent).is_some_and(|row| {
+                    dudes_types::identity_role(&row.role) == dudes_types::identity_role(&role)
+                }) {
+                    Then::Fold
+                } else {
+                    Then::Decide { agent }
+                };
+                self.persist(
+                    Record::AgentLookChanged {
+                        id: agent,
+                        role,
+                        character,
+                        accent,
+                        browser_look,
+                    },
+                    then,
+                );
+            }
             Command::ChangeModel {
                 agent,
                 model,

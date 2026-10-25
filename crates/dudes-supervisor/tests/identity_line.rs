@@ -130,3 +130,42 @@ fn a_rename_or_a_new_role_moves_the_digest() {
         "only the line moved"
     );
 }
+
+#[test]
+fn only_a_changed_role_decides_again_after_a_look_change() {
+    let mut harness = Harness::new();
+    let agent = harness.hire();
+    harness.drive(Input::Command(Command::Pause {
+        agent,
+        browser: None,
+    }));
+    harness.set_goal(agent, &["npm", "test"]);
+    let decisions = |harness: &Harness| {
+        harness
+            .records()
+            .filter(|record| matches!(record, Record::LoopDecided { .. }))
+            .count()
+    };
+    let look = |harness: &mut Harness, role: &str, accent| {
+        harness.drive(Input::Command(Command::Look {
+            agent,
+            role: role.into(),
+            character: None,
+            accent,
+            browser_look: None,
+        }));
+    };
+    let before = decisions(&harness);
+    look(
+        &mut harness,
+        "infra",
+        Some(dudes_types::AccentColour::Coral),
+    );
+    assert_eq!(
+        decisions(&harness),
+        before,
+        "a look-only change decides nothing"
+    );
+    look(&mut harness, "reviewer", None);
+    assert!(decisions(&harness) > before, "a new role is decided again");
+}
