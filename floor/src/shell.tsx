@@ -12,11 +12,11 @@ import {
 import { AgentDrawer, Receipts } from './renderer/AgentDrawer';
 import { CONTROL_TITLE_ID, CONTROL_VIEWS, Control, ControlNav, FocusRoster, toggledView, viewButtonId } from './renderer/Control';
 import type { ControlView } from './renderer/Control';
-import { CrewList, drawerHandBack } from './renderer/CrewList';
+import { drawerHandBack, Roster } from './renderer/Roster';
 import { CrewStats } from './renderer/CrewTotals.tsx';
 import { PauseAllControl } from './renderer/control/PauseAllControl';
 import { DoneNotices } from './renderer/DoneNotices';
-import { NeedsStrip } from './renderer/NeedsStrip';
+import { OverviewDialog } from './renderer/OverviewDialog';
 import { OfficeCanvas } from './renderer/OfficeCanvas';
 import { getFloorState, selectOutputAgent, subscribeToFloor } from './renderer/floor/store';
 import { refreshFloorSnapshot } from './renderer/floor/stream';
@@ -199,7 +199,7 @@ function SignedInShell() {
       shell.style.setProperty('--banner-height', `${pinned ? noticeBanner.offsetHeight : 0}px`);
     };
     const update = () => {
-      const dialogs = shell.querySelectorAll<HTMLDialogElement>('.hire-dialog:modal, .retire-dialog:modal, .ticket-dialog:modal');
+      const dialogs = shell.querySelectorAll<HTMLDialogElement>('.hire-dialog:modal, .retire-dialog:modal, .ticket-dialog:modal, .overview-dialog:modal');
       const modal = dialogs.item(dialogs.length - 1);
       const host = modal ?? shell;
       if (noticeArea.parentElement !== host) host.append(noticeArea);
@@ -315,7 +315,7 @@ function SignedInShell() {
 
   function selectAgent(id: string): boolean {
     if (!selectable || !floor.agents.some((row) => row.id === id)) return false;
-    if (page !== null) closeView();
+    if (page !== null || view === 'overview') closeView();
     selectOutputAgent(id);
     setSelectedId(id);
     return true;
@@ -557,14 +557,14 @@ function SignedInShell() {
       </div>
       <div className="floor-stage" data-page={page ?? undefined}
         onKeyDown={(event) => { if (closesDrawer(event, drawerOpen)) { event.stopPropagation(); clearSelection(); } }}>
-        {crewOpen && !focused ? <CrewList agents={floor.agents} cards={floor.cards} stepLabels={floor.stepLabels} selectedId={currentSelectedId}
+        {crewOpen && !focused ? <Roster agents={floor.agents} cards={floor.cards} stepLabels={floor.stepLabels} selectedId={currentSelectedId}
           selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent}
-          onOpenCard={openCard}
+          onOpenQuestion={openQuestion} onOpenTicket={openCard} sheet
           addAgent={floor.agents.length === 0 && hireSwitchOn(floor) ? null
             : <HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
-        {view === null || focused ? null : <Control key={view} floor={floor} view={view} selectedId={currentSelectedId}
-          onClose={closeView} onView={openView} onOpenQuestion={openQuestion} onOpenTicket={openCard}
-          onReviewRecovery={reviewRecovery} onHire={openHire} onHireAgain={hireAgain}
+        {view === null || view === 'overview' || focused ? null : <Control key={view} floor={floor} view={view}
+          onClose={closeView} onView={openView}
+          onReviewRecovery={reviewRecovery} onHire={openHire}
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className="office-slot">
           <div className="office-area">
@@ -572,9 +572,6 @@ function SignedInShell() {
               onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} /> : null}
             <FirstTask floor={floor} onHire={openHire} />
           </div>
-          {focused ? null : <NeedsStrip agents={floor.agents} cards={floor.cards} selectedId={currentSelectedId}
-            selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
-            onOpenTicket={openCard} />}
         </div>
         <div className="stage-center">
           <TerminalPanel floor={floor} theme={effectiveTheme} />
@@ -588,6 +585,7 @@ function SignedInShell() {
               {drawer}
               {splitter}
               <FocusRoster floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent}
+                onOpenQuestion={openQuestion} onOpenTicket={openCard}
                 onHireAgain={hireAgain} onAddAgent={openHire} collapsed={preferences.rosterCollapsed}
                 onToggle={() => setPreferences((current) => ({ ...current, rosterCollapsed: !current.rosterCollapsed }))} />
             </div>
@@ -600,6 +598,8 @@ function SignedInShell() {
               ?? document.getElementById('hire-open'))?.focus();
           }} /> : null}
       </div>
+      {view === 'overview' && !focused ? <OverviewDialog floor={floor} selectedId={currentSelectedId} onClose={closeView}
+        onSelectAgent={selectAgent} onOpenQuestion={openQuestion} onOpenTicket={openCard} onHireAgain={hireAgain} /> : null}
       {noticeArea === null ? null : createPortal(notices, noticeArea)}
       {noticeBanner === null ? null : createPortal(banner, noticeBanner)}
       <RetireDialog floor={floor} />

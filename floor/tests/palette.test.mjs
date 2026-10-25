@@ -115,9 +115,9 @@ test('the chrome is set in a sans, data in monospace, and no font comes from out
   }
 });
 
-test('white initials read at 4.5:1 on every Crew colour an avatar or a portrait badge can wear', () => {
+test('white initials read at 4.5:1 on every Crew colour a portrait badge can wear', () => {
   const low = [];
-  for (const initials of ['.crew-dot', '.portrait-badge']) {
+  for (const initials of ['.portrait-badge']) {
     const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)]
       .filter(([, selectors]) => selectors.split(',').map((selector) => selector.trim()).includes(initials))
       .map(([, , body]) => body).join(';');

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// The banner and the Waiting on you list: what counts, what never does, and what is announced.
+// The banner and the roster's reading of tickets: what counts, what never does, and what is announced.
 //
 // Mutation controls, each named by the test it turns red:
 //   - a Working ticket counted when its agent's turn ends ... "the banner counts Ready for you…"
@@ -8,7 +8,7 @@
 //   - the count worded in the singular for two .................. "the banner says it in plain words"
 //   - the first reading announced ............................... "a ticket is announced once…"
 //   - an arrival announced twice ................................ "a ticket is announced once…"
-//   - a ticket left out of Waiting on you ....................... "Waiting on you lists…"
+//   - a ticket left out of the roster ........................... "the roster reads the same tickets…"
 
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
@@ -18,27 +18,24 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
-import { ADA, GRACE, agent, find, plainCard, subscribe, ticketCard } from './helpers/tickets.mjs';
+import { ADA, GRACE, agent, plainCard, subscribe, ticketCard } from './helpers/tickets.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 
 let server;
 let store;
 let model;
-let questions;
+let needs;
 let TicketBanner;
 let titleFor;
-let Control;
-let WaitingOnYou;
 
 before(async () => {
   server = await createServer({ root, cacheDir: resolve(root, 'node_modules/.vite-tickets-banner'),
     server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
   store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   model = await server.ssrLoadModule('/src/renderer/ticket/model.ts');
-  questions = await server.ssrLoadModule('/src/renderer/questions.ts');
+  needs = await server.ssrLoadModule('/src/renderer/needs.ts');
   ({ TicketBanner, titleFor } = await server.ssrLoadModule('/src/renderer/ticket/TicketBanner.tsx'));
-  ({ Control, WaitingOnYou } = await server.ssrLoadModule('/src/renderer/Control.tsx'));
 });
 after(async () => { await server?.close(); });
 beforeEach(() => { store.resetFloorStore(); });
@@ -123,34 +120,22 @@ test('a ticket is announced once, when it arrives, and a reloaded page announces
   assert.deepEqual(model.arrivals(step.next, [ticketCard(2, 'doing'), ticketCard(4, 'todo')]).announce, []);
 });
 
-test('Waiting on you lists questions first, then Needs you, then Ready for you', () => {
+test('the roster reads the same tickets: the question first, then the ticket in Needs you, then the one Ready for you', () => {
   subscribe(store, {
-    agents: [agent(ADA, 'Ada', { status: 'waiting', question: 'Ship it or wait?', question_lsn: '9' })],
+    agents: [agent(ADA, 'Ada', { status: 'waiting', question: 'Ship it or wait?', question_lsn: '9' }),
+      agent(GRACE, 'Grace', { status: 'done' })],
     cards: [
-      ticketCard(1, 'review', { claimed_by: ADA }), ticketCard(2, 'blocked', { claimed_by: ADA }, { reason: 'no_turns' }),
+      ticketCard(1, 'review', { claimed_by: GRACE }), ticketCard(2, 'blocked', { claimed_by: ADA }, { reason: 'no_turns' }),
       ticketCard(3, 'doing', { claimed_by: ADA }), plainCard(4, 'review'),
     ],
   });
   const floor = store.getFloorState();
-  const items = questions.waitingOnYou(floor.agents, floor.cards);
-  assert.deepEqual(items.map((item) => [item.kind, item.name]), [
-    ['question', 'Ada'], ['ticket', 'Ticket 2'], ['ticket', 'Ticket 1'],
+  const rows = needs.needsOf(floor.agents, floor.cards);
+  assert.deepEqual(rows.map((row) => [row.name, row.state, row.action.label, row.second?.label ?? null]), [
+    ['Grace', 'ready', 'Review', null], ['Ada', 'needs-you', 'Answer', 'Open ticket'],
   ]);
-  assert.equal(items[1].text, 'The agent reached the work attempt limit for this ticket. Give to agent to try again, or Stop.');
-  assert.equal(items[2].text, 'Ready for you. The check passed. Accept it, or ask for changes.');
-  assert.equal(questions.waitingOnYou(floor.agents).length, 1, 'the agents alone still give the questions');
-
-  const opened = [];
-  const tree = WaitingOnYou({ items, selectable: true, onOpen() {}, onOpenTicket: (card) => opened.push(card) });
-  const buttons = find(tree, (node) => node.type === 'button');
-  assert.deepEqual(buttons.map((button) => button.props.children), ['Answer', 'Open ticket', 'Open ticket']);
-  buttons[1].props.onClick();
-  assert.deepEqual(opened, [items[1].card]);
-
-  const overview = renderToStaticMarkup(createElement(Control, {
-    floor, view: 'overview', selectedId: null, onClose() {}, onView() {}, onOpenQuestion() {}, onOpenTicket() {},
-  }));
-  assert.match(overview, /data-waiting-kind="ticket"[^>]*data-waiting-card-id="01JBQ8XK2M3N4P5Q6R7S8T0002"/);
-  assert.match(overview, /<h4>Ticket 1<\/h4>/);
-  assert.match(overview, /Open ticket/);
+  assert.equal(rows[1].second.card, floor.cards[1].id);
+  assert.equal(needs.waitingHeading(rows), '1 ready for you · 1 needs you');
+  assert.equal(needs.needsOf(floor.agents, []).filter((row) => row.state === 'needs-you').length, 1,
+    'the agents alone still give the questions');
 });

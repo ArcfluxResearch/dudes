@@ -20,21 +20,17 @@ const ada = Object.freeze({
   question: QUESTION,
 });
 
-test('a Waiting agent shows its question, whole, and its row says everything but its name', () => {
+test('a Waiting agent shows its question, whole', () => {
   assert.deepEqual(crewRowOf(ada), {
     name: 'Ada',
     colour: '#b87918',
     role: 'backend engineer',
-    engine: 'claude',
+    engine: 'Claude',
     workspace: 'Project not recorded',
-    status: 'waiting',
-    activity: { kind: 'question', line: `? ${QUESTION}`, text: QUESTION, spoken: `Waiting question: ${QUESTION}` },
+    activity: { kind: 'question', line: `? ${QUESTION}`, text: QUESTION },
     liveActivity: null,
-    lastTurn: null,
     activeCard: null,
     hold: null,
-    checkout: { worktree: null, shared: false },
-    description: `backend engineer, claude, waiting, $1.49 spent today. Waiting question: ${QUESTION}. Project: Project not recorded`,
   });
 });
 
@@ -49,29 +45,21 @@ test('otherwise the row shows the goal, and a question riding on another status 
       kind: 'goal',
       line: 'Validate every parser boundary',
       text: 'Validate every parser boundary',
-      spoken: 'Goal: Validate every parser boundary',
     });
-    assert.equal(crew.description, `backend engineer, claude, ${row.status}, $1.49 spent today. Goal: Validate every parser boundary. Project: Project not recorded`);
   }
 });
 
 test('an agent with no goal and no question says so, and a missing field shows a dash', () => {
   const crew = crewRowOf({ id: GRACE, status: 'idle' });
   assert.deepEqual(
-    { name: crew.name, role: crew.role, engine: crew.engine, activity: crew.activity, description: crew.description },
+    { name: crew.name, role: crew.role, engine: crew.engine, activity: crew.activity },
     {
       name: '—',
       role: '—',
       engine: '—',
-      activity: { kind: 'none', line: 'No goal', text: undefined, spoken: 'No goal' },
-      description: 'idle, $0.00 spent today. No goal. Project: Project not recorded',
+      activity: { kind: 'none', line: 'No goal', text: undefined },
     },
   );
-});
-
-test("the description gives today's spend in dollars truncated to cents, never rounded up", () => {
-  const spend = (usd) => crewRowOf({ ...ada, spent_today: { usd, tokens: 1 } }).description.match(/\$[\d.]+/)[0];
-  assert.deepEqual([0, 9_999, 10_000, 1_499_999, 12_340_000].map(spend), ['$0.00', '$0.00', '$0.01', '$1.49', '$12.34']);
 });
 
 test('a halt outranks a pause, and only a standing true flag holds a row', () => {
@@ -83,8 +71,6 @@ test('a halt outranks a pause, and only a standing true flag holds a row', () =>
     hold({ paused: true, halted: true }),
     hold({ paused: 'yes', halted: 1 }),
   ], [null, 'paused', 'halted', 'halted', null]);
-  assert.equal(crewRowOf({ ...ada, paused: true, halted: true }).description,
-    `backend engineer, claude, waiting, $1.49 spent today, halted. Waiting question: ${QUESTION}. Project: Project not recorded`);
 });
 
 test('the colour is the hire accent, or one fixed by the AgentId when the agent has none or an unknown one', () => {
@@ -100,29 +86,9 @@ test('an automatic hold replaces idle activity with its actionable reason', () =
     automatic_hold: { kind: 'launch_refused', reason: 'The adapter refuses this launch.' } };
   const crew = crewRowOf(row);
   assert.equal(crew.hold, 'held');
-  assert.equal(crew.status, 'held');
   assert.deepEqual(crew.activity, { kind: 'hold', line: 'Launch refused. The adapter refuses this launch.',
-    text: 'Launch refused. The adapter refuses this launch.', spoken: 'Launch refused. The adapter refuses this launch.' });
+    text: 'Launch refused. The adapter refuses this launch.' });
   assert.equal(crewRowOf({ ...row, halted: true }).hold, 'halted');
   assert.equal(crewRowOf({ ...row, paused: true }).hold, 'paused');
   assert.equal(crewRowOf({ ...row, mode: 'attached' }).hold, null);
-});
-
-
-test('a running Managed agent with a recovery-required ticket needs you instead of appearing to work', () => {
-  const running = { ...ada, mode: 'managed', status: 'running', goal: { ...ada.goal, id: '01ARZ3NDEKTSV4RRFFQ69G5FAX' } };
-  const card = { id: '01ARZ3NDEKTSV4RRFFQ69G5FAW', claimed_by: ADA, status: 'blocked',
-    ticket: { reason: 'recovery_required', round: 1, goal: running.goal.id } };
-  const crew = crewRowOf(running, [card]);
-  assert.equal(crew.status, 'needs you');
-  assert.match(crew.description, /claude, needs you,/);
-  for (const [row, cards, status] of [
-    [running, [], 'running'],
-    [running, [{ ...card, ticket: { ...card.ticket, goal: undefined } }], 'running'],
-    [{ ...running, goal: { ...running.goal, id: '01ARZ3NDEKTSV4RRFFQ69G5FAZ' } }, [card], 'running'], [running, [{ ...card, claimed_by: GRACE }], 'running'],
-    [running, [{ ...card, ticket: { ...card.ticket, reason: 'held_launch' } }], 'running'],
-    [{ ...running, status: 'waiting' }, [card], 'waiting'], [{ ...running, mode: 'attached' }, [card], 'running'],
-    [{ ...running, paused: true }, [card], 'running'], [{ ...running, halted: true }, [card], 'running'],
-    [{ ...running, goal: { ...running.goal, status: 'achieved' } }, [card], 'running'],
-  ]) assert.equal(crewRowOf(row, cards).status, status);
 });

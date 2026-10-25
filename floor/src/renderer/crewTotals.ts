@@ -1,24 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import type { AgentRow } from './scene/cast.ts';
-import { fieldsOf } from './scene/label.ts';
 import type { CardRow } from './board.ts';
-import { ticketWord } from './ticket/model.ts';
+import { NEED_LABEL, NEED_STATES, needsOf } from './needs.ts';
+import type { NeedState } from './needs.ts';
 
-const STATUS_ORDER = ['running', 'waiting', 'held', 'needs you', 'ready for you', 'done', 'idle'];
-
-/** Each status some agent has, with how many, in the order the top bar lists them. */
-export function crewStatuses(agents: readonly AgentRow[], cards: readonly CardRow[] = []): readonly { readonly status: string; readonly count: number }[] {
-  const counts = new Map<string, number>();
-  for (const row of agents) {
-    const own = fieldsOf(row).status || 'unknown';
-    const status = ticketWord(cards, row, own) ?? own;
-    counts.set(status, (counts.get(status) ?? 0) + 1);
-  }
-  const rank = (status: string): number => {
-    const at = STATUS_ORDER.indexOf(status);
-    return at === -1 ? STATUS_ORDER.length : at;
-  };
-  return [...counts].map(([status, count]) => ({ status, count }))
-    .sort((a, b) => rank(a.status) - rank(b.status) || (a.status < b.status ? -1 : 1));
+/** Each state some agent is in, with how many, in the order the roster lists them. Read from the one shared rule. */
+export function crewStatuses(agents: readonly AgentRow[], cards: readonly CardRow[] = []): readonly {
+  readonly status: NeedState; readonly label: string; readonly count: number;
+}[] {
+  const rows = needsOf(agents, cards);
+  return NEED_STATES.map((status) => ({ status, label: NEED_LABEL[status].toLowerCase(),
+    count: rows.filter((row) => row.state === status).length })).filter(({ count }) => count > 0);
 }
