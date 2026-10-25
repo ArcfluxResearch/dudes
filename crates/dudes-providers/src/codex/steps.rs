@@ -518,6 +518,50 @@ mod tests {
     }
 
     #[test]
+    fn a_real_run_with_a_failed_command_and_a_two_path_patch_reads_as_steps() {
+        let fixture = include_str!("../../tests/fixtures/codex/c4-file-change.stdout");
+        let mut stream = TurnStream::new();
+        let events: Vec<StepEvent> = fixture
+            .lines()
+            .flat_map(|line| stream.line(line).steps)
+            .collect();
+        let summary: Vec<String> = events
+            .iter()
+            .map(|event| match event {
+                StepEvent::Open { step, .. } => {
+                    format!(
+                        "open {} {:?} {} {:?}",
+                        step.id, step.kind, step.tool, step.args
+                    )
+                }
+                StepEvent::Close {
+                    id,
+                    failed,
+                    exit,
+                    result_bytes,
+                    result,
+                    ..
+                } => format!("close {id} {failed} {exit:?} {result_bytes} {result:?}"),
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                r#"open item_1 Command shell [("command", "/bin/zsh -lc ls")]"#,
+                r#"close item_1 false None 18 Some("main.rs\nnotes.txt\n")"#,
+                r#"open item_2 Command shell [("command", "/bin/zsh -lc \"pwd; rg --files --hidden -g AGENTS.md -g '\"'! .git'\"'; cat notes.txt; git status --short\"")]"#,
+                r#"close item_2 true Some(128) 87 Some("/work\nhello\nworld\nfatal: not a git repository (or any of the parent directories): .git\n")"#,
+                r#"open item_3-0 Write add [("file_path", "/work/created.txt")]"#,
+                r#"open item_3-1 Edit update [("file_path", "/work/notes.txt")]"#,
+                "close item_3-0 false None 0 None",
+                "close item_3-1 false None 0 None",
+                r#"open item_4 Command shell [("command", "/bin/zsh -lc 'cat notes.txt created.txt'")]"#,
+                r#"close item_4 false None 16 Some("hello\nEarth\nnew\n")"#,
+            ]
+        );
+    }
+
+    #[test]
     fn a_failed_command_closes_failed_with_its_exit_status() {
         let events = run(&[
             started(

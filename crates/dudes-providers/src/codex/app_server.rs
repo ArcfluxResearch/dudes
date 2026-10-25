@@ -1209,6 +1209,91 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn short(id: &str) -> &str {
+        id.rsplit('-').next().unwrap_or(id)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_real_streaming_turn_reads_as_steps_a_reply_and_usage() {
+        let fixture = include_str!("../../tests/fixtures/codex/app-server-turn.jsonl");
+        let mut reader = AppServerReader::new(CodexStartup::new(
+            "/data/providers/codex".into(),
+            "/data/agents/a".into(),
+            "/work".into(),
+            "the immutable task".into(),
+            TurnSession::Assigned,
+            ModelSelection::provider_default(),
+        ));
+        reader.start();
+        let mut summary = Vec::new();
+        let mut text = String::new();
+        for line in fixture.lines() {
+            // The capture is from a newer Codex line than the one streaming admits, so its
+            // user agent is swapped for an admitted one to read the rest of the turn.
+            let read = reader.line(&line.replace("dudes/0.164.0-alpha.11.1", "dudes/0.160.0"));
+            text.extend(read.text.iter().map(|fragment| fragment.text.as_str()));
+            summary.extend(read.steps.iter().map(|event| match event {
+                StepEvent::Open { step, .. } => {
+                    let args: Vec<String> = step
+                        .args
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}"))
+                        .collect();
+                    format!(
+                        "open {} {:?} {} {}",
+                        short(&step.id),
+                        step.kind,
+                        step.tool,
+                        args.join(" ; ")
+                    )
+                }
+                StepEvent::Close {
+                    id,
+                    failed,
+                    exit,
+                    result_bytes,
+                    result,
+                    ..
+                } => format!(
+                    "close {} {failed} {exit:?} {result_bytes} {result:?}",
+                    short(id)
+                ),
+            }));
+        }
+        let end = Box::new(reader).end(EXIT_0);
+        assert_eq!(
+            summary,
+            [
+                "open 000000000005 Command shell command=/bin/zsh -lc ls ; cwd=/work",
+                r#"close 000000000005 false None 18 Some("main.rs\nnotes.txt\n")"#,
+                "open 000000000006 Command shell command=/bin/zsh -lc 'git status --short' ; cwd=/work",
+                r#"close 000000000006 true Some(128) 69 Some("fatal: not a git repository (or any of the parent directories): .git\n")"#,
+                "open 000000000007 Command shell command=/bin/zsh -lc 'cat notes.txt' ; cwd=/work",
+                r#"close 000000000007 false None 12 Some("hello\nworld\n")"#,
+                r#"open 000000000008 Command shell command=/bin/zsh -lc "python3 -c 'pass'" ; cwd=/work"#,
+                "close 000000000008 false None 0 None",
+                "open 000000000009 Edit update file_path=/work/notes.txt",
+                "close 000000000009 false None 0 None",
+                "open 000000000010 Write add file_path=/work/created.txt",
+                "close 000000000010 false None 0 None",
+                r#"open 000000000011 Command shell command=/bin/zsh -lc "python3 -c 'print(1)'" ; cwd=/work"#,
+                r#"close 000000000011 false None 2 Some("1\n")"#,
+            ]
+        );
+        assert_eq!(text.lines().last(), Some("done"));
+        assert_eq!(end.outcome, TurnOutcome::Completed);
+        assert_eq!(end.last_message.as_deref(), Some("done"));
+        let Some(ScopedUsage::Session { total, .. }) = end.usage else {
+            panic!("a session total expected");
+        };
+        assert_eq!(
+            (total.input, total.cache_read, total.output),
+            (Tokens::new(8914), Tokens::new(142_592), Tokens::new(1459))
+        );
+    }
+
     #[test]
     fn another_turns_items_and_replies_open_no_steps() {
         let mut reader = reader();
