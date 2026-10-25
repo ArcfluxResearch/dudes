@@ -30,10 +30,6 @@ const STATE_TEXT: Readonly<Record<WorktreeState, string>> = Object.freeze({
   removed: 'removed',
 });
 
-export function worktreeStateText(state: WorktreeState): string {
-  return STATE_TEXT[state];
-}
-
 export function worktreeText(worktree: Worktree): string {
   return `Own copy on branch ${worktree.branch}, ${STATE_TEXT[worktree.state]}`;
 }
@@ -43,21 +39,7 @@ export function sharesCheckout(row: Readonly<Record<string, unknown>>): boolean 
   return row.shares_checkout === true;
 }
 
-/** What one Crew row says about where its agent writes: its own worktree, a directory others share, or neither. */
-export interface CheckoutOwnership {
-  readonly worktree: string | null;
-  readonly shared: boolean;
-}
-
-export const SHARED_DIRECTORY_TEXT = 'Shared directory';
-
-export function checkoutOf(row: Readonly<Record<string, unknown>>): CheckoutOwnership {
-  const worktree = decodeWorktree(row.worktree);
-  return { worktree: worktree === null ? null : `Own copy on branch ${worktree.branch}, ${STATE_TEXT[worktree.state]}`,
-    shared: sharesCheckout(row) };
-}
-
-/** One line over Crew, or null when no agent has a worktree in use or shares a directory. Released and removed trees are not counted. */
+/** One line over the agents, or null when no agent has a worktree in use or shares a directory. Released and removed trees are not counted. */
 export function checkoutSummary(rows: readonly Readonly<Record<string, unknown>>[]): string | null {
   const own = rows.filter((row) => {
     const state = decodeWorktree(row.worktree)?.state;

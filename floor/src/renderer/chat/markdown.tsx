@@ -10,6 +10,9 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { splitHidden } from '../memory/MemoryText.tsx';
+import { languageOf, tokenize } from './highlight.ts';
+import type { Language } from './highlight.ts';
+import './code.css';
 
 export const PARSE_LIMIT = 16_384;
 export const MAX_DEPTH = 6;
@@ -65,6 +68,23 @@ class Context {
   text(text: string): ReactNode[] {
     return splitHidden(text, true).map((piece) => typeof piece === 'string' ? piece
       : this.low ? piece.marker : this.el('span', { className: 'memory-marker' }, piece.marker));
+  }
+
+  /** Code as class-named spans over text nodes; once the element budget runs low the rest is plain text. */
+  code(text: string, language: Language): ReactNode[] {
+    const { tokens } = tokenize(text, language);
+    const out: ReactNode[] = [];
+    for (let k = 0; k < tokens.length; k += 1) {
+      if (this.low) {
+        out.push(...this.text(tokens.slice(k).map((token) => token.text).join('')));
+        break;
+      }
+      const token = tokens[k];
+      if (token === undefined) break;
+      if (token.cls === null) out.push(...this.text(token.text));
+      else out.push(this.el('span', { className: token.cls }, this.text(token.text)));
+    }
+    return out;
   }
 
   plain(text: string): ReactNode {
@@ -259,7 +279,7 @@ function blank(line: string): boolean {
   return true;
 }
 
-function fenceOpen(line: string): { ch: string; n: number; indent: number } | null {
+function fenceOpen(line: string): { ch: string; n: number; indent: number; info: string } | null {
   const { cols, pos } = columns(line);
   const ch = line[pos];
   if (cols > 3 || (ch !== '`' && ch !== '~')) return null;
@@ -267,7 +287,7 @@ function fenceOpen(line: string): { ch: string; n: number; indent: number } | nu
   while (line[end] === ch) end += 1;
   if (end - pos < 3) return null;
   if (ch === '`' && line.indexOf('`', end) >= 0) return null;
-  return { ch, n: end - pos, indent: cols };
+  return { ch, n: end - pos, indent: cols, info: line.slice(end) };
 }
 
 function fenceClose(line: string, fence: { ch: string; n: number }): boolean {
@@ -380,7 +400,9 @@ function blocks(ctx: Context, lines: readonly string[], depth: number): ReactNod
       i += 1;
       while (i < lines.length && !fenceClose(lines[i] ?? '', fence)) { code.push(strip(lines[i] ?? '', fence.indent)); i += 1; }
       i += 1;
-      out.push(ctx.el('pre', { className: 'chat-code' }, ctx.el('code', {}, ctx.text(code.join('\n')))));
+      const body = code.join('\n');
+      const language = languageOf(fence.info);
+      out.push(ctx.el('pre', { className: 'chat-code' }, ctx.el('code', {}, language === null ? ctx.text(body) : ctx.code(body, language))));
       continue;
     }
     const title = heading(line);

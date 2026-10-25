@@ -74,7 +74,7 @@ function admitted(
   const row = rows.get(visit.senderId);
   if (row === undefined) return false;
   const current = officeStateOf(row, activity);
-  return current === 'idle' || (current === 'working' && visit.admissionState === 'working');
+  return current === 'idle' || current === 'finished' || (current === 'working' && visit.admissionState === 'working');
 }
 
 /** Visits still worth drawing: time hasn't run them out, both agents still have a desk, and the sender's

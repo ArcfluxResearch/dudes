@@ -77,7 +77,7 @@ test('DELAYED_DELIVERY mutant cannot show a queued fact after its server time pa
   assert.equal(liveActivityLabel(unsafe, { live: true, now: 1_000, wallNow: NOW }), null);
 });
 
-test('the office tag shows the activity kind and Crew keeps its goal or question', () => {
+test('the office tag shows the activity kind and the roster keeps its goal or question', () => {
   const fields = fieldsOf(ROW, LIVE);
   assert.equal(fields.liveActivity, 'Tool step');
   assert.equal(fields.question, 'Ship this release?');
@@ -87,27 +87,26 @@ test('the office tag shows the activity kind and Crew keeps its goal or question
   assert.equal(card.liveActivity, 'Tool step');
   assert.equal(card.activity.kind, 'question');
   assert.equal(card.activity.text, 'Ship this release?');
-  assert.match(card.description, /Tool step/);
-  assert.doesNotMatch(card.description, /private-tool/);
+  assert.doesNotMatch(JSON.stringify(card), /private-tool/);
 
   assert.equal(fieldsOf(ROW, { live: false, now: NOW, wallNow: NOW }).liveActivity, null);
   assert.equal(crewRowOf(ROW, [], { live: false, now: NOW, wallNow: NOW }).liveActivity, null);
 });
 
-test('Crew renders the fixed label only while its floor is selectable and confirmed', async () => {
+test('the roster renders the fixed label only while its floor is selectable and confirmed', async () => {
   const server = await createServer({ root: resolve(import.meta.dirname, '..'),
     cacheDir: resolve(import.meta.dirname, '../node_modules/.vite-live-activity'),
     server: { middlewareMode: true, hmr: false }, appType: 'custom' });
   try {
-    const { CrewList } = await server.ssrLoadModule('/src/renderer/CrewList.tsx');
+    const { Roster } = await server.ssrLoadModule('/src/renderer/Roster.tsx');
     const row = { ...ROW, live_activity: { ...ROW.live_activity, at: Date.now() } };
-    const render = (selectable, stale) => renderToStaticMarkup(createElement(CrewList, {
+    const render = (selectable, stale) => renderToStaticMarkup(createElement(Roster, {
       agents: [row], cards: [], selectedId: null, selectable, stale,
-      onSelectAgent() {}, onOpenCard() {},
+      onSelectAgent() {}, onOpenQuestion() {}, onOpenTicket() {},
     }));
     const shown = render(true, false);
-    assert.match(shown, /class="crew-live-activity" data-live-activity="Tool step">Tool step<\/small>/);
-    assert.match(shown, /class="crew-activity" data-activity="question"/);
+    assert.match(shown, /<span class="crew-live-activity" data-live-activity="Tool step">Tool step<\/span>/);
+    assert.match(shown, /<small class="crew-activity" data-activity="question"/);
     assert.doesNotMatch(shown, /private-tool-argument/);
     assert.doesNotMatch(render(false, false), /crew-live-activity/);
     assert.doesNotMatch(render(true, true), /crew-live-activity/);

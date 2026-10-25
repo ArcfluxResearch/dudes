@@ -84,7 +84,9 @@ fn event(
         Record::TurnIssued { agent: id, .. }
         | Record::NoteOnlyTurnIssued { agent: id, .. }
         | Record::ConversationTurnIssued { agent: id, .. }
+        | Record::IdentifiedConversationTurnIssued { agent: id, .. }
         | Record::TaughtNoteOnlyTurnIssued { agent: id, .. }
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued { agent: id, .. }
         | Record::TurnIssuedWithBrowserNote { agent: id, .. } => ActivityEvent::TurnIssued {
             agent: agent(agents, *id)?,
         },

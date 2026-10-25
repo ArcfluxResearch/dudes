@@ -601,35 +601,36 @@ pub fn completed_note_input_digest(input: &dudes_policy::CompletedNoteInput) -> 
     })
 }
 
-/// Canonical encoding of a taught completed-note input failed.
+/// Canonical encoding of an identified completed-note input failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TaughtNoteDigestError;
-impl std::fmt::Display for TaughtNoteDigestError {
+pub struct IdentifiedNoteDigestError;
+impl std::fmt::Display for IdentifiedNoteDigestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("taught completed-note input does not encode")
+        f.write_str("identified completed-note input does not encode")
     }
 }
-impl std::error::Error for TaughtNoteDigestError {}
+impl std::error::Error for IdentifiedNoteDigestError {}
 
-/// Digest the complete input under distinct taught authority without reusing a raw hash.
+/// Digest the complete input, identity line included, under its own authority so no hash from an
+/// earlier completed-note contract can equal it.
 ///
 /// # Errors
 /// Returns a named encoding refusal instead of a fabricated empty digest.
-pub fn taught_note_input_digest(
+pub fn identified_note_input_digest(
     input: &dudes_policy::CompletedNoteInput,
-) -> Result<String, TaughtNoteDigestError> {
+) -> Result<String, IdentifiedNoteDigestError> {
     #[derive(serde::Serialize)]
-    struct TaughtCanonical<'a> {
+    struct IdentifiedCanonical<'a> {
         kind: &'static str,
         contract: dudes_proto::NoteContract,
         input: &'a dudes_policy::CompletedNoteInput,
     }
-    canonical_digest(&TaughtCanonical {
-        kind: "taught_completed_browser_note_v1",
-        contract: dudes_proto::NoteContract::Taught,
+    canonical_digest(&IdentifiedCanonical {
+        kind: "identified_completed_browser_note_v1",
+        contract: dudes_proto::NoteContract::IdentifiedTaught,
         input,
     })
-    .ok_or(TaughtNoteDigestError)
+    .ok_or(IdentifiedNoteDigestError)
 }
 
 /// Canonical encoding of a complete mail admission input failed.

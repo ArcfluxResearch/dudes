@@ -18,6 +18,7 @@ const COMMANDS: &[&str] = &[
     "closing",
     "agents",
     "team",
+    "whoami",
     "pause",
     "resume",
     "halt",
