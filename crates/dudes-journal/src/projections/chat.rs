@@ -8,7 +8,7 @@ use dudes_proto::{
     MAX_CHAT_TURN_BYTES_PER_AGENT, MAX_CHAT_TURNS, MAX_CHAT_TURNS_PER_AGENT, NoteAdmission,
     NoteContract, Record, TaskContract, TurnOutcome,
 };
-use dudes_types::{AgentId, GoalId, Lsn, TurnId};
+use dudes_types::{AgentId, GoalId, Lsn, ModelName, TurnId};
 use redb::{ReadableTable, Table};
 use serde::{Deserialize, Serialize};
 
@@ -1034,6 +1034,7 @@ pub(super) fn apply(
             provenance,
             outcome,
             exit,
+            model_usage,
             ..
         } => {
             if final_reply.as_ref().is_some_and(|reply| {
@@ -1077,6 +1078,18 @@ pub(super) fn apply(
                     } else {
                         ChatTurnState::Ended
                     };
+                    view.failure = match outcome {
+                        Some(TurnOutcome::Failed { reason }) => {
+                            cut(reason, dudes_proto::MAX_CHAT_FAILURE_BYTES)
+                        }
+                        _ => None,
+                    };
+                    view.ran_models = model_usage
+                        .keys()
+                        .filter(|name| ModelName::parse(name).is_ok())
+                        .take(dudes_proto::MAX_CHAT_RAN_MODELS)
+                        .cloned()
+                        .collect();
                     view.reply = final_reply
                         .as_ref()
                         .map(|reply| reply.text.clone())
@@ -1233,6 +1246,8 @@ fn reserve(
         state: ChatTurnState::Reserved,
         reply: None,
         truncated: None,
+        failure: None,
+        ran_models: Vec::new(),
     };
     if array_bytes(std::slice::from_ref(&view))? <= MAX_CHAT_TURN_BYTES_PER_AGENT {
         window.turns.push(TurnHistory {
@@ -1241,6 +1256,15 @@ fn reserve(
         });
     }
     Ok(())
+}
+
+/// `text` cut to at most `limit` bytes on a character boundary, or `None` when it is empty.
+fn cut(text: &str, limit: usize) -> Option<String> {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (end > 0).then(|| text[..end].to_owned())
 }
 
 fn update_history(window: &mut Windows, turn: TurnId, change: impl FnOnce(&mut ChatTurnView)) {

@@ -130,6 +130,24 @@ pub trait PredicateRunner: Send + Sync + 'static {
         Err(io::ErrorKind::Unsupported.into())
     }
 
+    /// [`PredicateRunner::run_captured`] for a child that exits when its input ends: the input is
+    /// written and left open, and the child's group is ended once `answered` holds for the output
+    /// so far, rather than at its end.
+    ///
+    /// # Errors
+    ///
+    /// As [`PredicateRunner::run_captured`].
+    fn run_captured_until(
+        &self,
+        spec: &LaunchSpec,
+        timeout: Duration,
+        stdout_cap: usize,
+        answered: fn(&[u8]) -> bool,
+    ) -> io::Result<PredicateCaptured> {
+        let _ = (spec, timeout, stdout_cap, answered);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     /// [`PredicateRunner::run`] that also ends early once `cancel` is set, killing and reaping the
     /// child and answering [`PredicateOutcome::Swept`]. A runner that cannot end one run early
     /// runs it to its end, which is the default.

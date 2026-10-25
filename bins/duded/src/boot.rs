@@ -442,6 +442,20 @@ where
     if let Some(profile) = &codex_profile {
         children.configure_codex_profile(Arc::clone(profile));
     }
+    let engine_models = crate::engine_models::EngineModels::new(
+        Arc::clone(&predicates) as Arc<dyn PredicateRunner>,
+        settings.state_dir.clone(),
+        Provider::ALL.into_iter().filter_map(|provider| {
+            adapters
+                .get(provider)
+                .map(|adapter| crate::engine_models::Source {
+                    provider,
+                    program: adapter.program().to_os_string(),
+                    env: adapter.child_env(&settings.daemon_env),
+                })
+        }),
+        codex_profile.clone(),
+    );
     let provider_check = crate::provider_check::ProviderCheck::start(
         Provider::ALL
             .into_iter()
@@ -464,6 +478,7 @@ where
         &settings.daemon_env,
         settings.state_dir.clone(),
         codex_profile,
+        Some(engine_models.clone()),
     )
     .context("starting the provider check thread")?;
     let sign_in = crate::sign_in::SignInCheck::new(
@@ -556,6 +571,20 @@ where
     // Publish the cursor replay established before the door can answer. Starting this at zero
     // would pair replay-derived supervisor health with an empty-journal ping until the next append.
     let last_lsn = Arc::new(AtomicU64::new(projections.last_applied_lsn().0));
+    if let Ok(mut turns) = projections.turns() {
+        turns.retain(|turn| {
+            !turn.model_usage.is_empty()
+                && sup
+                    .world()
+                    .agents
+                    .get(&turn.agent)
+                    .is_some_and(|agent| agent.provider == Provider::Claude)
+        });
+        turns.sort_by_key(|turn| turn.ended_at);
+        for turn in &turns {
+            provider_check.note_models_seen(turn.model_usage.keys().map(String::as_str));
+        }
+    }
 
     let switches = crate::floor_switches::SharedSwitches::new(
         crate::floor_switches::Switches::from_settings(settings),
@@ -654,6 +683,7 @@ where
             agents_root: settings.state_dir.join("agents"),
             running_mcp: options.mcp_servers().clone(),
             running_providers: options.into_providers(),
+            provider_check: provider_check.clone(),
             browser_launches,
             resolved_browser_turn: None,
             switches,
@@ -779,7 +809,8 @@ where
             .with_devices(daemon.sup.world().floor_devices.clone())
             .with_git(Arc::new(git_reads(settings, &daemon)))
             .with_diff(Arc::new(diff_reads(&daemon)))
-            .with_engine_logins(engine_logins);
+            .with_engine_logins(engine_logins)
+            .with_engine_models(engine_models);
         daemon.sup.enable_activity_sampling();
         daemon.activity_flusher = Some(start_activity_flusher(
             handle.clone(),
@@ -1685,6 +1716,7 @@ where
             Vec::new(),
             &settings.daemon_env,
             settings.state_dir.clone(),
+            None,
             None,
         )
         .expect("the provider check thread starts"),
