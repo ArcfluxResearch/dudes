@@ -297,7 +297,7 @@ fn a_half_written_answer_keeps_the_control_events_fail_open() {
 
 #[test]
 fn a_connection_dropped_after_the_request_blocks_control_events_and_fails_open_for_others() {
-    const UNANSWERED_BLOCK: &[u8] = b"dudes-hook: daemon accepted the connection but did not answer; control step blocked; retry, and restart duded if this persists\n";
+    const UNANSWERED_BLOCK: &[u8] = b"dudes-hook: daemon connection ended before an answer; control step blocked; retry, and restart duded if this persists\n";
     for (event, control) in [
         ("PreToolUse", true),
         ("UserPromptSubmit", true),

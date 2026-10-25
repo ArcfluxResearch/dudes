@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use common::hook_shim::{minted_token, payload};
+use common::hook_shim::{generated_handlers, handler, minted_token, payload, spawn_handler};
 use common::{
     Fixture, ScriptedRunner, SharedHost, TestClock, goal_params, hire, seams_with, set_goal,
 };
@@ -16,8 +16,8 @@ use duded::boot;
 use duded::ports::Ask;
 use duded::startup::Witness;
 use dudes_proto::PeerProvenance;
+use dudes_proto::rpc::Method;
 use dudes_proto::rpc::hook::{HookEventParams, HookToken};
-use dudes_proto::rpc::{Method, Response};
 use dudes_rpc::auth::{PeerIdentity, PeerResolution, PeerResolver};
 use dudes_rpc::{ClientError, FrameError, LocalClient};
 use dudes_types::AgentId;
@@ -42,7 +42,7 @@ impl PeerResolver for Resolver {
 }
 
 struct Rig {
-    _fixture: Fixture,
+    fixture: Fixture,
     running: common::Running,
     socket: std::path::PathBuf,
     agent: AgentId,
@@ -80,7 +80,7 @@ fn rig() -> Rig {
     await_hook_subject(&fixture, &running, agent);
     *resolver.provenance.lock().unwrap() = PeerProvenance::Agent(agent);
     Rig {
-        _fixture: fixture,
+        fixture,
         running,
         socket,
         agent,
@@ -141,12 +141,21 @@ fn paused_rig() -> Rig {
     rig
 }
 
-/// Names the shape of an unanswered conversation, and fails on any shape the shim would not block on.
-fn unanswered_shape(result: Result<Response, ClientError>) -> String {
+fn connect_at_full_cap(rig: &Rig) -> Result<LocalClient, ClientError> {
+    LocalClient::connect(&rig.socket).map_err(|error| {
+        assert!(
+            cfg!(windows) && error.raw_os_error() == Some(233),
+            "the saturated connection failed before setup with {error:?}"
+        );
+        ClientError::Io(error)
+    })
+}
+
+fn assert_unanswered<T: std::fmt::Debug>(result: Result<T, ClientError>) {
     use std::io::ErrorKind::{BrokenPipe, ConnectionReset, NotConnected, UnexpectedEof};
 
     let (label, error) = match result {
-        Err(ClientError::Closed) => return "Closed".to_owned(),
+        Err(ClientError::Closed) => return,
         Err(ClientError::Frame(FrameError::Io(e))) => ("Frame(Io)", e),
         Err(ClientError::Io(e)) => ("Io", e),
         other => panic!("the cap-full call produced {other:?}"),
@@ -160,7 +169,6 @@ fn unanswered_shape(result: Result<Response, ClientError>) -> String {
         error.kind(),
         error.raw_os_error()
     );
-    format!("{label} {:?}", error.kind())
 }
 
 fn hook_params(rig: &Rig) -> Value {
@@ -171,29 +179,31 @@ fn hook_params(rig: &Rig) -> Value {
     .unwrap()
 }
 
-/// Which error a client sees depends on whether its write beats the daemon's close, so one run
-/// cannot require any one shape. Every outcome must still be one the shim blocks on, and none may
-/// be an answer.
+/// A saturated pipe may close during Windows client setup or during the call. Every outcome must
+/// still be one the shim blocks on, and none may be an answer.
 #[test]
 fn a_full_cap_never_answers_and_ends_in_a_shape_the_shim_blocks_on() {
     let rig = paused_rig();
     let holder = hold_the_slot(&rig);
     let params = hook_params(&rig);
     for _ in 0..RUNS {
-        let mut client = LocalClient::connect(&rig.socket).expect("connect succeeds at the cap");
-        unanswered_shape(client.call(Method::HookEvent, Some(params.clone())));
+        assert_unanswered(
+            connect_at_full_cap(&rig)
+                .and_then(|mut client| client.call(Method::HookEvent, Some(params.clone()))),
+        );
     }
     drop(holder);
 }
 
-/// The daemon ends a connection it will not serve before reading from it, so a client that has
-/// not written yet reads a clean end of stream.
 #[test]
-fn a_full_cap_ends_a_silent_connection_with_a_clean_close() {
+fn a_full_cap_ends_a_silent_connection_without_an_answer() {
     let rig = paused_rig();
     let holder = hold_the_slot(&rig);
-    let mut client = LocalClient::connect(&rig.socket).expect("connect succeeds at the cap");
-    assert!(matches!(client.recv(), Err(ClientError::Closed)));
+    assert_unanswered(connect_at_full_cap(&rig).and_then(|mut client| {
+        let result = client.recv();
+        assert!(matches!(result, Err(ClientError::Closed)), "{result:?}");
+        result
+    }));
     drop(holder);
 }
 
@@ -202,8 +212,51 @@ fn a_call_after_the_full_cap_close_stays_unanswered() {
     let rig = paused_rig();
     let holder = hold_the_slot(&rig);
     let params = hook_params(&rig);
-    let mut client = LocalClient::connect(&rig.socket).expect("connect succeeds at the cap");
-    assert!(matches!(client.recv(), Err(ClientError::Closed)));
-    unanswered_shape(client.call(Method::HookEvent, Some(params)));
+    assert_unanswered(connect_at_full_cap(&rig).and_then(|mut client| {
+        let result = client.recv();
+        assert!(matches!(result, Err(ClientError::Closed)), "{result:?}");
+        client.call(Method::HookEvent, Some(params))
+    }));
+    drop(holder);
+}
+
+#[test]
+fn a_full_cap_blocks_real_control_hooks_but_an_absent_daemon_does_not() {
+    const UNANSWERED_BLOCK: &[u8] = b"dudes-hook: daemon connection ended before an answer; control step blocked; retry, and restart duded if this persists\n";
+    const FAILURE: &[u8] = b"dudes-hook: hook delivery failed\n";
+    let rig = paused_rig();
+    let holder = hold_the_slot(&rig);
+    let generated = generated_handlers(rig.agent, rig.fixture.state.path());
+    for (event, expected) in [("PreToolUse", 2), ("UserPromptSubmit", 2), ("Stop", 0)] {
+        let (_, output) = spawn_handler(
+            handler(&generated, event),
+            &rig.socket,
+            &rig.token,
+            &payload(event),
+        );
+        assert_eq!(output.status.code(), Some(expected), "{event}: {output:?}");
+        assert!(output.stdout.is_empty(), "{event}: {output:?}");
+        assert_eq!(
+            output.stderr,
+            if expected == 2 {
+                UNANSWERED_BLOCK
+            } else {
+                FAILURE
+            },
+            "{event}"
+        );
+    }
+    let missing = dudes_rpc::local_endpoint(rig.fixture.state.path(), "absent.sock");
+    for event in ["PreToolUse", "UserPromptSubmit"] {
+        let (_, output) = spawn_handler(
+            handler(&generated, event),
+            &missing,
+            &rig.token,
+            &payload(event),
+        );
+        assert_eq!(output.status.code(), Some(0), "{event}: {output:?}");
+        assert!(output.stdout.is_empty(), "{event}: {output:?}");
+        assert_eq!(output.stderr, FAILURE, "{event}");
+    }
     drop(holder);
 }
