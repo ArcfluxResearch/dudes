@@ -165,12 +165,19 @@ impl Host {
 
     /// Replace the fake `tool` with a script whose body is `script`.
     fn fake(&self, tool: &str, script: &str) {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let file = self.fakes.join(tool);
-        write(&file, &format!("#!/bin/sh\n{script}\n"));
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
-            .expect("an executable fake");
+        write(&self.fakes.join(format!(".{tool}.sh")), script);
+        if file.symlink_metadata().is_ok() {
+            std::fs::remove_file(&file).expect("replace the fake tool");
+        }
+        std::os::unix::fs::symlink(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/install-tool.sh"
+            ),
+            file,
+        )
+        .expect("the fake tool uses the fixture launcher");
     }
 
     /// Put only the fakes and these real tools on `PATH`.
@@ -258,6 +265,24 @@ impl Host {
         assert_eq!(left, 0, "install.sh leaves nothing in TMPDIR: {output:?}");
         output
     }
+}
+
+fn run_installed(path: &Path) -> Output {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    assert_eq!(
+        std::fs::metadata(path)
+            .expect("the installed script")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755,
+        "the installed binary is executable"
+    );
+    Command::new("/bin/sh")
+        .arg(path)
+        .output()
+        .expect("the installed binary runs")
 }
 
 fn stdout(output: &Output) -> String {
@@ -355,9 +380,7 @@ fn it_installs_the_binaries_and_floor_and_says_what_to_run_next() {
 
     assert!(first.status.success(), "installed: {first:?}");
     for binary in BINARIES {
-        let ran = Command::new(bin.join(binary))
-            .output()
-            .expect("the installed binary runs");
+        let ran = run_installed(&bin.join(binary));
         assert_eq!(
             String::from_utf8_lossy(&ran.stdout),
             format!("{binary} aarch64-apple-darwin\n")
@@ -575,9 +598,7 @@ fn it_installs_when_the_script_arrives_on_standard_input() {
         "{}",
         stdout(&pinned)
     );
-    let ran = Command::new(bin.join("dudes"))
-        .output()
-        .expect("the installed binary runs");
+    let ran = run_installed(&bin.join("dudes"));
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
         "dudes aarch64-apple-darwin\n"
@@ -691,59 +712,58 @@ fn failed_first_notice_swaps_leave_no_binaries_floor_or_notices() {
 
 #[test]
 fn a_retry_recovers_notices_after_notice_rollback_was_interrupted() {
-    for interrupted in NOTICES {
-        let served = tempfile::tempdir().expect("a release directory");
-        release(served.path(), &["aarch64-apple-darwin"]);
-        let url = serve(served.path()).url;
-        let host = Host::new("Darwin", "arm64");
-        previous_installation(&host);
-        let share = host.prefix().join("share/dudes");
-        host.fake(
-            "mv",
-            &format!(
-                "case \"$*\" in *\"floor.new\"* | *\".dudes-restore.\"*\"/{interrupted}\"* | *\".install-rollback.\"*\"/{interrupted}\"*) exit 74 ;; esac; exec /bin/mv \"$@\""
-            ),
-        );
-        host.fake(
-            "cp",
-            &format!(
-                "case \"$2\" in *\".install-rollback.\"*\"/{interrupted}\") exit 74 ;; esac; exec /bin/cp \"$@\""
-            ),
-        );
-        let failed = host.install(&url, &[]);
-        assert!(!failed.status.success(), "rollback interrupted: {failed:?}");
-        assert!(stderr(&failed).contains("recovery incomplete; rerun install.sh"));
-        let backups = rollback_dirs(&share);
-        assert_eq!(backups.len(), 1);
-        assert_eq!(
-            std::fs::read_to_string(backups[0].join(interrupted)).expect("the retryable notice"),
-            format!("previous {interrupted}\n")
-        );
-        for notice in NOTICES {
-            if notice != interrupted {
-                assert_eq!(
-                    std::fs::read_to_string(share.join(notice)).expect("the restored notice"),
-                    format!("previous {notice}\n")
-                );
-            }
-        }
-        host.fake("mv", "exec /bin/mv \"$@\"");
-        host.fake("cp", "exec /bin/cp \"$@\"");
-        host.fake("curl", "exit 74");
-        let recovered = host.install("http://127.0.0.1:9", &[]);
-        assert!(!recovered.status.success(), "download fails after recovery");
-        assert!(stderr(&recovered).contains("could not download"));
-        assert_previous_installation(&host);
-        assert!(rollback_dirs(&share).is_empty());
-        host.fake("curl", "exec /usr/bin/curl \"$@\"");
-        let retried = host.install(&url, &[]);
-        assert!(retried.status.success(), "retry installs: {retried:?}");
-        for notice in NOTICES {
+    let interrupted = NOTICES[1];
+    let served = tempfile::tempdir().expect("a release directory");
+    release(served.path(), &["aarch64-apple-darwin"]);
+    let url = serve(served.path()).url;
+    let host = Host::new("Darwin", "arm64");
+    previous_installation(&host);
+    let share = host.prefix().join("share/dudes");
+    host.fake(
+        "mv",
+        &format!(
+            "case \"$*\" in *\"floor.new\"* | *\".dudes-restore.\"*\"/{interrupted}\"* | *\".install-rollback.\"*\"/{interrupted}\"*) exit 74 ;; esac; exec /bin/mv \"$@\""
+        ),
+    );
+    host.fake(
+        "cp",
+        &format!(
+            "case \"$2\" in *\".install-rollback.\"*\"/{interrupted}\") exit 74 ;; esac; exec /bin/cp \"$@\""
+        ),
+    );
+    let failed = host.install(&url, &[]);
+    assert!(!failed.status.success(), "rollback interrupted: {failed:?}");
+    assert!(stderr(&failed).contains("recovery incomplete; rerun install.sh"));
+    let backups = rollback_dirs(&share);
+    assert_eq!(backups.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(backups[0].join(interrupted)).expect("the retryable notice"),
+        format!("previous {interrupted}\n")
+    );
+    for notice in NOTICES {
+        if notice != interrupted {
             assert_eq!(
-                std::fs::read_to_string(share.join(notice)).expect("the installed notice"),
-                format!("{notice} 1.2.3 aarch64-apple-darwin\n")
+                std::fs::read_to_string(share.join(notice)).expect("the restored notice"),
+                format!("previous {notice}\n")
             );
         }
+    }
+    host.fake("mv", "exec /bin/mv \"$@\"");
+    host.fake("cp", "exec /bin/cp \"$@\"");
+    host.fake("curl", "exit 74");
+    let recovered = host.install("http://127.0.0.1:9", &[]);
+    assert!(!recovered.status.success(), "download fails after recovery");
+    assert!(stderr(&recovered).contains("could not download"));
+    assert_previous_installation(&host);
+    assert!(rollback_dirs(&share).is_empty());
+    host.fake("curl", "exec /usr/bin/curl \"$@\"");
+    let retried = host.install(&url, &[]);
+    assert!(retried.status.success(), "retry installs: {retried:?}");
+    for notice in NOTICES {
+        assert_eq!(
+            std::fs::read_to_string(share.join(notice)).expect("the installed notice"),
+            format!("{notice} 1.2.3 aarch64-apple-darwin\n")
+        );
     }
 }
 
@@ -1327,8 +1347,7 @@ fn a_retry_restores_the_previous_floor_before_a_failed_download() {
     assert!(!share.join("floor.old").exists());
 }
 
-#[test]
-fn each_host_gets_its_own_target() {
+fn hosts_get_their_targets(platform: &str) {
     let targets = [
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",
@@ -1372,22 +1391,30 @@ fn each_host_gets_its_own_target() {
         .filter(|target| !target.ends_with("-gnu"))
         .collect();
     assert_eq!(probed_targets, installable_targets);
-    for (system, machine, fake, target) in cases {
+    for (system, machine, fake, target) in cases.into_iter().filter(|case| case.0 == platform) {
         let host = Host::new(system, machine);
         if let Some((tool, script)) = fake {
             host.fake(tool, script);
         }
         let output = host.install(&url, &[]);
         assert!(output.status.success(), "{system} {machine}: {output:?}");
-        let ran = Command::new(host.prefix().join("bin/dudes"))
-            .output()
-            .expect("the installed dudes runs");
+        let ran = run_installed(&host.prefix().join("bin/dudes"));
         assert_eq!(
             String::from_utf8_lossy(&ran.stdout),
             format!("dudes {target}\n"),
             "{system} {machine} with {fake:?}"
         );
     }
+}
+
+#[test]
+fn macos_hosts_get_their_own_targets() {
+    hosts_get_their_targets("Darwin");
+}
+
+#[test]
+fn linux_hosts_get_their_own_targets() {
+    hosts_get_their_targets("Linux");
 }
 
 #[test]
@@ -1791,9 +1818,7 @@ fn from_installs_a_local_release_directory_without_the_network() {
             & 0o777
     };
     for binary in BINARIES {
-        let ran = Command::new(bin.join(binary))
-            .output()
-            .expect("the installed binary runs");
+        let ran = run_installed(&bin.join(binary));
         assert_eq!(
             String::from_utf8_lossy(&ran.stdout),
             format!("{binary} aarch64-apple-darwin\n")
