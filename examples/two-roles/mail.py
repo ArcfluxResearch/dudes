@@ -10,6 +10,8 @@ import sys
 import time
 import traceback
 
+MAIL_WAKE_ISSUED = "identified_mail_wake_only_turn_issued"
+
 
 def command(argv, env=None):
     result = subprocess.run(argv, env=env, text=True, capture_output=True, timeout=10)
@@ -20,7 +22,7 @@ def command(argv, env=None):
 
 def failure_snapshot(records, work):
     kinds = {"turn_issued", "turn_spawned", "turn_ended", "predicate_result",
-             "loop_decided", "mail", "mail_state", "mail_wake_only_turn_issued"}
+             "loop_decided", "mail", "mail_state", MAIL_WAKE_ISSUED}
     counts = {kind: len(rows(records, kind)) for kind in sorted(kinds)}
     events = []
     for record in records:
@@ -112,7 +114,7 @@ def run(cli, runtime, work, home, config):
                            lambda records: done(records, sender) is not None
                            and len(rows(records, "mail")) == 1, work)
     assert not [record for record in before_goal
-                if record["t"] in ("turn_issued", "turn_spawned", "mail_wake_only_turn_issued")
+                if record["t"] in ("turn_issued", "turn_spawned", MAIL_WAKE_ISSUED)
                 and record["agent"] == recipient], "mail never wakes an agent with no goal"
     assert not (work / "agents" / recipient / "started.1").exists()
     ready = json.loads((work / "agents" / sender / "ready.1.json").read_text())
@@ -158,7 +160,7 @@ def verify(journal_path, store_path, work):
                           if record["agent"] == agents["recipient"])
     assert request["lsn"] < recipient_goal["lsn"], "the request arrived before its recipient had a goal"
     assert not [record for record in records
-                if record["t"] in ("turn_issued", "turn_spawned", "mail_wake_only_turn_issued")
+                if record["t"] in ("turn_issued", "turn_spawned", MAIL_WAKE_ISSUED)
                 and record["agent"] == agents["recipient"]
                 and record["lsn"] < recipient_goal["lsn"]], "no turn preceded the recipient's goal"
     assert done(records, agents["sender"])["lsn"] < reply["lsn"], "the reply follows sender completion"
@@ -173,7 +175,7 @@ def verify(journal_path, store_path, work):
         assert f"mail {incoming['id']}\n" in read
         assert incoming["body"] in read
         assert (work / "agents" / agent / "ack.txt").read_text().strip() == f"mail done {incoming['id']}"
-    wakes = rows(records, "mail_wake_only_turn_issued")
+    wakes = rows(records, MAIL_WAKE_ISSUED)
     assert len(wakes) == 1 and wakes[0]["agent"] == agents["sender"]
     assert wakes[0]["goal"] == agents["sender_goal"]
     assert wakes[0]["completion_lsn"] == done(records, agents["sender"])["lsn"]
