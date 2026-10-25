@@ -9435,7 +9435,7 @@ struct LaunchCheck {
     _outside: tempfile::TempDir,
     fixture: Fixture,
     running: common::Running,
-    page: Page,
+    page: Arc<Page>,
     marks: PathBuf,
     shell_marks: PathBuf,
     bin_a: PathBuf,
