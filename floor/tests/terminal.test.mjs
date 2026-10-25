@@ -331,6 +331,15 @@ test('Attach is offered for a Managed agent between turns with a confirmed sessi
   assert.deepEqual(terminalOffer(floorOf([row()], { terminal: false }), row(), idle), { kind: 'none' });
 });
 
+test('Attach is offered for a Claude agent, and a Codex or Pi agent is told its terminal cannot open', () => {
+  const offer = (provider) => terminalOffer(floorOf([row({ provider })]), row({ provider }), { phase: 'idle' });
+  assert.deepEqual(offer('claude'), { kind: 'attach', agent: ADA });
+  for (const provider of ['codex', 'pi']) assert.deepEqual(offer(provider), { kind: 'unavailable', reason: 'engine' });
+  const floor = floorOf([row({ provider: 'codex' })]);
+  const html = renderToStaticMarkup(createElement(TerminalAttachView, { floor, offer: offer('codex') }));
+  assert.match(html, /<span class="agent-attach-note" id="terminal-hint">Opening this engine’s own terminal is not supported yet\.<\/span>/);
+});
+
 // --- what the views say ------------------------------------------------------------------
 
 let server;
