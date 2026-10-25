@@ -191,6 +191,10 @@ fn any_goal() -> impl Strategy<Value = GoalInput> {
         )
 }
 
+fn any_identity() -> dudes_proto::IdentityLine {
+    dudes_proto::IdentityLine::new(dudes_types::AgentId::NIL, "Kim", "backend engineer")
+}
+
 fn any_work() -> impl Strategy<Value = WorkInput> {
     (
         prop::option::of("[a-z ]{1,20}"),
@@ -205,6 +209,7 @@ fn any_work() -> impl Strategy<Value = WorkInput> {
             held_card_context: None,
             unread_mail,
             memory_digest: memory_digest.unwrap_or_default(),
+            identity: Some(any_identity()),
         })
 }
 
@@ -697,6 +702,7 @@ proptest! {
             GoalId::NIL,
             Lsn(90),
             note,
+            any_identity(),
             CompletedNoteState {
                 control: input.control,
                 last_turn_end: input.last_turn_end,
@@ -713,7 +719,7 @@ proptest! {
         let actual = admit_completed_note(&completed);
         let expected = match ordinary.decision {
             LoopDecision::Continue { .. } | LoopDecision::Exhausted { reason:ExhaustedReason::Hops } =>
-                NoteAdmission::Issue { task:dudes_proto::taught_note_task(&text).unwrap() },
+                NoteAdmission::Issue { task:dudes_proto::identified_taught_note_task(&any_identity(), &text).unwrap() },
             LoopDecision::Wait { question } => NoteAdmission::Wait { question },
             LoopDecision::Hold { reason } => NoteAdmission::Hold { reason },
             LoopDecision::Exhausted { reason } => NoteAdmission::Exhausted { reason },

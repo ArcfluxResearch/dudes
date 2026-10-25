@@ -1620,13 +1620,21 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             | Record::TurnIssuedWithBrowserNote { agent, .. }
             | Record::NoteOnlyTurnIssued { agent, .. }
             | Record::ConversationTurnIssued { agent, .. }
-            | Record::TaughtNoteOnlyTurnIssued { agent, .. } => {
+            | Record::IdentifiedConversationTurnIssued { agent, .. }
+            | Record::TaughtNoteOnlyTurnIssued { agent, .. }
+            | Record::IdentifiedTaughtNoteOnlyTurnIssued { agent, .. } => {
                 self.move_status(*agent, FsmEvent::Continued);
             }
-            Record::MailWakeOnlyTurnIssued(issue) if mail_wake_accepted => {
+            Record::MailWakeOnlyTurnIssued(issue)
+            | Record::IdentifiedMailWakeOnlyTurnIssued(issue)
+                if mail_wake_accepted =>
+            {
                 self.move_status(issue.agent, FsmEvent::Continued);
             }
-            Record::MailWakeTurnDecided(decision) if mail_wake_accepted => {
+            Record::MailWakeTurnDecided(decision)
+            | Record::IdentifiedMailWakeTurnDecided(decision)
+                if mail_wake_accepted =>
+            {
                 let event = match decision.decision {
                     dudes_proto::MailWakeAdmission::Issue { .. } => FsmEvent::Continued,
                     dudes_proto::MailWakeAdmission::Wait { .. } => FsmEvent::Waited,
@@ -1640,10 +1648,16 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Record::ConversationTurnDecided {
                 agent, decision, ..
             }
+            | Record::IdentifiedConversationTurnDecided {
+                agent, decision, ..
+            }
             | Record::NoteTurnDecided {
                 agent, decision, ..
             }
             | Record::TaughtNoteTurnDecided {
+                agent, decision, ..
+            }
+            | Record::IdentifiedTaughtNoteTurnDecided {
                 agent, decision, ..
             } => {
                 let event = FsmEvent::of_note_admission(decision);
@@ -2950,6 +2964,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return;
         }
+        if !task.contains(row.identity_line(agent).as_str()) {
+            return;
+        }
         let Some((turn, launch)) = self.prepare_new_issue(agent, &row, task, operation) else {
             return;
         };
@@ -2957,7 +2974,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let session = &launch.session;
         let selection = launch.selection.clone();
         let record = match browser {
-            Some((note_lsn, Some(completion_lsn))) => Record::TaughtNoteOnlyTurnIssued {
+            Some((note_lsn, Some(completion_lsn))) => Record::IdentifiedTaughtNoteOnlyTurnIssued {
                 agent,
                 turn,
                 goal,
@@ -4177,10 +4194,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     self.request_mail_wake(agent);
                     continue;
                 };
-                let computed = match crate::host::taught_note_input_digest(&input) {
+                let computed = match crate::host::identified_note_input_digest(&input) {
                     Ok(value) => value,
                     Err(error) => {
-                        tracing::error!(%agent,%error,"taught_note_digest_refused");
+                        tracing::error!(%agent,%error,"identified_note_digest_refused");
                         continue;
                     }
                 };
@@ -4554,7 +4571,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     name,
                     browser_rename,
                 },
-                Then::Fold,
+                Then::Decide { agent },
             ),
             Command::Look {
                 agent,
@@ -4562,16 +4579,25 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 character,
                 accent,
                 browser_look,
-            } => self.persist(
-                Record::AgentLookChanged {
-                    id: agent,
-                    role,
-                    character,
-                    accent,
-                    browser_look,
-                },
-                Then::Fold,
-            ),
+            } => {
+                let then = if self.world.agents.get(&agent).is_some_and(|row| {
+                    dudes_types::identity_role(&row.role) == dudes_types::identity_role(&role)
+                }) {
+                    Then::Fold
+                } else {
+                    Then::Decide { agent }
+                };
+                self.persist(
+                    Record::AgentLookChanged {
+                        id: agent,
+                        role,
+                        character,
+                        accent,
+                        browser_look,
+                    },
+                    then,
+                );
+            }
             Command::ChangeModel {
                 agent,
                 model,
@@ -7113,7 +7139,8 @@ mod taught_notes_controls {
     #[test]
     fn taught_authority_acknowledgement_precedes_dependent_budget_refusal() {
         let (mut h, agent, goal) = completed_with_refusal();
-        h.unfsynced.insert(RecordKind::TaughtNoteTurnDecided);
+        h.unfsynced
+            .insert(RecordKind::IdentifiedTaughtNoteTurnDecided);
         let before = h.trace.len();
         h.drive(Input::Command(Command::BrowserNoteQueued {
             agent,
@@ -7136,7 +7163,7 @@ mod taught_notes_controls {
             .iter()
             .find_map(|seen| match seen {
                 Seen::Persist { token, entry }
-                    if matches!(entry.record, Record::TaughtNoteTurnDecided { .. }) =>
+                    if matches!(entry.record, Record::IdentifiedTaughtNoteTurnDecided { .. }) =>
                 {
                     Some(*token)
                 }
@@ -7167,7 +7194,7 @@ mod taught_notes_controls {
         );
     }
     #[test]
-    fn one_unchanged_legacy_exhausted_transition_becomes_an_inert_taught_baseline() {
+    fn one_unchanged_legacy_exhausted_transition_becomes_an_inert_identified_baseline() {
         let (mut h, agent, goal) = completed_with_refusal();
         let note = Lsn(10_000);
         h.supervisor
@@ -7209,7 +7236,7 @@ mod taught_notes_controls {
             .iter()
             .find_map(|effect| match effect {
                 Seen::Persist { token, entry }
-                    if matches!(entry.record, Record::TaughtNoteTurnDecided { .. }) =>
+                    if matches!(entry.record, Record::IdentifiedTaughtNoteTurnDecided { .. }) =>
                 {
                     Some(*token)
                 }
@@ -7223,7 +7250,7 @@ mod taught_notes_controls {
                     effect,
                     Seen::Persist {
                         entry: Entry {
-                            record: Record::TaughtNoteTurnDecided { .. },
+                            record: Record::IdentifiedTaughtNoteTurnDecided { .. },
                             ..
                         },
                         ..
@@ -7247,7 +7274,7 @@ mod taught_notes_controls {
                 effect,
                 Effect::Persist {
                     entry: Entry {
-                        record: Record::TaughtNoteTurnDecided { .. },
+                        record: Record::IdentifiedTaughtNoteTurnDecided { .. },
                         ..
                     },
                     ..
@@ -7256,7 +7283,7 @@ mod taught_notes_controls {
         }
         assert_eq!(
             h.supervisor.world.note_admission(agent).unwrap().contract,
-            dudes_proto::NoteContract::Taught
+            dudes_proto::NoteContract::IdentifiedTaught
         );
     }
 }

@@ -471,9 +471,10 @@ impl RecoveryWitness {
                 },
                 O::Work(work),
             ) => issued.work == work && issue_kind(self.reference.kind, carrier),
-            (E::FiniteIssue { .. }, O::Turn { .. }) => {
-                self.reference.kind == K::ConversationTurnIssued
-            }
+            (E::FiniteIssue { .. }, O::Turn { .. }) => matches!(
+                self.reference.kind,
+                K::ConversationTurnIssued | K::IdentifiedConversationTurnIssued
+            ),
             (E::Spawn { .. }, O::Turn { .. }) => self.reference.kind == K::TurnSpawned,
             (E::Confirmation { .. }, O::Turn { .. }) => self.reference.kind == K::SessionLearned,
             (E::End { .. }, O::Turn { .. }) => self.reference.kind == K::TurnEnded,
@@ -598,11 +599,13 @@ fn issue_kind(kind: RecordKind, carrier: &RecoveryIssueCarrier) -> bool {
                 RecoveryIssueCarrier::BrowserNote { .. }
             )
             | (
-                RecordKind::NoteOnlyTurnIssued | RecordKind::TaughtNoteOnlyTurnIssued,
+                RecordKind::NoteOnlyTurnIssued
+                    | RecordKind::TaughtNoteOnlyTurnIssued
+                    | RecordKind::IdentifiedTaughtNoteOnlyTurnIssued,
                 RecoveryIssueCarrier::CompletedNote { .. }
             )
             | (
-                RecordKind::MailWakeOnlyTurnIssued,
+                RecordKind::MailWakeOnlyTurnIssued | RecordKind::IdentifiedMailWakeOnlyTurnIssued,
                 RecoveryIssueCarrier::MailWake { .. }
             )
     )
@@ -757,7 +760,7 @@ fn ordinary_issue_evidence(
                 },
             ))
         }
-        Record::MailWakeOnlyTurnIssued(value) => {
+        Record::MailWakeOnlyTurnIssued(value) | Record::IdentifiedMailWakeOnlyTurnIssued(value) => {
             let issued = issued(
                 RecoveryWork {
                     agent: value.agent,
@@ -789,6 +792,14 @@ fn ordinary_issue_evidence(
             note_lsn,
             context_lsn,
             ..
+        }
+        | Record::IdentifiedConversationTurnIssued {
+            agent,
+            turn,
+            task,
+            note_lsn,
+            context_lsn,
+            ..
         } => Some((
             O::Turn {
                 agent: *agent,
@@ -804,6 +815,10 @@ fn ordinary_issue_evidence(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per note-carrying issue record, each naming its identified twin"
+)]
 fn note_issue_evidence(
     record: &Record,
     hash: &impl Fn(&[u8]) -> Hex32,
@@ -860,6 +875,19 @@ fn note_issue_evidence(
             ..
         }
         | Record::TaughtNoteOnlyTurnIssued {
+            agent,
+            goal,
+            turn,
+            task,
+            answers,
+            model_selection,
+            session,
+            mode,
+            note_lsn,
+            completion_lsn,
+            ..
+        }
+        | Record::IdentifiedTaughtNoteOnlyTurnIssued {
             agent,
             goal,
             turn,
