@@ -32,11 +32,20 @@ jobs:
       - name: Build the hook shim
         if: ${{ !cancelled() }}
         run: cargo build --locked -p dudes-hook
-      - name: PTY host
+      - name: PTY original LF input
+        if: ${{ !cancelled() }}
+        env:
+          DUDES_PTY_PROBE_UNIX_NEWLINES: '1'
+        run: >-
+          cargo nextest run --locked -p dudes-pty --test host
+          -E 'test(=pty_host_streams_writes_resizes_closes_and_dies_with_daemon)'
+          --no-fail-fast --no-tests=fail --success-output immediate
+      - name: PTY native CR input
         if: ${{ !cancelled() }}
         run: >-
           cargo nextest run --locked -p dudes-pty --test host
-          --no-fail-fast --success-output immediate
+          -E 'test(=pty_host_streams_writes_resizes_closes_and_dies_with_daemon)'
+          --no-fail-fast --no-tests=fail --success-output immediate
       - name: Unanswered hooks
         if: ${{ !cancelled() }}
         run: >-
