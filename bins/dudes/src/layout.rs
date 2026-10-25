@@ -3,7 +3,11 @@
 use std::path::{Path, PathBuf};
 
 /// The three programs `install.sh` puts in `<prefix>/bin`, by their exact names.
-pub(crate) const PROGRAMS: [&str; 3] = ["duded", "dudes", "dudes-hook"];
+pub(crate) const PROGRAMS: [&str; 3] = if cfg!(windows) {
+    ["duded.exe", "dudes.exe", "dudes-hook.exe"]
+} else {
+    ["duded", "dudes", "dudes-hook"]
+};
 
 /// The notice files `install.sh` puts in `<prefix>/share/dudes`.
 pub(crate) const NOTICES: [&str; 3] = ["LICENSE-APACHE", "LICENSE-MIT", "THIRD-PARTY.md"];

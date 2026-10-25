@@ -59,11 +59,12 @@ fn names(spec: &LaunchSpec) -> Vec<String> {
 
 #[test]
 fn the_agent_bin_directory_leads_path_and_nothing_else_moves() {
-    let (_, without, _) = spawn_of(config_with(Some("/opt/a:/usr/bin"), None));
-    let (_, with, _) = spawn_of(config_with(Some("/opt/a:/usr/bin"), Some(AGENT_BIN)));
+    let path = std::env::join_paths(["/opt/a", "/usr/bin"]).unwrap();
+    let (_, without, _) = spawn_of(config_with(path.to_str(), None));
+    let (_, with, _) = spawn_of(config_with(path.to_str(), Some(AGENT_BIN)));
     assert_eq!(
-        value(&with, "PATH"),
-        Some(OsStr::new("/run/dudes/agent-bin:/opt/a:/usr/bin"))
+        std::env::split_paths(value(&with, "PATH").unwrap()).collect::<Vec<_>>(),
+        [AGENT_BIN, "/opt/a", "/usr/bin"].map(PathBuf::from)
     );
     assert_eq!(
         names(&with),

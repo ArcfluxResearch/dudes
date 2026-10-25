@@ -12131,8 +12131,13 @@ fn the_git_tab_is_a_sibling_and_a_route_only_when_enabled() {
             assert_eq!(view["git"], json!({}), "the sibling is an empty object");
             let text = String::from_utf8_lossy(&routed);
             assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
+            let state = if cfg!(unix) {
+                "git_unavailable"
+            } else {
+                "unsupported_platform"
+            };
             assert!(
-                text.contains("\"state\":\"git_unavailable\""),
+                text.contains(&format!("\"state\":\"{state}\"")),
                 "a daemon whose runner starts no captured child answers a finite state: {text}"
             );
         } else {
