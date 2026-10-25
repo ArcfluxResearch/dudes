@@ -14,17 +14,45 @@ import traceback
 def command(argv, env=None):
     result = subprocess.run(argv, env=env, text=True, capture_output=True, timeout=10)
     if result.returncode:
-        raise RuntimeError(f"{Path(argv[0]).name} {argv[1]} failed: {result.stderr.strip()}")
+        raise subprocess.CalledProcessError(result.returncode, argv)
     return result.stdout
 
 
-def wait_for(description, read, predicate):
+def failure_snapshot(records, work):
+    kinds = {"turn_issued", "turn_spawned", "turn_ended", "predicate_result",
+             "loop_decided", "mail", "mail_state", "mail_wake_only_turn_issued"}
+    counts = {kind: len(rows(records, kind)) for kind in sorted(kinds)}
+    events = []
+    for record in records:
+        if record["t"] not in kinds:
+            continue
+        event = {key: record[key] for key in ("t", "agent", "turn", "pass", "provenance")
+                 if key in record}
+        if record["t"] == "turn_ended":
+            outcome = record["outcome"]
+            event["outcome"] = {key: outcome[key] for key in ("outcome", "code", "signal") if key in outcome}
+        if record["t"] == "loop_decided":
+            event["decision"] = record["decision"]["kind"]
+        events.append(event)
+    print("FAIL journal snapshot " + json.dumps({"counts": counts, "events": events[-12:]}), file=sys.stderr)
+    errors = work / "agent-errors.jsonl"
+    if errors.exists():
+        with errors.open() as source:
+            lines = source.read(4096).splitlines()
+        for line in lines[:4]:
+            error = json.loads(line)
+            safe = {key: error[key] for key in ("exception", "line", "returncode") if key in error}
+            print("FAIL stand-in exception " + json.dumps(safe), file=sys.stderr)
+
+
+def wait_for(description, read, predicate, work):
     end = time.monotonic() + 15
     while True:
         value = read()
         if predicate(value):
             return value
         if time.monotonic() >= end:
+            failure_snapshot(value, work)
             raise AssertionError(description)
         time.sleep(0.05)
 
@@ -73,7 +101,7 @@ def run(cli, runtime, work, home, config):
     agents["sender_goal"] = goal(sender)
     before_goal = wait_for("the sender finished and its request became durable", journal,
                            lambda records: done(records, sender) is not None
-                           and len(rows(records, "mail")) == 1)
+                           and len(rows(records, "mail")) == 1, work)
     assert not [record for record in before_goal
                 if record["t"] in ("turn_issued", "turn_spawned", "mail_wake_only_turn_issued")
                 and record["agent"] == recipient], "mail never wakes an agent with no goal"
@@ -84,7 +112,7 @@ def run(cli, runtime, work, home, config):
              and len(rows(records, "mail")) == 2
              and len([record for record in rows(records, "mail_state")
                       if record["state"]["state"] == "acked"]) == 2
-             and len(rows(records, "turn_ended")) == 3)
+             and len(rows(records, "turn_ended")) == 3, work)
     (work / "actors.json").write_text(json.dumps(agents))
     print("PASS mail to an agent with no goal created no turn before its goal was assigned")
 
@@ -194,7 +222,15 @@ def agent(session):
 if __name__ == "__main__":
     try:
         {"run": run, "verify": verify, "agent": agent}[sys.argv[1]](*sys.argv[2:])
-    except (AssertionError, OSError, RuntimeError, subprocess.SubprocessError) as error:
+    except Exception as error:
         where = traceback.extract_tb(error.__traceback__)[-1]
-        print(f"FAIL {str(error) or where.line}", file=sys.stderr)
+        if sys.argv[1] == "agent":
+            details = {"exception": type(error).__name__, "line": where.lineno}
+            if isinstance(error, subprocess.CalledProcessError):
+                details["returncode"] = error.returncode
+            with (Path(os.environ["DUDES_EXAMPLE_WORK"]) / "agent-errors.jsonl").open("a") as out:
+                out.write(json.dumps(details) + "\n")
+        message = (f"stand-in command exited {error.returncode}" if isinstance(error, subprocess.CalledProcessError)
+                   else str(error) or where.line)
+        print(f"FAIL {message}", file=sys.stderr)
         sys.exit(1)
