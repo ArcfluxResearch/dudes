@@ -11,6 +11,37 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.98.0] - 2026-10-26
+
+### Highlights
+
+- **One roster shows who needs you.** A single list beside the office replaces the Crew list, the strip of cards, the Overview lists and the focus mode roster. Each agent has one row with its face, its name, one state word, one line about what it is doing and the button for what it needs from you. The same state word appears in the office badges, the top bar counts and the Overview dialog, and the heading says in plain words who needs you. (#220, #222)
+- **An agent's panel opens on its state.** The panel now starts with the agent's name, its state, one sentence about it and the main action, then Pause or Stop and the model. Retire, Edit look and Open the real CLI moved into a menu. A finished agent no longer shows its old goal as current work. (#222)
+- **See why a turn failed and which model ran.** When a chat turn fails, Chat shows the engine's own words under "The engine said" instead of "No final reply was reported". The agent panel shows the model the latest turn ran. Dudes also asks Codex and Pi which models they offer, and it now streams from the Codex 0.164 that people have installed. (#223)
+- **Agents know who they are.** Every task a managed agent receives now opens with its name, its role and its id, so asking "Who are you?" gets the right answer. `dudes whoami` prints the same facts, and `dudes team` marks the asking agent's own row with `(you)`. (#221)
+- **Open an agent's real CLI without a restart.** Turning on the terminal in Settings, or with `dudes config set floor.terminal on`, now applies at once and does not end running work. The Attach button sits beside the model, and for Codex and Pi agents it explains that opening their own terminal is not supported yet instead of failing. (#227)
+- **Read code in agent replies with colour.** Fenced code in chat replies and in a ticket's summary is highlighted for TypeScript, JavaScript, JSON, Rust, Python, shell and diff. Other languages keep the plain block. (#217)
+
+### Floor
+
+- Notices float over the bottom corner of the office instead of reserving a strip, so the office, the Board and every sheet use the full height. Notices that must stay in view, such as Dudes being unable to save, sit in a thin banner under the top bar. (#212)
+- The ticket review sheet is wider on large screens, so a wide code block no longer needs sideways scrolling. Idle agents walk to different spots in the office, and an agent whose work is accepted leaves the bell. (#213)
+- Setup, answers, memory and retirement use plain words, and a ticket no longer repeats a generic warning for an engine's standing limits. Specific limits stay in the ticket's details. (#219)
+
+### Fixes
+
+- Starting several tickets at once no longer holds some of them for instruction review because the daemon had not looked at their folders. Every start is now sampled in order. (#226)
+- Pressing Stop before a turn has started now ends that turn's live output, so the page shows "Last turn ended". An agent with nothing run since Dudes started now reads "Idle" instead of "Waiting". (#228)
+- Steps no longer offer an output control for a connected-server tool, an unknown tool or a background shell, whose output can never be shown. (#216)
+- The release notes no longer say a release has no new capabilities when its Highlights list some. (#215)
+- Timing-dependent tests no longer fail at random on a busy machine. (#214, #224, #225)
+
+### Breaking
+
+- **Reload open Floor tabs after the upgrade.** The page and the daemon speak a new browser wire version, so a tab left open from 0.97.1 asks for a reload. (#223)
+- **Going back to 0.97.1 is refused once the journal holds a new record.** The first Chat message, completed-goal note or mail wake that a managed agent takes after the upgrade writes a record that 0.97.1 cannot read, and 0.97.1 then refuses to start and names the record. Until one is written, you can still go back. Back up the state directory first if you might. (#221)
+- **The first start after the upgrade rebuilds the saved view once.** Dudes rebuilds the saved view of chat turns from the journal. Nothing is lost. (#223)
+
 ## [0.97.1] - 2026-10-25
 
 ### Fixes
@@ -424,7 +455,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.97.1...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.98.0...HEAD
+[0.98.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.97.1...v0.98.0
 [0.97.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.97.0...v0.97.1
 [0.97.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.96.0...v0.97.0
 [0.96.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.95.0...v0.96.0
