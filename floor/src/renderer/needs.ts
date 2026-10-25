@@ -113,3 +113,15 @@ export function waitingHeading(rows: readonly Pick<NeedRow, 'state'>[]): string 
   return [ready > 0 ? `${ready} ready for you` : null, needing > 0 ? `${needing} ${needing === 1 ? 'needs' : 'need'} you` : null]
     .filter((part) => part !== null).join(' · ');
 }
+
+const FINISHED_HELD = ['doing', 'review', 'blocked'];
+
+/**
+ * The agents whose finished work waits for the operator: one with a ticket in review, and one whose status is
+ * done while its ticket is not yet accepted. The office keeps them at the bell until the ticket is accepted or closed.
+ */
+export function awaitingReviewOf(agents: readonly AgentRow[], cards: readonly CardRow[]): ReadonlySet<string> {
+  const held = tickets(cards).filter((card) => card.claimed_by !== null);
+  return new Set(agents.filter((row) => held.some((card) => card.claimed_by === row.id
+    && (card.status === 'review' || (row.status === 'done' && FINISHED_HELD.includes(card.status))))).map((row) => row.id));
+}

@@ -66,7 +66,7 @@ test('a summary with headings, lists, a quote, a table, code and a link reads as
   assert.match(out, /<ol start="3">/);
   assert.match(out, /<blockquote><p>quoted<\/p><\/blockquote>/);
   assert.match(out, /<table><thead><tr><th>a<\/th><th>b<\/th><\/tr><\/thead><tbody><tr><td>1<\/td><td>2<\/td><\/tr><\/tbody><\/table>/);
-  assert.match(out, /<pre class="chat-code"><code>let x = 1;<\/code><\/pre>/);
+  assert.match(out, /<pre class="chat-code"><code><span class="tok-keyword">let<\/span> x = <span class="tok-number">1<\/span>;<\/code><\/pre>/);
   assert.ok(out.includes('See the docs (https://example.com/a?b=1).'), out);
   assert.doesNotMatch(out, /rust/, 'the fence info string reaches no class');
   assert.doesNotMatch(out, /align|style=/);

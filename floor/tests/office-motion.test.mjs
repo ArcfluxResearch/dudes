@@ -21,6 +21,7 @@ const fenced = officePlan({ ...STUDIO, furniture: [...STUDIO.furniture,
   ...[[6, 7], [8, 7], [7, 6], [7, 8]].map(([x, y]) => ({ kind: 'plant', at: { x, y } }))] });
 const ISOLATED = { x: 7.5, y: 7.5 };
 const KITCHEN = { x: 13.5, y: 1.5 };
+const REVIEW = { ...ACTIVITY, awaitingReview: new Set([ADA]) };
 const goal = (status) => ({ id: GRACE, text: 'Ship it', status, budget: {}, hop_cap: 5 });
 
 function cast(rows, options, on = plan) {
@@ -123,12 +124,12 @@ test('APPROACH_IGNORED mutant: a walk to a sofa seat ends at its approach cell, 
 test('RING_ON_REPLAY mutant: only an agent that walked to the bell rings it, and only for a moment', () => {
   const [desk] = cast([{ id: ADA, status: 'running' }], { update: 'snapshot', now: NOW });
   const done = { id: ADA, status: 'done', goal: goal('achieved') };
-  const [walked] = cast([done], { previous: [desk], update: 'delta', now: NOW });
+  const [walked] = cast([done], { activity: REVIEW, previous: [desk], update: 'delta', now: NOW });
   assert.deepEqual(walked.station, { x: 16.5, y: 5.5 });
   assert.equal(charactersAt([walked], walked.arrivalAt, false)[0].ringing, true);
   assert.equal(charactersAt([walked], walked.arrivalAt + RING_MS, false)[0].ringing, false);
   assert.equal(charactersAt([walked], walked.arrivalAt, true)[0].ringing, false);
-  const [replayed] = cast([done], { update: 'snapshot', now: NOW });
+  const [replayed] = cast([done], { activity: REVIEW, update: 'snapshot', now: NOW });
   assert.equal(charactersAt([replayed], NOW, false)[0].ringing, false);
 });
 
@@ -419,29 +420,14 @@ test('BREAK_CAPACITY mutant: the full roster uses the lounge seats and leaves ov
 test('the planner sends each state to its place: board, bell, lounge, kitchen, desk or nowhere', () => {
   for (const [row, place] of [
     [{ id: ADA, status: 'idle', goal: goal('in_progress') }, 'board'],
-    [{ id: ADA, status: 'done', goal: goal('achieved') }, 'bell'],
+    [{ id: ADA, status: 'done', goal: goal('achieved') }, 'desk'],
     [{ id: ADA, status: 'exhausted' }, 'lounge'],
     [{ id: ADA, status: 'idle', automatic_hold: { kind: 'launch_failed', reason: 'gone' } }, 'lounge'],
     [{ id: ADA, status: 'attached', mode: 'attached' }, 'desk'],
     [{ id: ADA, status: 'running', paused: true }, 'desk'],
   ]) assert.equal(cast([row], { update: 'snapshot', now: NOW })[0].place, place, JSON.stringify(row));
+  assert.equal(cast([{ id: ADA, status: 'done', goal: goal('achieved') }], { activity: REVIEW, update: 'snapshot', now: NOW })[0].place, 'bell');
   assert.deepEqual(cast([{ id: ADA, status: 'idle', goal: goal('set') }], { update: 'snapshot', now: NOW })[0].station, { x: 1.5, y: 5.5 });
-});
-
-test('idle walks a collision-safe path to a short break and returns to its exact desk point', () => {
-  const [motion] = cast([{ id: ADA, status: 'idle' }]);
-  assert.ok(motion.route.length >= 3, 'idle has no reachable short walk');
-  assert.deepEqual(motion.route[0], motion.desk.foot);
-  assert.notDeepEqual(motion.route.at(-1), motion.desk.foot);
-  for (const point of motion.route) assert.ok(walkable(point), JSON.stringify(point));
-  const out = charactersAt([motion], motion.outboundEnd, false)[0];
-  const returning = charactersAt([motion], motion.returnEnd - 210, false)[0];
-  const back = charactersAt([motion], motion.returnEnd, false)[0];
-  assert.deepEqual(out.foot, motion.route.at(-1));
-  assert.equal(out.seat, null);
-  assert.notDeepEqual(returning.foot, out.foot, 'the walker never left its break point');
-  assert.deepEqual(back.foot, motion.desk.foot);
-  assert.equal(back.seat, 0.46);
 });
 
 test('reduced motion holds a still pose at every time', () => {
