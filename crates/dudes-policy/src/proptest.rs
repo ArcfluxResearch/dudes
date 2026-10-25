@@ -4,8 +4,8 @@
 
 use ::proptest::prelude::*;
 use dudes_proto::{
-    AgentBudget, BudgetScope, Ceiling, ExhaustedReason, Gate, GoalBudget, HoldReason, LoopDecision,
-    NoteAdmission, Spend,
+    AgentBudget, BudgetScope, Ceiling, ExhaustedReason, Gate, GoalBudget, HoldReason,
+    IDENTITY_BYTES, LoopDecision, NoteAdmission, Spend, TEACHING_BYTES,
 };
 use dudes_types::{BreakerRung, BreakerSignal, CardId, GoalId, Lsn, Provenance, Tokens, Usd};
 
@@ -676,8 +676,9 @@ proptest! {
         prop_assert_eq!(&decided.answers[..], &expected[..decided.answers.len()]);
         prop_assert_eq!(decided.answers.is_empty(), input.answers.is_empty());
         for carried in &input.answers[..decided.answers.len()] {
-            // Framing plus the answer, with the question at most 1,024 bytes.
-            if carried.text.len() + 1_024 + 64 + 432 <= 65_536 {
+            // Framing plus the answer, with the question at most 1,024 bytes. The loop keeps room
+            // for the identity line whether or not this agent has one.
+            if carried.text.len() + 1_024 + 64 + TEACHING_BYTES + IDENTITY_BYTES <= 65_536 {
                 prop_assert!(task.contains(carried.text.as_str()), "answer {} cut", carried.lsn.0);
             }
         }
