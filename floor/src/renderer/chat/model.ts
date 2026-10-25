@@ -31,6 +31,10 @@ export interface ChatTurn {
   readonly state: TurnState;
   readonly reply: string | null;
   readonly truncated: boolean | null;
+  /** The engine's own words for a failed turn, plain text. Never a reply. */
+  readonly failure: string | null;
+  /** The models the engine said the turn's usage went to, at most four. */
+  readonly ran_models: readonly string[];
   readonly reissued: boolean;
 }
 
@@ -67,6 +71,15 @@ function text(value: unknown, note = false): value is string {
       && !/^[ \t\r\n]|[ \t\r\n]$/.test(value)));
 }
 
+function failureText(value: unknown): boolean {
+  return value === null || (typeof value === 'string' && value.length > 0 && !/\p{Cs}/u.test(value) && utf8Bytes(value) <= 2048);
+}
+
+function ranModels(value: unknown): boolean {
+  return Array.isArray(value) && value.length <= 4
+    && value.every(name => typeof name === 'string' && name.length > 0 && !/\p{Cc}|\p{Cs}/u.test(name) && utf8Bytes(name) <= 128);
+}
+
 function boundedRows(rows: readonly { readonly agent_id: string }[], perAgent: number, count: number,
   bytes: number, perAgentBytes?: number): boolean {
   if (rows.length > count || utf8Bytes(JSON.stringify(rows)) > bytes) return false;
@@ -100,13 +113,14 @@ export function decodeChat(value: unknown, agents: readonly { readonly id: strin
     pending.push(Object.freeze({ ...row }) as unknown as PendingNote);
   }
   for (const row of value.turns) {
-    if (!exactObject(row, ['agent_id', 'turn_id', 'note_lsn', 'text', 'state', 'reply', 'truncated', 'reissued'])
+    if (!exactObject(row, ['agent_id', 'turn_id', 'note_lsn', 'text', 'state', 'reply', 'truncated', 'failure', 'ran_models', 'reissued'])
       || !identity(row.agent_id) || !current.has(row.agent_id) || !identity(row.turn_id)
       || !canonicalLsn(row.note_lsn) || !text(row.text, true)
       || typeof row.state !== 'string'
       || !['reserved', 'running', 'ended', 'failed', 'cancelled', 'delivery_uncertain', 'reissue_cancelled'].includes(row.state)
       || (row.reply !== null && !text(row.reply)) || (row.truncated !== null && typeof row.truncated !== 'boolean')
-      || typeof row.reissued !== 'boolean'
+      || typeof row.reissued !== 'boolean' || !failureText(row.failure) || !ranModels(row.ran_models)
+      || (row.failure !== null && row.state !== 'failed')
       || (row.reply === null && row.truncated !== null)
       || (row.state !== 'ended' && row.state !== 'failed' && (row.reply !== null || row.truncated !== null))) return null;
     turns.push(Object.freeze({ ...row }) as unknown as ChatTurn);

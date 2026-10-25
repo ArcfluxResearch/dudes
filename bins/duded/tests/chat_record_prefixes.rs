@@ -249,6 +249,15 @@ impl Prefix {
             "exit":{"code":0,"signal":null},"outcome":{"kind":"completed"},"last_message":reply,"usage":{"input":10,"output":5,"usd":7}}));
     }
 
+    fn end_failed(&mut self, id: TurnId, reason: &str, models: &[&str]) {
+        let usage: serde_json::Map<String, Value> = models
+            .iter()
+            .map(|name| ((*name).to_owned(), json!({"input":1,"output":1})))
+            .collect();
+        self.append(json!({"t":"turn_ended","agent":agent(),"turn":id,"mode":"managed","provenance":"observed",
+            "exit":{"code":1,"signal":null},"outcome":{"kind":"failed","reason":reason},"model_usage":usage}));
+    }
+
     fn attribution(&self) -> Value {
         let digest = format!("{:016x}", self.count).repeat(4);
         json!({"request_id_digest":digest,"request_digest":"22".repeat(32),"session_digest":"33".repeat(32)})
@@ -510,6 +519,9 @@ fn escaped_legacy_replies_remain_visible_within_the_larger_history_budget() {
             .len(),
         5
     );
+    let first = serde_json::to_value(&view.turns[0]).unwrap();
+    assert_eq!(first["failure"], Value::Null);
+    assert_eq!(first["ran_models"], json!([]));
 }
 
 #[test]
@@ -532,6 +544,66 @@ fn reply_truncation_is_utf8_safe_and_exact_length_never_invents_completeness() {
     assert_eq!(view.turns[0].truncated, None);
     assert_eq!(view.turns[1].reply.as_ref().unwrap(), &"🦀".repeat(1024));
     assert_eq!(view.turns[1].truncated, Some(true));
+}
+
+#[test]
+fn a_failed_turn_shows_the_engines_words_cut_on_a_character_boundary_and_the_models_that_ran() {
+    let mut p = Prefix::new();
+    let done = p.complete();
+    let cases: [(u64, String, &[&str]); 4] = [
+        (40, "model_not_found: no such model".to_owned(), &["gpt-9"]),
+        (41, "🦀".repeat(600), &[]),
+        (42, "a".repeat(2_048), &["m1", "m2", "m3", "m4", "m5"]),
+        (43, String::new(), &[]),
+    ];
+    for (id, reason, models) in &cases {
+        let note = p.queue("failure test", false);
+        let decision = p.note_decide(note, done, "failure test");
+        p.issue(turn(*id), note, decision, Some(done), "failure test", &[]);
+        p.intent(turn(*id), note);
+        p.spawn(turn(*id));
+        p.end_failed(turn(*id), reason, models);
+    }
+    let note = p.queue("fine", false);
+    let decision = p.note_decide(note, done, "fine");
+    p.issue(turn(44), note, decision, Some(done), "fine", &[]);
+    p.intent(turn(44), note);
+    p.spawn(turn(44));
+    p.end(turn(44), Some("all good"));
+    let view = p.projected.chat().unwrap();
+    let rows: Vec<_> = view
+        .turns
+        .iter()
+        .map(|row| {
+            (
+                row.state,
+                row.failure.as_deref().map(str::len),
+                row.ran_models.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (ChatTurnState::Failed, Some(30), vec!["gpt-9".to_owned()]),
+            (ChatTurnState::Failed, Some(2_048), vec![]),
+            (
+                ChatTurnState::Failed,
+                Some(2_048),
+                ["m1", "m2", "m3", "m4"].map(str::to_owned).to_vec()
+            ),
+            (ChatTurnState::Failed, None, vec![]),
+            (ChatTurnState::Ended, None, vec![]),
+        ]
+    );
+    assert_eq!(
+        view.turns[0].failure.as_deref(),
+        Some("model_not_found: no such model")
+    );
+    assert_eq!(
+        view.turns[1].failure.as_deref(),
+        Some("🦀".repeat(512).as_str())
+    );
 }
 
 #[test]

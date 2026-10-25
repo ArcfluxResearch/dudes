@@ -75,7 +75,7 @@ use recovery::RecoveryRoute;
 /// The configured public root for the first static shell.
 pub const BASE_PATH: &str = "/floor/";
 /// The browser-wire generation required by the daemon and its matching Floor bundle.
-pub const BROWSER_WIRE_VERSION: u32 = 7;
+pub const BROWSER_WIRE_VERSION: u32 = 8;
 
 const MANIFEST_NAME: &str = "release-manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;

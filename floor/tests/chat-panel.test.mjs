@@ -15,7 +15,7 @@ const G = '01ARZ3NDEKTSV4RRFFQ69G5FAZ';
 const row = { id: A, name: 'Ada', mode: 'managed', status: 'done', goal: { id: G, status: 'achieved' } };
 const view = () => ({ enabled: true, max_text_bytes: 4096, pending: [], turns: [], context_sent: [] });
 const turn = (patch = {}) => ({ agent_id: A, turn_id: T, note_lsn: '7', text: 'Please check',
-  state: 'ended', reply: 'A natural ending…', truncated: null, reissued: false, ...patch });
+  state: 'ended', reply: 'A natural ending…', truncated: null, failure: null, ran_models: [], reissued: false, ...patch });
 let server, store, ChatPanelView, AgentDrawer, action, chatModule;
 before(async () => {
   server = await createServer({ root: resolve(import.meta.dirname, '..'),
@@ -247,6 +247,23 @@ test('durable final text preserves natural ellipses and renders recorded complet
   assert.doesNotMatch(natural, /Final reply was truncated/);
   assert.match(render({ ...view(), turns: [turn({ truncated: true })] }), /Final reply was truncated/);
   assert.match(render({ ...view(), turns: [turn({ reply: null })] }), /No final reply was reported/);
+});
+
+test('a failed turn shows the engine\'s own words once, as plain text with hidden characters marked', () => {
+  const said = render({ ...view(), turns: [turn({ state: 'failed', reply: null, failure: 'model_not_found: **no** <b>such</b> model' })] });
+  assert.match(said, /The engine said/);
+  assert.match(said, /<pre class="chat-failure-text">model_not_found: \*\*no\*\* &lt;b&gt;such&lt;\/b&gt; model<\/pre>/);
+  assert.match(said, /Turn failed\./);
+  assert.doesNotMatch(said, /No final reply was reported|chat-final-reply/);
+  const same = render({ ...view(), turns: [turn({ state: 'failed', reply: 'rate limited', failure: 'rate limited' })] });
+  assert.equal(same.match(/rate limited/g).length, 1, 'the page shows an equal reply and failure once');
+  assert.doesNotMatch(same, /chat-final-reply/);
+  const both = render({ ...view(), turns: [turn({ state: 'failed', reply: 'partial answer', failure: 'rate limited' })] });
+  assert.match(both, /partial answer/);
+  assert.match(both, /rate limited/);
+  const hidden = render({ ...view(), turns: [turn({ state: 'failed', reply: null, failure: 'ok\u202Eevil\u0007' })] });
+  assert.match(hidden, /ok\[U\+202E\]evil\[U\+0007\]/);
+  assert.doesNotMatch(render({ ...view(), turns: [turn()] }), /The engine said/);
 });
 
 test('only an explicit matching-turn reissue marker shows the interruption warning', () => {
