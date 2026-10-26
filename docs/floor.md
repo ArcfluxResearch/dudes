@@ -38,9 +38,9 @@ stand along the back wall. From left to right, the Studio with eight agents, the
 twelve and HQ with sixteen:
 
 <p>
-  <img src="../.github/readme/office-studio.webp" width="32%" alt="The Studio, the smallest office, with eight agents. Four type at desks, two stand by the goal board, one sits on the lounge sofa under a question mark and one stands at the bell.">
-  <img src="../.github/readme/office-workshop.webp" width="32%" alt="The Workshop, with twelve agents. Seven type at desks in three clusters, three stand close together at the goal board with their name tags shortened to their names, one sits in the lounge under a question mark and one stands at the bell.">
-  <img src="../.github/readme/office-hq.webp" width="32%" alt="HQ, the largest office, with sixteen agents. Most type at desks in four clusters, a few walk between their desks and the goal board, two sit on the lounge sofa under question marks and one stands at the bell.">
+  <img src="../.github/readme/office-studio.webp" width="32%" alt="The Studio with eight agents. Nora and Lena work at desks, Maya has an export retry ready for review, and Theo is paused.">
+  <img src="../.github/readme/office-workshop.webp" width="32%" alt="The Workshop with twelve agents around three desk clusters. Nora and Lena work, Maya's export retry is ready for review, and Theo is paused.">
+  <img src="../.github/readme/office-hq.webp" width="32%" alt="HQ with sixteen agents around four desk clusters. Nora and Lena work, Maya's export retry is ready for review, and Theo is paused.">
 </p>
 
 ## Open the Floor
@@ -205,6 +205,10 @@ With `floor.board` on, the Board view makes tickets and moves them. It needs `fl
 `floor.goal` on too, and the daemon refuses to start without them. Turn it on with
 `dudes config set floor.board on`, which applies at once. `dudes quickstart` turns it on with the
 other Floor actions in a new file.
+
+![The Board with tickets in To do, Working, Ready for you, and Done.](../.github/readme/board.webp)
+
+The Board tracks tickets from the first task to work ready for your review and accepted results.
 
 **Giving a ticket to an agent starts that agent, which then runs and spends under your account.**
 Anyone holding your Floor session can do that until the session ends, so keep the link to yourself.
