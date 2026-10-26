@@ -8,7 +8,6 @@ import test, { before, after } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 let server;
@@ -75,15 +74,17 @@ test('a lost connection is the banner and the first wait is the stack', () => {
 });
 
 test('no notice reserves room: the page has no rail, no bottom padding for it, and no dialog shrinks for it', async () => {
-  const css = await legacyStyles();
-  assert.doesNotMatch(css, /notice-rail/);
-  const block = (selector) => new RegExp(`(?:^|\\n)${selector.replace(/[.[\]]/g, '\\$&')} \\{([^}]*)\\}`).exec(css)?.[1] ?? '';
-  const area = block('.notice-area');
-  assert.match(area, /position: fixed/);
-  assert.match(area, /pointer-events: none/);
-  assert.doesNotMatch(area, /\n\s*height:/, 'the stack area sizes to its notices');
-  assert.doesNotMatch(block('.shell:not(.shell-signed-out)'), /padding-bottom/);
-  assert.match(css, /\.notice-banner \{[^}]*position: relative/, 'the banner sits in the page under the top bar');
-  const phone = /@media \(max-width: 800px\) \{\s*\.shell:not\(\.shell-signed-out\) \{ padding-top: var\(--banner-height, 0px\); \}/.test(css);
-  assert.ok(phone, 'a phone makes room for its fixed banner and nothing else');
+  const look = await readFile(resolve(import.meta.dirname, '../src/renderer/notices/look.tsx'), 'utf8');
+  const shell = await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8');
+  const constant = (name) => new RegExp(`export const ${name} = cn\\(([^;]*?)\\);`).exec(look)?.[1] ?? '';
+  assert.doesNotMatch(look + shell, /notice-rail/);
+  const area = constant('NOTICE_AREA');
+  assert.match(area, /\bfixed\b/);
+  assert.match(area, /pointer-events-none/);
+  assert.doesNotMatch(area, /(?:^|\s|')h-/, 'the stack area sizes to its notices');
+  const shellRoot = /className=\{cn\('shell [^']*'/.exec(shell)?.[0] ?? '';
+  assert.doesNotMatch(shellRoot, /\bpb-/, 'the page keeps no bottom padding for notices');
+  assert.match(constant('NOTICE_BANNER'), /\brelative\b/, 'the banner sits in the page under the top bar');
+  assert.match(shellRoot, /max-\[800px\]:pt-\[var\(--banner-height,0px\)\]/, 'a phone makes room for its fixed banner and nothing else');
 });
+

@@ -10,6 +10,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { themeColour, themeTokens } from './helpers/theme-colour.mjs';
 import { legacyStyles } from './helpers/legacy-css.mjs';
+import { bare } from './helpers/shell-bare.mjs';
 
 const source = resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx');
 
@@ -51,8 +52,8 @@ before(async () => {
 });
 after(async () => { await server?.close(); });
 function notice(phase, stale = false) {
-  return renderToStaticMarkup(createElement(StreamNotice,
-    { floor: { ...store.getFloorState(), phase, stale, epoch: 1, snapshotEpoch: 1 } }));
+  return bare(renderToStaticMarkup(createElement(StreamNotice,
+    { floor: { ...store.getFloorState(), phase, stale, epoch: 1, snapshotEpoch: 1 } })), ['open-command', 'notice-action', 'office-closed', 'office-stale', 'stream-notice']);
 }
 
 test('the mirror publishes the phase, so an empty floor says which empty it is', async () => {

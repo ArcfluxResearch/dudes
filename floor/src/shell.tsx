@@ -55,7 +55,6 @@ import {
 const TOP_BAR = 'top-bar relative z-(--layer-top-bar) flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface px-4 py-2 font-sans';
 const WORDMARK = 'wordmark m-0 text-title font-semibold tracking-tight text-ink';
 const STAGE_ROW = 'row-[2/-1] min-h-0';
-const markHome = (node: HTMLButtonElement | null) => { if (node !== null) node.id = 'header-more-toggle'; };
 
 function reloadPage(): void {
   window.location.reload();
@@ -100,14 +99,18 @@ export function PastedLinkNotice({ variant = 'card' }: { readonly variant?: 'car
   if (first === 'no_key') return <SignInExpired variant={variant} why="This browser no longer has its sign-in key." />;
   if (first === 'reload') return line('Reload this page to finish signing in.');
   if (first === 'unsupported') {
-    return line(`This browser cannot keep a sign-in key, so it was not signed in. Some private windows block the storage
-      it needs. Try a normal window.`);
+    return line(<>
+      This browser cannot keep a sign-in key, so it was not signed in. Some private windows block the storage
+      it needs. Try a normal window.
+    </>);
   }
   if (!refused) return null;
   if (buildMismatch) {
-    return line(`Dudes now serves a different Floor build from this page, so the link pasted into this tab was not
+    return line(<>
+      Dudes now serves a different Floor build from this page, so the link pasted into this tab was not
       used. This page is as it was, but it cannot sign in to the new build. Copy any draft you need, reload
-      this tab, then paste the link again.`);
+      this tab, then paste the link again.
+    </>);
   }
   return line(<>
     The Floor link pasted into this tab was refused, or Dudes could not be reached to take it. This page is
@@ -523,7 +526,7 @@ function SignedInShell() {
               aria-controls={hiring ? 'hire-wizard' : undefined}
               onClick={(event) => openHire(event.currentTarget)}>Hire an agent</Button> : null}
             <PauseAllControl floor={floor} />
-            <Menu label="More" ref={markHome} className="size-auto gap-1 px-3"
+            <Menu label="More" id="header-more-toggle" className="size-auto gap-1 px-3"
               trigger={<>More<ChevronDown {...ICON} aria-hidden="true" /></>}>
               {page === null ? null : <MenuItem id="office-open" icon={<Building2 {...ICON} />} onSelect={closeView}>Office</MenuItem>}
               <MenuItem id="crew-toggle" icon={<Users {...ICON} />} checked={crewPressed}
@@ -562,7 +565,7 @@ function SignedInShell() {
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className={cn('office-slot col-[3/-1] flex min-w-0 flex-col', STAGE_ROW, 'max-[800px]:order-first max-[800px]:min-h-80',
           drawerOpen && !focused && 'col-[3/4]', (focused || fullPanel) && 'hidden')}>
-          <div className="office-area">
+          <div className="office-area [&>[data-office]]:relative [&>[data-office]]:isolate [&>[data-office]]:min-h-72 [&>[data-office]]:flex-auto [&>[data-office]]:overflow-hidden [&>[data-office]]:bg-(--studio-background)">
             {page === null ? <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
               onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} /> : null}
             <FirstTask floor={floor} onHire={openHire} />

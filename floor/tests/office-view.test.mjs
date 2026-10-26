@@ -310,9 +310,9 @@ test('RING_ONE_TONE mutant: the focus ring over the office has two tones far eno
   const css = await legacyStyles();
   const rule = /\.agent-select:focus-visible,\s*\.board-select:focus-visible\s*\{([^}]*)\}/.exec(css)?.[1];
   assert.ok(rule, 'the office focus ring has its own rule');
-  const office = /\.office\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
-  assert.match(office, /overflow:\s*hidden/, 'the office clips what is laid over it');
-  assert.match(office, /isolation:\s*isolate/, 'nothing laid over the office rises above the panels floating over it');
+  const shell = await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8');
+  assert.match(shell, /\[&>\[data-office\]\]:overflow-hidden/, 'the office clips what is laid over it');
+  assert.match(shell, /\[&>\[data-office\]\]:isolate/, 'nothing laid over the office rises above the panels floating over it');
   for (const theme of ['light', 'dark']) {
     const tokens = themeTokens(css, theme);
     const resolve = (value) => value.startsWith('var(--') ? tokens[value.slice(6, -1)] : value;

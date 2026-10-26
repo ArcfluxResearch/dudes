@@ -44,6 +44,9 @@ function describe(row: NeedRow): string {
   return `${NEED_LABEL[row.state]}. ${facts === '' ? '' : `${facts}. `}${row.doing}${live}. Project: ${crew.workspace}`;
 }
 
+const STAGE_FRAME = cn('z-(--layer-panels) m-0 box-border min-w-0 overflow-auto border-0 border-solid border-line bg-surface text-ink',
+  'min-[801px]:col-1 min-[801px]:row-[2/-1] min-[801px]:flex min-[801px]:min-h-0 min-[801px]:w-[min(264px,40vw)] min-[801px]:flex-col min-[801px]:gap-2 min-[801px]:border-r min-[801px]:px-2 min-[801px]:py-4');
+
 /**
  * Every current agent, one row each, ordered by who needs the operator first. A row says who, in one state
  * word what is going on, what the agent is doing, and offers the one click that acts on it. It reads only
@@ -152,8 +155,7 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
     .filter(([, members]) => members.length > 0);
 
   return (
-    <section className={cn('crew-list roster z-(--layer-panels) m-0 box-border min-w-0 overflow-auto border-0 border-solid border-line bg-surface text-ink',
-      hidden ? 'hidden' : sheet && 'min-[801px]:col-1 min-[801px]:row-[2/-1] min-[801px]:flex min-[801px]:min-h-0 min-[801px]:w-[min(264px,40vw)] min-[801px]:flex-col min-[801px]:gap-2 min-[801px]:border-r min-[801px]:px-2 min-[801px]:py-4')} id={`${base}-list`} aria-labelledby={title} data-stale={stale ? 'true' : 'false'}
+    <section className={cn('crew-list roster', hidden ? 'hidden' : sheet && STAGE_FRAME)} id={`${base}-list`} aria-labelledby={title} data-stale={stale ? 'true' : 'false'}
       data-sheet={sheet ? (open ? 'open' : 'closed') : undefined} data-waiting={rows.some((row) => row.state === 'needs-you' || row.state === 'ready')}>
       <h2 id={title} className="roster-title">{agents.length === 0 ? 'No agents yet' : waitingHeading(rows)}</h2>
       {sheet ? <button type="button" className="roster-sheet-toggle" aria-expanded={open} aria-controls={list}

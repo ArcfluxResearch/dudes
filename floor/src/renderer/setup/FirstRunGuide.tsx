@@ -9,6 +9,8 @@ import { FloorSwitches, WorkspaceSettings } from '../settings/SettingsView.tsx';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { Button, cn } from '../../ui/index.ts';
 
+const GUIDE = cn('first-run-guide absolute inset-y-0 right-0 z-(--layer-hire-wizard) box-border flex w-[min(var(--hire-wizard-width),100%)] flex-col gap-4 border-l border-line bg-surface p-4 font-sans text-ink shadow-sheet [grid-area:auto] group-has-[[data-terminal-expanded=true]]/stage:relative group-has-[[data-terminal-expanded=true]]/stage:inset-auto group-has-[[data-terminal-expanded=true]]/stage:row-2 group-has-[[data-terminal-expanded=true]]/stage:col-[1/-1] group-has-[[data-terminal-expanded=true]]/stage:w-auto');
+
 function FloorActions({ floor }: { readonly floor: FloorState }) {
   const report = floor.settings;
   if (report === null) return <p role="status">Settings are unavailable. Recheck to try again.</p>;
@@ -34,7 +36,7 @@ export function FirstRunGuideView({ floor, step, onStep, onClose }: {
   const current = steps[at];
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { heading.current?.focus(); }, [step]);
-  return <aside className="first-run-guide absolute inset-y-0 right-0 z-(--layer-hire-wizard) box-border flex w-[min(var(--hire-wizard-width),100%)] flex-col gap-4 border-l border-line bg-surface p-4 font-sans text-ink shadow-sheet [grid-area:auto] group-has-[[data-terminal-expanded=true]]/stage:relative group-has-[[data-terminal-expanded=true]]/stage:inset-auto group-has-[[data-terminal-expanded=true]]/stage:row-2 group-has-[[data-terminal-expanded=true]]/stage:col-[1/-1] group-has-[[data-terminal-expanded=true]]/stage:w-auto"
+  return <aside className={GUIDE}
     role="dialog" aria-labelledby="first-run-guide-title"
     onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }}>
     <header className="guide-head flex items-center justify-between gap-2">

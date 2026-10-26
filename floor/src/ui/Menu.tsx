@@ -17,6 +17,8 @@ export interface MenuProps {
   readonly trigger?: ReactNode;
   readonly children: ReactNode;
   readonly className?: string;
+  /** The id of the button, for a hand-off of focus to it from elsewhere on the page. */
+  readonly id?: string;
   readonly align?: 'start' | 'end';
   readonly ref?: Ref<HTMLButtonElement>;
 }
@@ -26,7 +28,7 @@ export interface MenuProps {
  * after an item is chosen. The list is drawn beside the button as a child of the component, so it works inside a modal
  * `dialog`, and it shows in the top layer so the dialog cannot clip it.
  */
-export function Menu({ label, trigger = <MoreHorizontal {...ICON} />, children, className, align = 'end', ref }: MenuProps) {
+export function Menu({ label, trigger = <MoreHorizontal {...ICON} />, children, className, id, align = 'end', ref }: MenuProps) {
   const made = useId();
   const [open, setOpen] = useState(false);
   const button = useRef<HTMLButtonElement | null>(null);
@@ -79,7 +81,7 @@ export function Menu({ label, trigger = <MoreHorizontal {...ICON} />, children, 
 
   return <>
     <button ref={(node) => { button.current = node; if (typeof ref === 'function') ref(node); else if (ref) ref.current = node; }}
-      type="button" aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} aria-controls={`${made}-menu`}
+      type="button" id={id} aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} aria-controls={`${made}-menu`}
       data-ui="menu-button" data-variant="ghost" data-size="md" data-open={open || undefined}
       onClick={() => { if (open) dismiss(); else enter('first'); }}
       onKeyDown={triggerKey}
