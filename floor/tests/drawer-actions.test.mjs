@@ -7,9 +7,9 @@ import { resolve } from 'node:path';
 import test, { after, before } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 import { loadStage } from './helpers/page.mjs';
 
 const root = resolve(import.meta.dirname, '..');
@@ -56,17 +56,17 @@ function drawer({ off = [], fields = {} } = {}) {
   return stage({ floor: { ...store.getFloorState(), settings } });
 }
 
-const actionsOf = (html) => /<div class="agent-detail-actions"[^>]*>([\s\S]*?)<\/aside>/.exec(html)?.[1] ?? '';
+const actionsOf = (html) => /<header class="agent-detail-head">([\s\S]*?)<\/header>/.exec(html)?.[1] ?? '';
+const labelsOf = (html) => [...html.replace(/<svg[\s\S]*?<\/svg>/g, '').matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)]
+  .map(([, label]) => label).filter((label) => label !== '');
 
 test('Pause stays in view, Retire sits in the More actions menu, and Attach sits by the model', () => {
   const html = drawer();
-  assert.match(html, /<div class="agent-detail-actions"/, 'no action row');
   const block = actionsOf(html);
-  const labels = [...block.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label);
-  assert.equal(labels[0], 'Pause');
-  const menu = /<details class="agent-more"><summary aria-label="More actions" title="More actions">…<\/summary>([\s\S]*?)<\/details>/.exec(block)?.[1] ?? '';
-  assert.deepEqual([...menu.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label).filter((label) => label !== 'Edit look'),
-    ['Retire']);
+  assert.match(block, /<button(?=[^>]*aria-label="More actions")(?=[^>]*aria-haspopup="menu")[^>]*>/, 'no More actions menu button');
+  const menu = /<div[^>]*role="menu"[^>]*>([\s\S]*?)<\/div><\/div>/.exec(block)?.[1] ?? '';
+  assert.equal(labelsOf(block.replace(menu, ''))[0], 'Pause');
+  assert.deepEqual(labelsOf(menu).filter((label) => label !== 'Edit look'), ['Retire agent']);
   assert.ok(html.indexOf('class="terminal-attach"') > html.indexOf('class="agent-model'), 'Attach follows the model');
   assert.doesNotMatch(menu, /Open the real CLI/);
   assert.doesNotMatch(block, /trust this folder/);
@@ -75,13 +75,13 @@ test('Pause stays in view, Retire sits in the More actions menu, and Attach sits
 test('the Attach explanation is the button’s description and tooltip, and a waiting Attach says why', () => {
   const block = actionsOf(drawer());
   const text = 'Open this agent’s real CLI\\. Automatic work waits while you type\\. Detach returns control to Dudes\\.';
-  assert.match(block, new RegExp(`<button[^>]*class="terminal-attach"[^>]*title="${text}"`));
-  assert.match(block, /<button[^>]*class="terminal-attach"[^>]*aria-describedby="terminal-hint"/);
+  assert.match(block, new RegExp(`<button(?=[^>]*class="terminal-attach")(?=[^>]*title="${text}")`));
+  assert.match(block, /<button(?=[^>]*class="terminal-attach")(?=[^>]*aria-describedby="terminal-hint")/);
   assert.match(block, new RegExp(`<span class="visually-hidden" id="terminal-hint">${text}</span>`));
-  assert.doesNotMatch(block, /<button[^>]*class="terminal-attach"[^>]*aria-disabled/);
+  assert.doesNotMatch(block, /<button(?=[^>]*class="terminal-attach")(?=[^>]*aria-disabled)/);
   assert.doesNotMatch(drawer(), /agent-detail-tab-terminal|agent-detail-panel-terminal/);
   const running = actionsOf(drawer({ fields: { status: 'running' } }));
-  assert.match(running, /<button[^>]*class="terminal-attach"[^>]*aria-disabled="true"[^>]*>/);
+  assert.match(running, /<button(?=[^>]*class="terminal-attach")(?=[^>]*aria-disabled="true")[^>]*>/);
   assert.match(running, /id="terminal-hint">Wait for this agent’s current work to finish before opening its CLI\./);
 });
 
@@ -95,8 +95,8 @@ test('a switched-off terminal explains how to open the real CLI without a disclo
 test('the Pause explanation is the button’s description and tooltip, not a paragraph', () => {
   const block = actionsOf(drawer());
   const text = 'Pause stops new turns and kills nothing: a turn already running runs to its end.';
-  assert.match(block, new RegExp(`<button[^>]*class="control-pause"[^>]*title="${text}"`));
-  assert.match(block, /<button[^>]*class="control-pause"[^>]*aria-describedby="control-hint"/);
+  assert.match(block, new RegExp(`<button(?=[^>]*class="control-pause")(?=[^>]*title="${text}")`));
+  assert.match(block, /<button(?=[^>]*class="control-pause")(?=[^>]*aria-describedby="control-hint")/);
   assert.match(block, new RegExp(`<span class="visually-hidden" id="control-hint">${text}</span>`));
   assert.doesNotMatch(block, /<p class="hire-note" id="control-hint"/);
 });

@@ -1,10 +1,6 @@
 @layer legacy, theme, base, components, utilities;
 
 @layer legacy {
-.enable-controls {
-  font-size: 0.8rem;
-}
-
 .live-work {
   padding: 0.4rem 0.6rem;
   border: 1px solid var(--line);

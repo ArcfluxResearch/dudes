@@ -448,4 +448,48 @@
   justify-content: flex-end;
   gap: 0.4rem;
 }
+
+/* Moved from the agent actions stylesheet. */
+@media (max-width: 800px) {
+  .hire-wizard {
+    width: auto;
+    box-shadow: none;
+  }
+
+  .hire-dialog {
+    padding: 0.5rem;
+  }
+
+  /* Four stacked steps would take a quarter of a phone screen: one numbered strip, the current step named. */
+  .hire-index ol {
+    display: flex;
+    gap: 0.3rem;
+  }
+
+  .hire-index li {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .hire-index button {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    padding: 0.3rem 0.25rem;
+    text-align: center;
+  }
+
+  .hire-index button:not([aria-current='step']) :is(.hire-index-label, .hire-index-hint),
+  .hire-index-hint {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .hire-body,
+  .hire-facts div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 }

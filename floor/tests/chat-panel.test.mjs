@@ -5,8 +5,8 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test, { after, before } from 'node:test';
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const A = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
@@ -67,8 +67,8 @@ test('a fresh drawer defaults to Chat while explicit preferences and Chat-off fa
   assert.equal(readDetailTab(storage, 'overview'), 'overview', 'and to Overview where Chat is unavailable');
   const draw = chat => renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(chat), row,
     selectedId: A, onClose() {}, leaveFocusTo: 'crew-toggle' }));
-  assert.match(draw(view()), /id="agent-detail-tab-chat"[^>]*aria-selected="true"/);
-  assert.match(draw(null), /id="agent-detail-tab-overview"[^>]*aria-selected="true"/);
+  assert.match(draw(view()), /<button(?=[^>]*\bid="agent-detail-tab-chat")(?=[^>]*aria-selected="true")[^>]*>/);
+  assert.match(draw(null), /<button(?=[^>]*\bid="agent-detail-tab-overview")(?=[^>]*aria-selected="true")[^>]*>/);
 });
 
 test('reserved preparation stays cancellable and uncertain cancellation names its narrow promise', () => {
@@ -551,7 +551,7 @@ test('context loss displays the refused message separately from the newer draft 
   chatModule.resetChat();
 });
 
-const tabNames = html => [...html.matchAll(/role="tab" class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map(match => match[1]);
+const tabNames = html => [...html.matchAll(/role="tab"[^>]*class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map(match => match[1]);
 
 test('after a chat message the drawer tabs are Overview, Chat, Git and Memory and never Output', () => {
   const output = { ...liveReply('Provisional assistant text'), chunks: ['Raw engine text'] };
@@ -566,10 +566,10 @@ test('after a chat message the drawer tabs are Overview, Chat, Git and Memory an
 test('the latest turn offers Show full output, collapsed by default, and opening it shows the live output', () => {
   const chat = { ...view(), turns: [turn({ state: 'running', reply: null })] };
   const closed = render(chat, { output: liveReply('Provisional assistant text') });
-  assert.match(closed, /<button[^>]*class="full-output-toggle"[^>]*aria-expanded="false"[^>]*aria-controls="chat-full-output"[^>]*>Show full output<\/button><div id="chat-full-output" hidden="">/);
+  assert.match(closed, /<button(?=[^>]*class="full-output-toggle")(?=[^>]*aria-expanded="false")(?=[^>]*aria-controls="chat-full-output")[^>]*>Show full output<\/button><div id="chat-full-output" hidden="">/);
   const output = { ...store.getFloorState().output, view: 'output', targetId: A, status: 'live', chunks: ['Raw engine text'] };
   const open = renderToStaticMarkup(createElement(ChatPanelView, { floor: floor(chat, { output }), row, action, fullOutput: true }));
-  assert.match(open, /<button[^>]*class="full-output-toggle"[^>]*aria-expanded="true"[^>]*>Hide full output<\/button><div id="chat-full-output"><section[^>]*aria-label="Live work"/);
+  assert.match(open, /<button(?=[^>]*class="full-output-toggle")(?=[^>]*aria-expanded="true")[^>]*>Hide full output<\/button><div id="chat-full-output"><section[^>]*aria-label="Live work"/);
   assert.match(open, /<pre class="live-work-text">Raw engine text<\/pre>/);
   assert.doesNotMatch(open, /Read-only|Live work<|TurnId|<h3>Live work/i, 'no jargon inside the toggle');
   assert.equal((render({ ...view(), turns: [turn({ turn_id: B, note_lsn: '6' }), turn()] }).match(/class="full-output-toggle"/g) ?? []).length, 1,

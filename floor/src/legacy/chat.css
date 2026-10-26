@@ -160,4 +160,115 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+/* Moved from the agent panel stylesheet: headings and fact lists shared by the tabs, Messages and Git. */
+.agent-detail h3,
+.chat-panel h3 {
+  font-family: var(--font-head);
+  font-weight: 600;
+}
+
+
+.agent-detail dl {
+  margin: 0;
+}
+
+.agent-detail dl div {
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.agent-detail dt {
+  color: var(--muted-ink);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.agent-detail dd {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+
+.messages-panel section { margin-top: 1rem; }
+.messages-panel h3 { overflow-wrap: anywhere; }
+.messages-panel ol { list-style: none; padding: 0; }
+.messages-panel li { border-top: 1px solid var(--line); padding: 0.75rem 0; }
+.messages-panel li p { margin: 0 0 0.5rem; overflow-wrap: anywhere; }
+
+
+.agent-detail-git h3,
+.agent-detail-git h4,
+.agent-detail-git p {
+  margin: 0 0 0.5rem;
+}
+
+.agent-detail-git h4 {
+  margin-top: 0.9rem;
+  font-size: 0.9rem;
+}
+
+.agent-detail-git ul,
+.agent-detail-git ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.agent-detail-git li {
+  border-top: 1px solid var(--shadow);
+  padding: 0.3rem 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-detail-git .git-head {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 0.75rem;
+  margin: 0.6rem 0 0;
+}
+
+.agent-detail-git .git-note,
+.agent-detail-git .git-cut,
+.agent-detail-git .git-kind {
+  color: var(--muted-ink);
+  font-size: 0.82rem;
+}
+
+.agent-detail-git .git-path {
+  overflow-wrap: anywhere;
+}
+
+.agent-detail-git .git-copy,
+.agent-detail-git .git-refresh {
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--line);
+  background: var(--button-background);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.agent-detail-git .git-refresh {
+  margin: 0 0 0.5rem;
+}
+
+.agent-detail-git .git-copy:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.agent-detail-git .git-refresh[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.agent-detail-git button:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
 }

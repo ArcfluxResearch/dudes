@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import test, { after, before } from 'node:test';
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 
 let server;
 let completionCheckOf;

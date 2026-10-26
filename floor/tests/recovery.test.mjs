@@ -5,8 +5,8 @@ import { resolve } from 'node:path';
 import test, { before, after, beforeEach } from 'node:test';
 import { act, createElement, Fragment, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 import { loadStage } from './helpers/page.mjs';
 import { fakePage } from './helpers/fake-page.mjs';
 
@@ -728,7 +728,7 @@ test('a recovery request reveals Overview from Chat and focuses its visible head
     await act(async () => root.render(draw({ id: AGENT })));
     assert.equal(page.host.querySelector('[id="agent-detail-tab-overview"]').getAttribute('aria-selected'), 'true');
     assert.equal(page.host.querySelector('[id="agent-detail-panel-overview"]').getAttribute('hidden'), null);
-    assert.equal(page.host.querySelector('[class="agent-overview-details"]').open, true);
+    assert.equal(page.host.querySelector('[class~="agent-overview-details"]').open, true);
     assert.equal(page.document.activeElement.id, 'recovery-title');
     assert.deepEqual(scrolled, [{ id: 'recovery-title', block: 'start' }]);
     assert.equal(model.getRecoveryState().requests.size, 0);

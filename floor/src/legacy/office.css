@@ -339,4 +339,21 @@
 .agent-detail-head > .agent-detail-question, .agent-detail-head > .agent-look-editor, .agent-detail-head > .agent-model { grid-column: 1 / -1; }
 .selection-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .selection-bar .stream-state { margin: 0; overflow-wrap: anywhere; }
+
+/* Moved from the retire and terminal stylesheet. */
+/* The button covers the board's corners on screen, so its middle is the middle of the board's face, whichever wall it hangs on. */
+.board-note-count {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 90%;
+  overflow: hidden;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: #fff8e7;
+  color: #241f1a;
+  font: 9px ui-monospace, monospace;
+  white-space: nowrap;
+}
 }

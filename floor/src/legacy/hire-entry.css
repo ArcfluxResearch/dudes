@@ -40,8 +40,7 @@
   line-height: 1.5;
 }
 
-.hire-off > summary,
-.enable-controls > summary {
+.hire-off > summary {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
@@ -60,13 +59,11 @@
   border-style: dashed;
 }
 
-.hire-off > summary::-webkit-details-marker,
-.enable-controls > summary::-webkit-details-marker {
+.hire-off > summary::-webkit-details-marker {
   display: none;
 }
 
-.hire-off > summary::before,
-.enable-controls > summary::before {
+.hire-off > summary::before {
   flex: none;
   width: 0.5rem;
   height: 0.5rem;
@@ -75,19 +72,16 @@
   content: '';
 }
 
-.hire-off > summary::after,
-.enable-controls > summary::after {
+.hire-off > summary::after {
   font-weight: 700;
   content: '+' / '';
 }
 
-.hire-off[open] > summary::after,
-.enable-controls[open] > summary::after {
+.hire-off[open] > summary::after {
   content: '\2212' / '';
 }
 
-.hire-off > summary:focus-visible,
-.enable-controls > summary:focus-visible {
+.hire-off > summary:focus-visible {
   outline: 2px solid var(--accent-ink);
   outline-offset: 2px;
 }

@@ -4,11 +4,11 @@ import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { decodeWorkspace, workspaceGroups } from '../src/renderer/workspace.ts';
 import { applyServerFrame, beginFloorEpoch, getFloorState, resetFloorStore } from '../src/renderer/floor/store.ts';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 
 const ADA = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const GRACE = '01M31CGZJMEFDYMJ4YBV76DJHQ';

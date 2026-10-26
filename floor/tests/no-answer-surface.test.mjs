@@ -142,10 +142,10 @@ import { extname, resolve } from 'node:path';
 import test, { after, before } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
 import { createServer } from 'vite';
 
+import { hookClasses, renderToStaticMarkup } from './helpers/markup.mjs';
 import { loadStage } from './helpers/page.mjs';
 
 import { answerGate } from '../src/renderer/answer/answer.ts';
@@ -429,7 +429,7 @@ const ADMITTED_HANDLERS = [
   { file: 'src/renderer/AgentDetail.tsx', tag: 'section', handler: 'onBlur',
     expression: '(event) => {\n          if (!event.currentTarget.contains(event.relatedTarget)) setFocusedSection(null);\n        }' },
   { file: 'src/renderer/AgentDetail.tsx', tag: 'button', className: 'agent-detail-tab', handler: 'onKeyDown',
-    expression: '(event) => {\n            if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;\n            const target = detailTabTarget(tabs, id, event.key);\n            if (target === null) return;\n            event.preventDefault();\n            onTabChange(target);\n            event.currentTarget.ownerDocument.getElementById(`agent-detail-tab-${target}`)?.focus();\n          }' },
+    expression: '(event) => {\n            if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;\n            const target = detailTabTarget(tabs, id, event.key);\n            if (target === null) return;\n            event.preventDefault();\n            event.stopPropagation();\n            onTabChange(target);\n            event.currentTarget.ownerDocument.getElementById(`agent-detail-tab-${target}`)?.focus();\n          }' },
   { file: TERMINAL_PANEL, tag: 'div', className: 'terminal-actions', handler: 'onKeyDown', expression: TERMINAL_HEADER_KEYS },
   { file: TERMINAL_PANEL, tag: 'textarea', handler: 'onFocus', expression: '(event) => event.currentTarget.select()' },
   { file: FIRST_RUN_GUIDE, tag: 'aside', className: 'first-run-guide', handler: 'onKeyDown',
@@ -464,9 +464,12 @@ const ADMITTED_HANDLERS = [
   { file: LOOK_PANEL, tag: 'form', handler: 'onSubmit',
     expression: '(event) => { event.preventDefault(); void submitLook(row, browserLookDeps); }' },
   { file: LOOK_PANEL, tag: 'form', handler: 'onKeyDown',
-    expression: "(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelLook(); } }" },
-  { file: LOOK_PANEL, tag: 'select', handler: 'onChange',
-    expression: '(event) => editLook({ character: event.currentTarget.value || null })' },
+    expression: "(event) => { event.stopPropagation(); if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); cancelLook(); } }" },
+  { file: LOOK_PANEL, tag: 'select', handler: 'onValueChange',
+    expression: '(value) => editLook({ character: value || null })' },
+  { file: LOOK_PANEL, tag: 'button', className: 'look-open', handler: 'onSelect', expression: '() => beginLook(row)' },
+  { file: RETIRE_PANEL, tag: 'button', className: 'retire-open', handler: 'onSelect', expression: '() => {}' },
+  { file: RETIRE_PANEL, tag: 'button', className: 'retire-open', handler: 'onSelect', expression: '() => confirmRetire(offer, session)' },
   { file: LOOK_PANEL, tag: 'input', handler: 'onChange', expression: '() => editLook({ accent: null })' },
   { file: LOOK_PANEL, tag: 'input', handler: 'onChange', expression: '() => editLook({ accent })' },
   { file: LOOK_PANEL, tag: 'textarea', handler: 'onChange',
@@ -664,7 +667,7 @@ function isAdmittedHandler(file, entry) {
   if (entry.handler === '{...}' && file.startsWith('src/ui/')) return true;
   return ADMITTED_HANDLERS.some((rule) => rule.file === file && rule.tag === entry.tag
     && rule.handler === entry.handler
-    && (rule.className === undefined || rule.className === entry.className)
+    && (rule.className === undefined || rule.className === hookClasses(entry.className))
     && (rule.expression === undefined || rule.expression === entry.expression));
 }
 
@@ -850,7 +853,7 @@ test('every handler prop other than onClick on a lowercase intrinsic tag under f
     const handlers = seen.get(rule.file) ?? [];
     assert.ok(
       handlers.some((entry) => entry.tag === rule.tag && entry.handler === rule.handler
-        && (rule.className === undefined || entry.className === rule.className)
+        && (rule.className === undefined || hookClasses(entry.className) === rule.className)
         && (rule.expression === undefined || entry.expression === rule.expression)),
       `${rule.file} was not scanned as itself for ${rule.handler} on <${rule.tag}>`,
     );
@@ -864,10 +867,10 @@ test('terminal local handlers admit only the header shortcuts and native copy se
   assert.deepEqual(handlers.map((entry) => isAdmittedHandler(TERMINAL_PANEL, entry)), [true, true, true]);
   for (const [original, replacement] of [
     ["command(action);", "writeTerminal('injected');"],
-    ['className="terminal-actions"', 'className="other-actions"'],
+    ['className="terminal-actions ', 'className="other-actions '],
     ['event.currentTarget.select()', 'writeTerminal(event.currentTarget.value)'],
     ['onFocus={(event)', 'onChange={(event)'],
-    ['<textarea readOnly', '<input readOnly'],
+    ['<Textarea readOnly', '<input readOnly'],
     ['screen.current === null && buttons?.length', 'buttons?.length'],
   ]) {
     assert.ok(text.includes(original), original);
@@ -1193,7 +1196,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(10).fill(TICKET_PANEL),
     ...Array(13).fill(HIRE_FORM),
     HIRE_ENTRY,
-    ...Array(6).fill(RETIRE_PANEL),
+    ...Array(8).fill(RETIRE_PANEL),
     ...Array(2).fill(GIT_PANEL),
     ...Array(5).fill(DIFF_PANEL),
     ...Array(4).fill(MEMORY_PANEL),
@@ -1220,6 +1223,10 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   expected.sort();
   const clickExpected = [...expected, LOGIN_PANEL, FLOOR_SHELL];
   clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
+  // The menu items of More actions choose with `onSelect`, which the menu closes before it runs: Edit look and Retire.
+  clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
+  clickExpected.splice(clickExpected.indexOf(RETIRE_PANEL), 1);
+  clickExpected.splice(clickExpected.indexOf(RETIRE_PANEL), 1);
   clickExpected.splice(clickExpected.indexOf(MODEL_PANEL), 1);
   // The ticket forms each submit with a button that has no click handler of its own.
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
@@ -1294,7 +1301,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => hide(row.id, !hidden.includes(row.id))',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, LOOK_PANEL), 'utf8')), [
-    '() => beginLook(row)', 'cancelLook', '() => { void checkLook(browserLookDeps); }',
+    'cancelLook', '() => { void checkLook(browserLookDeps); }',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, MODEL_PANEL), 'utf8')), [
     '() => { void removeOverride(row, browserModelDeps); }', 'cancelModel', '() => beginModel(row)',
@@ -2305,7 +2312,7 @@ test('terminal copy fallback is one readonly selection field and local commands 
   function localUiIn(text) {
     const syntax = parsedByExtension(text, TERMINAL_PANEL);
     return {
-      fields: intrinsicElementsIn(syntax).filter((node) => ['input', 'textarea', 'select'].includes(node.tagName.text))
+      fields: intrinsicElementsIn(syntax).filter((node) => ['input', 'textarea', 'select'].includes(elementNameOf(node.tagName)))
         .map((node) => node.getText(syntax)),
       commands: functionPinsIn(syntax, ['command']),
       bindings: valueBindingsIn(syntax).filter(({ name, declaredBy }) => name === 'command'
@@ -2313,14 +2320,14 @@ test('terminal copy fallback is one readonly selection field and local commands 
     };
   }
   const expected = {
-    fields: [String.raw`<textarea readOnly aria-label="Terminal selection to copy"
-          value={copy.selection} onFocus={(event) => event.currentTarget.select()} />`],
+    fields: [String.raw`<Textarea readOnly aria-label="Terminal selection to copy"
+          value={copy.selection} className="max-h-20" onFocus={(event) => event.currentTarget.select()} />`],
     commands: [TERMINAL_COMMAND_FUNCTION],
     bindings: 1,
   };
   assert.deepEqual(localUiIn(text), expected);
   for (const [original, replacement] of [
-    ['<textarea readOnly', '<textarea'],
+    ['<Textarea readOnly', '<Textarea'],
     ['value={copy.selection}', 'value={currentFloorSession()?.csrf}'],
     ['copyTerminalSelection(screen.current)', 'copyTerminalSelection(screen.current); writeTerminal(copy.selection)'],
     ["setFontSize((current) => zoomFontSize(current, action));", "writeTerminal(action);"],
@@ -2728,7 +2735,7 @@ test('only the control module names the Floor’s stop: no route or member elsew
     problem: null };
   const labels = new Set();
   const collect = (html) => {
-    for (const [, text] of html.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)) labels.add(text);
+    for (const [, text] of html.replace(/<svg[\s\S]*?<\/svg>/g, '').matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)) labels.add(text);
   };
   for (const paused of [false, true]) {
     for (const halted of [false, true]) {
@@ -2986,13 +2993,13 @@ test('with the same Waiting row but no answer sibling, no answer form renders', 
 test('Pause and Resume render when the snapshot carries the control sibling', () => {
   // The positive control for the absence checks below: with control on, the buttons are there.
   const html = center(floorWith(working(), undefined, CONTROL));
-  assert.match(html, /<button type="button" class="control-pause"[^>]*>Pause<\/button>/);
+  assert.match(html, /<button(?=[^>]*class="control-pause")[^>]*>Pause<\/button>/);
   assert.match(html, new RegExp(`data-control-agent-id="${ADA}" data-control-lsn="${LSN}"`));
   // Where the live case looks for them: in the selected agent's own panel, under its name.
   assert.match(html,
-    /id="selected-agent-detail"[\s\S]*<aside class="agent-detail"[^>]*>[\s\S]*<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<div class="agent-detail-actions"><div class="agent-detail-control"[\s\S]*class="control-pause"/);
+    /id="selected-agent-detail"[\s\S]*<aside class="agent-detail"[^>]*>[\s\S]*<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<div class="agent-detail-control"[\s\S]*class="control-pause"/);
   const paused = center(floorWith(working({ paused: true }), undefined, CONTROL));
-  assert.match(paused, /<button type="button" class="control-resume"[^>]*>Resume<\/button>/);
+  assert.match(paused, /<button(?=[^>]*class="control-resume")[^>]*>Resume<\/button>/);
   assert.doesNotMatch(paused, /class="control-pause"/);
 });
 
@@ -3126,7 +3133,7 @@ test('Attach renders when the snapshot carries the terminal sibling', () => {
   // The positive control for the absence checks below: with the terminal on, Attach is there.
   const html = center(floorWith(resting(), undefined, undefined, undefined, TERMINAL));
   assert.match(html,
-    /<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<details class="agent-more">[\s\S]*?<div class="agent-detail-terminal" data-terminal-offer="attach"><button type="button" class="terminal-attach"[^>]*>Open the real CLI<\/button>/);
+    /<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<div class="agent-detail-terminal" data-terminal-offer="attach"><button(?=[^>]*class="terminal-attach")[^>]*>(?:<svg[\s\S]*?<\/svg>)?Open the real CLI<\/button>/);
 });
 
 test('the terminal offer stays none without the sibling, a live confirmed view, or the agent on the floor', () => {
@@ -3173,9 +3180,9 @@ test('Retire renders when the snapshot carries the retire sibling', () => {
   // The positive control for the absence checks below: with retiring on, Retire is there.
   const html = center(floorWith(working(), undefined, CONTROL, undefined, undefined, RETIRE));
   assert.match(html,
-    new RegExp(`<div class="retire-offer"><button type="button" class="retire-open" data-retire-offer="${ADA}"[^>]*>Retire</button>`));
-  // Where the live case looks for it: in the selected agent's own panel, after Pause.
-  assert.match(html, /<aside class="agent-detail"[\s\S]*class="control-pause"[\s\S]*class="retire-open"/);
+    new RegExp(`<button(?=[^>]*role="menuitem")(?=[^>]*class="retire-open")(?=[^>]*data-retire-offer="${ADA}")[^>]*>(?:<svg[\\s\\S]*?</svg>)?Retire agent</button>`));
+  // Where the live case looks for it: in the More actions menu of the selected agent's own panel.
+  assert.match(html, /<aside class="agent-detail"[\s\S]*role="menu"[\s\S]*class="retire-open"/);
   const halted = center(floorWith(working({ halted: true }), undefined, CONTROL, undefined, undefined, RETIRE));
   assert.match(halted, /Lift the halt from the command line before retiring it from this page\./);
   assert.doesNotMatch(halted, /data-retire-offer/);

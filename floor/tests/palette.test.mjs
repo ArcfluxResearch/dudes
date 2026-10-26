@@ -60,7 +60,7 @@ test('every text colour reads at 4.5:1 on every surface it is drawn on, day and 
 });
 
 test('every focus ring is at least 2 pixels wide and reads at 3:1 on every panel surface, day and night', async () => {
-  const sheets = [css, ...await Promise.all(['src/failure.css', 'src/renderer/cardNotes.css', 'src/renderer/terminal/controls.css']
+  const sheets = [css, ...await Promise.all(['src/failure.css', 'src/renderer/cardNotes.css']
     .map((sheet) => readFile(resolve(floor, sheet), 'utf8')))].join('\n');
   const surfaces = ['surface', 'surface-muted', 'output', 'card-background', 'button-background', 'question'];
   const rings = [];
@@ -110,7 +110,7 @@ test('the chrome is set in a sans, data in monospace, and no font comes from out
   assert.match(/--font-data:\s*([^;]+);/.exec(root)?.[1] ?? '', /monospace$/);
   const data = /\n((?:[^{}\n]+,\n)*[^{}\n]+) \{\n  font-family: var\(--font-data\);/.exec(css)?.[1].split(/,\n/) ?? [];
   for (const selector of ['code', 'pre', '.data', '.live-work-text']) assert.ok(data.includes(selector), `${selector} is not data type`);
-  for (const sheet of ['legacy styles', 'src/failure.css', 'src/renderer/cardNotes.css', 'src/renderer/terminal/controls.css']) {
+  for (const sheet of ['legacy styles', 'src/failure.css', 'src/renderer/cardNotes.css']) {
     const text = sheet === 'legacy styles' ? css : await readFile(resolve(floor, sheet), 'utf8');
     assert.doesNotMatch(text, /@import|@font-face|url\(|https?:/, `${sheet} reaches for a resource`);
   }

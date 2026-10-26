@@ -1,15 +1,33 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { Pencil } from 'lucide-react';
 import { useSyncExternalStore } from 'react';
 
 import { ACCENT_COLOURS, CAST_CHARACTERS, accessoryOf, isAccentColour, lookOf } from '../appearance.ts';
 import { Portrait } from '../Portrait.tsx';
 import { floorSessionGeneration } from '../../session.ts';
+import { Button, Card, Field, ICON, MenuItem, Select, Textarea } from '../../ui/index.ts';
 import { getFloorState, subscribeToFloor } from '../floor/store.ts';
+import { CHOICE, LABEL, NOTE, RADIO, RECEIPT } from '../receipt.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { browserLookDeps, beginLook, cancelLook, checkLook, editLook, getLookState, lookAvailable,
   lookBlocked, lookProblem, submitLook, subscribeToLook } from './look.ts';
 
+const CHARACTER_OPTIONS = [{ value: '', label: 'Automatic' },
+  ...CAST_CHARACTERS.map((character) => ({ value: character, label: `Character ${character.toUpperCase()}` }))];
+
+/** The More menu's way into the look form. */
+export function LookMenuItem({ row }: { readonly row: AgentRow }) {
+  const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
+  const state = useSyncExternalStore(subscribeToLook, getLookState, getLookState);
+  if (!lookAvailable(floor, row)) return null;
+  const blocked = lookBlocked(state, floorSessionGeneration());
+  return <MenuItem icon={<Pencil {...ICON} />} disabled={blocked} className="look-open"
+    title={blocked ? 'Wait for the current look change to finish or check its status.' : undefined}
+    onSelect={() => beginLook(row)}>Edit look</MenuItem>;
+}
+
+/** The look form, drawn while this agent's look is being edited, and the sentences after a save. */
 export function LookEditor({ row }: { readonly row: AgentRow }) {
   const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
   const state = useSyncExternalStore(subscribeToLook, getLookState, getLookState);
@@ -18,48 +36,46 @@ export function LookEditor({ row }: { readonly row: AgentRow }) {
   const mine = state.attempt?.payload.agent === row.id;
   const name = typeof row.name === 'string' ? row.name : row.id;
   const draft = state.editor === row.id && !blocked ? state.draft : null;
-  return <section className="agent-look-editor" aria-label={`Appearance and role for ${name}`}>
-    {draft === null ? <button type="button" disabled={blocked} title={blocked ? 'Wait for the current look change to finish or check its status.' : undefined} onClick={() => beginLook(row)}>
-      Edit look
-    </button> : <form onSubmit={(event) => { event.preventDefault(); void submitLook(row, browserLookDeps); }}
-      onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelLook(); } }}>
-      <label htmlFor="agent-look-character">Character</label>
-      <select id="agent-look-character" autoFocus value={draft.character ?? ''}
-        onChange={(event) => editLook({ character: event.currentTarget.value || null })}>
-        <option value="">Automatic</option>
-        {CAST_CHARACTERS.map((character) => <option key={character} value={character}>
-          Character {character.toUpperCase()}
-        </option>)}
-      </select>
-      <fieldset className="hire-accents">
-        <legend>Accent colour</legend>
-        <label><input type="radio" name="look-accent" value="" checked={draft.accent === null}
+  return <section className="agent-look-editor grid gap-2 font-sans empty:hidden" aria-label={`Appearance and role for ${name}`}>
+    {draft === null ? null : <Card className="p-4"><form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void submitLook(row, browserLookDeps); }}
+      onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); cancelLook(); } }}>
+      <div className="flex items-start justify-between gap-4">
+        <Field label="Character" className="min-w-0 flex-1">
+          <Select autoFocus options={CHARACTER_OPTIONS} value={draft.character ?? ''}
+            onValueChange={(value) => editLook({ character: value || null })} />
+        </Field>
+        <LookPreview row={row} character={draft.character} accent={draft.accent} role={draft.role} />
+      </div>
+      <fieldset className="hire-accents m-0 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 border-0 p-0">
+        <legend className={`mb-1.5 p-0 ${LABEL}`}>Accent colour</legend>
+        <label className={CHOICE}><input type="radio" name="look-accent" value="" className={RADIO} checked={draft.accent === null}
           onChange={() => editLook({ accent: null })} />Automatic</label>
-        {Object.keys(ACCENT_COLOURS).filter(isAccentColour).map((accent) => <label key={accent}>
-          <input type="radio" name="look-accent" value={accent} checked={draft.accent === accent}
+        {Object.keys(ACCENT_COLOURS).filter(isAccentColour).map((accent) => <label key={accent} className={CHOICE}>
+          <input type="radio" name="look-accent" value={accent} className={RADIO} checked={draft.accent === accent}
             onChange={() => editLook({ accent })} />
-          <span className="hire-accent-swatch" style={{ backgroundColor: ACCENT_COLOURS[accent] }} />
+          <span className="hire-accent-swatch inline-block size-3 rounded-pill border border-line-strong" style={{ backgroundColor: ACCENT_COLOURS[accent] }} />
           {accent[0]?.toUpperCase()}{accent.slice(1)}
         </label>)}
       </fieldset>
-      <LookPreview row={row} character={draft.character} accent={draft.accent} role={draft.role} />
-      <label htmlFor="agent-look-role">Role</label>
-      <textarea id="agent-look-role" rows={2} value={draft.role}
-        onChange={(event) => editLook({ role: event.currentTarget.value })} />
-      <button type="submit" disabled={lookProblem(draft) !== null} title={lookProblem(draft) ?? undefined}>Save</button>
-      <button type="button" onClick={cancelLook}>Cancel</button>
-      {lookProblem(draft) === null ? null : <small role="status">{lookProblem(draft)}</small>}
-    </form>}
-    {mine && state.sending ? <small role="status">Saving look…</small> : null}
-    {mine && state.outcome === 'refused' ? <small role="status">The agent or its look changed. Refresh and try again.</small> : null}
-    {mine && state.outcome === 'full' ? <small role="status">The Floor is at its size limit. Shorten the role and save again.</small> : null}
-    {mine && state.outcome === 'forbidden' ? <small role="status">This Floor session cannot edit the agent. Open a fresh session.</small> : null}
+      <Field label="Role">
+        <Textarea rows={2} value={draft.role} onChange={(event) => editLook({ role: event.currentTarget.value })} />
+      </Field>
+      <div className="flex gap-2">
+        <Button type="submit" variant="primary" disabled={lookProblem(draft) !== null} title={lookProblem(draft) ?? undefined}>Save</Button>
+        <Button onClick={cancelLook}>Cancel</Button>
+      </div>
+      {lookProblem(draft) === null ? null : <small role="status" className="text-small text-danger">{lookProblem(draft)}</small>}
+    </form></Card>}
+    {mine && state.sending ? <small className={NOTE} role="status">Saving look…</small> : null}
+    {mine && state.outcome === 'refused' ? <small className={NOTE} role="status">The agent or its look changed. Refresh and try again.</small> : null}
+    {mine && state.outcome === 'full' ? <small className={NOTE} role="status">The Floor is at its size limit. Shorten the role and save again.</small> : null}
+    {mine && state.outcome === 'forbidden' ? <small className={NOTE} role="status">This Floor session cannot edit the agent. Open a fresh session.</small> : null}
   </section>;
 }
 
 function LookPreview({ row, character, accent, role }: { readonly row: AgentRow;
   readonly character: string | null; readonly accent: string | null; readonly role: string }) {
-  return <output className="hire-portrait-preview" aria-label="Portrait preview"
+  return <output className="hire-portrait-preview shrink-0" aria-label="Portrait preview"
     data-character={character ?? 'automatic'} data-accent={accent ?? 'automatic'}>
     <Portrait className="hire-portrait" look={lookOf({ id: row.id, character, accent: isAccentColour(accent) ? accent : null })}
       accessory={accessoryOf(role)} name={row.name} />
@@ -71,11 +87,11 @@ export function LookStatus() {
   if (state.attempt === null || state.outcome === 'changed' || state.outcome === 'refused'
     || state.outcome === 'conflict' || state.outcome === 'full'
     || (state.outcome === 'rejected' && !state.uncertain)) return null;
-  return <section className="look-status" role="status" aria-label="Look status">
-    <p>{state.sending ? 'Saving look…' : state.uncertain ? 'Look change is not settled.'
+  return <section className={`look-status ${RECEIPT}`} role="status" aria-label="Look status">
+    <p className="m-0">{state.sending ? 'Saving look…' : state.uncertain ? 'Look change is not settled.'
       : 'This Floor session cannot edit the agent. Open a fresh session.'}</p>
-    {state.uncertain ? <button type="button" disabled={state.sending}
+    {state.uncertain ? <Button size="sm" className="justify-self-start" disabled={state.sending}
       title={state.sending ? 'Wait for the current look request to finish.' : undefined}
-      onClick={() => { void checkLook(browserLookDeps); }}>Check look status</button> : null}
+      onClick={() => { void checkLook(browserLookDeps); }}>Check look status</Button> : null}
   </section>;
 }

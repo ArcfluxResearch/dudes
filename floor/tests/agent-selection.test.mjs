@@ -6,10 +6,10 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { selectedAgentRow } from '../src/renderer/scene/selection.ts';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const ADA = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
@@ -72,7 +72,7 @@ test('the detail renders selected values and offers navigation to its waiting qu
     ]) {
       assert.ok(html.includes(exact), `detail omitted full value ${exact}`);
     }
-    const tabs = [...html.matchAll(/<button type="button" role="tab" class="agent-detail-tab"[^>]*>([^<]*)<\/button>/g)];
+    const tabs = [...html.matchAll(/<button type="button" role="tab"[^>]*class="agent-detail-tab"[^>]*>([^<]*)<\/button>/g)];
     assert.deepEqual(tabs.map((tab) => tab[1]), ['Overview']);
     assert.match(html, /<button type="button">Answer<\/button>/);
     assert.doesNotMatch(html, /<input|<form|<textarea|contenteditable/i,

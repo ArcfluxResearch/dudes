@@ -15,10 +15,14 @@
 import { useSyncExternalStore } from 'react';
 
 import { floorSessionGeneration } from '../../session.ts';
+import { Button, cn } from '../../ui/index.ts';
 import { automaticHoldOf } from '../automaticHold.ts';
 import { journalPosition } from '../format.ts';
 import type { FloorState } from '../floor/store.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from '../focus.ts';
+import {
+  ACTIONS, FACT, FACTS, FACT_NAME, FACT_VALUE, KICKER as KICKER_TEXT, MESSAGE_CLASS, NOTE, RECEIPT, RECEIPT_TITLE,
+} from '../receipt.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import {
   PARTIAL_EDITS_NOTE, REFUSAL_REASONS, afterRefusal, blocksControls, browserControlDeps, checkControlStatus, checkable,
@@ -90,13 +94,13 @@ export function ControlStripView({ control, floor, row, session }: {
   const focusOnLeave = pressedHere ? 'control-status-title' : AGENT_DETAIL_HEADING_ID;
   const hint = gate.open && gate.offer !== 'none' ? hintFor(gate.offer, row) : undefined;
   return (
-    <div className="agent-detail-control" data-control-agent-id={gate.open ? gate.agent : undefined}
+    <div className="agent-detail-control grid gap-2" data-control-agent-id={gate.open ? gate.agent : undefined}
       data-control-lsn={gate.open ? gate.controlLsn ?? '' : undefined}>
       {wording === null ? null : (
-        <p className="agent-detail-pause" role="status" data-pause-state={wording.state}>{wording.text}</p>
+        <p className={cn('agent-detail-pause', PAUSED)} role="status" data-pause-state={wording.state}>{wording.text}</p>
       )}
       {stopped === null ? null : (
-        <p className="agent-detail-pause" role="status" data-stop-state={stopped.state}>{stopped.text}</p>
+        <p className={cn('agent-detail-pause', PAUSED)} role="status" data-stop-state={stopped.state}>{stopped.text}</p>
       )}
       {!gate.open ? null : (
         <>
@@ -106,39 +110,39 @@ export function ControlStripView({ control, floor, row, session }: {
               double-click: the verb has flipped by then, and it would undo the
               first. */}
           {gate.offer === 'none' && !gate.stop ? null : (
-            <div className="control-actions">
+            <div className={cn('control-actions', ACTIONS)}>
               {gate.offer !== 'pause' && gate.offer !== 'resume' ? null : gate.offer === 'pause' ? (
-                <button key="pause" ref={handFocusOnLeave} type="button" className="control-pause"
-                  aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
+                <Button key="pause" ref={handFocusOnLeave} className="control-pause"
+                  aria-disabled={blocked || undefined} loading={busy} data-focus-on-leave={focusOnLeave}
                   title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
                   onClick={(event) => { if (event.detail < 2) void submitControl('pause', gate, browserControlDeps); }}>
                   {busy ? 'Sending…' : 'Pause'}
-                </button>
+                </Button>
               ) : (
-                <button key="resume" ref={handFocusOnLeave} type="button" className="control-resume"
-                  aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
+                <Button key="resume" ref={handFocusOnLeave} variant="primary" className="control-resume"
+                  aria-disabled={blocked || undefined} loading={busy} data-focus-on-leave={focusOnLeave}
                   title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
                   onClick={(event) => { if (event.detail < 2) void submitControl('resume', gate, browserControlDeps); }}>
                   {busy ? 'Sending…' : 'Resume'}
-                </button>
+                </Button>
               )}
               {gate.stop ? (
-                <button key="halt" type="button" className="control-stop" ref={handFocusOnLeave}
-                  aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
+                <Button key="halt" variant="danger" className="control-stop" ref={handFocusOnLeave}
+                  aria-disabled={blocked || undefined} loading={busy} data-focus-on-leave={focusOnLeave}
                   title={HINTS.halt} aria-describedby="control-stop-note"
                   onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
                   onClick={(event) => { if (event.detail < 2) void submitControl('halt', gate, browserControlDeps); }}>
                   {busy && attempt?.verb === 'halt' ? 'Sending…' : 'Stop this turn'}
-                </button>
+                </Button>
               ) : null}
             </div>
           )}
-          {gate.stop ? <p className="hire-note control-stop-note" id="control-stop-note">{PARTIAL_EDITS_NOTE}</p> : null}
+          {gate.stop ? <p className={cn('control-stop-note', NOTE)} id="control-stop-note">{PARTIAL_EDITS_NOTE}</p> : null}
           {hint === undefined ? null : <span className="visually-hidden" id="control-hint">{hint}</span>}
-          {gate.halted && !gate.haltedByFloor ? <p className="hire-note control-halt-note">{HALT_NOTE}</p> : null}
-          {blocked && !control.sending ? <p className="hire-note">{heldBecause(control)}</p> : null}
+          {gate.halted && !gate.haltedByFloor ? <p className={cn('control-halt-note', NOTE)}>{HALT_NOTE}</p> : null}
+          {blocked && !control.sending ? <p className={NOTE}>{heldBecause(control)}</p> : null}
           {control.problem === null || attempt !== null ? null : (
-            <p className="control-problem" role="alert">{control.problem}</p>
+            <p className={cn('control-problem', MESSAGE_CLASS.error)} role="alert">{control.problem}</p>
           )}
         </>
       )}
@@ -169,38 +173,40 @@ export function ControlStatusView({ control, floor, session, leaveFocusTo = 'cre
   const outcome = control.outcome;
   const asking = checkable(control) || (control.sending && outcome !== null);
   return (
-    <section className="control-status" aria-labelledby="control-status-title" aria-live="polite"
+    <section className={cn('control-status', RECEIPT)} aria-labelledby="control-status-title" aria-live="polite"
       data-control-outcome={outcome?.kind ?? 'sending'} data-control-verb={attempt.verb} data-control-agent-id={agent}
       data-control-lsn={controlLsn ?? ''}>
-      <h3 id="control-status-title" tabIndex={-1}>
-        <span className="agent-detail-kicker">{KICKER[attempt.verb]}</span> {name}
+      <h3 id="control-status-title" tabIndex={-1} className={RECEIPT_TITLE}>
+        <span className={cn('agent-detail-kicker', KICKER_TEXT)}>{KICKER[attempt.verb]}</span> {name}
       </h3>
-      <dl className="hire-facts">
-        <div><dt>AgentId</dt><dd>{agent}</dd></div>
-        <div><dt>Control position</dt><dd>{controlLsn === null ? 'none yet' : journalPosition(controlLsn)}</dd></div>
+      <dl className={FACTS}>
+        <div className={FACT}><dt className={FACT_NAME}>AgentId</dt><dd className={FACT_VALUE}>{agent}</dd></div>
+        <div className={FACT}><dt className={FACT_NAME}>Control position</dt><dd className={FACT_VALUE}>{controlLsn === null ? 'none yet' : journalPosition(controlLsn)}</dd></div>
       </dl>
-      {outcome === null ? <p className="control-pending" role="status">Sending…</p>
+      {outcome === null ? <p className={cn('control-pending', MESSAGE_CLASS.pending)} role="status">Sending…</p>
         : <OutcomeBody outcome={outcome} attempt={attempt} control={control} floor={floor} session={session} />}
-      {control.problem === null ? null : <p className="control-problem" role="alert">{control.problem}</p>}
+      {control.problem === null ? null : <p className={cn('control-problem', MESSAGE_CLASS.error)} role="alert">{control.problem}</p>}
       {asking ? (
-        <footer className="control-actions">
-          <button type="button" aria-disabled={control.sending || !floor.control}
-            aria-busy={control.sending} ref={handFocusOnLeave} data-focus-on-leave="control-status-title"
+        <footer className={cn('control-actions', ACTIONS)}>
+          <Button size="sm" aria-disabled={control.sending || !floor.control}
+            loading={control.sending} ref={handFocusOnLeave} data-focus-on-leave="control-status-title"
             onClick={() => { if (!control.sending && floor.control) void checkControlStatus(browserControlDeps); }}>
             {control.sending ? 'Checking…' : 'Check status'}
-          </button>
+          </Button>
         </footer>
       ) : null}
-      {receiptDismissible(control) ? <footer className="control-actions">
-        <button type="button" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}
-          onClick={dismissReceipt}>Dismiss receipt</button>
+      {receiptDismissible(control) ? <footer className={cn('control-actions', ACTIONS)}>
+        <Button size="sm" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}
+          onClick={dismissReceipt}>Dismiss receipt</Button>
       </footer> : null}
       {!asking || control.sending || floor.control ? null : (
-        <p className="hire-note">Check status waits until this page is signed in and the Floor offers pause and resume.</p>
+        <p className={NOTE}>Check status waits until this page is signed in and the Floor offers pause and resume.</p>
       )}
     </section>
   );
 }
+
+const PAUSED = 'm-0 rounded-md bg-warn-soft px-3 py-2 text-base font-medium text-ink';
 
 const KICKER: Readonly<Record<ControlVerb, string>> = Object.freeze({
   pause: 'Pause request', halt: 'Stop request', resume: 'Resume request',
@@ -255,28 +261,28 @@ function OutcomeBody({ outcome, attempt, control, floor, session }: {
       const next = continuationOf(attempt, floor);
       return (
         <>
-          <p className="control-success" role="status">{RECORDED[attempt.verb]}</p>
-          <p className="control-continuation" data-control-continuation={next.kind}>{continuationText(next)}</p>
+          <p className={cn('control-success', MESSAGE_CLASS.success)} role="status">{RECORDED[attempt.verb]}</p>
+          <p className="control-continuation m-0 text-base text-muted" data-control-continuation={next.kind}>{continuationText(next)}</p>
         </>
       );
     }
     case 'pending':
-      return <p className="control-pending" role="status">{PENDING}</p>;
+      return <p className={cn('control-pending', MESSAGE_CLASS.pending)} role="status">{PENDING}</p>;
     case 'unavailable':
-      return <p className="control-pending" role="status">{UNAVAILABLE}</p>;
+      return <p className={cn('control-pending', MESSAGE_CLASS.pending)} role="status">{UNAVAILABLE}</p>;
     case 'unknown':
-      return <p className="control-pending" role="status">{UNKNOWN}</p>;
+      return <p className={cn('control-pending', MESSAGE_CLASS.pending)} role="status">{UNKNOWN}</p>;
     case 'refused':
       return (
-        <p className="control-error" role="alert" data-control-reason={outcome.reason}>
+        <p className={cn('control-error', MESSAGE_CLASS.error)} role="alert" data-control-reason={outcome.reason}>
           {REFUSAL_REASONS[outcome.reason]}
         </p>
       );
     case 'conflict':
-      return <p className="control-error" role="alert">{CONFLICT}</p>;
+      return <p className={cn('control-error', MESSAGE_CLASS.error)} role="alert">{CONFLICT}</p>;
     case 'rejected':
       return (
-        <p className="control-error" role="alert">
+        <p className={cn('control-error', MESSAGE_CLASS.error)} role="alert">
           {`Dudes refused the request itself (HTTP ${outcome.status}) and changed nothing.`}
         </p>
       );
@@ -286,7 +292,7 @@ function OutcomeBody({ outcome, attempt, control, floor, session }: {
         ? 'Check status then asks again with the same request, which never applies twice.'
         : 'You can then press Pause or Resume again.';
       return (
-        <p className="control-error" role="alert" data-control-session={now}>
+        <p className={cn('control-error', MESSAGE_CLASS.error)} role="alert" data-control-session={now}>
           {now === 'checking'
             ? 'Dudes refused this request and changed nothing. Checking whether this page is still signed in…'
             : now === 'ended'

@@ -227,7 +227,7 @@ const onTerminalStage = (target, { focus = false, expanded = false } = {}) => (s
 
 test('an expanded terminal takes the stage under the top bar and its banners, above every panel, in focus mode too', async () => {
   const css = await legacyStyles();
-  const controls = await readFile(resolve(root, 'src/renderer/terminal/controls.css'), 'utf8');
+  const panel = await readFile(resolve(root, 'src/renderer/terminal/TerminalPanel.tsx'), 'utf8');
   const layers = Object.fromEntries([.../:root\s*\{([^}]+)\}/.exec(css)[1].matchAll(/--(layer-[a-z-]+):\s*(\d+);/g)]
     .map(([, name, value]) => [name, Number(value)]));
   for (const width of [1440, 1024]) {
@@ -242,7 +242,7 @@ test('an expanded terminal takes the stage under the top bar and its banners, ab
         `${width}${focus ? ' in focus mode' : ''}: expanded, ${target} leaves part of the stage`);
     }
   }
-  assert.doesNotMatch(controls, /position:\s*fixed/, 'the expanded terminal covers the top bar and its banners');
+  assert.doesNotMatch(panel, /className="[^"]*\bfixed\b/, 'the expanded terminal covers the top bar and its banners');
 });
 
 test('a Done notice keeps its goal text beside the agent name and Dismiss', async () => {
@@ -343,11 +343,11 @@ test('the first-run guide has a separate row above an expanded terminal and its 
 });
 
 test('detail tab focus rings stay inside the scrolling row', async () => {
-  const css = await legacyStyles();
-  const rules = rulesAt(css, 1024);
-  const selector = '.agent-detail-tabs button:focus-visible';
-  assert.equal(declared(rules, rule => rule.split(',').map(part => part.trim()).includes(selector), 'outline-offset'), '-2px');
-  assert.match(declared(rules, rule => rule.split(',').map(part => part.trim()).includes(selector), 'outline'), /^2px solid /);
+  const tab = await readFile(resolve(root, 'src/ui/Tabs.tsx'), 'utf8');
+  const look = await readFile(resolve(root, 'src/ui/look.ts'), 'utf8');
+  assert.match(tab, /selected:text-ink', RING_INSET/, 'a tab draws its ring outside a row that clips');
+  assert.match(look, /RING_BASE = '[^']*focus-visible:outline-2 focus-visible:outline-solid /);
+  assert.match(look, /RING_INSET = cn\(RING_BASE, 'focus-visible:-outline-offset-2'\)/);
 });
 
 test('below 1440 the view tabs tighten even without Hire or Pause all', async () => {
@@ -383,14 +383,16 @@ test('the tightened top bar spends no more on spacing than Chrome measured room 
 });
 
 test('seven detail tabs keep to one row and scroll sideways, with no scrollbar to take their height', async () => {
-  const css = await legacyStyles();
-  const rules = rulesAt(css, 1440);
-  const list = (property) => declared(rules, (selector) => selector === '.agent-detail-tabs', property);
-  assert.notEqual(list('flex-wrap'), 'wrap', 'the seventh tab wraps to a second row');
-  assert.equal(list('overflow-x'), 'auto', 'tabs past the drawer edge are cut off');
-  assert.equal(list('scrollbar-width'), 'none', 'the row shows a scrollbar');
-  const hang = declared(rules, (selector) => selector === '.agent-detail-tabs button', 'margin-bottom') ?? '0';
-  assert.ok(!hang.startsWith('-'), `a tab hangs ${hang} below the row, so the row scrolls up and down by that much`);
+  const list = await readFile(resolve(root, 'src/ui/Tabs.tsx'), 'utf8');
+  const detail = await readFile(resolve(root, 'src/renderer/AgentDetail.tsx'), 'utf8');
+  const row = /<TabList[^>]*className="([^"]*)"/.exec(detail)?.[1].split(' ') ?? [];
+  const classes = (source, pattern) => /className=\{?cn\('([^']*)'/.exec(source.slice(source.search(pattern)))?.[1].split(' ') ?? [];
+  const base = classes(list, /data-ui="tab-list"/);
+  assert.ok(!base.includes('flex-wrap') && !row.includes('flex-wrap'), 'the seventh tab wraps to a second row');
+  assert.ok(base.includes('overflow-x-auto'), 'tabs past the drawer edge are cut off');
+  assert.ok(row.includes('[scrollbar-width:none]'), 'the row shows a scrollbar');
+  const tab = /<Tab [^>]*className="([^"]*)"/.exec(detail)?.[1].split(' ') ?? [];
+  assert.ok(tab.includes('mb-0'), 'a tab hangs below the row, so the row scrolls up and down by that much');
 });
 
 test('closing the drawer hands focus to the Crew row only while Crew is open and no view covers it', async () => {
@@ -448,8 +450,8 @@ test('the drawer opens only on a selection and hands focus to the target it is g
     floor, row, selectedId: row?.id ?? null, onClose() {}, leaveFocusTo: `crew-row-${ADA}`,
   }));
   const open = drawer(floor.agents.find((row) => row.id === ADA));
-  assert.match(open, new RegExp(`^<div class="agent-drawer" id="selected-agent-detail" data-focus-on-leave="crew-row-${ADA}">`));
-  assert.match(open, /<button type="button" id="selection-clear" class="drawer-close" aria-label="Close agent details" title="Close \(Escape\)" data-focus-on-leave="crew-row-[^"]+">×<\/button>/);
+  assert.match(open, new RegExp(`^<div class="agent-drawer[^"]*" id="selected-agent-detail" data-focus-on-leave="crew-row-${ADA}">`));
+  assert.match(open, /<button(?=[^>]*\bid="selection-clear")(?=[^>]*aria-label="Close agent details")(?=[^>]*title="Close \(Escape\)")(?=[^>]*data-focus-on-leave="crew-row-[^"]+")[^>]*>/);
   assert.match(open, new RegExp(`data-selected-agent-id="${ADA}"`));
   assert.equal(drawer(null), '');
 });

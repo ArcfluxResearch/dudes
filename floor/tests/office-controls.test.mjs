@@ -9,7 +9,6 @@ import { resolve } from 'node:path';
 import test, { after, before, mock } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { focusAnswer } from '../src/renderer/focus.ts';
@@ -17,6 +16,7 @@ import { showOverlay, turnKey, wheelZoom } from '../src/renderer/office3d/view.t
 import { followMode, officeModeOf } from '../src/renderer/scene/officeMode.ts';
 import { asksOpenQuestion } from '../src/renderer/scene/stations.ts';
 import { forgetLater } from '../src/renderer/useHeard.ts';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 const GRACE = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';

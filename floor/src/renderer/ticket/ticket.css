@@ -640,4 +640,9 @@
   .board-give { grid-template-columns: minmax(0, 1fr) auto; }
   .board-give label, .board-give input { grid-column: 1 / -1; }
 }
+
+/* Moved from the agent panel stylesheet. */
+.ticket-digest h4 { margin: 0 0 .3rem; }
+.ticket-digest p { margin: 0 0 .3rem; }
+.ticket-digest .ticket-digest-note { color: var(--muted-ink); font-size: inherit; }
 }

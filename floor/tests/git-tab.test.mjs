@@ -20,8 +20,8 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
@@ -368,7 +368,7 @@ test('the planted working directory is absent from the tab, and an absolute path
 });
 
 test('the tab exists only when the daemon sent the sibling', () => {
-  const tabs = (html) => [...html.matchAll(/role="tab" class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1]);
+  const tabs = (html) => [...html.matchAll(/role="tab"[^>]*class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1]);
   const detail = (git) => renderToStaticMarkup(createElement(AgentDetail, { row, git }));
   assert.deepEqual(tabs(detail(null)), ['Overview']);
   assert.deepEqual(tabs(detail(createElement('p', null, 'Git panel'))), ['Overview', 'Git']);
