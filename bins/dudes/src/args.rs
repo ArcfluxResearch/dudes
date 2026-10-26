@@ -243,6 +243,8 @@ pub enum MailCommand {
     Send(MailSend),
     /// Read the current inbox with validated bodies.
     Read,
+    /// List the current inbox without displaying bodies.
+    List,
     /// Move one delivered marker into the existing acknowledgement directory.
     Done(MailId),
 }
@@ -252,7 +254,7 @@ pub enum MailCommand {
 pub struct MailSend {
     pub(crate) route: MailRoute,
     pub(crate) act: dudes_proto::MailAct,
-    pub(crate) subject: String,
+    pub(crate) subject: Option<String>,
     pub(crate) body: Option<String>,
 }
 
@@ -1020,13 +1022,21 @@ USAGE
     dudes mail send --to <agent[,agent...]|@department|@all> --act message|request
               --subject <text> [--body <text>]
 
-    dudes mail send --reply-to <mail> --act message|request --subject <text> [--body <text>]
+    dudes mail send --reply-to <mail> --act message|request [--subject <text>] [--body <text>]
 
     dudes mail read [--unread]
 
+    dudes mail list [--unread]
+
     dudes mail done <mail>
-        Send, read or acknowledge mail in DUDES_MAILBOX without connecting to the
-        daemon. Reply with a delivered mail id. These commands print text only.
+        Send, read, list or acknowledge mail in DUDES_MAILBOX without connecting
+        to the daemon. Reply with a delivered mail id. A reply's default subject
+        is Re: followed by the original subject. A new conversation requires
+        --subject. If the original marker has gone, pass --subject explicitly.
+        Generated reply subjects may be shortened to fit the outgoing
+        byte limit. The daemon can still refuse a reply above its delivery limit.
+        Read shows bodies and a reply command for each request. List shows only
+        the current inbox's metadata. These commands print text only.
 ";
 
 const TAIL_HELP: &str = "\
@@ -1423,7 +1433,7 @@ fn mail(tail: &[OsString]) -> Result<MailCommand, ArgError> {
         "--help" | "-h" => Err(ArgError::HelpRequested),
         "--json" => Err(ArgError::TextOnly("mail")),
         "send" => mail_send(rest).map(MailCommand::Send),
-        "read" => {
+        "read" | "list" => {
             let mut unread = false;
             for flag in rest {
                 match flag.to_string_lossy().as_ref() {
@@ -1436,7 +1446,11 @@ fn mail(tail: &[OsString]) -> Result<MailCommand, ArgError> {
                     other => return Err(ArgError::UnknownFlag(other.to_owned())),
                 }
             }
-            Ok(MailCommand::Read)
+            Ok(if subcommand == "list" {
+                MailCommand::List
+            } else {
+                MailCommand::Read
+            })
         }
         "done" => {
             for flag in rest {
@@ -1557,10 +1571,15 @@ fn mail_send(tail: &[OsString]) -> Result<MailSend, ArgError> {
             _ => unreachable!(),
         }
     }
+    let route = required(route, "--to or --reply-to")?;
+    let act = required(act, "--act")?;
+    if matches!(route, MailRoute::To(_)) && subject.is_none() {
+        return Err(ArgError::Missing("--subject"));
+    }
     Ok(MailSend {
-        route: required(route, "--to or --reply-to")?,
-        act: required(act, "--act")?,
-        subject: required(subject, "--subject")?,
+        route,
+        act,
+        subject,
         body,
     })
 }
@@ -1602,7 +1621,7 @@ mod mail_tests {
             let Command::Mail(MailCommand::Send(send)) = invocation.command else {
                 panic!("mail send")
             };
-            assert_eq!(send.subject, value);
+            assert_eq!(send.subject.as_deref(), Some(value));
             assert_eq!(send.body.as_deref(), Some(value));
             assert!(!invocation.json);
         }

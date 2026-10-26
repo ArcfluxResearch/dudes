@@ -133,7 +133,7 @@ fn a_request_offers_a_ready_reply_but_a_message_does_not() {
     assert_eq!(request.code(), 0, "{}", request.output());
     assert!(request.stdout.contains("act request\n"));
     assert!(request.stdout.contains(&format!(
-        "dudes mail send --reply-to {id} --act message --body <text>"
+        "dudes mail send --reply-to {id} --act message --body 'Your reply'"
     )));
     marker["act"] = json!("message");
     mailbox.write(id, &marker);
@@ -212,6 +212,7 @@ fn a_reply_can_derive_its_subject_from_a_pending_or_acknowledged_parent() {
         ])
         .run();
     assert_eq!(missing.code(), 4, "{}", missing.output());
+    assert!(missing.stderr.contains("provide --subject explicitly"));
     assert_eq!(
         fs::read_dir(mailbox.path.join("outbox")).unwrap().count(),
         0
@@ -229,6 +230,20 @@ fn a_reply_can_derive_its_subject_from_a_pending_or_acknowledged_parent() {
         .run();
     assert_eq!(new_thread.code(), 1);
     assert!(new_thread.stderr.contains("--subject"));
+    let explicit = mailbox
+        .cli()
+        .args([
+            "mail",
+            "send",
+            "--reply-to",
+            &MailId::from_parts(1, 21).to_string(),
+            "--act",
+            "message",
+            "--subject",
+            "Chosen subject",
+        ])
+        .run();
+    assert_eq!(explicit.code(), 0, "{}", explicit.output());
 }
 
 fn round_trip(body: &str) {
@@ -256,7 +271,7 @@ fn round_trip(body: &str) {
             "--to",
             &recipient.to_string(),
             "--act",
-            "message",
+            "request",
             "--subject",
             "original",
             "--body",
@@ -300,8 +315,6 @@ fn round_trip(body: &str) {
             &id.to_string(),
             "--act",
             "message",
-            "--subject",
-            "reply",
             "--body",
             "answer",
         ])
@@ -315,12 +328,14 @@ fn round_trip(body: &str) {
             thread_seq,
             members: actual_members,
             body: Some(body),
+            subject,
             ..
         } if *from == recipient && *to == sender => {
             assert_eq!(*actual, thread);
             assert_eq!(*thread_seq, 2);
             assert_eq!(actual_members, &members);
             assert_eq!(body, "answer");
+            assert_eq!(subject, "Re: original");
             Some(())
         }
         _ => None,
@@ -336,6 +351,10 @@ fn read_delivered(destination: &Path, id: MailId, body: &str) {
     assert_eq!(read.code(), 0, "{}", read.output());
     assert!(read.stdout.contains(&format!("mail {id}")));
     assert!(read.stdout.contains("subject original"));
+    assert!(read.stdout.contains("act request\n"));
+    assert!(read.stdout.contains(&format!(
+        "dudes mail send --reply-to {id} --act message --body 'Your reply'"
+    )));
     assert!(read.stdout.contains(body));
     let unread = offline(destination)
         .args(["mail", "read", "--unread"])
