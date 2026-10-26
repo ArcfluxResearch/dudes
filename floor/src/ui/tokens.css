@@ -1,0 +1,88 @@
+/* The design tokens, drawn the way style.css draws its own: a day set on the bare root, and a night set that
+   follows the system unless the shell pins a theme. `--ui-surface` is the panel colour; the plain name is taken
+   by the older screens, which keep their own paper. */
+:root {
+  --bg: #f7f8f7;
+  --ui-surface: #ffffff;
+  --surface-2: #f1f4f3;
+  --border: #e1e6e4;
+  --border-strong: #c9d1ce;
+  --text: #16201d;
+  --text-muted: #5b6863;
+  --text-subtle: #7f8a86;
+  --accent: #1f6f66;
+  --accent-hover: #185b53;
+  --accent-fg: #ffffff;
+  --accent-soft: #e3f1ee;
+  --focus: #2a8a7f;
+  --ok: #2f7d4f;
+  --ok-soft: #e4f1e8;
+  --warn: #9a6d14;
+  --warn-soft: #f7eed8;
+  --danger: #b23b2e;
+  --danger-soft: #f9e4e0;
+  --info: #3b6aa0;
+  --info-soft: #e5edf7;
+  --input-bg: var(--ui-surface);
+  --shadow-1: 0 1px 2px rgb(22 32 29 / 6%);
+  --shadow-2: 0 4px 14px rgb(22 32 29 / 10%), 0 1px 3px rgb(22 32 29 / 8%);
+  --shadow-3: 0 16px 40px rgb(22 32 29 / 16%), 0 2px 8px rgb(22 32 29 / 8%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(:has(.shell[data-theme='light'])) {
+    --bg: #0f1312;
+    --ui-surface: #151a19;
+    --surface-2: #1b2120;
+    --border: #262e2c;
+    --border-strong: #36423e;
+    --text: #e6ecea;
+    --text-muted: #9ba9a4;
+    --text-subtle: #76837e;
+    --accent: #4fb3a6;
+    --accent-hover: #66c4b8;
+    --accent-fg: #0b1110;
+    --accent-soft: #163029;
+    --focus: #6fd0c3;
+    --ok: #5cbf83;
+    --ok-soft: #1a3326;
+    --warn: #e0ad4b;
+    --warn-soft: #3a2f16;
+    --danger: #ec7d6d;
+    --danger-soft: #3a1f1b;
+    --info: #7ea6d8;
+    --info-soft: #1c2836;
+    --input-bg: var(--surface-2);
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 30%);
+    --shadow-2: 0 4px 14px rgb(0 0 0 / 40%), 0 0 0 1px rgb(255 255 255 / 4%);
+    --shadow-3: 0 16px 40px rgb(0 0 0 / 55%), 0 0 0 1px rgb(255 255 255 / 5%);
+  }
+}
+
+:root:has(.shell[data-theme='dark']) {
+  --bg: #0f1312;
+  --ui-surface: #151a19;
+  --surface-2: #1b2120;
+  --border: #262e2c;
+  --border-strong: #36423e;
+  --text: #e6ecea;
+  --text-muted: #9ba9a4;
+  --text-subtle: #76837e;
+  --accent: #4fb3a6;
+  --accent-hover: #66c4b8;
+  --accent-fg: #0b1110;
+  --accent-soft: #163029;
+  --focus: #6fd0c3;
+  --ok: #5cbf83;
+  --ok-soft: #1a3326;
+  --warn: #e0ad4b;
+  --warn-soft: #3a2f16;
+  --danger: #ec7d6d;
+  --danger-soft: #3a1f1b;
+  --info: #7ea6d8;
+  --info-soft: #1c2836;
+  --input-bg: var(--surface-2);
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 30%);
+  --shadow-2: 0 4px 14px rgb(0 0 0 / 40%), 0 0 0 1px rgb(255 255 255 / 4%);
+  --shadow-3: 0 16px 40px rgb(0 0 0 / 55%), 0 0 0 1px rgb(255 255 255 / 5%);
+}

@@ -11,6 +11,7 @@ import { LinkRefused, currentFloorSession, establishFloorSession, reauthenticate
 import { WebFloorShell } from './shell';
 import { floorRequestsPaused } from './transport';
 import './style.css';
+import './ui/ui.css';
 
 /** The browser's own socket, beside the page that authenticated, on the browser's clock. */
 const BROWSER: StreamPorts = { location: window.location, socket: browserSocket };

@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const floorRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const allowed = new Set(['MIT', 'Apache-2.0', 'ISC', 'BSD-3-Clause', 'MPL-2.0']);
+const allowed = new Set(['MIT', 'Apache-2.0', 'ISC', 'BSD-3-Clause', 'MPL-2.0', 'OFL-1.1']);
 const direct = new Map([
   ['node_modules/@xterm/xterm', '6.0.0'],
   ['node_modules/react', '19.3.1'],
@@ -15,6 +15,11 @@ const direct = new Map([
   ['node_modules/@types/react', '19.3.0'],
   ['node_modules/@types/react-dom', '19.3.0'],
   ['node_modules/@types/three', '0.186.0'],
+  ['node_modules/tailwindcss', '4.3.3'],
+  ['node_modules/@tailwindcss/vite', '4.3.3'],
+  ['node_modules/lucide-react', '1.55.0'],
+  ['node_modules/@fontsource-variable/inter', '5.3.0'],
+  ['node_modules/@fontsource-variable/jetbrains-mono', '5.3.0'],
 ]);
 const forbidden = new Set(['node_modules/pixi.js', 'node_modules/zustand']);
 const mpl = new Set([

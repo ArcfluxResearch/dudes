@@ -1,0 +1,109 @@
+@import './tokens.css';
+/* No preflight: the older screens keep the browser's own element styles, so only the utilities are brought in. They
+   stay out of any cascade layer, so a utility on an element meets the older sheets by specificity and order. */
+@import 'tailwindcss/utilities.css' source(none);
+/* Only the files that use the utilities are read, so a word in an older screen's source never becomes a class. */
+@source './**/*.tsx';
+@source '../renderer/AgentDetail.tsx';
+@source '../renderer/AgentDrawer.tsx';
+@source '../renderer/LogPanel.tsx';
+@source '../renderer/control/ControlPanel.tsx';
+@source '../renderer/look/AccentChoice.tsx';
+@source '../renderer/look/LookEditor.tsx';
+@source '../renderer/model/ModelEditor.tsx';
+@source '../renderer/onboarding/HireWizard.tsx';
+@source '../renderer/rename/NameEditor.tsx';
+@source '../renderer/retire/RetirePanel.tsx';
+@source '../renderer/settings/SettingsView.tsx';
+@source '../renderer/terminal/TerminalPanel.tsx';
+@source '../renderer/ticket/TicketBoard.tsx';
+@source '../shell.tsx';
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2') format('woff2-variations');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2') format('woff2-variations');
+}
+
+/* Named for what they mean, so the class names carry no ARIA attribute name for a markup search to trip on. */
+@custom-variant waiting ([aria-disabled='true']);
+@custom-variant invalid ([aria-invalid='true']);
+@custom-variant current-step ([aria-current='step']);
+@custom-variant group-current-step (&:is(:where(.group)[aria-current='step'] *));
+
+@theme {
+  --spacing: 4px;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-caption: 11px;
+  --text-caption--line-height: 1.45;
+  --text-small: 12px;
+  --text-small--line-height: 1.45;
+  --text-base: 13px;
+  --text-base--line-height: 1.45;
+  --text-body: 14px;
+  --text-body--line-height: 1.55;
+  --text-title: 16px;
+  --text-title--line-height: 1.4;
+  --text-page: 20px;
+  --text-page--line-height: 1.3;
+  --text-display: 24px;
+  --text-display--line-height: 1.25;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-pill: 999px;
+  --default-transition-duration: 120ms;
+  --default-transition-timing-function: ease-out;
+  --animate-pop: pop 160ms ease-out;
+  @keyframes pop {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: none; }
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--ui-surface);
+  --color-surface-2: var(--surface-2);
+  --color-field: var(--input-bg);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-muted: var(--text-muted);
+  --color-subtle: var(--text-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-focus: var(--focus);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --shadow-card: var(--shadow-1);
+  --shadow-pop: var(--shadow-2);
+  --shadow-sheet: var(--shadow-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui, .ui *, .ui::backdrop {
+    transition: none !important;
+    animation: none !important;
+  }
+}
