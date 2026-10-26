@@ -112,7 +112,7 @@ export function MenuItem({ onSelect, danger = false, icon, children, className, 
       onSelect();
     }}
     className={cn('box-border flex h-8 w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-2 text-left font-sans text-base',
-      'transition-colors hover:bg-surface-2 focus-visible:bg-surface-2 waiting:cursor-not-allowed waiting:opacity-50',
+      'transition-[color,background-color,border-color,opacity] hover:bg-surface-2 focus-visible:bg-surface-2 waiting:cursor-not-allowed waiting:opacity-50',
       danger ? 'text-danger' : 'text-ink', RING_INSET, className)}>
     {icon}{children}
   </button>;

@@ -14,6 +14,9 @@ import { legacyFileNames } from './helpers/legacy-css.mjs';
 const floor = resolve(import.meta.dirname, '..');
 const LAYERS = '@layer legacy, theme, base, components, utilities;';
 const ENTRY = 'src/tailwind.css';
+/** The component lab's own entry only imports the Tailwind entry file and names the lab's folder as a class source. */
+const LAB = 'lab/lab.css';
+const LAB_TEXT = "@import '../src/tailwind.css';\n@source '.';\n";
 const THIRD_PARTY = new Map([['src/renderer/terminal/xterm.css', "@import '@xterm/xterm/css/xterm.css' layer(legacy);"]]);
 
 /**
@@ -58,12 +61,14 @@ const LEGACY = new Map([
   ['src/renderer/ticket/ticket.css', { blocks: 126, declarations: 385 }],
 ]);
 
-async function stylesheets(dir = resolve(floor, 'src')) {
+async function stylesheets(dirs = [resolve(floor, 'src'), resolve(floor, 'lab')]) {
   const found = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const path = resolve(dir, entry.name);
-    if (entry.isDirectory()) found.push(...await stylesheets(path));
-    else if (entry.name.endsWith('.css')) found.push(relative(floor, path));
+  for (const dir of dirs) {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = resolve(dir, entry.name);
+      if (entry.isDirectory()) found.push(...await stylesheets([path]));
+      else if (entry.name.endsWith('.css')) found.push(relative(floor, path));
+    }
   }
   return found.sort();
 }
@@ -98,7 +103,7 @@ function topLevel(text) {
 
 test('the stylesheets are the Tailwind entry file, the third-party wrapper and the listed older screens, and no others', async () => {
   const actual = await stylesheets();
-  const expected = [ENTRY, ...THIRD_PARTY.keys(), ...LEGACY.keys()].sort();
+  const expected = [ENTRY, LAB, ...THIRD_PARTY.keys(), ...LEGACY.keys()].sort();
   assert.deepEqual(actual, expected,
     'a new CSS file is not allowed: style with Tailwind utilities, and put a token or keyframe in src/tailwind.css. '
     + 'A deleted older file must also leave the LEGACY list in this test.');
@@ -122,6 +127,10 @@ test('every stylesheet starts with the one layer order, and its rules are inside
   const bad = [];
   for (const file of await stylesheets()) {
     const text = await readFile(resolve(floor, file), 'utf8');
+    if (file === LAB) {
+      if (text !== LAB_TEXT) bad.push(`${file}: it imports the entry file and names its folder, and holds nothing else`);
+      continue;
+    }
     const statements = topLevel(text);
     if (statements[0]?.head !== LAYERS) bad.push(`${file}: the first statement is not \`${LAYERS}\``);
     if (!bare(text).trimStart().startsWith(LAYERS)) bad.push(`${file}: something comes before the layer order`);

@@ -20,7 +20,7 @@ test('a width, a colour and a style of one border are different kinds and all st
   assert.equal(cn('border border-line', 'border-transparent'), 'border border-transparent');
 });
 
-test('the type scale, the radii and the shadows of the design are known to the merger', () => {
+test('the type scale, the radii and the shadows of the Floor are known to the merger', () => {
   assert.equal(cn('text-base text-ink', 'text-small'), 'text-ink text-small');
   assert.equal(cn('text-small text-muted', 'text-danger'), 'text-small text-danger');
   assert.equal(cn('text-body', 'text-caption'), 'text-caption');

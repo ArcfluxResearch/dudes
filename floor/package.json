@@ -13,7 +13,8 @@
     "build": "vite build && node scripts/write-release-manifest.mjs",
     "check:licenses": "node scripts/check-dependency-licenses.mjs",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:browser": "node browser/run.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",

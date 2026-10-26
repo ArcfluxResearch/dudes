@@ -143,12 +143,11 @@
   src: url('../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2') format('woff2-variations');
 }
 
-
 /* Named for what they mean, so a class string carries no ARIA attribute name for a markup search to trip on. */
-@custom-variant waiting ([aria-disabled='true']);
-@custom-variant invalid ([aria-invalid='true']);
-@custom-variant selected ([aria-selected='true']);
-@custom-variant on ([aria-checked='true']);
+@custom-variant waiting (&[aria-disabled='true']);
+@custom-variant invalid (&[aria-invalid='true']);
+@custom-variant selected (&[aria-selected='true']);
+@custom-variant on (&[aria-checked='true']);
 @custom-variant group-on (&:is(:where(.group)[aria-checked='true'] *));
 
 @theme static {

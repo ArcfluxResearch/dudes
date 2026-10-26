@@ -22,7 +22,7 @@ const SIZE: Readonly<Record<ButtonSize, { readonly text: string; readonly square
 const BASE = cn(
   'box-border m-0 inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border',
   'cursor-pointer font-sans text-base font-medium leading-none whitespace-nowrap no-underline select-none',
-  'transition-colors active:translate-y-px',
+  'transition-[color,background-color,border-color,opacity] active:translate-y-px',
   'disabled:cursor-not-allowed disabled:opacity-50 waiting:cursor-not-allowed waiting:opacity-50',
   RING,
 );
@@ -45,15 +45,23 @@ export type ButtonProps = Native & {
   readonly ref?: Ref<HTMLButtonElement>;
 };
 
-export function Button({ variant = 'secondary', size = 'md', icon, loading = false, children, className, type = 'button', onClick, ref, ...rest }: ButtonProps) {
-  const waiting = loading || rest['aria-disabled'] === true || rest['aria-disabled'] === 'true';
-  const press = (event: MouseEvent<HTMLButtonElement>) => {
+/** A press handler that does nothing while the button is waiting on an answer, so it can stay focusable instead of disabled. */
+export function whileIdle(waiting: boolean, onClick: ButtonProps['onClick']) {
+  return (event: MouseEvent<HTMLButtonElement>) => {
     if (waiting) event.preventDefault();
     else onClick?.(event);
   };
+}
+
+export function isWaiting(loading: boolean, ariaDisabled: ButtonProps['aria-disabled']): boolean {
+  return loading || ariaDisabled === true || ariaDisabled === 'true';
+}
+
+export function Button({ variant = 'secondary', size = 'md', icon, loading = false, children, className, type = 'button', onClick, ref, ...rest }: ButtonProps) {
+  const waiting = isWaiting(loading, rest['aria-disabled']);
   return (
     <button ref={ref} type={type} data-ui="button" data-variant={variant} data-size={size} data-loading={loading || undefined}
-      {...rest} aria-busy={loading || undefined} aria-disabled={waiting || undefined} onClick={press}
+      {...rest} aria-busy={loading || undefined} aria-disabled={waiting || undefined} onClick={whileIdle(waiting, onClick)}
       className={buttonClass(variant, size, false, className)}>
       {loading ? <LoaderCircle {...ICON} className="animate-spin" /> : icon}
       {children}

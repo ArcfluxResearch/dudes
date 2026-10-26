@@ -37,7 +37,7 @@ export function Switch({ checked, onCheckedChange, label, description, busy = fa
         onClick={() => { if (!busy) onCheckedChange(!checked); }}
         className={cn(
           'group relative mt-0.5 box-border inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-pill border-0 p-0.5',
-          'bg-line-strong transition-colors hover:bg-muted on:bg-accent on:hover:bg-accent-hover',
+          'bg-line-strong transition-[color,background-color,border-color,opacity] hover:bg-muted on:bg-accent on:hover:bg-accent-hover',
           'active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 waiting:cursor-progress waiting:opacity-70', RING)}>
         <span data-part="knob" className={cn(
           'pointer-events-none flex size-4 items-center justify-center rounded-pill bg-surface text-muted shadow-card',

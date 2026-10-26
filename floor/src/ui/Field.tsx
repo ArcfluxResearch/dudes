@@ -39,7 +39,7 @@ export function Field({ label, hint, error, id, className, children }: FieldProp
 /** The box every text control draws: edge, fill, hover, focus, invalid and disabled. */
 export const FIELD_BOX = cn(
   'box-border w-full rounded-md border border-line-strong bg-field px-3 font-sans text-base text-ink',
-  'placeholder:text-subtle transition-colors hover:border-muted invalid:border-danger',
+  'placeholder:text-subtle transition-[color,background-color,border-color,opacity] hover:border-muted invalid:border-danger',
   'focus-visible:border-focus disabled:cursor-not-allowed disabled:bg-surface-2 disabled:opacity-60',
   RING,
 );
