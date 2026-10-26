@@ -10,9 +10,9 @@ import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 import { ADA, GRACE, agent, subscribe, ticketCard } from './helpers/tickets.mjs';
 
 const root = resolve(import.meta.dirname, '..');
@@ -56,7 +56,7 @@ test('an idle agent with an accepted ticket shows it as Last finished and its Cu
   assert.match(html, /<h3>Current work<\/h3><\/div><p class="agent-overview-work-text">None<\/p>/);
   assert.match(html, /<section class="agent-overview-finished" aria-label="Last finished"><div class="agent-overview-section-head"><h3>Last finished<\/h3>/);
   assert.match(html, /<p class="agent-overview-work-text">Fix the parser<\/p><p class="agent-overview-finished-words">Done, accepted (13:41|1:41 PM)<\/p>/);
-  assert.match(html, /<span class="crew-chip" data-state="idle">Idle<\/span> <span class="agent-detail-state-text">Ready for a new task<\/span>/);
+  assert.match(html, /<span data-state="idle"><span aria-hidden="true"><\/span>Idle<\/span> <span class="agent-detail-state-text">Ready for a new task<\/span>/);
   assert.match(roster, /Last finished: Fix the parser/);
   assert.doesNotMatch(roster, /Nothing assigned/);
   const [need] = needs.needsOf(floor.agents, floor.cards);

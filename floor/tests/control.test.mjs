@@ -56,9 +56,9 @@ import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 import { loadStage } from './helpers/page.mjs';
 
 import { decodeSwitchSibling } from '../src/renderer/floor/sibling.ts';
@@ -302,7 +302,7 @@ test('Pause only while not paused; Resume only while paused and not halted; Stop
         drawn += buttons.length;
         for (const text of buttons) assert.doesNotMatch(text, /halt|restart/i, `${label}: a button names ${text}`);
         // A halt the Floor cannot lift is said, in a sentence and not on a control.
-        if (halted) assert.match(html, /<p class="hire-note control-halt-note">A halt from the command line stands on this agent\./, label);
+        if (halted) assert.match(html, /<p class="control-halt-note">A halt from the command line stands on this agent\./, label);
         else assert.doesNotMatch(html, /control-halt-note/, label);
       }
     }
@@ -616,8 +616,8 @@ test('503 offers a same-id retry and is never retried by itself', async () => {
   assert.equal(net.calls.length, 1, 'a 503 was retried by itself');
   const html = status();
   assert.match(html, /This page does not retry by itself/);
-  assert.match(html, /<button type="button" aria-disabled="false" aria-busy="false"[^>]*>Check status<\/button>/);
-  assert.match(strip(), /<button type="button" class="control-pause" aria-disabled="true"/);
+  assert.match(html, /<button type="button"(?![^>]*aria-(?:disabled|busy)="true")[^>]*>Check status<\/button>/);
+  assert.match(strip(), /<button(?=[^>]*class="control-pause")(?=[^>]*aria-disabled="true")/);
   await control.checkControlStatus(net);
   assert.equal(net.calls[1].url, net.calls[0].url);
   assert.equal(net.calls[1].init.body, net.calls[0].init.body);
@@ -692,20 +692,20 @@ test('both buttons are disabled while a request is pending, and a second press s
   const net = daemon(reply, APPLIED);
   const first = press(net, 'pause');
   assert.equal(control.getControlState().sending, true);
-  assert.match(strip(), /<button type="button" class="control-pause" aria-disabled="true" aria-busy="true"[^>]*>Sending…<\/button>/);
-  assert.match(strip(GRACE), /<button type="button" class="control-resume" aria-disabled="true"/);
+  assert.match(strip(), /<button(?=[^>]*class="control-pause")(?=[^>]*aria-disabled="true")(?=[^>]*aria-busy="true")[^>]*>(?:<svg[\s\S]*?<\/svg>)?Sending…<\/button>/);
+  assert.match(strip(GRACE), /<button(?=[^>]*class="control-resume")(?=[^>]*aria-disabled="true")/);
   // Waiting, never disabled: a disabled button drops the keyboard focus it holds.
   assert.doesNotMatch(strip() + strip(GRACE), /<button[^>]*\sdisabled=""/, 'a waiting slot is disabled');
   // The projection moves while the request is out: the Resume it now offers waits too.
   delta([agent({ paused: true, control_lsn: NEXT })], 10);
-  assert.match(strip(), /<button type="button" class="control-resume" aria-disabled="true"/);
+  assert.match(strip(), /<button(?=[^>]*class="control-resume")(?=[^>]*aria-disabled="true")/);
   await control.submitControl('resume', gate(), net);
   await control.submitControl('resume', gate(GRACE), net);
   assert.equal(net.calls.length, 1, 'a second request went out while the first was out');
   reply.release(APPLIED);
   await first;
   assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: '1099511628300' });
-  assert.match(strip(), /<button type="button" class="control-resume" aria-busy="false"/);
+  assert.match(strip(), /<button(?=[^>]*class="control-resume")(?![^>]*aria-busy="true")/);
 });
 
 test('after a reload the page sends nothing by itself, and request_id lived only in module memory', async () => {
@@ -821,22 +821,22 @@ test('a 200 holds the pressed verb until a delta moves its control position, and
   assert.deepEqual(control.getControlState().outcome, { kind: 'applied', controlLsn: '1099511628300' });
   // No delta yet: the row still names the position the request named, and still offers Pause.
   assert.equal(gate().offer, 'pause');
-  assert.match(strip(), /<button type="button" class="control-pause" aria-disabled="true"/,
+  assert.match(strip(), /<button(?=[^>]*class="control-pause")(?=[^>]*aria-disabled="true")/,
     'the pressed verb is offered again before the floor has shown the request');
-  assert.match(strip(), /<p class="hire-note">This pause was recorded, but the Floor has not shown it yet\.<\/p>/);
+  assert.match(strip(), /<p>This pause was recorded, but the Floor has not shown it yet\.<\/p>/);
   await control.submitControl('pause', gate(), net);
   assert.equal(net.calls.length, 1, 'a second press sent the same control position again');
-  assert.match(strip(), /class="control-pause"[^>]*data-focus-on-leave="control-status-title"/,
+  assert.match(strip(), /<button(?=[^>]*class="control-pause")(?=[^>]*data-focus-on-leave="control-status-title")/,
     'when the pressed slot flips, it does not hand the keyboard to its request’s heading');
   assert.match(status(), /<h3 id="control-status-title" tabindex="-1">/);
   assert.doesNotMatch(strip(GRACE), /aria-disabled/, 'another agent’s button is held by this request');
-  assert.match(strip(GRACE), /class="control-pause"[^>]*data-focus-on-leave="agent-detail-title"/,
+  assert.match(strip(GRACE), /<button(?=[^>]*class="control-pause")(?=[^>]*data-focus-on-leave="agent-detail-title")/,
     'a flip of another agent’s button hands the keyboard to this request’s heading');
   // The delta moves the position: the opposite verb is offered, and it is live.
   delta([agent({ paused: true, control_lsn: NEXT }), GRACE_ROW()], 10);
   assert.deepEqual(buttonsIn(strip()), ['Resume', 'Stop this turn']);
   assert.doesNotMatch(strip(), /aria-disabled/, 'the opposite verb still waits after the floor showed the request');
-  assert.match(strip(), /class="control-resume"[^>]*data-focus-on-leave="agent-detail-title"/,
+  assert.match(strip(), /<button(?=[^>]*class="control-resume")(?=[^>]*data-focus-on-leave="agent-detail-title")/,
     'a flip of a Resume this page never pressed hands the keyboard to an older request');
   await press(net, 'resume');
   assert.equal(net.calls.length, 2);
@@ -902,7 +902,7 @@ test('a 403 says what a press does next: an ended session keeps no settled reque
   assert.match(html, /data-control-session="live"/);
   assert.match(html, /Open Dudes to sign in again, then act again\./);
   for (const id of [ADA, GRACE]) {
-    assert.match(strip(id, net.generation), /class="control-pause" aria-disabled="true"/,
+    assert.match(strip(id, net.generation), /<button(?=[^>]*class="control-pause")(?=[^>]*aria-disabled="true")/,
       `${id}’s Pause is offered beside a request to paste a new link`);
   }
   assert.match(strip(ADA, net.generation),

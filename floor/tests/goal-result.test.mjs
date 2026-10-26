@@ -4,12 +4,12 @@ import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { goalResultOf } from '../src/renderer/goal/result.ts';
 import { applyServerFrame, beginFloorEpoch, getFloorState, noteStale, noteTransport,
   resetFloorStore } from '../src/renderer/floor/store.ts';
 import { selectedAgentRow } from '../src/renderer/scene/selection.ts';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 
 let server;
 let AgentDetail;
@@ -128,11 +128,11 @@ test('synthetic malformed results are unavailable rather than missing or a compl
 test('a result whose check could not run says so, shows its position and no provenance', () => {
   const notRun = { pass: false, provenance: 'observed', lsn: 1099511627779, not_run: true };
   assert.deepEqual(goalResultOf(goalOf(notRun)), { kind: 'not_run', position: 1099511627779 });
-  const html = renderResult(goalOf(notRun));
+  const html = renderResult(goalOf(notRun)).replace(/<svg[\s\S]*?<\/svg>/g, '');
   assert.equal(html, '<section aria-label="Latest completion check"><h3>Latest completion check</h3>'
     + '<p>Latest check could not run. Its program did not start, so this result says nothing about the task. '
     + 'The journal shows why (dudes tail).</p>'
-    + '<dl></dl><details><summary>Details</summary><dl><div><dt>Journal position</dt><dd class="data">segment 1 · byte 3</dd></div></dl></details></section>');
+    + '<dl></dl><details><summary>Details</summary><div><dl><div><dt>Journal position</dt><dd class="data">segment 1 · byte 3</dd></div></dl></div></details></section>');
   const detail = renderDetail(rowOf(goalOf(notRun)));
   assert.match(detail, /Latest check could not run/);
   assert.doesNotMatch(detail, /Who ran it|Latest check failed/);

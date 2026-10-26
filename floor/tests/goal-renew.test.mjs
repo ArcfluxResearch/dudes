@@ -20,11 +20,11 @@ import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { decodeGoalLimits } from '../src/renderer/goal/limits.ts';
 import { ATTEMPT_ID } from '../src/renderer/onboarding/hire.ts';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
@@ -275,7 +275,7 @@ test('the renewal form states what a new task gets, in the specified words, and 
   assert.doesNotMatch(html, /stays unchanged/);
   assert.match(html, /<label[^>]*>New task<\/label>/);
   assert.match(html, /<textarea[^>]*name="goal"[^>]*>ship the parser<\/textarea>/);
-  assert.match(html, /<button type="button" class="goal-send"[^>]*>Start a new task<\/button>/);
+  assert.match(html, /<button(?=[^>]*class="goal-send")[^>]*>Start a new task<\/button>/);
   assert.match(html, /data-renew-turns="3"/);
   assert.match(html, /data-renew-usd="1000000"/);
   assert.doesNotMatch(html, /Turns: exactly|Change task|data-renew-tokens/);

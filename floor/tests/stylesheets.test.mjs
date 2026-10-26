@@ -25,18 +25,12 @@ const THIRD_PARTY = new Map([['src/renderer/terminal/xterm.css', "@import '@xter
  * is lowered to the new count, so the set only ever gets smaller. The last lane deletes the legacy layer.
  */
 const LEGACY = new Map([
-  ['src/legacy/agent-actions.css', { blocks: 26, declarations: 66 }],
-  ['src/legacy/agent-detail.css', { blocks: 54, declarations: 168 }],
-  ['src/legacy/agent-panel.css', { blocks: 77, declarations: 175 }],
   ['src/legacy/base.css', { blocks: 9, declarations: 126 }],
   ['src/legacy/engine-sign-in.css', { blocks: 4, declarations: 7 }],
-  ['src/legacy/handoff.css', { blocks: 60, declarations: 143 }],
-  ['src/legacy/hire-entry.css', { blocks: 7, declarations: 25 }],
-  ['src/legacy/hire-wizard.css', { blocks: 29, declarations: 87 }],
-  ['src/legacy/other-screens.css', { blocks: 40, declarations: 97 }],
-  ['src/legacy/retire-terminal.css', { blocks: 28, declarations: 88 }],
+  ['src/legacy/handoff.css', { blocks: 45, declarations: 95 }],
+  ['src/legacy/hire-wizard.css', { blocks: 11, declarations: 42 }],
+  ['src/legacy/other-screens.css', { blocks: 37, declarations: 94 }],
   ['src/legacy/touch-and-phone.css', { blocks: 25, declarations: 68 }],
-  ['src/renderer/terminal/controls.css', { blocks: 5, declarations: 8 }],
 ]);
 
 async function stylesheets(dirs = [resolve(floor, 'src'), resolve(floor, 'lab')]) {

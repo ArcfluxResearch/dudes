@@ -156,9 +156,9 @@ test('ANSWER_BOX_SKIPPED mutant: the speech mark takes the keyboard to the answe
   const open = (answering) => renderToStaticMarkup(createElement(AgentDrawer, {
     floor: { ...floor, answering }, row, selectedId: ADA, onClose() {}, leaveFocusTo: 'crew-toggle' }));
   assert.match(open({ maxTextBytes: 4096 }),
-    /<section class="agent-detail-question" aria-label="Waiting question" tabindex="-1">[\s\S]*?<div class="agent-detail-answer"[^>]*>[\s\S]*?<textarea /);
+    /<section class="[^"]*\bagent-detail-question\b[^"]*" aria-label="Waiting question" tabindex="-1">[\s\S]*?<div class="[^"]*\bagent-detail-answer\b[^"]*"[^>]*>[\s\S]*?<textarea /);
   assert.doesNotMatch(open(null), /agent-detail-answer/);
-  assert.match(open(null), /<section class="agent-detail-question" aria-label="Waiting question" tabindex="-1"><h3>Waiting question<\/h3><p>Which timeout is right\?<\/p>/);
+  assert.match(open(null), /<section class="[^"]*\bagent-detail-question\b[^"]*" aria-label="Waiting question" tabindex="-1"><h3 class="[^"]*">Waiting question<\/h3><p class="[^"]*">Which timeout is right\?<\/p>/);
 });
 
 test('TURN_KEYS_SWAPPED and TURN_WITH_MODIFIER mutants: the arrow keys turn the view, a sixteenth of a turn a press', () => {

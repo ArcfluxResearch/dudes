@@ -43,9 +43,9 @@ import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 import { loadStage } from './helpers/page.mjs';
 
 import { decodeGoalLimits } from '../src/renderer/goal/limits.ts';
@@ -246,14 +246,14 @@ function center(row = rowOf()) {
 
 /** The Change task button as assistive technology reads it: [aria-disabled, aria-busy, label], or null. */
 function sendButton(html) {
-  const found = html.match(/<button type="button" class="goal-send"([^>]*)>([^<]*)<\/button>/);
+  const found = html.match(/<button(?=[^>]*class="goal-send")([^>]*)>(?:<svg[\s\S]*?<\/svg>)?([^<]*)<\/button>/);
   if (found === null) return null;
   const attribute = (name) => found[1].match(new RegExp(` ${name}="([^"]*)"`))?.[1] ?? null;
   return [attribute('aria-disabled'), attribute('aria-busy'), found[2]];
 }
 
-const LIVE = Object.freeze([null, 'false', 'Change task']);
-const HELD = Object.freeze(['true', 'false', 'Change task']);
+const LIVE = Object.freeze([null, null, 'Change task']);
+const HELD = Object.freeze(['true', null, 'Change task']);
 
 /** The continuation line of the status, as [kind, text]. */
 function continuation() {
@@ -380,8 +380,8 @@ test('while a turn runs the form cannot send, says so in the specified words, an
   assert.doesNotMatch(html, /<textarea[^>]*readonly/i, 'the draft cannot be written while the turn ends');
   // The same detail keeps Pause live and mounts the task draft inside Change.
   assert.match(html,
-    /<button type="button" class="control-pause"[^>]*>Pause<\/button>[\s\S]*?<section id="agent-detail-panel-overview"[^>]*>[\s\S]*?<details class="agent-overview-change"><summary>Change<\/summary><section class="agent-detail-goal"/);
-  assert.doesNotMatch(html.match(/<button type="button" class="control-pause"[^>]*>/)[0], /aria-disabled/);
+    /<button(?=[^>]*class="control-pause")[^>]*>Pause<\/button>[\s\S]*?<section id="agent-detail-panel-overview"[^>]*>[\s\S]*?<details class="agent-overview-change"><summary>(?:<svg[\s\S]*?<\/svg>)?Change<\/summary><div><section class="agent-detail-goal"/);
+  assert.doesNotMatch(html.match(/<button(?=[^>]*class="control-pause")[^>]*>/)[0], /aria-disabled/);
   const net = daemon(CHANGED);
   await goal.submitGoal(gate(), net);
   assert.equal(net.calls.length, 0, 'a change was sent while a turn runs');
@@ -567,9 +567,9 @@ test('each admission refusal explains why nothing was recorded', async () => {
 
 /** The task form's check choice, as [data-check-id, checked, label] per option, or null when none is drawn. */
 function goalChecks(html) {
-  const group = html.match(/<fieldset class="hire-choices" data-check-choice="goal">([\s\S]*?)<\/fieldset>/);
+  const group = html.match(/<fieldset data-check-choice="goal">([\s\S]*?)<\/fieldset>/);
   if (group === null) return null;
-  return [...group[1].matchAll(/<input( [^>]*)\/><span class="hire-choice-label">([^<]+)<\/span>/g)]
+  return [...group[1].matchAll(/<input( [^>]*)\/><span>([^<]+)<\/span>/g)]
     .map(([, attributes, label]) => [/ data-check-id="([^"]+)"/.exec(attributes)?.[1], / checked=""/.test(attributes),
       label]);
 }
@@ -579,13 +579,13 @@ const chosen = (html) => goalChecks(html).map(([id, checked]) => [id, checked]);
 test('the check choice offers Keep and then the agent’s workspace checks, with Keep chosen', () => {
   subscribe({ agents: [enrolled()], checks: CHECKS });
   const html = form();
-  assert.match(html, /<fieldset class="hire-choices" data-check-choice="goal"><legend>Completion check<\/legend>/);
+  assert.match(html, /<fieldset data-check-choice="goal"><legend>Completion check<\/legend>/);
   assert.deepEqual(goalChecks(html), [
     ['keep', true, 'Keep “Parser tests pass”'],
     ['default', false, 'Parser tests pass'],
     ['contributing', false, 'CONTRIBUTING.md exists (may already be true)'],
   ]);
-  assert.ok(html.includes('</fieldset><p class="hire-note">Changing the task runs the check once first. If it already '
+  assert.ok(html.includes('</fieldset><p>Changing the task runs the check once first. If it already '
     + 'passes, nothing changes.</p>'), 'the choice does not say the check runs once first');
   assert.doesNotMatch(html, /stays unchanged/);
 
@@ -788,7 +788,7 @@ test('Check status resends the identical body after a 503, a pending reply and a
   await new Promise((done) => setTimeout(done, 20));
   assert.equal(net.calls.length, 1, 'a 503 was retried by itself');
   assert.match(status(), /this page does not retry by itself/);
-  assert.match(status(), /<button type="button" aria-disabled="false" aria-busy="false"[^>]*>Check status<\/button>/);
+  assert.match(status(), /<button type="button"(?![^>]*aria-(?:disabled|busy)="true")[^>]*>Check status<\/button>/);
   assert.deepEqual(sendButton(form()), HELD, 'an unresolved request left Send live');
   await goal.submitGoal(gate(), net);
   assert.equal(net.calls.length, 1, 'a new request id was minted while one was unresolved');
@@ -853,7 +853,7 @@ test('a changed goal holds its own form until the projection moves the task, and
   subscribe({ agents: [agent(), GRACE_ROW()] });
   const net = daemon(CHANGED, CHANGED);
   await change(net);
-  assert.match(form(), /<p class="hire-note" role="status">Dudes saved this task change\. The page has not shown the new task yet\.<\/p>/);
+  assert.match(form(), /<p role="status">Dudes saved this task change\. The page has not shown the new task yet\.<\/p>/);
   assert.deepEqual(sendButton(form()), HELD);
   await change(net, 'ship it again');
   assert.equal(net.calls.length, 1, 'a second press named the replaced goal again');

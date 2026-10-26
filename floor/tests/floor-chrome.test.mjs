@@ -225,22 +225,23 @@ test('a ticket card puts its state above the title and the agent below it, in th
 });
 
 test('detail tab focus rings stay inside the scrolling row', async () => {
-  const css = await legacyStyles();
-  const rules = rulesAt(css, 1024);
-  const selector = '.agent-detail-tabs button:focus-visible';
-  assert.equal(declared(rules, rule => rule.split(',').map(part => part.trim()).includes(selector), 'outline-offset'), '-2px');
-  assert.match(declared(rules, rule => rule.split(',').map(part => part.trim()).includes(selector), 'outline'), /^2px solid /);
+  const tab = await readFile(resolve(root, 'src/ui/Tabs.tsx'), 'utf8');
+  const look = await readFile(resolve(root, 'src/ui/look.ts'), 'utf8');
+  assert.match(tab, /selected:text-ink', RING_INSET/, 'a tab draws its ring outside a row that clips');
+  assert.match(look, /RING_BASE = '[^']*focus-visible:outline-2 focus-visible:outline-solid /);
+  assert.match(look, /RING_INSET = cn\(RING_BASE, 'focus-visible:-outline-offset-2'\)/);
 });
 
 test('seven detail tabs keep to one row and scroll sideways, with no scrollbar to take their height', async () => {
-  const css = await legacyStyles();
-  const rules = rulesAt(css, 1440);
-  const list = (property) => declared(rules, (selector) => selector === '.agent-detail-tabs', property);
-  assert.notEqual(list('flex-wrap'), 'wrap', 'the seventh tab wraps to a second row');
-  assert.equal(list('overflow-x'), 'auto', 'tabs past the drawer edge are cut off');
-  assert.equal(list('scrollbar-width'), 'none', 'the row shows a scrollbar');
-  const hang = declared(rules, (selector) => selector === '.agent-detail-tabs button', 'margin-bottom') ?? '0';
-  assert.ok(!hang.startsWith('-'), `a tab hangs ${hang} below the row, so the row scrolls up and down by that much`);
+  const list = await readFile(resolve(root, 'src/ui/Tabs.tsx'), 'utf8');
+  const detail = await readFile(resolve(root, 'src/renderer/AgentDetail.tsx'), 'utf8');
+  const row = /<TabList[^>]*className="([^"]*)"/.exec(detail)?.[1].split(' ') ?? [];
+  const base = /className=\{?cn\('([^']*)'/.exec(list.slice(list.search(/data-ui="tab-list"/)))?.[1].split(' ') ?? [];
+  assert.ok(!base.includes('flex-wrap') && !row.includes('flex-wrap'), 'the seventh tab wraps to a second row');
+  assert.ok(base.includes('overflow-x-auto'), 'tabs past the drawer edge are cut off');
+  assert.ok(row.includes('[scrollbar-width:none]'), 'the row shows a scrollbar');
+  const tab = /<Tab [^>]*className="([^"]*)"/.exec(detail)?.[1].split(' ') ?? [];
+  assert.ok(tab.includes('mb-0'), 'a tab hangs below the row, so the row scrolls up and down by that much');
 });
 
 test('closing the drawer hands focus to the Crew row only while Crew is open and no view covers it', async () => {

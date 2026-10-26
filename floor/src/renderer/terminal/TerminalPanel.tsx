@@ -8,14 +8,17 @@
 // and the only input this file hands on is what the screen received from the
 // operator. With the terminal off, it explains how to turn it on.
 
+import { Terminal as TerminalIcon } from 'lucide-react';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { RefObject } from 'react';
 
 import { currentFloorSession } from '../../session.ts';
+import { Button, Dialog, ICON, Textarea, cn } from '../../ui/index.ts';
 import type { FloorState } from '../floor/store.ts';
 import { browserSocket } from '../floor/stream.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from '../focus.ts';
 import { UnavailableControls } from '../settings/SettingsView.tsx';
+import { NOTE, ACTIONS, KICKER as KICKER_TEXT } from '../receipt.ts';
 import { RetireStrip, openConfirmation } from '../retire/RetirePanel.tsx';
 import type { AgentRow } from '../scene/cast.ts';
 import type { Terminal } from './grid.ts';
@@ -24,7 +27,6 @@ import {
   writeFontSize, zoomFontSize,
 } from './controls.ts';
 import type { CopyResult, TerminalCommand, TerminalPlatform } from './controls.ts';
-import './controls.css';
 import {
   LEAVE_KEY, abandonTerminal, attachTerminal, bindTerminalScreen, detachTerminal, dismissTerminal,
   getTerminalState, leavesTerminal, subscribeToTerminal, terminalOffer, writeTerminal,
@@ -62,16 +64,18 @@ export function AttachConfirmation({ name, onConfirm, onCancel }: {
   readonly name: string; readonly onConfirm: () => void; readonly onCancel: () => void;
 }) {
   return (
-    <dialog ref={openConfirmation} className="retire-dialog" data-attach-dialog
+    <Dialog ref={openConfirmation} size="sm" className="retire-dialog" data-attach-dialog
       aria-labelledby="attach-dialog-title" aria-describedby="attach-dialog-text" onCancel={onCancel}>
-      <h2 id="attach-dialog-title">{`Attach to ${name}?`}</h2>
-      <p id="attach-dialog-text">{TRUST_WARNING}</p>
-      <div className="retire-actions">
-        <button type="button" className="terminal-attach-confirm"
-          onClick={(event) => { if (event.detail < 2) onConfirm(); }}>Attach</button>
-        <button type="button" className="retire-cancel" onClick={onCancel}>Cancel</button>
+      <div className="grid gap-4 p-6">
+        <h2 id="attach-dialog-title" className="m-0 font-sans text-title font-semibold text-ink">{`Attach to ${name}?`}</h2>
+        <p id="attach-dialog-text" className="m-0 text-body text-muted">{TRUST_WARNING}</p>
+        <div className={cn('retire-actions justify-end', ACTIONS)}>
+          <Button className="retire-cancel" onClick={onCancel}>Cancel</Button>
+          <Button variant="primary" className="terminal-attach-confirm"
+            onClick={(event) => { if (event.detail < 2) onConfirm(); }}>Attach</Button>
+        </div>
       </div>
-    </dialog>
+    </Dialog>
   );
 }
 
@@ -99,14 +103,14 @@ export function TerminalAttachView({ floor, offer }: { readonly floor: FloorStat
   const hint = offer.kind === 'attach' ? ATTACH_HINT : whyNoAttach(floor, offer);
   const claudeTrust = target !== null && floor.agents.find((row) => row.id === target)?.provider === 'claude';
   return (
-    <div className="agent-detail-terminal" data-terminal-offer={offer.kind}>
-      <button type="button" className="terminal-attach" title={hint} aria-describedby="terminal-hint"
+    <div className="agent-detail-terminal flex flex-wrap items-center gap-x-3 gap-y-1" data-terminal-offer={offer.kind}>
+      <Button className="terminal-attach" title={hint} aria-describedby="terminal-hint" icon={<TerminalIcon {...ICON} />}
         aria-haspopup={claudeTrust ? 'dialog' : undefined} aria-disabled={target === null || undefined}
-        onClick={() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }}>Open the real CLI</button>
+        onClick={() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }}>Open the real CLI</Button>
       {confirming && target !== null && claudeTrust ? <AttachConfirmation name={nameOf(floor, target)}
         onCancel={() => setConfirming(false)}
         onConfirm={() => { setConfirming(false); attachTerminal(target, browserTerminalPorts()); }} /> : null}
-      <span className={offer.kind === 'unavailable' && offer.reason === 'engine' ? 'agent-attach-note' : 'visually-hidden'} id="terminal-hint">{hint}</span>
+      <span className={offer.kind === 'unavailable' && offer.reason === 'engine' ? 'agent-attach-note text-small text-muted' : 'visually-hidden'} id="terminal-hint">{hint}</span>
     </div>
   );
 }
@@ -206,15 +210,15 @@ export function TerminalPanelView({ channel, floor, theme = 'light' }: {
   const failed = ended && channel.ending !== 'detached';
   const detaching = channel.phase === 'detaching';
   return (
-    <section className="terminal-panel" aria-labelledby="terminal-title" data-terminal-agent-id={channel.agent}
+    <section className="terminal-panel relative z-(--layer-terminal) box-border flex min-h-0 flex-1 flex-col gap-3 rounded-lg border border-line bg-surface p-3 font-sans text-ink" aria-labelledby="terminal-title" data-terminal-agent-id={channel.agent}
       data-terminal-phase={channel.phase} data-terminal-ending={ended ? channel.ending : undefined}
       data-terminal-expanded={expanded ? 'true' : 'false'}>
-      <header className="terminal-head">
+      <header className="terminal-head flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div>
-          <p className="agent-detail-kicker">Terminal</p>
-          <h2 id="terminal-title">{nameOf(floor, channel.agent)}</h2>
+          <p className={cn('agent-detail-kicker m-0', KICKER_TEXT)}>Terminal</p>
+          <h2 id="terminal-title" className="m-0 text-title font-semibold">{nameOf(floor, channel.agent)}</h2>
         </div>
-        <div ref={actions} className="terminal-actions" onKeyDown={(event) => {
+        <div ref={actions} className="terminal-actions flex flex-wrap items-center gap-1.5" onKeyDown={(event) => {
           if (expanded && event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
             const buttons = actions.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
             if (event.shiftKey && event.target === buttons?.[0]) {
@@ -237,43 +241,44 @@ export function TerminalPanelView({ channel, floor, theme = 'light' }: {
           event.stopPropagation();
           command(action);
         }}>
-          <button type="button" aria-label="Zoom out" aria-keyshortcuts={`${modifier}+-`}
+          <Button size="sm" aria-label="Zoom out" aria-keyshortcuts={`${modifier}+-`}
             aria-disabled={fontSize <= MIN_FONT_SIZE || undefined}
             title={fontSize <= MIN_FONT_SIZE ? `Minimum zoom is ${MIN_FONT_SIZE}px.` : undefined}
-            aria-description={fontSize <= MIN_FONT_SIZE ? `Minimum zoom is ${MIN_FONT_SIZE}px.` : undefined} onClick={() => command('zoom-out')}>−</button>
-          <button type="button" aria-label="Reset terminal zoom" aria-keyshortcuts={`${modifier}+0`}
-            onClick={() => command('zoom-reset')}>{fontSize}px</button>
-          <button type="button" aria-label="Zoom in" aria-keyshortcuts={`${modifier}+=`}
+            aria-description={fontSize <= MIN_FONT_SIZE ? `Minimum zoom is ${MIN_FONT_SIZE}px.` : undefined} onClick={() => command('zoom-out')}>−</Button>
+          <Button size="sm" aria-label="Reset terminal zoom" aria-keyshortcuts={`${modifier}+0`}
+            onClick={() => command('zoom-reset')}>{fontSize}px</Button>
+          <Button size="sm" aria-label="Zoom in" aria-keyshortcuts={`${modifier}+=`}
             aria-disabled={fontSize >= MAX_FONT_SIZE || undefined}
             title={fontSize >= MAX_FONT_SIZE ? `Maximum zoom is ${MAX_FONT_SIZE}px.` : undefined}
-            aria-description={fontSize >= MAX_FONT_SIZE ? `Maximum zoom is ${MAX_FONT_SIZE}px.` : undefined} onClick={() => command('zoom-in')}>+</button>
-          <button type="button" aria-label="Copy selection" aria-keyshortcuts={`${modifier}+C`}
-            onClick={() => command('copy')}>Copy</button>
-          <button type="button" aria-expanded={expanded} onClick={() => command('expand')}>
-            {expanded ? 'Restore' : 'Expand'}</button>
+            aria-description={fontSize >= MAX_FONT_SIZE ? `Maximum zoom is ${MAX_FONT_SIZE}px.` : undefined} onClick={() => command('zoom-in')}>+</Button>
+          <Button size="sm" aria-label="Copy selection" aria-keyshortcuts={`${modifier}+C`}
+            onClick={() => command('copy')}>Copy</Button>
+          <Button size="sm" aria-expanded={expanded} onClick={() => command('expand')}>
+            {expanded ? 'Restore' : 'Expand'}</Button>
           {channel.phase === 'attached' || detaching ? (
-            <button type="button" className="terminal-detach" aria-disabled={detaching || undefined}
-              aria-busy={detaching} aria-describedby={detaching ? 'terminal-status' : undefined} onClick={detachTerminal}>{detaching ? 'Detaching…' : 'Detach'}</button>
+            <Button size="sm" className="terminal-detach" aria-disabled={detaching || undefined}
+              loading={detaching} aria-describedby={detaching ? 'terminal-status' : undefined} onClick={detachTerminal}>{detaching ? 'Detaching…' : 'Detach'}</Button>
           ) : null}
           {ended ? (
-            <button ref={handFocusOnLeave} type="button" className="terminal-close"
-              data-focus-on-leave={AGENT_DETAIL_HEADING_ID} onClick={dismissTerminal}>Close</button>
+            <Button ref={handFocusOnLeave} size="sm" variant="primary" className="terminal-close"
+              data-focus-on-leave={AGENT_DETAIL_HEADING_ID} onClick={dismissTerminal}>Close</Button>
           ) : null}
           <RetireStrip floor={floor} row={floor.agents.find((row) => row.id === channel.agent) ?? null} />
         </div>
       </header>
-      <p className={`terminal-state${ended ? ' terminal-ended' : ''}${failed ? ' terminal-failed' : ''}`}
+      <p className={cn('terminal-state m-0 rounded-md px-3 py-2 text-base text-ink',
+        ended && 'terminal-ended bg-ok-soft font-medium', failed && 'terminal-failed bg-danger-soft')}
         id="terminal-status" role={failed ? 'alert' : 'status'}>
         {statusOf(channel, floor)}
       </p>
-      <p className="hire-note terminal-keys">{KEYS_HINT}</p>
-      <p className="hire-note terminal-shortcuts">{shortcuts}</p>
-      {copy === null ? null : <div className="terminal-copy-result">
-        <p role="status">{copy.kind === 'copied' ? 'Selection copied.'
+      <p className={cn('terminal-keys', NOTE)}>{KEYS_HINT}</p>
+      <p className={cn('terminal-shortcuts', NOTE)}>{shortcuts}</p>
+      {copy === null ? null : <div className="terminal-copy-result grid gap-2">
+        <p role="status" className="m-0 text-base">{copy.kind === 'copied' ? 'Selection copied.'
           : copy.kind === 'empty' ? 'Select terminal text before copying.'
             : 'The browser refused clipboard access. Select the text below and use your browser’s Copy command.'}</p>
-        {copy.kind === 'refused' ? <textarea readOnly aria-label="Terminal selection to copy"
-          value={copy.selection} onFocus={(event) => event.currentTarget.select()} /> : null}
+        {copy.kind === 'refused' ? <Textarea readOnly aria-label="Terminal selection to copy"
+          value={copy.selection} className="max-h-20" onFocus={(event) => event.currentTarget.select()} /> : null}
       </div>}
       <TerminalScreen phase={channel.phase} leaveTo={actions} theme={theme} screen={screen}
         fontSize={fontSize} platform={platform} onCommand={command} />
@@ -391,5 +396,5 @@ function TerminalScreen({ phase, leaveTo, theme, screen, fontSize, platform, onC
     }
   }, [theme]);
 
-  return <div ref={host} className="terminal-screen" />;
+  return <div ref={host} className="terminal-screen min-h-0 flex-1 overflow-hidden rounded-md bg-(--terminal-background)" />;
 }

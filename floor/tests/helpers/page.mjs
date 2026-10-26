@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { Fragment, createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
+
+import { renderToStaticMarkup } from './markup.mjs';
 
 /**
  * The stage beside the office as the shell draws it: an open Control view or the Overview dialog, the

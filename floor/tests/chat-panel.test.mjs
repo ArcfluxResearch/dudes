@@ -7,7 +7,6 @@ import test, { after, before } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const A = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const B = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
@@ -67,8 +66,8 @@ test('a fresh drawer defaults to Chat while explicit preferences and Chat-off fa
   assert.equal(readDetailTab(storage, 'overview'), 'overview', 'and to Overview where Chat is unavailable');
   const draw = chat => renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(chat), row,
     selectedId: A, onClose() {}, leaveFocusTo: 'crew-toggle' }));
-  assert.match(draw(view()), /id="agent-detail-tab-chat"[^>]*aria-selected="true"/);
-  assert.match(draw(null), /id="agent-detail-tab-overview"[^>]*aria-selected="true"/);
+  assert.match(draw(view()), /<button(?=[^>]*\bid="agent-detail-tab-chat")(?=[^>]*aria-selected="true")[^>]*>/);
+  assert.match(draw(null), /<button(?=[^>]*\bid="agent-detail-tab-overview")(?=[^>]*aria-selected="true")[^>]*>/);
 });
 
 test('reserved preparation stays cancellable and uncertain cancellation names its narrow promise', () => {
@@ -106,10 +105,11 @@ test('the composer follows the thread while the conversation fills and scrolls t
   assert.ok(html.indexOf('aria-labelledby="chat-thread-title"') < html.indexOf('aria-labelledby="chat-compose-title"'));
   assert.ok(html.indexOf('Conversation details</summary>') < html.indexOf('aria-labelledby="chat-compose-title"'));
   assert.match(html, /class="[^"]*\bchat-scroll\b[^"]*" role="log"/);
-  const css = await legacyStyles();
-  const rule = selector => css.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]+)\\}`))?.[1] ?? '';
-  assert.match(rule(".agent-drawer:has(.agent-detail[data-detail-tab='chat'])"), /overflow: clip/);
-  assert.match(rule('#agent-detail-panel-chat'), /flex: 1 1 auto; min-height: 0/);
+  const sheet = renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(), row, selectedId: A, onClose() {}, leaveFocusTo: 'crew-toggle' }));
+  const on = (markup, hook) => markup.match(new RegExp(`class="((?:[^"]*\\s)?${hook}(?:\\s[^"]*)?)"`))?.[1].replaceAll('&amp;', '&').split(/\s+/) ?? [];
+  for (const utility of ['flex', 'flex-col', 'overflow-hidden']) assert.ok(on(sheet, 'agent-drawer').includes(utility), `the drawer lacks ${utility}`);
+  for (const utility of ['flex', 'flex-1', 'flex-col', 'min-h-0']) assert.ok(on(sheet, 'agent-detail').includes(utility), `the detail lacks ${utility}`);
+  for (const utility of ['flex-1', 'min-h-0', 'overflow-y-auto']) assert.ok(/tabpanel" class="([^"]*)"/.exec(sheet)?.[1].split(/\s+/).includes(utility), `a panel lacks ${utility}`);
   const wears = hook => html.match(new RegExp(`class="([^"]*\\b${hook}\\b[^"]*)"`))?.[1].split(/\s+/) ?? [];
   assert.ok(wears('chat-thread').includes('flex-1'));
   for (const utility of ['flex-1', 'min-h-0', 'overflow-y-auto']) assert.ok(wears('chat-scroll').includes(utility), utility);
@@ -157,13 +157,12 @@ test('the Chat sheet follows the visible viewport while a phone keyboard opens a
 test('a short Chat sheet reserves its composer and lets the header and tabs scroll under notices', async () => {
   const html = renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(), row, selectedId: A,
     onClose() {}, leaveFocusTo: 'crew-toggle' }));
-  assert.match(html, /class="agent-detail-context">[\s\S]*<header class="agent-detail-head">[\s\S]*class="agent-detail-tabs"/);
-  const css = await legacyStyles();
-  assert.match(css, /\.agent-detail-context \{ display: contents; \}/);
-  assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] \{[^}]*grid-template-rows: minmax\(0, auto\) minmax\(0, 1fr\) auto auto/);
-  assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] > \.agent-detail-context \{[^}]*overflow-y: auto/);
-  assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] \.chat-panel \{ display: contents/);
-  assert.match(css, /\[data-chat-short='true'\] \.chat-compose \{ grid-row: 4/);
+  assert.match(html, /class="[^"]*\bagent-detail-context\b[^"]*">[\s\S]*<header class="[^"]*\bagent-detail-head\b[^"]*">[\s\S]*\bagent-detail-tabs\b/);
+  const context = /class="((?:[^"]*\s)?agent-detail-context(?:\s[^"]*)?)"/.exec(html)?.[1].replaceAll('&amp;', '&').split(/\s+/) ?? [];
+  assert.ok(context.includes('overflow-y-auto'), 'the header and tabs scroll');
+  assert.ok(context.includes('[[data-chat-short=true]_&]:max-h-[30%]'), 'a short sheet gives the header less of the height');
+  assert.ok(context.includes('flex-none'), 'the header keeps its own height');
+  assert.match(html, /\bchat-compose\b/);
 });
 
 test('resizing the thread follows the newest reply unless the reader has scrolled away', async () => {
@@ -552,7 +551,7 @@ test('context loss displays the refused message separately from the newer draft 
   chatModule.resetChat();
 });
 
-const tabNames = html => [...html.matchAll(/role="tab" class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map(match => match[1]);
+const tabNames = html => [...html.matchAll(/role="tab"[^>]*class="[^"]*\bagent-detail-tab\b[^"]*"[^>]*>([^<]+)<\/button>/g)].map(match => match[1]);
 
 test('after a chat message the drawer tabs are Overview, Chat, Git and Memory and never Output', () => {
   const output = { ...liveReply('Provisional assistant text'), chunks: ['Raw engine text'] };

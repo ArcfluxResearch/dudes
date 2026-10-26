@@ -10,8 +10,8 @@ import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 
 import {
   MAX_CHUNK_BYTES, abandonTerminal, attachTerminal, bindTerminalScreen, detachTerminal, dismissTerminal, fitGrid,
@@ -364,7 +364,7 @@ after(async () => {
 
 const panel = (channel, floor) => renderToStaticMarkup(createElement(TerminalPanelView, { channel, floor }));
 const status = (html) => /<p class="terminal-state[^"]*"[^>]* role="(?:status|alert)">([^<]*)<\/p>/.exec(html)?.[1];
-const buttons = (html) => [...html.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label)
+const buttons = (html) => [...html.replace(/<svg[\s\S]*?<\/svg>/g, '').matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label)
   .filter((label) => ['Detach', 'Detaching…', 'Close'].includes(label));
 
 test('Attach carries its explanation as a tooltip and description, and a disabled Attach says why', () => {
@@ -402,7 +402,7 @@ test('Claude Attach shows the workspace trust warning in a confirmation before o
   const view = (agent) => renderToStaticMarkup(createElement(TerminalAttachView, { floor, offer: { kind: 'attach', agent } }));
   const claude = view(ADA);
   assert.doesNotMatch(claude, /trust this folder/);
-  assert.match(claude, /<button type="button" class="terminal-attach" title="[^"]*" aria-describedby="terminal-hint" aria-haspopup="dialog">Open the real CLI<\/button>/);
+  assert.match(claude, /<button type="button" class="terminal-attach" title="[^"]*" aria-describedby="terminal-hint" aria-haspopup="dialog">(?:<svg[\s\S]*?<\/svg>)?Open the real CLI<\/button>/);
   assert.doesNotMatch(view(GRACE), /aria-haspopup/);
   const dialog = renderToStaticMarkup(createElement(AttachConfirmation, { name: 'Ada', onConfirm() {}, onCancel() {} }));
   assert.match(dialog, /Claude Code may ask you to trust this folder/);
@@ -424,7 +424,7 @@ test('the panel offers Detach only while attached, and Close only once ended', (
     'What you type goes to this agent’s CLI. Automatic work waits until you detach.');
   // The way out of the grid is on screen in every phase, the ended one included.
   for (const channel of [open('attached'), { ...open('ended'), ending: 'lost' }]) {
-    assert.match(panel(channel, floor), /<p class="hire-note terminal-keys">Tab and Shift\+Tab go to the CLI\. Press Ctrl\+\] to move the keyboard from the terminal to this panel’s button\.<\/p>/);
+    assert.match(panel(channel, floor), /<p class="terminal-keys">Tab and Shift\+Tab go to the CLI\. Press Ctrl\+\] to move the keyboard from the terminal to this panel’s button\.<\/p>/);
   }
 });
 
