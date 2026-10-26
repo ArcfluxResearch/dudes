@@ -158,7 +158,7 @@ export function AgentDetail({
         {selection}
         <section className="agent-detail-state flex flex-wrap items-center gap-x-3 gap-y-2" aria-label="State" data-state={need.state}>
           <p className="agent-detail-state-line m-0 flex min-w-48 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-body"><Badge state={need.state} />
-            {' '}<span className="agent-detail-state-text text-ink">{sentence}</span></p>
+            {' '}<span className="agent-detail-state-text min-w-0 text-ink [overflow-wrap:anywhere]">{sentence}</span></p>
           <div className="agent-detail-primary flex flex-wrap items-center gap-2 empty:hidden">
             {act(need.action)}
             {need.second === null ? null : act(need.second)}
