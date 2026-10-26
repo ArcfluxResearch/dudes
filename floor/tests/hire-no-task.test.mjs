@@ -130,7 +130,7 @@ test('a first hire requires a name, leaves multiple engines to choose, and sends
   hire.prepareHire(both);
   assert.equal(hire.getHireState().draft.workspaceId, 'repo_1');
   assert.equal(hire.getHireState().draft.engine, undefined, 'multiple engines need a choice');
-  assert.match(render(both), /data-hire-action="next" aria-disabled="true"/);
+  assert.match(render(both), /data-hire-action="next"[^>]*aria-disabled="true"/);
   hire.moveSection(1, both);
   assert.equal(hire.getHireState().section, 'identity');
   hire.showSection('engine', both);

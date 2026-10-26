@@ -240,7 +240,7 @@ const wizard = () => renderToStaticMarkup(createElement(HireWizardView, {
   hire: hire.getHireState(), floor: getFloorState(), onClose() {},
 }));
 
-const NEXT_DISABLED = /data-hire-action="next" aria-disabled="true"[^>]*>Next<\/button>/;
+const NEXT_DISABLED = /data-hire-action="next"[^>]*aria-disabled="true"[^>]*>Next<\/button>/;
 const HIRE_DISABLED = /data-hire-action="submit" aria-disabled="true"/;
 const HIRE_OFFERED = /data-hire-action="submit"/;
 

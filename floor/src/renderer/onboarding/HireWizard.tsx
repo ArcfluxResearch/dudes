@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 
 import { accessoryOf, lookOf } from '../appearance.ts';
 import { Portrait } from '../Portrait.tsx';
-import { Button, Choice, Disclosure, Field, Input, Notice, Select, Textarea, cn } from '../../ui/index.ts';
+import { Button, Choice, Disclosure, Field, Input, Notice, Select, Textarea, buttonClass, cn } from '../../ui/index.ts';
 import { AccentChoice, CHARACTER_OPTIONS } from '../look/LookFields.tsx';
 
 import { handFocusOnLeave } from '../focus.ts';
@@ -394,6 +394,7 @@ function HireForm({ hire, floor, onClose, onSettings }: {
         </div>
       </div>
       <Reconciliation floor={floor} />
+      {/* Next is a plain button: a Button ignores presses while it is aria-disabled, and an incomplete step must still say what is missing when pressed. */}
       <Actions>
         <Button ref={handFocusOnLeave} data-focus-on-leave="hire-open"
           onClick={onClose}>Cancel</Button>
@@ -405,9 +406,9 @@ function HireForm({ hire, floor, onClose, onSettings }: {
             onClick={() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }}>
             {hire.sending ? 'Hiring…' : 'Hire'}
           </Button>
-          : <Button variant="primary" data-hire-action="next" aria-disabled={frozen || stuck
+          : <button type="button" data-hire-action="next" className={buttonClass('primary', 'md', false)} aria-disabled={frozen || stuck
             || stepProblems.some((problem) => problem.section === hire.section)}
-            onClick={() => { if (!frozen && !stuck) moveSection(1, floor); }}>Next</Button>}
+            onClick={() => { if (!frozen && !stuck) moveSection(1, floor); }}>Next</button>}
       </Actions>
       {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <div className="px-6 pb-4 max-[640px]:px-4"><NoHireProjectHint floor={floor} /></div>)
         : blocked === null || stuck ? null : <p className={cn(NOTE, 'px-6 pb-4 max-[640px]:px-4')} role="status">{blocked}</p>}
