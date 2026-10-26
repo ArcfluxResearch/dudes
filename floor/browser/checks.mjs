@@ -317,8 +317,8 @@ export function checks({ page, cdp, log }) {
         if (stop.style !== 'solid' || parseFloat(stop.width) < 2 || stop.colour !== focus) bad.push(`${stop.kind} "${stop.label}": ${stop.style} ${stop.width} ${stop.colour}`);
       }
       assert.deepEqual(bad, []);
-      assert.deepEqual([...seen].sort(), ['button', 'disclosure', 'icon-button', 'input', 'menu-button', 'select', 'switch', 'tab', 'textarea'],
-        'the walk reached a button, icon button, input, textarea, select, menu button, switch, tab and disclosure');
+      assert.deepEqual([...seen].sort(), ['button', 'choice', 'disclosure', 'icon-button', 'input', 'menu-button', 'select', 'switch', 'tab', 'textarea'],
+        'the walk reached a button, choice, icon button, input, textarea, select, menu button, switch, tab and disclosure');
     });
   }
 
@@ -346,6 +346,25 @@ export function checks({ page, cdp, log }) {
     await page.press('Escape');
     assert.equal(await dialogOpen(), false, 'Escape with nothing open closes the dialog');
     assert.equal(await page.active(), 'open-dialog', 'focus returns to the button that opened it');
+  });
+
+  check('a choice is a real radio or checkbox: arrows move a radio group, Space toggles a checkbox, and its mark shows the state', async () => {
+    await theme('light');
+    await page.focus('#choices [name="lab-engine"][value="claude"]');
+    await page.press('ArrowDown');
+    await page.waitFor(`document.getElementById('choice-now').textContent === 'codex'`, 'the arrow key to choose Codex');
+    assert.notEqual(await page.js(`getComputedStyle(document.querySelector('#choices [name="lab-engine"][value="codex"]')).backgroundColor`),
+      await page.js(`getComputedStyle(document.querySelector('#choices [name="lab-engine"][value="claude"]')).backgroundColor`),
+      'the chosen radio is drawn differently from the other')
+    await page.focus('#choices [name="lab-copy"]');
+    await page.press(' ');
+    await page.waitFor(`document.getElementById('choice-now').textContent === 'codex copy'`, 'Space to tick the box');
+    assert.equal(await page.js(`document.querySelector('#choices [name="lab-copy"]').checked`), true);
+  });
+
+  check('a notice carries its role and does not take focus', async () => {
+    assert.equal(await page.js(`document.querySelector('#notices [data-tone="danger"]').getAttribute('role')`), 'alert');
+    assert.equal(await page.js(`document.querySelectorAll('#notices [tabindex]').length`), 0);
   });
 
   check('a toast is a status region, and Dismiss works from the keyboard', async () => {

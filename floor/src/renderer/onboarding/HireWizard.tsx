@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useSyncExternalStore } from 'react';
+import type { ReactNode } from 'react';
 
-import { ACCENT_COLOURS, CAST_CHARACTERS, accessoryOf, isAccentColour, lookOf } from '../appearance.ts';
+import { accessoryOf, lookOf } from '../appearance.ts';
 import { Portrait } from '../Portrait.tsx';
+import { Button, Choice, Disclosure, Field, Input, Notice, Select, Textarea, cn } from '../../ui/index.ts';
+import { AccentChoice, CHARACTER_OPTIONS } from '../look/LookFields.tsx';
 
 import { handFocusOnLeave } from '../focus.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
@@ -38,6 +41,12 @@ const ENGINE_REACH: Readonly<Record<HireEngine, string>> = Object.freeze({
   pi: 'Nothing stops it changing files. It can change any file your account can.',
 });
 
+const NOTE = 'm-0 text-small leading-normal text-muted';
+const FIELDSET = 'm-0 flex min-w-0 flex-col gap-2 border-0 p-0';
+const LEGEND = 'mb-2 p-0 text-small font-medium text-ink';
+const FACTS = 'm-0 grid grid-cols-[minmax(0,10rem)_minmax(0,1fr)] gap-x-4 gap-y-1 text-base max-[640px]:grid-cols-1';
+const CODE = 'rounded-sm bg-surface-2 px-1 font-mono text-small wrap-anywhere';
+
 function text(value: unknown): string {
   return typeof value === 'string' && value !== '' ? value : '—';
 }
@@ -51,11 +60,6 @@ function goalLine(row: AgentRow): string {
   const goal = goalOf(row);
   if (goal === null) return 'No goal';
   return `${text(goal.text)} · ${text(goal.status)}`;
-}
-
-function LengthNote({ value, limit }: { value: string; limit: number }) {
-  const note = lengthNote(value, limit);
-  return note === null ? null : <p className="hire-count" role="status">{note}</p>;
 }
 
 /**
@@ -91,13 +95,13 @@ const TRUST_ALLOWS = "A copy runs the repository's own Claude settings, such as 
 
 function SharedProjectNote({ names, copy }: { readonly names: readonly string[]; readonly copy: OwnCopy }) {
   if (names.length === 0) return null;
-  return <p className="hire-note hire-shared" role="note" data-hire-shared="true">
-    {names.join(' and ')} already {names.length === 1 ? 'works' : 'work'} in this project. Two agents in one
-    folder can overwrite each other, so Dudes holds their finished tickets for your review.{' '}
-    {copy.state === 'available'
-      ? 'To keep them apart, work in its own copy (on the Engine step), or choose another project.'
-      : 'To keep them apart, choose another project.'}
-  </p>;
+  return <Notice tone="warn" role="note" data-hire-shared="true">
+    <p className="m-0">{names.join(' and ')} already {names.length === 1 ? 'works' : 'work'} in this project. Two agents in one
+      folder can overwrite each other, so Dudes holds their finished tickets for your review.{' '}
+      {copy.state === 'available'
+        ? 'To keep them apart, work in its own copy (on the Engine step), or choose another project.'
+        : 'To keep them apart, choose another project.'}</p>
+  </Notice>;
 }
 
 /** The own-copy choice on the App step: a box, or why there is none. */
@@ -110,31 +114,28 @@ function OwnCopyChoice({ copy, workspace, names, frozen }: {
   if (copy.state === 'none') return null;
   if (copy.state === 'untrusted') {
     if (names.length === 0) return null;
-    return <div className="hire-copy" data-hire-copy="untrusted">
-      <p className="hire-note">
+    return <div className="flex flex-col gap-2" data-hire-copy="untrusted">
+      <p className={NOTE}>
         This project needs trust before an agent can use its own copy. You can continue in the shared folder or choose another project.
       </p>
-      <details><summary>Trust details</summary><p>{COPY_EXPLAINED} {TRUST_ALLOWS}</p>
-        <p>To trust it, run <code>{`dudes project trust ${workspace.workspaceId}`}</code> in a terminal, then reload this page.</p>
-      </details>
+      <Disclosure summary="Trust details"><div className="flex flex-col gap-2"><p className={NOTE}>{COPY_EXPLAINED} {TRUST_ALLOWS}</p>
+        <p className={NOTE}>To trust it, run <code className={CODE}>{`dudes project trust ${workspace.workspaceId}`}</code> in a terminal, then reload this page.</p>
+      </div></Disclosure>
     </div>;
   }
   if (copy.state === 'engine') {
-    return <div className="hire-copy" data-hire-copy="engine">
-      <p className="hire-note">Only Claude can work in its own copy of the project for now.</p>
+    return <div data-hire-copy="engine">
+      <p className={NOTE}>Only Claude can work in its own copy of the project for now.</p>
     </div>;
   }
-  return <div className="hire-copy" data-hire-copy="available">
-    <label className="hire-choice">
-      <input type="checkbox" name="own_copy" checked={copy.checked} disabled={frozen}
-        onChange={(event) => editDraft({ ownCopy: event.target.checked })} />
-      <span className="hire-choice-label">Work in its own copy of the project</span>
-    </label>
+  return <div className="flex flex-col gap-2" data-hire-copy="available">
+    <Choice type="checkbox" name="own_copy" checked={copy.checked} disabled={frozen}
+      onChange={(event) => editDraft({ ownCopy: event.target.checked })}
+      label="Work in its own copy of the project" note={COPY_EXPLAINED} />
     {copy.preselected && copy.checked
-      ? <p className="hire-note" data-hire-copy-reason="shared">{`Ticked because ${names.join(' and ')} already `
+      ? <p className={NOTE} data-hire-copy-reason="shared">{`Ticked because ${names.join(' and ')} already `
         + `${names.length === 1 ? 'works' : 'work'} in this project's folder. You can untick it.`}</p>
       : null}
-    <p className="hire-note">{COPY_EXPLAINED}</p>
   </div>;
 }
 
@@ -152,36 +153,34 @@ function ModelChoice({ engine, items, draft, frozen, configured, fixed, invalid 
   readonly invalid: boolean;
 }) {
   if (fixed) {
-    return <p className="hire-note" data-hire-model="fixed">
+    return <p className={NOTE} data-hire-model="fixed">
       {configured === null ? 'The configuration sets this engine\u2019s model, so it cannot be chosen here.'
         : `The configuration sets this engine\u2019s model to ${configured}, so it cannot be chosen here.`}
     </p>;
   }
   const chosen = draft.model ?? '';
   const { shown, more } = searchModels(items, chosen);
-  return <div className="hire-model" data-hire-model="true">
-    <fieldset className="hire-choices model-choices" disabled={frozen}>
-      <legend>Which model?</legend>
-      {['', ...shown.map((item) => item.id)].map((name) => (
-        <label key={name} className="hire-choice">
-          <input type="radio" name="model" value={name} checked={chosen === name}
-            onChange={() => editDraft({ model: name })} />
-          <span className="hire-choice-label">{name === '' ? (configured === null ? 'Default model' : `Configured: ${configured}`) : name}</span>
-        </label>
-      ))}
+  return <div className="flex flex-col gap-3" data-hire-model="true">
+    <fieldset className={FIELDSET} disabled={frozen}>
+      <legend className={LEGEND}>Which model?</legend>
+      <div className="flex max-h-56 flex-col gap-1.5 overflow-y-auto">
+        {['', ...shown.map((item) => item.id)].map((name) => (
+          <Choice key={name} type="radio" name="model" value={name} checked={chosen === name}
+            onChange={() => editDraft({ model: name })}
+            label={name === '' ? (configured === null ? 'Default model' : `Configured: ${configured}`) : name} />
+        ))}
+      </div>
     </fieldset>
-    {more === 0 ? null : <p className="hire-count">{more} more models match. Keep typing to narrow the list.</p>}
-    <div className="hire-field">
-      <label htmlFor="hire-model-name">Search the list, or type another model name</label>
-      <input id="hire-model-name" name="model_name" type="text" autoComplete="off" spellCheck={false}
+    {more === 0 ? null : <p className={NOTE}>{more} more models match. Keep typing to narrow the list.</p>}
+    <Field id="hire-model-name" label="Search the list, or type another model name" hint={<>{configured === null
+      ? `Leave empty and ${HIRE_ENGINES[engine]} chooses its default model.`
+      : `Leave empty to use the configured model, ${configured}.`} The engine checks the name when the agent first runs. You can change it later from the agent panel.</>}>
+      <Input name="model_name" type="text" autoComplete="off" spellCheck={false}
         placeholder="Leave empty to use the app's default model"
-        value={chosen} disabled={frozen} aria-invalid={invalid}
+        value={chosen} disabled={frozen} aria-invalid={invalid ? true : undefined}
         aria-describedby={invalid ? 'hire-problem' : undefined}
         onChange={(event) => editDraft({ model: event.target.value })} />
-      <p className="hire-count">{configured === null
-        ? `Leave empty and ${HIRE_ENGINES[engine]} chooses its default model.`
-        : `Leave empty to use the configured model, ${configured}.`} The engine checks the name when the agent first runs. You can change it later from the agent panel.</p>
-    </div>
+    </Field>
     <ModelListBar provider={engine} id="hire-model-list" />
   </div>;
 }
@@ -213,18 +212,25 @@ export function HireWizardView({ hire, floor, onClose, onSettings }: {
   readonly onSettings?: () => void;
 }) {
   return (
-    <section className="hire-wizard" id="hire-wizard" aria-labelledby="hire-title">
-      <header className="hire-head">
-        <h2 id="hire-title" tabIndex={-1}>Hire an agent</h2>
-        {hire.outcome === null ? null : <button type="button" ref={handFocusOnLeave}
-          data-focus-on-leave="hire-open" onClick={onClose}>Close</button>}
+    <section className="flex flex-col font-sans text-ink" id="hire-wizard" data-hire-wizard="true" aria-labelledby="hire-title">
+      <header className="flex items-center justify-between gap-3 border-b border-line px-6 py-4 max-[640px]:px-4">
+        <h2 id="hire-title" tabIndex={-1}
+          className="m-0 rounded-md text-title font-semibold outline-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-solid focus-visible:outline-focus">Hire an agent</h2>
+        {hire.outcome === null ? null : <Button ref={handFocusOnLeave}
+          data-focus-on-leave="hire-open" onClick={onClose}>Close</Button>}
       </header>
       {floor.onboarding === null && noProjects(floor) && floor.settings?.switches.hire !== false
-        ? null : <UnavailableControls floor={floor} control="hire" />}
+        ? null : <div className="px-6 pt-4 max-[640px]:px-4"><UnavailableControls floor={floor} control="hire" /></div>}
       {hire.outcome === null ? <HireForm hire={hire} floor={floor} onClose={onClose} onSettings={onSettings} />
         : <HireAnswer hire={hire} floor={floor} onClose={onClose} />}
     </section>
   );
+}
+
+/** The bar of buttons along the bottom of the dialog, which stays in view while the steps scroll. */
+function Actions({ children }: { readonly children: ReactNode }) {
+  return <footer data-hire-actions="true"
+    className="sticky bottom-0 z-10 flex flex-wrap justify-end gap-2 border-t border-line bg-surface px-6 py-3 max-[640px]:px-4">{children}</footer>;
 }
 
 function HireForm({ hire, floor, onClose, onSettings }: {
@@ -250,129 +256,110 @@ function HireForm({ hire, floor, onClose, onSettings }: {
   const frozen = hire.attempt !== null;
   const stepProblems = problemsIn(hire.draft, floor);
   const invalid = (field: FieldName) => hire.problem?.field === field;
+  const flagged = (field: FieldName) => (invalid(field) ? true : undefined);
   const described = (field: FieldName) => (invalid(field) ? 'hire-problem' : undefined);
+  const nameNote = lengthNote(hire.draft.name, LIMITS.name);
+  const roleNote = lengthNote(hire.draft.role, LIMITS.role);
 
   return (
     <>
-      {hire.prefill === null ? null : <p className="hire-note">
+      {hire.prefill === null ? null : <p className={cn(NOTE, 'px-6 pt-4 max-[640px]:px-4')}>
         This prepares a new agent from archived details. Review each section.
       </p>}
-      <div className="hire-body">
-        <nav className="hire-index" aria-label="Hire sections">
-          <ol>
-            {SECTIONS.map((entry, index) => (
-              <li key={entry.key}>
-                <button type="button" aria-current={entry.key === hire.section ? 'step' : undefined}
+      <div className="grid gap-6 p-6 min-[801px]:grid-cols-[11rem_minmax(0,1fr)] max-[640px]:p-4">
+        <nav aria-label="Hire sections" className="min-w-0">
+          <ol className="m-0 flex list-none gap-1 p-0 min-[801px]:flex-col">
+            {SECTIONS.map((entry, index) => {
+              const current = entry.key === hire.section;
+              return <li key={entry.key} className="min-w-0 max-[800px]:flex-1">
+                <button type="button" aria-current={current ? 'step' : undefined}
                   aria-disabled={stuck || (index > at && stepProblems.some((problem) =>
                     SECTIONS.findIndex((section) => section.key === problem.section) < index))}
-                  onClick={() => { if (!stuck) showSection(entry.key, floor); }}>
-                  <span className="hire-index-number">{index + 1}</span>
-                  <span className="hire-index-label">{entry.label}</span>
-                  <span className="hire-index-hint">{entry.hint}</span>
+                  onClick={() => { if (!stuck) showSection(entry.key, floor); }}
+                  className={cn('box-border grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 rounded-md border-0 p-2 text-left font-sans text-base text-ink',
+                    'transition-colors hover:bg-surface-2 waiting:cursor-not-allowed waiting:opacity-50',
+                    'outline-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-solid focus-visible:outline-focus',
+                    current ? 'bg-accent-soft' : 'bg-transparent',
+                    'max-[800px]:justify-items-center max-[800px]:gap-x-2 max-[800px]:text-center')}>
+                  <span data-hire-step="number" className={cn('row-span-2 inline-flex size-6 items-center justify-center rounded-pill text-small font-semibold tabular-nums',
+                    current ? 'bg-accent text-accent-fg' : 'bg-surface-2 text-muted', 'max-[800px]:row-span-1')}>{index + 1}</span>
+                  <span data-hire-step="label" className={cn('font-medium', !current && 'max-[800px]:sr-only')}>{entry.label}</span>
+                  <span data-hire-step="hint" className="text-small text-muted max-[800px]:sr-only">{entry.hint}</span>
                 </button>
-              </li>
-            ))}
+              </li>;
+            })}
           </ol>
         </nav>
-        <div className="hire-section" data-hire-section={hire.section} data-hire-engine={engine ?? undefined}>
-          <h3>{SECTIONS[at]?.label}</h3>
-          {hire.prefill?.notes[hire.section] === undefined ? null : <p className="hire-note">{hire.prefill.notes[hire.section]}</p>}
+        <div className="flex min-w-0 flex-col gap-4" data-hire-section={hire.section} data-hire-engine={engine ?? undefined}>
+          <h3 className="m-0 text-title font-semibold">{SECTIONS[at]?.label}</h3>
+          {hire.prefill?.notes[hire.section] === undefined ? null : <p className={NOTE}>{hire.prefill.notes[hire.section]}</p>}
           {hire.section !== 'identity' ? null : (
             <>
-              <div className="hire-field">
-                <label htmlFor="hire-name">Name</label>
-                <input id="hire-name" name="name" type="text" required autoComplete="off" spellCheck={false}
+              <Field id="hire-name" label="Name" hint={nameNote === null ? undefined : <span role="status">{nameNote}</span>}>
+                <Input name="name" type="text" required autoComplete="off" spellCheck={false}
                   value={hire.draft.name} disabled={frozen}
-                  aria-invalid={invalid('name')} aria-describedby={described('name')}
+                  aria-invalid={flagged('name')} aria-describedby={described('name')}
                   onChange={(event) => editDraft({ name: event.target.value })} />
-                <LengthNote value={hire.draft.name} limit={LIMITS.name} />
-              </div>
-              <details className="hire-more" open={invalid('role')}>
-              <summary>Role and look</summary>
-              <div className="hire-appearance">
-                <div className="hire-field">
-                  <label htmlFor="hire-character">Character</label>
-                  <select id="hire-character" name="character" value={hire.draft.character ?? ''} disabled={frozen}
-                    onChange={(event) => editDraft({ character: event.target.value })}>
-                    <option value="">Automatic</option>
-                    {CAST_CHARACTERS.map((character) => <option key={character} value={character}>
-                      Character {character.toUpperCase()}
-                    </option>)}
-                  </select>
+              </Field>
+              <Disclosure summary="Role and look" open={invalid('role')} data-hire-more="look">
+                <div className="flex flex-col gap-4 pt-2">
+                  <div className="flex items-start gap-4">
+                    <Field id="hire-character" label="Character" className="min-w-0 flex-1">
+                      <Select name="character" options={CHARACTER_OPTIONS} value={hire.draft.character ?? ''} disabled={frozen}
+                        onValueChange={(value) => editDraft({ character: value })} />
+                    </Field>
+                    <HirePortrait draft={hire.draft} />
+                  </div>
+                  <AccentChoice name="accent" value={hire.draft.accent ?? null} disabled={frozen}
+                    onChange={(accent) => editDraft({ accent: accent === null ? void 0 : accent as typeof hire.draft.accent })} />
+                  <Field id="hire-role" label="Role" hint={<>{roleNote === null ? null : <span role="status">{roleNote} </span>}
+                    A label shown to people and other agents, not instructions for the agent. Leave empty to use engineer.</>}>
+                    <Textarea name="role" rows={2} autoComplete="off"
+                      value={hire.draft.role} disabled={frozen}
+                      aria-invalid={flagged('role')} aria-describedby={described('role')}
+                      onChange={(event) => editDraft({ role: event.target.value })} />
+                  </Field>
                 </div>
-                <fieldset className="hire-accents" disabled={frozen}>
-                  <legend>Accent colour</legend>
-                  <label><input type="radio" name="accent" value="" checked={hire.draft.accent === undefined}
-                    onChange={() => editDraft({ accent: void 0 })} />Automatic</label>
-                  {Object.keys(ACCENT_COLOURS).filter(isAccentColour).map((accent) => (
-                    <label key={accent}>
-                      <input type="radio" name="accent" value={accent} checked={hire.draft.accent === accent}
-                        onChange={() => editDraft({ accent })} />
-                      <span className="hire-accent-swatch" style={{ backgroundColor: ACCENT_COLOURS[accent] }} />
-                      {accent[0]?.toUpperCase()}{accent.slice(1)}
-                    </label>
-                  ))}
-                </fieldset>
-                <HirePortrait draft={hire.draft} />
-              </div>
-              <div className="hire-field">
-                <label htmlFor="hire-role">Role</label>
-                <textarea id="hire-role" name="role" rows={2} autoComplete="off"
-                  value={hire.draft.role} disabled={frozen}
-                  aria-invalid={invalid('role')} aria-describedby={described('role')}
-                  onChange={(event) => editDraft({ role: event.target.value })} />
-                <LengthNote value={hire.draft.role} limit={LIMITS.role} />
-                <p className="hire-count">A label shown to people and other agents, not instructions for the agent.
-                  Leave empty to use engineer.</p>
-              </div>
-              </details>
+              </Disclosure>
             </>
           )}
           {hire.section !== 'workspace' ? null : (
             <>
-              {noProject ? <NoHireProjectHint floor={floor} /> : catalog === null ? <p>{NO_PROJECT_LIST}</p> : (
-                <fieldset className="hire-choices" aria-invalid={invalid('workspace_id')}
+              {noProject ? <NoHireProjectHint floor={floor} /> : catalog === null ? <p className={NOTE}>{NO_PROJECT_LIST}</p> : (
+                <fieldset className={FIELDSET} aria-invalid={flagged('workspace_id')}
                   aria-describedby={described('workspace_id')}>
-                  <legend>Which project?</legend>
+                  <legend className={LEGEND}>Which project?</legend>
                   {catalog.workspaces.map((space) => (
-                    <label key={space.workspaceId} className="hire-choice">
-                      <input type="radio" name="workspace_id" value={space.workspaceId}
-                        checked={hire.draft.workspaceId === space.workspaceId} disabled={frozen}
-                        onChange={() => editDraft({ workspaceId: space.workspaceId })} />
-                      <span className="hire-choice-label">{space.label}</span>
-                      {space.reloadMark?.kind !== 'changed' ? null : (
-                        <span className="hire-note" data-reload-mark={space.reloadMark.kind}>
-                          Updated while the daemon was running.
-                        </span>
-                      )}
-                    </label>
+                    <Choice key={space.workspaceId} type="radio" name="workspace_id" value={space.workspaceId}
+                      checked={hire.draft.workspaceId === space.workspaceId} disabled={frozen}
+                      onChange={() => editDraft({ workspaceId: space.workspaceId })}
+                      label={space.label}
+                      note={space.reloadMark?.kind !== 'changed' ? undefined : (
+                        <span data-reload-mark={space.reloadMark.kind}>Updated while the daemon was running.</span>
+                      )} />
                   ))}
                 </fieldset>
               )}
-              {catalog === null ? null : <><p className="hire-note">Choose the project where this agent will work.</p>
-                <details className="hire-more"><summary>Project details</summary><dl className="hire-facts">
-                  {catalog.workspaces.map(space => <div key={space.workspaceId}><dt>{space.label}</dt><dd><code>{space.workspaceId}</code></dd></div>)}
-                </dl></details>
+              {catalog === null ? null : <>
+                <p className={NOTE}>Choose the project where this agent will work.</p>
+                <Disclosure summary="Project details"><dl className={cn(FACTS, 'pt-2')}>
+                  {catalog.workspaces.map((space) => <Fact key={space.workspaceId} name={space.label}><code className={CODE}>{space.workspaceId}</code></Fact>)}
+                </dl></Disclosure>
               </>}
-              {catalog === null || !projectAddOn(floor) ? null : <details className="hire-more" data-hire-add-project="true">
-                <summary>Add another project</summary>
-                <AddProject floor={floor} />
-              </details>}
+              {catalog === null || !projectAddOn(floor) ? null : <Disclosure data-hire-add-project="true" summary="Add another project">
+                <div className="pt-2"><AddProject floor={floor} /></div>
+              </Disclosure>}
               {workspace === null ? null : <SharedProjectNote names={sharing} copy={copy} />}
             </>
           )}
           {hire.section !== 'engine' ? null : (
             <>
-              {workspace === null ? <p className="hire-note">Choose a project to see the engines it offers.</p> : (
-                <fieldset className="hire-choices" aria-invalid={invalid('engine')} aria-describedby={described('engine')}>
-                  <legend>Which engine should do the work?</legend>
+              {workspace === null ? <p className={NOTE}>Choose a project to see the engines it offers.</p> : (
+                <fieldset className={FIELDSET} aria-invalid={flagged('engine')} aria-describedby={described('engine')}>
+                  <legend className={LEGEND}>Which engine should do the work?</legend>
                   {workspace.engines.map((name) => (
-                    <label key={name} className="hire-choice">
-                      <input type="radio" name="engine" value={name} checked={engine === name} disabled={frozen}
-                        onChange={() => editDraft({ engine: name })} />
-                      <span className="hire-choice-label">{HIRE_ENGINES[name]}</span>
-                      <span className="hire-note">{ENGINE_REACH[name]}</span>
-                    </label>
+                    <Choice key={name} type="radio" name="engine" value={name} checked={engine === name} disabled={frozen}
+                      onChange={() => editDraft({ engine: name })} label={HIRE_ENGINES[name]} note={ENGINE_REACH[name]} />
                   ))}
                 </fieldset>
               )}
@@ -380,82 +367,88 @@ function HireForm({ hire, floor, onClose, onSettings }: {
                 configured={row?.configuredModel ?? null} fixed={row?.modelFixed === true} invalid={invalid('model')} />}
               {workspace === null ? null
                 : <OwnCopyChoice copy={copy} workspace={workspace} names={sharing} frozen={frozen} />}
-              {withdrawn ? <p className="hire-note">An engine missing here may be turned off, or this project may need a spending limit to use it. Check Settings.</p>
+              {withdrawn ? <p className={NOTE}>An engine missing here may be turned off, or this project may need a spending limit to use it. Check Settings.</p>
                 : null}
-              {engine === null || row === null ? null : <p className="hire-note" data-engine-found={row.found}>
+              {engine === null || row === null ? null : <p className={NOTE} data-engine-found={row.found}>
                 {row.found ? `Dudes found ${HIRE_ENGINES[engine]}’s command on this computer.`
                   : `Dudes did not find ${HIRE_ENGINES[engine]}’s command on this computer.`}
               </p>}
               {missing === null ? null : (
-                <div className="hire-problem" role="alert">
-                  <p>{missing}</p>
-                  {engine === null || row?.found !== false || INSTALL_COMMANDS[engine] === undefined ? null : <details>
-                    <summary>Installation details</summary><p className="hire-install">
-                      <code>{INSTALL_COMMANDS[engine]}</code>{' '}
-                      <button type="button" onClick={() => copyToClipboard(INSTALL_COMMANDS[engine]!)}>Copy</button>
+                <Notice tone="danger" role="alert" data-hire-missing="true">
+                  <p className="m-0">{missing}</p>
+                  {engine === null || row?.found !== false || INSTALL_COMMANDS[engine] === undefined ? null : <Disclosure summary="Installation details">
+                    <p className="m-0 flex flex-wrap items-center gap-2 pt-1" data-hire-install="true">
+                      <code className={CODE}>{INSTALL_COMMANDS[engine]}</code>
+                      <Button size="sm" onClick={() => copyToClipboard(INSTALL_COMMANDS[engine]!)}>Copy</Button>
                     </p>
-                  </details>}
-                  <button type="button" onClick={() => refreshFloorSnapshot()}>Check again</button>
-                </div>
+                  </Disclosure>}
+                  <div><Button onClick={() => refreshFloorSnapshot()}>Check again</Button></div>
+                </Notice>
               )}
               {engine === null ? null : <EngineSignIn engine={engine} row={row} terminal={floor.terminal} onSettings={onSettings} />}
             </>
           )}
           {hire.problem === null || (noProject && hire.problem.field === 'workspace_id') ? null : (
-            <p className="hire-problem" id="hire-problem" role="alert">
-              {hire.problem.message}
-            </p>
+            <Notice tone="danger" id="hire-problem" role="alert">{hire.problem.message}</Notice>
           )}
         </div>
       </div>
       <Reconciliation floor={floor} />
-      <footer className="hire-actions">
-        <button type="button" ref={handFocusOnLeave} data-focus-on-leave="hire-open"
-          onClick={onClose}>Cancel</button>
-        <button type="button" aria-disabled={at === 0 || frozen || stuck}
-          onClick={() => { if (at !== 0 && !frozen && !stuck) moveSection(-1, floor); }}>Back</button>
+      <Actions>
+        <Button ref={handFocusOnLeave} data-focus-on-leave="hire-open"
+          onClick={onClose}>Cancel</Button>
+        <Button aria-disabled={at === 0 || frozen || stuck}
+          onClick={() => { if (at !== 0 && !frozen && !stuck) moveSection(-1, floor); }}>Back</Button>
         {at === SECTIONS.length - 1
-          ? <button type="button" className="hire-submit" aria-disabled={blocked !== null || frozen || hire.sending}
-            ref={handFocusOnLeave} data-focus-on-leave="hire-title" aria-busy={hire.sending}
+          ? <Button variant="primary" data-hire-action="submit" aria-disabled={blocked !== null || frozen || hire.sending}
+            ref={handFocusOnLeave} data-focus-on-leave="hire-title" loading={hire.sending}
             onClick={() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }}>
             {hire.sending ? 'Hiring…' : 'Hire'}
-          </button>
-          : <button type="button" className="hire-next" aria-disabled={frozen || stuck
+          </Button>
+          : <Button variant="primary" data-hire-action="next" aria-disabled={frozen || stuck
             || stepProblems.some((problem) => problem.section === hire.section)}
-            onClick={() => { if (!frozen && !stuck) moveSection(1, floor); }}>Next</button>}
-      </footer>
-      {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <NoHireProjectHint floor={floor} />)
-        : blocked === null || stuck ? null : <p className="hire-note" role="status">{blocked}</p>}
+            onClick={() => { if (!frozen && !stuck) moveSection(1, floor); }}>Next</Button>}
+      </Actions>
+      {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <div className="px-6 pb-4 max-[640px]:px-4"><NoHireProjectHint floor={floor} /></div>)
+        : blocked === null || stuck ? null : <p className={cn(NOTE, 'px-6 pb-4 max-[640px]:px-4')} role="status">{blocked}</p>}
     </>
   );
+}
+
+/** One row of a list of facts: a name and what it is. */
+function Fact({ name, children }: { readonly name: ReactNode; readonly children: ReactNode }) {
+  return <div className="contents">
+    <dt className="text-small font-medium text-muted">{name}</dt>
+    <dd className="m-0 wrap-anywhere">{children}</dd>
+  </div>;
 }
 
 /** The hire is complete, but with tickets off nobody can give the agent a task: say so and offer the switch. */
 function TicketsOffNote({ floor }: { readonly floor: FloorState }) {
   const switches = floor.settings?.switches;
   const needed = (['control', 'goal'] as const).filter((key) => switches?.[key] === false);
-  return <div className="hire-warning" role="status" data-hire-tickets="off">
-    <p>{TICKETS_OFF_AFTER}</p>
+  return <Notice tone="warn" role="status" data-hire-tickets="off">
+    <p className="m-0">{TICKETS_OFF_AFTER}</p>
     {switches?.board === false
-      ? <button type="button" onClick={() => { void changeSetting('floor.board', 'on'); }}>Turn on tickets</button>
+      ? <div><Button onClick={() => { void changeSetting('floor.board', 'on'); }}>Turn on tickets</Button></div>
       : null}
-    {needed.length === 0 ? null : <p>{`Tickets also need ${needed.map((key) => key === 'control' ? 'Pause, resume and rename' : 'Change tasks').join(' and ')} on, under Floor switches in Settings.`}</p>}
-  </div>;
+    {needed.length === 0 ? null : <p className="m-0">{`Tickets also need ${needed.map((key) => key === 'control' ? 'Pause, resume and rename' : 'Change tasks').join(' and ')} on, under Floor switches in Settings.`}</p>}
+  </Notice>;
 }
 
 function NoHireProjectHint({ floor }: { readonly floor: FloorState }) {
-  return <>
+  return <div className="flex flex-col gap-3">
     {projectAddOn(floor)
-      ? <p className="hire-note">Agents work in a project, and none is set up yet. Add the folder of your project below.</p>
-      : <p className="hire-note">Agents work in a project, and none is set up yet. Turn on Add and remove projects under Floor switches in Settings, then add your project folder.</p>}
+      ? <p className={NOTE}>Agents work in a project, and none is set up yet. Add the folder of your project below.</p>
+      : <p className={NOTE}>Agents work in a project, and none is set up yet. Turn on Add and remove projects under Floor switches in Settings, then add your project folder.</p>}
     <AddProject floor={floor} />
-  </>;
+  </div>;
 }
 
 function HirePortrait({ draft }: { readonly draft: HireDraft }) {
-  return <output className="hire-portrait-preview" aria-label="Portrait preview"
-    data-character={draft.character || 'automatic'} data-accent={draft.accent ?? 'automatic'}>
-    {!draft.character ? <span>Assigned on hire</span> : <Portrait className="hire-portrait"
+  return <output aria-label="Portrait preview" data-character={draft.character || 'automatic'} data-accent={draft.accent ?? 'automatic'}
+    className="mt-6 flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-line bg-surface-2 p-2 text-center text-small text-muted">
+    {!draft.character ? <span>Assigned on hire</span> : <Portrait className="size-full object-contain"
       look={lookOf({ id: '', character: draft.character, accent: draft.accent })} accessory={accessoryOf(draft.role)}
       name={draft.name} />}
   </output>;
@@ -464,25 +457,30 @@ function HirePortrait({ draft }: { readonly draft: HireDraft }) {
 /** What the journal already holds, for an operator who lost track of a Hire. */
 function Reconciliation({ floor }: { readonly floor: FloorState }) {
   return (
-    <details className="hire-roster hire-more" aria-labelledby="hire-roster-title">
-      <summary id="hire-roster-title">Agents already on the floor</summary>
-      <p>
-        This page forgets a hire in progress if it reloads. Look here for that agent before hiring again: every
-        hire makes a new agent.
-      </p>
-      {floor.phase !== 'live' ? <p>Waiting for the floor.</p> : floor.agents.length === 0 ? (
-        <p>No current agents.</p>
-      ) : (
-        <ul>
-          {floor.agents.map((row) => (
-            <li key={row.id} data-roster-agent-id={row.id}>
-              <strong>{text(row.name)}</strong> <span>{text(row.role)}</span> <code>{row.id}</code>
-              <span className="hire-roster-goal">{goalLine(row)}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </details>
+    <div className="border-t border-line px-6 py-3 max-[640px]:px-4">
+      <Disclosure data-hire-more="roster" summary={<span id="hire-roster-title">Agents already on the floor</span>}>
+        <div className="flex flex-col gap-2 pt-2">
+          <p className={NOTE}>
+            This page forgets a hire in progress if it reloads. Look here for that agent before hiring again: every
+            hire makes a new agent.
+          </p>
+          {floor.phase !== 'live' ? <p className={NOTE}>Waiting for the floor.</p> : floor.agents.length === 0 ? (
+            <p className={NOTE}>No current agents.</p>
+          ) : (
+            <ul className="m-0 flex list-none flex-col divide-y divide-line rounded-md border border-line p-0 text-base">
+              {floor.agents.map((row) => (
+                <li key={row.id} data-roster-agent-id={row.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2 wrap-anywhere">
+                  <strong className="font-semibold">{text(row.name)}</strong>
+                  <span className="text-muted">{text(row.role)}</span>
+                  <code className={cn(CODE, 'text-muted')}>{row.id}</code>
+                  <span className="basis-full text-small text-muted">{goalLine(row)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </Disclosure>
+    </div>
   );
 }
 
@@ -499,29 +497,31 @@ function HireAnswer({ hire, floor, onClose }: {
   const shown = hired !== null && presenceOf(hired, floor, hire.askedAtEpoch) === 'present';
   const hiredName = hired === null ? '' : agentName(hire, floor, hired);
   return (
-    <div className="hire-answer" data-hire-outcome={outcome.kind} aria-live="polite">
-      <AnswerBody outcome={outcome} hire={hire} floor={floor} />
-      {!settled ? null : !fresh ? <p className="hire-note">You can hire another once the Floor has refreshed.</p>
-        : floor.onboarding === null ? <p className="hire-note">This session offers no further hires.</p> : null}
-      <footer className="hire-actions">
+    <div data-hire-outcome={outcome.kind} aria-live="polite">
+      <div className="flex flex-col gap-4 p-6 max-[640px]:p-4">
+        <AnswerBody outcome={outcome} hire={hire} floor={floor} />
+        {!settled ? null : !fresh ? <p className={NOTE}>You can hire another once the Floor has refreshed.</p>
+          : floor.onboarding === null ? <p className={NOTE}>This session offers no further hires.</p> : null}
+      </div>
+      <Actions>
         {settled ? null : (
-          <button type="button" aria-disabled={hire.sending} aria-busy={hire.sending}
+          <Button aria-disabled={hire.sending} loading={hire.sending}
             ref={handFocusOnLeave} data-focus-on-leave="hire-title"
             onClick={() => { if (!hire.sending) void checkHireStatus(browserHireDeps); }}>
             {hire.sending ? 'Checking…' : 'Check status'}
-          </button>
+          </Button>
         )}
-        {noEffect ? <button type="button" aria-disabled={hire.sending}
+        {noEffect ? <Button aria-disabled={hire.sending}
           ref={handFocusOnLeave} data-focus-on-leave="hire-title"
-          onClick={() => { if (!hire.sending) releaseAttempt(); }}>Edit the form</button> : null}
+          onClick={() => { if (!hire.sending) releaseAttempt(); }}>Edit the form</Button> : null}
         {settled ? (
-          <button type="button" aria-disabled={!fresh || floor.onboarding === null}
+          <Button aria-disabled={!fresh || floor.onboarding === null}
             ref={handFocusOnLeave} data-focus-on-leave="hire-title"
-            onClick={() => { if (fresh && floor.onboarding !== null) startAnotherHire(); }}>Hire another</button>
+            onClick={() => { if (fresh && floor.onboarding !== null) startAnotherHire(); }}>Hire another</Button>
         ) : null}
-        {shown ? <button type="button" className="hire-next" ref={handFocusOnLeave} data-focus-on-leave="hire-open"
-          onClick={onClose}>Open {hiredName}</button> : null}
-      </footer>
+        {shown ? <Button variant="primary" data-hire-action="open" ref={handFocusOnLeave} data-focus-on-leave="hire-open"
+          onClick={onClose}>Open {hiredName}</Button> : null}
+      </Actions>
     </div>
   );
 }
@@ -536,11 +536,11 @@ function agentName(hire: HireState, floor: FloorState, agent: string): string {
 
 /** The record ids, for the rare reader who needs them; the names above are what to read. */
 function RecordIds({ agent }: { readonly agent: string }) {
-  return <details className="hire-more"><summary>Technical details</summary>
-    <dl className="hire-facts">
-      <div><dt>AgentId</dt><dd data-hire-agent-id={agent}>{agent}</dd></div>
+  return <Disclosure summary="Technical details" data-hire-more="ids">
+    <dl className={cn(FACTS, 'pt-2')}>
+      <Fact name="AgentId"><span data-hire-agent-id={agent} className="font-mono text-small">{agent}</span></Fact>
     </dl>
-  </details>;
+  </Disclosure>;
 }
 
 function AnswerBody({ outcome, hire, floor }: {
@@ -554,21 +554,21 @@ function AnswerBody({ outcome, hire, floor }: {
       return (
         <>
           {presence === 'absent' ? (
-            <p className="hire-warning" role="status">
+            <Notice tone="warn" role="status">
               Hired, then retired: this agent is no longer on the floor.
-            </p>
+            </Notice>
           ) : (
-            <p className="hire-success" role="status">
+            <Notice tone="ok" role="status">
               {`Hired ${agentName(hire, floor, outcome.agent)}.`}
-            </p>
+            </Notice>
           )}
           {ticketsOff(floor) ? <TicketsOffNote floor={floor} /> : null}
-          <dl className="hire-facts">
+          <dl className={FACTS}>
             {hire.attempt?.payload.own_copy === true ? (
-              <div><dt>Works in</dt><dd data-hire-own-copy="true">Its own copy of the project, on its own branch</dd></div>
+              <Fact name="Works in"><span data-hire-own-copy="true">Its own copy of the project, on its own branch</span></Fact>
             ) : null}
-            <div><dt>On the floor</dt><dd>{presence === 'present' ? 'Yes, on the Floor'
-              : presence === 'absent' ? 'No, retired since the Hire' : 'Waiting for the Floor to refresh'}</dd></div>
+            <Fact name="On the floor">{presence === 'present' ? 'Yes, on the Floor'
+              : presence === 'absent' ? 'No, retired since the Hire' : 'Waiting for the Floor to refresh'}</Fact>
           </dl>
           <RecordIds agent={outcome.agent} />
         </>
@@ -576,36 +576,36 @@ function AnswerBody({ outcome, hire, floor }: {
     }
     case 'pending':
       return (
-        <p className="hire-pending" role="status">
+        <Notice tone="info" role="status">
           Not confirmed yet. The daemon has this Hire in progress, or cannot confirm it yet. No agent is shown
           until it does; Check status asks again with the same attempt.
-        </p>
+        </Notice>
       );
     case 'unavailable':
       return (
-        <p className="hire-pending" role="status">
+        <Notice tone="warn" role="status">
           The daemon could not confirm this Hire, so no agent is shown. Check again later with the same attempt;
           this page does not retry by itself. If this keeps happening, the operator may need to restart the daemon.
-        </p>
+        </Notice>
       );
     case 'unknown':
       return (
-        <p className="hire-pending" role="status">
+        <Notice tone="warn" role="status">
           The page lost the daemon&apos;s answer, so it cannot say whether an agent was hired. Check status asks
           again with the same attempt, which never hires twice.
-        </p>
+        </Notice>
       );
     case 'refused': {
       const session = sessionAfterRefusal(floor, hire.askedAtEpoch);
       if (outcome.note !== undefined && !hire.uncertain) {
-        return <><p className="hire-error" role="alert">No agent was hired.</p>
-          <p className="hire-note">{outcome.note}</p></>;
+        return <><Notice tone="danger" role="alert">No agent was hired.</Notice>
+          <p className={NOTE}>{outcome.note}</p></>;
       }
       if (hire.uncertain) {
         // This refusal answered a check. The request before it has no known
         // result, so nothing here may say that no agent was hired.
         return (
-          <p className="hire-error" role="alert" data-hire-session={session}>
+          <Notice tone="danger" role="alert" data-hire-session={session}>
             {session === 'checking'
               ? 'The daemon refused this check before any effect. Checking whether this Floor session is still live…'
               : `${session === 'ended' ? 'Your Floor session has ended or was revoked. ' : ''}The daemon refused `
@@ -613,13 +613,13 @@ function AnswerBody({ outcome, hire, floor }: {
                 + 'agent may already have been hired. Open Dudes to sign in again in '
                 + 'this browser: this page keeps the Hire, and Check status asks again with the same '
                 + 'attempt, which never hires twice.'}
-          </p>
+          </Notice>
         );
       }
       const workspace = hire.attempt?.payload.workspace_id ?? '';
       const offered = floor.onboarding?.workspaces.some((space) => space.workspaceId === workspace) ?? false;
       return (
-        <><p className="hire-error" role="alert" data-hire-session={session}>
+        <><Notice tone="danger" role="alert" data-hire-session={session}>
           {session === 'checking'
             ? 'The daemon refused this Hire before any effect. Checking whether this Floor session is still live…'
             : session === 'ended'
@@ -632,31 +632,31 @@ function AnswerBody({ outcome, hire, floor }: {
                 : !offered
                   ? 'This project is no longer offered. No agent was hired. Choose another project.'
                   : 'The daemon refused this Hire before any effect. No agent was hired.'}
-        </p>{workspace === '' ? null : <details className="hire-more"><summary>Details</summary>
-          <p>Project: <code>{workspace}</code></p>
-        </details>}</>
+        </Notice>{workspace === '' ? null : <Disclosure summary="Details" data-hire-more="details">
+          <p className={cn(NOTE, 'pt-2')}>Project: <code className={CODE}>{workspace}</code></p>
+        </Disclosure>}</>
       );
     }
     case 'conflict':
       return (
-        <p className="hire-error" role="alert">
+        <Notice tone="danger" role="alert">
           The daemon holds a different request under this attempt, so it refused this one before any effect. This
           is a page error; nothing is reported as hired.
-        </p>
+        </Notice>
       );
     case 'stale':
       return (
-        <p className="hire-error" role="alert">
+        <Notice tone="danger" role="alert">
           A reload changed this project in the daemon&apos;s configuration after this page was offered it, so
           the daemon refused this Hire before any effect. No agent was hired. Review the project in the fresh
           snapshot and hire again.
-        </p>
+        </Notice>
       );
     case 'rejected':
       return (
-        <><p className="hire-error" role="alert">
+        <><Notice tone="danger" role="alert">
           Dudes could not use this request. No agent was hired.
-        </p><details className="hire-more"><summary>Details</summary><p>HTTP status: {outcome.status}</p></details></>
+        </Notice><Disclosure summary="Details" data-hire-more="details"><p className={cn(NOTE, 'pt-2')}>HTTP status: {outcome.status}</p></Disclosure></>
       );
   }
 }

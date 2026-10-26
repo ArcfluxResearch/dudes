@@ -82,7 +82,7 @@ test('the engine step offers Claude three suggestions, Codex none, and a changed
   subscribe();
   fill({ model: 'opus' });
   hire.showSection('engine');
-  const values = (html) => [...html.matchAll(/<input type="radio" name="model"(?: checked="")? value="([^"]*)"/g)].map((match) => match[1]);
+  const values = (html) => [...html.matchAll(/<input type="radio" class="[^"]*" name="model" (?:checked="" )?value="([^"]*)"/g)].map((match) => match[1]);
   assert.deepEqual(values(render()), ['', 'opus', 'sonnet', 'haiku']);
   assert.match(render(), /Default model/);
   hire.editDraft({ engine: 'codex' });

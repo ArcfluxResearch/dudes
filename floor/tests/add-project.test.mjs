@@ -140,12 +140,12 @@ test('the box shows where a newcomer meets no project, and falls back to the old
     const shown = renderToStaticMarkup(createElement(AddProject, { floor: floor(true) }));
     assert.match(shown, /Dudes found a git repository at \/work\/app\./);
     assert.match(shown, /running cargo test/);
-    assert.match(shown, /class="add-project-submit"[^>]*>Add project</);
+    assert.match(shown, /data-add-project="submit"[^>]*>Add project</);
     await addPreviewed(deps);
     assert.equal(getAddState().kind, 'refused');
     const refused = renderToStaticMarkup(createElement(AddProject, { floor: floor(true) }));
     assert.match(refused, /This folder is not a git repository\. Dudes needs one to show you what an agent changed\./);
-    assert.doesNotMatch(refused, /Make it a git|git init|add-project-submit/);
+    assert.doesNotMatch(refused, /Make it a git|git init|data-add-project="submit"/);
   } finally {
     await server.close();
   }

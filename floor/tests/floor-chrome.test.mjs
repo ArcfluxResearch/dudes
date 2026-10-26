@@ -99,9 +99,9 @@ test('the top bar names the floor and counts the crew by status', () => {
   assert.deepEqual([...stats.matchAll(/<li([^>]*)>([^<]*)<\/li>/g)].map(([, attrs, words]) => [attrs.trim(), words]), [
     ['class="crew-stats-total"', '3 crew'],
   ], 'the roster beside the office says each state, so the top bar keeps only the count');
-  assert.doesNotMatch(bar, /hire-entry-off/, 'the top bar still carries the Hire reason that Crew folds');
+  assert.doesNotMatch(bar, /data-hire-entry="off"/, 'the top bar still carries the Hire reason that Crew folds');
   const crew = html.match(/<section class="crew-list roster"[\s\S]*?<\/section>/)?.[0] ?? '';
-  assert.match(crew, /<details class="hire-off"><summary>Hire is unavailable<\/summary><p class="hire-entry-off">Hire is unavailable\. Check Engines and Projects in Settings\./);
+  assert.match(crew, /data-hire-entry="folded".*?>Hire is unavailable<\/summary>.*?<p data-hire-entry="off"[^>]*>Hire is unavailable\. Check Engines and Projects in Settings\./);
   const actions = bar.match(/<div class="top-bar-actions" role="group" aria-label="Floor actions">[\s\S]*<\/div>/)[0];
   assert.match(actions, /<button type="button" class="crew-toggle" id="crew-toggle" aria-pressed="true" aria-controls="crew-list">Crew<\/button>/);
   assert.match(actions, /id="focus-toggle" aria-pressed="false" aria-keyshortcuts="Alt\+Shift\+F">Focus agent<\/button>/);
