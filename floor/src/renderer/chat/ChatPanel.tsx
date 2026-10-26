@@ -22,7 +22,7 @@ import { Steps } from './Steps.tsx';
 import { EngineSaid } from './EngineSaid.tsx';
 import { FullOutput } from '../LiveWork.tsx';
 import { MessageSquare, Paperclip, SendHorizontal } from 'lucide-react';
-import { Button, Disclosure, Field, ICON, RING, Textarea, buttonClass, cn } from '../../ui/index.ts';
+import { Button, Disclosure, Field, ICON, Notice, RING, Textarea, buttonClass, cn } from '../../ui/index.ts';
 import { ASSISTANT_BUBBLE, HEADING, NOTE, SPEAKER, USER_BUBBLE } from './look.ts';
 import { SHORT_THREAD } from './shortLayout.ts';
 
@@ -168,8 +168,8 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
         {action.stopSend.stopLsn === null ? 'Stopping this turn…'
           : 'Stopped. Sending your note once the turn has ended…'}</p> : null}
       {accepts ? null : <p className={cn('chat-guidance', NOTE)}>Files work with agents Dudes launches.</p>}
-      {(draft !== '' || files.length > 0) && problem !== null ? <p className="m-0 text-small font-medium text-danger" role="alert">{problem}</p> : null}
-      {action.problem === null ? null : <p className="m-0 text-small font-medium text-danger" role="alert">{action.problem}</p>}
+      {(draft !== '' || files.length > 0) && problem !== null ? <Notice tone="danger" role="alert">{problem}</Notice> : null}
+      {action.problem === null ? null : <Notice tone="danger" role="alert">{action.problem}</Notice>}
       </>}
     </section>
   </div>;
@@ -251,11 +251,11 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
             <p className={cn('chat-speaker', SPEAKER)}>You</p>
             <ChatText text={entry.text} />
           </div>
-          {turn?.reissued === true ? <div className={cn(WARNING, 'rounded-md border border-line bg-warn-soft px-3 py-2')} data-chat-reissued="true">
-            <p className="m-0">Restarted after interruption</p>
+          {turn?.reissued === true ? <Notice tone="warn" data-chat-reissued="true">
+            <p className={WARNING}>Restarted after interruption</p>
             <Disclosure className="font-normal" summaryClassName="py-0 text-small font-normal" summary="What changed">
               <p className={NOTE}>Previous delivery may have happened and earlier context may be missing.</p></Disclosure>
-          </div> : null}
+          </Notice> : null}
           {note === null ? turn === null ? <p className={cn('chat-message-state mx-2', NOTE)}>Message accepted; current status unavailable.</p> : null
             : <div className={cn('chat-message-state mx-2 flex flex-col items-start gap-1', NOTE, emphasis)}>
               <p className="m-0">{pendingText(note)}</p>

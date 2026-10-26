@@ -4,7 +4,7 @@
 // What it read lives in this panel's state only, so unmounting the panel forgets it. A new agent,
 // connection epoch or Floor session mounts a fresh reader, which forgets it too.
 
-import { Button, Disclosure, cn } from '../../ui/index.ts';
+import { Button, Disclosure, Notice, cn } from '../../ui/index.ts';
 import { RelativeTime } from '../RelativeTime.tsx';
 import { useEffect, useReducer, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -19,7 +19,6 @@ import {
 } from './memory.ts';
 import type { MemoryDeps, MemoryEntry, MemoryProblem, MemoryRequest, MemoryShown, MemorySummary, Withheld } from './memory.ts';
 
-const NOTICE = 'memory-notice m-0 rounded-md border border-line border-s-[3px] border-s-info bg-surface-2 px-3 py-2 text-small text-ink';
 const BLOCK = 'flex flex-col gap-2';
 
 type Crew = Pick<FloorState, 'agents' | 'retiredAgents'>;
@@ -126,13 +125,13 @@ function Shown({ shown, agent, crew, reading, onRead }: {
 }) {
   const older = shown.older;
   return <>
-    {shown.retired ? <p className={NOTICE}>This agent has retired. Its saved memory is still available.</p> : null}
-    {shown.fenced ? <p className={NOTICE}>
+    {shown.retired ? <Notice className="memory-notice">This agent has retired. Its saved memory is still available.</Notice> : null}
+    {shown.fenced ? <Notice tone="warn" className="memory-notice">
       Dudes stopped memory work after an integrity failure. The summary may be out of date until Dudes restarts.
-    </p> : null}
-    {shown.condensedSince ? <p className={NOTICE}>
+    </Notice> : null}
+    {shown.condensedSince ? <Notice className="memory-notice">
       Memory was condensed after this tab opened. Press Refresh to read the new summary.
-    </p> : null}
+    </Notice> : null}
     {shown.summary === null ? null : <Summary summary={shown.summary} />}
     {shown.withheld === null ? null : <Refused withheld={shown.withheld} agent={agent} crew={crew} />}
     <section className={cn('memory-entries', BLOCK)}>
