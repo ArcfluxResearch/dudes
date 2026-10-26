@@ -8,13 +8,11 @@
 @import './legacy/crew.css';
 @import './legacy/hire-entry.css';
 @import './legacy/live-work.css';
-@import './legacy/setup.css';
 @import './legacy/office-controls.css';
 @import './legacy/hire-wizard.css';
 @import './legacy/agent-actions.css';
 @import './legacy/retire-terminal.css';
-@import './legacy/activity-log.css';
-@import './legacy/settings.css';
+@import './legacy/other-screens.css';
 @import './legacy/chat.css';
 @import './legacy/agent-detail.css';
 @import './legacy/roster.css';
