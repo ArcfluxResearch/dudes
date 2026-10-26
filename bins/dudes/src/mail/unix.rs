@@ -566,11 +566,15 @@ pub(super) fn run(command: &MailCommand, path: &Path, out: &mut dyn Write) -> io
                         writeln!(out, "{}", Escaped(&body))?;
                     }
                     if item.act == MailAct::Request {
-                        writeln!(
-                            out,
-                            "reply: dudes mail send --reply-to {} --act message --body 'Your reply'",
-                            item.id
-                        )?;
+                        if item.thread.is_some() {
+                            writeln!(
+                                out,
+                                "reply: dudes mail send --reply-to {} --act message --body 'Your reply'",
+                                item.id
+                            )?;
+                        } else {
+                            writeln!(out, "reply unavailable: this mail has no thread")?;
+                        }
                     }
                 }
             }

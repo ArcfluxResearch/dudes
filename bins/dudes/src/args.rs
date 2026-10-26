@@ -1035,7 +1035,7 @@ USAGE
         --subject. If the original marker has gone, pass --subject explicitly.
         Generated reply subjects may be shortened to fit the outgoing
         byte limit. The daemon can still refuse a reply above its delivery limit.
-        Read shows bodies and a reply command for each request. List shows only
+        Read shows bodies and a reply command for threaded requests. List shows only
         the current inbox's metadata. These commands print text only.
 ";
 
