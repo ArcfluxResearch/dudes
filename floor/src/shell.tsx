@@ -512,7 +512,7 @@ function SignedInShell() {
   return (
     <TicketNoticeHost value={noticeStack}><main ref={shellRef} aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
       data-page={page ?? undefined}
-      className={cn('shell grid grid-rows-[auto_minmax(0,1fr)] bg-bg has-[.roster[data-sheet]]:pb-16 font-sans text-ink max-[800px]:box-border max-[800px]:min-h-screen max-[800px]:has-[.roster[data-sheet]]:pb-[4.5rem] max-[800px]:pt-[var(--banner-height,0px)]',
+      className={cn('shell grid grid-rows-[auto_minmax(0,1fr)] bg-bg font-sans text-ink max-[800px]:box-border max-[800px]:min-h-screen max-[800px]:has-[.roster[data-sheet]]:pb-[4.5rem] max-[800px]:pt-[var(--banner-height,0px)]',
         fullPanel ? 'h-dvh' : 'h-screen max-[800px]:h-auto')}
       onKeyDown={(event) => {
         if (page !== null && closesPanel(event)) { event.stopPropagation(); closeView(); }
