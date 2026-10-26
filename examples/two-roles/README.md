@@ -98,7 +98,8 @@ python3 examples/two-roles/mail-live.py --allow-spend --provider claude \
 ```
 
 Use `--provider codex` for Codex. `--cli`, `--daemon` and `--journal-reader` select absolute build
-outputs when they are outside `target/release`. The script gives Dudes its own temporary home,
+outputs when they are outside `target/release`. The journal reader runs from this checkout and
+must be built from it. The script gives Dudes its own temporary home,
 configuration, state, runtime and project, and passes only the selected scratch engine profiles
 to the adapters. It removes the Dudes directories afterward and keeps the prepared engine home.
 
@@ -108,9 +109,10 @@ thread. It derives answered from those records. It does not require a stored ans
 browser display. This run does not verify an answered label in CLI or Floor output. A request
 that receives no reply fails the rehearsal.
 
-The floor admission ceiling is $1, with $0.50 per agent per day and $0.50 per goal, one ordinary
-turn per goal, and a 60-second goal timeout. These are admission ceilings; a running turn can
-finish above them. The script prints engine-reported dollars after shutdown and identifies
+The floor admission ceiling is $1 shared by both agents, with $1 per agent per day and $1 per goal.
+Each goal allows one ordinary turn, and each completion check times out after 60 seconds.
+The script waits up to 90 seconds for each expected outcome. The dollar amounts are admission ceilings.
+A running turn can finish above them. The script prints engine-reported dollars after shutdown and identifies
 unreported usage as unknown. Its live-engine path is opt-in; the unpaid `mail.sh` remains the
 repeatable stand-in check.
 

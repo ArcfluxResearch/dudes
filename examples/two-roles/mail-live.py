@@ -13,9 +13,11 @@ import time
 
 from mail import MAIL_WAKE_ISSUED, answered, done, rows
 
+CHECKOUT = Path(__file__).resolve().parents[2]
+
 
 def arguments():
-    target = Path(os.environ.get("CARGO_TARGET_DIR", Path(__file__).resolve().parents[2] / "target"))
+    target = Path(os.environ.get("CARGO_TARGET_DIR", CHECKOUT / "target"))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-spend", action="store_true", help="authorize real engine turns")
     parser.add_argument("--provider", choices=("claude", "codex"), required=True)
@@ -69,8 +71,8 @@ def rehearse(args, root):
                CLAUDE_CONFIG_DIR=str(args.engine_home / ".claude"),
                DUDES_STATE_DIR=str(state), DUDES_RUNTIME_DIR=str(runtime))
 
-    def command(argv):
-        result = subprocess.run(argv, env=env, cwd=work, capture_output=True,
+    def command(argv, cwd=work):
+        result = subprocess.run(argv, env=env, cwd=cwd, capture_output=True,
                                 text=True, timeout=10)
         if result.returncode:
             raise RuntimeError(f"{Path(argv[0]).name} {argv[1]} exited {result.returncode}")
@@ -109,8 +111,9 @@ def rehearse(args, root):
         agents = {}
         for role in ("recipient", "sender"):
             hired = json.loads(operator("--json", "hire", "--name", f"mail {role}",
-                                        "--role", role, "--provider", args.provider,
-                                        "--cwd", str(work), "--usd-per-day", "0.5"))
+                                        "--role", role, "--department", "mail",
+                                        "--provider", args.provider,
+                                        "--cwd", str(work), "--usd-per-day", "1"))
             agents[role] = hired["agent"]
 
         def goal(role, task):
@@ -119,7 +122,7 @@ def rehearse(args, root):
                                  f"from pathlib import Path; Path({str(marker)!r}).touch()"])
             operator("--json", "goal", "--agent", agents[role], "--text",
                      f"In this scratch project, run only these commands and finish.\n{task}\n{create}",
-                     "--usd", "0.5", "--hop-cap", "1", "--timeout-s", "60",
+                     "--usd", "1", "--hop-cap", "1", "--timeout-s", "60",
                      "--", "test", "-f", str(marker))
 
         goal("recipient", "")
@@ -146,7 +149,8 @@ def rehearse(args, root):
         except subprocess.TimeoutExpired:
             daemon.kill()
             daemon.wait(timeout=10)
-        dump = command([str(args.journal_reader), "journal", "--state", str(state)])
+        dump = command([str(args.journal_reader), "journal", "--state", str(state)],
+                       cwd=CHECKOUT)
         records = [dict(json.loads(line.split(" ", 2)[2]), lsn=int(line.split(" ", 1)[0]))
                    for line in dump.splitlines()]
         reported_cost(records)
