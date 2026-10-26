@@ -176,7 +176,7 @@ export function AgentDetail({
         </div>
         {enable}
         {fields.question === '' ? null : (
-          <section className={`agent-detail-question grid gap-2 rounded-lg border border-line bg-warn-soft p-3 ${RING}`} aria-label="Waiting question" tabIndex={-1}>
+          <section className={`agent-detail-question m-0 grid gap-2 rounded-lg border border-line bg-warn-soft p-3 shadow-none ${RING}`} aria-label="Waiting question" tabIndex={-1}>
             <h3 className="m-0 font-sans text-title font-semibold text-ink">Waiting question</h3>
             <p className="m-0 text-body text-ink [overflow-wrap:anywhere]">{fields.question}</p>
             {answer}

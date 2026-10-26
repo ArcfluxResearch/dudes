@@ -12,7 +12,7 @@
 import { useId, useSyncExternalStore } from 'react';
 
 import { floorSessionGeneration } from '../../session.ts';
-import { Button, Field, Textarea, cn } from '../../ui/index.ts';
+import { Button, Textarea, cn } from '../../ui/index.ts';
 import type { FloorState } from '../floor/store.ts';
 import { journalPosition } from '../format.ts';
 import { handFocusOnLeave } from '../focus.ts';

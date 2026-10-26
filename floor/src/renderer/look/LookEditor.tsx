@@ -36,8 +36,8 @@ export function LookEditor({ row }: { readonly row: AgentRow }) {
   const mine = state.attempt?.payload.agent === row.id;
   const name = typeof row.name === 'string' ? row.name : row.id;
   const draft = state.editor === row.id && !blocked ? state.draft : null;
-  return <section className="agent-look-editor grid gap-2 font-sans empty:hidden" aria-label={`Appearance and role for ${name}`}>
-    {draft === null ? null : <Card className="p-4"><form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void submitLook(row, browserLookDeps); }}
+  return <section className="agent-look-editor grid gap-2 border-0 p-0 font-sans empty:hidden" aria-label={`Appearance and role for ${name}`}>
+    {draft === null ? null : <Card className="p-4"><form className="grid grid-cols-1 gap-4" onSubmit={(event) => { event.preventDefault(); void submitLook(row, browserLookDeps); }}
       onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); cancelLook(); } }}>
       <div className="flex items-start justify-between gap-4">
         <Field label="Character" className="min-w-0 flex-1">
