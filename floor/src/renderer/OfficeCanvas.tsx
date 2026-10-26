@@ -811,10 +811,9 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
         {inBar ? createPortal(<>{modeLine}{fullLine}{viewButtons}</>, bar) : viewButtons}
         {inBar ? null : modeLine}
         <p className="office-mode-heard" role="status">{modeHeard}</p>
-        {floor.agents.length !== 0 || floor.phase !== 'live' || floor.stale ? null : (
+        {floor.agents.length !== 0 || floor.phase !== 'live' || floor.stale || hireSwitchOn(floor) ? null : (
           <div className="office-empty">
-
-            {hireSwitchOn(floor) ? null : <HireEntry floor={floor} id="hire-open-office" onAddAgent={onAddAgent} />}
+            <HireEntry floor={floor} id="hire-open-office" onAddAgent={onAddAgent} />
           </div>
         )}
       </div>
