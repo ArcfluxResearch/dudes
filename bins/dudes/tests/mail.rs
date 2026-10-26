@@ -13,7 +13,7 @@ use common::{Cli, Fixture, OpenRunner, SharedHost};
 use dudes::args::Command;
 use dudes::exit;
 use dudes_proto::{MailFrom, MailTo, Record};
-use dudes_types::{AgentId, MailId, MailState};
+use dudes_types::{AgentId, MailId, MailState, ThreadId};
 use serde_json::{Value, json};
 
 struct Mailbox {
@@ -128,6 +128,9 @@ fn a_request_offers_a_ready_reply_but_a_message_does_not() {
     let id = MailId::from_parts(1, 18);
     let mut marker = mailbox.marker(id, "Which branch should I use?");
     marker["act"] = json!("request");
+    marker["thread"] = json!(ThreadId::from_parts(1, 3));
+    marker["thread_seq"] = json!(1);
+    marker["members"] = json!([mailbox.agent, AgentId::from_parts(1, 2)]);
     mailbox.write(id, &marker);
     let request = mailbox.cli().args(["mail", "read"]).run();
     assert_eq!(request.code(), 0, "{}", request.output());
@@ -135,6 +138,18 @@ fn a_request_offers_a_ready_reply_but_a_message_does_not() {
     assert!(request.stdout.contains(&format!(
         "dudes mail send --reply-to {id} --act message --body 'Your reply'"
     )));
+    for field in ["thread", "thread_seq", "members"] {
+        marker.as_object_mut().unwrap().remove(field);
+    }
+    mailbox.write(id, &marker);
+    let legacy = mailbox.cli().args(["mail", "read"]).run();
+    assert_eq!(legacy.code(), 0, "{}", legacy.output());
+    assert!(
+        legacy
+            .stdout
+            .contains("reply unavailable: this mail has no thread\n")
+    );
+    assert!(!legacy.stdout.contains("dudes mail send --reply-to"));
     marker["act"] = json!("message");
     mailbox.write(id, &marker);
     let message = mailbox.cli().args(["mail", "read"]).run();
