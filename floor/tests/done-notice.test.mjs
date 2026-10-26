@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import assert from 'node:assert/strict';
+import { bare } from './helpers/shell-bare.mjs';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach, mock } from 'node:test';
 
@@ -80,8 +81,9 @@ function held() {
 }
 
 function region() {
-  return renderToStaticMarkup(createElement(DoneNotices,
-    { notices: store.getFloorState().doneNotices, leaveFocusTo: 'floor-notices' }));
+  return bare(renderToStaticMarkup(createElement(DoneNotices,
+    { notices: store.getFloorState().doneNotices, leaveFocusTo: 'floor-notices' })),
+  ['done-notices', 'done-notice', 'done-notice-met', 'done-notice-goal', 'done-notices-more', 'done-notices-more-label']);
 }
 
 function handoffs(html) {
@@ -204,7 +206,7 @@ test('Done notices draw an empty polite region, then each notice with its agent,
 
   delta(11, [agent(ADA, 'Ada', goal(NOTES, 'Ship the release notes', 'achieved'))]);
   assert.equal(region(), '<div class="done-notices" aria-live="polite"><ol aria-label="Goals done">'
-    + `<li class="done-notice" data-done-agent-id="${ADA}"><p class="agent-detail-kicker">Done</p>`
+    + `<li class="done-notice" data-done-agent-id="${ADA}"><p>Done</p>`
     + '<p class="done-notice-met"><strong>Ada</strong> <span>met its goal.</span></p><p class="done-notice-goal" title="Ship the release notes">Ship the release notes</p>'
     + `<button type="button" id="done-dismiss-${ADA}-${NOTES}" data-focus-on-leave="floor-notices" `
     + 'aria-label="Dismiss the Done notice for Ada: Ship the release notes">'
@@ -235,8 +237,8 @@ test('a dismissed notice hands focus to the next notice, or to the one before wh
 test("the only notice hands focus to the target it is given when it is dismissed", () => {
   snapshot([agent(ADA, 'Ada', goal(NOTES, 'Ship the release notes', 'in_progress'))], 10);
   delta(11, [agent(ADA, 'Ada', goal(NOTES, 'Ship the release notes', 'achieved'))]);
-  const inAgents = renderToStaticMarkup(createElement(DoneNotices,
-    { notices: store.getFloorState().doneNotices, leaveFocusTo: 'focus-toggle' }));
+  const inAgents = bare(renderToStaticMarkup(createElement(DoneNotices,
+    { notices: store.getFloorState().doneNotices, leaveFocusTo: 'focus-toggle' })));
   assert.deepEqual(handoffs(inAgents), [[`done-dismiss-${ADA}-${NOTES}`, 'focus-toggle']]);
 });
 
@@ -256,7 +258,7 @@ test('more than one notice says how many wait behind the newest, for the one-lin
 });
 
 test('Enter on the shown Dismiss hands focus to the next notice once it shows, then to the given target, beside a terminal or not', async () => {
-  const noticeOf = (element) => (element === null || element.getAttribute?.('class') === 'done-notice' ? element : noticeOf(element.parentNode));
+  const noticeOf = (element) => (element === null || element.getAttribute?.('class')?.split(' ').includes('done-notice') ? element : noticeOf(element.parentNode));
   // Beside a terminal the one-line row shows only the newest notice; without one every notice shows.
   for (const terminal of [true, false]) {
     store.resetFloorStore();

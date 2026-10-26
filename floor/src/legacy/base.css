@@ -125,4 +125,16 @@ body {
   min-height: 100vh;
   margin: 0;
 }
+
+/* Monospace is for data the page reports, never for the chrome around it. */
+code,
+pre,
+kbd,
+samp,
+.data,
+.live-work-text,
+.memory-text {
+  font-family: var(--font-data);
+  font-size: 0.88em;
+}
 }
