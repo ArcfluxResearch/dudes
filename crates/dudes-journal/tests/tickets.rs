@@ -834,7 +834,7 @@ fn asking_for_changes_clears_the_previous_exit_and_replaces_the_result() {
 
 #[test]
 fn a_working_ticket_keeps_its_last_nonempty_summary() {
-    for message in [None, Some(""), Some("\u{7}")] {
+    for message in [None, Some(""), Some("\u{7}"), Some(" \n\t")] {
         let mut records = ready_ticket();
         records.truncate(6);
         let turn = dudes_types::TurnId::from_parts(9, 2);
@@ -849,4 +849,54 @@ fn a_working_ticket_keeps_its_last_nonempty_summary() {
         );
         assert_eq!(ticket.last_turn_end.unwrap().exit.code, Some(1));
     }
+}
+
+#[test]
+fn an_old_ticket_result_cache_is_rebuilt_from_the_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir.path().join("journal");
+    let cache = dir.path().join("state.redb");
+    let mut writer = open(
+        &journal,
+        JournalOptions {
+            fsync: Fsync::None,
+            ..JournalOptions::default()
+        },
+    )
+    .unwrap()
+    .0;
+    for record in ready_ticket() {
+        writer
+            .append(&Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record,
+            })
+            .unwrap();
+    }
+    drop(writer);
+    let reader = Reader::new(&journal);
+    let mut projections = Projections::open_with(&cache, Fsync::None).unwrap();
+    replay(&reader, &mut projections).unwrap();
+    assert_ne!(projections.last_applied_lsn(), Lsn::ZERO);
+    drop(projections);
+
+    let database = redb::Database::create(&cache).unwrap();
+    let transaction = database.begin_write().unwrap();
+    transaction
+        .open_table(redb::TableDefinition::<&str, u64>::new("meta"))
+        .unwrap()
+        .insert("schema_version", 57)
+        .unwrap();
+    transaction.commit().unwrap();
+    drop(database);
+
+    let mut projections = Projections::open_with(&cache, Fsync::None).unwrap();
+    assert_eq!(projections.last_applied_lsn(), Lsn::ZERO);
+    replay(&reader, &mut projections).unwrap();
+    let (_, ticket) = projections.ticket(card()).unwrap().unwrap();
+    assert_eq!(
+        ticket.summary.as_deref(),
+        Some("The parser now accepts empty input.")
+    );
+    assert_eq!(ticket.last_turn_end.unwrap().exit.code, Some(0));
 }

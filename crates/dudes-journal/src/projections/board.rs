@@ -148,8 +148,17 @@ fn apply_outcome(
         } => {
             let goal = get_row::<TurnRow>(turns, &turn.to_bytes())?.and_then(|row| row.goal);
             match goal {
-                Some(goal) => update_goal_ticket(table, goal, |ticket| {
-                    ticket.summary = last_message.as_deref().map(summary_text);
+                Some(goal) => update_goal_ticket(table, goal, |status, ticket| {
+                    if status != CardStatus::Doing {
+                        return;
+                    }
+                    if let Some(summary) = last_message
+                        .as_deref()
+                        .map(summary_text)
+                        .filter(|summary| !summary.trim().is_empty())
+                    {
+                        ticket.summary = Some(summary);
+                    }
                     ticket.last_turn_end = Some(dudes_proto::TicketTurnEnd {
                         exit: *exit,
                         at: entry.at,
@@ -164,7 +173,7 @@ fn apply_outcome(
             pass,
             evidence,
             ..
-        } => update_goal_ticket(table, *goal, |ticket| {
+        } => update_goal_ticket(table, *goal, |_, ticket| {
             ticket.check = Some(TicketCheckResult {
                 pass: *pass,
                 exit: match evidence {
@@ -182,7 +191,7 @@ fn apply_outcome(
 fn update_goal_ticket(
     table: &mut RowTable<'_>,
     goal: GoalId,
-    change: impl FnOnce(&mut TicketRow),
+    change: impl FnOnce(CardStatus, &mut TicketRow),
 ) -> Result<()> {
     let found = all_rows::<BoardRow>(table)?.into_iter().find(|row| {
         row.ticket
@@ -193,7 +202,7 @@ fn update_goal_ticket(
         return Ok(());
     };
     if let Some(ticket) = &mut row.ticket {
-        change(ticket);
+        change(row.view.status, ticket);
     }
     put_row(table, &row.view.id.to_bytes(), &row)
 }
@@ -492,6 +501,7 @@ fn start_ticket(row: &mut BoardRow, lsn: Lsn, agent: AgentId, goal: GoalId, expe
         ticket.message = None;
         ticket.reason = None;
         ticket.summary = None;
+        ticket.last_turn_end = None;
         ticket.check = None;
         ticket.coverage = None;
         ticket.round = ticket.round.saturating_add(1);
