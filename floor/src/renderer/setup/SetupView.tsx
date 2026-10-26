@@ -15,6 +15,9 @@ import { engineName } from '../engines.ts';
 import { INSTALL_COMMANDS } from './daemon.ts';
 import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import type { ProviderName, ProviderRow } from './daemon.ts';
+import { Button, Disclosure, ICON } from '../../ui/index.ts';
+import { Code, HINT, LINK, Tag } from '../PageParts.tsx';
+import { Copy, ExternalLink, RefreshCw } from 'lucide-react';
 
 /** Put `text` on the clipboard. Nothing else happens, and a refusal changes nothing. */
 export function copyToClipboard(text: string): void {
@@ -26,14 +29,14 @@ function InstallGuide({ provider }: { readonly provider: ProviderName }) {
   switch (provider) {
     case 'claude':
       return (
-        <a href="https://code.claude.com/docs/en/setup" target="_blank" rel="noopener noreferrer">
-          Claude Code install guide
+        <a className={`${LINK} inline-flex items-center gap-1`} href="https://code.claude.com/docs/en/setup" target="_blank" rel="noopener noreferrer">
+          Claude Code install guide<ExternalLink {...ICON} size={12} aria-hidden="true" />
         </a>
       );
     case 'codex':
       return (
-        <a href="https://github.com/openai/codex" target="_blank" rel="noopener noreferrer">
-          Codex CLI install guide
+        <a className={`${LINK} inline-flex items-center gap-1`} href="https://github.com/openai/codex" target="_blank" rel="noopener noreferrer">
+          Codex CLI install guide<ExternalLink {...ICON} size={12} aria-hidden="true" />
         </a>
       );
     default:
@@ -44,32 +47,37 @@ function InstallGuide({ provider }: { readonly provider: ProviderName }) {
 function ProviderEntry({ row }: { readonly row: ProviderRow }) {
   const install = row.detail === null ? INSTALL_COMMANDS[row.provider] : undefined;
   return (
-    <li className="setup-provider" data-provider={row.provider} data-found={row.found}>
-      <h3>{engineName(row.provider)}</h3>
+    <li data-provider={row.provider} data-found={row.found} data-ui="card"
+      className="grid gap-2 rounded-lg border border-line bg-surface p-4 shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="m-0 text-title font-semibold text-ink">{engineName(row.provider)}</h3>
+        <Tag tone={row.found ? 'ok' : 'warn'}>{row.found ? 'Found' : 'Not found'}</Tag>
+      </div>
       {row.found ? (
         <>
-          <p>Found.</p>
-          <details className="setup-where"><summary>Where it is</summary>
-            <p>Dudes found it at <code>{row.path ?? 'a path this page cannot show'}</code>.</p>
-          </details>
+          <Disclosure summary="Where it is">
+            <p className={HINT}>Dudes found it at <Code>{row.path ?? 'a path this page cannot show'}</Code>.</p>
+          </Disclosure>
         </>
       ) : (
         <>
-          {row.detail === null ? <p>Not found.</p> : <p className="setup-refusal">{row.detail}</p>}
-          <details className="setup-where"><summary>Why it was not found</summary>
-            {row.detail === null ? <p>Dudes could not find <code>{row.program ?? 'its program'}</code>.</p> : null}
-            <p className="setup-note">
-              Dudes searches the same folders it had when it started. These may differ from the folders your terminal
-              searches. If you install an app in one of them, press Recheck. If you change the search folders, restart Dudes.
-            </p>
-          </details>
+          {row.detail === null ? null : <p className="m-0 text-base leading-reading text-ink">{row.detail}</p>}
+          <Disclosure summary="Why it was not found">
+            <div className="grid gap-2">
+              {row.detail === null ? <p className={HINT}>Dudes could not find <Code>{row.program ?? 'its program'}</Code>.</p> : null}
+              <p className={HINT}>
+                Dudes searches the same folders it had when it started. These may differ from the folders your terminal
+                searches. If you install an app in one of them, press Recheck. If you change the search folders, restart Dudes.
+              </p>
+            </div>
+          </Disclosure>
           {install === undefined ? null : (
-            <p className="setup-install">
-              <code>{install}</code>
-              <button type="button" className="setup-copy" onClick={() => copyToClipboard(install)}>Copy</button>
-            </p>
+            <div data-part="install" className="flex flex-wrap items-center gap-2 rounded-md bg-surface-2 p-2">
+              <Code className="min-w-0 flex-1 bg-transparent">{install}</Code>
+              <Button size="sm" icon={<Copy {...ICON} />} onClick={() => copyToClipboard(install)}>Copy</Button>
+            </div>
           )}
-          <InstallGuide provider={row.provider} />
+          <div className="flex"><InstallGuide provider={row.provider} /></div>
         </>
       )}
     </li>
@@ -80,28 +88,26 @@ export function SetupView({ floor, onGuide }: { readonly floor: FloorState; read
   const report = floor.daemon;
   const state = snapshotReadState(floor, report !== null);
   return (
-    <div className="setup-view">
-      {onGuide === undefined ? null : <button type="button" id="first-run-guide-open" onClick={onGuide}>Open first-run guide</button>}
+    <div data-ui="setup" className="grid gap-4 font-sans text-ink [overflow-wrap:anywhere]">
+      {onGuide === undefined ? null : <div className="flex"><Button id="first-run-guide-open" onClick={onGuide}>Open first-run guide</Button></div>}
       <ReadNotice state={state} label="Setup" message="Dudes could not check the engines. Retry to check again." />
       {report === null || state !== 'ready' ? null : (
           <>
-            {floor.stale ? <p role="status">Connection interrupted. These engine checks may be out of date.</p> : null}
-            <details className="setup-where"><summary>Where Dudes keeps its data</summary>
-              <dl className="setup-home">
-                <div>
-                  <dt>State directory</dt>
-                  <dd>{report.stateDir === null ? 'Not reported' : <code>{report.stateDir}</code>}</dd>
-                </div>
+            {floor.stale ? <p role="status" className={HINT}>Connection interrupted. These engine checks may be out of date.</p> : null}
+            <Disclosure summary="Where Dudes keeps its data">
+              <dl className="m-0 grid gap-0.5">
+                <dt className="text-small font-medium tracking-label text-muted uppercase">State directory</dt>
+                <dd className="m-0 text-base">{report.stateDir === null ? 'Not reported' : <Code>{report.stateDir}</Code>}</dd>
               </dl>
-            </details>
-            {report.providers.length === 0 ? <p>No engines are available to hire.</p> : (
-              <ul className="setup-providers" aria-label="Engines">
+            </Disclosure>
+            {report.providers.length === 0 ? <p className={HINT}>No engines are available to hire.</p> : (
+              <ul className="m-0 grid list-none gap-3 p-0" aria-label="Engines">
                 {report.providers.map((row) => <ProviderEntry key={row.provider} row={row} />)}
               </ul>
             )}
           </>
         )}
-      {state !== 'ready' ? null : <button type="button" className="setup-recheck" onClick={() => refreshFloorSnapshot()}>Recheck</button>}
+      {state !== 'ready' ? null : <div className="flex"><Button variant="primary" icon={<RefreshCw {...ICON} />} onClick={() => refreshFloorSnapshot()}>Recheck</Button></div>}
     </div>
   );
 }

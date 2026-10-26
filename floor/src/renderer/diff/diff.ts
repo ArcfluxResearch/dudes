@@ -235,3 +235,53 @@ export async function postDiff(request: DiffRequest, signedIn: boolean,
   if (status === 404) return Object.freeze({ kind: 'response', response: Object.freeze({ mode: 'refused', reason: 'disabled' }) });
   return Object.freeze({ kind: status === 503 ? 'unavailable' : 'unknown' });
 }
+
+export interface LineChanges {
+  /** Zero-based lines of the old text that the current text no longer has. */
+  readonly removed: ReadonlySet<number>;
+  /** Zero-based lines of the current text that the old text did not have. */
+  readonly added: ReadonlySet<number>;
+}
+
+/** The most line pairs compared, which keeps the comparison well under a frame for the sizes the viewer is allowed to show. */
+const MAX_LINE_PAIRS = 4_000_000;
+
+const linesOf = (text: string): string[] => text === '' ? [] : text.split(/\r\n|\r|\n/).slice(0, /[\r\n]$/.test(text) ? -1 : undefined);
+
+/**
+ * Which lines were taken out and which were put in, by the longest run of lines the two texts share. A file too big to
+ * compare cheaply gets `null`, and the viewer then shows it without colour.
+ */
+export function changedLines(oldText: string, currentText: string): LineChanges | null {
+  const before = linesOf(oldText);
+  const after = linesOf(currentText);
+  let start = 0;
+  while (start < before.length && start < after.length && before[start] === after[start]) start += 1;
+  let endBefore = before.length;
+  let endAfter = after.length;
+  while (endBefore > start && endAfter > start && before[endBefore - 1] === after[endAfter - 1]) { endBefore -= 1; endAfter -= 1; }
+  const n = endBefore - start;
+  const m = endAfter - start;
+  if (n * m > MAX_LINE_PAIRS) return null;
+  const width = m + 1;
+  const table = new Uint32Array((n + 1) * width);
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      table[i * width + j] = before[start + i] === after[start + j]
+        ? table[(i + 1) * width + j + 1]! + 1
+        : Math.max(table[(i + 1) * width + j]!, table[i * width + j + 1]!);
+    }
+  }
+  const removed = new Set<number>();
+  const added = new Set<number>();
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (before[start + i] === after[start + j]) { i += 1; j += 1; }
+    else if (table[(i + 1) * width + j]! >= table[i * width + j + 1]!) { removed.add(start + i); i += 1; }
+    else { added.add(start + j); j += 1; }
+  }
+  for (; i < n; i += 1) removed.add(start + i);
+  for (; j < m; j += 1) added.add(start + j);
+  return { removed, added };
+}

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import type { ReactNode } from 'react';
-import { AgentMarkdown } from './markdown.tsx';
+import { cn } from '../../ui/index.ts';
+import { AgentMarkdown, MARKDOWN } from './markdown.tsx';
 
 type TextPart = { readonly kind: 'text' | 'code'; readonly text: string };
 
@@ -34,7 +35,8 @@ function inlineText(text: string): readonly ReactNode[] {
 export function ChatText({ text, final = false, mode = 'basic' }: {
   readonly text: string; readonly final?: boolean; readonly mode?: 'basic' | 'agent';
 }) {
-  const className = `chat-text${mode === 'agent' ? ' chat-md' : ''}${final ? ' chat-final-reply' : ''}`;
+  const className = cn('chat-text min-w-0 text-body leading-reading [overflow-wrap:anywhere]',
+    MARKDOWN, mode === 'agent' ? 'chat-md' : 'whitespace-pre-wrap [tab-size:2]', final && 'chat-final-reply');
   if (mode === 'agent') return <div className={className}><AgentMarkdown text={text} /></div>;
   return <div className={className}>
     {splitFences(text).map((part, index) => part.kind === 'code'

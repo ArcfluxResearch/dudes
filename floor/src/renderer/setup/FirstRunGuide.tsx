@@ -18,7 +18,7 @@ function FloorActions({ floor }: { readonly floor: FloorState }) {
   return <>
     <p>These actions are optional. Turn on the ones you want to use from this page.</p>
     <p>This step is done once you have seen it, whichever switches are on.</p>
-    <div className="settings-view"><FloorSwitches report={report} headingId="guide-switches" /></div>
+    <div data-ui="settings"><FloorSwitches report={report} headingId="guide-switches" /></div>
   </>;
 }
 

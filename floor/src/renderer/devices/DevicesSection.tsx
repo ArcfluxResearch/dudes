@@ -3,10 +3,11 @@
 import { RelativeTime } from '../RelativeTime.tsx';
 import { useSyncExternalStore } from 'react';
 
+import { Button, Notice } from '../../ui/index.ts';
+import { Group, HINT, Tag } from '../PageParts.tsx';
 import { getDevicesState, answerBrowser, subscribeToDevices } from './devices.ts';
 import { signOutHere } from './signOut.ts';
 import type { Device } from './devices.ts';
-import { Button } from '../../ui/index.ts';
 
 function When({ at }: { readonly at: number | string | null }) {
   return at === null ? 'not yet' : <RelativeTime at={at} />;
@@ -14,16 +15,21 @@ function When({ at }: { readonly at: number | string | null }) {
 
 function Row({ device }: { readonly device: Device }) {
   return (
-    <li className="device-row grid justify-items-start gap-1 border-t border-line py-2">
-      <h4 className="m-0 text-base font-semibold [overflow-wrap:anywhere]">{device.name}{device.this
-        ? <span className="device-this ml-2 rounded-pill border border-accent px-2 text-caption font-semibold text-accent">This browser</span> : null}</h4>
-      <dl className="m-0 flex flex-wrap gap-x-5 gap-y-0.5 text-small">
-        <div className="block border-0 p-0"><dt className="inline after:content-[':_']">Signed in</dt><dd className="m-0 inline"><When at={device.signed_in} /></dd></div>
-        <div className="block border-0 p-0"><dt className="inline after:content-[':_']">First used</dt><dd className="m-0 inline"><When at={device.first_used} /></dd></div>
-        <div className="block border-0 p-0"><dt className="inline after:content-[':_']">Last used</dt><dd className="m-0 inline"><When at={device.last_used} /></dd></div>
-      </dl>
-      <Button size="sm" aria-label={`Sign out ${device.name}${device.this ? ' (this browser)' : ''}`}
-        onClick={() => { void (device.this ? signOutHere() : answerBrowser(device.id, 'remove')); }}>Sign out</Button>
+    <li className="grid gap-2 py-3 first:pt-0 last:pb-0 min-[641px]:grid-cols-[minmax(0,1fr)_auto] min-[641px]:items-center min-[641px]:gap-4">
+      <div className="grid min-w-0 gap-1">
+        <h4 className="m-0 flex flex-wrap items-center gap-2 text-base font-medium text-ink">
+          {device.name}{device.this ? <Tag tone="accent">This browser</Tag> : null}
+        </h4>
+        <dl className="m-0 flex flex-wrap gap-x-4 gap-y-0.5 text-small text-muted">
+          <div className="flex gap-1"><dt>Signed in</dt><dd className="m-0 text-ink"><When at={device.signed_in} /></dd></div>
+          <div className="flex gap-1"><dt>First used</dt><dd className="m-0 text-ink"><When at={device.first_used} /></dd></div>
+          <div className="flex gap-1"><dt>Last used</dt><dd className="m-0 text-ink"><When at={device.last_used} /></dd></div>
+        </dl>
+      </div>
+      <div className="flex">
+        <Button size="sm" aria-label={`Sign out ${device.name}${device.this ? ' (this browser)' : ''}`}
+          onClick={() => { void (device.this ? signOutHere() : answerBrowser(device.id, 'remove')); }}>Sign out</Button>
+      </div>
     </li>
   );
 }
@@ -32,11 +38,11 @@ function Row({ device }: { readonly device: Device }) {
 export function DevicesSection() {
   const { devices, loaded, signOutFailed } = useSyncExternalStore(subscribeToDevices, getDevicesState, getDevicesState);
   return (
-    <section aria-labelledby="settings-browsers"><h3 id="settings-browsers">Signed-in browsers</h3>
-      <p>A browser stays signed in for 30 days without use and 90 days in all. Signing one out here ends it at once.</p>
-      {!loaded ? <p role="status">Reading the signed-in browsers.</p> : <ul className="device-list m-0 grid list-none gap-2 p-0">
+    <Group title="Signed-in browsers" headingId="settings-browsers"
+      description="A browser stays signed in for 30 days without use and 90 days in all. Signing one out here ends it at once.">
+      {!loaded ? <p role="status" className={HINT}>Reading the signed-in browsers.</p> : <ul className="m-0 grid list-none divide-y divide-line p-0">
         {devices.map((device) => <Row key={device.id} device={device} />)}</ul>}
-      {signOutFailed ? <p className="link-refused m-0 text-danger" role="alert">Could not sign out, so this browser is still signed in. Try again.</p> : null}
-    </section>
+      {signOutFailed ? <Notice tone="warn" role="alert">Could not sign out, so this browser is still signed in. Try again.</Notice> : null}
+    </Group>
   );
 }

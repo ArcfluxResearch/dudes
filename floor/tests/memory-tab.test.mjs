@@ -23,7 +23,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { fakePage, press } from './helpers/fake-page.mjs';
-import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
@@ -278,19 +277,18 @@ test('the panel shows a read error for a refused reply and keeps nothing from it
   }
 });
 
-/** The `overflow` and `contain` declarations of every top-level rule whose selector list names `selector` exactly. */
-function clipsOf(css, selector) {
-  const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)];
-  return rules.filter(([, selectors]) => selectors.split(',').map((part) => part.trim()).includes(selector))
-    .flatMap(([, , body]) => [...body.matchAll(/(?:^|;)\s*(overflow|contain)\s*:\s*([^;]+)/g)]
-      .map(([, property, value]) => `${property}: ${value.trim()}`));
-}
-
 test('every memory text clips what it draws, so stacked marks cannot paint over its header', async () => {
-  const css = await legacyStyles();
-  assert.deepEqual(clipsOf(css, '.memory-text'), ['overflow: hidden'], 'an entry preview');
-  assert.deepEqual(clipsOf(css, '.memory-summary .memory-text'), ['overflow: auto'], 'the summary scrolls within its bound');
-  assert.deepEqual(clipsOf(css, '.memory-whole-text'), ['overflow: auto'], 'a whole entry scrolls within its bound');
+  const { deps } = daemon(ok(PIN));
+  const panel = await mount({ agent: ADA, active: true, crew, deps });
+  const tokens = (element) => (element.getAttribute('class') ?? '').split(/\s+/);
+  const texts = classed(panel.host, 'memory-text');
+  assert.ok(texts.length >= 2, 'the summary and an entry');
+  for (const text of texts) assert.ok(tokens(text).includes('overflow-hidden'), 'a preview clips what it draws');
+  for (const hook of ['memory-summary-text']) {
+    assert.ok(tokens(one(panel.host, hook)).includes('overflow-auto'), `${hook} scrolls within its bound`);
+    assert.ok(tokens(one(panel.host, hook)).includes('max-h-96'), `${hook} has a bound`);
+  }
+  await panel.close();
 });
 
 test('hostile text renders inert, with each hidden run drawn as one marker', async () => {
@@ -306,7 +304,8 @@ test('hostile text renders inert, with each hidden run drawn as one marker', asy
   assert.deepEqual(texts.map(textOf), [SHOWN, SHOWN, SHOWN], 'the summary, an entry and a whole entry');
   for (const text of texts) {
     assert.deepEqual(classed(text, 'memory-marker').map(textOf), MARKERS);
-    assert.deepEqual([...text.attributes], [['class', 'memory-text'], ['dir', 'ltr']]);
+    assert.deepEqual([...text.attributes].map(([name]) => name), ['class', 'dir']);
+    assert.equal(text.getAttribute('dir'), 'ltr');
   }
   assert.equal(textOf(one(panel.host, 'memory-whole-text')), SHOWN);
   const tags = new Set(elements(panel.host).map((element) => element.tagName));
@@ -322,7 +321,7 @@ test('the first page shows the fixed heading, the summary, each entry and the wi
   const { deps } = daemon(ok(PIN));
   const panel = await mount({ agent: ADA, active: true, crew, deps });
   const host = panel.host;
-  assert.ok(textOf(host).startsWith(`Memory${HEADING}Refresh`));
+  assert.ok(textOf(host).startsWith(`MemoryRefresh${HEADING}`));
   assert.equal(textOf(one(host, 'memory-status')), '');
   const summary = textOf(one(host, 'memory-summary'));
   assert.match(summary, /^SummaryExact excerpts of the memory, chosen by Dudes\. It covers 1 section and 5 bytes of memory\. Updated .*\.\[Condensed memory: exact excerpts; 0 sections omitted\]\n\[append 7 bytes 0\.\.5\]\nfirstDetails.*2026.* · segment 0 · byte 9$/);

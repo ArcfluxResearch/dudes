@@ -89,10 +89,10 @@ test('the roster shows the active card and the office notes open Board', async (
     agents: [{ id: A, name: 'Ada', status: 'running' }], cards: rows, selectedId: null,
     selectable: true, stale: false, castVariants: null, onSelectAgent() {}, onOpenQuestion() {}, onOpenTicket() {},
   });
-  assert.match(strip, /<small class="crew-activity" data-activity="none" title="Build the board">Build the board<\/small>/);
+  assert.match(strip, /<small class="crew-activity[^"]*" data-activity="none" title="Build the board">Build the board<\/small>/);
   assert.doesNotMatch(strip, /crew-card-note/);
   const notes = await renderModule('/src/renderer/BoardNotes.tsx', 'BoardNotes', { count: 1, hidden: 0, onOpenTasks() {} });
-  assert.match(notes, /<button type="button" class="board-select" aria-label="1 card, open Board" aria-controls="control-panel" title="1 card on Board">/);
+  assert.match(notes, /<button type="button" class="board-select[^"]*" aria-label="1 card, open Board" aria-controls="control-panel" title="1 card on Board">/);
   assert.ok(notes.includes('>1 card</span>'), 'one card is one card');
   const overflow = await renderModule('/src/renderer/BoardNotes.tsx', 'BoardNotes', { count: 7, hidden: 1, onOpenTasks() {} });
   assert.ok(overflow.includes('7 cards · +1'), 'the board shows six notes and counts the rest');
@@ -105,14 +105,14 @@ test('the roster shows the active card and the office notes open Board', async (
   assert.match(overflow, /aria-label="7 cards, 1 not on the board, open Board"/);
   assert.match(goals, /aria-label="2 cards, 3 goals not on the board, open Board"/);
   const one = await renderModule('/src/renderer/BoardNotes.tsx', 'BoardNotes', { count: 0, hidden: 0, goalsHidden: 1, onOpenTasks() {} });
-  assert.match(one, /aria-label="0 cards, 1 goal not on the board, open Board"[^>]*><span class="board-note-count">0 cards · \+1 goal<\/span>/);
+  assert.match(one, /aria-label="0 cards, 1 goal not on the board, open Board"[^>]*><span class="board-note-count[^"]*">0 cards · \+1 goal<\/span>/);
 });
 
 test('card detail supplies the existing heading focus and hand-back target', async () => {
   const detail = await renderModule('/src/renderer/BoardPanel.tsx', 'CardDetail', {
     floor: { ...getFloorState(), agents: [] }, card: card(C, 'doing', 'Inspect parser'),
   });
-  assert.match(detail, /<h3 id="card-detail-title" tabindex="-1" data-focus-on-leave="view-board">Inspect parser<\/h3>/);
+  assert.match(detail, /<h3 id="card-detail-title" tabindex="-1"[^>]*data-focus-on-leave="view-board">Inspect parser<\/h3>/);
   assert.match(detail, /aria-labelledby="card-detail-title"/);
 });
 

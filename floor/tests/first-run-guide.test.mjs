@@ -34,7 +34,13 @@ function snapshot({ settings = SETTINGS, found = false, onboarding = null, agent
 const status = (key, actionsSeen = false) =>
   guideSteps(getFloorState(), actionsSeen).find((step) => step.key === key)?.status;
 const done = (key) => status(key) === 'Complete';
-const indexStatus = (html, label) => html.match(new RegExp(`>${label}<span class="[^"]*">([^<]+)</span>`))?.[1];
+/** The switch drawn for `label`: its description text and whether it is on. */
+function switchOf(html, label) {
+  const found = new RegExp(`<span id="[^"]*-label"[^>]*>${label}</span>(?:<p id="[^"]*-description"[^>]*>(.*?)</p>)?</div><button[^>]*role="switch" aria-checked="(true|false)"`).exec(html);
+  assert.ok(found, `no switch named ${label}`);
+  return { says: found[1]?.replace(/<[^>]+>/g, '') ?? '', on: found[2] === 'true' };
+}
+const indexStatus = (html, label) => html.match(new RegExp(`>${label}<span[^>]*>([^<]+)</span>`))?.[1];
 let server;
 let FirstRunGuideView;
 let SettingsView;
@@ -100,12 +106,12 @@ test('Floor actions uses the Settings switches instead of config commands', () =
   snapshot();
   const html = view('actions');
   for (const label of ['Hire agents', 'Pause, resume and rename', 'Attach terminals', 'Add and remove projects']) {
-    assert.match(html, new RegExp(`<dt>${label}</dt><dd><span class="settings-says">[^<]*</span> Off[^]*?<button type="button">Turn on</button>`));
+    assert.equal(switchOf(html, label).on, false, label);
   }
   assert.doesNotMatch(html, /dudes config|quickstart|>Copy</);
   assert.doesNotMatch(html, /First hire|Open Hire wizard/);
   snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, control: true, terminal: true, hire: true } } });
-  assert.match(view('actions'), /<dt>Hire agents<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button>/);
+  assert.equal(switchOf(view('actions'), 'Hire agents').on, true);
 });
 
 test('ACTIONS_GATED_ON_SWITCHES mutant: Floor actions is Optional until seen, never Not done, whatever is on', () => {
@@ -136,12 +142,12 @@ test('ACTIONS_SEEN_UNREPORTED mutant: Floor actions is not seen until the switch
   const stale = view('actions');
   assert.notEqual(getFloorState().settings, null, 'a stale view retains its settings report');
   assert.equal(indexStatus(stale, 'Floor actions'), 'Optional');
-  assert.doesNotMatch(stale, /class="settings-view"|>Turn on<|>Turn off</, 'the guide waits for a confirmed snapshot before editing retained values');
+  assert.doesNotMatch(stale, /data-ui="settings"|role="switch"/, 'the guide waits for a confirmed snapshot before editing retained values');
   noteTransport('close');
   const disconnected = view('actions');
   assert.equal(indexStatus(disconnected, 'Floor actions'), 'Optional');
   assert.match(disconnected, /<p class="guide-status [^"]*" role="status">Optional<\/p>/);
-  assert.doesNotMatch(disconnected, /class="settings-view"|>Turn on<|>Turn off</, 'old switch values cannot be edited while disconnected');
+  assert.doesNotMatch(disconnected, /data-ui="settings"|role="switch"/, 'old switch values cannot be edited while disconnected');
   assert.equal(status('actions', true), 'Optional');
 });
 
