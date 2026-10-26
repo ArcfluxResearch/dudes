@@ -3,18 +3,16 @@
 import { Pencil } from 'lucide-react';
 import { useSyncExternalStore } from 'react';
 
-import { ACCENT_COLOURS, CAST_CHARACTERS, accessoryOf, isAccentColour, lookOf } from '../appearance.ts';
+import { accessoryOf, isAccentColour, lookOf } from '../appearance.ts';
 import { Portrait } from '../Portrait.tsx';
 import { floorSessionGeneration } from '../../session.ts';
 import { Button, Card, Field, ICON, MenuItem, Select, Textarea } from '../../ui/index.ts';
 import { getFloorState, subscribeToFloor } from '../floor/store.ts';
-import { CHOICE, LABEL, NOTE, RADIO, RECEIPT } from '../receipt.ts';
+import { NOTE, RECEIPT } from '../receipt.ts';
 import type { AgentRow } from '../scene/cast.ts';
+import { AccentChoice, CHARACTER_OPTIONS } from './LookFields.tsx';
 import { browserLookDeps, beginLook, cancelLook, checkLook, editLook, getLookState, lookAvailable,
   lookBlocked, lookProblem, submitLook, subscribeToLook } from './look.ts';
-
-const CHARACTER_OPTIONS = [{ value: '', label: 'Automatic' },
-  ...CAST_CHARACTERS.map((character) => ({ value: character, label: `Character ${character.toUpperCase()}` }))];
 
 /** The More menu's way into the look form. */
 export function LookMenuItem({ row }: { readonly row: AgentRow }) {
@@ -46,17 +44,7 @@ export function LookEditor({ row }: { readonly row: AgentRow }) {
         </Field>
         <LookPreview row={row} character={draft.character} accent={draft.accent} role={draft.role} />
       </div>
-      <fieldset className="hire-accents m-0 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 border-0 p-0">
-        <legend className={`mb-1.5 p-0 ${LABEL}`}>Accent colour</legend>
-        <label className={CHOICE}><input type="radio" name="look-accent" value="" className={RADIO} checked={draft.accent === null}
-          onChange={() => editLook({ accent: null })} />Automatic</label>
-        {Object.keys(ACCENT_COLOURS).filter(isAccentColour).map((accent) => <label key={accent} className={CHOICE}>
-          <input type="radio" name="look-accent" value={accent} className={RADIO} checked={draft.accent === accent}
-            onChange={() => editLook({ accent })} />
-          <span className="hire-accent-swatch inline-block size-3 rounded-pill border border-line-strong" style={{ backgroundColor: ACCENT_COLOURS[accent] }} />
-          {accent[0]?.toUpperCase()}{accent.slice(1)}
-        </label>)}
-      </fieldset>
+      <AccentChoice name="look-accent" value={draft.accent} onChange={(accent) => editLook({ accent })} />
       <Field label="Role">
         <Textarea rows={2} value={draft.role} onChange={(event) => editLook({ role: event.currentTarget.value })} />
       </Field>

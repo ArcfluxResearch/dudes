@@ -30,9 +30,8 @@ const LEGACY = new Map([
   ['src/legacy/base.css', { blocks: 7, declarations: 114 }],
   ['src/legacy/chat.css', { blocks: 128, declarations: 357 }],
   ['src/legacy/crew.css', { blocks: 38, declarations: 128 }],
-  ['src/legacy/engine-sign-in.css', { blocks: 12, declarations: 41 }],
-  ['src/legacy/hire-entry.css', { blocks: 13, declarations: 50 }],
-  ['src/legacy/hire-wizard.css', { blocks: 63, declarations: 198 }],
+  ['src/legacy/engine-sign-in.css', { blocks: 4, declarations: 7 }],
+  ['src/legacy/hire-wizard.css', { blocks: 29, declarations: 87 }],
   ['src/legacy/live-work.css', { blocks: 9, declarations: 27 }],
   ['src/legacy/memory.css', { blocks: 16, declarations: 39 }],
   ['src/legacy/office-controls.css', { blocks: 6, declarations: 13 }],
@@ -40,14 +39,10 @@ const LEGACY = new Map([
   ['src/legacy/roster.css', { blocks: 49, declarations: 137 }],
   ['src/legacy/settings.css', { blocks: 56, declarations: 161 }],
   ['src/legacy/setup.css', { blocks: 40, declarations: 130 }],
-  ['src/legacy/task.css', { blocks: 26, declarations: 71 }],
   ['src/legacy/touch-and-phone.css', { blocks: 25, declarations: 68 }],
   ['src/renderer/cardNotes.css', { blocks: 3, declarations: 16 }],
   ['src/renderer/chat/code.css', { blocks: 14, declarations: 37 }],
   ['src/renderer/chat/engine-said.css', { blocks: 3, declarations: 10 }],
-  ['src/renderer/diff/diff.css', { blocks: 37, declarations: 104 }],
-  ['src/renderer/recovery/recovery.css', { blocks: 23, declarations: 61 }],
-  ['src/renderer/ticket/ticket.css', { blocks: 129, declarations: 389 }],
 ]);
 
 async function stylesheets(dirs = [resolve(floor, 'src'), resolve(floor, 'lab')]) {

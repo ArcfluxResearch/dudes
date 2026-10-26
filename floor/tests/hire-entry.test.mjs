@@ -80,12 +80,12 @@ test('the roster folds the Hire reason behind a chip that names it, with the rea
     const { HireEntry } = await server.ssrLoadModule('/src/renderer/onboarding/HireEntry.tsx');
     const { hireUnavailable } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
     const folded = (floor) => renderToStaticMarkup(createElement(HireEntry, { floor, id: 'hire-open-crew', onAddAgent() {}, folded: true }));
-    assert.equal(folded(off), '<details class="hire-off"><summary>Hire is off</summary>'
-      + '<p class="hire-entry-off">Hire is off. Turn on Hire agents under Floor switches in Settings.</p></details>');
+    assert.match(folded(off), /data-hire-entry="folded".*?>Hire is off<\/summary>.*?<p data-hire-entry="off"[^>]*>Hire is off\. Turn on Hire agents under Floor switches in Settings\.<\/p>/);
     const unknown = { ...on, settings: null, onboarding: null };
-    assert.equal(folded(unknown), '<details class="hire-off"><summary>Hire is unavailable</summary>'
-      + `<p class="hire-entry-off">${hireUnavailable(unknown).replaceAll("'", '&#x27;')}</p></details>`);
-    assert.match(folded(on), /<button type="button" class="hire-entry" id="hire-open-crew">Add agent<\/button>/);
+    assert.ok(folded(unknown).includes(`>Hire is unavailable</summary>`));
+    assert.ok(folded(unknown).includes(`<p data-hire-entry="off"`));
+    assert.ok(folded(unknown).includes(hireUnavailable(unknown).replaceAll("'", '&#x27;')));
+    assert.match(folded(on), /<button type="button" data-ui="button"[^>]*id="hire-open-crew"[^>]*>Add agent<\/button>/);
   } finally { await server.close(); }
 });
 

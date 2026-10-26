@@ -292,7 +292,7 @@ const view = (engine, channel, signIn = 'signed_out', terminal = true) =>
 
 test('Sign in is offered for a signed-out engine, for Pi always, and for no other state', () => {
   const idle = { phase: 'idle' };
-  assert.match(view('claude', idle), /<button type="button" class="login-start">Sign in to Claude<\/button>/);
+  assert.match(view('claude', idle), /data-login="start"[^>]*>Sign in to Claude<\/button>/);
   assert.match(view('codex', idle), />Sign in to Codex</);
   assert.equal(view('claude', idle, 'signed_in'), '');
   assert.equal(view('claude', idle, 'unknown'), '');
@@ -310,11 +310,11 @@ test('the person is told what to do while the login runs, and in plain words how
   assert.match(view('claude', live('running')), /Paste the code it shows into this window, then press Enter\./);
   assert.match(view('codex', live('running', 'codex')), /This window finishes by itself\./);
   assert.match(view('pi', live('running', 'pi'), 'unknown'), /Type \/login/);
-  assert.match(view('claude', live('running')), /<button type="button" class="login-close">Cancel sign-in<\/button>/);
+  assert.match(view('claude', live('running')), /data-login="close"[^>]*>Cancel sign-in<\/button>/);
   assert.doesNotMatch(view('claude', live('running')), /Try again/);
 
   const done = (ending) => view('claude', { phase: 'ended', id: 1, engine: 'claude', ending });
-  assert.match(done('succeeded'), /role="status">Signed in\. Checking again…/);
+  assert.match(done('succeeded'), /data-login="state" role="status"[^>]*>.*?<div[^>]*>Signed in\. Checking again…/);
   assert.doesNotMatch(done('succeeded'), /Try again/);
   const failures = {
     failed: /The sign-in did not finish\./,
@@ -329,7 +329,7 @@ test('the person is told what to do while the login runs, and in plain words how
     const html = done(ending);
     assert.match(html, words, ending);
     assert.match(html, /role="alert"/, ending);
-    assert.match(html, /class="login-retry">Try again<\/button>/, ending);
+    assert.match(html, /data-login="retry"[^>]*>Try again<\/button>/, ending);
   }
   assert.doesNotMatch(view('codex', { phase: 'running', id: 1, engine: 'claude' }), /Paste the code/,
     'another engine\'s login is not drawn here');
@@ -339,8 +339,8 @@ test('Pi\'s sign-in needs the terminal switch, and the other engines\' do not', 
   const idle = { phase: 'idle' };
   const off = view('pi', idle, 'unknown', false);
   assert.match(off, /Signing in to Pi needs Attach terminals turned on under Floor switches in Settings\./);
-  assert.match(off, /<button type="button" class="login-recheck">Check again<\/button>/);
-  assert.doesNotMatch(off, /Open Pi to sign in|login-start/);
+  assert.match(off, /data-login="recheck"[^>]*>Check again<\/button>/);
+  assert.doesNotMatch(off, /Open Pi to sign in|data-login="start"/);
   assert.match(view('claude', idle, 'signed_out', false), />Sign in to Claude</);
   assert.match(view('codex', idle, 'signed_out', false), />Sign in to Codex</);
   assert.match(view('pi', idle, 'unknown', true), /Open Pi to sign in/);
@@ -360,9 +360,9 @@ const wizard = () => renderToStaticMarkup(createElement(HireWizardView, {
   hire: hire.getHireState(), floor: getFloorState(), onClose() {},
 }));
 
-const NEXT_DISABLED = /<button type="button" class="hire-next" aria-disabled="true">Next<\/button>/;
-const HIRE_DISABLED = /<button type="button" class="hire-submit" aria-disabled="true"/;
-const HIRE_OFFERED = /class="hire-submit"/;
+const NEXT_DISABLED = /data-hire-action="next"[^>]*aria-disabled="true"[^>]*>Next<\/button>/;
+const HIRE_DISABLED = /data-hire-action="submit" aria-disabled="true"/;
+const HIRE_OFFERED = /data-hire-action="submit"/;
 
 test('the Hire wizard holds on Engine while the chosen engine is signed out, offers Sign in, and shows no command', () => {
   const found = { provider: 'claude', program: 'claude', found: true, path: '~/bin/claude' };
@@ -370,11 +370,11 @@ test('the Hire wizard holds on Engine while the chosen engine is signed out, off
   hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'claude' });
   hire.showSection('engine');
   const html = wizard();
-  assert.match(html, /role="alert"><p>Claude is installed but not signed in, so this agent could not start\./);
-  assert.match(html, /<button type="button">Check again<\/button>/);
+  assert.match(html, /data-hire-missing="true"[^>]*>.*?<p class="m-0">Claude is installed but not signed in, so this agent could not start\./);
+  assert.match(html, /<button type="button" data-ui="button"[^>]*>Check again<\/button>/);
   assert.match(html, />Sign in to Claude</);
   assert.match(html, HIRE_DISABLED);
-  assert.doesNotMatch(html, /<code>/, 'no terminal command is shown on this path');
+  assert.doesNotMatch(html, /<code[ >]/, 'no terminal command is shown on this path');
   assert.doesNotMatch(html, /claude auth login|npm install/);
 
   for (const sign_in of ['signed_in', 'unknown', undefined]) {
@@ -394,8 +394,8 @@ test('a missing engine keeps its install command and Check again, and offers no 
   hire.showSection('engine');
   const html = wizard();
   assert.match(html, /was not found on this computer/);
-  assert.match(html, /<code>npm install -g @anthropic-ai\/claude-code<\/code>/);
-  assert.match(html, /<button type="button">Check again<\/button>/);
+  assert.match(html, /<code[^>]*>npm install -g @anthropic-ai\/claude-code<\/code>/);
+  assert.match(html, /<button type="button" data-ui="button"[^>]*>Check again<\/button>/);
   assert.doesNotMatch(html, /Sign in to/);
 });
 

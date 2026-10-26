@@ -173,3 +173,17 @@ test('a disclosure is a details whose summary carries a Lucide chevron that turn
   assert.match(page, /<summary data-part="summary"[^>]*><svg[^>]*lucide-chevron-right[^>]*group-open:rotate-90[^>]*>/);
   assert.match(page, /<\/svg>Details<\/summary>/);
 });
+
+test('a choice is a native radio or checkbox inside a row, with its note and aside, and a notice carries the role its caller gives', () => {
+  const radio = html(h(ui.Choice, { type: 'radio', name: 'engine', value: 'claude', checked: true, onChange() {}, label: 'Claude', note: 'Asks first.', aside: '3' }));
+  assert.match(radio, /^<label data-ui="choice" data-type="radio"/);
+  assert.match(radio, /<input type="radio"[^>]*name="engine"[^>]*checked=""[^>]*value="claude"/);
+  assert.match(radio, />Claude<\/span><span[^>]*>Asks first\.<\/span>/);
+  const box = html(h(ui.Choice, { type: 'checkbox', name: 'copy', checked: false, onChange() {}, label: 'Own copy', disabled: true }));
+  assert.match(box, /data-type="checkbox"/);
+  assert.match(box, /<input type="checkbox"[^>]*disabled=""/);
+  const alert = html(h(ui.Notice, { tone: 'danger', role: 'alert', id: 'why' }, 'Name is required.'));
+  assert.match(alert, /^<div data-ui="notice" data-tone="danger" role="alert" id="why"/);
+  assert.match(alert, /<svg[^>]*aria-hidden="true"/);
+  assert.match(alert, />Name is required\.<\/div><\/div>$/);
+});

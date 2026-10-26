@@ -94,9 +94,9 @@ test('the top bar names the floor and counts the crew by status', () => {
   assert.deepEqual([...stats.matchAll(/<li class="([\w-]+)[^"]*">([^<]*)<\/li>/g)].map(([, name, words]) => [name, words]), [
     ['crew-stats-total', '3 crew'],
   ], 'the roster beside the office says each state, so the top bar keeps only the count');
-  assert.doesNotMatch(bar, /hire-entry-off/, 'the top bar still carries the Hire reason that Crew folds');
+  assert.doesNotMatch(bar, /data-hire-entry="off"/, 'the top bar still carries the Hire reason that Crew folds');
   const crew = html.match(/<section class="crew-list roster[^"]*"[\s\S]*?<\/section>/)?.[0] ?? '';
-  assert.match(crew, /<details class="hire-off"><summary>Hire is unavailable<\/summary><p class="hire-entry-off">Hire is unavailable\. Check Engines and Projects in Settings\./);
+  assert.match(crew, /data-hire-entry="folded".*?>Hire is unavailable<\/summary>.*?<p data-hire-entry="off"[^>]*>Hire is unavailable\. Check Engines and Projects in Settings\./);
   const actions = bar.match(/<div class="top-bar-actions [^"]*" role="group" aria-label="Floor actions">[\s\S]*<\/div>/)[0];
   const more = tagWith(actions, 'header-more-toggle');
   assert.match(more, /aria-label="More"/);
@@ -214,16 +214,14 @@ test('Crew reveals its roster from Board, a page or focus mode', async () => {
   }
 });
 
-test('Needs you keeps card metadata visible above the title at every width', async () => {
-  const css = await readFile(resolve(root, 'src/renderer/ticket/ticket.css'), 'utf8');
-  for (const width of [640, 1024, 1440]) {
-    const rules = rulesAt(css, width);
-    const meta = selector => ['.ticket-card .ticket-card-meta', '.ticket-lane .ticket-card-meta'].includes(selector);
-    assert.equal(declared(rules, meta, 'display'), 'flex', `${width}: round and stopping metadata is visible`);
-    assert.equal(declared(rules, meta, 'grid-column'), '1 / -1', `${width}: metadata has its own row`);
-    assert.match(declared(rules, selector => selector === '.ticket-lane .ticket-card-footer', 'grid-row'), /^2(?: \/ span 2)?$/,
-      `${width}: the agent does not overlap metadata`);
-  }
+test('a ticket card puts its state above the title and the agent below it, in the Needs you lane too', async () => {
+  const source = await readFile(resolve(root, 'src/renderer/ticket/TicketBoard.tsx'), 'utf8');
+  const card = source.slice(source.indexOf('function TicketCard'), source.indexOf('export function TicketBoard'));
+  const meta = card.indexOf('ticket-card-meta');
+  const title = card.indexOf('<strong');
+  const footer = card.indexOf('ticket-card-footer');
+  assert.ok(meta > 0 && meta < title && title < footer, 'state, then title, then agent and place');
+  assert.doesNotMatch(card, /grid-cols|col-span|row-span/, 'one stacked layout for every lane, so the agent never overlaps the state');
 });
 
 test('detail tab focus rings stay inside the scrolling row', async () => {
