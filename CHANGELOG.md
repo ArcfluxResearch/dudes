@@ -11,6 +11,12 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.99.1] - 2026-10-27
+
+### Fixes
+
+- On a wide screen the Floor no longer scrolls 64 pixels past the bottom of the window into an empty strip. Every view fills the window exactly again, and a phone keeps its room for the roster bar. (#253)
+
 ## [0.99.0] - 2026-10-27
 
 ### Highlights
@@ -478,7 +484,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.99.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.99.1...HEAD
+[0.99.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.99.0...v0.99.1
 [0.99.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.98.0...v0.99.0
 [0.98.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.97.1...v0.98.0
 [0.97.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.97.0...v0.97.1
