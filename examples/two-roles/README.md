@@ -69,6 +69,9 @@ mail, so give it a goal before expecting that automatic response.
 Mailbox files update asynchronously. The stand-in waits for the daemon-created outbox before
 sending and for a delivered inbox marker before its single read. It does not assume that a
 journaled receipt is already readable through the mailbox files.
+After each send, it waits up to three seconds for that queued item to leave its outbox before
+finishing its goal and exiting. This keeps the sender's context active while the daemon admits
+and scrubs the subject.
 
 The stopped daemon's journal must contain exactly two mail records on one thread, numbered 1
 and 2, with both marked acknowledged. The first has act `request`; the later message from its
