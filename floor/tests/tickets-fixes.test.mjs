@@ -17,7 +17,10 @@ import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
+import { renderToStaticMarkup as renderRaw } from 'react-dom/server';
+import { plainMarkup } from './helpers/plain-markup.mjs';
+
+const renderToStaticMarkup = (...args) => plainMarkup(renderRaw(...args));
 import { createServer } from 'vite';
 
 import { ADA, GRACE, agent, cardId, daemon, done, json, plainCard, subscribe, ticketCard } from './helpers/tickets.mjs';

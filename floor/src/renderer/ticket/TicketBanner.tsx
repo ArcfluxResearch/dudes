@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import './ticket.css';
+import { Button } from '../../ui/index.ts';
 import { useAutoDismiss } from '../useAutoDismiss.ts';
 
 import type { FloorState } from '../floor/store.ts';
@@ -44,10 +44,11 @@ export function TicketBanner({ floor, onOpen }: { readonly floor: FloorState; re
 
   return <>
     <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true" data-ticket-announcement="true">{said}</div>
-    {text === null || dismissed === text ? null : <div className="ticket-banner" ref={banner} role="group" aria-label="Tickets waiting on you">
-      <span className="ticket-banner-text">{text}</span>
-      <button type="button" className="ticket-banner-open" onClick={onOpen}>Open Board</button>
-      <button type="button" className="ticket-banner-dismiss" aria-label="Dismiss ticket banner" onClick={() => setDismissed(text)}>Dismiss</button>
+    {text === null || dismissed === text ? null : <div className="ticket-banner box-border flex flex-wrap items-center gap-2 border-warn bg-warn-soft py-2 pr-2 pl-3 font-sans text-base text-ink"
+      ref={banner} role="group" aria-label="Tickets waiting on you">
+      <span className="ticket-banner-text mr-1 font-medium">{text}</span>
+      <Button size="sm" className="ticket-banner-open" onClick={onOpen}>Open Board</Button>
+      <Button variant="ghost" size="sm" className="ticket-banner-dismiss" aria-label="Dismiss ticket banner" onClick={() => setDismissed(text)}>Dismiss</Button>
     </div>}
   </>;
 }

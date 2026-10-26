@@ -26,7 +26,7 @@ import { RenameStatus } from './rename/NameEditor.tsx';
 import { RetireStatus, RetireStrip } from './retire/RetirePanel.tsx';
 import { automaticHoldOf } from './automaticHold.ts';
 import { RESUME_SWITCH } from './ticket/stuck.ts';
-import { RecoveryPanel, RecoveryReceipts } from './recovery/RecoveryPanel.tsx';
+import { RECEIPTS, RecoveryPanel, RecoveryReceipts } from './recovery/RecoveryPanel.tsx';
 import { switchedOffControls, UnavailableControls } from './settings/SettingsView.tsx';
 import type { AgentRow } from './scene/cast.ts';
 import { TerminalAttach } from './terminal/TerminalPanel.tsx';
@@ -39,7 +39,7 @@ import { readDetailTab, writeDetailTab } from './view.ts';
  */
 export function Receipts({ floor, leaveFocusTo }: { readonly floor: FloorState; readonly leaveFocusTo: string }) {
   return (
-    <div className="receipts">
+    <div className={RECEIPTS}>
       <PauseAllReceipt leaveFocusTo={leaveFocusTo} />
       <RenameStatus />
       <LookStatus />

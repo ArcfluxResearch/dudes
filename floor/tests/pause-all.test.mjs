@@ -365,7 +365,7 @@ test('RECEIPT_OVER_STAGE and BOX_FLOATS mutants: the receipt sits with the other
   const beside = stage({ floor: store.getFloorState() });
   pauseAll.resetPauseAll();
   assert.match(beside,
-    /<div class="receipts"><section class="pause-all-receipt" aria-live="polite" aria-label="Pause all result"><p[^>]*>Paused 2 agents\.<\/p>/,
+    /<div class="receipts[^"]*"><section class="pause-all-receipt" aria-live="polite" aria-label="Pause all result"><p[^>]*>Paused 2 agents\.<\/p>/,
     'the result is the first of the receipts beside the office, above the drawer');
   // The result stays in the flow beside the office. The confirmation is a popover from its button, so it moves nothing in the bar.
   const rules = await styleRules();

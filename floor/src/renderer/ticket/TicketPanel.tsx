@@ -31,6 +31,9 @@ import { AGENT_SAYS, FROM_LAST_READING, NO_SUMMARY, agentWithoutProjectSentence,
 import { StuckActions } from './StuckActions.tsx';
 import { AgentMarkdown } from '../chat/markdown.tsx';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
+import { Badge, Button, Disclosure, Field, Input, Textarea, cn } from '../../ui/index.ts';
+import type { BadgeState } from '../../ui/index.ts';
+import { FILE_LIST, FILE_ROW, FORM_ACTIONS, HINT, PATH, SELECT_BOX, SHEET_SECTIONS } from './look.ts';
 
 import { coverageText, groupGaps, instructionContextDetails, instructionContextText } from './instructions.ts';
 import type { InstructionReview } from './instructions.ts';
@@ -44,6 +47,18 @@ const KIND_LABEL: Readonly<Record<GitChangeKind, string>> = Object.freeze({
   added: 'Added', modified: 'Modified', deleted: 'Deleted', renamed: 'Renamed',
   type_changed: 'Type changed', conflicted: 'Conflict',
 });
+
+const KIND_INK: Readonly<Record<GitChangeKind, string>> = Object.freeze({
+  added: 'text-ok', modified: 'text-muted', deleted: 'text-danger', renamed: 'text-info',
+  type_changed: 'text-info', conflicted: 'text-danger',
+});
+
+const STATE_BADGE: Readonly<Record<CardRow['status'], BadgeState>> = Object.freeze({
+  todo: 'waiting', claimed: 'waiting', doing: 'working', review: 'ready', blocked: 'needs-you', done: 'done',
+});
+
+const FACT_LABEL = 'text-caption font-semibold tracking-label text-muted uppercase';
+const NEEDS = 'ticket-needs m-0 rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-ink';
 
 type Mode = 'none' | 'give' | 'changes' | 'edit' | 'remove' | 'stop';
 
@@ -80,7 +95,7 @@ function ChangedFiles({ floor, card }: { readonly floor: FloorState; readonly ca
   }, [floor.git, agent, card.id, card.seq]);
   if (!floor.git) {
     return <section aria-label="Changed files"><h4>Changed files</h4>
-      <p className="ticket-hint">Changed files are turned off, so this list is empty. To see them, turn on Show changed files in Settings.</p>
+      <p className={HINT}>Changed files are turned off, so this list is empty. To see them, turn on Show changed files in Settings.</p>
     </section>;
   }
   const mine = agent !== null && git.agent === agent;
@@ -88,20 +103,20 @@ function ChangedFiles({ floor, card }: { readonly floor: FloorState; readonly ca
   const view = belongs ? git.view : null;
   const problem = mine ? refusalText(view, git.failure, git.busy) : null;
   const rows = view === null || view.state !== 'ok' ? [] : [
-    ...view.committed.items.map((file) => ({ kind: KIND_LABEL[file.kind], path: file.path, cut: file.cut })),
-    ...view.changes.items.map((file) => ({ kind: KIND_LABEL[file.kind], path: file.path, cut: file.cut })),
+    ...view.committed.items.map((file) => ({ kind: KIND_LABEL[file.kind], ink: KIND_INK[file.kind], path: file.path, cut: file.cut })),
+    ...view.changes.items.map((file) => ({ kind: KIND_LABEL[file.kind], ink: KIND_INK[file.kind], path: file.path, cut: file.cut })),
   ];
   const loading = mine && git.phase === 'loading';
   return <section aria-label="Changed files"><h4>Changed files</h4>
     {loading ? <p role="status">Reading the checkout…</p> : null}
-    {problem === null ? null : <p className="ticket-hint" role="status">{problem}</p>}
+    {problem === null ? null : <p className={HINT} role="status">{problem}</p>}
     {view !== null && view.state === 'ok' ? (rows.length === 0 ? <p>No changed files.</p>
-      : <ul className="ticket-files">{rows.map((file, at) => <li key={at}>
-        <span className="git-kind">{file.kind}</span>{' '}<span className="git-path data">{file.path}{file.cut ? '…' : ''}</span>
+      : <ul className={FILE_LIST}>{rows.map((file, at) => <li key={at} className={FILE_ROW}>
+        <span className={cn('git-kind w-24 shrink-0 text-caption font-medium', file.ink)}>{file.kind}</span>{' '}<span className={PATH}>{file.path}{file.cut ? '…' : ''}</span>
       </li>)}</ul>) : null}
-    {agent === null ? null : <button type="button" className="ticket-look" disabled={loading}
+    {agent === null ? null : <Button size="sm" className="ticket-look self-start" disabled={loading}
       title={loading ? 'Wait for the checkout to finish loading.' : undefined}
-      onClick={look}>Look again</button>}
+      onClick={look}>Look again</Button>}
   </section>;
 }
 
@@ -118,8 +133,8 @@ function InstructionEvidence({ floor, review, reviewing }: {
         : 'Dudes could not see everything the agent relied on, so look over the work yourself.'}</p>
     <h5>Known changed paths</h5>
     {review.changed_paths.length === 0 ? <p>No known changed paths were retained.</p>
-      : <ul className="ticket-files">{review.changed_paths.map((row, at) => <li key={at}>
-        <span className="git-path data">{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>{' '}({instructionContextText(row.context)})
+      : <ul className={FILE_LIST}>{review.changed_paths.map((row, at) => <li key={at} className={FILE_ROW}>
+        <span className={PATH}>{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>{' '}({instructionContextText(row.context)})
       </li>)}</ul>}
     <h5>Why this needs your review</h5>
     {review.gaps.length === 0 ? <p>No coverage gaps were recorded.</p>
@@ -134,7 +149,7 @@ function InstructionEvidence({ floor, review, reviewing }: {
       {holding.length === 0 ? ' Accept records that you reviewed the change.'
         : ' Accept records that you reviewed it despite these gaps.'} If it is not fine, choose Ask for changes.</p>}
     {review.pending_comparison ? <p role="status">Dudes is still comparing the instruction files. Review actions are unavailable until it finishes.</p> : null}
-    <details><summary>Observation details</summary>
+    <Disclosure summary="Observation details">
       <p>These observations compare sampled endpoints. They do not identify an exclusive writer or prove that instructions were unchanged between samples.</p>
       <p>Review through record {review.watermark.through_lsn}.</p>
       <p>Review digest <code>{review.watermark.set_digest}</code>.</p>
@@ -143,7 +158,7 @@ function InstructionEvidence({ floor, review, reviewing }: {
         <ul>{review.gaps.map((row, at) => <li key={at}>
           Coverage gap {at + 1}. {row.reason.replaceAll('_', ' ')}. {instructionContextDetails(row.context)}.
           {row.agent === null ? null : <> Participant <code>{row.agent}</code>.</>}
-          {row.display === null ? null : <> <span className="git-path data">{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>.</>}
+          {row.display === null ? null : <> <span className={PATH}>{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>.</>}
           {row.origin === 'declared' ? ' Standing engine limit.' : ' Found during this ticket.'}
         </li>)}</ul>
       </>}
@@ -167,7 +182,7 @@ function InstructionEvidence({ floor, review, reviewing }: {
         {row.sampled_at === null ? ' No ending sample.' : <> Sampled at {recordedTime(row.sampled_at)}.</>}
         {row.recovery ? (row.sampled_at === null ? ' Settled during recovery.' : ' Sampled during recovery.') : null}
       </li>)}</ul>
-    </details>
+    </Disclosure>
   </section>;
 }
 
@@ -183,36 +198,39 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
   const waiting = (fresh ? shown?.waiting?.note : null) ?? words.note;
   const failure = engineStopped(ticket?.last_turn_end);
   return <>
-    <p className="ticket-status">{statusSentence(card.status, words.agent, words.place)}</p>
-    <details className="ticket-facts"><summary>Details</summary><dl>
-      <div><dt>State</dt><dd>{stateName(card.status)}</dd></div>
-      <div><dt>Agent</dt><dd>{words.agent ?? 'Not given to an agent'}</dd></div>
-      {shown === null ? null : <div><dt>Done when</dt><dd>{shown.check.label}</dd></div>}
-      {ticket === null ? null : <div><dt>Round</dt><dd>{shown?.round ?? ticket.round}</dd></div>}
-      {words.place === null ? null : <div><dt>Place</dt><dd>{words.place}</dd></div>}
+    <div className="flex flex-wrap items-center gap-3">
+      <Badge state={STATE_BADGE[card.status]}>{stateName(card.status)}</Badge>
+      <p className="ticket-status m-0 min-w-0 flex-1 text-body text-ink">{statusSentence(card.status, words.agent, words.place)}</p>
+    </div>
+    <Disclosure summary="Details" className="ticket-facts"><dl className="m-0 grid grid-cols-2 gap-x-6 gap-y-3 pb-2 max-[800px]:grid-cols-1">
+      <div><dt className={FACT_LABEL}>State</dt><dd className="m-0 mt-0.5">{stateName(card.status)}</dd></div>
+      <div><dt className={FACT_LABEL}>Agent</dt><dd className="m-0 mt-0.5">{words.agent ?? 'Not given to an agent'}</dd></div>
+      {shown === null ? null : <div><dt className={FACT_LABEL}>Done when</dt><dd className="m-0 mt-0.5">{shown.check.label}</dd></div>}
+      {ticket === null ? null : <div><dt className={FACT_LABEL}>Round</dt><dd className="m-0 mt-0.5">{shown?.round ?? ticket.round}</dd></div>}
+      {words.place === null ? null : <div><dt className={FACT_LABEL}>Place</dt><dd className="m-0 mt-0.5">{words.place}</dd></div>}
     </dl>
-    {failure === null ? null : <p>{failure}</p>}
-    {shown?.coverage != null && shown.coverage.limits.length > 0 ? <p>{coverageText(shown.coverage)}</p> : null}
-    </details>
-    {failure === null ? null : <p className="ticket-needs" role="note">An earlier engine attempt stopped. Open Details for its result.</p>}
-    {card.status === 'blocked' ? <p className="ticket-needs" role="note">{reasonSentence(ticket?.reason ?? null)}</p>
-      : waiting === null ? null : <p className="ticket-wait">{waiting}</p>}
+    {failure === null ? null : <p className="m-0 mt-2">{failure}</p>}
+    {shown?.coverage != null && shown.coverage.limits.length > 0 ? <p className="m-0 mt-2">{coverageText(shown.coverage)}</p> : null}
+    </Disclosure>
+    {failure === null ? null : <p className={NEEDS} role="note">An earlier engine attempt stopped. Open Details for its result.</p>}
+    {card.status === 'blocked' ? <p className={NEEDS} role="note">{reasonSentence(ticket?.reason ?? null)}</p>
+      : waiting === null ? null : <p className="ticket-wait m-0">{waiting}</p>}
     {shown === null && mine?.phase !== 'failed' ? <p role="status">Reading the ticket…</p> : null}
-    {mine?.problem == null ? null : <p className="ticket-hint" role="status">{mine.problem}</p>}
+    {mine?.problem == null ? null : <p className={HINT} role="status">{mine.problem}</p>}
     {shown === null ? null : <>
-      {shown.truncated.length === 0 ? null : <p className="ticket-hint" role="note">
+      {shown.truncated.length === 0 ? null : <p className={HINT} role="note">
         Some details are shortened in this view: {shown.truncated.map((field) => TRUNCATED_LABEL[field]).join(', ')}.
       </p>}
       <section aria-label="Note"><h4>Note</h4>
-        {shown.note === '' ? <p>{shown.truncated.includes('note')
-          ? 'The note was omitted from this view.' : 'No note.'}</p> : <p className="ticket-text">{shown.note}</p>}
+        {shown.note === '' ? <p className="text-muted">{shown.truncated.includes('note')
+          ? 'The note was omitted from this view.' : 'No note.'}</p> : <p className="ticket-text whitespace-pre-wrap">{shown.note}</p>}
       </section>
       {card.status === 'todo' || card.status === 'claimed' ? null : <section aria-label="The agent's summary">
         <h4>{AGENT_SAYS}</h4>
         {shown.summary === null || shown.summary === '' ? <p>{shown.truncated.includes('summary')
           ? "The agent's summary was omitted from this view." : `${NO_SUMMARY}.`}</p>
-          : <div className="ticket-summary md"><AgentMarkdown text={shown.summary} /></div>}
-        {fresh ? null : <p className="ticket-hint" role="note">{FROM_LAST_READING}</p>}
+          : <div className="ticket-summary md rounded-md border-l-4 border-line-strong bg-surface-2 px-3 py-2"><AgentMarkdown text={shown.summary} /></div>}
+        {fresh ? null : <p className={HINT} role="note">{FROM_LAST_READING}</p>}
       </section>}
     </>}
   </>;
@@ -240,13 +258,13 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
   const reviewReady = !requiresInstructionReview(card) || reviewedWatermark(evidence, card) !== null;
   const chosen = usable.find((row) => row.id === agent)?.id ?? usable[0]?.id ?? null;
   if (noProjects(floor)) return <NoTicketProjectHint floor={floor} />;
-  if (project === null) return <p className="ticket-hint" role="status">{pending ?? 'Reading the ticket…'}</p>;
-  if (usable.length === 0) return <div className="ticket-field" data-no-agent="true">
-    <p className="ticket-hint">{agentChoiceSentence(floor, project)}</p>
-    {unrecorded.map((row) => <p key={row.id} className="ticket-hint">{agentWithoutProjectSentence(row.name)}</p>)}
+  if (project === null) return <p className={HINT} role="status">{pending ?? 'Reading the ticket…'}</p>;
+  if (usable.length === 0) return <div className="flex flex-col items-start gap-2 rounded-lg border border-line bg-surface-2 p-3" data-no-agent="true">
+    <p className={HINT}>{agentChoiceSentence(floor, project)}</p>
+    {unrecorded.map((row) => <p key={row.id} className={HINT}>{agentWithoutProjectSentence(row.name)}</p>)}
     {onHire !== undefined && hireSwitchOn(floor)
-      ? <button type="button" className="ticket-hire" onClick={(event) => onHire(event.currentTarget)}>Hire an agent</button>
-      : <p className="ticket-hint">Open Settings to check whether hiring is available.</p>}
+      ? <Button size="sm" className="ticket-hire" onClick={(event) => onHire(event.currentTarget)}>Hire an agent</Button>
+      : <p className={HINT}>Open Settings to check whether hiring is available.</p>}
   </div>;
 
   async function submit(event: FormEvent): Promise<void> {
@@ -261,25 +279,25 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
     }
   }
 
-  return <form className="ticket-form" aria-label={mode === 'changes' ? 'Ask for changes' : 'Give to agent'}
+  return <form className="ticket-form flex flex-col gap-4 rounded-lg border border-line bg-surface-2 p-4" aria-label={mode === 'changes' ? 'Ask for changes' : 'Give to agent'}
     ref={handFocusAfterLeave} data-focus-on-leave="card-detail-title" onSubmit={(event) => { void submit(event); }}>
-    <div className="ticket-field">
-      <label htmlFor={`${ids}-agent`}>Agent</label>
-      <select id={`${ids}-agent`} value={chosen ?? ''} onChange={(event) => setAgent(event.target.value)}>
+    <Field label="Agent" id={`${ids}-agent`}>
+      <select id={`${ids}-agent`} className={SELECT_BOX} value={chosen ?? ''} onChange={(event) => setAgent(event.target.value)}>
         {usable.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
       </select>
-    </div>
-    {unrecorded.map((row) => <p key={row.id} className="ticket-hint">{agentWithoutProjectSentence(row.name)}</p>)}
-    {mode === 'changes' ? <div className="ticket-field">
-      <label htmlFor={`${ids}-message`}>What should change?</label>
-      <textarea id={`${ids}-message`} rows={3} maxLength={2048} value={message}
+    </Field>
+    {unrecorded.map((row) => <p key={row.id} className={HINT}>{agentWithoutProjectSentence(row.name)}</p>)}
+    {mode === 'changes' ? <Field label="What should change?" id={`${ids}-message`}>
+      <Textarea rows={3} maxLength={2048} value={message}
         onChange={(event) => { writeTicketChangesDraft(card.id, event.target.value); setMessage(event.target.value); }} />
-    </div> : null}
-    <button type="submit" disabled={sending || chosen === null || !reviewReady || !ticketActionsOpen(floor)}
-      title={sending ? 'Wait for the current request to finish.' : !reviewReady ? 'Read the current instruction review first.'
-        : !ticketActionsOpen(floor) ? 'Reconnect to Dudes before giving this ticket.' : chosen === null ? 'Choose an agent.' : undefined}>
-      {mode === 'changes' ? 'Send back' : 'Give to agent'}</button>
-    <button type="button" onClick={onDone}>Cancel</button>
+    </Field> : null}
+    <div className={FORM_ACTIONS}>
+      <Button type="submit" variant="primary" disabled={sending || chosen === null || !reviewReady || !ticketActionsOpen(floor)}
+        title={sending ? 'Wait for the current request to finish.' : !reviewReady ? 'Read the current instruction review first.'
+          : !ticketActionsOpen(floor) ? 'Reconnect to Dudes before giving this ticket.' : chosen === null ? 'Choose an agent.' : undefined}>
+        {mode === 'changes' ? 'Send back' : 'Give to agent'}</Button>
+      <Button onClick={onDone}>Cancel</Button>
+    </div>
   </form>;
 }
 
@@ -307,27 +325,26 @@ function EditForm({ floor, card, detail, onDone }: {
     if (saved) onDone();
   }
 
-  return <form className="ticket-form" aria-label="Edit ticket" onSubmit={(event) => { void submit(event); }}>
-    <div className="ticket-field">
-      <label htmlFor={`${ids}-title`}>Title</label>
-      <input id={`${ids}-title`} type="text" required maxLength={256} value={title} onChange={(event) => setTitle(event.target.value)} />
-    </div>
-    <div className="ticket-field">
-      <label htmlFor={`${ids}-note`}>Note (optional)</label>
-      <textarea id={`${ids}-note`} rows={3} maxLength={8192} value={text} onChange={(event) => setText(event.target.value)} />
-    </div>
-    {checks.length > 0 ? <div className="ticket-field">
-      <label htmlFor={`${ids}-check`}>Done when</label>
-      <select id={`${ids}-check`} value={checkId} onChange={(event) => setCheckId(event.target.value)}>
+  return <form className="ticket-form flex flex-col gap-4 rounded-lg border border-line bg-surface-2 p-4" aria-label="Edit ticket" onSubmit={(event) => { void submit(event); }}>
+    <Field label="Title" id={`${ids}-title`}>
+      <Input type="text" required maxLength={256} value={title} onChange={(event) => setTitle(event.target.value)} />
+    </Field>
+    <Field label="Note (optional)" id={`${ids}-note`}>
+      <Textarea rows={3} maxLength={8192} value={text} onChange={(event) => setText(event.target.value)} />
+    </Field>
+    {checks.length > 0 ? <Field label="Done when" id={`${ids}-check`}>
+      <select id={`${ids}-check`} className={SELECT_BOX} value={checkId} onChange={(event) => setCheckId(event.target.value)}>
         {checks.map((entry) => <option key={entry.id} value={entry.id}>{choiceLabel(entry)}</option>)}
       </select>
-    </div> : null}
-    <button type="submit" disabled={sending || title.trim() === '' || !ticketActionsOpen(floor)
-      || editableDetail(getDetailState(), card) === null}
-      title={sending ? 'Wait for the current request to finish.' : title.trim() === '' ? 'Enter a title.'
-        : !ticketActionsOpen(floor) ? 'Reconnect to Dudes before editing.' : editableDetail(getDetailState(), card) === null
-          ? 'Read the complete current note before editing.' : undefined}>Save</button>
-    <button type="button" onClick={onDone}>Cancel</button>
+    </Field> : null}
+    <div className={FORM_ACTIONS}>
+      <Button type="submit" variant="primary" disabled={sending || title.trim() === '' || !ticketActionsOpen(floor)
+        || editableDetail(getDetailState(), card) === null}
+        title={sending ? 'Wait for the current request to finish.' : title.trim() === '' ? 'Enter a title.'
+          : !ticketActionsOpen(floor) ? 'Reconnect to Dudes before editing.' : editableDetail(getDetailState(), card) === null
+            ? 'Read the complete current note before editing.' : undefined}>Save</Button>
+      <Button onClick={onDone}>Cancel</Button>
+    </div>
   </form>;
 }
 
@@ -369,13 +386,16 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   const readHint = needsReview ? 'Read the current instruction evidence before reviewing this ticket.'
     : noteUnread ? 'Read the complete current note before editing this ticket.' : null;
 
-  const actionButton = (action: TicketAction) => <button key={action} type="button" className="ticket-action" data-action={action}
+  const actionButton = (action: TicketAction) => <Button key={action}
+    variant={action === 'give' || action === 'accept' || action === 'try_again' ? 'primary' : 'secondary'}
+    className={cn('ticket-action', action === 'remove' || action === 'stop' ? 'text-danger' : 'flex-1 max-[800px]:h-11 max-[800px]:text-body')}
+    data-action={action}
     disabled={sending || (action === 'edit' && editable === null)
       || ((action === 'accept' || action === 'changes') && !reviewReady)}
     title={sending ? 'Wait for the current request to finish.' : action === 'edit' && editable === null
       ? 'Read the complete current note before editing.' : (action === 'accept' || action === 'changes') && !reviewReady
         ? 'Read the current instruction review first.' : undefined}
-    onClick={() => press(action)}>{ACTION_LABEL[action]}</button>;
+    onClick={() => press(action)}>{ACTION_LABEL[action]}</Button>;
 
   function press(action: TicketAction): void {
     switch (action) {
@@ -394,9 +414,10 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
     }
   }
 
-  return <section className="card-detail ticket-panel" aria-labelledby="card-detail-title" data-selected-card-id={card.id}
+  return <section className={cn('card-detail ticket-panel group/panel flex flex-col gap-3 px-6 pt-6 pb-6 font-sans text-body leading-[1.55] text-ink focus:outline-none',
+    'max-[800px]:px-4 max-[800px]:pt-4 max-[800px]:pb-0', SHEET_SECTIONS)} aria-labelledby="card-detail-title" data-selected-card-id={card.id}
     data-ticket-status={card.status} data-mode={mode} ref={focusSheet} tabIndex={-1} data-focus-on-leave="view-board">
-    <h3 id="card-detail-title" tabIndex={-1}>{card.title}</h3>
+    <h3 id="card-detail-title" tabIndex={-1} className="m-0 text-page leading-tight font-semibold wrap-anywhere focus:outline-none">{card.title}</h3>
     <Facts floor={floor} card={card} />
     <StuckActions floor={floor} card={card} onReviewRecovery={onReviewRecovery} />
     {shown?.context == null ? null : <RecoveredReview context={shown.context} fresh={fresh} />}
@@ -404,10 +425,10 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
       reviewing={reviewing} />}
     {(needsReview && !reviewReady) || (detail.card === card.id && detail.phase === 'failed')
       || (noteUnread && detail.phase === 'ready') ? <div>
-      {readHint === null ? null : <p className="ticket-hint" role="status">{readHint}</p>}
-      <button type="button" className="ticket-look" disabled={detail.phase === 'loading'}
+      {readHint === null ? null : <p className={HINT} role="status">{readHint}</p>}
+      <Button size="sm" className="ticket-look" disabled={detail.phase === 'loading'}
         title={detail.phase === 'loading' ? 'Wait for the ticket to finish loading.' : undefined}
-        onClick={() => { void loadDetail(card); }}>Read again</button>
+        onClick={() => { void loadDetail(card); }}>Read again</Button>
     </div> : null}
     {(card.status === 'review' || card.status === 'done') && !changesView ? <ChangedFiles floor={floor} card={card} /> : null}
     {changesView
@@ -419,16 +440,20 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
         : shown.context?.check.state === 'current' ? 'This check covers the current work.'
           : shown.context?.check.state === 'historical' ? 'More work happened after this check. It does not check those changes.'
             : 'Dudes cannot confirm whether this check covers the current work.'}</p>
-      <details><summary>Details</summary><p>Checked at {recordedTime(shown.result.at)}.</p>
-        {shown.result.exit === null ? null : <p>Exit status: {shown.result.exit}.</p>}</details>
+      <Disclosure summary="Details"><p>Checked at {recordedTime(shown.result.at)}.</p>
+        {shown.result.exit === null ? null : <p>Exit status: {shown.result.exit}.</p>}</Disclosure>
     </section>}
     {digest === null ? null : <section className="ticket-digest" aria-label="Steps the engine reported"><h4>Engine-reported steps</h4>
-      <p>{digest}</p><p className="ticket-digest-note">{DIGEST_CAVEAT}</p></section>}
+      <p>{digest}</p><p className="ticket-digest-note text-small text-muted">{DIGEST_CAVEAT}</p></section>}
     {!floor.ticket ? <TicketOffHint floor={floor} /> : null}
-    {actions.length === 0 ? null : <div className="ticket-actions" role="group" aria-label="Ticket actions" aria-busy={sending}>
-      {ordinary.length === 0 ? null : <div className="ticket-action-pair">{ordinary.map(actionButton)}</div>}
-      {destructive.length === 0 ? null : <div className="ticket-destructive">{destructive.map(actionButton)}</div>}
-      {sending ? <p className="ticket-sending" role="status">Sending…</p> : null}
+    {actions.length === 0 ? null : <div className={cn('ticket-actions mt-2 flex flex-col gap-3 border-t border-line pt-4',
+      'max-[800px]:group-data-[mode=none]/panel:sticky max-[800px]:group-data-[mode=none]/panel:bottom-0 max-[800px]:group-data-[mode=none]/panel:z-10',
+      'max-[800px]:group-data-[mode=none]/panel:-mx-4 max-[800px]:group-data-[mode=none]/panel:bg-surface max-[800px]:group-data-[mode=none]/panel:px-4',
+      'max-[800px]:group-data-[mode=none]/panel:pt-3 max-[800px]:group-data-[mode=none]/panel:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]')}
+      role="group" aria-label="Ticket actions" aria-busy={sending}>
+      {ordinary.length === 0 ? null : <div className="ticket-action-pair flex flex-wrap gap-2 max-[800px]:group-data-[mode=none]/panel:grid max-[800px]:group-data-[mode=none]/panel:grid-cols-2">{ordinary.map(actionButton)}</div>}
+      {destructive.length === 0 ? null : <div className="ticket-destructive flex flex-wrap gap-2">{destructive.map(actionButton)}</div>}
+      {sending ? <p className="ticket-sending m-0 text-muted" role="status">Sending…</p> : null}
     </div>}
     <div className="ticket-mode" hidden={!open || !modeAllowed}>
     {mode === 'give' || mode === 'changes'
@@ -436,16 +461,16 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
         pending={detail.card === card.id ? detail.problem : null} mode={mode} onDone={() => setMode('none')} onHire={onHire} /> : null}
     {mode === 'edit' && editable !== null ? <EditForm key={`${card.id}:${card.seq}`} floor={floor} card={card}
       detail={editable} onDone={() => setMode('none')} /> : null}
-    {mode === 'remove' || mode === 'stop' ? <div className="ticket-confirm" role="group" aria-label={mode === 'remove' ? 'Remove ticket' : 'Stop ticket'}>
-      <p>{mode === 'remove' ? 'Remove this ticket? It leaves the board. Dudes keeps its history.'
+    {mode === 'remove' || mode === 'stop' ? <div className="ticket-confirm flex flex-wrap items-center gap-3 rounded-lg border border-danger/30 bg-danger-soft p-4" role="group" aria-label={mode === 'remove' ? 'Remove ticket' : 'Stop ticket'}>
+      <p className="m-0 w-full">{mode === 'remove' ? 'Remove this ticket? It leaves the board. Dudes keeps its history.'
         : 'Stop this ticket? The agent finishes its current step before stopping.'}</p>
-      <button type="button" className="ticket-remove" disabled={sending || !open || !modeAllowed}
+      <Button variant="danger" className="ticket-remove" disabled={sending || !open || !modeAllowed}
         title={sending ? 'Wait for the current request to finish.' : !open ? 'Reconnect to Dudes before changing this ticket.' : !modeAllowed ? 'This ticket changed. Open its current actions.' : undefined}
         onClick={() => {
           if (!open || !actions.includes(mode)) return;
           void changeTicket(card, { verb: mode }).then((changed) => { if (changed) setMode('none'); });
-        }}>{mode === 'remove' ? 'Remove ticket' : 'Stop ticket'}</button>
-      <button type="button" onClick={() => setMode('none')}>Keep it</button>
+        }}>{mode === 'remove' ? 'Remove ticket' : 'Stop ticket'}</Button>
+      <Button onClick={() => setMode('none')}>Keep it</Button>
     </div> : null}
     </div>
   </section>;

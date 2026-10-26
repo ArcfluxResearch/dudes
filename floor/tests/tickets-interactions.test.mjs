@@ -477,7 +477,7 @@ test('closing nested Hire stays inside the composer after its opener disappears'
     const { closeHire } = await closeHireCallback(app.page, hire.dialog, opener);
     closeHire();
     app.page.flushFocus();
-    assert.equal(app.page.document.activeElement.getAttribute('class'), 'ticket-dialog-close');
+    assert.ok(app.page.document.activeElement.getAttribute('class').split(' ').includes('ticket-dialog-close'));
     hire.topbar.focus();
     assert.notEqual(app.page.document.activeElement, hire.topbar, 'underlying ticket keeps the top bar inert');
     await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
@@ -504,7 +504,7 @@ test('closing nested Hire skips a connected Give opener hidden by revoked author
     assert.notEqual(opener.closest('[hidden]'), null);
     (await closeHireCallback(app.page, hire.dialog, opener)).closeHire();
     app.page.flushFocus();
-    assert.equal(app.page.document.activeElement.getAttribute('class'), 'ticket-dialog-close');
+    assert.ok(app.page.document.activeElement.getAttribute('class').split(' ').includes('ticket-dialog-close'));
   } finally { await app.close(); }
 });
 
@@ -519,7 +519,7 @@ test('successful Hire reveals the agent without opening it, and returns to the u
     completeHire();
     app.page.flushFocus();
     assert.deepEqual(selections, [['revealed', ADA]]);
-    assert.equal(app.page.document.activeElement.getAttribute('class'), 'ticket-dialog-close');
+    assert.ok(app.page.document.activeElement.getAttribute('class').split(' ').includes('ticket-dialog-close'));
     await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
     app.page.flushFocus();
     hire.dialog.showModal();

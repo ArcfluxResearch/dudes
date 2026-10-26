@@ -318,16 +318,14 @@ test('Board reserves no hidden terminal row while the first-run guide is open', 
   }
 });
 
-test('Needs you keeps card metadata visible above the title at every width', async () => {
-  const css = await readFile(resolve(root, 'src/renderer/ticket/ticket.css'), 'utf8');
-  for (const width of [640, 1024, 1440]) {
-    const rules = rulesAt(css, width);
-    const meta = selector => ['.ticket-card .ticket-card-meta', '.ticket-lane .ticket-card-meta'].includes(selector);
-    assert.equal(declared(rules, meta, 'display'), 'flex', `${width}: round and stopping metadata is visible`);
-    assert.equal(declared(rules, meta, 'grid-column'), '1 / -1', `${width}: metadata has its own row`);
-    assert.match(declared(rules, selector => selector === '.ticket-lane .ticket-card-footer', 'grid-row'), /^2(?: \/ span 2)?$/,
-      `${width}: the agent does not overlap metadata`);
-  }
+test('a ticket card puts its state above the title and the agent below it, in the Needs you lane too', async () => {
+  const source = await readFile(resolve(root, 'src/renderer/ticket/TicketBoard.tsx'), 'utf8');
+  const card = source.slice(source.indexOf('function TicketCard'), source.indexOf('export function TicketBoard'));
+  const meta = card.indexOf('ticket-card-meta');
+  const title = card.indexOf('<strong');
+  const footer = card.indexOf('ticket-card-footer');
+  assert.ok(meta > 0 && meta < title && title < footer, 'state, then title, then agent and place');
+  assert.doesNotMatch(card, /grid-cols|col-span|row-span/, 'one stacked layout for every lane, so the agent never overlaps the state');
 });
 
 test('the first-run guide has a separate row above an expanded terminal and its controls', async () => {
@@ -410,7 +408,7 @@ test('each Control view opens under its own heading and only office panels have 
     ['setup', 'Setup'], ['settings', 'Settings']]) {
     const html = renderToStaticMarkup(createElement(Control, { floor, view, selectedId: null, onClose() {}, onView() {}, onOpenQuestion() {} }));
     const page = ['log', 'setup', 'settings'].includes(view);
-    assert.match(html, new RegExp(`^<section class="control-panel" id="control-panel" data-view="${view}" `
+    assert.match(html, new RegExp(`^<section class="control-panel[^"]*" id="control-panel" data-view="${view}" `
       + `aria-labelledby="control-title" ${page ? 'data-page="true" ' : ''}data-focus-on-leave="view-${view}"><header class="control-panel-head"><div class="control-heading-copy">`
       + `<h2 id="control-title" tabindex="-1">${label}</h2>`),
     view);

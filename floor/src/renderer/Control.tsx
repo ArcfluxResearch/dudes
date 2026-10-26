@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
 
@@ -19,6 +20,7 @@ import { TicketOffHint } from './ticket/TicketGuidance.tsx';
 import { TicketPanel } from './ticket/TicketPanel.tsx';
 import { HireEntry } from './onboarding/HireEntry.tsx';
 import { isPageView } from '../navigation.ts';
+import { Dialog, ICON, IconButton, cn } from '../ui/index.ts';
 
 export type ControlView = 'overview' | 'board' | 'log' | 'setup' | 'settings';
 
@@ -169,7 +171,7 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
   };
   const label = labelOf(view);
   return (
-    <section className="control-panel" id="control-panel" data-view={view} aria-labelledby={CONTROL_TITLE_ID}
+    <section className="control-panel has-[dialog[open]]:overflow-y-hidden" id="control-panel" data-view={view} aria-labelledby={CONTROL_TITLE_ID}
       data-page={isPageView(view) ? 'true' : undefined}
       ref={handFocusOnLeave} data-focus-on-leave={viewButtonId(view)}
       onKeyDown={(event) => { if (closesPanel(event)) { event.stopPropagation(); onClose(); } }}>
@@ -184,25 +186,28 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
       <div className="control-view">{panels[view]}</div>
       {view === 'board' ? <TicketNotice floor={floor}
         card={showing ? overlay?.kind === 'card' ? overlay.id : null : undefined} /> : null}
-      {view === 'board' ? <dialog className="ticket-dialog" id="selected-card-detail" ref={dialog}
+      {view === 'board' ? <Dialog className="ticket-dialog m-0 ml-auto h-dvh max-h-none w-[min(100vw,56rem,max(35rem,70vw))] max-w-[100vw] rounded-none rounded-l-xl border-y-0 border-r-0 data-[composer=true]:m-auto data-[composer=true]:h-fit data-[composer=true]:max-h-[calc(100dvh-4rem)] data-[composer=true]:w-[min(36rem,calc(100vw-2rem))] data-[composer=true]:rounded-xl data-[composer=true]:border max-[800px]:data-[composer=false]:w-screen max-[800px]:data-[composer=false]:rounded-none"
+        id="selected-card-detail" ref={dialog}
         data-composer={overlay?.kind === 'new'}
         aria-label={overlay?.kind === 'new' ? 'New ticket' : 'Ticket detail'}
         onCancel={(event) => { event.preventDefault(); closeOverlay(); }}
         onKeyDown={(event) => { if (event.key === 'Escape') event.stopPropagation(); }}>
-        {showing ? <><header className="ticket-dialog-head"><p>{overlay?.kind === 'new' ? 'New ticket' : 'Ticket review'}</p>
-          <button type="button" className="ticket-dialog-close" aria-label="Close ticket dialog" onClick={closeOverlay}>×</button>
+        {showing ? <><header className={cn('ticket-dialog-head sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface px-6 py-2',
+          overlay?.kind === 'new' && 'border-b-0 pb-0')}>
+          <p className={cn('m-0 text-caption font-semibold tracking-label text-muted uppercase', overlay?.kind === 'new' && 'sr-only')}>{overlay?.kind === 'new' ? 'New ticket' : 'Ticket review'}</p>
+          <IconButton label="Close ticket dialog" icon={<X {...ICON} />} className="ticket-dialog-close ml-auto" onClick={closeOverlay} />
         </header>
-        {overlay?.kind === 'new' ? <div className="ticket-composer"><h3>New ticket</h3>
-          <p>Tell an agent what you want to happen.</p>
+        {overlay?.kind === 'new' ? <div className="ticket-composer flex flex-col gap-2 px-6 pt-2 pb-6"><h3 className="m-0 text-page font-semibold">New ticket</h3>
+          <p className="m-0 text-base text-muted">Tell an agent what you want to happen.</p>
           {floor.ticket ? null : <TicketOffHint floor={floor} />}
           <NewTicketForm floor={floor} onHire={onHire} onCancel={closeOverlay}
             onCreated={(id) => { opener.current = null; seenCard.current = null; setOverlay({ kind: 'card', id }); }} />
         </div> : selectedCard?.ticket != null ? <TicketPanel key={selectedCard.id} floor={floor} card={selectedCard} onHire={onHire}
           onReviewRecovery={onReviewRecovery} />
           : selectedCard !== null ? <CardDetail key={selectedCard.id} floor={floor} card={selectedCard} />
-            : <p role="status">Waiting for the board to confirm this ticket.</p>}
+            : <p role="status" className="m-0 p-6 text-base text-muted">Waiting for the board to confirm this ticket.</p>}
         </> : null}
-      </dialog> : null}
+      </Dialog> : null}
     </section>
   );
 }

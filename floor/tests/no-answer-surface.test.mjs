@@ -664,7 +664,7 @@ function isAdmittedHandler(file, entry) {
   if (entry.handler === '{...}' && file.startsWith('src/ui/')) return true;
   return ADMITTED_HANDLERS.some((rule) => rule.file === file && rule.tag === entry.tag
     && rule.handler === entry.handler
-    && (rule.className === undefined || rule.className === entry.className)
+    && (rule.className === undefined || (entry.className ?? '').split(/\s+/).includes(rule.className))
     && (rule.expression === undefined || rule.expression === entry.expression));
 }
 
@@ -850,7 +850,7 @@ test('every handler prop other than onClick on a lowercase intrinsic tag under f
     const handlers = seen.get(rule.file) ?? [];
     assert.ok(
       handlers.some((entry) => entry.tag === rule.tag && entry.handler === rule.handler
-        && (rule.className === undefined || entry.className === rule.className)
+        && (rule.className === undefined || (entry.className ?? '').split(/\s+/).includes(rule.className))
         && (rule.expression === undefined || entry.expression === rule.expression)),
       `${rule.file} was not scanned as itself for ${rule.handler} on <${rule.tag}>`,
     );
@@ -2925,7 +2925,7 @@ test('the answer form renders when the snapshot carries the answer sibling', () 
   // Where the live case looks for it: in the selected agent's own panel, under its question.
   assert.match(html,
     /id="selected-agent-detail"[\s\S]*<aside class="agent-detail"[\s\S]*<section class="agent-detail-question"[\s\S]*<textarea/);
-  assert.doesNotMatch(center(floorWith(waiting(), SIBLING), 'overview').split('<div class="receipts">')[0], /<textarea|name="answer"/,
+  assert.doesNotMatch(center(floorWith(waiting(), SIBLING), 'overview').split('<div class="receipts')[0], /<textarea|name="answer"/,
     'Overview lists the question but answers only through the agent\'s own panel');
 });
 

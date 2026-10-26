@@ -6,6 +6,7 @@ import type { FloorState } from './floor/store.ts';
 import { useEffect, useSyncExternalStore } from 'react';
 import { handFocusOnLeave } from './focus.ts';
 import { activityText } from './activity.ts';
+import { CARD_DETAIL, CARD_FACTS, CARD_HEADING } from './ticket/look.ts';
 import { journalPosition, recordedTime } from './format.ts';
 import { ReadNotice, snapshotReadState } from './ReadError.tsx';
 import { getReadAvailability, subscribeToReadAvailability } from './floor/reads.ts';
@@ -57,10 +58,10 @@ export function useRequestedCard(floor: FloorState, selectable: boolean, onSelec
 
 export function CardDetail({ floor, card }: { readonly floor: FloorState; readonly card: CardRow | null }) {
   if (card === null) return <p className="no-selection">Select a card in Board to inspect it.</p>;
-  return <section className="card-detail" aria-labelledby="card-detail-title" data-selected-card-id={card.id}>
-    <h3 id="card-detail-title" ref={focusCardDetailHeading} tabIndex={-1}
+  return <section className={CARD_DETAIL} aria-labelledby="card-detail-title" data-selected-card-id={card.id}>
+    <h3 id="card-detail-title" ref={focusCardDetailHeading} tabIndex={-1} className={CARD_HEADING}
       data-focus-on-leave="view-board">{card.title}</h3>
-    <dl>
+    <dl className={CARD_FACTS}>
       <div><dt>Card</dt><dd className="data">{card.id}</dd></div>
       <div><dt>Department</dt><dd>{card.department}</dd></div>
       <div><dt>Status</dt><dd>{card.status}</dd></div>

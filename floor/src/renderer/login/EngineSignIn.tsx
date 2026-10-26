@@ -23,6 +23,7 @@ import {
 } from './login.ts';
 import type { LoginChannel, LoginEnding, LoginPorts } from './login.ts';
 import { hyperlinkTarget, printedLink } from './signInLink.ts';
+import { LOGIN_ACTIONS, LOGIN_FAILED, LOGIN_OFFER, LOGIN_PANEL, LOGIN_SCREEN, LOGIN_STATE } from './look.ts';
 
 type OpenChannel = Exclude<LoginChannel, { readonly phase: 'idle' }>;
 
@@ -90,7 +91,7 @@ export function EngineSignInView({ engine, row, channel, terminal, onSettings }:
   if (!signInOffered(engine, row)) return null;
   if (engine === 'pi' && !terminal) {
     return (
-      <div className="login-offer" data-login-offer="pi">
+      <div className={LOGIN_OFFER} data-login-offer="pi">
         <p className="hire-note" role="status">{ENDINGS.needs_terminal} <a href="#/settings" onClick={onSettings}>Open Settings</a></p>
         <button type="button" className="login-recheck" onClick={() => refreshFloorSnapshot()}>Check again</button>
       </div>
@@ -98,7 +99,7 @@ export function EngineSignInView({ engine, row, channel, terminal, onSettings }:
   }
   const busy = channel.phase !== 'idle' && channel.phase !== 'ended';
   return (
-    <div className="login-offer" data-login-offer={engine}>
+    <div className={LOGIN_OFFER} data-login-offer={engine}>
       {engine === 'pi' ? <p className="hire-note">
         Pi cannot tell Dudes whether it is signed in. If it needs a sign-in, open it here.
       </p> : null}
@@ -117,14 +118,14 @@ function LoginPanel({ engine, channel }: { readonly engine: HireEngine; readonly
   const progress = channel.phase === 'opening' || channel.phase === 'starting' ? PROGRESS[channel.phase] : null;
   const [link, setLink] = useState<string | null>(null);
   return (
-    <section className="login-panel" aria-label={`Sign in to ${HIRE_ENGINES[engine]}`}
+    <section className={LOGIN_PANEL} aria-label={`Sign in to ${HIRE_ENGINES[engine]}`}
       data-login-phase={channel.phase} data-login-ending={ended ? channel.ending : undefined}>
-      <p className={`login-state${failed ? ' login-failed' : ''}`} role={failed ? 'alert' : 'status'}>
+      <p className={failed ? `${LOGIN_STATE} ${LOGIN_FAILED}` : LOGIN_STATE} role={failed ? 'alert' : 'status'}>
         {ended ? endingText(engine, channel.ending) : progress ?? STEPS[engine]}
       </p>
       {link !== null && !ended ? <SignInLink link={link} /> : null}
       <LoginScreen phase={channel.phase} onLink={setLink} />
-      <div className="login-actions">
+      <div className={LOGIN_ACTIONS}>
         {failed ? <button type="button" className="login-retry"
           onClick={() => startLogin(engine, browserLoginPorts())}>Try again</button> : null}
         <button type="button" className="login-close" onClick={closeLogin}>{ended ? 'Close' : 'Cancel sign-in'}</button>
@@ -264,5 +265,5 @@ function LoginScreen({ phase, onLink }: { readonly phase: OpenChannel['phase']; 
     if (phase === 'running') screen.current.focus();
   }, [phase]);
 
-  return <div ref={host} className="terminal-screen login-screen" />;
+  return <div ref={host} className={LOGIN_SCREEN} />;
 }

@@ -10,7 +10,13 @@ import type { InspectReason, InvalidationReason, Receipt, RecoveryChoice, Refusa
 import { blocksDraft, browserRecoveryDeps, checkRecoveryReceipt, chooseRecovery, draftProblem, getRecoveryState,
   inspectRecovery, liveReader, recoveryEnabled, requestReceipt, submitRecovery, subscribeToRecovery } from './recovery.ts';
 import type { Draft, RecoveryRequest, RecoveryState } from './recovery.ts';
-import './recovery.css';
+import { Button, Disclosure, cn } from '../../ui/index.ts';
+
+/** The receipts column gives a focused receipt the room to scroll inside the drawer. */
+export const RECEIPTS = 'receipts has-[.recovery-receipt:focus-within]:max-h-[calc(100dvh-8rem)]';
+const CARD = 'min-w-0 wrap-anywhere rounded-lg border border-line bg-surface p-4 font-sans text-base text-ink [&_h3]:m-0 [&_h3]:text-title [&_h3]:font-semibold [&_h4]:m-0 [&_h4]:text-body [&_h4]:font-semibold [&_p]:m-0';
+const WARNING = 'recovery-warning rounded-md border-l-4 border-warn bg-warn-soft px-3 py-2';
+const FACTS = 'recovery-facts m-0 grid min-w-0 grid-cols-[minmax(0,1fr)] [&>div]:grid [&>div]:min-w-0 [&>div]:gap-0.5 [&>div]:border-t [&>div]:border-line [&>div]:py-2 [&_dt]:text-caption [&_dt]:font-semibold [&_dt]:tracking-label [&_dt]:text-muted [&_dt]:uppercase [&_dd]:m-0 [&_dd]:min-w-0 [&_dd]:font-mono [&_dd]:text-small [&_dd]:wrap-anywhere';
 
 const CHOICES: Readonly<Record<RecoveryChoice, string>> = {
   try_recorded: 'Try recorded conversation', fresh_with_recap: 'Start fresh with recorded recap', repeat_issued_fresh: 'Repeat the same task in fresh context',
@@ -56,25 +62,25 @@ export function RecoveryPanelView({ floor, row, memory, session, onReadReceipt }
   const retained = [...memory.requests].filter(([, request]) => request.payload.expected.work.agent === row.id);
   const goal = row.goal;
   const goalText = typeof goal === 'object' && goal !== null && 'text' in goal && typeof goal.text === 'string' ? goal.text : null;
-  return <section className="recovery-panel" aria-labelledby="recovery-title">
+  return <section className={cn('recovery-panel my-4 flex flex-col items-start gap-3', CARD)} aria-labelledby="recovery-title">
     <h3 id="recovery-title" tabIndex={-1}>Recover interrupted task</h3>
-    {goalText === null ? null : <p className="recovery-goal"><strong>Current task</strong> {goalText}</p>}
+    {goalText === null ? null : <p className="recovery-goal"><strong className="block text-small text-muted">Current task</strong> {goalText}</p>}
     <p>Keep the same agent and task. Inspect what Dudes recorded, then choose how to continue.</p>
     <p>Resume alone cannot release this interruption.</p>
-    <button type="button" aria-disabled={!enabled || busy} aria-busy={busy}
+    <Button variant="primary" aria-disabled={!enabled || busy} loading={busy}
       title={busy ? 'Wait for the recovery inspection to finish.' : !enabled ? 'Reconnect to Dudes with recovery and agent controls turned on in Settings.' : undefined} ref={handFocusOnLeave}
       data-focus-on-leave={AGENT_DETAIL_HEADING_ID} onClick={(event) => { if (event.detail < 2) void inspectRecovery(row.id, browserRecoveryDeps); }}>
       {busy ? 'Inspecting…' : 'Inspect recovery'}
-    </button>
+    </Button>
     {!enabled && draft === undefined ? <p role="status">Recovery waits for a connection to Dudes with Recover interrupted tasks and Pause, resume and rename turned on in Settings. Your saved results are kept.</p> : null}
     {inspection?.kind === 'problem' ? <p role="alert">{inspection.text}</p> : null}
     {inspection?.kind === 'unavailable' ? <p role="status">{UNAVAILABLE[inspection.reason]}</p> : null}
     {draft === undefined ? null : <RecoveryDraft draft={draft} memory={memory} floor={floor} session={session} />}
-    {retained.length === 0 || onReadReceipt === undefined ? null : <div className="recovery-retained">
+    {retained.length === 0 || onReadReceipt === undefined ? null : <div className="recovery-retained flex flex-col items-start gap-2">
       <p>This page keeps {retained.length === 1 ? 'a recovery request' : `${retained.length} recovery requests`} for this agent.
         Open a receipt to see what Dudes recorded. This closes the agent panel.</p>
-      {retained.map(([id], index) => <button key={id} type="button" onClick={() => onReadReceipt(id)}>
-        Read recovery receipt{retained.length > 1 ? ` ${index + 1}` : ''}</button>)}
+      {retained.map(([id], index) => <Button key={id} onClick={() => onReadReceipt(id)}>
+        Read recovery receipt{retained.length > 1 ? ` ${index + 1}` : ''}</Button>)}
     </div>}
   </section>;
 }
@@ -85,39 +91,40 @@ function RecoveryDraft({ draft, memory, floor, session }: {
   const problem = draftProblem(draft, floor, session);
   const blocked = blocksDraft(draft, memory);
   const waiting = (Object.keys(WAIT_LABELS) as (keyof Waits)[]).filter(key => inspection.waiting[key] === 'waiting');
-  return <div className="recovery-draft" data-recovery-reason={inspection.reason}>
-    {inspection.reason === 'missing_spawn' ? <p className="recovery-warning">The engine may have run before Dudes recorded its launch. Earlier effects may repeat.
+  return <div className="recovery-draft flex flex-col items-start gap-3" data-recovery-reason={inspection.reason}>
+    {inspection.reason === 'missing_spawn' ? <p className={WARNING}>The engine may have run before Dudes recorded its launch. Earlier effects may repeat.
       Only the exact already-issued task can repeat, in fresh context without the earlier conversation history.
       Its task and answers stay unchanged. No recap is added.</p>
-      : inspection.prior_effects_unknown ? <p className="recovery-warning">Earlier effects are unknown and may repeat.</p> : null}
+      : inspection.prior_effects_unknown ? <p className={WARNING}>Earlier effects are unknown and may repeat.</p> : null}
     {inspection.choices === 'recorded_or_fresh' ? <p>Trying the recorded conversation attempts its recorded identifier. It does not promise restored history.
       A context failure never automatically falls back to fresh work.</p> : null}
     {inspection.choices === 'repeat_issued_fresh' ? null : <p>Fresh context does not restore old conversation history. Dudes supplies a recorded recap,
       which may shrink or be omitted so mandatory task content and answers fit.</p>}
-    <div className="recovery-actions" role="group" aria-label="Recovery context choice">
-      {advertisedChoices(inspection.choices).map(choice => <button key={choice} type="button" aria-pressed={draft.choice === choice}
+    <div className="recovery-actions flex flex-wrap gap-2" role="group" aria-label="Recovery context choice">
+      {advertisedChoices(inspection.choices).map(choice => <Button key={choice} aria-pressed={draft.choice === choice}
+        className="h-auto min-h-8 py-1.5 text-left whitespace-normal aria-pressed:border-accent aria-pressed:bg-accent-soft"
         aria-disabled={problem !== null || blocked}
         title={problem ?? (blocked ? 'Check the saved recovery request first.' : undefined)} ref={handFocusOnLeave} data-focus-on-leave="recovery-title"
-        onClick={() => { if (problem === null && !blocked) chooseRecovery(draft.key, choice); }}>{CHOICES[choice]}</button>)}
+        onClick={() => { if (problem === null && !blocked) chooseRecovery(draft.key, choice); }}>{CHOICES[choice]}</Button>)}
     </div>
     <p>Recovery keeps the existing limits, questions, and instruction review. Allowing recovery does not guarantee that work will start.</p>
-    {waiting.length === 0 ? null : <div className="recovery-waits"><p>At this inspection, work was also waiting for:</p>
-      <ul aria-label="Waits at inspection">{waiting.map(key => <li key={key}>{WAIT_LABELS[key]}</li>)}</ul></div>}
+    {waiting.length === 0 ? null : <div className="recovery-waits self-stretch rounded-md bg-surface-2 px-3 py-2"><p>At this inspection, work was also waiting for:</p>
+      <ul className="m-0 pl-5" aria-label="Waits at inspection">{waiting.map(key => <li key={key}>{WAIT_LABELS[key]}</li>)}</ul></div>}
     {problem === null ? null : <p role="status">{problem}</p>}
     {blocked ? <p role="status">This page keeps a recovery request for this work. Read its receipt with the button below.
       A later interruption needs a fresh inspection and choice.</p> : null}
-    <button type="button" aria-disabled={problem !== null || blocked || draft.choice === null}
+    <Button variant="primary" aria-disabled={problem !== null || blocked || draft.choice === null}
       title={problem ?? (blocked ? 'Check the saved recovery request first.' : draft.choice === null ? 'Choose how to continue first.' : undefined)} ref={handFocusOnLeave}
       data-focus-on-leave={draft.requestId === null ? 'recovery-title' : `recovery-receipt-${draft.requestId}`}
-      onClick={(event) => { if (event.detail < 2) void submitRecovery(draft.key, browserRecoveryDeps); }}>Authorize one recovery</button>
-    <details className="recovery-details"><summary>Recorded identifiers</summary>
-    <dl className="recovery-facts">
+      onClick={(event) => { if (event.detail < 2) void submitRecovery(draft.key, browserRecoveryDeps); }}>Authorize one recovery</Button>
+    <Disclosure summary="Recorded identifiers" className="recovery-details self-stretch">
+    <dl className={FACTS}>
       <div><dt>AgentId</dt><dd>{inspection.expected.work.agent}</dd></div>
       <div><dt>GoalId</dt><dd>{inspection.expected.work.goal}</dd></div>
       <div><dt>Source turn</dt><dd>{inspection.expected.work.turn}</dd></div>
       {inspection.expected.ticket === null ? null : <div><dt>Ticket</dt><dd>{inspection.expected.ticket.card} · Round {inspection.expected.ticket.round}</dd></div>}
     </dl>
-    </details>
+    </Disclosure>
   </div>;
 }
 
@@ -128,7 +135,7 @@ export function RecoveryReceipts({ floor }: { readonly floor: FloorState }) {
 export function RecoveryReceiptsView({ floor, memory }: { readonly floor: FloorState; readonly memory: RecoveryState }) {
   return <>{[...memory.requests.entries()].map(([id, request]) => {
     const receipt = requestReceipt(request);
-    return <section key={id} className="recovery-receipt" aria-live="polite"
+    return <section key={id} className={cn('recovery-receipt my-4 flex flex-col items-start gap-3', CARD)} aria-live="polite"
     aria-labelledby={`recovery-receipt-${id}`} data-recovery-outcome={receipt === null ? request.outcome?.state ?? 'sending' : 'accepted'}>
     <h3 id={`recovery-receipt-${id}`} tabIndex={-1}>Recovery request · {request.name}</h3>
     <p>Context choice: {CHOICES[request.payload.choice]}</p>
@@ -147,15 +154,15 @@ export function RecoveryReceiptsView({ floor, memory }: { readonly floor: FloorS
       : 'The latest receipt reply was lost or unreadable. Its current lifecycle could not be read. Earlier authorization facts are retained.'}</p> : null}
     {request.read?.state === 'forbidden' ? <p>This reader cannot check the receipt. Open Dudes to sign in again in this browser,
       then press Check receipt explicitly. The earlier request is kept and is never resubmitted.</p> : null}
-    <button type="button" aria-disabled={request.submitting || request.checking || !liveReader(floor)} aria-busy={request.checking}
+    <Button aria-disabled={request.submitting || request.checking || !liveReader(floor)} loading={request.checking}
       title={request.submitting || request.checking ? 'Wait for the current recovery request to finish.' : !liveReader(floor) ? 'Reconnect to Dudes before checking this result.' : undefined}
       ref={handFocusOnLeave} data-focus-on-leave={`recovery-receipt-${id}`}
-      onClick={(event) => { if (event.detail < 2) void checkRecoveryReceipt(id, browserRecoveryDeps); }}>{request.checking ? 'Checking…' : 'Check receipt'}</button>
+      onClick={(event) => { if (event.detail < 2) void checkRecoveryReceipt(id, browserRecoveryDeps); }}>{request.checking ? 'Checking…' : 'Check receipt'}</Button>
     <p>Check receipt reads only this request. It never retries recovery. You can check it after recovery is switched off, while this browser stays signed in and connected.</p>
-    <details className="recovery-details"><summary>Request identifiers</summary>
-      <dl className="recovery-facts"><div><dt>RequestId</dt><dd>{id}</dd></div>
+    <Disclosure summary="Request identifiers" className="recovery-details self-stretch">
+      <dl className={FACTS}><div><dt>RequestId</dt><dd>{id}</dd></div>
         <div><dt>GoalId</dt><dd>{request.payload.expected.work.goal}</dd></div></dl>
-    </details>
+    </Disclosure>
     {liveReader(floor) ? null : <p role="status">Receipt lookup waits for a live confirmed Floor session. Your request is kept.</p>}
   </section>;
   })}</>;
@@ -186,7 +193,7 @@ function ReceiptFacts({ receipt }: { readonly receipt: Receipt }) {
   const status = receipt.status;
   return <div data-recovery-receipt-state={status.state}>
     <h4>What Dudes recorded</h4>
-    <p className="recovery-status">{status.state === 'pending' ? 'Waiting to issue the task. Remaining reviews and limits still apply.'
+    <p className="recovery-status font-medium">{status.state === 'pending' ? 'Waiting to issue the task. Remaining reviews and limits still apply.'
       : status.state === 'issue_bound' ? 'The task is recorded. No launch or terminal failure is recorded for this recovery yet.'
         : status.state === 'consumed' ? 'Recovery permission was used. This does not prove the process ended or the task succeeded. It can also mean a terminal failure before launch.'
           : status.state === 'invalidated' ? `Recovery permission is closed. ${INVALIDATIONS[status.reason]} It cannot be reused.`
@@ -194,9 +201,9 @@ function ReceiptFacts({ receipt }: { readonly receipt: Receipt }) {
     <p>{receipt.attempt.spawn === null ? 'No launch is recorded in this receipt.' : `Launch recorded at ${receipt.attempt.spawn}.`}
       {' '}{receipt.attempt.confirmation === null ? 'No matching context confirmation is recorded.' : `Identifier confirmation recorded at ${receipt.attempt.confirmation}; this does not prove restored history.`}
       {' '}{receipt.attempt.end === null ? 'No end is recorded.' : `End recorded at ${receipt.attempt.end}; this receipt does not classify success.`}</p>
-    {receipt.prior_effects_unknown ? <p className="recovery-warning">Earlier effects remain unknown and may repeat. This receipt does not erase them.</p> : null}
-    <details className="recovery-details"><summary>Record details</summary>
-      <dl className="recovery-facts">
+    {receipt.prior_effects_unknown ? <p className={WARNING}>Earlier effects remain unknown and may repeat. This receipt does not erase them.</p> : null}
+    <Disclosure summary="Record details" className="recovery-details self-stretch">
+      <dl className={FACTS}>
         <div><dt>State</dt><dd>{status.state}</dd></div>
         {status.state === 'issue_bound' || status.state === 'consumed' || status.state === 'superseded' ? <>
           <div><dt>Turn</dt><dd>{status.turn}</dd></div>
@@ -206,6 +213,6 @@ function ReceiptFacts({ receipt }: { readonly receipt: Receipt }) {
         {status.state === 'invalidated' ? <div><dt>Closed at record</dt><dd>{status.invalidation_lsn}</dd></div> : null}
         {status.state === 'superseded' ? <div><dt>Replaced at record</dt><dd>{status.barrier_lsn}</dd></div> : null}
       </dl>
-    </details>
+    </Disclosure>
   </div>;
 }
