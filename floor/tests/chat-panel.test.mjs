@@ -109,7 +109,8 @@ test('the composer follows the thread while the conversation fills and scrolls t
   const on = (markup, hook) => markup.match(new RegExp(`class="((?:[^"]*\\s)?${hook}(?:\\s[^"]*)?)"`))?.[1].replaceAll('&amp;', '&').split(/\s+/) ?? [];
   for (const utility of ['flex', 'flex-col', 'overflow-hidden']) assert.ok(on(sheet, 'agent-drawer').includes(utility), `the drawer lacks ${utility}`);
   for (const utility of ['flex', 'flex-1', 'flex-col', 'min-h-0']) assert.ok(on(sheet, 'agent-detail').includes(utility), `the detail lacks ${utility}`);
-  for (const utility of ['flex-1', 'min-h-0', 'overflow-y-auto']) assert.ok(/tabpanel" class="([^"]*)"/.exec(sheet)?.[1].split(/\s+/).includes(utility), `a panel lacks ${utility}`);
+  const tabpanel = /tabpanel" class="([^"]*)"/.exec(sheet)?.[1].split(/\s+/) ?? [];
+  assert.ok(tabpanel.includes('flex-1') && !tabpanel.includes('overflow-y-auto') && !tabpanel.includes('min-h-0'), 'a panel grows with its content and the sheet scrolls');
   const wears = hook => html.match(new RegExp(`class="([^"]*\\b${hook}\\b[^"]*)"`))?.[1].split(/\s+/) ?? [];
   assert.ok(wears('chat-thread').includes('flex-1'));
   for (const utility of ['flex-1', 'min-h-0', 'overflow-y-auto']) assert.ok(wears('chat-scroll').includes(utility), utility);
@@ -154,13 +155,15 @@ test('the Chat sheet follows the visible viewport while a phone keyboard opens a
   }
 });
 
-test('a short Chat sheet reserves its composer and lets the header and tabs scroll under notices', async () => {
+test('the agent panel is one scroll region, so a form above the Chat never squeezes the conversation', async () => {
   const html = renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(), row, selectedId: A,
     onClose() {}, leaveFocusTo: 'crew-toggle' }));
   assert.match(html, /class="[^"]*\bagent-detail-context\b[^"]*">[\s\S]*<header class="[^"]*\bagent-detail-head\b[^"]*">[\s\S]*\bagent-detail-tabs\b/);
   const context = /class="((?:[^"]*\s)?agent-detail-context(?:\s[^"]*)?)"/.exec(html)?.[1].replaceAll('&amp;', '&').split(/\s+/) ?? [];
-  assert.ok(context.includes('overflow-y-auto'), 'the header and tabs scroll');
-  assert.ok(context.includes('[[data-chat-short=true]_&]:max-h-[30%]'), 'a short sheet gives the header less of the height');
+  assert.ok(!context.includes('overflow-y-auto') && !context.some((name) => name.includes('max-h')), 'the header and tabs do not scroll on their own');
+  const panel = /class="((?:[^"]*\s)?agent-detail(?:\s[^"]*)?)"/.exec(html)?.[1].split(/\s+/) ?? [];
+  assert.ok(panel.includes('overflow-y-auto'), 'the panel scrolls as one');
+  assert.match(html, /<section class="chat-thread [^"]*\bmin-h-72\b/, 'the conversation keeps a usable height');
   assert.ok(context.includes('flex-none'), 'the header keeps its own height');
   assert.match(html, /\bchat-compose\b/);
 });

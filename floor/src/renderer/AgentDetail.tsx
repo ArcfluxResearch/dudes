@@ -131,9 +131,9 @@ export function AgentDetail({
   }, []);
 
   return (
-    <aside ref={detail} className="agent-detail flex min-h-0 flex-1 flex-col" aria-label="Selected agent details" data-selected-agent-id={row.id} data-detail-tab={selected}
+    <aside ref={detail} className="agent-detail flex min-h-0 flex-1 flex-col overflow-y-auto" aria-label="Selected agent details" data-selected-agent-id={row.id} data-detail-tab={selected}
       style={{ '--agent': accentOf(row) } as CSSProperties}>
-      <div className="agent-detail-context max-h-[55%] flex-none overflow-y-auto [[data-chat-short=true]_&]:max-h-[30%]">
+      <div className="agent-detail-context flex-none">
       <header className="agent-detail-head grid grid-cols-1 gap-3 font-sans text-ink">
         <div className="flex items-start gap-3 pr-8">
           <Portrait className={cn('agent-portrait agent-detail-portrait shrink-0', PORTRAIT_FRAME)} look={lookOf(row)} accessory={accessoryOf(row.role)}
@@ -199,7 +199,7 @@ export function AgentDetail({
       {tabs.length > 1 ? <p id="agent-detail-tab-hint" className="agent-detail-tab-hint sr-only">Scroll for more sections · Use arrow keys</p> : null}
       </div>
       {available.map(({ id, content }) => <section key={id} id={`agent-detail-panel-${id}`}
-        role="tabpanel" className={`min-h-0 flex-1 overflow-y-auto rounded-md ${RING_INSET}`} data-detail-section={id} aria-labelledby={`agent-detail-tab-${id}`} tabIndex={0} hidden={selected !== id}
+        role="tabpanel" className={`flex-1 rounded-md ${RING_INSET}`} data-detail-section={id} aria-labelledby={`agent-detail-tab-${id}`} tabIndex={0} hidden={selected !== id}
         ref={handFocusOnLeave} data-focus-on-leave="agent-detail-tab-overview"
         onFocus={() => setFocusedSection(id)} onBlur={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget)) setFocusedSection(null);
