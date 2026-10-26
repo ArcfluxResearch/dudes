@@ -68,7 +68,7 @@ export function ReorderHandle({ agent, name, ids, scope, onMove }: {
     onMove(agent, target);
   }
 
-  return <IconButton className={cn('agent-reorder-handle h-9 min-h-0 w-5 shrink-0 [&>svg]:shrink-0 cursor-grab touch-none text-subtle',
+  return <IconButton className={cn('agent-reorder-handle h-9 min-h-0 w-5 max-[800px]:h-11 max-[800px]:w-11 shrink-0 [&>svg]:shrink-0 cursor-grab touch-none text-subtle',
     'data-[dragging=true]:cursor-grabbing data-[dragging=true]:bg-surface-2 data-[dragging=true]:text-ink')}
   data-dragging={dragging ? 'true' : 'false'}
   label={`Reorder ${name}, position ${position} of ${ids.length}`}

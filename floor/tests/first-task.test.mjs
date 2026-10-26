@@ -170,8 +170,9 @@ test('several free agents share one line and retain the Who picker when opened',
     assert.match(textOf(app.open()), /2 agents are free.*Give a task/);
     await act(async () => press(app.open()));
     assert.match(textOf(app.page.host), /Who\?/);
-    assert.deepEqual(elements(app.page.host, 'OPTION').map(textOf).sort(), ['Ari', 'Kim']);
-    await act(async () => propsOf(elements(app.page.host, 'SELECT')[0]).onChange({ target: { value: ADA } }));
+    const names = elements(app.page.host, 'DIV').filter((node) => node.getAttribute('role') === 'option');
+    assert.deepEqual(names.map(textOf).sort(), ['Ari', 'Kim']);
+    await act(async () => propsOf(names.find((option) => option.getAttribute('data-value') === ADA)).onClick());
     assert.ok(app.page.host.querySelector('[aria-label="Give Kim a task"]'));
     await act(async () => press(app.close()));
     await act(async () => press(app.close()));

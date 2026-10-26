@@ -123,8 +123,9 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
     const { crew } = row;
     const about = `${base}-about-${row.id}`;
     const selected = selectedId === row.id;
+    const stacked = row.state === 'needs-you' || row.state === 'ready';
     return (
-      <li className={cn('crew-entry roster-entry flex items-center gap-0.5 rounded-lg border border-transparent pr-1 transition-[background-color,border-color]',
+      <li className={cn('crew-entry roster-entry flex items-center gap-0.5 rounded-lg border border-transparent pr-1 transition-[background-color,border-color]', stacked && 'flex-wrap',
         'hover:bg-surface-2 data-[selected=true]:border-accent data-[selected=true]:bg-accent-soft', ENTRY_STATE[row.state])}
       key={row.id} data-state={row.state} data-selected={selected} data-reorder-agent={row.id}
       data-reorder-scope={order} style={{ '--agent': crew.colour } as CSSProperties}>
@@ -135,7 +136,7 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
           }}
           type="button"
           id={crewRowId(row.id, base)}
-          className={cn('crew-row m-0 flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent py-2 pr-1 pl-2 text-left',
+          className={cn('crew-row m-0 flex min-w-0 flex-1 basis-0 cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent py-2 pr-1 pl-2 text-left',
             'font-sans text-base text-ink disabled:cursor-default', RING_INSET)}
           data-agent-id={row.id}
           aria-label={`Inspect ${crew.name}`}
@@ -156,18 +157,19 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
               <strong className="crew-name truncate text-base font-semibold"><bdi>{crew.name}</bdi></strong>
               <Badge state={row.state} className="roster-state px-1.5"><span className="sr-only">Status: </span>{NEED_LABEL[row.state]}</Badge>
             </span>
-            <small className="crew-activity truncate text-small text-muted data-[activity=question]:font-medium data-[activity=question]:text-ink"
+            <small className={cn('crew-activity text-small text-muted data-[activity=question]:font-medium data-[activity=question]:text-ink',
+              stacked ? 'line-clamp-2 [overflow-wrap:anywhere]' : 'truncate')}
             data-activity={crew.activity.kind} title={row.doing}>
               {row.live === null ? null : <span className="crew-live-activity after:content-['_·_']" data-live-activity={row.live}>{row.live}</span>}
               {row.doing}
             </small>
           </span>
         </button>
-        <span className="roster-acts flex flex-col gap-1">
-          <Button size="sm" variant={row.action.kind === 'agent' ? 'secondary' : 'primary'} className={cn('roster-act', 'max-[800px]:h-10')}
+        <span className={cn('roster-acts flex gap-1', stacked ? 'order-last basis-full pb-2 pl-[3.25rem]' : 'flex-col')}>
+          <Button size="sm" variant={row.action.kind === 'agent' ? 'secondary' : 'primary'} className={cn('roster-act', 'max-[800px]:h-11')}
             data-primary={row.action.kind !== 'agent'} disabled={!selectable}
             aria-label={`${row.action.label}, ${crew.name}`} onClick={() => act(row.action, row.id)}>{row.action.label}</Button>
-          {row.second === null ? null : <Button size="sm" variant="primary" className={cn('roster-act', 'max-[800px]:h-10')}
+          {row.second === null ? null : <Button size="sm" variant="primary" className={cn('roster-act', 'max-[800px]:h-11')}
             data-primary="true" disabled={!selectable}
             aria-label={`${row.second.label}, ${crew.name}`} onClick={() => { if (row.second !== null) act(row.second, row.id); }}>
             {row.second.label}</Button>}
@@ -190,7 +192,7 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
     data-sheet={sheet ? (open ? 'open' : 'closed') : undefined} data-waiting={waiting}>
       <h2 id={title} className={cn('roster-title m-0 text-body font-semibold', !waiting && 'text-muted')}>
         {agents.length === 0 ? 'No agents yet' : waitingHeading(rows)}</h2>
-      {sheet ? <Button size="md" className="roster-sheet-toggle hidden max-[800px]:inline-flex max-[800px]:h-10" aria-expanded={open} aria-controls={list}
+      {sheet ? <Button size="md" className="roster-sheet-toggle hidden max-[800px]:inline-flex max-[800px]:h-11" aria-expanded={open} aria-controls={list}
         onClick={() => setOpen((current) => !current)}>{open ? 'Hide agents' : `Show ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}`}</Button> : null}
       <div className={cn('roster-body flex flex-col gap-2', sheet && 'max-[800px]:col-span-full', sheeted && 'max-[800px]:hidden')} id={list} ref={attach}>
         {agents.length === 0 ? <p className="crew-empty m-0 px-1 text-base text-muted">No current agents.</p>

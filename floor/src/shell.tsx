@@ -53,7 +53,7 @@ import {
 } from './renderer/view';
 
 const TOP_BAR = 'top-bar relative z-(--layer-top-bar) flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface px-4 py-2 font-sans';
-const WORDMARK = 'wordmark m-0 text-title font-semibold tracking-[-0.01em] text-ink';
+const WORDMARK = 'wordmark m-0 text-title font-semibold tracking-[-0.01em] text-ink max-[800px]:order-1';
 const STAGE_ROW = 'row-[2/-1] min-h-0';
 
 function reloadPage(): void {
@@ -196,6 +196,8 @@ function SignedInShell() {
     const sync = () => {
       const pinned = noticeBanner.parentElement?.classList.contains('top-region') === true;
       shell.style.setProperty('--banner-height', `${pinned ? noticeBanner.offsetHeight : 0}px`);
+      const room = noticeArea.parentElement === shell ? noticeArea.offsetHeight : 0;
+      shell.style.setProperty('--notice-room', `${room === 0 ? 0 : room + 16}px`);
     };
     const update = () => {
       const dialogs = shell.querySelectorAll<HTMLDialogElement>('.hire-dialog:modal, .retire-dialog:modal, .ticket-dialog:modal, .overview-dialog:modal');
@@ -213,6 +215,7 @@ function SignedInShell() {
     observer.observe(shell, { childList: true, subtree: true, attributes: true, attributeFilter: ['open'] });
     const height = new ResizeObserver(sync);
     height.observe(noticeBanner);
+    height.observe(noticeArea);
     update();
     return () => { observer.disconnect(); height.disconnect(); noticeArea.remove(); noticeBanner.remove(); };
   }, [noticeArea, noticeBanner]);
@@ -509,7 +512,7 @@ function SignedInShell() {
   return (
     <TicketNoticeHost value={noticeStack}><main ref={shellRef} aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
       data-page={page ?? undefined}
-      className={cn('shell grid grid-rows-[auto_minmax(0,1fr)] bg-bg has-[.roster[data-sheet]]:pb-16 font-sans text-ink max-[800px]:min-h-screen max-[800px]:pt-[var(--banner-height,0px)]',
+      className={cn('shell grid grid-rows-[auto_minmax(0,1fr)] bg-bg has-[.roster[data-sheet]]:pb-16 font-sans text-ink max-[800px]:box-border max-[800px]:min-h-screen max-[800px]:has-[.roster[data-sheet]]:pb-[4.5rem] max-[800px]:pt-[var(--banner-height,0px)]',
         fullPanel ? 'h-dvh' : 'h-screen max-[800px]:h-auto')}
       onKeyDown={(event) => {
         if (page !== null && closesPanel(event)) { event.stopPropagation(); closeView(); }
@@ -520,7 +523,7 @@ function SignedInShell() {
           <h1 id="floor-title" className={WORDMARK}>dudes</h1>
           <CrewStats agents={floor.agents} cards={floor.cards} statuses={focused} />
           <ControlNav floor={floor} view={focused ? null : view} onToggle={toggleView} />
-          <div className="top-bar-actions ml-auto flex items-start gap-2" role="group" aria-label="Floor actions">
+          <div className="top-bar-actions ml-auto flex items-start gap-2 max-[800px]:order-2" role="group" aria-label="Floor actions">
             {hireSwitchOn(floor) ? <Button variant="primary" id="hire-open" aria-expanded={hiring}
               aria-controls={hiring ? 'hire-wizard' : undefined}
               onClick={(event) => openHire(event.currentTarget)}>Hire an agent</Button> : null}
@@ -542,7 +545,7 @@ function SignedInShell() {
               <MenuItem className="sign-out" icon={<LogOut {...ICON} />} onSelect={signOut}>Sign out</MenuItem>
             </Menu>
           </div>
-          <div className={cn('office-bar flex basis-full shrink-0 grow-0 flex-wrap items-center gap-x-3 gap-y-[0.4rem] empty:hidden', fullPanel && 'hidden')} ref={setOfficeBar} />
+          <div className={cn('office-bar flex basis-full shrink-0 grow-0 flex-wrap items-center gap-x-3 gap-y-[0.4rem] empty:hidden max-[800px]:order-4', fullPanel && 'hidden')} ref={setOfficeBar} />
         </header>
       </div>
       <div data-page={page ?? undefined}
@@ -562,7 +565,7 @@ function SignedInShell() {
           onClose={closeView} onView={openView}
           onReviewRecovery={reviewRecovery} onHire={openHire}
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
-        <div className={cn('office-slot col-[3/-1] flex min-w-0 flex-col', STAGE_ROW, 'max-[800px]:order-first max-[800px]:min-h-80',
+        <div className={cn('office-slot col-[3/-1] flex min-w-0 flex-col', STAGE_ROW, 'max-[800px]:order-first max-[800px]:min-h-80 max-[800px]:flex-1',
           drawerOpen && !focused && 'col-[3/4]', (focused || fullPanel) && 'hidden')}>
           <div className="office-area relative flex min-h-0 flex-auto flex-col [&>[data-office]]:relative [&>[data-office]]:isolate [&>[data-office]]:min-h-72 [&>[data-office]]:flex-auto [&>[data-office]]:overflow-hidden [&>[data-office]]:bg-(--studio-background)">
             {page === null ? <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
@@ -577,7 +580,7 @@ function SignedInShell() {
           <TerminalPanel floor={floor} theme={effectiveTheme} />
         </div>
         <div className={cn('stage-side pointer-events-none z-(--layer-panels) col-4 flex min-w-0 flex-col gap-2 [&>*]:pointer-events-auto max-[800px]:p-0',
-          STAGE_ROW, drawerOpen && 'max-[800px]:z-[calc(var(--layer-top-bar)+1)]', focused && 'col-1 p-2', fullPanel && 'hidden')}>
+          STAGE_ROW, drawerOpen && 'max-[800px]:z-[calc(var(--layer-top-bar)+1)]', focused && 'col-1 p-2 pb-[calc(0.5rem+var(--notice-room,0px))]', fullPanel && 'hidden')}>
           <Receipts floor={floor} leaveFocusTo={displayRow === null ? home : AGENT_DETAIL_HEADING_ID} focused={focused} />
           {focused ? <section className="focus-mode flex min-h-0 flex-auto flex-col gap-2" aria-label="Focus mode" ref={handFocusOnLeave}
             data-focus-on-leave="header-more-toggle">

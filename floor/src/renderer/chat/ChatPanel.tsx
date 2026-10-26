@@ -95,7 +95,7 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
   const target = action.answerTargets.get(row.id);
   const replying = target !== undefined && question.open && target.questionLsn === question.questionLsn;
   const waitingQuestion = row.status === 'waiting' && typeof row.question === 'string' && canonicalLsn(row.question_lsn);
-  return <div className="chat-panel flex h-full min-h-0 flex-col gap-3 overflow-y-auto font-sans text-base text-ink" data-chat-agent-id={row.id}>
+  return <div className="chat-panel flex min-h-full flex-col gap-3 font-sans text-base text-ink" data-chat-agent-id={row.id}>
     <ChatThread key={row.id} entries={entries} floor={floor} row={row} action={action}
       fullOutput={fullOutput} onFullOutput={onFullOutput} />
     {row.mode === 'attached' ? <p className={cn('chat-guidance', NOTE)}>Attached replies are unavailable. Messages are sent as context.</p> : null}

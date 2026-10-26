@@ -134,6 +134,9 @@ const CLEAR_WIDTH = 'max-w-[calc(100%_-_var(--covered-left,0px)_-_var(--covered-
 const LINE = 'm-0 box-border pointer-events-none font-sans text-base text-ink';
 const IN_BAR = 'static min-w-0 flex-[1_1_16rem] max-w-none';
 
+/** The least a finger can hit on a phone, in pixels. */
+const TOUCH_TARGET = 44;
+
 /** The transparent button laid over a figure or a note: a ring on hover and a doubled one for the keyboard, so it shows on a light floor, a dark one or the backdrop. */
 const OFFICE_HIT = cn('absolute box-border cursor-pointer border-0 bg-transparent p-0 outline-0',
   'hover:bg-accent/10 hover:outline-2 hover:outline-solid hover:outline-offset-2 hover:outline-accent',
@@ -458,11 +461,13 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
       }
     }
 
-    function place(element: HTMLElement, rect: { left: number; top: number; width?: number; height?: number }) {
-      element.style.left = `${rect.left}px`;
-      element.style.top = `${rect.top}px`;
-      if (rect.width !== undefined) element.style.width = `${rect.width}px`;
-      if (rect.height !== undefined) element.style.height = `${rect.height}px`;
+    function place(element: HTMLElement, rect: { left: number; top: number; width?: number; height?: number }, touch = false) {
+      const wide = rect.width === undefined ? 0 : touch ? Math.max(0, TOUCH_TARGET - rect.width) : 0;
+      const tall = rect.height === undefined ? 0 : touch ? Math.max(0, TOUCH_TARGET - rect.height) : 0;
+      element.style.left = `${rect.left - wide / 2}px`;
+      element.style.top = `${rect.top - tall / 2}px`;
+      if (rect.width !== undefined) element.style.width = `${rect.width + wide}px`;
+      if (rect.height !== undefined) element.style.height = `${rect.height + tall}px`;
     }
 
     /** A tag's size whole and with the name alone, measured again only when what it says changes. The frame sets its form after. */
@@ -536,12 +541,12 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
       for (const [id, button] of buttonsRef.current) {
         const rect = renderer.figureRect(id);
         showOverlay(button, rect !== null && onCanvas({ x: rect.left + rect.width / 2, y: rect.top + rect.height }, css), viewButtons);
-        if (rect !== null) place(button, rect);
+        if (rect !== null) place(button, rect, css.width <= 800);
       }
       for (const [id, mark] of marksRef.current) {
         const rect = renderer.badgeRect(id);
         showOverlay(mark, rect !== null && onCanvas({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }, css), viewButtons);
-        if (rect !== null) place(mark, rect);
+        if (rect !== null) place(mark, rect, css.width <= 800);
       }
       const tags = [...tagsRef.current].flatMap(([id, tag]) => {
         const presence = rosterRef.current.get(id) ?? 'gone';

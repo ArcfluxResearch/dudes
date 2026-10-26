@@ -10,6 +10,7 @@ import { CARD_DETAIL, CARD_FACTS, CARD_HEADING } from './ticket/look.ts';
 import { journalPosition, recordedTime } from './format.ts';
 import { ReadNotice, snapshotReadState } from './ReadError.tsx';
 import { getReadAvailability, subscribeToReadAvailability } from './floor/reads.ts';
+import { Disclosure } from '../ui/index.ts';
 
 let requestedCard: string | null = null;
 const selectionListeners = new Set<() => void>();
@@ -91,7 +92,7 @@ function CardActivity({ floor, cardId }: { readonly floor: FloorState; readonly 
             return <li key={row.lsn} data-card-activity-lsn={row.lsn} className="border-b border-line py-2 [overflow-wrap:anywhere]">
               <p className="m-0 mb-1">{activityText(row)}</p>
               <small className="opacity-75"><RelativeTime at={row.at} /></small>
-              <details><summary>Details</summary><p className="m-0 mb-1">{recordedTime(row.at)} · {journalPosition(row.lsn)}</p></details>
+              <Disclosure summary="Details" className="text-small"><p className="m-0 mb-1">{recordedTime(row.at)} · {journalPosition(row.lsn)}</p></Disclosure>
             </li>;
           })}
         </ol>}

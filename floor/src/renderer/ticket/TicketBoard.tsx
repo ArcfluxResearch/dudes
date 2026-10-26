@@ -9,9 +9,9 @@ import type { CardRow } from '../board.ts';
 import { accentOf } from '../appearance.ts';
 import { initialOf } from '../Portrait.tsx';
 import { Plus } from 'lucide-react';
-import { Badge, Button, Field, ICON, Input, RING, Textarea, cn } from '../../ui/index.ts';
+import { Badge, Button, Field, ICON, Input, RING, Select, Textarea, cn } from '../../ui/index.ts';
 import type { BadgeState } from '../../ui/index.ts';
-import { FORM_ACTIONS, HINT, SELECT_BOX } from './look.ts';
+import { FORM_ACTIONS, HINT } from './look.ts';
 
 import { useRequestedCard } from '../BoardPanel.tsx';
 import type { FloorState } from '../floor/store.ts';
@@ -143,9 +143,8 @@ export function FirstTaskForm({ floor, agents }: { readonly floor: FloorState; r
   return <form className="ticket-form grid gap-3" onSubmit={(event) => { void submit(event); }} aria-label={`Give ${agent.name} a task`}>
     <h2 className="m-0 text-title font-semibold">Give {agent.name} a task</h2>
     {agents.length > 1 ? <Field label="Who?" id={`${ids}-who`}>
-      <select id={`${ids}-who`} className={SELECT_BOX} value={agent.id} onChange={(event) => setChosen(event.target.value)}>
-        {agents.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-      </select></Field> : null}
+      <Select id={`${ids}-who`} value={agent.id} onValueChange={setChosen}
+        options={agents.map((entry) => ({ value: entry.id, label: entry.name }))} /></Field> : null}
     <Field label={<>What should {agent.name} do?</>} id={`${ids}-task`}
       hint={<span className="first-task-note">When {agent.name} says it is finished, Dudes checks it itself ({agent.check.label}) before you review it.</span>}>
       <Textarea rows={3} maxLength={8192} value={task} placeholder="For example: add a dark mode switch to the settings page"
@@ -215,18 +214,14 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
         onChange={(event) => editDraft({ note: event.target.value })} />
     </Field>
     {projects.length > 1 || chosenProject !== null && project === null ? <Field label="Project" id={`${ids}-project`}>
-      <select id={`${ids}-project`} className={SELECT_BOX} name="project" value={project ?? ''}
-        onChange={(event) => { editDraft({ project: event.target.value, check: null, agent: '' }); }}>
-        {project === null ? <option value="">Choose a project</option> : null}
-        {projects.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
-      </select>
+      <Select id={`${ids}-project`} name="project" value={project ?? ''} placeholder="Choose a project"
+        onValueChange={(value) => { editDraft({ project: value, check: null, agent: '' }); }}
+        options={projects.map((entry) => ({ value: entry.id, label: entry.label }))} />
     </Field> : null}
     {checks.length > 0 ? <Field label="Done when" id={`${ids}-check`}>
-      <select id={`${ids}-check`} className={SELECT_BOX} name="check" value={check?.id ?? ''}
-        onChange={(event) => editDraft({ check: event.target.value })}>
-        {check === null ? <option value="">Choose a check</option> : null}
-        {checks.map((entry) => <option key={entry.id} value={entry.id}>{choiceLabel(entry)}</option>)}
-      </select>
+      <Select id={`${ids}-check`} name="check" value={check?.id ?? ''} placeholder="Choose a check"
+        onValueChange={(value) => editDraft({ check: value })}
+        options={checks.map((entry) => ({ value: entry.id, label: choiceLabel(entry) }))} />
     </Field> : null}
     {chosenCheck !== null && check === null && project !== null ? <p className={HINT} role="status">The saved check is no longer available. Choose a check before creating this ticket.</p> : null}
     {chosenProject !== null && project === null ? <p className={HINT} role="status">The saved project is no longer available. Choose a project before creating this ticket.</p> : null}
@@ -238,11 +233,10 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
         ? <Button size="sm" className="ticket-hire" onClick={(event) => onHire(event.currentTarget)}>Hire an agent</Button>
         : <p className={HINT}>Open Settings to check whether hiring is available.</p>}
     </div> : <Field label="Give to agent (optional)" id={`${ids}-agent`}>
-      <select id={`${ids}-agent`} className={SELECT_BOX} name="agent" value={agent} onChange={(event) => editDraft({ agent: event.target.value })}>
-        <option value="">Not yet</option>
-        {usable.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
-        {unrecorded.map((row) => <option key={row.id} value={row.id} disabled>{row.name} (hired before projects were recorded)</option>)}
-      </select>
+      <Select id={`${ids}-agent`} name="agent" value={agent} onValueChange={(value) => editDraft({ agent: value })}
+        options={[{ value: '', label: 'Not yet' },
+          ...usable.map((row) => ({ value: row.id, label: row.name })),
+          ...unrecorded.map((row) => ({ value: row.id, label: `${row.name} (hired before projects were recorded)`, disabled: true }))]} />
     </Field>}
     {unrecorded.map((row) => <p key={row.id} className={HINT}>{agentWithoutProjectSentence(row.name)}</p>)}
     <div className={FORM_ACTIONS}>
@@ -282,7 +276,7 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
       {words.note === null ? null : <span className="ticket-note text-small whitespace-pre-wrap text-muted">{words.note}</span>}
       <span className="ticket-card-footer mt-auto flex items-center justify-between gap-2">
         {words.agent === null ? <span className="ticket-unassigned text-small text-subtle">Unassigned</span> : <span className="ticket-agent inline-flex min-w-0 items-center gap-2 text-small font-medium text-ink">
-          <span className={cn('ticket-avatar inline-flex size-6 shrink-0 items-center justify-center rounded-pill border text-caption font-semibold text-(--agent)',
+          <span className={cn('ticket-avatar inline-flex size-6 shrink-0 items-center justify-center rounded-pill border text-caption font-semibold text-[color-mix(in_srgb,var(--agent)_55%,var(--text))]',
             'border-[color-mix(in_srgb,var(--agent)_38%,var(--ui-surface))] bg-[color-mix(in_srgb,var(--agent)_12%,var(--ui-surface))]')} aria-hidden="true"
             style={{ '--agent': accentOf(row ?? { id: card.claimed_by ?? '' }) } as CSSProperties}>{initialOf(words.agent)}</span>
           <span className="truncate">{words.agent}</span>

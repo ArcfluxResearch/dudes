@@ -31,9 +31,9 @@ import { AGENT_SAYS, FROM_LAST_READING, NO_SUMMARY, agentWithoutProjectSentence,
 import { StuckActions } from './StuckActions.tsx';
 import { AgentMarkdown, MARKDOWN } from '../chat/markdown.tsx';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
-import { Badge, Button, Disclosure, Field, Input, Textarea, cn } from '../../ui/index.ts';
+import { Badge, Button, Disclosure, Field, Input, Select, Textarea, cn } from '../../ui/index.ts';
 import type { BadgeState } from '../../ui/index.ts';
-import { FILE_LIST, FILE_ROW, FORM_ACTIONS, HINT, PATH, SELECT_BOX, SHEET_SECTIONS } from './look.ts';
+import { FILE_LIST, FILE_ROW, FORM_ACTIONS, HINT, PATH, SHEET_SECTIONS } from './look.ts';
 
 import { coverageText, groupGaps, instructionContextDetails, instructionContextText } from './instructions.ts';
 import type { InstructionReview } from './instructions.ts';
@@ -282,9 +282,8 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
   return <form className="ticket-form flex flex-col gap-4 rounded-lg border border-line bg-surface-2 p-4" aria-label={mode === 'changes' ? 'Ask for changes' : 'Give to agent'}
     ref={handFocusAfterLeave} data-focus-on-leave="card-detail-title" onSubmit={(event) => { void submit(event); }}>
     <Field label="Agent" id={`${ids}-agent`}>
-      <select id={`${ids}-agent`} className={SELECT_BOX} value={chosen ?? ''} onChange={(event) => setAgent(event.target.value)}>
-        {usable.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
-      </select>
+      <Select id={`${ids}-agent`} value={chosen ?? ''} onValueChange={setAgent}
+        options={usable.map((row) => ({ value: row.id, label: row.name }))} />
     </Field>
     {unrecorded.map((row) => <p key={row.id} className={HINT}>{agentWithoutProjectSentence(row.name)}</p>)}
     {mode === 'changes' ? <Field label="What should change?" id={`${ids}-message`}>
@@ -333,9 +332,8 @@ function EditForm({ floor, card, detail, onDone }: {
       <Textarea rows={3} maxLength={8192} value={text} onChange={(event) => setText(event.target.value)} />
     </Field>
     {checks.length > 0 ? <Field label="Done when" id={`${ids}-check`}>
-      <select id={`${ids}-check`} className={SELECT_BOX} value={checkId} onChange={(event) => setCheckId(event.target.value)}>
-        {checks.map((entry) => <option key={entry.id} value={entry.id}>{choiceLabel(entry)}</option>)}
-      </select>
+      <Select id={`${ids}-check`} value={checkId} onValueChange={setCheckId}
+        options={checks.map((entry) => ({ value: entry.id, label: choiceLabel(entry) }))} />
     </Field> : null}
     <div className={FORM_ACTIONS}>
       <Button type="submit" variant="primary" disabled={sending || title.trim() === '' || !ticketActionsOpen(floor)

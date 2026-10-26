@@ -83,7 +83,7 @@ test('no notice reserves room: the page has no rail, no bottom padding for it, a
   assert.match(area, /pointer-events-none/);
   assert.doesNotMatch(area, /(?:^|\s|')h-/, 'the stack area sizes to its notices');
   const shellRoot = /className=\{cn\('shell [^']*'/.exec(shell)?.[0] ?? '';
-  assert.doesNotMatch(shellRoot.replace(' has-[.roster[data-sheet]]:pb-16', ''), /\bpb-/, 'the page keeps no bottom padding for notices');
+  assert.doesNotMatch(shellRoot.replace(' has-[.roster[data-sheet]]:pb-16', '').replace(' max-[800px]:has-[.roster[data-sheet]]:pb-[4.5rem]', ''), /\bpb-/, 'the page keeps no bottom padding for notices');
   assert.match(constant('NOTICE_BANNER'), /\brelative\b/, 'the banner sits in the page under the top bar');
   assert.match(shellRoot, /max-\[800px\]:pt-\[var\(--banner-height,0px\)\]/, 'a phone makes room for its fixed banner and nothing else');
 });
