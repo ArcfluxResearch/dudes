@@ -173,4 +173,13 @@
   outline: 2px solid var(--accent-ink);
   outline-offset: 2px;
 }
+
+/* The Chat tab on a short sheet, while the on-screen keyboard is open: the header scrolls and the composer stays in view. */
+.agent-drawer[data-chat-short='true'] .agent-detail[data-detail-tab='chat'] { display: grid; grid-template-rows: minmax(0, auto) minmax(0, 1fr) auto auto; }
+.agent-drawer[data-chat-short='true'] .agent-detail[data-detail-tab='chat'] > .agent-detail-context { display: block; grid-row: 1; min-height: 0; overflow-y: auto; }
+.agent-drawer[data-chat-short='true'] .agent-detail[data-detail-tab='chat'] #agent-detail-panel-chat,
+.agent-drawer[data-chat-short='true'] .agent-detail[data-detail-tab='chat'] .chat-panel { display: contents; }
+.agent-drawer[data-chat-short='true'] .chat-thread { grid-row: 2; overflow: clip; }
+.agent-drawer[data-chat-short='true'] .chat-panel > .chat-guidance { grid-row: 3; }
+.agent-drawer[data-chat-short='true'] .chat-compose { grid-row: 4; }
 }

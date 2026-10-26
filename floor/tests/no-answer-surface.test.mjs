@@ -501,7 +501,7 @@ const ADMITTED_HANDLERS = [
   { file: CHAT_PANEL, tag: 'section', className: 'chat-compose', handler: 'onDragOver', expression: 'overChatFiles' },
   { file: CHAT_PANEL, tag: 'section', className: 'chat-compose', handler: 'onDrop', expression: '(event) => dropChatFiles(event, gate)' },
   { file: CHAT_PANEL, tag: 'textarea', handler: 'onKeyDown',
-    expression: '(event) => {\n          if (!queuesChatOnKey(event) || blocked || action.sending) return;\n          event.preventDefault();\n          void submitChat(gate, browserChatDeps);\n        }' },
+    expression: '(event) => {\n            if (!queuesChatOnKey(event) || blocked || action.sending) return;\n            event.preventDefault();\n            void submitChat(gate, browserChatDeps);\n          }' },
   { file: CHAT_PANEL, tag: 'div', className: 'chat-scroll', handler: 'onScroll',
     expression: 'event => {\n        const node = event.currentTarget;\n        if (node.clientWidth !== size.current.width || node.clientHeight !== size.current.height) return;\n        follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;\n      }' },
   // ControlPanel.tsx: Pause and Resume keep keyboard focus while they wait, so a
@@ -581,12 +581,16 @@ test("Roster.tsx's top-level imports include its live activity expiry hook, it b
     "reveal's body is no longer its one scrollIntoView statement");
 });
 
-/** An element's `className` string literal, or null if it has no `className` or its value is not one. */
+/**
+ * An element's `className` string literal, or null if it has none or its value is not one.
+ * Utilities share the attribute with the name a rule is pinned by, so a rule names that one class.
+ */
 function classNameOf(node, syntax) {
   const found = node.attributes.properties
     .find((entry) => ts.isJsxAttribute(entry) && entry.name.getText(syntax) === 'className');
   if (found === undefined || found.initializer === undefined) return null;
-  return ts.isStringLiteral(found.initializer) ? found.initializer.text : null;
+  if (ts.isStringLiteral(found.initializer)) return found.initializer.text;
+  return null;
 }
 
 /**
@@ -1417,7 +1421,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => void stopAndSend(gate, stopControl, browserChatDeps)',
     '() => removeChatFile(row.id, file.id)',
     '() => setAsking(true)', '() => setAsking(false)',
-    '() => {\n        setAsking(false);\n        void clearQueuedChat(chatGate(floor, row), browserChatDeps);\n      }',
+    '() => {\n          setAsking(false);\n          void clearQueuedChat(chatGate(floor, row), browserChatDeps);\n        }',
   ].sort());
   assert.deepEqual(clicksIn(await readFile(resolve(floor, 'src/renderer/chat/Steps.tsx'), 'utf8')), [
     '() => requestStepResult(step.id)',
@@ -2659,7 +2663,7 @@ test('Chat requires its own fresh sibling and revokes its mounted history and ac
   assert.equal(chatGate(on, row).open, true);
   const draw = floor => renderToStaticMarkup(createElement(ChatPanelView, { floor, row, action }));
   assert.match(draw(on), /Browser note/);
-  assert.match(draw(on), /class="chat-cancel"/);
+  assert.match(draw(on), /class="[^"]*\bchat-cancel\b/);
   for (const floor of [base, { ...on, chat: null }, { ...on, phase: 'closed' }, { ...on, stale: true },
     { ...on, snapshotEpoch: on.epoch - 1 }, { ...on, agents: [] }]) {
     assert.equal(chatGate(floor, row).open, false);
