@@ -555,6 +555,13 @@ pub fn read_body(read: &TicketReadResult) -> Value {
         if trim_recovered_history(&mut body["ticket"]["context"]) {
             continue;
         }
+        if trim_instruction_evidence(&mut body["ticket"]["instruction_review"]) {
+            mark_truncated(&mut body, TicketReadTruncation::InstructionEvidence);
+            continue;
+        }
+        if trim_ticket_display_text(&mut body) {
+            continue;
+        }
         if let Some(summary) = body["ticket"]["summary"].as_str().map(str::to_owned) {
             let mut cut = summary.len() / 2;
             while !summary.is_char_boundary(cut) {
@@ -570,13 +577,7 @@ pub fn read_body(read: &TicketReadResult) -> Value {
             }
             continue;
         }
-        if trim_instruction_evidence(&mut body["ticket"]["instruction_review"]) {
-            mark_truncated(&mut body, TicketReadTruncation::InstructionEvidence);
-            continue;
-        }
-        if !trim_ticket_display_text(&mut body) {
-            return json!({"state":"unavailable", "truncated":[TicketReadTruncation::Ticket]});
-        }
+        return json!({"state":"unavailable", "truncated":[TicketReadTruncation::Ticket]});
     }
 }
 
@@ -1170,6 +1171,28 @@ mod tests {
         assert!(
             gaps.iter()
                 .all(|gap| gap["origin"] == "observed" && gap["holds"].is_boolean())
+        );
+    }
+
+    #[test]
+    fn an_oversized_read_keeps_the_summary_before_instruction_evidence() {
+        let mut read = instruction_read_fixture();
+        read.ticket.description = format!("x{}x", "\n".repeat(8_190));
+        assert!(serde_json::to_vec(&read_value(&read)).unwrap().len() > MAX_TICKET_BODY_BYTES);
+        let body = read_body(&read);
+        assert!(serde_json::to_vec(&body).unwrap().len() <= MAX_TICKET_BODY_BYTES);
+        assert_eq!(body["ticket"]["summary"], read.ticket.summary.unwrap());
+        assert!(
+            body["ticket"]["truncated"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("instruction_evidence"))
+        );
+        assert!(
+            body["ticket"]["truncated"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("note"))
         );
     }
 
