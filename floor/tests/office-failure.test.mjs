@@ -82,7 +82,7 @@ test('the office box is identified with detail in the drawer beside it', async (
 
 test('the failure line is a sibling of the office box, not a child of it', async () => {
   const text = await readFile(source, 'utf8');
-  const at = text.indexOf('className="office-failure"');
+  const at = text.indexOf('className="office-failure ');
   assert.notEqual(at, -1, 'the failure paragraph is still rendered');
   assert.ok(at > text.indexOf('<div className="office '), 'the failure line follows the office box');
   const depth = divDepthAt(text, at);

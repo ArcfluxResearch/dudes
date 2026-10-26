@@ -846,7 +846,7 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
       </div>
       {support === 'loading' ? <p role="status">Loading the office.</p> : null}
       {fallback === null ? null
-        : <ReadError className="office-failure" message={fallback} onRetry={() => setAttempt((count) => count + 1)} />}
+        : <ReadError className="office-failure border-t border-line bg-surface px-3 py-2" message={fallback} onRetry={() => setAttempt((count) => count + 1)} />}
     </>
   );
 }

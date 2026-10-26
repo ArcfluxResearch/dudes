@@ -124,7 +124,7 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
     const about = `${base}-about-${row.id}`;
     const selected = selectedId === row.id;
     return (
-      <li className={cn('crew-entry roster-entry flex items-center gap-1 rounded-lg border border-transparent pr-1 transition-[background-color,border-color]',
+      <li className={cn('crew-entry roster-entry flex items-center gap-0.5 rounded-lg border border-transparent pr-1 transition-[background-color,border-color]',
         'hover:bg-surface-2 data-[selected=true]:border-accent data-[selected=true]:bg-accent-soft', ENTRY_STATE[row.state])}
       key={row.id} data-state={row.state} data-selected={selected} data-reorder-agent={row.id}
       data-reorder-scope={order} style={{ '--agent': crew.colour } as CSSProperties}>
@@ -135,7 +135,7 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
           }}
           type="button"
           id={crewRowId(row.id, base)}
-          className={cn('crew-row m-0 flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg border-0 bg-transparent p-2 text-left',
+          className={cn('crew-row m-0 flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent py-2 pr-1 pl-2 text-left',
             'font-sans text-base text-ink disabled:cursor-default', RING_INSET)}
           data-agent-id={row.id}
           aria-label={`Inspect ${crew.name}`}
@@ -154,7 +154,7 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
           <span className="crew-who grid min-w-0 flex-1 gap-0.5">
             <span className="roster-line flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
               <strong className="crew-name truncate text-base font-semibold"><bdi>{crew.name}</bdi></strong>
-              <Badge state={row.state} className="roster-state"><span className="visually-hidden">Status: </span>{NEED_LABEL[row.state]}</Badge>
+              <Badge state={row.state} className="roster-state px-1.5"><span className="visually-hidden">Status: </span>{NEED_LABEL[row.state]}</Badge>
             </span>
             <small className="crew-activity truncate text-small text-muted data-[activity=question]:font-medium data-[activity=question]:text-ink"
             data-activity={crew.activity.kind} title={row.doing}>
