@@ -90,7 +90,7 @@ test('the banner says it in plain words', () => {
 test('the banner is drawn for a waiting ticket and carries the words and an Open Board button', () => {
   subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'review', { claimed_by: ADA })] });
   const html = banner();
-  assert.match(html, /<span class="ticket-banner-text">1 ticket is ready for you\.<\/span>/);
+  assert.match(html, /<span class="ticket-banner-text [^"]*">(?:<svg[^]*?<\/svg>)?1 ticket is ready for you\.<\/span>/);
   assert.match(html, /Open Board<\/button>/);
   assert.match(html, /aria-live="polite"/);
 });

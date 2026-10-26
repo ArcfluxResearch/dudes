@@ -17,7 +17,7 @@ import {
   beginPauseAll, checkPauseAllStatus, getPauseAllState, pauseAllTargets, resetPauseAll,
 } from '../src/renderer/control/pauseAll.ts';
 import { loadStage } from './helpers/page.mjs';
-import { legacyStyles } from './helpers/legacy-css.mjs';
+import { bare } from './helpers/shell-bare.mjs';
 
 const floorRoot = resolve(import.meta.dirname, '..');
 const IDS = [
@@ -67,21 +67,6 @@ const applied = (payload, lsn) => ({ status: 200, text: async () => JSON.stringi
 const refused = (payload) => ({ status: 409, text: async () => JSON.stringify({
   request_id: payload.request_id, state: 'refused', reason: 'stale_control',
 }) });
-
-/** Every rule in the Floor's stylesheet, as its normalized comma-separated selectors and its declaration body. */
-async function styleRules() {
-  const css = await legacyStyles();
-  return [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^}]*)\}/g)].map(([, selectors, body]) => ({
-    selectors: selectors.split(',').map((selector) => selector.trim().replace(/\s+/g, ' ')), body,
-  }));
-}
-
-/** The position, top, right and z-index declarations of every rule whose selector list matches `pattern`. */
-function placements(rules, pattern) {
-  return rules.filter((rule) => pattern.test(rule.selectors.join(',')))
-    .flatMap((rule) => [...rule.body.matchAll(/(?:^|;|\s)(position|top|right|z-index):\s*([^;]+);/g)]
-      .map(([, property, value]) => `${property}: ${value.trim()}`));
-}
 
 let server;
 let PauseAllControlView;
@@ -338,17 +323,6 @@ test('a stale confirmation warning stays visible beside an earlier completed rec
   assert.match(receipt, /Paused 1 agent\./);
 });
 
-test('RECEIPT_BUTTONS_UNSTYLED mutant: the Pause all receipt\'s buttons share the Floor\'s base, disabled and focus-visible button rules with the control\'s', async () => {
-  const rules = await styleRules();
-  for (const suffix of ['', ':disabled', ':focus-visible']) {
-    const target = `.pause-all-control button${suffix}`;
-    const rule = rules.find((candidate) => candidate.selectors.includes(target));
-    assert.ok(rule, `no rule styles ${target}`);
-    assert.ok(rule.selectors.includes(`.pause-all-receipt button${suffix}`),
-      `${target}'s rule does not also style .pause-all-receipt button${suffix}`);
-  }
-});
-
 test('RECEIPT_OVER_STAGE and BOX_FLOATS mutants: the receipt sits with the other receipts beside the office, and the confirmation is a popover from its button', async () => {
   // The stage reads the floor and the Pause all state the page's own modules hold, so the pause goes through those.
   const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
@@ -362,15 +336,15 @@ test('RECEIPT_OVER_STAGE and BOX_FLOATS mutants: the receipt sits with the other
   const header = renderToStaticMarkup(createElement(PauseAllControlView, { floor: store.getFloorState(), state: pauseAll.getPauseAllState(),
     confirming: true, onOpen() {}, onCancel() {}, onConfirm() {} }));
   assert.doesNotMatch(header, /pause-all-receipt|Paused 2 agents/, 'the top bar keeps the button and the confirmation, not the result');
-  const beside = stage({ floor: store.getFloorState() });
+  const beside = bare(stage({ floor: store.getFloorState() }), ['receipts', 'pause-all-receipt']);
   pauseAll.resetPauseAll();
   assert.match(beside,
     /<div class="receipts"><section class="pause-all-receipt" aria-live="polite" aria-label="Pause all result"><p[^>]*>Paused 2 agents\.<\/p>/,
     'the result is the first of the receipts beside the office, above the drawer');
   // The result stays in the flow beside the office. The confirmation is a popover from its button, so it moves nothing in the bar.
-  const rules = await styleRules();
-  assert.deepEqual(placements(rules, /\.pause-all-receipt\b/), []);
-  assert.ok(placements(rules, /\.pause-all-confirm\b/).includes('position: absolute'));
+  const control = await readFile(resolve(floorRoot, 'src/renderer/control/PauseAllControl.tsx'), 'utf8');
+  assert.doesNotMatch(/<section className="pause-all-receipt[^"]*"/.exec(control)?.[0] ?? '', /\b(?:absolute|fixed|z-)/);
+  assert.match(/<section className="pause-all-confirm[^"]*"/.exec(control)?.[0] ?? '', /\babsolute\b/);
 });
 
 test('RECEIPT_RENDERED_LAST mutant: the Pause all receipt renders first in the stack, ahead of a Pause request receipt open at the same time', async () => {
@@ -390,16 +364,17 @@ test('RECEIPT_RENDERED_LAST mutant: the Pause all receipt renders first in the s
   const beside = stage({ floor: store.getFloorState() });
   pauseAll.resetPauseAll();
   control.resetControl();
-  const order = [...beside.matchAll(/<section class="(pause-all-receipt|control-status)"/g)].map((match) => match[1]);
+  const order = [...bare(beside, ['pause-all-receipt', 'control-status']).matchAll(/<section class="(pause-all-receipt|control-status)"/g)].map((match) => match[1]);
   assert.deepEqual(order, ['pause-all-receipt', 'control-status'], 'the Pause all result leads the stack, not the last of it');
 });
 
 test('RECEIPT_STACK_OVERLAP mutant: a Pause all receipt and a Pause request receipt, both open, declare no position, top, right or z-index to float one over the other', async () => {
-  const rules = await styleRules();
-  const placed = placements(rules, /\.(pause-all-receipt|control-status|retire-status|answer-status|goal-status)\b/);
-  assert.deepEqual(placed, [], 'every receipt type in the stack stays in flow, so the container\'s own gap is what spaces them');
-  const container = rules.filter((rule) => rule.selectors.includes('.receipts')).map((rule) => rule.body);
-  assert.ok(container.some((body) => /gap:\s*[^;]+;/.test(body)), 'the stack itself supplies the space between receipts');
+  const drawer = await readFile(resolve(floorRoot, 'src/renderer/AgentDrawer.tsx'), 'utf8');
+  const stack = /<div className=\{cn\('receipts [^']*'/.exec(drawer)?.[0] ?? '';
+  assert.match(stack, /\bgap-2\b/, 'the stack itself supplies the space between receipts');
+  const control = await readFile(resolve(floorRoot, 'src/renderer/control/PauseAllControl.tsx'), 'utf8');
+  assert.doesNotMatch(/<section className="pause-all-receipt[^"]*"/.exec(control)?.[0] ?? '', /\b(?:absolute|fixed|z-)/,
+    'the Pause all receipt stays in flow, so the stack\'s own gap is what spaces it');
 });
 
 /** The source of PauseAllControlView's `onConfirm` prop, as PauseAllControl.tsx wires it. */
@@ -428,7 +403,7 @@ test('CONFIRM_FOCUS_DROPPED and CONFIRM_FOCUS_FALLBACK_DROPPED mutants: Confirm 
   const html = renderToStaticMarkup(createElement(PauseAllReceiptView, {
     state: { ...getPauseAllState(), phase: 'sending', total: 2, paused: 0 }, onCheck() {}, onDismiss() {},
   }));
-  assert.match(html, /<p id="pause-all-receipt-status" tabindex="-1">Pausing agents… 0 of 2 paused\.<\/p>/,
+  assert.match(bare(html), /<p id="pause-all-receipt-status" tabindex="-1">Pausing agents… 0 of 2 paused\.<\/p>/,
     'the status line Confirm focuses is the one the receipt actually renders');
 });
 

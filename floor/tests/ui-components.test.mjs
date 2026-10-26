@@ -97,6 +97,17 @@ test('a menu is a labelled button over a role=menu popover, and its items are me
   assert.match(page, /aria-disabled="true"[^>]*disabled=""[^>]*>Off|disabled=""[^>]*aria-disabled="true"[^>]*>Off/);
 });
 
+test('a menu button takes an id for a hand-off of focus, and a checkable item is a menuitemcheckbox that says whether it is on', () => {
+  const page = html(h(ui.Menu, { label: 'More', id: 'header-more-toggle' },
+    h(ui.MenuItem, { onSelect() {}, checked: true }, 'Crew'), h(ui.MenuItem, { onSelect() {}, checked: false }, 'Focus'),
+    h(ui.MenuItem, { onSelect() {} }, 'Plain')));
+  assert.match(page, /<button type="button" id="header-more-toggle" aria-label="More"/);
+  assert.match(page, /role="menuitemcheckbox" aria-checked="true"[^>]*>(?:<[^>]*>)*Crew/);
+  assert.match(page, /role="menuitemcheckbox" aria-checked="false"[^>]*>(?:<[^>]*>)*Focus/);
+  assert.equal([...page.matchAll(/role="menuitem" tabindex="-1"/g)].length, 1);
+  assert.equal([...page.matchAll(/<svg[^>]*lucide-check/g)].length, 1, 'only the item that is on shows the mark');
+});
+
 test('a switch is role=switch, named by its label, described by its description, and shows the value it is handed', () => {
   const on = html(h(ui.Switch, { checked: true, onCheckedChange() {}, label: 'Hire', description: 'Lets you hire from the page' }));
   assert.match(on, /role="switch" aria-checked="true" aria-labelledby="([^"]+)-label" aria-describedby="\1-description"/);

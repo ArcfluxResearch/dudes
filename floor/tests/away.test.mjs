@@ -406,7 +406,7 @@ test('each away state says its one thing, in words', async () => {
     assert.equal(text(), kind === 'updated' ? `${words} See the release notes.` : words);
     const html = renderToStaticMarkup(createElement(StreamNotice,
       { floor: { ...store.getFloorState(), phase: 'closed', stale: false, epoch: 1, snapshotEpoch: 1 } }));
-    assert.equal(html.includes('<a href="https://github.com/ArcfluxResearch/dudes/releases" target="_blank" rel="noopener noreferrer">'),
+    assert.equal(html.includes('href="https://github.com/ArcfluxResearch/dudes/releases" target="_blank" rel="noopener noreferrer">'),
       kind === 'updated', 'the update notice links the releases list, since the page knows only its own version');
   }
 

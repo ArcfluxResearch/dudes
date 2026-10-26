@@ -6,15 +6,19 @@ import { clockTime } from '../format.ts';
 import { useAutoDismiss } from '../useAutoDismiss.ts';
 import { answerBrowser, dismissDeparted, getDevicesState, subscribeToDevices, unansweredDevices } from './devices.ts';
 import type { Departed, Device } from './devices.ts';
+import { Button, cn } from '../../ui/index.ts';
+import { NoticeIcon, noticeCard, noticeLine } from '../notices/look.tsx';
 
-function NewBrowser({ device }: { readonly device: Device }) {
+function NewBrowser({ device, banner }: { readonly device: Device; readonly banner: boolean }) {
   return (
-    <li className="device-notice">
-      <p>A new browser signed in: <strong>{device.name}</strong>, at <span className="device-time">{clockTime(device.signed_in)}</span></p>
-      <button type="button" onClick={() => { void answerBrowser(device.id, 'keep'); }}
-        aria-label={`Keep ${device.name}`}>Keep</button>
-      <button type="button" onClick={() => { void answerBrowser(device.id, 'remove'); }}
-        aria-label={`Remove ${device.name}`}>Remove</button>
+    <li className={cn(banner ? 'm-0' : noticeCard('warn'), 'device-notice flex flex-wrap items-center gap-x-3 gap-y-2')}>
+      <p className="m-0 min-w-0 flex-[1_1_192px]"><NoticeIcon tone="warn" />A new browser signed in: <strong className="font-semibold">{device.name}</strong>, at <span className="device-time whitespace-nowrap">{clockTime(device.signed_in)}</span></p>
+      <div className="flex gap-2">
+        <Button size="sm" onClick={() => { void answerBrowser(device.id, 'keep'); }}
+          aria-label={`Keep ${device.name}`}>Keep</Button>
+        <Button size="sm" onClick={() => { void answerBrowser(device.id, 'remove'); }}
+          aria-label={`Remove ${device.name}`}>Remove</Button>
+      </div>
     </li>
   );
 }
@@ -22,7 +26,7 @@ function NewBrowser({ device }: { readonly device: Device }) {
 function Gone({ notice }: { readonly notice: Departed }) {
   const item = useRef<HTMLLIElement>(null);
   useAutoDismiss(item, notice.key, () => dismissDeparted(notice.key));
-  return <li ref={item} className="device-notice device-notice-gone"><p><strong>{notice.name}</strong> {notice.reason}.</p></li>;
+  return <li ref={item} className={cn(noticeCard('info'), 'device-notice device-notice-gone')}><p className="m-0"><strong className="font-semibold">{notice.name}</strong> {notice.reason}.</p></li>;
 }
 
 /**
@@ -39,11 +43,11 @@ export function DeviceNotices({ part }: { readonly part?: 'asking' | 'gone' } = 
   const later = waiting.length - asking.length;
   const gone = part === 'asking' ? [] : departed;
   return (
-    <div className="device-notices" aria-live="polite">
+    <div className={cn('device-notices', part === 'asking' && asking.length > 0 && noticeLine('warn'), part !== 'asking' && 'pointer-events-none')} aria-live="polite">
       {asking.length === 0 && gone.length === 0 ? null : (
-        <ul aria-label="Signed-in browsers">
-          {asking.map((device) => <NewBrowser key={device.id} device={device} />)}
-          {later > 0 ? <li className="device-notice device-notice-later"><p>{later === 1 ? '1 more browser is' : `${later} more browsers are`} waiting for an answer.</p></li> : null}
+        <ul className="m-0 grid list-none gap-2 p-0" aria-label="Signed-in browsers">
+          {asking.map((device) => <NewBrowser key={device.id} device={device} banner={part === 'asking'} />)}
+          {later > 0 ? <li className="device-notice device-notice-later m-0 text-small text-muted"><p className="m-0">{later === 1 ? '1 more browser is' : `${later} more browsers are`} waiting for an answer.</p></li> : null}
           {gone.map((notice) => <Gone key={notice.key} notice={notice} />)}
         </ul>
       )}

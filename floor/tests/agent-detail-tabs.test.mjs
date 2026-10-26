@@ -36,7 +36,7 @@ const tabs = html => [...html.matchAll(/role="tab" class="agent-detail-tab"[^>]*
 const header = html => html.match(/<header class="agent-detail-head">([\s\S]*?)<\/header>/)?.[1] ?? '';
 const panel = (html, id) => html.match(
   new RegExp(`<section id="agent-detail-panel-${id}"[\\s\\S]*?(?=<section id="agent-detail-panel-|</aside>)`))?.[0] ?? '';
-const CLOSE = /<button type="button" id="selection-clear" class="drawer-close" aria-label="Close agent details"[^>]*>×<\/button>/;
+const CLOSE = /<button\b(?=[^>]*\bid="selection-clear")(?=[^>]*\bclass="[^"]*\bdrawer-close\b)(?=[^>]*aria-label="Close agent details")[^>]*>/;
 const STREAM_STATE = /<(?:p|span) class="stream-state" role="status">([^<]*)<\/(?:p|span)>/g;
 
 async function drawer() {

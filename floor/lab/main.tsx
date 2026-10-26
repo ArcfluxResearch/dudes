@@ -35,6 +35,14 @@ function ActionsMenu({ id, label, note }: { readonly id: string; readonly label:
   </Menu>;
 }
 
+function CheckedMenu() {
+  const [shown, setShown] = useState(true);
+  return <Menu label="View options" id="view-options" trigger={<>View</>} className="size-auto h-8 px-3">
+    <MenuItem checked={shown} onSelect={() => setShown((now) => !now)}>Crew</MenuItem>
+    <MenuItem onSelect={() => {}}>Focus</MenuItem>
+  </Menu>;
+}
+
 function Lab() {
   const [last, setLast] = useState('');
   const [page, setPage] = useState('');
@@ -70,6 +78,7 @@ function Lab() {
 
     <Section id="menus" title="Menu">
       <ActionsMenu id="page" label="More actions" note={setLast} />
+      <CheckedMenu />
     </Section>
 
     <Section id="switches" title="Switches">

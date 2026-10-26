@@ -70,13 +70,13 @@ test('the top bar lists exactly Overview, Board, Log, Setup and Settings, with n
     ['overview', 'Overview'], ['board', 'Board'], ['log', 'Log'], ['setup', 'Setup'], ['settings', 'Settings'],
   ]);
   const html = renderToStaticMarkup(createElement(ControlNav, { floor: store.getFloorState(), view: null, onToggle() {} }));
-  assert.deepEqual([...html.matchAll(/<button type="button" id="([^"]+)" aria-pressed="false">([^<]+)<\/button>/g)]
-    .map(([, id, label]) => [id, label]), [
+  assert.deepEqual([...html.matchAll(/<button\b([^>]*)>([^<]+)<\/button>/g)]
+    .map(([, attrs, label]) => [/\bid="([^"]+)"/.exec(attrs)?.[1], label]), [
     ['view-overview', 'Overview'], ['view-board', 'Board'], ['view-log', 'Log'],
     ['view-setup', 'Setup'], ['view-settings', 'Settings'],
   ]);
   const open = renderToStaticMarkup(createElement(ControlNav, { floor: store.getFloorState(), view: 'overview', onToggle() {} }));
-  assert.match(open, /id="view-overview" aria-pressed="true" aria-controls="overview-dialog"/);
+  assert.match(open, /id="view-overview"[^>]*aria-pressed="true" aria-controls="overview-dialog"/);
 });
 
 test('Overview is a dialog with the count, the journal in plain words and the roster in place of the old lists', () => {
@@ -110,7 +110,7 @@ test('with nothing waiting the dialog says so plainly', () => {
 test('Escape and the close button end the dialog and focus returns to the Overview button', async () => {
   const source = await readFile(resolve(root, 'src/renderer/OverviewDialog.tsx'), 'utf8');
   assert.match(source, /onCancel=\{\(event\) => \{ event\.preventDefault\(\); onClose\(\); \}\}/);
-  assert.match(source, /<IconButton label="Close Overview" title="Close \(Escape\)" icon=\{<X \{\.\.\.ICON\} \/>\} onClick=\{onClose\} \/>/);
+  assert.match(source, /label="Close Overview" title="Close \(Escape\)" icon=\{<X \{\.\.\.ICON\} \/>\} onClick=\{onClose\}/);
   assert.match(source, /restoreFocusAfterDialog\(opener, node\?\.ownerDocument\.getElementById\(viewButtonId\('overview'\)\) \?\? null\)/);
   const shell = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
   assert.match(shell, /\{view === 'overview' && !focused \? <OverviewDialog floor=\{floor\}/);

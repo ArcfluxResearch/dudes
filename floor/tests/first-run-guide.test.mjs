@@ -122,7 +122,7 @@ test('ACTIONS_GATED_ON_SWITCHES mutant: Floor actions is Optional until seen, ne
         const at = `control ${control}, terminal ${terminal}, Hire ${onboarding === null ? 'unavailable' : 'available'}`;
         assert.equal(indexStatus(view('welcome'), 'Floor actions'), 'Optional', at);
         assert.equal(indexStatus(view('actions'), 'Floor actions'), 'Complete', at);
-        assert.match(view('actions'), /<p class="[^"]*" role="status">Complete<\/p>/, at);
+        assert.match(view('actions'), /<p class="guide-status [^"]*" role="status">Complete<\/p>/, at);
         assert.equal(status('actions'), 'Optional', at);
         assert.equal(status('actions', true), 'Complete', at);
       }
@@ -146,7 +146,7 @@ test('ACTIONS_SEEN_UNREPORTED mutant: Floor actions is not seen until the switch
   noteTransport('close');
   const disconnected = view('actions');
   assert.equal(indexStatus(disconnected, 'Floor actions'), 'Optional');
-  assert.match(disconnected, /<p class="[^"]*" role="status">Optional<\/p>/);
+  assert.match(disconnected, /<p class="guide-status [^"]*" role="status">Optional<\/p>/);
   assert.doesNotMatch(disconnected, /data-ui="settings"|role="switch"/, 'old switch values cannot be edited while disconnected');
   assert.equal(status('actions', true), 'Optional');
 });

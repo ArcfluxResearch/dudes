@@ -32,15 +32,19 @@ import { switchedOffControls, UnavailableControls } from './settings/SettingsVie
 import type { AgentRow } from './scene/cast.ts';
 import { TerminalAttach } from './terminal/TerminalPanel.tsx';
 import { readDetailTab, writeDetailTab } from './view.ts';
+import { cn } from '../ui/index.ts';
 
 /**
  * The results of actions taken in the drawer. They stay on the page when the
  * drawer closes, because a retired agent leaves the selection with its receipt
  * still to read.
  */
-export function Receipts({ floor, leaveFocusTo }: { readonly floor: FloorState; readonly leaveFocusTo: string }) {
+export function Receipts({ floor, leaveFocusTo, focused = false }: {
+  readonly floor: FloorState; readonly leaveFocusTo: string; readonly focused?: boolean;
+}) {
   return (
-    <div className="receipts">
+    <div className={cn('receipts grid max-h-[40%] w-[min(var(--side-width),45vw)] flex-none gap-2 overflow-auto pr-2 pt-2 empty:hidden',
+      'has-[[class~=recovery-receipt]:focus-within]:max-h-[calc(100dvh-8rem)] max-[800px]:m-2 max-[800px]:w-auto max-[800px]:p-0', focused && 'p-0')}>
       <PauseAllReceipt leaveFocusTo={leaveFocusTo} />
       <RenameStatus />
       <LookStatus />
@@ -54,10 +58,19 @@ export function Receipts({ floor, leaveFocusTo }: { readonly floor: FloorState; 
   );
 }
 
-export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, recoveryRequested, onRecoveryShown, onReadRecoveryReceipt, onOpenTicket }: {
+const DRAWER = cn('agent-drawer m-0 box-border min-w-0 overflow-auto border-0 border-solid border-line bg-surface text-ink',
+  'max-[800px]:not-has-[[data-detail-tab=chat]]:top-[var(--banner-height,0px)]',
+  '[&_[class~=agent-detail]]:border-0 [&_[class~=agent-detail]]:bg-transparent [&_[class~=agent-detail]]:p-0 [&_[class~=agent-detail]]:shadow-none',
+  '[&_[class~=agent-detail-identity]]:pr-8');
+const DOCKED = 'min-[801px]:relative min-[801px]:z-(--layer-panels) min-[801px]:w-[min(var(--side-width),45vw)] min-[801px]:flex-none min-[801px]:border-l min-[801px]:p-4';
+const IN_FOCUS = 'min-[801px]:relative min-[801px]:z-(--layer-panels) min-[801px]:w-auto min-[801px]:flex-none min-[801px]:rounded-[var(--radius)] min-[801px]:border min-[801px]:p-4';
+
+export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, leaveFocusTo, recoveryRequested, onRecoveryShown, onReadRecoveryReceipt, onOpenTicket }: {
   readonly floor: FloorState;
   readonly row: AgentRow | null;
   readonly selectedId: string | null;
+  /** True inside focus mode's frame, where the drawer fills its column and keeps a full edge. */
+  readonly inFocus?: boolean;
   readonly onClose: () => void;
   readonly leaveFocusTo: string;
   readonly recoveryRequested?: { readonly id: string } | null;
@@ -102,7 +115,7 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, rec
     ? freeTaskAgents(floor).filter((agent) => agent.id === row.id) : [];
   const changeGoal = row !== null && goalGate(floor, row).open;
   return (
-    <div className="agent-drawer" id="selected-agent-detail" key={selectedId ?? 'none'}
+    <div className={cn(DRAWER, inFocus ? IN_FOCUS : DOCKED)} id="selected-agent-detail" key={selectedId ?? 'none'}
       ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}>
       {row === null ? (
         <header className="agent-detail-head">
