@@ -43,7 +43,7 @@ export function Receipts({ floor, leaveFocusTo, focused = false }: {
   readonly floor: FloorState; readonly leaveFocusTo: string; readonly focused?: boolean;
 }) {
   return (
-    <div className={cn('receipts grid max-h-[40%] w-[min(var(--side-width),45vw)] flex-none gap-2 overflow-auto pr-2 pt-2 empty:hidden',
+    <div className={cn('receipts grid max-h-[55%] w-[min(var(--side-width),45vw)] flex-none gap-2 overflow-auto pr-2 pt-2 empty:hidden',
       'has-[[class~=recovery-receipt]:focus-within]:max-h-[calc(100dvh-8rem)] max-[800px]:m-2 max-[800px]:w-auto max-[800px]:p-0', focused && 'p-0')}>
       <PauseAllReceipt leaveFocusTo={leaveFocusTo} />
       <RenameStatus />

@@ -203,7 +203,6 @@ export function GoalStatusView({ goal, floor, session, leaveFocusTo = 'crew-togg
         <span className={cn('agent-detail-kicker', KICKER_TEXT)}>{renewing ? 'New task' : 'Task change'}</span> {name}
       </h3>
       <dl className={FACTS}>
-        <div className={FACT}><dt className={FACT_NAME}>AgentId</dt><dd className={FACT_VALUE}>{agent}</dd></div>
         <div className={FACT}><dt className={FACT_NAME}>Previous task</dt><dd className={FACT_VALUE}>{replaced}</dd></div>
       </dl>
       {outcome === null ? <p className={cn('goal-pending', MESSAGE_CLASS.pending)} role="status">Sending…</p>
