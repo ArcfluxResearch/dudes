@@ -7,7 +7,10 @@
 Dudes keeps your coding agents working on goals you can check. Hire Claude Code, Codex, or Pi,
 give them work, and review the results on the Floor, a 3D office in your browser.
 
-<img src=".github/readme/floor.webp" width="720" alt="A 3D office with three agents. Kim works on a ticket, the crew list shows two idle agents, and the right panel shows Kim's goal controls.">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/readme/floor-dark.webp">
+  <img src=".github/readme/floor.webp" width="720" alt="The Workshop with twelve agents. The roster shows Maya ready for review and Theo paused, while Maya's open panel shows her finished export retry reply and Steps.">
+</picture>
 
 ## Install
 
@@ -26,6 +29,20 @@ Dudes is an early preview. Commands and configuration keys can change between re
 For source builds and Windows, see [Build Dudes from source](docs/building-from-source.md).
 Agents run under your account. Read [What agents can do on your machine](docs/what-agents-can-do.md)
 before you hire one.
+
+## See the Floor
+
+<p>
+  <img src=".github/readme/office-studio.webp" width="32%" alt="The Studio with eight agents. Nora and Lena work at desks, Maya has an export retry ready for review, and Theo is paused.">
+  <img src=".github/readme/office-workshop.webp" width="32%" alt="The Workshop with twelve agents around three desk clusters. Nora and Lena work, Maya's export retry is ready for review, and Theo is paused.">
+  <img src=".github/readme/office-hq.webp" width="32%" alt="HQ with sixteen agents around four desk clusters. Nora and Lena work, Maya's export retry is ready for review, and Theo is paused.">
+</p>
+
+Pin Studio for 8 agents, Workshop for 12, or HQ for 16 in **Settings**.
+
+<img src=".github/readme/board.webp" width="720" alt="The Board with tickets in To do, Working, Ready for you, and Done.">
+
+The Board tracks tickets from the first task to work ready for your review and accepted results.
 
 ## Why Dudes
 
