@@ -76,17 +76,17 @@ export function MessagesPanel({ messages, threads, agent, agents, retiredAgents 
             <Disclosure summary="Details" className={cn('border-t border-line pt-1')}
               summaryClassName={cn('text-small text-muted')}>
               <dl className={cn('m-0 grid min-w-0 gap-2 text-small leading-5')}>
-                <div className={cn('min-w-0')}>
-                  <dt className={cn('font-medium text-muted')}>Message id</dt>
-                  <dd className={cn('m-0 font-mono text-ink [overflow-wrap:anywhere]')}>{row.id}</dd>
+                <div className={cn('min-w-0 border-0 p-0')}>
+                  <dt className={cn('text-small font-medium tracking-normal text-muted normal-case')}>Message id</dt>
+                  <dd className={cn('m-0 font-mono text-small text-ink [overflow-wrap:anywhere]')}>{row.id}</dd>
                 </div>
-                <div className={cn('min-w-0')}>
-                  <dt className={cn('font-medium text-muted')}>Delivery state</dt>
-                  <dd className={cn('m-0 text-ink [overflow-wrap:anywhere]')}>{row.state}</dd>
+                <div className={cn('min-w-0 border-0 p-0')}>
+                  <dt className={cn('text-small font-medium tracking-normal text-muted normal-case')}>Delivery state</dt>
+                  <dd className={cn('m-0 text-small text-ink [overflow-wrap:anywhere]')}>{row.state}</dd>
                 </div>
-                <div className={cn('min-w-0')}>
-                  <dt className={cn('font-medium text-muted')}>Creation order</dt>
-                  <dd className={cn('m-0 font-mono text-ink [overflow-wrap:anywhere]')}>{row.lsn}</dd>
+                <div className={cn('min-w-0 border-0 p-0')}>
+                  <dt className={cn('text-small font-medium tracking-normal text-muted normal-case')}>Creation order</dt>
+                  <dd className={cn('m-0 font-mono text-small text-ink [overflow-wrap:anywhere]')}>{row.lsn}</dd>
                 </div>
               </dl>
             </Disclosure>
