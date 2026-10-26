@@ -101,7 +101,7 @@ test('the App step explains the copy, or says what trusting the project allows, 
       return renderToStaticMarkup(createElement(HireWizardView, { hire: view.getHireState(), floor: state, onClose() {} }));
     };
     const trusted = await page(floor({ agents: working }));
-    assert.match(trusted, /<input type="checkbox" name="own_copy" checked=""/);
+    assert.match(trusted, /<input type="checkbox" class="[^"]*" name="own_copy" checked=""/);
     assert.match(trusted, /Work in its own copy of the project/);
     assert.match(trusted, /Ticked because Ada already works in this project&#x27;s folder/);
     assert.match(trusted, /separate checkout of this project on its own branch/);
@@ -109,12 +109,12 @@ test('the App step explains the copy, or says what trusting the project allows, 
     assert.doesNotMatch(trusted, /dudes hire/);
     const untrusted = await page(floor({ onboarding: catalog({ trusted: false }), agents: working }));
     const quiet = await page(floor({ onboarding: catalog({ trusted: false }) }));
-    assert.doesNotMatch(quiet, /dudes project trust|<code>/, 'no command unless another agent shares the folder');
+    assert.doesNotMatch(quiet, /dudes project trust|<code[ >]/, 'no command unless another agent shares the folder');
     assert.doesNotMatch(untrusted, /name="own_copy"/);
     assert.match(untrusted, /environment values and helper commands/);
-    assert.match(untrusted, /<code>dudes project trust parser<\/code>/);
-    assert.match(untrusted, /<details><summary>Trust details<\/summary>/);
-    assert.doesNotMatch(untrusted.replace(/<details[^>]*>[\s\S]*?<\/details>/g, ''), /dudes project trust|<code>parser<\/code>/);
+    assert.match(untrusted, /<code[^>]*>dudes project trust parser<\/code>/);
+    assert.match(untrusted, /data-ui="disclosure"[^>]*><summary[^>]*>(?:<svg.*?<\/svg>)?Trust details<\/summary>/);
+    assert.doesNotMatch(untrusted.replace(/<details[^>]*>[\s\S]*?<\/details>/g, ''), /dudes project trust|<code[^>]*>parser<\/code>/);
 
     assert.doesNotMatch(untrusted, /dudes hire/);
   } finally { await server.close(); }

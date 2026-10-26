@@ -102,7 +102,7 @@ test('with tickets off the wizard still hires, then says so and offers the switc
   hire.showSection('engine');
   const html = render();
   assert.doesNotMatch(html, /Tickets are off|data-hire-tickets/, 'tickets off blocked the form');
-  assert.match(html, /class="hire-submit"(?! aria-disabled="true")/);
+  assert.match(html, /data-hire-action="submit"(?! aria-disabled="true")/);
   await hire.submitHire(getFloorState(), net.deps);
   assert.equal(hire.getHireState().outcome?.kind, 'complete');
   assert.equal(net.calls.length, 1);
@@ -130,7 +130,7 @@ test('a first hire requires a name, leaves multiple engines to choose, and sends
   hire.prepareHire(both);
   assert.equal(hire.getHireState().draft.workspaceId, 'repo_1');
   assert.equal(hire.getHireState().draft.engine, undefined, 'multiple engines need a choice');
-  assert.match(render(both), /class="hire-next" aria-disabled="true"/);
+  assert.match(render(both), /data-hire-action="next"[^>]*aria-disabled="true"/);
   hire.moveSection(1, both);
   assert.equal(hire.getHireState().section, 'identity');
   hire.showSection('engine', both);
