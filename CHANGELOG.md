@@ -11,6 +11,29 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.99.0] - 2026-10-27
+
+### Highlights
+
+- **A redesigned Floor.** Every screen, dialog and control now draws from one design: Inter for text and JetBrains Mono for data, neutral surfaces with one teal accent, owned buttons, fields, selects, menus, switches, tabs, dialogs and disclosures, Lucide icons, and the same focus ring everywhere. Native browser controls and the old hand-written styles are gone, light and dark both meet the 4.5:1 text contrast bar, and the page still runs under the strict style policy. (#236, #237, #238, #239, #240, #241, #242, #243, #248)
+- **The Floor fits a phone and keeps the conversation in view.** Phone tap targets are at least 44 pixels high, the header takes two rows, and the office fills the screen. An agent's panel scrolls as one region, so the conversation keeps its height when a form or a receipt is open, and notices no longer cover the message box. Control receipts read as plain status lines, and the reason someone needs you shows on two lines in the roster. (#249)
+- **See what a message is about and whether it was answered.** Messages show each mail's subject, cut to 120 bytes, and whether the sender marked it as a message or a request. A request shows Awaiting, Answered, Undeliverable or Thread full, worked out from what Dudes recorded rather than from what an agent says. Dudes removes the secrets it knows about from a subject when the mail is sent and saves only the scrubbed subject, so ending the turn or restarting never reveals the original. (#247)
+- **Answering mail from the command line is easier.** `dudes mail list` shows your current mail without reading the bodies, reading a request prints the exact reply command, and a reply can leave out `--subject` to reuse `Re:` and the original subject. (#235)
+
+### Fixes
+
+- A ticket's result and engine exit survive a later Chat message or mail wake after the ticket reached review, and rework starts with a clean exit. (#234)
+- Windows uninstall uses the native executable names, and a named-pipe disconnect no longer sends an unanswered control hook down the general fail-open path. (#231)
+- Release builds no longer warn about a test-only stream constructor. (#233)
+- Timing-dependent admission tests no longer fail at random, and the lockfile moves `crypto-bigint` off a yanked version. (#230)
+
+### Breaking
+
+- **Reload open Floor tabs after the upgrade.** The page and the daemon speak a new browser wire version, so a tab left open from 0.98.0 asks for a reload and keeps its drafts. (#247)
+- **The first start after the upgrade rebuilds the saved views once.** Dudes rebuilds the board and mail views from the journal. Nothing is lost. (#234, #247)
+- **Mail sent before the upgrade shows no subject on the Floor.** Its subject was saved before scrubbing existed, so the Floor leaves it out. (#247)
+- **Going back to 0.98.0 works, with one gap.** 0.98.0 ignores the new subject field. A mail that was part way through delivery to several agents when you downgrade may stay pending until you upgrade again. (#247)
+
 ## [0.98.0] - 2026-10-26
 
 ### Highlights
@@ -455,7 +478,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.98.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.99.0...HEAD
+[0.99.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.98.0...v0.99.0
 [0.98.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.97.1...v0.98.0
 [0.97.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.97.0...v0.97.1
 [0.97.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.96.0...v0.97.0
