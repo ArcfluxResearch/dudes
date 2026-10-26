@@ -1,17 +1,14 @@
 # Building a Floor screen
 
 This is the guide for whoever builds the next screen. The Floor is styled with Tailwind utilities on owned components. There
-is no hand-written CSS except the entry file, the third-party terminal wrapper, the component lab's entry and, until the
-Messages tab is rebuilt, that tab's one file.
+is no hand-written CSS except the entry file, the third-party terminal wrapper and the component lab's entry.
 
 ## The rule
 
 Styling is Tailwind utilities on components and screens. Nothing goes into a CSS file, except a token or a keyframe in the
 entry file, `src/tailwind.css`.
 
-`tests/stylesheets.test.mjs` enforces it. It lists every stylesheet that may exist, so a new `.css` file fails the test. It
-pins the Messages file's rule and declaration counts, so adding a rule to it fails the test too. The rebuild of the Messages tab
-deletes `src/legacy/messages.css`, its line in that test, and the `legacy` layer.
+`tests/stylesheets.test.mjs` enforces it. It lists every stylesheet that may exist, so a new `.css` file fails the test.
 
 ## Layers
 
@@ -21,16 +18,15 @@ deletes `src/legacy/messages.css`, its line in that test, and the `legacy` layer
 @layer legacy, theme, base, components, utilities;
 ```
 
-The Messages rules sit in `legacy`, the lowest layer. A rule in a higher layer beats every legacy rule whatever its selector's
-specificity, so a utility on an element needs no `!important` and no longer selector. Do not add `!important`.
+Only the terminal's third-party stylesheet sits in `legacy`, the lowest layer. A rule in a higher layer beats every legacy
+rule whatever its selector's specificity, so a utility on an element needs no `!important` and no longer selector. Do not add
+`!important`.
 
-Three things follow.
+Two things follow.
 
 - Tailwind's preflight is not loaded, so elements keep the browser's own styles: a `p`, `ul`, `h3` or `button` has its default
   margin, padding and font until a utility says otherwise. The entry file's `base` layer sets only the page's colour, font and
   scheme on the root, and the body's margin and minimum size.
-- A utility has the same class name as a Messages rule it would restyle, so a test fails when a generated utility name equals
-  a class in that file (`hidden`, `flex` and `grid` are the likely ones).
 - Never set `display` on an element with the `popover` attribute. The browser hides a closed popover with `display: none`, and
   an author `display` would show it.
 
@@ -128,8 +124,8 @@ How the pieces behave:
 
 - `tests/ui-components.test.mjs` renders each component to markup and checks its structure and attributes.
 - `tests/ui-tokens.test.mjs` pins the token values and checks text at 4.5 to 1, and input edges and the focus ring at 3 to 1.
-- `tests/ui-utilities.test.mjs` checks that every class a component writes produces CSS, that no generated utility shares a
-  name with a Messages class, and that spacing keeps to the scale.
+- `tests/ui-utilities.test.mjs` checks that every class a component writes produces CSS, and that spacing keeps to the
+  scale.
 - `tests/no-answer-surface.test.mjs` and `tests/focus.test.mjs` read the source for controls. They read each owned component as
   the one native element it draws (`Button` as `button`, `Switch` as `button`, `Select` as `select`). A handler you add at a
   call site is checked and must be admitted there as it would be on the native element.

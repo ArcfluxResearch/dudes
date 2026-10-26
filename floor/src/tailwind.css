@@ -1,11 +1,8 @@
 @layer legacy, theme, base, components, utilities;
 
-/* The Messages tab's rules, kept until that tab is rebuilt on the owned components. */
-@import './legacy/messages.css';
-
 /*
- * No preflight: elements keep the browser's own styles. Only utilities are brought in, in their own layer above the
- * Messages rules, and the whole of `src` is read for class names.
+ * No preflight: elements keep the browser's own styles. Only utilities are brought in, in their own layer, and the
+ * whole of `src` is read for class names.
  */
 @import 'tailwindcss/utilities.css' layer(utilities) source('.');
 

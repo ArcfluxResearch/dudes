@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// Every stylesheet in the Floor. New styling is Tailwind utilities on components and screens, so the only hand-written
-// CSS that may exist is the Tailwind entry file, the component lab's entry, the third-party wrapper, and the Messages
-// tab's rules, which sit in the legacy layer until that tab is rebuilt and can only shrink.
+// Every stylesheet in the Floor. Styling is Tailwind utilities on components and screens, so the only hand-written
+// CSS that may exist is the Tailwind entry file, the component lab's entry and the third-party wrapper.
 
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
@@ -16,15 +15,6 @@ const ENTRY = 'src/tailwind.css';
 const LAB = 'lab/lab.css';
 const LAB_TEXT = "@import '../src/tailwind.css';\n@source '.';\n";
 const THIRD_PARTY = new Map([['src/renderer/terminal/xterm.css', "@import '@xterm/xterm/css/xterm.css' layer(legacy);"]]);
-
-/**
- * The Messages tab's stylesheet and what it holds now: its rule blocks and its declarations, counted with comments
- * removed. It may not grow, and when it shrinks its line is lowered to the new count. It is deleted, with this entry
- * and the layer, when the tab is rebuilt on the owned components.
- */
-const LEGACY = new Map([
-  ['src/legacy/messages.css', { blocks: 10, declarations: 20 }],
-]);
 
 async function stylesheets(dirs = [resolve(floor, 'src'), resolve(floor, 'lab')]) {
   const found = [];
@@ -66,27 +56,13 @@ function topLevel(text) {
   return found;
 }
 
-test('the stylesheets are the Tailwind entry file, the third-party wrapper and the Messages file, and no others', async () => {
+test('the stylesheets are the Tailwind entry file, the lab entry and the third-party wrapper, and no others', async () => {
   const actual = await stylesheets();
-  const expected = [ENTRY, LAB, ...THIRD_PARTY.keys(), ...LEGACY.keys()].sort();
+  const expected = [ENTRY, LAB, ...THIRD_PARTY.keys()].sort();
   assert.deepEqual(actual, expected,
-    'a new CSS file is not allowed: style with Tailwind utilities, and put a token or keyframe in src/tailwind.css. '
-    + 'The Messages file leaves the LEGACY list in this test when it is deleted.');
+    'a new CSS file is not allowed: style with Tailwind utilities, and put a token or keyframe in src/tailwind.css.');
 });
 
-test('the Messages file never grows, and a shrunken one has its count lowered', async () => {
-  const off = [];
-  for (const [file, pinned] of LEGACY) {
-    const text = bare(await readFile(resolve(floor, file), 'utf8'));
-    const actual = { blocks: text.split('{').length - 1, declarations: text.split(';').length - 1 };
-    if (actual.blocks > pinned.blocks || actual.declarations > pinned.declarations) {
-      off.push(`${file} grew from ${JSON.stringify(pinned)} to ${JSON.stringify(actual)}: new styling is Tailwind, not a rule here`);
-    } else if (actual.blocks < pinned.blocks || actual.declarations < pinned.declarations) {
-      off.push(`${file} shrank: set its line to ${JSON.stringify(actual)}`);
-    }
-  }
-  assert.deepEqual(off, []);
-});
 
 test('every stylesheet starts with the one layer order, and its rules are inside a layer', async () => {
   const bad = [];
@@ -100,14 +76,9 @@ test('every stylesheet starts with the one layer order, and its rules are inside
     if (statements[0]?.head !== LAYERS) bad.push(`${file}: the first statement is not \`${LAYERS}\``);
     if (!bare(text).trimStart().startsWith(LAYERS)) bad.push(`${file}: something comes before the layer order`);
     if (file === ENTRY) continue;
-    if (THIRD_PARTY.has(file)) {
-      if (JSON.stringify(statements.slice(1)) !== JSON.stringify([{ head: THIRD_PARTY.get(file), block: false }])) {
-        bad.push(`${file}: a third-party wrapper holds one import into the legacy layer and nothing else`);
-      }
-      continue;
+    if (JSON.stringify(statements.slice(1)) !== JSON.stringify([{ head: THIRD_PARTY.get(file), block: false }])) {
+      bad.push(`${file}: a third-party wrapper holds one import into the legacy layer and nothing else`);
     }
-    const rest = statements.slice(1);
-    if (rest.length !== 1 || rest[0].head !== '@layer legacy' || !rest[0].block) bad.push(`${file}: rules must all sit in one \`@layer legacy { }\` block`);
   }
   assert.deepEqual(bad, []);
 });
@@ -120,10 +91,10 @@ test('the Tailwind entry file holds imports, layers, theme and keyframes and no 
   assert.deepEqual(rules, [], 'a style rule belongs on a component as utilities, not in the entry file');
 });
 
-test('the entry file imports the Messages file once, before the utilities', async () => {
+test('the entry file imports the utilities and no hand-written stylesheet', async () => {
   const entry = await readFile(resolve(floor, ENTRY), 'utf8');
   const imports = [...entry.matchAll(/@import '([^']+)'/g)].map(([, spec]) => spec);
-  assert.deepEqual(imports.slice(0, 2), ['./legacy/messages.css', 'tailwindcss/utilities.css']);
+  assert.deepEqual(imports, ['tailwindcss/utilities.css']);
 });
 
 test('a module imports only the entry file or the third-party wrapper', async () => {
