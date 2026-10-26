@@ -17,7 +17,10 @@ import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
+import { renderToStaticMarkup as renderRaw } from 'react-dom/server';
+import { plainMarkup } from './helpers/plain-markup.mjs';
+
+const renderToStaticMarkup = (...args) => plainMarkup(renderRaw(...args));
 import { createServer } from 'vite';
 
 import { ADA, GRACE, advance as advanceStore, agent, cardId, daemon, json, subscribe, ticketCard, instructionReview, instructionSummary, INSTRUCTION_WATERMARK } from './helpers/tickets.mjs';
@@ -276,7 +279,7 @@ test('a held agent\'s ticket has a Resume button and no command to type', async 
   for (const reason of ['held_launch', 'held_failing', 'held_unsure', 'worktree_missing']) {
     store.resetFloorStore();
     const html = await stuck(reason);
-    assert.match(html, /<button type="button" class="ticket-action" data-action="resume">Resume agent<\/button>/, reason);
+    assert.match(html, /<button[^>]*data-action="resume"[^>]*>Resume agent<\/button>/, reason);
     assert.doesNotMatch(html, /`dudes|dudes resume/, reason);
     assert.doesNotMatch(html, /data-action="review_recovery"/, reason);
   }
@@ -290,7 +293,7 @@ test('with the control switch off the held ticket names the switch and offers no
 
 test('an interrupted ticket opens the recovery view, or names the switches that are off', async () => {
   const html = await stuck('recovery_required', { row: { paused: false } });
-  assert.match(html, /data-action="review_recovery">Review recovery<\/button>/);
+  assert.match(html, /data-action="review_recovery"[^>]*>Review recovery<\/button>/);
   assert.match(html, /Recovery continues the same task\./);
   assert.doesNotMatch(html, /`dudes|recovery inspect/);
   store.resetFloorStore();
