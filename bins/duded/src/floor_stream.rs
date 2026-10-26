@@ -503,6 +503,7 @@ impl FloorStreams {
         Self::with_output(initial, fault, Arc::new(OutputRegistry::new()))
     }
 
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn with_output(
         initial: AgentSnapshot,
         fault: FloorStreamFault,
