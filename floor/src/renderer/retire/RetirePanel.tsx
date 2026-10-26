@@ -13,7 +13,7 @@ import { floorSessionGeneration } from '../../session.ts';
 import { Button } from '../../ui/Button.tsx';
 import { Dialog } from '../../ui/Dialog.tsx';
 import { TrashIcon } from '../../ui/icons.tsx';
-import { MenuItem, MenuNote } from '../../ui/Menu.tsx';
+import { MenuItem, MenuNote, MenuSeparator } from '../../ui/Menu.tsx';
 import {
   blocksControls, browserControlDeps, controlGate, getControlState, submitControl, subscribeToControl,
 } from '../control/control.ts';
@@ -49,6 +49,7 @@ export function RetireMenuItem({ floor, row }: { readonly floor: FloorState; rea
   const session = floorSessionGeneration();
   const blocked = blocksRetire(retire, offer, session);
   return <>
+    <MenuSeparator />
     <MenuItem danger icon={<TrashIcon />} className="retire-open" data-retire-offer={offer.agent} disabled={blocked}
       title={blocked ? 'Wait for the current retirement request or check its status.' : undefined}
       onSelect={() => confirmRetire(offer, session)}>Retire</MenuItem>

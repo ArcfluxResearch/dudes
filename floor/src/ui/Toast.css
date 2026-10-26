@@ -2,7 +2,7 @@
 @layer tokens, legacy, ui;
 
 @layer ui {
-  .ui-toast {
+  [data-ui='toast'] {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     align-items: start;
@@ -16,6 +16,8 @@
     background: var(--surface);
     color: var(--text);
     box-shadow: var(--shadow-2);
+    max-width: 440px;
+    font-weight: 400;
     animation: ui-toast-in var(--dur-pop) var(--ease);
   }
 
@@ -24,11 +26,11 @@
   }
 
   .ui-toast-icon { margin-top: 2px; color: var(--info); }
-  .ui-toast[data-tone='done'] .ui-toast-icon { color: var(--ok); }
-  .ui-toast[data-tone='problem'] .ui-toast-icon { color: var(--danger); }
-  .ui-toast[data-tone='problem'] { border-color: var(--danger); }
+  [data-ui='toast'][data-tone='done'] .ui-toast-icon { color: var(--ok); }
+  [data-ui='toast'][data-tone='problem'] .ui-toast-icon { color: var(--danger); }
+  [data-ui='toast'][data-tone='problem'] { border-color: var(--danger); }
 
-  .ui-toast-message { margin: 0; font-size: 13px; line-height: 1.45; }
+  .ui-toast-message { display: block; margin: 0; font-size: 13px; font-weight: 400; line-height: 1.45; }
 
   .ui-toast-actions {
     grid-column: 2;

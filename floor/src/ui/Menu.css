@@ -13,6 +13,8 @@
     background: var(--border);
   }
 
+  .ui-menu-separator:first-child { display: none; }
+
   .ui-menu-note {
     margin: 0;
     padding: var(--sp-6) var(--sp-8);

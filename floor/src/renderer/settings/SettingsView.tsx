@@ -2,7 +2,7 @@
 
 import { useId, useState, useSyncExternalStore } from 'react';
 
-import { Card } from '../../ui/Card.tsx';
+import { Panel } from '../../ui/Card.tsx';
 import { Disclosure } from '../../ui/Disclosure.tsx';
 import { Switch } from '../../ui/Switch.tsx';
 import './SettingsView.css';
@@ -157,9 +157,8 @@ export function FloorSwitches({ report, headingId = 'settings-switches' }: {
   readonly headingId?: string;
 }) {
   const edit = useSyncExternalStore(subscribeToSettingsEdit, getSettingsEditState, getSettingsEditState);
-  return <section className="floor-switches" data-ui-scope="" aria-labelledby={headingId}>
-    <h3 id={headingId}>Floor switches</h3>
-    <Card className="floor-switches-card">
+  return <Panel className="floor-switches" data-ui-scope="" title="Floor switches" titleId={headingId}>
+    <div className="floor-switches-rows">
       <div className="ui-switch-row">
         <div className="ui-switch-text"><span className="ui-switch-label">Chat messages</span>
           <span className="ui-switch-desc">Always on, with no setting</span></div>
@@ -175,11 +174,11 @@ export function FloorSwitches({ report, headingId = 'settings-switches' }: {
           <EditOutcome settingKey={`floor.${key}`} label={`Turn ${on ? 'off' : 'on'} ${label}`} />
         </Switch>;
       })}
-    </Card>
-    <p>Recovery also needs Pause, resume and rename. Spending limits still apply.</p>
+    </div>
+    <p className="floor-switches-note">Recovery also needs Pause, resume and rename. Spending limits still apply.</p>
     <Disclosure summary="Configuration details"><dl>{SWITCHES.map(([key, label]) =>
       <div key={key}><dt>{label}</dt><dd><code>floor.{key}</code></dd></div>)}</dl></Disclosure>
-  </section>;
+  </Panel>;
 }
 
 /** Turns one switch or engine on or off through the daemon, which keeps the file's start rules. */

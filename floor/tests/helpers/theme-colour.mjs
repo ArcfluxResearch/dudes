@@ -7,7 +7,7 @@ export function themeTokens(css, theme) {
   const dark = /:root:has\(\.shell\[data-theme='dark'\]\)\s*\{([^}]+)\}/.exec(css)?.[1] ?? '';
   assert.ok(light && dark, 'both theme token sets exist');
   return Object.fromEntries([...`${light}${theme === 'dark' ? dark : ''}`
-    .matchAll(/--([a-z-]+):\s*(#[0-9a-f]{6})/gi)].map((match) => [match[1], match[2]]));
+    .matchAll(/--([a-z0-9-]+):\s*(#[0-9a-f]{6})/gi)].map((match) => [match[1], match[2]]));
 }
 
 export function themeColour(css, className, theme) {
