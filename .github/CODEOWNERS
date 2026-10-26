@@ -4,6 +4,7 @@
 
 /.github/CODEOWNERS         @alexnthnz @tristanphvn @mimin1101
 /.github/workflows/         @alexnthnz @tristanphvn @mimin1101
+/.github/ci/                @alexnthnz @tristanphvn @mimin1101
 /.github/dependabot.yml     @alexnthnz @tristanphvn @mimin1101
 /install.sh                 @alexnthnz @tristanphvn @mimin1101
 /SECURITY.md                @alexnthnz @tristanphvn @mimin1101

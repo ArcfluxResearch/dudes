@@ -6,16 +6,19 @@
 // one confirmation serves both. The status lives in the receipts beside the drawer,
 // because the agent's detail leaves with the agent.
 
+import { UserMinus } from 'lucide-react';
 import { useSyncExternalStore } from 'react';
 import type { ReactNode, RefCallback } from 'react';
 
 import { floorSessionGeneration } from '../../session.ts';
+import { Button, Dialog, ICON, MenuItem, cn } from '../../ui/index.ts';
 import {
   blocksControls, browserControlDeps, controlGate, getControlState, submitControl, subscribeToControl,
 } from '../control/control.ts';
 import type { ControlState } from '../control/control.ts';
 import type { FloorState } from '../floor/store.ts';
 import { handFocusOnLeave } from '../focus.ts';
+import { MESSAGE_CLASS, ACTIONS, KICKER as KICKER_TEXT, NOTE, RECEIPT, RECEIPT_TITLE } from '../receipt.ts';
 import { UnavailableControls } from '../settings/SettingsView.tsx';
 import type { AgentRow } from '../scene/cast.ts';
 import {
@@ -36,6 +39,21 @@ export function RetireStrip({ floor, row }: { readonly floor: FloorState; readon
   return <RetireStripView retire={retire} floor={floor} row={row} session={floorSessionGeneration()} />;
 }
 
+/** Retire as an item of the agent's More menu. It opens the same confirmation as the strip's button. */
+export function RetireMenuItem({ floor, row }: { readonly floor: FloorState; readonly row: AgentRow | null }) {
+  const retire = useSyncExternalStore(subscribeToRetire, getRetireState, getRetireState);
+  const offer = retireOffer(floor, row);
+  if (offer.kind === 'none') return null;
+  if (offer.kind === 'halted') return <MenuItem danger aria-disabled="true" icon={<UserMinus {...ICON} />} title={HALTED_LINE}
+    className="retire-open" onSelect={() => {}}>Retire agent</MenuItem>;
+  const session = floorSessionGeneration();
+  const waiting = blocksRetire(retire, offer, session);
+  return <MenuItem danger icon={<UserMinus {...ICON} />} className="retire-open" data-retire-offer={offer.agent}
+    aria-haspopup="dialog" aria-disabled={waiting || undefined}
+    title={waiting ? 'Wait for the current retirement request or check its status.' : undefined}
+    onSelect={() => confirmRetire(offer, session)}>Retire agent</MenuItem>;
+}
+
 export function RetireStripView({ retire, floor, row, session }: {
   readonly retire: RetireState;
   readonly floor: FloorState;
@@ -45,19 +63,19 @@ export function RetireStripView({ retire, floor, row, session }: {
 }) {
   const offer = retireOffer(floor, row);
   if (offer.kind === 'none') return <UnavailableControls floor={floor} control="retire" />;
-  if (offer.kind === 'halted') return <div className="retire-offer"><p className="hire-note">{HALTED_LINE}</p></div>;
+  if (offer.kind === 'halted') return <div className="retire-offer grid justify-items-start gap-2"><p className={NOTE}>{HALTED_LINE}</p></div>;
   const pressedHere = retire.attempt?.payload.agent === offer.agent;
   return (
-    <div className="retire-offer">
+    <div className="retire-offer grid justify-items-start gap-2">
       {/* Waiting, never disabled: a disabled button drops the keyboard focus
           the closing confirmation hands back to it. */}
-      <button ref={handFocusOnLeave} type="button" className="retire-open" data-retire-offer={offer.agent}
+      <Button ref={handFocusOnLeave} variant="danger" size="sm" className="retire-open" data-retire-offer={offer.agent}
         data-focus-on-leave={pressedHere ? STATUS_TITLE : undefined} aria-haspopup="dialog"
         aria-disabled={blocksRetire(retire, offer, session) || undefined}
         title={blocksRetire(retire, offer, session) ? 'Wait for the current retirement request or check its status.' : undefined}
-        onClick={() => confirmRetire(offer, session)}>Retire</button>
+        onClick={() => confirmRetire(offer, session)}>Retire</Button>
       {retire.problem === null || retire.attempt !== null ? null : (
-        <p className="retire-problem" role="alert">{retire.problem}</p>
+        <p className={cn('retire-problem', MESSAGE_CLASS.error)} role="alert">{retire.problem}</p>
       )}
     </div>
   );
@@ -97,23 +115,25 @@ export function RetireDialogView({ retire, control, floor, session }: {
   const pause = controlGate(floor, row);
   const pauseInstead = pause.open && pause.offer === 'pause' && !blocksControls(control, pause, session);
   return (
-    <dialog ref={openConfirmation} className="retire-dialog" data-retire-dialog={offer.agent}
+    <Dialog ref={openConfirmation} size="sm" className="retire-dialog" data-retire-dialog={offer.agent}
       aria-labelledby="retire-dialog-title" aria-describedby="retire-dialog-text" onCancel={cancelRetire}>
-      <h2 id="retire-dialog-title">{`Retire ${offer.name}?`}</h2>
-      <p id="retire-dialog-text">{CONSEQUENCES}</p>
-      <div className="retire-actions">
-        {/* The second click of a double-click on Retire outside would land here. */}
-        <button type="button" className="retire-confirm"
-          onClick={(event) => { if (event.detail < 2) void submitRetire(offer, browserControlDeps); }}>Retire</button>
-        <button type="button" className="retire-cancel" onClick={cancelRetire}>Cancel</button>
-        {pauseInstead ? (
-          <button type="button" className="retire-pause"
-            onClick={() => { cancelRetire(); void submitControl('pause', pause, browserControlDeps); }}>
-            Pause instead
-          </button>
-        ) : null}
+      <div className="grid gap-4 p-6">
+        <h2 id="retire-dialog-title" className="m-0 font-sans text-title font-semibold text-ink">{`Retire ${offer.name}?`}</h2>
+        <p id="retire-dialog-text" className="m-0 text-body text-muted">{CONSEQUENCES}</p>
+        <div className={cn('retire-actions justify-end', ACTIONS)}>
+          <Button className="retire-cancel" onClick={cancelRetire}>Cancel</Button>
+          {pauseInstead ? (
+            <Button className="retire-pause"
+              onClick={() => { cancelRetire(); void submitControl('pause', pause, browserControlDeps); }}>
+              Pause instead
+            </Button>
+          ) : null}
+          {/* The second click of a double-click on Retire outside would land here. */}
+          <Button variant="danger" className="retire-confirm"
+            onClick={(event) => { if (event.detail < 2) void submitRetire(offer, browserControlDeps); }}>Retire</Button>
+        </div>
       </div>
-    </dialog>
+    </Dialog>
   );
 }
 
@@ -134,29 +154,29 @@ export function RetireStatusView({ retire, floor, session, leaveFocusTo = 'crew-
   const outcome = retire.outcome;
   const asking = checkable(retire) || (retire.sending && outcome !== null);
   return (
-    <section className="retire-status" aria-labelledby={STATUS_TITLE} aria-live="polite"
+    <section className={cn('retire-status', RECEIPT)} aria-labelledby={STATUS_TITLE} aria-live="polite"
       data-retire-outcome={outcome?.kind ?? 'sending'} data-retire-agent-id={attempt.payload.agent}>
-      <h3 id={STATUS_TITLE} tabIndex={-1}>
-        <span className="agent-detail-kicker">Retire request</span> {attempt.name}
+      <h3 id={STATUS_TITLE} tabIndex={-1} className={RECEIPT_TITLE}>
+        <span className={cn('agent-detail-kicker', KICKER_TEXT)}>Retire request</span> {attempt.name}
       </h3>
       <OutcomeBody attempt={attempt} retire={retire} floor={floor} session={session} />
-      {retire.problem === null ? null : <p className="retire-problem" role="alert">{retire.problem}</p>}
+      {retire.problem === null ? null : <p className={cn('retire-problem', MESSAGE_CLASS.error)} role="alert">{retire.problem}</p>}
       {asking ? (
-        <footer className="retire-actions">
-          <button type="button" aria-disabled={retire.sending || !floor.retire} aria-busy={retire.sending}
+        <footer className={cn('retire-actions', ACTIONS)}>
+          <Button size="sm" aria-disabled={retire.sending || !floor.retire} loading={retire.sending}
             title={retire.sending ? 'Wait for the current retirement request to finish.' : !floor.retire ? 'Reconnect to Dudes with Retire agents turned on in Settings.' : undefined}
             ref={handFocusOnLeave} data-focus-on-leave={STATUS_TITLE}
             onClick={() => { if (!retire.sending && floor.retire) void checkRetireStatus(browserControlDeps); }}>
             {retire.sending ? 'Checking…' : 'Check status'}
-          </button>
+          </Button>
         </footer>
       ) : null}
-      {receiptDismissible(retire) ? <footer className="retire-actions">
-        <button type="button" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}
-          onClick={dismissReceipt}>Dismiss receipt</button>
+      {receiptDismissible(retire) ? <footer className={cn('retire-actions', ACTIONS)}>
+        <Button size="sm" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}
+          onClick={dismissReceipt}>Dismiss receipt</Button>
       </footer> : null}
       {!asking || retire.sending || floor.retire ? null : (
-        <p className="hire-note">Check status waits for a live Floor session that offers Retire.</p>
+        <p className={NOTE}>Check status waits for a live Floor session that offers Retire.</p>
       )}
     </section>
   );
@@ -176,43 +196,43 @@ function OutcomeBody({ attempt, retire, floor, session }: {
   readonly floor: FloorState;
   readonly session: number;
 }) {
-  const retiring = <p className="retire-pending" role="status">{`Retiring ${attempt.name}.`}</p>;
+  const retiring = <p className={cn('retire-pending', MESSAGE_CLASS.pending)} role="status">{`Retiring ${attempt.name}.`}</p>;
   const outcome = retire.outcome;
   if (outcome === null) return retiring;
   switch (outcome.kind) {
     case 'retired':
       return leftTheFloor(attempt, floor)
-        ? <p className="retire-success" role="status">{`Retired ${attempt.name}.`}</p>
+        ? <p className={cn('retire-success', MESSAGE_CLASS.success)} role="status">{`Retired ${attempt.name}.`}</p>
         : retiring;
     case 'pending':
-      return <>{retiring}<p className="hire-note">{`Dudes has not confirmed this request yet. ${ASK_AGAIN}`}</p></>;
+      return <>{retiring}<p className={NOTE}>{`Dudes has not confirmed this request yet. ${ASK_AGAIN}`}</p></>;
     case 'unavailable':
       return (
-        <p className="retire-pending" role="status">
+        <p className={cn('retire-pending', MESSAGE_CLASS.pending)} role="status">
           Dudes could not confirm this request. Check status asks again with the same request; this page does
           not retry by itself.
         </p>
       );
     case 'unknown':
       return (
-        <p className="retire-pending" role="status">
+        <p className={cn('retire-pending', MESSAGE_CLASS.pending)} role="status">
           {`The page lost Dudes’ reply, so it cannot say whether this request was recorded. ${ASK_AGAIN}`}
         </p>
       );
     case 'refused':
       return (
-        <p className="retire-error" role="alert" data-retire-reason={outcome.reason}>{REFUSALS[outcome.reason]}</p>
+        <p className={cn('retire-error', MESSAGE_CLASS.error)} role="alert" data-retire-reason={outcome.reason}>{REFUSALS[outcome.reason]}</p>
       );
     case 'conflict':
       return (
-        <p className="retire-error" role="alert">
+        <p className={cn('retire-error', MESSAGE_CLASS.error)} role="alert">
           Dudes holds a different request under this request id, so it refused this one before any effect. This
           is a page error; nothing was recorded.
         </p>
       );
     case 'rejected':
       return (
-        <p className="retire-error" role="alert">
+        <p className={cn('retire-error', MESSAGE_CLASS.error)} role="alert">
           {`Dudes refused the request itself (HTTP ${outcome.status}) before any effect. Nothing was recorded.`}
         </p>
       );
@@ -220,7 +240,7 @@ function OutcomeBody({ attempt, retire, floor, session }: {
       const now = afterRetireRefusal(retire, floor, session);
       const next = retire.uncertain ? ASK_AGAIN : 'Nothing was retired.';
       return (
-        <p className="retire-error" role="alert" data-retire-session={now}>
+        <p className={cn('retire-error', MESSAGE_CLASS.error)} role="alert" data-retire-session={now}>
           {now === 'checking'
             ? 'Dudes refused this request before any effect. Checking whether this Floor session is still live…'
             : now === 'ended'

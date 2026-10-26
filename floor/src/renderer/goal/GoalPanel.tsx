@@ -14,10 +14,15 @@
 import { useId, useSyncExternalStore } from 'react';
 
 import { floorSessionGeneration } from '../../session.ts';
+import { Button, Textarea, cn } from '../../ui/index.ts';
 import type { FloorState } from '../floor/store.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from '../focus.ts';
 import { choiceLabel, isCheckRefusal } from '../onboarding/checks.ts';
 import { trimAsciiSpace, utf8Bytes } from '../onboarding/hire.ts';
+import {
+  ACTIONS, CHOICE, FACT, FACTS, FACT_NAME, FACT_VALUE, KICKER as KICKER_TEXT, LABEL, MESSAGE_CLASS, NOTE, QUOTE, RADIO,
+  RECEIPT, RECEIPT_TITLE,
+} from '../receipt.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { formatUsdMicros } from '../onboarding/catalog.ts';
 import { formatUsd } from '../scene/label.ts';
@@ -39,7 +44,7 @@ function atMost(micros: number): string {
 
 function CarryList({ carry }: { readonly carry: CarryOver }) {
   return (
-    <ul className="goal-carry">
+    <ul className="goal-carry m-0 grid list-disc gap-1 pl-5 text-base">
       <li>{`Work attempts: exactly ${carry.turns} left.`}</li>
       <li>{carry.usdAtMost === null ? 'Dollars: this task sets no dollar limit.'
         : `Dollars: at most ${atMost(carry.usdAtMost)} left.`}</li>
@@ -57,9 +62,9 @@ const SPENT: Readonly<Record<Spent, string>> = Object.freeze({
 function RenewList({ offer }: { readonly offer: RenewOffer }) {
   return (
     <>
-      <p data-renew-spent={offer.spent}>{SPENT[offer.spent]}</p>
-      <p data-renew-turns={offer.hopCap}>{`A new task gets this project’s allowance: ${offer.hopCap} ${offer.hopCap === '1' ? 'work attempt' : 'work attempts'}.`}</p>
-      <ul className="goal-carry">
+      <p className="m-0" data-renew-spent={offer.spent}>{SPENT[offer.spent]}</p>
+      <p className="m-0" data-renew-turns={offer.hopCap}>{`A new task gets this project’s allowance: ${offer.hopCap} ${offer.hopCap === '1' ? 'work attempt' : 'work attempts'}.`}</p>
+      <ul className="goal-carry m-0 grid list-disc gap-1 pl-5 text-base">
         <li data-renew-usd={offer.usd ?? 'none'}>{offer.usd === null ? 'no dollar limit'
           : `a limit of ${formatUsdMicros(offer.usd)}`}</li>
         {offer.tokens === null ? null : <li data-renew-tokens={offer.tokens}>{`a limit of ${offer.tokens} tokens`}</li>}
@@ -108,58 +113,58 @@ export function GoalFormView({ goal, floor, row, session }: {
   const mine = goal.attempt !== null && presents(goal.attempt, gate.agent, gate.goal);
   const focusOnLeave = mine ? 'goal-status-title' : AGENT_DETAIL_HEADING_ID;
   return (
-    <section className="agent-detail-goal" aria-labelledby={`${field}-title`} data-goal-agent-id={gate.agent}
+    <section className="agent-detail-goal grid gap-3 text-base text-ink" aria-labelledby={`${field}-title`} data-goal-agent-id={gate.agent}
       data-goal-id={gate.goal} data-goal-form={offer === undefined ? 'change' : 'renew'}>
-      <h3 id={`${field}-title`}>{offer === undefined ? 'Change this agent’s task' : 'Start a new task'}</h3>
-      {offer === undefined ? <><p>The new task keeps what this one has left:</p><CarryList carry={gate.carry} /></>
+      <h3 id={`${field}-title`} className="m-0 font-sans text-title font-semibold">{offer === undefined ? 'Change this agent’s task' : 'Start a new task'}</h3>
+      {offer === undefined ? <><p className="m-0">The new task keeps what this one has left:</p><CarryList carry={gate.carry} /></>
         : <RenewList offer={offer} />}
-      <fieldset className="hire-choices" data-check-choice="goal">
-        <legend>Completion check</legend>
-        <label className="hire-choice">
-          <input type="radio" name="goal_check" data-check-id="keep" checked={check === 'keep'} required
+      <fieldset className="m-0 grid min-w-0 gap-1.5 border-0 p-0" data-check-choice="goal">
+        <legend className={cn('mb-1.5 p-0', LABEL)}>Completion check</legend>
+        <label className={CHOICE}>
+          <input type="radio" name="goal_check" data-check-id="keep" checked={check === 'keep'} required className={RADIO}
             onChange={() => choose('keep')} />
-          <span className="hire-choice-label">
+          <span className="min-w-0 [overflow-wrap:anywhere]">
             {gate.currentCheck === null ? 'Keep the current check' : `Keep “${gate.currentCheck}”`}
           </span>
         </label>
         {gate.enrolled.map((option) => (
-          <label key={option.id} className="hire-choice">
-            <input type="radio" name="goal_check" value={option.id} data-check-id={option.id} required
+          <label key={option.id} className={CHOICE}>
+            <input type="radio" name="goal_check" value={option.id} data-check-id={option.id} required className={RADIO}
               checked={check !== null && check !== 'keep' && check.id === option.id}
               onChange={() => choose({ id: option.id })} />
-            <span className="hire-choice-label">{choiceLabel(option)}</span>
+            <span className="min-w-0 [overflow-wrap:anywhere]">{choiceLabel(option)}</span>
           </label>
         ))}
       </fieldset>
-      <p className="hire-note">{offer === undefined
+      <p className={NOTE}>{offer === undefined
         ? 'Changing the task runs the check once first. If it already passes, nothing changes.'
         : 'Starting the new task runs the check once first. If it already passes, nothing changes.'}</p>
-      <label htmlFor={field}>New task</label>
+      <label htmlFor={field} className={LABEL}>New task</label>
       {/* The field is read-only and Send aria-disabled while they wait, never
           disabled: a disabled element drops the keyboard focus it holds. A
           running turn holds only Send, so the new text can be written while
           the turn ends. */}
-      <textarea id={field} name="goal" rows={3} autoComplete="off" value={draft} readOnly={blocked}
-        ref={handFocusOnLeave} data-focus-on-leave={focusOnLeave}
+      <Textarea id={field} name="goal" rows={3} autoComplete="off" value={draft} readOnly={blocked}
+        className="read-only:border-dashed read-only:bg-surface-2" ref={handFocusOnLeave} data-focus-on-leave={focusOnLeave}
         aria-invalid={problem !== null} aria-describedby={problem === null ? undefined : `${field}-problem`}
         onChange={(event) => editGoalDraft(gate.agent, gate.goal, event.target.value)} />
-      <p className="hire-count">{utf8Bytes(trimAsciiSpace(draft))} of {gate.maxTextBytes} bytes</p>
-      {problem === null ? null : <p className="goal-problem" id={`${field}-problem`}>{problem}</p>}
-      {gate.turnRunning ? <p className="goal-turn" role="status">{TURN_RUNNING}</p> : null}
-      {!blocked || goal.sending ? null : <p className="hire-note" role="status">{heldBecause(goal, mine)}</p>}
+      <p className={cn('goal-count', NOTE)}>{utf8Bytes(trimAsciiSpace(draft))} of {gate.maxTextBytes} bytes</p>
+      {problem === null ? null : <p className={cn('goal-problem', MESSAGE_CLASS.error)} id={`${field}-problem`}>{problem}</p>}
+      {gate.turnRunning ? <p className="goal-turn m-0 rounded-md bg-warn-soft px-3 py-2 text-base font-medium text-ink" role="status">{TURN_RUNNING}</p> : null}
+      {!blocked || goal.sending ? null : <p className={NOTE} role="status">{heldBecause(goal, mine)}</p>}
       {goal.problem === null || goal.attempt !== null ? null : (
-        <p className="goal-problem" role="alert">{goal.problem}</p>
+        <p className={cn('goal-problem', MESSAGE_CLASS.error)} role="alert">{goal.problem}</p>
       )}
-      <div className="goal-actions">
-        <button type="button" className="goal-send"
+      <div className={cn('goal-actions', ACTIONS)}>
+        <Button variant="primary" className="goal-send"
           aria-disabled={blocked || gate.turnRunning || draft === '' || problem !== null || check === null || undefined}
           title={problem ?? (blocked ? 'Wait for the current task request or check its status.' : gate.turnRunning ? 'Wait for the current work attempt to finish.' : draft === '' ? 'Enter a task first.' : check === null ? 'Choose a completion check.' : undefined)}
           ref={handFocusOnLeave} data-focus-on-leave={focusOnLeave}
-          aria-busy={goal.sending && mine} onClick={() => void submitGoal(gate, browserGoalDeps)}>
+          loading={goal.sending && mine} onClick={() => void submitGoal(gate, browserGoalDeps)}>
           {goal.sending && mine ? 'Sending…' : offer === undefined ? 'Change task' : 'Start a new task'}
-        </button>
+        </Button>
       </div>
-      <p className="hire-note">
+      <p className={NOTE}>
         This page keeps a task change only in memory. After a reload it shows only what the journal says, and it
         never sends anything by itself.
       </p>
@@ -191,35 +196,35 @@ export function GoalStatusView({ goal, floor, session, leaveFocusTo = 'crew-togg
   const renewing = isRenewal(attempt.payload);
   const asking = checkable(goal) || (goal.sending && outcome !== null);
   return (
-    <section className="goal-status" aria-labelledby="goal-status-title" aria-live="polite"
+    <section className={cn('goal-status', RECEIPT)} aria-labelledby="goal-status-title" aria-live="polite"
       data-goal-outcome={outcome?.kind ?? 'sending'} data-goal-agent-id={agent} data-goal-id={replaced}
       data-goal-kind={renewing ? 'renew' : 'change'}>
-      <h3 id="goal-status-title" tabIndex={-1}>
-        <span className="agent-detail-kicker">{renewing ? 'New task' : 'Task change'}</span> {name}
+      <h3 id="goal-status-title" tabIndex={-1} className={RECEIPT_TITLE}>
+        <span className={cn('agent-detail-kicker', KICKER_TEXT)}>{renewing ? 'New task' : 'Task change'}</span> {name}
       </h3>
-      <dl className="hire-facts">
-        <div><dt>AgentId</dt><dd>{agent}</dd></div>
-        <div><dt>Previous task</dt><dd>{replaced}</dd></div>
+      <dl className={FACTS}>
+        <div className={FACT}><dt className={FACT_NAME}>AgentId</dt><dd className={FACT_VALUE}>{agent}</dd></div>
+        <div className={FACT}><dt className={FACT_NAME}>Previous task</dt><dd className={FACT_VALUE}>{replaced}</dd></div>
       </dl>
-      {outcome === null ? <p className="goal-pending" role="status">Sending…</p>
+      {outcome === null ? <p className={cn('goal-pending', MESSAGE_CLASS.pending)} role="status">Sending…</p>
         : <OutcomeBody outcome={outcome} attempt={attempt} goal={goal} floor={floor} session={session} />}
-      {goal.problem === null ? null : <p className="goal-problem" role="alert">{goal.problem}</p>}
+      {goal.problem === null ? null : <p className={cn('goal-problem', MESSAGE_CLASS.error)} role="alert">{goal.problem}</p>}
       {asking ? (
-        <footer className="goal-actions">
-          <button type="button" aria-disabled={goal.sending || !floor.goalChange}
+        <footer className={cn('goal-actions', ACTIONS)}>
+          <Button size="sm" aria-disabled={goal.sending || !floor.goalChange}
             title={goal.sending ? 'Wait for the current task request to finish.' : !floor.goalChange ? 'Reconnect to Dudes with Change tasks turned on in Settings.' : undefined}
-            aria-busy={goal.sending} ref={handFocusOnLeave} data-focus-on-leave="goal-status-title"
+            loading={goal.sending} ref={handFocusOnLeave} data-focus-on-leave="goal-status-title"
             onClick={() => { if (!goal.sending && floor.goalChange) void checkGoalStatus(browserGoalDeps); }}>
             {goal.sending ? 'Checking…' : 'Check status'}
-          </button>
+          </Button>
         </footer>
       ) : null}
-      {receiptDismissible(goal) ? <footer className="goal-actions">
-        <button type="button" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}
-          onClick={dismissReceipt}>Dismiss receipt</button>
+      {receiptDismissible(goal) ? <footer className={cn('goal-actions', ACTIONS)}>
+        <Button size="sm" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}
+          onClick={dismissReceipt}>Dismiss receipt</Button>
       </footer> : null}
       {!asking || goal.sending || floor.goalChange ? null : (
-        <p className="hire-note">Check status waits for a live Floor session that offers task change.</p>
+        <p className={NOTE}>Check status waits for a live Floor session that offers task change.</p>
       )}
     </section>
   );
@@ -279,26 +284,26 @@ function OutcomeBody({ outcome, attempt, goal, floor, session }: {
       const renewing = isRenewal(attempt.payload);
       return (
         <>
-          <p className="goal-success" role="status">
+          <p className={cn('goal-success', MESSAGE_CLASS.success)} role="status">
             {renewing ? 'New task saved.'
               : 'Dudes saved the new task. This does not mean the agent has started work.'}
           </p>
-          <blockquote className="goal-text">{attempt.payload.text}</blockquote>
-          <p className="goal-continuation" data-goal-continuation={next.kind}>
+          <blockquote className={cn('goal-text', QUOTE)}>{attempt.payload.text}</blockquote>
+          <p className="goal-continuation m-0 text-base text-muted" data-goal-continuation={next.kind}>
             {continuationText(next, renewing)}
           </p>
         </>
       );
     }
     case 'pending':
-      return <p className="goal-pending" role="status">{PENDING}</p>;
+      return <p className={cn('goal-pending', MESSAGE_CLASS.pending)} role="status">{PENDING}</p>;
     case 'unavailable':
-      return <p className="goal-pending" role="status">{UNAVAILABLE}</p>;
+      return <p className={cn('goal-pending', MESSAGE_CLASS.pending)} role="status">{UNAVAILABLE}</p>;
     case 'unknown':
-      return <p className="goal-pending" role="status">{UNKNOWN}</p>;
+      return <p className={cn('goal-pending', MESSAGE_CLASS.pending)} role="status">{UNKNOWN}</p>;
     case 'refused':
       return (
-        <p className="goal-error" role="alert" data-goal-reason={outcome.reason}
+        <p className={cn('goal-error', MESSAGE_CLASS.error)} role="alert" data-goal-reason={outcome.reason}
           data-check-refusal={isCheckRefusal(outcome.reason) ? outcome.reason : undefined}>
           {outcome.reason === 'goal_exhausted' && renewalOffered(floor, goal, attempt)
             ? EXHAUSTED_WITH_RENEWAL : refusalText(outcome.reason, attempt)}
@@ -307,10 +312,10 @@ function OutcomeBody({ outcome, attempt, goal, floor, session }: {
         </p>
       );
     case 'conflict':
-      return <p className="goal-error" role="alert">{CONFLICT}</p>;
+      return <p className={cn('goal-error', MESSAGE_CLASS.error)} role="alert">{CONFLICT}</p>;
     case 'rejected':
       return (
-        <p className="goal-error" role="alert">
+        <p className={cn('goal-error', MESSAGE_CLASS.error)} role="alert">
           {`Dudes refused the request itself (HTTP ${outcome.status}) before any effect. Nothing was recorded.`}
         </p>
       );
@@ -320,7 +325,7 @@ function OutcomeBody({ outcome, attempt, goal, floor, session }: {
         ? 'Check status then asks again with the same request, which never applies twice.'
         : 'You can then send the task again.';
       return (
-        <p className="goal-error" role="alert" data-goal-session={now}>
+        <p className={cn('goal-error', MESSAGE_CLASS.error)} role="alert" data-goal-session={now}>
           {now === 'checking'
             ? 'Dudes refused this request before any effect. Checking whether this Floor session is still live…'
             : now === 'ended'

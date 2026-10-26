@@ -30,7 +30,7 @@ cargo install cargo-nextest cargo-deny --locked
 
 ## Before you push
 
-CI runs every check on every pull request, so locally you only need the checks for what you
+CI reports every check on every pull request, so locally you only need the checks for what you
 changed:
 
 | You changed | Run locally |
@@ -57,6 +57,14 @@ The [CI workflow](.github/workflows/ci.yml) runs on every pull request and every
 `checks` (formatting, the `dudes-types` no-default-features build, crate layering, schemas and
 naming), `clippy` on Linux, macOS and Windows, `test` on Linux and macOS, `msrv`, `deny`, `floor`
 and `e2e`. Its weekly run adds the Windows tests.
+
+A first job, `changes`, lists the files a pull request touches. A pull request that changes only
+`floor/` skips the steps of the Rust jobs, and one that changes no `floor/` file skips the steps of
+the `floor` job; every job still reports under its own name. A skipped job says so in its run
+summary. Two lists in `.github/ci/` name the files that cross the line, the Floor files Rust reads
+and the Rust-side files the Floor reads. A change to a listed file runs both sides, and
+`cargo xtask floor-reads` fails when a source file points at a path the lists do not cover. Pushes to
+`main` and the weekly and manual runs always run everything.
 
 When you change the Pi MCP extension or add a version to `PI_MCP_TESTED_VERSIONS`, run
 `scripts/verify-pi-mcp.py` locally against the real Pi releases; CI runs only the extension's unit

@@ -6,11 +6,11 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { selectedAgentRow } from '../src/renderer/scene/selection.ts';
 import { getFloorState } from '../src/renderer/floor/store.ts';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 
 const ADA = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const GRACE = '01M31CGZJMEFDYMJ4YBV76DJHQ';
@@ -169,7 +169,7 @@ test('the header keeps enabled controls beside the tabbed agent facts', async ()
 test('a turn without assistant text offers no output toggle while the header retains its status', async () => {
   await withViews(({ drawer: center }) => {
     const output = { ...live.output, targetId: GRACE, status: 'live', chunks: [] };
-    assert.match(center({ ...live, output }, grace, GRACE), /<span class="crew-chip" data-state="needs-you">Needs you<\/span>/);
+    assert.match(center({ ...live, output }, grace, GRACE), /<span data-state="needs-you"><span aria-hidden="true"><\/span>Needs you<\/span>/);
     assert.doesNotMatch(center({ ...live, output }, grace, GRACE), /Show full output/);
     assert.doesNotMatch(center({ ...live, output: { ...output, status: 'ended' } }, grace, GRACE), /Show full output/);
     assert.doesNotMatch(center({ ...live, stale: true, output }, grace, GRACE), /Show full output/);
@@ -195,7 +195,7 @@ test('a recovery-required ticket gives the selected agent and focus roster the s
     title: 'Continue the interrupted task', ticket: { reason: 'recovery_required', round: 1, goal: row.goal.id } };
   await withViews(({ focus }) => {
     const html = focus({ ...live, agents: [row], cards: [card] }, row, ADA);
-    assert.match(html, /<section class="agent-detail-state" aria-label="State" data-state="needs-you"><p class="agent-detail-state-line"><span class="crew-chip" data-state="needs-you">Needs you<\/span>/);
+    assert.match(html, /<section class="agent-detail-state" aria-label="State" data-state="needs-you"><p class="agent-detail-state-line"><span data-state="needs-you"><span aria-hidden="true"><\/span>Needs you<\/span>/);
     assert.match(html, /<dt>Status<\/dt><dd>Needs you<\/dd>/);
     assert.match(html, /data-state="needs-you"[^>]*><span aria-hidden="true"[^>]*><\/span><span class="visually-hidden">Status: <\/span>Needs you<\/span>/);
     assert.doesNotMatch(html, /<span>running<\/span>|data-status="running"/);

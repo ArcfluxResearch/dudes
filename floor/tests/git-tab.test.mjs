@@ -369,7 +369,7 @@ test('the planted working directory is absent from the tab, and an absolute path
 });
 
 test('the tab exists only when the daemon sent the sibling', () => {
-  const tabs = (html) => [...html.matchAll(/role="tab" class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1]);
+  const tabs = (html) => [...html.matchAll(/role="tab"[^>]*class="[^"]*\bagent-detail-tab\b[^"]*"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1]);
   const detail = (git) => renderToStaticMarkup(createElement(AgentDetail, { row, git }));
   assert.deepEqual(tabs(detail(null)), ['Overview']);
   assert.deepEqual(tabs(detail(createElement('p', null, 'Git panel'))), ['Overview', 'Git']);

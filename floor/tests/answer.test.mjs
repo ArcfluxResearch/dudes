@@ -48,11 +48,11 @@ import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { decodeAnswerLimits } from '../src/renderer/answer/limits.ts';
 import { ATTEMPT_ID } from '../src/renderer/onboarding/hire.ts';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 import { accessibleNameOfHeading } from './helpers/heading-name.mjs';
 
 const root = resolve(import.meta.dirname, '..');
@@ -305,7 +305,7 @@ test('empty text, whitespace only and a control character refuse to send, and se
   const net = daemon();
   for (const text of ['', '   \n\t', 'a\u0000b']) await sendOnce(net, text);
   assert.equal(net.calls.length, 0);
-  assert.match(form(), /class="answer-send" aria-disabled="true"/);
+  assert.match(form(), /<button(?=[^>]*class="answer-send")(?=[^>]*aria-disabled="true")/);
 });
 
 test('answered shows the answer as recorded, never a running turn; continuation appears only from projection deltas', async () => {
@@ -319,7 +319,7 @@ test('answered shows the answer as recorded, never a running turn; continuation 
   assert.match(html, /data-answer-continuation="open"/);
   assert.doesNotMatch(html, /moved on/, 'the 200 alone was shown as the agent moving on');
   assert.match(form(), /Your answer is saved\. Waiting for this question to close\./);
-  assert.match(form(), /class="answer-send" aria-disabled="true"/);
+  assert.match(form(), /<button(?=[^>]*class="answer-send")(?=[^>]*aria-disabled="true")/);
   // The form's own store subscription reads the state this test drove: one module instance.
   assert.match(renderToStaticMarkup(createElement(Form,
     { floor: getFloorState(), row: rowOf(), leaveFocusTo: 'agent-detail-title' })),
@@ -327,7 +327,7 @@ test('answered shows the answer as recorded, never a running turn; continuation 
   assert.match(html, /<h3 id="answer-status-title" tabindex="-1">/);
   assert.match(form(), /<textarea[^>]*data-focus-on-leave="answer-status-title"/,
     'when the question closes, the field does not hand the keyboard to this answer’s heading');
-  assert.match(form(), /class="answer-send"[^>]*data-focus-on-leave="answer-status-title"/,
+  assert.match(form(), /<button(?=[^>]*class="answer-send")(?=[^>]*data-focus-on-leave="answer-status-title")/,
     'when the question closes, Send does not hand the keyboard to this answer’s heading');
 
   // The question closes: said as closed, and still no turn.
@@ -483,14 +483,14 @@ test('the response map: every row, and anything off its row proves nothing', () 
 
 test('Send waits while a request is out, keeping the keyboard, and a second Send sends nothing', async () => {
   subscribe({ agents: [waiting(), GRACE_ROW()] });
-  assert.match(form(), /class="answer-send"[^>]*data-focus-on-leave="agent-detail-title"/,
+  assert.match(form(), /<button(?=[^>]*class="answer-send")(?=[^>]*data-focus-on-leave="agent-detail-title")/,
     'before this page answers, Send does not hand the keyboard to the agent’s own heading');
   const reply = held();
   const net = daemon(reply, ANSWERED);
   const first = sendOnce(net);
   assert.equal(answer.getAnswerState().sending, true);
-  assert.match(form(), /class="answer-send" aria-disabled="true"[^>]*aria-busy="true">Sending…</);
-  assert.match(form(GRACE), /class="answer-send" aria-disabled="true"[^>]*data-focus-on-leave="agent-detail-title"/);
+  assert.match(form(), /<button(?=[^>]*class="answer-send")(?=[^>]*aria-disabled="true")(?=[^>]*aria-busy="true")[^>]*>(?:<svg[\s\S]*?<\/svg>)?Sending…</);
+  assert.match(form(GRACE), /<button(?=[^>]*class="answer-send")(?=[^>]*aria-disabled="true")(?=[^>]*data-focus-on-leave="agent-detail-title")/);
   assert.doesNotMatch(form() + form(GRACE), /<button[^>]*\sdisabled=""/, 'a waiting Send is disabled');
   await sendOnce(net, 'another', GRACE);
   await sendOnce(net);
@@ -630,13 +630,13 @@ test('after 202 or 503 and a session end, a same-request_id Check from a new ses
     assert.match(html, /data-answer-session="ended"/);
     assert.match(html, /Open Dudes to sign in again in this browser: this page keeps the answer\. Check status then asks again with the same request/);
     assert.doesNotMatch(html, />Edit and send again</);
-    assert.match(html, /<button type="button" aria-disabled="true"[^>]*aria-busy="false"[^>]*>Check status<\/button>/,
+    assert.match(html, /<button type="button"(?=[^>]*aria-disabled="true")(?![^>]*aria-busy="true")[^>]*>Check status<\/button>/,
       'Check status is offered with no session to send it on');
 
     // A fresh link pasted into this tab: a new session, the same page.
     net.paste(FRESH);
     subscribe();
-    assert.match(status(net.generation), /<button type="button" aria-disabled="false" aria-busy="false"[^>]*>Check status<\/button>/);
+    assert.match(status(net.generation), /<button type="button"(?![^>]*aria-(?:disabled|busy)="true")[^>]*>Check status<\/button>/);
     await answer.checkAnswerStatus(net);
     assert.equal(net.calls.length, 3);
     assert.equal(net.calls[2].init.body, net.calls[0].init.body, 'the new session sent a different request');

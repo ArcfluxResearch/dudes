@@ -12,10 +12,14 @@
 import { useId, useSyncExternalStore } from 'react';
 
 import { floorSessionGeneration } from '../../session.ts';
+import { Button, Textarea, cn } from '../../ui/index.ts';
 import type { FloorState } from '../floor/store.ts';
 import { journalPosition } from '../format.ts';
 import { handFocusOnLeave } from '../focus.ts';
 import { trimAsciiSpace, utf8Bytes } from '../onboarding/hire.ts';
+import {
+  ACTIONS, FACT, FACTS, FACT_NAME, FACT_VALUE, KICKER as KICKER_TEXT, MESSAGE_CLASS, NOTE, QUOTE, RECEIPT, RECEIPT_TITLE,
+} from '../receipt.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import {
   REFUSAL_REASONS, afterRefusal, answerGate, answers, blocksForm, browserAnswerDeps, checkAnswerStatus, checkable,
@@ -50,40 +54,41 @@ export function AnswerFormView({ answer, floor, row, leaveFocusTo, compact = fal
   const mine = answer.attempt !== null && answers(answer.attempt, gate.agent, gate.questionLsn);
   const focusOnLeave = mine ? 'answer-status-title' : leaveFocusTo;
   return (
-    <div className="agent-detail-answer" data-answer-agent-id={gate.agent} data-answer-question-lsn={gate.questionLsn}>
-      <label htmlFor={field}>Your answer</label>
+    <div className="agent-detail-answer grid gap-2" data-answer-agent-id={gate.agent} data-answer-question-lsn={gate.questionLsn}>
+      <label htmlFor={field} className="text-small font-medium text-ink">Your answer</label>
       {/* The field is read-only and Send aria-disabled while they wait, never
           disabled: a disabled element drops the keyboard focus it holds. */}
-      <textarea id={field} name="answer" rows={3} autoComplete="off" value={draft} readOnly={blocked}
+      <Textarea id={field} name="answer" rows={3} autoComplete="off" value={draft} readOnly={blocked}
         ref={handFocusOnLeave} data-focus-on-leave={focusOnLeave}
         aria-invalid={problem !== null} aria-describedby={problem === null ? undefined : `${field}-problem`}
+        className="read-only:border-dashed read-only:bg-surface-2"
         onChange={(event) => editAnswerDraft(gate.agent, gate.questionLsn, event.target.value)}
         onKeyDown={(event) => { if (sendsOnKey(event)) void submitAnswer(gate, browserAnswerDeps); }} />
-      <p className="hire-count">
+      <p className={cn('answer-count', NOTE)}>
         {compact ? null : <>{utf8Bytes(trimAsciiSpace(draft))} of {gate.maxTextBytes} bytes · </>}Ctrl+Enter or ⌘+Enter sends
       </p>
       {/* Recomputed on every keystroke, so it is not an alert: the field names
           it, and it is read when the field is. */}
-      {problem === null ? null : <p className="answer-problem" id={`${field}-problem`}>{problem}</p>}
+      {problem === null ? null : <p className={cn('answer-problem', MESSAGE_CLASS.error)} id={`${field}-problem`}>{problem}</p>}
       {!blocked || answer.sending ? null : (
-        <p className="hire-note" role="status">
+        <p className={NOTE} role="status">
           {mine && answer.outcome?.kind === 'answered'
             ? 'Your answer is saved. Waiting for this question to close.'
             : 'An earlier answer is not confirmed yet. Check its status.'}
         </p>
       )}
-      <div className="answer-actions">
-        <button type="button" className="answer-send"
+      <div className={cn('answer-actions', ACTIONS)}>
+        <Button variant="primary" className="answer-send"
           aria-disabled={blocked || draft === '' || problem !== null || undefined}
           title={problem ?? (blocked ? 'Wait for the current answer request or check its status.' : draft === '' ? 'Enter an answer first.' : undefined)}
           ref={handFocusOnLeave} data-focus-on-leave={focusOnLeave}
-          aria-busy={answer.sending && mine}
+          loading={answer.sending && mine}
           onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
           onClick={() => void submitAnswer(gate, browserAnswerDeps)}>
           {answer.sending && mine ? 'Sending…' : 'Send answer'}
-        </button>
+        </Button>
       </div>
-      {compact ? null : <p className="hire-note">
+      {compact ? null : <p className={NOTE}>
         Your draft stays in this tab until you reload or close it. Reloading shows open questions and never
         sends an answer.
       </p>}
@@ -115,37 +120,37 @@ export function AnswerStatusView({ answer, floor, session, leaveFocusTo }: {
   const outcome = answer.outcome;
   const asking = checkable(answer) || (answer.sending && outcome !== null);
   return (
-    <section className="answer-status" aria-labelledby="answer-status-title" aria-live="polite"
+    <section className={cn('answer-status', RECEIPT)} aria-labelledby="answer-status-title" aria-live="polite"
       data-answer-outcome={outcome?.kind ?? 'sending'} data-answer-agent-id={agent}
       data-answer-question-lsn={questionLsn}>
-      <h3 id="answer-status-title" tabIndex={-1}><span className="agent-detail-kicker">Your answer</span> {name}</h3>
-      <dl className="hire-facts">
-        <div><dt>AgentId</dt><dd>{agent}</dd></div>
-        <div><dt>Question</dt><dd>{journalPosition(questionLsn)}</dd></div>
+      <h3 id="answer-status-title" tabIndex={-1} className={RECEIPT_TITLE}><span className={cn('agent-detail-kicker', KICKER_TEXT)}>Your answer</span> {name}</h3>
+      <dl className={FACTS}>
+        <div className={FACT}><dt className={FACT_NAME}>AgentId</dt><dd className={FACT_VALUE}>{agent}</dd></div>
+        <div className={FACT}><dt className={FACT_NAME}>Question</dt><dd className={FACT_VALUE}>{journalPosition(questionLsn)}</dd></div>
       </dl>
-      {outcome === null ? <p className="answer-pending" role="status">Sending…</p>
+      {outcome === null ? <p className={cn('answer-pending', MESSAGE_CLASS.pending)} role="status">Sending…</p>
         : <OutcomeBody outcome={outcome} attempt={attempt} answer={answer} floor={floor} session={session} />}
-      {answer.problem === null ? null : <p className="answer-problem" role="alert">{answer.problem}</p>}
-      <footer className="answer-actions">
+      {answer.problem === null ? null : <p className={cn('answer-problem', MESSAGE_CLASS.error)} role="alert">{answer.problem}</p>}
+      <footer className={cn('answer-actions', ACTIONS, 'empty:hidden')}>
         {asking ? (
-          <button type="button" aria-disabled={answer.sending || !floor.answering}
+          <Button size="sm" aria-disabled={answer.sending || !floor.answering}
             title={answer.sending ? 'Wait for the current answer request to finish.' : !floor.answering ? 'Reconnect to Dudes with Answer questions turned on in Settings.' : undefined}
-            aria-busy={answer.sending} ref={handFocusOnLeave} data-focus-on-leave="answer-status-title"
+            loading={answer.sending} ref={handFocusOnLeave} data-focus-on-leave="answer-status-title"
             onClick={() => { if (!answer.sending && floor.answering) void checkAnswerStatus(browserAnswerDeps); }}>
             {answer.sending ? 'Checking…' : 'Check status'}
-          </button>
+          </Button>
         ) : null}
         {outcome?.kind === 'forbidden' && releasable(answer) ? (
-          <button type="button" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}
-            onClick={releaseAnswer}>Edit and send again</button>
+          <Button size="sm" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}
+            onClick={releaseAnswer}>Edit and send again</Button>
         ) : null}
       </footer>
-      {receiptDismissible(answer) ? <footer className="answer-actions">
-        <button type="button" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}
-          onClick={dismissReceipt}>Dismiss receipt</button>
+      {receiptDismissible(answer) ? <footer className={cn('answer-actions', ACTIONS)}>
+        <Button size="sm" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}
+          onClick={dismissReceipt}>Dismiss receipt</Button>
       </footer> : null}
       {!asking || answer.sending || floor.answering ? null : (
-        <p className="hire-note">Check status waits for a live Floor session that offers answering.</p>
+        <p className={NOTE}>Check status waits for a live Floor session that offers answering.</p>
       )}
     </section>
   );
@@ -163,11 +168,11 @@ function OutcomeBody({ outcome, attempt, answer, floor, session }: {
       const next = continuationOf(attempt, floor);
       return (
         <>
-          <p className="answer-success" role="status">
+          <p className={cn('answer-success', MESSAGE_CLASS.success)} role="status">
             Dudes saved the answer. This does not mean the agent has started work.
           </p>
-          <blockquote className="answer-text">{attempt.payload.text}</blockquote>
-          <p className="answer-continuation" data-answer-continuation={next.kind}>
+          <blockquote className={cn('answer-text', QUOTE)}>{attempt.payload.text}</blockquote>
+          <p className="answer-continuation m-0 text-base text-muted" data-answer-continuation={next.kind}>
             {next.kind === 'unconfirmed' ? 'Waiting for the floor to confirm the agent.'
               : next.kind === 'absent' ? 'The agent is no longer on the floor.'
                 : next.kind === 'open' ? 'The floor has not shown the question closing yet.'
@@ -183,41 +188,41 @@ function OutcomeBody({ outcome, attempt, answer, floor, session }: {
     }
     case 'pending':
       return (
-        <p className="answer-pending" role="status">
+        <p className={cn('answer-pending', MESSAGE_CLASS.pending)} role="status">
           Not confirmed yet. Dudes has this answer in progress, or cannot confirm it yet. Check status asks
           again with the same request, which never answers twice.
         </p>
       );
     case 'unavailable':
       return (
-        <p className="answer-pending" role="status">
+        <p className={cn('answer-pending', MESSAGE_CLASS.pending)} role="status">
           Dudes could not confirm this answer. Check status later asks again with the same request; this page
           does not retry by itself. If this keeps happening, the operator may need to restart Dudes.
         </p>
       );
     case 'unknown':
       return (
-        <p className="answer-pending" role="status">
+        <p className={cn('answer-pending', MESSAGE_CLASS.pending)} role="status">
           The page lost Dudes&apos; reply, so it cannot say whether this answer was recorded. Check status
           asks again with the same request, which never answers twice.
         </p>
       );
     case 'refused':
       return (
-        <p className="answer-error" role="alert" data-answer-reason={outcome.reason}>
+        <p className={cn('answer-error', MESSAGE_CLASS.error)} role="alert" data-answer-reason={outcome.reason}>
           {REFUSAL_REASONS[outcome.reason]}
         </p>
       );
     case 'conflict':
       return (
-        <p className="answer-error" role="alert">
+        <p className={cn('answer-error', MESSAGE_CLASS.error)} role="alert">
           Dudes holds a different request under this request id, so it refused this one before any effect.
           This is a page error; nothing was recorded.
         </p>
       );
     case 'rejected':
       return (
-        <p className="answer-error" role="alert">
+        <p className={cn('answer-error', MESSAGE_CLASS.error)} role="alert">
           Dudes refused the request itself (HTTP {outcome.status}) before any effect. Nothing was recorded.
         </p>
       );
@@ -227,7 +232,7 @@ function OutcomeBody({ outcome, attempt, answer, floor, session }: {
         ? 'Check status then asks again with the same request, which never answers twice.'
         : 'You can then send it again.';
       return (
-        <p className="answer-error" role="alert" data-answer-session={now}>
+        <p className={cn('answer-error', MESSAGE_CLASS.error)} role="alert" data-answer-session={now}>
           {now === 'checking'
             ? 'Dudes refused this request before any effect. Checking whether this Floor session is still live…'
             : now === 'ended'

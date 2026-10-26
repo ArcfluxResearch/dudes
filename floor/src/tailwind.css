@@ -2,13 +2,8 @@
 
 /* The older screens' rules, kept as they were and in their original order until each screen moves. */
 @import './legacy/base.css';
-@import './legacy/agent-panel.css';
-@import './legacy/hire-entry.css';
 @import './legacy/hire-wizard.css';
-@import './legacy/agent-actions.css';
-@import './legacy/retire-terminal.css';
 @import './legacy/other-screens.css';
-@import './legacy/agent-detail.css';
 @import './legacy/handoff.css';
 @import './legacy/engine-sign-in.css';
 @import './legacy/touch-and-phone.css';

@@ -19,9 +19,9 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test, { after, before } from 'node:test';
 import { act, createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 import { fakePage, press } from './helpers/fake-page.mjs';
 
 const root = resolve(import.meta.dirname, '..');
@@ -601,7 +601,7 @@ test('losing authentication clears the panel: a 403, no session, or a new sessio
 });
 
 test('the Memory tab sits after Git, and the drawer always offers it for a live agent', () => {
-  const tabs = (html) => [...html.matchAll(/role="tab" class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1]);
+  const tabs = (html) => [...html.matchAll(/role="tab"[^>]*class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1]);
   const panel = (label) => createElement('p', null, label);
   assert.deepEqual(tabs(renderToStaticMarkup(createElement(AgentDetail, { row: ada, git: panel('Git'), memory: panel('Memory'),
     messages: panel('Messages') }))), ['Overview', 'Git', 'Memory', 'Messages']);

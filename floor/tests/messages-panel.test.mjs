@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import test, { after, before } from 'node:test';
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 
 let server;
 let AgentDetail;
@@ -30,7 +30,7 @@ test('Messages joins the detail registry with ARIA, hidden drafts and persistent
     messages: createElement('p', null, 'Approved mail metadata'),
     git: createElement('p', null, 'Git details'),
     goal: createElement('textarea', { defaultValue: 'Unsubmitted goal draft' }) }));
-  assert.match(html, /id="agent-detail-tab-messages"[^>]*aria-controls="agent-detail-panel-messages"[^>]*aria-selected="true"[^>]*tabindex="0"/);
+  assert.match(html, /<button(?=[^>]*\bid="agent-detail-tab-messages")(?=[^>]*aria-controls="agent-detail-panel-messages")(?=[^>]*aria-selected="true")(?=[^>]*tabindex="0")[^>]*>/);
   assert.match(html, /id="agent-detail-panel-messages"[^>]*aria-labelledby="agent-detail-tab-messages"/);
   assert.match(html, /id="agent-detail-panel-overview"[^>]*hidden=""/);
   assert.match(html, /Unsubmitted goal draft/);

@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, KeyboardEvent, ReactNode, Ref } from 'react';
+import type { ButtonHTMLAttributes, HTMLAttributes, KeyboardEvent, ReactNode, Ref } from 'react';
 
 import { cn } from './cn.ts';
 import { RING_INSET } from './look.ts';
@@ -7,12 +7,12 @@ import { RING_INSET } from './look.ts';
  * A row of tabs. Arrow keys, Home and End move between them and select the one reached, and only the selected tab is in
  * the tab order, so Tab leaves the row.
  */
-export function TabList({ label, children, className, ref }: {
+export function TabList({ label, children, className, ref, ...rest }: {
   readonly label: string;
   readonly children: ReactNode;
   readonly className?: string;
   readonly ref?: Ref<HTMLDivElement>;
-}) {
+} & Omit<HTMLAttributes<HTMLDivElement>, 'role' | 'aria-label' | 'children' | 'onKeyDown'>) {
   function keyOf(event: KeyboardEvent<HTMLDivElement>): void {
     if (event.altKey || event.ctrlKey || event.metaKey) return;
     const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]:not([aria-disabled="true"])')];
@@ -27,7 +27,7 @@ export function TabList({ label, children, className, ref }: {
     to.focus();
     to.click();
   }
-  return <div ref={ref} role="tablist" aria-label={label} data-ui="tab-list" onKeyDown={keyOf}
+  return <div ref={ref} role="tablist" aria-label={label} data-ui="tab-list" {...rest} onKeyDown={keyOf}
     className={cn('flex gap-1 overflow-x-auto border-b border-line font-sans', className)}>{children}</div>;
 }
 

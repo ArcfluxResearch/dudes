@@ -6,7 +6,6 @@ import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
 import { createServer } from 'vite';
 
@@ -16,6 +15,7 @@ import {
 import {
   beginPauseAll, checkPauseAllStatus, getPauseAllState, pauseAllTargets, resetPauseAll,
 } from '../src/renderer/control/pauseAll.ts';
+import { renderToStaticMarkup } from './helpers/markup.mjs';
 import { loadStage } from './helpers/page.mjs';
 import { bare } from './helpers/shell-bare.mjs';
 

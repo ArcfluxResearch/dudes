@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Ellipsis } from 'lucide-react';
+import { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 
+import { Badge, Button, Disclosure, ICON, Menu, MenuSeparator, RING, RING_INSET, Tab, TabList } from '../ui/index.ts';
 import { accentOf, accessoryOf, lookOf } from './appearance.ts';
 import { Portrait } from './Portrait.tsx';
 import { AgentOverview } from './AgentOverview.tsx';
@@ -10,15 +12,16 @@ import { detailTabSelection, detailTabTarget, revealedTabScroll } from './detail
 import type { DetailTab } from './detailTabs.ts';
 import type { CardRow } from './board.ts';
 import { stateSentenceOf } from './agentState.ts';
-import { NEED_LABEL, needsOf } from './needs.ts';
+import { needsOf } from './needs.ts';
 import type { NeedAction } from './needs.ts';
 import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
 import { HIRE_ENGINES } from './onboarding/catalog.ts';
 import { NameEditor } from './rename/NameEditor.tsx';
-import { LookEditor } from './look/LookEditor.tsx';
+import { LookEditor, LookMenuItem } from './look/LookEditor.tsx';
+import { lookAvailable } from './look/look.ts';
+import { getFloorState, subscribeToFloor } from './floor/store.ts';
 import { ModelEditor } from './model/ModelEditor.tsx';
 import { beginRename } from './rename/rename.ts';
-import { automaticHoldOf } from './automaticHold.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from './focus.ts';
 import type { AgentRow } from './scene/cast.ts';
 import { fieldsOf } from './scene/label.ts';
@@ -70,9 +73,6 @@ export function AgentDetail({
   const fields = fieldsOf(row, { live, now: performance.now(), wallNow: Date.now() });
   const need = needsOf([row], cards, { live, now: performance.now(), wallNow: Date.now() })[0]!;
   const sentence = stateSentenceOf(row, cards, fields);
-  const automaticHold = automaticHoldOf(row);
-  const resumeInOverview = automaticHold !== null || (row.paused === true && row.halted !== true)
-    || (row.halted === true && row.halted_by_floor === true);
   const panels: readonly { readonly id: DetailTab; readonly label: string; readonly content: ReactNode }[] = [
     { id: 'overview', label: 'Overview', content: <AgentOverview row={row} cards={cards} fields={fields}
       recovery={recovery} goalForm={goalForm}
@@ -83,18 +83,18 @@ export function AgentDetail({
     { id: 'messages', label: 'Messages', content: messages },
   ];
   function act(action: NeedAction): ReactNode {
-    if (action.kind === 'question') return <button type="button" onClick={(event) => {
+    if (action.kind === 'question') return <Button variant="primary" onClick={(event) => {
       const question = event.currentTarget.closest('.agent-detail')?.querySelector<HTMLElement>('.agent-detail-question');
       question?.focus();
       question?.scrollIntoView({ block: 'nearest' });
-    }}>{action.label}</button>;
+    }}>{action.label}</Button>;
     if (action.kind === 'ticket') return onOpenTicket === undefined ? null
-      : <button type="button" onClick={() => onOpenTicket(action.card)}>{action.label}</button>;
+      : <Button variant="primary" onClick={() => onOpenTicket(action.card)}>{action.label}</Button>;
     if (action.label !== 'Talk') return null;
     return <>
       {tab !== 'chat' && panels.some((panel) => panel.id === 'chat' && panel.content !== null)
-        ? <button type="button" onClick={() => onTabChange('chat')}>{action.label}</button> : null}
-      {taskForm === null ? null : <details className="agent-overview-task"><summary>Give a task</summary>{taskForm}</details>}
+        ? <Button variant="primary" onClick={() => onTabChange('chat')}>{action.label}</Button> : null}
+      {taskForm === null ? null : <Disclosure className="agent-overview-task basis-full" summary="Give a task">{taskForm}</Disclosure>}
     </>;
   }
   const available = panels.filter((panel) => panel.content !== null);
@@ -131,57 +131,59 @@ export function AgentDetail({
   }, []);
 
   return (
-    <aside ref={detail} className="agent-detail" aria-label="Selected agent details" data-selected-agent-id={row.id} data-detail-tab={selected}
+    <aside ref={detail} className="agent-detail flex min-h-0 flex-1 flex-col" aria-label="Selected agent details" data-selected-agent-id={row.id} data-detail-tab={selected}
       style={{ '--agent': accentOf(row) } as CSSProperties}>
-      <div className="agent-detail-context">
-      <header className="agent-detail-head">
-        <Portrait className="agent-portrait agent-detail-portrait" look={lookOf(row)} accessory={accessoryOf(row.role)}
-          name={row.name} />
-        <div className="agent-detail-identity">
-          <div className="agent-detail-name">
-            <h2 id={AGENT_DETAIL_HEADING_ID} tabIndex={-1} onDoubleClick={() => beginRename(`detail:${row.id}`, row)}>{value(row.name)}</h2>
-            <NameEditor row={row} surface="detail" showName={false} />
+      <div className="agent-detail-context max-h-[55%] flex-none overflow-y-auto [[data-chat-short=true]_&]:max-h-[30%]">
+      <header className="agent-detail-head grid grid-cols-1 gap-3 font-sans text-ink">
+        <div className="flex items-start gap-3 pr-8">
+          <Portrait className="agent-portrait agent-detail-portrait shrink-0" look={lookOf(row)} accessory={accessoryOf(row.role)}
+            name={row.name} />
+          <div className="agent-detail-identity grid min-w-0 flex-1 gap-0.5">
+            <div className="agent-detail-name flex min-w-0 flex-wrap items-center gap-1.5">
+              <h2 id={AGENT_DETAIL_HEADING_ID} tabIndex={-1} onDoubleClick={() => beginRename(`detail:${row.id}`, row)}
+                className={`m-0 min-w-0 rounded-sm font-sans text-page font-semibold text-ink [overflow-wrap:anywhere] ${RING}`}>{value(row.name)}</h2>
+              <NameEditor row={row} surface="detail" showName={false} />
+            </div>
+            <p className="agent-detail-status m-0 text-base text-muted [overflow-wrap:anywhere]">
+              {value(row.role)}
+              {typeof row.provider === 'string' && row.provider !== '' ? ` · ${providerLabel(row.provider)}` : ''}
+              {fields.liveActivity === null && streamState === null ? null : <span className="sr-only">
+                {fields.liveActivity === null ? null : <>{' · '}<span data-live-activity={fields.liveActivity}>{fields.liveActivity}</span></>}
+                {streamState === null ? null : <>{' · '}<span className="stream-state font-normal" role="status">{streamState}</span></>}
+              </span>}
+            </p>
           </div>
-          <p className="agent-detail-status">
-            {value(row.role)}
-            {typeof row.provider === 'string' && row.provider !== '' ? ` · ${providerLabel(row.provider)}` : ''}
-            {fields.liveActivity === null ? null : <>{' · '}<span data-live-activity={fields.liveActivity}>{fields.liveActivity}</span></>}
-            {streamState === null ? null : <>{' · '}<span className="stream-state" role="status">{streamState}</span></>}
-          </p>
+          <MoreActions row={row} retire={retire} />
         </div>
         {selection}
-        <section className="agent-detail-state" aria-label="State" data-state={need.state}>
-          <p className="agent-detail-state-line"><span className="crew-chip" data-state={need.state}>{NEED_LABEL[need.state]}</span>
-            {' '}<span className="agent-detail-state-text">{sentence}</span></p>
-          <div className="agent-detail-primary">
-            {resumeInOverview ? control : null}
+        <section className="agent-detail-state flex flex-wrap items-center gap-x-3 gap-y-2" aria-label="State" data-state={need.state}>
+          <p className="agent-detail-state-line m-0 flex min-w-48 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-body"><Badge state={need.state} />
+            {' '}<span className="agent-detail-state-text min-w-0 text-ink [overflow-wrap:anywhere]">{sentence}</span></p>
+          <div className="agent-detail-primary flex flex-wrap items-center gap-2 empty:hidden">
             {act(need.action)}
             {need.second === null ? null : act(need.second)}
+            {control}
           </div>
         </section>
-        <div className="agent-detail-actions">
-          {resumeInOverview ? null : control}
-          <details className="agent-more">
-            <summary aria-label="More actions" title="More actions">…</summary>
-            <div className="agent-more-body"><LookEditor row={row} />{retire}{enable}</div>
-          </details>
+        <LookEditor row={row} />
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <ModelEditor row={row} />
+          {terminal}
+          {attachNote}
         </div>
-        <ModelEditor row={row} />
-        {terminal}
-        {attachNote}
+        {enable}
         {fields.question === '' ? null : (
-          <section className="agent-detail-question" aria-label="Waiting question" tabIndex={-1}>
-            <h3>Waiting question</h3>
-            <p>{fields.question}</p>
+          <section className={`agent-detail-question m-0 grid max-h-64 gap-2 overflow-y-auto rounded-lg border border-line bg-warn-soft p-3 shadow-none ${RING}`} aria-label="Waiting question" tabIndex={-1}>
+            <h3 className="m-0 font-sans text-title font-semibold text-ink">Waiting question</h3>
+            <p className="m-0 text-body text-ink [overflow-wrap:anywhere]">{fields.question}</p>
             {answer}
           </section>
         )}
       </header>
-      <div ref={tabRow} className="agent-detail-tabs" role="tablist" aria-label="Agent detail sections"
+      <TabList ref={tabRow} label="Agent detail sections" className="agent-detail-tabs mt-3 mb-2 [scrollbar-width:none]"
         aria-describedby={tabs.length > 1 ? 'agent-detail-tab-hint' : undefined}>
-        {available.map(({ id, label }) => <button key={id} type="button" role="tab" className="agent-detail-tab"
+        {available.map(({ id, label }) => <Tab key={id} selected={selected === id} className="agent-detail-tab mb-0"
           id={`agent-detail-tab-${id}`} data-detail-section={id} aria-controls={`agent-detail-panel-${id}`}
-          aria-selected={selected === id} tabIndex={selected === id ? 0 : -1}
           ref={handFocusOnLeave} data-focus-on-leave="agent-detail-tab-overview"
           onFocus={() => setFocusedSection(id)} onBlur={() => setFocusedSection(null)}
           onClick={() => onTabChange(id)} onKeyDown={(event) => {
@@ -189,14 +191,15 @@ export function AgentDetail({
             const target = detailTabTarget(tabs, id, event.key);
             if (target === null) return;
             event.preventDefault();
+            event.stopPropagation();
             onTabChange(target);
             event.currentTarget.ownerDocument.getElementById(`agent-detail-tab-${target}`)?.focus();
-          }}>{label}</button>)}
-      </div>
-      {tabs.length > 1 ? <p id="agent-detail-tab-hint" className="agent-detail-tab-hint">Scroll for more sections · Use arrow keys</p> : null}
+          }}>{label}</Tab>)}
+      </TabList>
+      {tabs.length > 1 ? <p id="agent-detail-tab-hint" className="agent-detail-tab-hint sr-only">Scroll for more sections · Use arrow keys</p> : null}
       </div>
       {available.map(({ id, content }) => <section key={id} id={`agent-detail-panel-${id}`}
-        role="tabpanel" data-detail-section={id} aria-labelledby={`agent-detail-tab-${id}`} tabIndex={0} hidden={selected !== id}
+        role="tabpanel" className={`min-h-0 flex-1 overflow-y-auto rounded-md ${RING_INSET}`} data-detail-section={id} aria-labelledby={`agent-detail-tab-${id}`} tabIndex={0} hidden={selected !== id}
         ref={handFocusOnLeave} data-focus-on-leave="agent-detail-tab-overview"
         onFocus={() => setFocusedSection(id)} onBlur={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget)) setFocusedSection(null);
@@ -205,4 +208,16 @@ export function AgentDetail({
       </section>)}
     </aside>
   );
+}
+
+/** What is not the main action, in one menu. It is not drawn when it would hold nothing. */
+function MoreActions({ row, retire }: { readonly row: AgentRow; readonly retire: ReactNode }) {
+  const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
+  const look = lookAvailable(floor, row);
+  if (!look && retire === null) return null;
+  return <Menu label="More actions" trigger={<Ellipsis {...ICON} />} className="agent-more">
+    <LookMenuItem row={row} />
+    {look && retire !== null ? <MenuSeparator /> : null}
+    {retire}
+  </Menu>;
 }

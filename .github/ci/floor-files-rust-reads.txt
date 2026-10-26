@@ -1,0 +1,16 @@
+# Floor files that Rust code or Rust tests read. A pull request that changes one of them runs the
+# Rust jobs even when it touches nothing else outside floor/.
+#
+# One path per line, or a directory as `dir/*`. `cargo xtask floor-reads` fails when Rust source
+# under crates/, bins/ or xtask/ points into floor/ at a path this list does not cover.
+
+floor/dist/*
+floor/index.html
+floor/src/renderer/looks.json
+floor/src/renderer/ticket/ticket.ts
+floor/src/renderer/ticket/words.ts
+floor/src/session.ts
+floor/tests/fixtures/signed-request-v1.json
+floor/tests/fixtures/static-contract.json
+floor/tests/helpers/project-word.mjs
+floor/tests/helpers/terminal-commands.mjs

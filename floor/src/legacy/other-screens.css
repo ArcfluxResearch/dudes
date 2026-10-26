@@ -55,12 +55,6 @@
   background: var(--danger-background);
 }
 
-.agent-drawer:has(.agent-detail[data-detail-tab='chat']) { display: flex; flex-direction: column; overflow: clip; }
-.agent-detail-context { display: contents; }
-.agent-detail[data-detail-tab='chat'] { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
-.agent-detail[data-detail-tab='chat'] > .agent-detail-context > * { flex: 0 0 auto; }
-#agent-detail-panel-chat { flex: 1 1 auto; min-height: 0; }
-
 @media (max-width: 800px) {
   .task-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -103,33 +97,65 @@
   border: 1px solid var(--ink);
 }
 
-.hire-portrait-preview {
+/* The button covers the board's corners on screen, so its middle is the middle of the board's face, whichever wall it hangs on. */
+.board-note-count {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 90%;
+  overflow: hidden;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: #fff8e7;
+  color: #241f1a;
+  font: 9px ui-monospace, monospace;
+  white-space: nowrap;
+}
+.shell-signed-out {
+  align-content: start;
+}
+
+/* The office takes what the stage leaves, so a docked panel never shortens it. */
+.office-area {
+  position: relative;
   display: flex;
-  align-items: center;
-  grid-column: 2;
-  grid-row: 1 / 3;
-  max-width: 6rem;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+/* The Messages tab and the ticket digest still read these. */
+.agent-detail h3 {
+  font-family: var(--font-head);
+  font-weight: 600;
+}
+.agent-detail dl {
+  margin: 0;
+}
+
+.agent-detail dl div {
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.agent-detail dt {
   color: var(--muted-ink);
-  font-size: 0.8rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
-.hire-portrait {
-  display: inline-block;
-  border: 2px solid var(--portrait-border);
+.agent-detail dd {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
 }
-.agent-name-editor { font: inherit; }
-.agent-name-editor button { font: inherit; cursor: pointer; }
-.agent-name-editor > button { margin-left: 0.4rem; }
-.agent-name-form { display: flex; flex-wrap: wrap; gap: 0.25rem; }
-.agent-name-form input { min-width: 0; max-width: 100%; font: inherit; }
-.agent-name-editor small { display: block; font-size: 0.75rem; }
-
-.agent-look-editor { border-top: 1px solid var(--portrait-border); padding: .6rem 0; }
-.agent-look-editor form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .4rem .7rem; align-items: start; }
-.agent-look-editor form > label, .agent-look-editor form > select,
-.agent-look-editor form > textarea, .agent-look-editor form > fieldset,
-.agent-look-editor form > small { grid-column: 1 / -1; }
-.agent-look-editor form > textarea, .agent-look-editor form > select { box-sizing: border-box; width: 100%; font: inherit; }
-.agent-look-editor .hire-portrait-preview { grid-column: 1 / -1; grid-row: auto; }
-.agent-look-editor form > button { font: inherit; }
+.ticket-digest h4 { margin: 0 0 .3rem; }
+.ticket-digest p { margin: 0 0 .3rem; }
+.ticket-digest .ticket-digest-note { color: var(--muted-ink); font-size: inherit; }
+.messages-panel section { margin-top: 1rem; }
+.messages-panel h3 { overflow-wrap: anywhere; }
+.messages-panel ol { list-style: none; padding: 0; }
+.messages-panel li { border-top: 1px solid var(--line); padding: 0.75rem 0; }
+.messages-panel li p { margin: 0 0 0.5rem; overflow-wrap: anywhere; }
 }
