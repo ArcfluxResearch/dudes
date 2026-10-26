@@ -14,6 +14,7 @@ import type { AgentOrderView } from './view.ts';
 import { useHeldLayout } from './useHeldLayout.ts';
 import type { Placed } from './useHeldLayout.ts';
 import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
+import { cn } from '../ui/index.ts';
 
 export const GROUP_FROM = 30;
 
@@ -49,7 +50,7 @@ function describe(row: NeedRow): string {
  * the projection, never the office, so it also stands in for the office when the office cannot draw.
  */
 export function Roster({ agents, cards = [], stepLabels = {}, selectedId, selectable, stale, onSelectAgent, onOpenQuestion,
-  onOpenTicket, addAgent, base = 'crew', order = 'strip', sheet = false }: {
+  onOpenTicket, addAgent, base = 'crew', order = 'strip', sheet = false, hidden = false }: {
   readonly agents: readonly AgentRow[];
   readonly stepLabels?: Readonly<Record<string, string>>;
   readonly cards?: readonly CardRow[];
@@ -66,6 +67,8 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
   readonly order?: AgentOrderView;
   /** Below 800 pixels the side roster is a bottom sheet that opens from its heading. */
   readonly sheet?: boolean;
+  /** Leaves the roster mounted but out of the page, while a Control view takes the stage. */
+  readonly hidden?: boolean;
 }) {
   const { ordered, move } = useAgentOrder(agents, order);
   const live = selectable && !stale;
@@ -149,7 +152,8 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
     .filter(([, members]) => members.length > 0);
 
   return (
-    <section className="crew-list roster" id={`${base}-list`} aria-labelledby={title} data-stale={stale ? 'true' : 'false'}
+    <section className={cn('crew-list roster z-(--layer-panels) m-0 box-border min-w-0 overflow-auto border-0 border-solid border-line bg-surface text-ink',
+      hidden ? 'hidden' : sheet && 'min-[801px]:col-1 min-[801px]:row-[2/-1] min-[801px]:flex min-[801px]:min-h-0 min-[801px]:w-[min(264px,40vw)] min-[801px]:flex-col min-[801px]:gap-2 min-[801px]:border-r min-[801px]:px-2 min-[801px]:py-4')} id={`${base}-list`} aria-labelledby={title} data-stale={stale ? 'true' : 'false'}
       data-sheet={sheet ? (open ? 'open' : 'closed') : undefined} data-waiting={rows.some((row) => row.state === 'needs-you' || row.state === 'ready')}>
       <h2 id={title} className="roster-title">{agents.length === 0 ? 'No agents yet' : waitingHeading(rows)}</h2>
       {sheet ? <button type="button" className="roster-sheet-toggle" aria-expanded={open} aria-controls={list}

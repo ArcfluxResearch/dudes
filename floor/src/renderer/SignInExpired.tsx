@@ -3,6 +3,8 @@
 import { signedOutReason } from '../session.ts';
 import type { SignedOutReason } from '../session.ts';
 import { copyToClipboard } from './setup/SetupView.tsx';
+import { Button, cn } from '../ui/index.ts';
+import { NoticeIcon, noticeCard, noticeLine } from './notices/look.tsx';
 
 /**
  * The one command that gets a person back in when the page holds no session. It is the one place
@@ -12,8 +14,9 @@ import { copyToClipboard } from './setup/SetupView.tsx';
 const OPEN = 'dudes open';
 
 export function OpenCommand() {
-  return <span className="open-command"><code>{OPEN}</code>
-    <button type="button" className="open-command-copy" onClick={() => copyToClipboard(OPEN)}>Copy</button></span>;
+  return <span className="open-command inline-flex items-center gap-2 align-middle">
+    <code className="rounded-md border border-line bg-surface-2 px-2 py-0.5 font-mono text-small text-ink">{OPEN}</code>
+    <Button size="sm" className="open-command-copy" onClick={() => copyToClipboard(OPEN)}>Copy</Button></span>;
 }
 
 const WHY: Readonly<Record<SignedOutReason, string>> = {
@@ -24,10 +27,12 @@ const WHY: Readonly<Record<SignedOutReason, string>> = {
 };
 
 /** Said when this browser has no sign-in the daemon will accept, why, and the way to get one. */
-export function SignInExpired({ why }: { readonly why?: string }) {
+export function SignInExpired({ why, variant = 'card' }: { readonly why?: string; readonly variant?: 'card' | 'line' | 'page' }) {
   const reason = signedOutReason();
   return (
-    <p className="link-refused" role="alert">
+    <p className={cn('link-refused', variant === 'card' ? noticeCard('danger') : variant === 'line' ? noticeLine('danger')
+      : 'm-0 font-sans text-body leading-reading text-ink')} role="alert">
+      <NoticeIcon tone="danger" />
       {why !== undefined ? why : reason === null
         ? 'You are signed out of this Floor. That happens when you sign out, when the browser is removed, or after 30 days without use or 90 days in all.'
         : WHY[reason]}

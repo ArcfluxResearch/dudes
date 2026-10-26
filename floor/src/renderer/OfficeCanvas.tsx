@@ -57,6 +57,7 @@ import { useHeard } from './useHeard.ts';
 import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
 import { getOfficePin, subscribeToOfficePin } from './view.ts';
 import { lazyChunk } from '../transport.ts';
+import { cn } from '../ui/index.ts';
 
 const TURN_PER_PIXEL = 0.008;
 const DRAG_THRESHOLD = 4;
@@ -726,7 +727,7 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
 
   return (
     <>
-      <div className="office" ref={boxRef} data-office={support} data-mode={pausedOrHalted?.mode}
+      <div className={cn('office relative isolate min-h-72 flex-auto overflow-hidden bg-(--studio-background)')} ref={boxRef} data-office={support} data-mode={pausedOrHalted?.mode}
         data-layout={choice.id} data-full={confirmed ? choice.full : undefined}>
         <canvas className="office-canvas" ref={canvasRef} key={attempt} hidden={fallback !== null}>
           {/* The canvas is opaque to anything that is not looking at it. This

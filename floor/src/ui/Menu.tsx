@@ -1,4 +1,4 @@
-import { MoreHorizontal } from 'lucide-react';
+import { Check, MoreHorizontal } from 'lucide-react';
 import { useCallback, useContext, useId, useRef, useState } from 'react';
 import type { ButtonHTMLAttributes, KeyboardEvent, ReactNode, Ref } from 'react';
 
@@ -8,7 +8,7 @@ import { ICON, RING_INSET } from './look.ts';
 import { MenuClose } from './menuClose.ts';
 import { useTopLayerPopover } from './popover.ts';
 
-const ITEMS = '[role="menuitem"]:not([aria-disabled="true"])';
+const ITEMS = ':is([role="menuitem"], [role="menuitemcheckbox"]):not([aria-disabled="true"])';
 
 export interface MenuProps {
   /** The accessible name of the button and of the list. */
@@ -97,14 +97,17 @@ export type MenuItemProps = {
   readonly onSelect: () => void;
   readonly danger?: boolean;
   readonly icon?: ReactNode;
+  /** Makes the item a checkbox that is on or off, shown with a check mark when on. */
+  readonly checked?: boolean;
   readonly children: ReactNode;
   readonly ref?: Ref<HTMLButtonElement>;
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'role' | 'onClick' | 'children'>;
 
-export function MenuItem({ onSelect, danger = false, icon, children, className, ref, ...rest }: MenuItemProps) {
+export function MenuItem({ onSelect, danger = false, icon, checked, children, className, ref, ...rest }: MenuItemProps) {
   const dismiss = useContext(MenuClose);
   const blocked = rest.disabled === true || rest['aria-disabled'] === true || rest['aria-disabled'] === 'true';
-  return <button ref={ref} type="button" role="menuitem" tabIndex={-1} data-ui="menu-item" data-variant={danger ? 'danger' : 'default'} {...rest}
+  return <button ref={ref} type="button" role={checked === undefined ? 'menuitem' : 'menuitemcheckbox'} aria-checked={checked}
+    tabIndex={-1} data-ui="menu-item" data-variant={danger ? 'danger' : 'default'} {...rest}
     aria-disabled={blocked || undefined}
     onClick={(event) => {
       if (blocked) { event.preventDefault(); return; }
@@ -114,7 +117,7 @@ export function MenuItem({ onSelect, danger = false, icon, children, className, 
     className={cn('box-border flex h-8 w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-2 text-left font-sans text-base',
       'transition-[color,background-color,border-color,opacity] hover:bg-surface-2 focus-visible:bg-surface-2 waiting:cursor-not-allowed waiting:opacity-50',
       danger ? 'text-danger' : 'text-ink', RING_INSET, className)}>
-    {icon}{children}
+    {icon}{children}{checked === true ? <Check {...ICON} aria-hidden="true" className="ml-auto text-accent" /> : null}
   </button>;
 }
 

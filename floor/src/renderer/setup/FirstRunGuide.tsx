@@ -7,6 +7,7 @@ import { guideSnapshotConfirmed, guideSteps } from './guide.ts';
 import { SetupView } from './SetupView.tsx';
 import { FloorSwitches, WorkspaceSettings } from '../settings/SettingsView.tsx';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
+import { Button, cn } from '../../ui/index.ts';
 
 function FloorActions({ floor }: { readonly floor: FloorState }) {
   const report = floor.settings;
@@ -33,17 +34,20 @@ export function FirstRunGuideView({ floor, step, onStep, onClose }: {
   const current = steps[at];
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { heading.current?.focus(); }, [step]);
-  return <aside className="first-run-guide" role="dialog" aria-labelledby="first-run-guide-title"
+  return <aside className="first-run-guide absolute inset-y-0 right-0 z-(--layer-hire-wizard) box-border flex w-[min(var(--hire-wizard-width),100%)] flex-col gap-4 border-l border-line bg-surface p-4 font-sans text-ink shadow-sheet [grid-area:auto] group-has-[[data-terminal-expanded=true]]/stage:relative group-has-[[data-terminal-expanded=true]]/stage:inset-auto group-has-[[data-terminal-expanded=true]]/stage:row-2 group-has-[[data-terminal-expanded=true]]/stage:col-[1/-1] group-has-[[data-terminal-expanded=true]]/stage:w-auto"
+    role="dialog" aria-labelledby="first-run-guide-title"
     onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }}>
-    <header className="guide-head"><h2 id="first-run-guide-title" ref={heading} tabIndex={-1}>First-run guide</h2>
-      <button type="button" onClick={onClose}>Close</button></header>
-    <ol className="guide-index" aria-label="Guide steps">{steps.map((entry) => <li key={entry.key}>
-      <button type="button" aria-current={entry.key === step ? 'step' : undefined} onClick={() => onStep(entry.key)}>
-        {entry.label}<span>{entry.status}</span></button>
+    <header className="guide-head flex items-center justify-between gap-2">
+      <h2 id="first-run-guide-title" ref={heading} tabIndex={-1} className="m-0 text-title font-semibold focus:outline-0">First-run guide</h2>
+      <Button size="sm" onClick={onClose}>Close</Button></header>
+    <ol className="guide-index m-0 flex list-none flex-wrap gap-2 p-0" aria-label="Guide steps">{steps.map((entry) => <li key={entry.key}>
+      <Button aria-current={entry.key === step ? 'step' : undefined} onClick={() => onStep(entry.key)}
+        className={cn('h-auto flex-col items-start gap-0 py-1.5 text-left', entry.key === step && 'border-accent bg-accent-soft hover:bg-accent-soft')}>
+        {entry.label}<span className="text-caption font-normal text-muted">{entry.status}</span></Button>
     </li>)}</ol>
-    <div className="guide-body">
-      <h3>{current.label}</h3>
-      {step === 'welcome' ? null : <p className="guide-status" role="status">{current.status}</p>}
+    <div className="guide-body grid min-h-0 flex-1 content-start gap-3 overflow-auto text-body leading-reading [overflow-wrap:anywhere] [&_p]:m-0">
+      <h3 className="m-0 text-title font-semibold">{current.label}</h3>
+      {step === 'welcome' ? null : <p className="guide-status font-medium" role="status">{current.status}</p>}
       {!confirmed ? <p role="status">Waiting for current information from Dudes. Recheck to try again.</p> : null}
       {step === 'welcome' ? <p>Dudes supervises coding agents while they work towards a goal.
         The Floor shows their current state and offers the actions you enable locally.</p> : null}
@@ -59,10 +63,10 @@ export function FirstRunGuideView({ floor, step, onStep, onClose }: {
       </> : null}
       {step === 'actions' ? <FloorActions floor={floor} /> : null}
     </div>
-    <footer className="guide-navigation">
-      <button type="button" disabled={at === 0} onClick={() => onStep(steps[at - 1].key)}>Back</button>
-      <button type="button" onClick={() => refreshFloorSnapshot()}>Recheck</button>
-      <button type="button" disabled={at === steps.length - 1} onClick={() => onStep(steps[at + 1].key)}>Next</button>
+    <footer className="guide-navigation flex justify-between gap-2 border-t border-line pt-3">
+      <Button disabled={at === 0} onClick={() => onStep(steps[at - 1].key)}>Back</Button>
+      <Button onClick={() => refreshFloorSnapshot()}>Recheck</Button>
+      <Button variant="primary" disabled={at === steps.length - 1} onClick={() => onStep(steps[at + 1].key)}>Next</Button>
     </footer>
   </aside>;
 }
