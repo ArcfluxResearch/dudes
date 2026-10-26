@@ -27,6 +27,8 @@ const SHEET = cn(
   'max-[800px]:p-3 max-[800px]:shadow-sheet',
 );
 
+const ROWS = 'crew-rows m-0 grid list-none gap-1 p-0';
+
 /** A row whose agent has something for the operator carries its state in its edge and wash, so it reads before its words do. */
 const ENTRY_STATE: Readonly<Record<NeedState, string>> = {
   'needs-you': 'border-warn/40 bg-warn-soft',
@@ -179,7 +181,6 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
 
   const waiting = rows.some((row) => row.state === 'needs-you' || row.state === 'ready');
   const sheeted = sheet && !open;
-  const list_ = 'crew-rows m-0 grid list-none gap-1 p-0';
   return (
     <section className={cn('crew-list roster flex flex-col gap-2 border-0 border-line bg-none p-3 font-sans text-ink',
       docked ? 'w-80 max-w-[42vw] border-r bg-surface min-[801px]:max-[1099px]:w-60' : 'w-auto overflow-visible bg-transparent p-0',
@@ -195,9 +196,9 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
           : grouped ? groups.map(([state, members]) => <section key={state} className="roster-group" aria-labelledby={`${base}-group-${state}`}>
             <h3 id={`${base}-group-${state}`} className="m-0 mt-2 mb-1 px-1 text-caption font-semibold tracking-label text-muted uppercase">
               {NEED_LABEL[state]} <span className="ml-1 font-normal tabular-nums">{members.length}</span></h3>
-            <ul className={list_} aria-label={`${NEED_LABEL[state]} agents`}>{members.map(entry)}</ul>
+            <ul className={ROWS} aria-label={`${NEED_LABEL[state]} agents`}>{members.map(entry)}</ul>
           </section>)
-            : <ul className={list_} aria-label="Agents">{placed.map(entry)}</ul>}
+            : <ul className={ROWS} aria-label="Agents">{placed.map(entry)}</ul>}
         {addAgent}
       </div>
     </section>
