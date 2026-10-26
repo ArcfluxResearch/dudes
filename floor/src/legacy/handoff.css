@@ -218,18 +218,6 @@
   overflow: auto;
 }
 
-.focus-roster {
-  display: grid;
-  gap: 0.6rem;
-}
-
-.link-refused {
-  max-width: 60rem;
-  margin: 0.25rem 0 0;
-  color: var(--danger-ink);
-  font-weight: 700;
-}
-
 /* Between the narrow layout and 1200 pixels a Control view covers Crew, so Crew leaves the tab order too. */
 @media (min-width: 801px) and (max-width: 1199px) {
   .control-panel {

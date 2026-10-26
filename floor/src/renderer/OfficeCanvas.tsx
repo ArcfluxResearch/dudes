@@ -745,7 +745,7 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
 
   return (
     <>
-      <div className="office group/office relative isolate min-h-72 flex-auto overflow-hidden bg-[var(--studio-background)]" ref={boxRef} data-office={support} data-mode={pausedOrHalted?.mode}
+      <div className="office group/office" ref={boxRef} data-office={support} data-mode={pausedOrHalted?.mode}
         data-layout={choice.id} data-full={confirmed ? choice.full : undefined}>
         <canvas className={cn('office-canvas block size-full cursor-grab touch-none',
           'group-data-[dragging=true]/office:cursor-grabbing group-data-[mode=paused]/office:saturate-[.45] group-data-[mode=paused]/office:brightness-[.86]',

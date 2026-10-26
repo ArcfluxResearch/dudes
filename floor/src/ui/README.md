@@ -94,7 +94,7 @@ pass over its own, and takes `ref` as a normal prop.
 | `Field` | `label`, `hint`, `error`, `id`; one control inside | `data-ui="field"`, `data-invalid` |
 | `Input`, `Textarea` | native props; take id, description and invalid state from a surrounding `Field` | `data-ui="input"`, `data-ui="textarea"` |
 | `Select` | `options`, `value`, `onValueChange`, `placeholder`, `name` | `data-ui="select"`, `data-ui="select-list"` |
-| `Menu`, `MenuItem`, `MenuSeparator` | `label`, `trigger`, `align`; items take `onSelect`, `danger`, `icon` | `data-ui="menu-button"`, `menu`, `menu-item` |
+| `Menu`, `MenuItem`, `MenuSeparator` | `label`, `trigger`, `id`, `align`; items take `onSelect`, `danger`, `icon`, `checked` | `data-ui="menu-button"`, `menu`, `menu-item` |
 | `Switch` | `checked`, `onCheckedChange`, `label`, `description`, `busy` | `data-ui="switch"`, `data-state`, `data-part="knob"` |
 | `TabList`, `Tab` | `label`; `selected` | `data-ui="tab-list"`, `tab`, `data-state` |
 | `Badge` | `state`: needs-you, ready, working, waiting, done or idle | `data-ui="badge"`, `data-state` |

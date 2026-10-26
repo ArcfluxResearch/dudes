@@ -149,7 +149,7 @@ test('shell passes one selected AgentId to all views and all selection routes us
   assert.match(shell, /selectOutputAgent\(id\);\s*setSelectedId\(id\)/);
   assert.match(shell, /<OfficeCanvas[^>]*selectedId=\{currentSelectedId\} onSelectAgent=\{selectAgent\}/);
   assert.match(shell, /<Roster[^>]*selectedId=\{currentSelectedId\}[^>]*onSelectAgent=\{selectAgent\}/);
-  assert.match(shell, /<AgentDrawer floor=\{floor\} row=\{displayRow\} selectedId=\{currentSelectedId\} onClose=\{clearSelection\}/);
+  assert.match(shell, /<AgentDrawer floor=\{floor\} row=\{displayRow\} inFocus=\{focused\} selectedId=\{currentSelectedId\} onClose=\{clearSelection\}/);
   assert.match(shell, /<FocusRoster floor=\{floor\} selectedId=\{currentSelectedId\} onSelectAgent=\{selectAgent\}/);
   assert.match(canvas, /onClick=\{\(\) => onSelectAgent\(id\)\}/);
   assert.match(strip, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);

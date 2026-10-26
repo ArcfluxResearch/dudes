@@ -62,13 +62,16 @@ function describe(row: NeedRow): string {
   return `${NEED_LABEL[row.state]}. ${facts === '' ? '' : `${facts}. `}${row.doing}${live}. Project: ${crew.workspace}`;
 }
 
+const STAGE_FRAME = cn('z-(--layer-panels) m-0 box-border min-w-0 overflow-auto border-0 border-solid border-line bg-surface text-ink',
+  'min-[801px]:col-1 min-[801px]:row-[2/-1] min-[801px]:flex min-[801px]:min-h-0 min-[801px]:w-[min(264px,40vw)] min-[801px]:flex-col min-[801px]:gap-2 min-[801px]:border-r min-[801px]:px-2 min-[801px]:py-4');
+
 /**
  * Every current agent, one row each, ordered by who needs the operator first. A row says who, in one state
  * word what is going on, what the agent is doing, and offers the one click that acts on it. It reads only
  * the projection, never the office, so it also stands in for the office when the office cannot draw.
  */
 export function Roster({ agents, cards = [], stepLabels = {}, selectedId, selectable, stale, onSelectAgent, onOpenQuestion,
-  onOpenTicket, addAgent, base = 'crew', order = 'strip', sheet = false }: {
+  onOpenTicket, addAgent, base = 'crew', order = 'strip', sheet = false, hidden = false }: {
   readonly agents: readonly AgentRow[];
   readonly stepLabels?: Readonly<Record<string, string>>;
   readonly cards?: readonly CardRow[];
@@ -85,6 +88,8 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
   readonly order?: AgentOrderView;
   /** Below 800 pixels the side roster is a bottom sheet that opens from its heading. */
   readonly sheet?: boolean;
+  /** Leaves the roster mounted but out of the page, while a Control view takes the stage. */
+  readonly hidden?: boolean;
 }) {
   const { ordered, move } = useAgentOrder(agents, order);
   const live = selectable && !stale;
@@ -97,7 +102,6 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
   const grouped = agents.length >= GROUP_FROM;
   const ids = placed.map(({ row }) => row.id);
   const title = `${base}-title`;
-  const docked = base === 'crew';
   const list = `${base}-rows`;
 
   function reveal(id: string): void {
@@ -150,10 +154,9 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
           <span className="crew-who grid min-w-0 flex-1 gap-0.5">
             <span className="roster-line flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
               <strong className="crew-name truncate text-base font-semibold"><bdi>{crew.name}</bdi></strong>
-              <Badge state={row.state} className="crew-chip"><span className="visually-hidden">Status: </span>{NEED_LABEL[row.state]}</Badge>
+              <Badge state={row.state} className="roster-state"><span className="visually-hidden">Status: </span>{NEED_LABEL[row.state]}</Badge>
             </span>
-            <small className={cn('crew-activity truncate text-small text-muted data-[activity=question]:font-medium data-[activity=question]:text-ink',
-              docked && 'min-[801px]:max-[1099px]:hidden')}
+            <small className="crew-activity truncate text-small text-muted data-[activity=question]:font-medium data-[activity=question]:text-ink"
             data-activity={crew.activity.kind} title={row.doing}>
               {row.live === null ? null : <span className="crew-live-activity after:content-['_·_']" data-live-activity={row.live}>{row.live}</span>}
               {row.doing}
@@ -182,9 +185,7 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
   const waiting = rows.some((row) => row.state === 'needs-you' || row.state === 'ready');
   const sheeted = sheet && !open;
   return (
-    <section className={cn('crew-list roster flex flex-col gap-2 border-0 border-line bg-none p-3 font-sans text-ink',
-      docked ? 'w-80 max-w-[42vw] border-r bg-surface min-[801px]:max-[1099px]:w-60' : 'w-auto overflow-visible bg-transparent p-0',
-      sheet && SHEET)}
+    <section className={cn('crew-list roster font-sans text-ink', hidden ? 'hidden' : sheet ? [STAGE_FRAME, SHEET] : 'flex flex-col gap-2')}
     id={`${base}-list`} aria-labelledby={title} data-stale={stale ? 'true' : 'false'}
     data-sheet={sheet ? (open ? 'open' : 'closed') : undefined} data-waiting={waiting}>
       <h2 id={title} className={cn('roster-title m-0 text-body font-semibold', !waiting && 'text-muted')}>

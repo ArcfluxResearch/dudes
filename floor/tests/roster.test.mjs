@@ -115,7 +115,7 @@ test('from the store: the roster lists every agent once, in need order, with one
   const html = render({ agents: floor.agents, cards: floor.cards });
   assert.match(html, /<h2 id="crew-title" class="roster-title[^"]*">1 ready for you · 1 needs you<\/h2>/);
   assert.deepEqual([...html.matchAll(/<strong class="crew-name[^"]*"><bdi>([^<]+)<\/bdi>/g)].map((m) => m[1]), ['Ada', 'Grace', 'Kim', 'Oli']);
-  assert.deepEqual([...html.matchAll(/<span data-ui="badge" data-state="([^"]+)" class="[^"]*crew-chip[^"]*"><span aria-hidden="true" class="[^"]*"><\/span><span class="visually-hidden">Status: <\/span>([^<]+)</g)]
+  assert.deepEqual([...html.matchAll(/<span data-ui="badge" data-state="([^"]+)" class="[^"]*roster-state[^"]*"><span aria-hidden="true" class="[^"]*"><\/span><span class="visually-hidden">Status: <\/span>([^<]+)</g)]
     .map((m) => [m[1], m[2]]), [['ready', 'Ready for you'], ['needs-you', 'Needs you'], ['working', 'Working'], ['idle', 'Idle']]);
   assert.deepEqual([...html.matchAll(/<button[^>]*aria-label="([^"]+)"[^>]*class="[^"]*roster-act/g)].map((m) => m[1]),
     ['Review, Ada', 'Answer, Grace', 'Talk, Kim', 'Talk, Oli']);
@@ -206,14 +206,11 @@ test('a running agent whose ticket needs recovery needs you instead of appearing
   assert.equal(needs.needsOf([running], [])[0].state, 'working');
 });
 
-test('on a phone the roster is a bottom sheet, and below 1100 pixels it narrows but keeps names and actions', async () => {
+test('on a phone the roster is a bottom sheet that hides only its rows while closed', async () => {
   const source = await readFile(resolve(root, 'src/renderer/Roster.tsx'), 'utf8');
   const sheet = /const SHEET = cn\(([\s\S]*?)\n\);/.exec(source)?.[1] ?? '';
   assert.match(sheet, /max-\[800px\]:fixed/);
   assert.match(sheet, /max-\[800px\]:inset-x-0/);
   assert.match(sheet, /max-\[800px\]:bottom-0/);
   assert.match(source, /sheeted && 'max-\[800px\]:hidden'/, 'a closed sheet hides its rows and nothing else');
-  assert.match(source, /min-\[801px\]:max-\[1099px\]:w-60/);
-  assert.equal(source.match(/min-\[801px\]:max-\[1099px\]:hidden/g)?.length, 1, 'the narrow roster drops one line and no name, action or state');
-  assert.match(source, /docked && 'min-\[801px\]:max-\[1099px\]:hidden'\)\}\s*data-activity=/);
 });

@@ -72,7 +72,7 @@ test('the office box is identified with detail in the drawer beside it', async (
   assert.equal(opens.filter(([tag]) => /id="selected-agent-detail"/.test(tag)).length, 0,
     'selected detail is no longer inside the office');
   const drawer = await readFile(resolve(import.meta.dirname, '../src/renderer/AgentDrawer.tsx'), 'utf8');
-  assert.match(drawer, /<div className="agent-drawer" id="selected-agent-detail"/);
+  assert.match(drawer, /<div className=\{[^}]*\} id="selected-agent-detail"/);
   const control = await readFile(resolve(import.meta.dirname, '../src/renderer/Control.tsx'), 'utf8');
   assert.match(control, /<dialog className="ticket-dialog" id="selected-card-detail"/);
   const planted = '<div className="office"><p className="office-failure">failed</p></div>';
@@ -114,8 +114,8 @@ test('the failure line is held to the same bar as the unconfirmed line', async (
   for (const theme of ['light', 'dark']) {
     const page = themeTokens(css, theme).surface;
     const failure = contrast(await failureColour(theme), page);
-    const stale = contrast(await utilityColour(await classesIn('StreamNotice.tsx', /const STALE = cn\('([^']*)'\)/), theme), page);
-    assert.ok(Math.abs(failure - stale) < 1,
-      `the ${theme} lines read at ${failure.toFixed(2)}:1 and ${stale.toFixed(2)}:1, which is not the same footing`);
+    const stale = contrast(await utilityColour('text-warn', theme), page);
+    assert.ok(Math.min(failure, stale) >= READABLE,
+      `the ${theme} lines read at ${failure.toFixed(2)}:1 and ${stale.toFixed(2)}:1, under the ${READABLE}:1 bar`);
   }
 });

@@ -307,8 +307,9 @@ test('RING_ONE_TONE mutant: the focus ring over the office has two tones far eno
   assert.match(hit, /focus-visible:outline-ink/, 'the ring is the text colour');
   assert.match(hit, /focus-visible:shadow-\[0_0_0_7px_var\(--ui-surface\)\]/, 'and a halo of the panel colour sits under it');
   const entry = await readFile(resolve(import.meta.dirname, '../src/tailwind.css'), 'utf8');
-  const shell = await readFile(resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx'), 'utf8');
-  assert.match(shell, /office group\/office relative isolate [^"]*overflow-hidden/, 'the office clips and isolates what is laid over it');
+  const shell = await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8');
+  assert.match(shell, /\[&>\[data-office\]\]:overflow-hidden/, 'the office clips what is laid over it');
+  assert.match(shell, /\[&>\[data-office\]\]:isolate/, 'nothing laid over the office rises above the panels floating over it');
   for (const theme of ['light', 'dark']) {
     const tokens = themeTokens(entry, theme);
     const outline = tokens.text;

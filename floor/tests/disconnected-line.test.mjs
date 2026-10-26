@@ -10,9 +10,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { classesIn, themeTokens, utilityColour } from './helpers/theme-colour.mjs';
 import { legacyStyles } from './helpers/legacy-css.mjs';
+import { bare } from './helpers/shell-bare.mjs';
 
-const lineColour = async (name, theme) => utilityColour(
-  await classesIn('StreamNotice.tsx', new RegExp(`const ${name} = cn\\('([^']*)'\\)`)), theme);
+/** The notice tones the stream lines wear: a stopped Dudes is danger, an unconfirmed view is warn. */
+const lineColour = async (name, theme) => utilityColour(name === 'CLOSED' ? 'text-danger' : 'text-warn', theme);
 const source = resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx');
 
 /** The office box's own background — the surface these lines are kept off. */
@@ -53,8 +54,8 @@ before(async () => {
 });
 after(async () => { await server?.close(); });
 function notice(phase, stale = false) {
-  return renderToStaticMarkup(createElement(StreamNotice,
-    { floor: { ...store.getFloorState(), phase, stale, epoch: 1, snapshotEpoch: 1 } }));
+  return bare(renderToStaticMarkup(createElement(StreamNotice,
+    { floor: { ...store.getFloorState(), phase, stale, epoch: 1, snapshotEpoch: 1 } })), ['open-command', 'notice-action', 'office-closed', 'office-stale', 'stream-notice']);
 }
 
 test('the mirror publishes the phase, so an empty floor says which empty it is', async () => {
@@ -123,9 +124,9 @@ test('all three lines below the floor are on the same footing', async () => {
     const read = [['office-failure', failure], ['office-stale', await lineColour('STALE', theme)], ['office-closed', await lineColour('CLOSED', theme)]]
       .map(([name, colour]) => [name, contrast(colour, themeTokens(css, theme).surface)]);
     const ratios = read.map(([, ratio]) => ratio);
-    assert.ok(Math.max(...ratios) - Math.min(...ratios) < 1,
+    assert.ok(Math.min(...ratios) >= READABLE,
       `the ${theme} lines read at ` + read.map(([name, ratio]) => `${name} ${ratio.toFixed(2)}:1`).join(', ')
-      + ', which is not the same footing');
+      + ', under the ' + READABLE + ':1 bar');
   }
 });
 

@@ -7,6 +7,8 @@ import type { FloorState } from './floor/store.ts';
 import { selectOutputAgent } from './floor/store.ts';
 import { handFocusOnLeave } from './focus.ts';
 import type { AgentRow } from './scene/cast.ts';
+import { X } from 'lucide-react';
+import { ICON, IconButton } from '../ui/index.ts';
 
 const UNAVAILABLE: Record<string, string> = {
   unknown: 'Agent unavailable', retired: 'Agent retired', attached: 'Output unavailable for agents Dudes did not start',
@@ -39,8 +41,8 @@ export function SelectionBar({ floor, onClear, leaveFocusTo, showStatus = true }
   readonly showStatus?: boolean;
 }) {
   const close = (
-    <button type="button" id="selection-clear" className="drawer-close" aria-label="Close agent details"
-      title="Close (Escape)" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo} onClick={onClear}>×</button>
+    <IconButton id="selection-clear" className="drawer-close absolute right-2 top-2" label="Close agent details" icon={<X {...ICON} />}
+      title="Close (Escape)" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo} onClick={onClear} />
   );
   return showStatus ? (
     <div className="selection-bar">

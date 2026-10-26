@@ -34,7 +34,7 @@ function snapshot({ settings = SETTINGS, found = false, onboarding = null, agent
 const status = (key, actionsSeen = false) =>
   guideSteps(getFloorState(), actionsSeen).find((step) => step.key === key)?.status;
 const done = (key) => status(key) === 'Complete';
-const indexStatus = (html, label) => html.match(new RegExp(`>${label}<span>([^<]+)</span>`))?.[1];
+const indexStatus = (html, label) => html.match(new RegExp(`>${label}<span class="[^"]*">([^<]+)</span>`))?.[1];
 let server;
 let FirstRunGuideView;
 let SettingsView;
@@ -116,7 +116,7 @@ test('ACTIONS_GATED_ON_SWITCHES mutant: Floor actions is Optional until seen, ne
         const at = `control ${control}, terminal ${terminal}, Hire ${onboarding === null ? 'unavailable' : 'available'}`;
         assert.equal(indexStatus(view('welcome'), 'Floor actions'), 'Optional', at);
         assert.equal(indexStatus(view('actions'), 'Floor actions'), 'Complete', at);
-        assert.match(view('actions'), /<p class="guide-status" role="status">Complete<\/p>/, at);
+        assert.match(view('actions'), /<p class="guide-status [^"]*" role="status">Complete<\/p>/, at);
         assert.equal(status('actions'), 'Optional', at);
         assert.equal(status('actions', true), 'Complete', at);
       }
@@ -140,7 +140,7 @@ test('ACTIONS_SEEN_UNREPORTED mutant: Floor actions is not seen until the switch
   noteTransport('close');
   const disconnected = view('actions');
   assert.equal(indexStatus(disconnected, 'Floor actions'), 'Optional');
-  assert.match(disconnected, /<p class="guide-status" role="status">Optional<\/p>/);
+  assert.match(disconnected, /<p class="guide-status [^"]*" role="status">Optional<\/p>/);
   assert.doesNotMatch(disconnected, /class="settings-view"|>Turn on<|>Turn off</, 'old switch values cannot be edited while disconnected');
   assert.equal(status('actions', true), 'Optional');
 });
