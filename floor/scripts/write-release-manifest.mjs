@@ -76,6 +76,7 @@ export function servedOutputPath(path) {
 
 const runtimeNotices = new Set([
   '@xterm/xterm@6.0.0@MIT',
+  'lucide-react@1.61.0@ISC',
   'react@19.3.1@MIT',
   'react-dom@19.3.1@MIT',
   'scheduler@0.28.0@MIT',

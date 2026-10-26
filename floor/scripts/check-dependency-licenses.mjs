@@ -9,12 +9,19 @@ const direct = new Map([
   ['node_modules/react', '19.3.1'],
   ['node_modules/react-dom', '19.3.1'],
   ['node_modules/three', '0.186.1'],
+  ['node_modules/lucide-react', '1.61.0'],
+  ['node_modules/@fontsource-variable/inter', '5.3.0'],
+  ['node_modules/@fontsource-variable/jetbrains-mono', '5.3.0'],
   ['node_modules/vite', '8.3.5'],
   ['node_modules/@vitejs/plugin-react', '6.1.2'],
   ['node_modules/typescript', '6.0.2'],
   ['node_modules/@types/react', '19.3.0'],
   ['node_modules/@types/react-dom', '19.3.0'],
   ['node_modules/@types/three', '0.186.0'],
+]);
+const ofl = new Set([
+  'node_modules/@fontsource-variable/inter',
+  'node_modules/@fontsource-variable/jetbrains-mono',
 ]);
 const forbidden = new Set(['node_modules/pixi.js', 'node_modules/zustand']);
 const mpl = new Set([
@@ -37,6 +44,7 @@ export function checkLock(lock) {
   for (const [path, pkg] of Object.entries(lock.packages ?? {})) {
     if (path === '') continue;
     packages += 1;
+    if (pkg.license === 'OFL-1.1' && ofl.has(path)) continue;
     if (!pkg.license || !allowed.has(pkg.license)) throw new Error(`${path}: unreviewed licence ${pkg.license}`);
     if (forbidden.has(path)) throw new Error(`${path}: outside A01`);
     if (pkg.license === 'MPL-2.0') {
