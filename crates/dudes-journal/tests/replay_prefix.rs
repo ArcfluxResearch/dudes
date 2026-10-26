@@ -1475,12 +1475,14 @@ proptest! {
         replay(&Reader::new(&shorter_journal), &mut shorter).unwrap();
         prop_assert_ne!(live.export().unwrap(), shorter.export().unwrap());
 
+        let mut retired_mail_agents = BTreeSet::new();
         let mut instruction_issues = BTreeSet::new();
         let mut instruction_ends = BTreeSet::new();
         let mut attached_agents = BTreeSet::new();
         let mut instruction_attachments = 0;
         for entry in &entries {
             match &entry.record {
+                Record::AgentRetired { id, .. } => { retired_mail_agents.insert(*id); }
                 Record::TurnIssued {
                     turn,
                     mode: Mode::Managed,
@@ -1517,7 +1519,8 @@ proptest! {
             + instruction_ends.len()
             + instruction_attachments
             + attached_agents.len()
-            + expected_recovery.len();
+            + expected_recovery.len()
+            + retired_mail_agents.len();
         let export = live.export().unwrap();
         prop_assert_eq!(exported_recovery_references(&export), expected_recovery);
         prop_assert_eq!(

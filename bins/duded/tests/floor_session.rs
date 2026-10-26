@@ -27,7 +27,7 @@ const START_MS: i64 = 1_800_000_000_000;
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v8"
+    "/tests/fixtures/floor-release-v9"
 );
 
 fn free_port() -> u16 {
@@ -429,7 +429,7 @@ fn a_signed_handshake_reaches_the_snapshot_and_a_cookie_alone_does_not() {
     let cookie = page.cookie.clone();
 
     for (refused, expected) in [
-        ("dudes-floor-v4".to_owned(), "HTTP/1.1 401 Unauthorized"),
+        ("dudes-floor-v5".to_owned(), "HTTP/1.1 401 Unauthorized"),
         (
             format!(
                 "dudes-floor-v3, dudes-csrf.{}",
@@ -451,7 +451,7 @@ fn a_signed_handshake_reaches_the_snapshot_and_a_cookie_alone_does_not() {
     }
 
     let protocols = format!(
-        "dudes-floor-v4, {}",
+        "dudes-floor-v5, {}",
         page.signed("GET", "/floor/stream", &[]).protocol_entries()
     );
     let (mut browser, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
@@ -571,13 +571,13 @@ fn signing_out_closes_the_stream_and_only_an_unknown_session_is_told_so() {
     );
 
     let protocols = format!(
-        "dudes-floor-v4, {}",
+        "dudes-floor-v5, {}",
         page.signed("GET", "/floor/stream", &[]).protocol_entries()
     );
     let (mut stream, upgrade) = raw_upgrade(addr, &host, &origin, Some(&page.cookie), &protocols);
     assert!(upgrade.starts_with("HTTP/1.1 101"), "{upgrade:?}");
     assert!(
-        upgrade.contains("Sec-WebSocket-Protocol: dudes-floor-v4\r\n"),
+        upgrade.contains("Sec-WebSocket-Protocol: dudes-floor-v5\r\n"),
         "{upgrade:?}"
     );
     wait_for_live(&probe, 1);
@@ -656,7 +656,7 @@ fn unattached_browser_close_appends_no_domain_record() {
     let cookie = page.cookie.clone();
     let protocols = || {
         format!(
-            "dudes-floor-v4, {}",
+            "dudes-floor-v5, {}",
             page.signed("GET", "/floor/stream", &[]).protocol_entries()
         )
     };
@@ -675,7 +675,7 @@ fn unattached_browser_close_appends_no_domain_record() {
         "the authenticated carrier did not reach the stream: {head:?}"
     );
     assert!(
-        head.contains("Sec-WebSocket-Protocol: dudes-floor-v4\r\n"),
+        head.contains("Sec-WebSocket-Protocol: dudes-floor-v5\r\n"),
         "{head:?}"
     );
     browser
@@ -1361,7 +1361,7 @@ fn a_removed_device_is_refused_with_its_reason_and_its_stream_closes() {
 /// The stream handshake entries a page offers: the stream's protocol and a fresh signature.
 fn stream_protocols(page: &Page) -> String {
     format!(
-        "dudes-floor-v4, {}",
+        "dudes-floor-v5, {}",
         page.signed("GET", "/floor/stream", &[]).protocol_entries()
     )
 }

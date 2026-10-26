@@ -32,7 +32,7 @@ const NATIVE_EXTENSION_OFFER: &str = "permessage-deflate; client_max_window_bits
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v8"
+    "/tests/fixtures/floor-release-v9"
 );
 
 fn free_port() -> u16 {
@@ -92,13 +92,13 @@ struct WebSocket {
 
 impl WebSocket {
     fn connect(page: &Page) -> Self {
-        let protocols = signed_protocols(page, "dudes-floor-v4");
+        let protocols = signed_protocols(page, "dudes-floor-v5");
         let (stream, head) = raw_upgrade(page.addr, Some(&page.cookie), Some(&protocols), None);
         assert!(
             head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"),
             "{head:?}"
         );
-        assert!(head.contains("Sec-WebSocket-Protocol: dudes-floor-v4\r\n"));
+        assert!(head.contains("Sec-WebSocket-Protocol: dudes-floor-v5\r\n"));
         assert!(
             !head
                 .to_ascii_lowercase()
@@ -806,7 +806,7 @@ fn an_unfolded_announcement_never_publishes_a_mismatched_closing_cut() {
 }
 
 #[test]
-fn only_generation_four_upgrades_before_any_domain_frame() {
+fn only_generation_five_upgrades_before_any_domain_frame() {
     let fixture = Fixture::new();
     let settings = settings(&fixture, free_port());
     let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
@@ -826,7 +826,7 @@ fn only_generation_four_upgrades_before_any_domain_frame() {
     let issued = issue(&settings);
     let page = exchange(addr, &issued.bootstrap, &clock);
     let before = fixture.entries().len();
-    for generation in [1, 2, 3, 5] {
+    for generation in [1, 2, 3, 4, 6] {
         let protocols = signed_protocols(&page, &format!("dudes-floor-v{generation}"));
         let (mut stream, head) = raw_upgrade(addr, Some(&page.cookie), Some(&protocols), None);
         assert!(head.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{head:?}");
@@ -843,7 +843,7 @@ fn only_generation_four_upgrades_before_any_domain_frame() {
     }
     let protocols = format!(
         "{}, dudes-csrf.{}",
-        signed_protocols(&page, "dudes-floor-v4"),
+        signed_protocols(&page, "dudes-floor-v5"),
         "A".repeat(43)
     );
     let (_old, head) = raw_upgrade(addr, Some(&page.cookie), Some(&protocols), None);
@@ -851,13 +851,13 @@ fn only_generation_four_upgrades_before_any_domain_frame() {
         head.starts_with("HTTP/1.1 403 Forbidden\r\n"),
         "the old secret entry is refused: {head:?}"
     );
-    let protocols = signed_protocols(&page, "dudes-floor-v4");
+    let protocols = signed_protocols(&page, "dudes-floor-v5");
     let (stream, head) = raw_upgrade(addr, Some(&page.cookie), Some(&protocols), None);
     assert!(
         head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"),
         "{head:?}"
     );
-    assert!(head.contains("Sec-WebSocket-Protocol: dudes-floor-v4\r\n"));
+    assert!(head.contains("Sec-WebSocket-Protocol: dudes-floor-v5\r\n"));
     let mut browser = WebSocket { stream };
     browser.send(r#"{"type":"floor.subscribe"}"#);
     assert_eq!(browser.json()["type"], "floor.snapshot");
@@ -937,7 +937,7 @@ fn stream_admission_limits_refuse_then_recover() {
 
     let first = WebSocket::connect(&page);
     let second = WebSocket::connect(&page);
-    let protocols = signed_protocols(&page, "dudes-floor-v4");
+    let protocols = signed_protocols(&page, "dudes-floor-v5");
     let (_third, response_head) = raw_upgrade(addr, Some(&page.cookie), Some(&protocols), None);
     assert!(
         response_head.starts_with("HTTP/1.1 403 Forbidden"),
@@ -1016,7 +1016,7 @@ fn stream_idle_and_absolute_expiry_release_slots() {
     held_socket.expect_closed(&probe);
     drop(held_socket);
     wait_for_live(&probe, 0);
-    let protocols = signed_protocols(&absolute_page, "dudes-floor-v4");
+    let protocols = signed_protocols(&absolute_page, "dudes-floor-v5");
     let (_expired, response_head) =
         raw_upgrade(addr, Some(&absolute_page.cookie), Some(&protocols), None);
     assert!(
@@ -1256,7 +1256,7 @@ fn append_poison_publishes_only_the_stopped_fact_and_keeps_authenticated_reads()
     assert_eq!(snapshot["type"], "floor.snapshot");
     assert_eq!(snapshot["projection"], before["projection"]);
     assert_eq!(snapshot["journal_stopped"], publication["journal_stopped"]);
-    let (_, unauthenticated) = raw_upgrade(addr, None, Some("dudes-floor-v4"), None);
+    let (_, unauthenticated) = raw_upgrade(addr, None, Some("dudes-floor-v5"), None);
     assert!(!unauthenticated.starts_with("HTTP/1.1 101"));
     assert!(!unauthenticated.contains("journal_stopped"));
     let refused = running

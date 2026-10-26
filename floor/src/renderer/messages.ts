@@ -17,6 +17,9 @@ export interface MessageRow {
   readonly lsn: string;
   readonly state: 'durable' | 'notified' | 'acked' | 'bounced';
   readonly thread?: string;
+  readonly subject: string | null;
+  readonly act: 'message' | 'request' | null;
+  readonly reply_status: 'not_expected' | 'answered' | 'undeliverable' | 'thread_full' | 'awaiting';
 }
 
 export function messageCut(value: unknown): string | null {
@@ -38,17 +41,24 @@ export function decodeMessages(value: unknown, cut: string | null): {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return empty(1);
     const row = raw as Record<string, unknown>;
     const lsn = messageCut(row.lsn);
-    if ((Object.keys(row).length !== (row.thread === undefined ? 6 : 7))
+    if ((Object.keys(row).length !== (row.thread === undefined ? 9 : 10))
       || (row.thread !== undefined && (typeof row.thread !== 'string' || !ID.test(row.thread)))
       || typeof row.id !== 'string' || !ID.test(row.id) || ids.has(row.id)
       || typeof row.from !== 'string' || !ID.test(row.from)
       || typeof row.to !== 'string' || !ID.test(row.to)
-      || typeof row.at !== 'number' || !Number.isFinite(row.at)
+      || (row.subject !== null && (typeof row.subject !== 'string'
+        || UTF8.encode(row.subject).length > 120 || /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(row.subject)
+        || row.subject.trim() !== row.subject || /[^\S ]| {2}/u.test(row.subject)))
+      || (row.act !== null && row.act !== 'message' && row.act !== 'request')
+      || (row.reply_status !== 'not_expected' && row.reply_status !== 'answered'
+        && row.reply_status !== 'undeliverable' && row.reply_status !== 'thread_full' && row.reply_status !== 'awaiting')
+      || (row.act === 'request' ? row.reply_status === 'not_expected' : row.reply_status !== 'not_expected')
+      || typeof row.at !== 'number'  || !Number.isFinite(row.at)
       || lsn === null || BigInt(lsn) <= previous || BigInt(lsn) > BigInt(cut)
       || (row.state !== 'durable' && row.state !== 'notified' && row.state !== 'acked' && row.state !== 'bounced')) {
       return empty(1);
     }
-    rows.push(Object.freeze({ id: row.id, from: row.from, to: row.to, at: row.at, lsn, state: row.state,
+    rows.push(Object.freeze({ id: row.id, from: row.from, to: row.to, at: row.at, lsn, state: row.state, subject: row.subject, act: row.act, reply_status: row.reply_status,
       ...(typeof row.thread === 'string' ? { thread: row.thread } : {}) }));
     ids.add(row.id);
     previous = BigInt(lsn);
@@ -78,7 +88,8 @@ export function decodeMailWindow(
   if (cut === null || cut !== messageCut(threadLsn)) return empty(1);
   const decoded = decodeMessages(messages, cut);
   if (decoded.rejected !== 0 || !Array.isArray(threads) || threads.length > MAX_THREADS
-    || UTF8.encode(JSON.stringify(threads)).length > MAX_THREAD_BYTES) return empty(1);
+    || UTF8.encode(JSON.stringify(threads)).length > MAX_THREAD_BYTES
+    || UTF8.encode(JSON.stringify(messages)).length + UTF8.encode(JSON.stringify(threads)).length > MAX_MESSAGE_BYTES) return empty(1);
   const graph = new Map<string, ThreadRow>();
   let previous = '';
   for (const raw of threads) {

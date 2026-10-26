@@ -29,7 +29,7 @@ use serde_json::{Value, json};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v8"
+    "/tests/fixtures/floor-release-v9"
 );
 const PAGE: &str = "/floor/memory/page";
 const ENTRY: &str = "/floor/memory/entry";
@@ -1184,7 +1184,7 @@ impl Stream {
     fn subscribe(page: &Page) -> (Self, Value) {
         let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
         stream.set_read_timeout(Some(WAIT)).expect("timeout");
-        let request = page.upgrade_head("/floor/stream", "dudes-floor-v4");
+        let request = page.upgrade_head("/floor/stream", "dudes-floor-v5");
         stream.write_all(request.as_bytes()).expect("upgrade");
         let mut head = Vec::new();
         let mut byte = [0_u8; 1];

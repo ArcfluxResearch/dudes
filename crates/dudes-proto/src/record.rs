@@ -1101,6 +1101,9 @@ pub enum Record {
         act: MailAct,
         /// Subject line.
         subject: String,
+        /// Daemon-owned subject admission policy. Only policy 1 permits browser captions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject_admission: Option<u32>,
         /// Inline UTF-8 body at or under 4 KiB. `Some("")` is an empty body; `None` is
         /// either no body or an out-of-line body, as decided by the reference fields.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4190,6 +4193,7 @@ pub mod samples {
                 to: MailTo::Agent { agent: agent() },
                 act: MailAct::Request,
                 subject: "Review please".into(),
+                subject_admission: None,
                 // The legal out-of-line row of the mail presence table: over 4 KiB, so the body
                 // is the referenced file and `body` is `None`.
                 body: None,
@@ -4531,6 +4535,7 @@ mod tests {
             to: MailTo::Agent { agent: agent() },
             act: MailAct::Message,
             subject: "control".into(),
+            subject_admission: None,
             body: body.map(str::to_owned),
             body_len,
             body_path,

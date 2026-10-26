@@ -33,7 +33,7 @@ use sha2::{Digest as _, Sha256};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v8"
+    "/tests/fixtures/floor-release-v9"
 );
 
 fn check(id: &str, program: &str) -> EnrolledCheck {
@@ -414,7 +414,7 @@ fn snapshot(page: &FloorPage) -> (Value, Vec<u8>) {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("timeout");
-    let request = page.upgrade_head("/floor/stream", "dudes-floor-v4");
+    let request = page.upgrade_head("/floor/stream", "dudes-floor-v5");
     stream.write_all(request.as_bytes()).expect("upgrade");
     assert!(read_head(&mut stream).starts_with("HTTP/1.1 101 Switching Protocols"));
     let subscribe = br#"{"type":"floor.subscribe"}"#;
