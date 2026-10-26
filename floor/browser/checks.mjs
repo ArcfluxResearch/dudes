@@ -244,6 +244,23 @@ export function checks({ page, cdp, log }) {
     await menuSuite('#menus', false);
   });
 
+  check('a checkable menu item is a menuitemcheckbox that the arrows reach, and choosing it flips its mark and closes the menu', async () => {
+    await theme('light');
+    const trigger = '#view-options';
+    const crew = `document.querySelector('[data-ui="menu"][aria-label="View options"] [role="menuitemcheckbox"]')`;
+    await page.focus(trigger);
+    await page.press('Enter');
+    await page.waitFor(`document.activeElement.getAttribute('role') === 'menuitemcheckbox'`, 'focus to enter the list on the checkbox item');
+    assert.equal(await page.js(`${crew}.getAttribute('aria-checked')`), 'true');
+    assert.equal(await page.js(`document.activeElement.textContent.trim()`), 'Crew');
+    await page.press('ArrowDown');
+    assert.equal(await page.js(`document.activeElement.textContent.trim()`), 'Focus', 'the arrows move on from a checkbox item to the next one');
+    await page.press('ArrowUp');
+    await page.press('Enter');
+    assert.equal(await page.js(`document.activeElement === document.querySelector('${trigger}')`), true, 'focus is back on the button');
+    assert.equal(await page.js(`${crew}.getAttribute('aria-checked')`), 'false', 'the choice flipped the mark');
+  });
+
   async function selectSuite(scope, insideDialog) {
     const trigger = `${scope} [data-ui="select"]`;
     const list = `${scope} [data-ui="select-list"]`;

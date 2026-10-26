@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { Building2, ChevronDown, LogOut, Maximize2, Minimize2, Moon, Sun, Users } from 'lucide-react';
 import { currentPage, isPageView, openPage, subscribeToPage } from './navigation.ts';
 
 import { DeviceNotices } from './renderer/devices/DeviceNotices';
@@ -43,12 +44,18 @@ import { requestCardSelection } from './renderer/BoardPanel';
 import { OpenCommand, SignInExpired } from './renderer/SignInExpired';
 import { StreamNotice } from './renderer/StreamNotice';
 import { NoticeStack } from './renderer/notices/NoticeStack';
+import { NOTICE_AREA, NOTICE_BANNER, NoticeIcon, noticeCard } from './renderer/notices/look';
+import { Button, Card, ICON, Menu, MenuItem, MenuSeparator, RING, cn } from './ui/index.ts';
 import './failure.css';
 import {
   DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH,
   focusAgentId, isFocusShortcut, keyboardSidebarWidth, pointerSidebarWidth,
   readViewPreferences, rememberGuideClosed, toggleTheme, writeViewPreferences,
 } from './renderer/view';
+
+const TOP_BAR = 'top-bar relative z-(--layer-top-bar) flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface px-4 py-2 font-sans';
+const WORDMARK = 'wordmark m-0 text-title font-semibold tracking-[-0.01em] text-ink';
+const STAGE_ROW = 'row-[2/-1] min-h-0';
 
 function reloadPage(): void {
   window.location.reload();
@@ -63,67 +70,53 @@ function reloadPage(): void {
  * A page opened with no link, as a copied address is because a browser scrubs
  * the secret as soon as it signs in, is told it is signed out.
  */
-export function PastedLinkNotice() {
+export function PastedLinkNotice({ variant = 'card' }: { readonly variant?: 'card' | 'page' }) {
   const first = useSyncExternalStore(subscribeToPastedLink, firstLinkProblem, firstLinkProblem);
   const refused = useSyncExternalStore(subscribeToPastedLink, pastedLinkRefused, pastedLinkRefused);
   const buildMismatch = useSyncExternalStore(subscribeToPastedLink, pastedLinkBuildMismatch, pastedLinkBuildMismatch);
   const waiting = useSyncExternalStore(subscribeToPastedLink, pastedLinkWaitsForReload, pastedLinkWaitsForReload);
+  const line = (children: ReactNode) => (
+    <p className={cn('link-refused', variant === 'card' ? noticeCard('danger') : 'm-0 font-sans text-body font-normal leading-reading text-ink')} role="alert">
+      <NoticeIcon tone="danger" />{children}
+    </p>
+  );
   if (waiting) {
-    return (
-      <p className="link-refused" role="alert">
-        A new sign-in link was opened in this tab. Reload this page to use the new link. A reload drops anything
-        you have typed but not sent. <button type="button" className="notice-action"
-          onClick={reloadPage}>Reload</button>
-      </p>
-    );
+    return line(<>
+      A new sign-in link was opened in this tab. Reload this page to use the new link. A reload drops anything
+      you have typed but not sent. <Button size="sm" onClick={reloadPage}>Reload</Button>
+    </>);
   }
   if (first === 'refused') {
-    return (
-      <p className="link-refused" role="alert">
-        This sign-in link did not work. A link works once, for 60 seconds. To get a new one, run <OpenCommand /> in a terminal.
-      </p>
-    );
+    return line(<>
+      This sign-in link did not work. A link works once, for 60 seconds. To get a new one, run <OpenCommand /> in a terminal.
+    </>);
   }
   if (first === 'missing') {
-    return (
-      <p className="link-refused" role="alert">
-        The sign-in link in the address of this page is not a Dudes sign-in link. To sign in, run <OpenCommand /> in a terminal.
-      </p>
-    );
+    return line(<>
+      The sign-in link in the address of this page is not a Dudes sign-in link. To sign in, run <OpenCommand /> in a terminal.
+    </>);
   }
-  if (first === 'expired') return <SignInExpired />;
-  if (first === 'no_key') return <SignInExpired why="This browser no longer has its sign-in key." />;
-  if (first === 'reload') {
-    return (
-      <p className="link-refused" role="alert">
-        Reload this page to finish signing in.
-      </p>
-    );
-  }
+  if (first === 'expired') return <SignInExpired variant={variant} />;
+  if (first === 'no_key') return <SignInExpired variant={variant} why="This browser no longer has its sign-in key." />;
+  if (first === 'reload') return line('Reload this page to finish signing in.');
   if (first === 'unsupported') {
-    return (
-      <p className="link-refused" role="alert">
-        This browser cannot keep a sign-in key, so it was not signed in. Some private windows block the storage
-        it needs. Try a normal window.
-      </p>
-    );
+    return line(<>
+      This browser cannot keep a sign-in key, so it was not signed in. Some private windows block the storage
+      it needs. Try a normal window.
+    </>);
   }
   if (!refused) return null;
   if (buildMismatch) {
-    return (
-      <p className="link-refused" role="alert">
-        Dudes now serves a different Floor build from this page, so the link pasted into this tab was not
-        used. This page is as it was, but it cannot sign in to the new build. Copy any draft you need, reload
-        this tab, then paste the link again.
-      </p>
-    );
+    return line(<>
+      Dudes now serves a different Floor build from this page, so the link pasted into this tab was not
+      used. This page is as it was, but it cannot sign in to the new build. Copy any draft you need, reload
+      this tab, then paste the link again.
+    </>);
   }
-  return (
-    <p className="link-refused" role="alert">
-      The Floor link pasted into this tab was refused, or Dudes could not be reached to take it. This page is
-      as it was and keeps what it holds. For a new sign-in, run <OpenCommand /> in a terminal.
-    </p>
-  );
+  return line(<>
+    The Floor link pasted into this tab was refused, or Dudes could not be reached to take it. This page is
+    as it was and keeps what it holds. For a new sign-in, run <OpenCommand /> in a terminal.
+  </>);
 }
 
 /**
@@ -133,12 +126,17 @@ export function PastedLinkNotice() {
  */
 function SignedOutShell() {
   return (
-    <main className="shell shell-signed-out" aria-labelledby="floor-title" data-theme={readViewPreferences().theme}>
-      <header className="top-bar">
-        <h1 id="floor-title" className="wordmark">dudes</h1>
-        <PastedLinkNotice />
+    <main className="shell shell-signed-out grid h-screen grid-rows-[auto_minmax(0,1fr)] bg-bg font-sans text-ink"
+      aria-labelledby="floor-title" data-theme={readViewPreferences().theme}>
+      <header className={TOP_BAR}>
+        <h1 id="floor-title" className={WORDMARK}>dudes</h1>
       </header>
-      <p className="signed-out-line" role="status">This tab is not signed in, so the Floor shows no agents yet.</p>
+      <div className="grid content-start justify-items-center overflow-auto px-4 py-12">
+        <Card className="grid w-full max-w-[576px] gap-4 p-6">
+          <p className="signed-out-line m-0 text-title font-semibold text-ink" role="status">This tab is not signed in, so the Floor shows no agents yet.</p>
+          <PastedLinkNotice variant="page" />
+        </Card>
+      </div>
     </main>
   );
 }
@@ -182,13 +180,14 @@ function SignedInShell() {
   const [noticeArea] = useState(() => {
     if (typeof document === 'undefined') return null;
     const area = document.createElement('div');
-    area.className = 'notice-area';
+    area.className = NOTICE_AREA;
     return area;
   });
   const [noticeBanner] = useState(() => {
     if (typeof document === 'undefined') return null;
     const banner = document.createElement('section');
-    banner.className = 'notice-banner';
+    banner.className = NOTICE_BANNER;
+    banner.dataset.host = 'top';
     banner.setAttribute('aria-label', 'Floor status');
     return banner;
   });
@@ -205,6 +204,7 @@ function SignedInShell() {
       const host = modal ?? shell;
       if (noticeArea.parentElement !== host) host.append(noticeArea);
       const top = shell.querySelector('.top-region');
+      noticeBanner.dataset.host = modal === null ? 'top' : modal.matches('.ticket-dialog') ? 'sticky' : 'fixed';
       if (modal !== null) {
         if (noticeBanner.parentElement !== modal) modal.prepend(noticeBanner);
       } else if (top !== null && noticeBanner.parentElement !== top) top.append(noticeBanner);
@@ -474,13 +474,13 @@ function SignedInShell() {
     setPreferences((current) => ({ ...current, sidebarWidth: DEFAULT_SIDEBAR_WIDTH }));
   }
 
-  const splitter = <div className="panel-splitter" role="separator" tabIndex={0}
+  const splitter = <div className={cn('panel-splitter w-2 flex-none cursor-col-resize touch-none rounded-sm transition-colors hover:bg-accent/50 focus-visible:bg-accent/50 max-[800px]:hidden', RING)} role="separator" tabIndex={0}
     aria-label={focused ? 'Resize roster' : 'Resize agent details'}
     aria-orientation="vertical" aria-valuemin={MIN_SIDEBAR_WIDTH} aria-valuemax={MAX_SIDEBAR_WIDTH}
     aria-valuenow={preferences.sidebarWidth} aria-valuetext={`${preferences.sidebarWidth} pixels`}
     onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={endResize}
     onPointerCancel={endResize} onKeyDown={keyResize} onDoubleClick={resetSidebar} />;
-  const drawer = <AgentDrawer floor={floor} row={displayRow} selectedId={currentSelectedId} onClose={clearSelection}
+  const drawer = <AgentDrawer floor={floor} row={displayRow} inFocus={focused} selectedId={currentSelectedId} onClose={clearSelection}
     leaveFocusTo={leaveDrawerTo} recoveryRequested={recoveryAsked} onRecoveryShown={() => setRecoveryAsked(null)}
     onReadRecoveryReceipt={readRecoveryReceipt} onOpenTicket={openCard} />;
 
@@ -497,100 +497,102 @@ function SignedInShell() {
       <PastedLinkNotice />
       {view === 'board' ? null : <TicketNotice floor={floor} />}
       <NotificationOffer onBoard={view === 'board'} leaveFocusTo="floor-notices" />
-      {signOutFailed ? <p className="link-refused" role="alert">Could not sign out, so this browser is still signed in. Try again.</p> : null}
+      {signOutFailed ? <p className={noticeCard('danger', 'link-refused')} role="alert"><NoticeIcon tone="danger" />Could not sign out, so this browser is still signed in. Try again.</p> : null}
       {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
       <StreamNotice floor={floor} placement="stack" />
       <DeviceNotices part="gone" />
       <DoneNotices notices={floor.doneNotices} leaveFocusTo="floor-notices" />
     </NoticeStack>
   );
+  const fullPanel = view === 'board' || page !== null;
+  const crewPressed = page === null && crewOpen && !focused && view !== 'board';
 
   return (
-    <TicketNoticeHost value={noticeStack}><main className="shell" ref={shellRef} aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
+    <TicketNoticeHost value={noticeStack}><main ref={shellRef} aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
       data-page={page ?? undefined}
+      className={cn('shell grid grid-rows-[auto_minmax(0,1fr)] bg-bg font-sans text-ink max-[800px]:pt-[var(--banner-height,0px)]',
+        fullPanel ? 'h-dvh' : 'h-screen max-[800px]:h-auto max-[800px]:min-h-screen')}
       onKeyDown={(event) => {
         if (page !== null && closesPanel(event)) { event.stopPropagation(); closeView(); }
       }}
       data-theme={preferences.theme} data-scheme={effectiveTheme} style={{ '--side-width': `${preferences.sidebarWidth}px` } as CSSProperties}>
-      <div className="top-region">
-        <header className="top-bar">
-          <h1 id="floor-title" className="wordmark">dudes</h1>
+      <div className="top-region relative">
+        <header className={TOP_BAR}>
+          <h1 id="floor-title" className={WORDMARK}>dudes</h1>
           <CrewStats agents={floor.agents} cards={floor.cards} statuses={focused} />
           <ControlNav floor={floor} view={focused ? null : view} onToggle={toggleView} />
-          <div className="top-bar-actions" role="group" aria-label="Floor actions">
-            {hireSwitchOn(floor) ? <button type="button" className="hire-open" id="hire-open" aria-expanded={hiring}
+          <div className="top-bar-actions ml-auto flex items-start gap-2" role="group" aria-label="Floor actions">
+            {hireSwitchOn(floor) ? <Button variant="primary" id="hire-open" aria-expanded={hiring}
               aria-controls={hiring ? 'hire-wizard' : undefined}
-              onClick={(event) => openHire(event.currentTarget)}>Hire an agent</button> : null}
+              onClick={(event) => openHire(event.currentTarget)}>Hire an agent</Button> : null}
             <PauseAllControl floor={floor} />
-            <details className="header-more" onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                event.currentTarget.open = false;
-                event.currentTarget.querySelector('summary')?.focus();
-                event.stopPropagation();
-              }
-            }}>
-              <summary id="header-more-toggle">More</summary>
-              <div className="header-menu" onClick={(event) => {
-                if (!(event.target as HTMLElement).closest('button')) return;
-                const menu = event.currentTarget;
-                const details = menu.closest('details');
-                details?.removeAttribute('open');
-                if (menu.contains(menu.ownerDocument.activeElement)) details?.querySelector('summary')?.focus();
-              }}>
-                {page === null ? null : <button type="button" id="office-open" onClick={closeView}>Office</button>}
-                <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={page === null && crewOpen && !focused && view !== 'board'}
-                  aria-controls={page === null && crewOpen && !focused && view !== 'board' ? 'crew-list' : undefined}
-                  onClick={toggleCrew}>Crew</button>
-                <button type="button" className="focus-toggle" id="focus-toggle" aria-pressed={focused}
-                  aria-keyshortcuts="Alt+Shift+F" onClick={toggleFocus}>
-                  {focused ? 'Leave focus' : 'Focus agent'}
-                </button>
-                <button type="button" className="theme-toggle" aria-pressed={effectiveTheme === 'dark'}
-                  onClick={() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))}>
-                  Use {effectiveTheme === 'dark' ? 'light' : 'dark'} theme
-                </button>
-                <button type="button" className="sign-out" onClick={signOut}>Sign out</button>
-              </div>
-            </details>
+            <Menu label="More" id="header-more-toggle" className="size-auto h-8 gap-1 px-3"
+              trigger={<>More<ChevronDown {...ICON} aria-hidden="true" /></>}>
+              {page === null ? null : <MenuItem id="office-open" icon={<Building2 {...ICON} />} onSelect={closeView}>Office</MenuItem>}
+              <MenuItem id="crew-toggle" icon={<Users {...ICON} />} checked={crewPressed}
+                aria-controls={crewPressed ? 'crew-list' : undefined} onSelect={toggleCrew}>Crew</MenuItem>
+              <MenuItem id="focus-toggle" icon={focused ? <Minimize2 {...ICON} /> : <Maximize2 {...ICON} />}
+                aria-keyshortcuts="Alt+Shift+F" onSelect={toggleFocus}>
+                {focused ? 'Leave focus' : 'Focus agent'}
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem className="theme-toggle" icon={effectiveTheme === 'dark' ? <Sun {...ICON} /> : <Moon {...ICON} />}
+                onSelect={() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))}>
+                Use {effectiveTheme === 'dark' ? 'light' : 'dark'} theme
+              </MenuItem>
+              <MenuItem className="sign-out" icon={<LogOut {...ICON} />} onSelect={signOut}>Sign out</MenuItem>
+            </Menu>
           </div>
-          <div className="office-bar" ref={setOfficeBar} />
+          <div className={cn('office-bar', fullPanel && 'hidden')} ref={setOfficeBar} />
         </header>
       </div>
-      <div className="floor-stage" data-page={page ?? undefined}
+      <div data-page={page ?? undefined}
+        className={cn('floor-stage group/stage relative min-h-0 grid grid-rows-[auto_minmax(0,1fr)]',
+          fullPanel ? 'grid-cols-[minmax(0,1fr)]'
+            : focused ? 'grid-cols-[minmax(0,1fr)] has-[[data-terminal-agent-id]]:grid-cols-[minmax(0,1fr)_minmax(384px,0.85fr)] max-[800px]:flex max-[800px]:flex-col'
+              : 'grid-cols-[auto_auto_minmax(0,1fr)_auto] max-[800px]:flex max-[800px]:flex-col',
+          page !== null && 'grid-rows-[minmax(0,1fr)] overflow-hidden',
+          guide === 'open' && 'max-[800px]:min-h-[512px] has-[[data-terminal-expanded=true]]:grid-rows-[auto_minmax(0,0.7fr)_minmax(0,1fr)]')}
         onKeyDown={(event) => { if (closesDrawer(event, drawerOpen)) { event.stopPropagation(); clearSelection(); } }}>
         {crewOpen && !focused ? <Roster agents={floor.agents} cards={floor.cards} stepLabels={floor.stepLabels} selectedId={currentSelectedId}
           selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent}
-          onOpenQuestion={openQuestion} onOpenTicket={openCard} sheet
+          onOpenQuestion={openQuestion} onOpenTicket={openCard} sheet hidden={fullPanel}
           addAgent={floor.agents.length === 0 && hireSwitchOn(floor) ? null
             : <HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
         {view === null || view === 'overview' || focused ? null : <Control key={view} floor={floor} view={view}
           onClose={closeView} onView={openView}
           onReviewRecovery={reviewRecovery} onHire={openHire}
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
-        <div className="office-slot">
-          <div className="office-area">
+        <div className={cn('office-slot col-[3/-1] flex min-w-0 flex-col', STAGE_ROW, 'max-[800px]:order-first max-[800px]:min-h-80',
+          drawerOpen && !focused && 'col-[3/4]', (focused || fullPanel) && 'hidden')}>
+          <div className="office-area [&>[data-office]]:relative [&>[data-office]]:isolate [&>[data-office]]:min-h-72 [&>[data-office]]:flex-auto [&>[data-office]]:overflow-hidden [&>[data-office]]:bg-(--studio-background)">
             {page === null ? <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
               onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} /> : null}
             <FirstTask floor={floor} onHire={openHire} />
           </div>
         </div>
-        <div className="stage-center">
+        <div className={cn('stage-center pointer-events-none relative z-(--layer-panels) col-3 flex min-w-0 flex-col p-2 max-[800px]:p-0 [&>*]:pointer-events-auto', STAGE_ROW,
+          'has-[[data-terminal-expanded=true]]:col-[1/-1] has-[[data-terminal-expanded=true]]:z-(--layer-expanded-terminal) has-[[data-terminal-expanded=true]]:bg-(--surface-muted)',
+          guide === 'open' && 'has-[[data-terminal-expanded=true]]:row-3',
+          focused ? 'hidden has-[[data-terminal-agent-id]]:col-2 has-[[data-terminal-agent-id]]:flex' : null, fullPanel && 'hidden')}>
           <TerminalPanel floor={floor} theme={effectiveTheme} />
         </div>
-        <div className="stage-side">
-          <Receipts floor={floor} leaveFocusTo={displayRow === null ? home : AGENT_DETAIL_HEADING_ID} />
-          {focused ? <section className="focus-mode" aria-label="Focus mode" ref={handFocusOnLeave}
+        <div className={cn('stage-side pointer-events-none z-(--layer-panels) col-4 flex min-w-0 flex-col gap-2 [&>*]:pointer-events-auto max-[800px]:p-0',
+          STAGE_ROW, drawerOpen && 'max-[800px]:z-[calc(var(--layer-top-bar)+1)]', focused && 'col-1 p-2', fullPanel && 'hidden')}>
+          <Receipts floor={floor} leaveFocusTo={displayRow === null ? home : AGENT_DETAIL_HEADING_ID} focused={focused} />
+          {focused ? <section className="focus-mode flex min-h-0 flex-auto flex-col gap-2" aria-label="Focus mode" ref={handFocusOnLeave}
             data-focus-on-leave="header-more-toggle">
-            <h2>Focused agent</h2>
-            <div className="focus-frame">
+            <h2 className="m-0 text-title font-semibold">Focused agent</h2>
+            <div className={cn('focus-frame grid min-h-0 flex-auto max-[800px]:flex max-[800px]:flex-col',
+              preferences.rosterCollapsed ? 'grid-cols-[minmax(0,1fr)_0_8rem]' : 'grid-cols-[minmax(0,1fr)_8px_var(--side-width)]')}>
               {drawer}
-              {splitter}
+              {preferences.rosterCollapsed ? null : splitter}
               <FocusRoster floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent}
                 onOpenQuestion={openQuestion} onOpenTicket={openCard}
                 onHireAgain={hireAgain} onAddAgent={openHire} collapsed={preferences.rosterCollapsed}
                 onToggle={() => setPreferences((current) => ({ ...current, rosterCollapsed: !current.rosterCollapsed }))} />
             </div>
-          </section> : drawerOpen ? <div className="drawer-frame">{splitter}{drawer}</div> : null}
+          </section> : drawerOpen ? <div className="drawer-frame flex min-h-0 flex-auto justify-end">{splitter}{drawer}</div> : null}
         </div>
         {guide === 'open' ?
           <FirstRunGuide floor={floor} onClose={() => {

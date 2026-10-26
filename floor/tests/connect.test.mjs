@@ -25,7 +25,10 @@ import { getFloorState, resetFloorStore } from '../src/renderer/floor/store.ts';
 import { streamProtocols } from '../src/renderer/floor/stream.ts';
 import { currentFloorSession, reauthenticateFloorSessionWith, resetFloorSession } from '../src/session.ts';
 import { fakeDaemon } from './helpers/fake-daemon.mjs';
+import { bare } from './helpers/shell-bare.mjs';
 import { testSigner } from './helpers/signer.mjs';
+
+const KEEP = ['link-refused', 'open-command', 'open-command-copy'];
 
 const root = resolve(import.meta.dirname, '..');
 const BOOTSTRAP = `A${'b'.repeat(41)}E`;
@@ -209,7 +212,7 @@ test('a refused pasted link is said, names no secret, and keeps what the page ho
   const answer = await server.ssrLoadModule('/src/renderer/answer/answer.ts');
   const control = await server.ssrLoadModule('/src/renderer/control/control.ts');
   const { PastedLinkNotice } = await server.ssrLoadModule('/src/shell.tsx');
-  const page = () => renderToStaticMarkup(createElement(PastedLinkNotice));
+  const page = () => bare(renderToStaticMarkup(createElement(PastedLinkNotice)), KEEP);
   const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), signer: STUB_SIGNER };
 
   // The page holds a session, a live floor with one Waiting agent, and one of each attempt.
@@ -269,7 +272,7 @@ test('a link refused for a different build says so, keeps the page, and a matchi
   const session = await server.ssrLoadModule('/src/session.ts');
   const entry = await server.ssrLoadModule('/src/connect.ts');
   const { PastedLinkNotice } = await server.ssrLoadModule('/src/shell.tsx');
-  const page = () => renderToStaticMarkup(createElement(PastedLinkNotice));
+  const page = () => bare(renderToStaticMarkup(createElement(PastedLinkNotice)), KEEP);
   const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), signer: STUB_SIGNER };
   session.resetFloorSession();
   entry.resetPastedLink();
@@ -302,7 +305,7 @@ test('a refused first link leads with the used-or-expired line, names no secret,
   const entry = await server.ssrLoadModule('/src/connect.ts');
   const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
-  const page = () => renderToStaticMarkup(createElement(WebFloorShell));
+  const page = () => bare(renderToStaticMarkup(createElement(WebFloorShell)), KEEP);
   const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), signer: STUB_SIGNER };
   session.resetFloorSession();
   entry.resetPastedLink();
@@ -359,7 +362,7 @@ test('a page whose address holds no usable link says so instead of Disconnected'
   const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   const session = await server.ssrLoadModule('/src/session.ts');
   const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
-  const page = () => renderToStaticMarkup(createElement(WebFloorShell));
+  const page = () => bare(renderToStaticMarkup(createElement(WebFloorShell)), KEEP);
   session.resetFloorSession();
   entry.resetPastedLink();
   store.resetFloorStore();
@@ -376,7 +379,7 @@ test('a page that no longer has its key says so instead of Disconnected', async 
   const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   const session = await server.ssrLoadModule('/src/session.ts');
   const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
-  const page = () => renderToStaticMarkup(createElement(WebFloorShell));
+  const page = () => bare(renderToStaticMarkup(createElement(WebFloorShell)), KEEP);
   session.resetFloorSession();
   entry.resetPastedLink();
   store.resetFloorStore();
@@ -404,7 +407,7 @@ test('a browser that cannot hold a key is told why and offered no fallback', asy
   const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   const session = await server.ssrLoadModule('/src/session.ts');
   const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
-  const page = () => renderToStaticMarkup(createElement(WebFloorShell));
+  const page = () => bare(renderToStaticMarkup(createElement(WebFloorShell)), KEEP);
   session.resetFloorSession();
   entry.resetPastedLink();
   store.resetFloorStore();

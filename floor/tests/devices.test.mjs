@@ -6,6 +6,7 @@
 // page, the session and the device list share the state they share in the browser.
 
 import assert from 'node:assert/strict';
+import { bare } from './helpers/shell-bare.mjs';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 
@@ -88,7 +89,7 @@ beforeEach(() => {
   delete globalThis.window;
 });
 
-const notice = () => renderToStaticMarkup(createElement(DeviceNotices));
+const notice = () => bare(renderToStaticMarkup(createElement(DeviceNotices)), ['device-notices']);
 
 test('a new browser is announced for another browser and not for this one, until it is answered', async () => {
   const held = daemon({ list: [
@@ -134,7 +135,7 @@ test('the banner holds the waiting sign-ins and the stack holds the departed, ea
   await signedIn(held);
   await devices.loadDevices();
   devices.applyDeviceFrame({ type: 'floor.device.removed', device: '01HQZX3YB7CNEWWTQ6F9N7MMM6', reason: 'replaced' });
-  const part = (which) => renderToStaticMarkup(createElement(DeviceNotices, { part: which }));
+  const part = (which) => bare(renderToStaticMarkup(createElement(DeviceNotices, { part: which })), ['device-notices']);
   assert.match(part('asking'), /A new browser signed in: <strong>Chrome on Linux<\/strong>/);
   assert.doesNotMatch(part('asking'), /Edge on Windows/, 'the banner names one browser at a time');
   assert.match(part('asking'), /1 more browser is waiting for an answer\./);

@@ -6,6 +6,7 @@ import type { ReactNode } from 'react';
 import { clockTime } from '../format.ts';
 import { planStack, remember, severityOf } from './stack.ts';
 import type { HistoryEntry } from './stack.ts';
+import { Button, RING, cn } from '../../ui/index.ts';
 
 /** Containers that stay in the list so a screen reader knows their live region; a notice is what they hold. */
 const HOLDERS = '.done-notices, .device-notices';
@@ -73,32 +74,34 @@ export function NoticeStack({ host, children }: {
   }, [expanded]);
 
   return (
-    <div className="notice-stack" data-expanded={expanded ? 'true' : 'false'}>
-      <div className="notice-list" ref={attach} id="floor-notices" role="region"
-        aria-label="Floor notices" tabIndex={0}>
+    <div className="notice-stack flex min-h-0 flex-col gap-2" data-expanded={expanded ? 'true' : 'false'}>
+      <div className={cn('notice-list flex min-h-0 flex-col gap-2 overflow-y-auto overscroll-contain rounded-lg [&>*]:flex-none [&>*]:max-w-full',
+        '[&>[data-folded]]:hidden [&>.done-notices:empty]:absolute [&>.device-notices:empty]:absolute', RING)}
+        ref={attach} id="floor-notices" role="region" aria-label="Floor notices" tabIndex={0}>
         {children}
       </div>
       {folded > 0 || expanded || history.length > 0 ? (
-        <div className="notice-tools">
+        <div className="notice-tools pointer-events-auto flex gap-2">
           {folded > 0 || expanded ? (
-            <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
+            <Button size="sm" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
               {expanded ? 'Show fewer' : `+${folded} more`}
-            </button>
+            </Button>
           ) : null}
           {history.length > 0 ? (
-            <button type="button" aria-expanded={reading} aria-controls="notice-history"
-              onClick={() => setReading((open) => !open)}>History</button>
+            <Button size="sm" aria-expanded={reading} aria-controls="notice-history"
+              onClick={() => setReading((open) => !open)}>History</Button>
           ) : null}
         </div>
       ) : null}
       {reading && history.length > 0 ? (
-        <section className="notice-history" id="notice-history" aria-label="Earlier notices">
-          <ol>
+        <section className="notice-history pointer-events-auto grid max-h-56 gap-3 overflow-y-auto rounded-lg border border-line bg-surface p-3 text-small text-ink shadow-pop"
+          id="notice-history" aria-label="Earlier notices">
+          <ol className="m-0 grid list-none gap-2 p-0">
             {history.map((entry) => (
-              <li key={entry.key}><time>{clockTime(entry.at)}</time> {entry.text}</li>
+              <li key={entry.key}><time className="whitespace-nowrap text-muted">{clockTime(entry.at)}</time> {entry.text}</li>
             ))}
           </ol>
-          <button type="button" onClick={() => { setHistory([]); setReading(false); }}>Clear</button>
+          <Button size="sm" className="justify-self-start" onClick={() => { setHistory([]); setReading(false); }}>Clear</Button>
         </section>
       ) : null}
     </div>

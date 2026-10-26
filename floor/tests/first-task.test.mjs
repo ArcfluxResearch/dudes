@@ -93,8 +93,8 @@ async function mountTask(agents = [agent(ADA, 'Kim')]) {
   };
   await render();
   return { page, render, get floor() { return floor; },
-    open: () => page.host.querySelector('[class="first-task-open"]'),
-    close: () => page.host.querySelector('[class="first-task-close"]'),
+    open: () => page.host.querySelector('[class~="first-task-open"]'),
+    close: () => page.host.querySelector('[class~="first-task-close"]'),
     async unmount() { await act(async () => root.unmount()); page.restore(); } };
 }
 
@@ -204,7 +204,7 @@ test('the offer waits while any ticket is open, and names the install command wh
   assert.match(html, /already installed[^]*Setup[^]*restart to find it/);
   assert.doesNotMatch(html, /is not installed on/);
   assert.match(html, /npm install -g @anthropic-ai\/claude-code/);
-  assert.match(html, />Copy<\/button><button type="button">Recheck/);
+  assert.match(html, />Copy<\/button><button type="button"[^>]*>Recheck/);
 });
 
 test('Hire preselects the only project and available engine, including after choosing a project', () => {
