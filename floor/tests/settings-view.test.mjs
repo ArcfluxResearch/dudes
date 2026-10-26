@@ -106,8 +106,8 @@ test('Hire says it is off when its switch is off, and names every other reason w
     const { UnavailableControls } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
     const hint = (hire) => renderToStaticMarkup(createElement(UnavailableControls,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, hire } }), control: 'hire' }));
-    assert.match(hint(false), /^<p data-ui="notice" class="[^"]*">Hire is off\. Turn on Hire agents under Floor switches in Settings\.<\/p>$/);
-    assert.match(hint(true), /^<p data-ui="notice" class="[^"]*">Hire is unavailable\. Check Engines and Projects in Settings\.<\/p>$/);
+    assert.match(hint(false), /^<div data-ui="notice" data-tone="warn"[^>]*>(?:<svg[^>]*>.*?<\/svg>)?<div[^>]*>Hire is off\. Turn on Hire agents under Floor switches in Settings\.<\/div><\/div>$/);
+    assert.match(hint(true), /^<div data-ui="notice" data-tone="warn"[^>]*>(?:<svg[^>]*>.*?<\/svg>)?<div[^>]*>Hire is unavailable\. Check Engines and Projects in Settings\.<\/div><\/div>$/);
   } finally { await server.close(); }
 });
 

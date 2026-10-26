@@ -56,20 +56,6 @@ export function Tag({ tone = 'neutral', children, className }: {
   );
 }
 
-/** A line that needs the reader's eye but not their answer: a left bar in the warning colour on a soft fill. */
-export function Notice({ children, className, role }: {
-  readonly children: ReactNode;
-  readonly className?: string;
-  readonly role?: 'status' | 'alert';
-}) {
-  return (
-    <p data-ui="notice" role={role}
-      className={cn('m-0 rounded-md border border-line border-l-4 border-l-warn bg-warn-soft px-3 py-2 text-base leading-reading text-ink', className)}>
-      {children}
-    </p>
-  );
-}
-
 /** Label and value pairs, one per row, with a hairline between rows. */
 export function Facts({ children, className }: { readonly children: ReactNode; readonly className?: string }) {
   return <dl className={cn('m-0 grid divide-y divide-line', className)}>{children}</dl>;

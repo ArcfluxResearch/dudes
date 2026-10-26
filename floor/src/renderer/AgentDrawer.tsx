@@ -19,7 +19,6 @@ import { freeTaskAgents } from './setup/nextStep.ts';
 import { GoalForm, GoalStatus } from './goal/GoalPanel.tsx';
 import { OverviewOutput, SelectionBar, streamStatus } from './LiveWork.tsx';
 import { MemoryPanel } from './memory/MemoryPanel.tsx';
-import { Notice } from './PageParts.tsx';
 import { LookStatus } from './look/LookEditor.tsx';
 import { ModelStatus } from './model/ModelEditor.tsx';
 import { MessagesPanel } from './MessagesPanel.tsx';
@@ -32,7 +31,7 @@ import { switchedOffControls, UnavailableControls } from './settings/SettingsVie
 import type { AgentRow } from './scene/cast.ts';
 import { TerminalAttach } from './terminal/TerminalPanel.tsx';
 import { readDetailTab, writeDetailTab } from './view.ts';
-import { cn } from '../ui/index.ts';
+import { Notice, cn } from '../ui/index.ts';
 
 /**
  * The results of actions taken in the drawer. They stay on the page when the
@@ -140,7 +139,7 @@ export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, 
           git={floor.git ? <GitPanel row={row} active={detailTab === 'git'} /> : null}
           memory={<MemoryPanel agent={row.id} active={detailTab === 'memory'} crew={floor} />}
           control={floor.settings && !floor.control && automaticHoldOf(row) !== null
-            ? <Notice>Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</Notice>
+            ? <Notice tone="warn">Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</Notice>
             : <ControlStrip floor={floor} row={row} />}
           recovery={<RecoveryPanel floor={floor} row={row} onReadReceipt={onReadRecoveryReceipt} />}
           retire={switchedOff.includes('retire') ? null : <RetireStrip floor={floor} row={row} />}

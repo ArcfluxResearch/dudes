@@ -20,8 +20,8 @@ import { desktopNotificationPreference } from '../desktopNotifications.ts';
 import { releaseNotesLabel, releaseNotesUrl } from '../releaseLinks.ts';
 import { Bell, BellOff } from 'lucide-react';
 
-import { Button, Disclosure, Field, ICON, Input, Switch, cn } from '../../ui/index.ts';
-import { Code, Fact, Facts, Group, HINT, LINK, Notice } from '../PageParts.tsx';
+import { Button, Disclosure, Field, ICON, Input, Notice, Switch, cn } from '../../ui/index.ts';
+import { Code, Fact, Facts, Group, HINT, LINK } from '../PageParts.tsx';
 import { DevicesSection } from '../devices/DevicesSection.tsx';
 import { AddProject, RemoveNotice, RemoveProject } from '../project/AddProject.tsx';
 
@@ -68,14 +68,14 @@ export function UnavailableControls({ floor, control }: {
 }) {
   if (control === 'hire') {
     const reason = hireUnavailable(floor);
-    return reason === null ? null : <Notice>{reason}</Notice>;
+    return reason === null ? null : <Notice tone="warn">{reason}</Notice>;
   }
   if (!switchedOffControls(floor).includes(control)) return null;
   if (control === 'retire') {
-    return <Notice>Retire is off. Turn on Pause, resume and rename and Retire agents under
+    return <Notice tone="warn">Retire is off. Turn on Pause, resume and rename and Retire agents under
       Floor switches in Settings.</Notice>;
   }
-  return <Notice>To open the real CLI, turn on Attach terminals under Floor switches in Settings.</Notice>;
+  return <Notice tone="warn">To open the real CLI, turn on Attach terminals under Floor switches in Settings.</Notice>;
 }
 
 const TEXT_LINK_LIST = 'm-0 grid list-none gap-1 p-0 text-base';
@@ -140,7 +140,7 @@ export function SettingsView({ floor, onSetup }: {
     <UnavailableControls floor={floor} control="hire" />
     <OfficeLayoutChoice />
     <Group title="About" headingId="settings-about">
-      {report.about.daemon_version === __FLOOR_BUILD_VERSION__ ? null : <Notice role="status">
+      {report.about.daemon_version === __FLOOR_BUILD_VERSION__ ? null : <Notice tone="warn" role="status">
         This page is version {__FLOOR_BUILD_VERSION__}, but Dudes is version {report.about.daemon_version}.
         {' '}Open Dudes to load the matching page. Keep any draft text before leaving this page.
       </Notice>}
@@ -305,11 +305,11 @@ export function DesktopNotificationChoice() {
         {on ? 'Turn notifications off' : notifications.kind === 'asking' ? 'Waiting for browser permission' : 'Turn notifications on'}
       </Button>
     </div>
-    {notifications.kind === 'denied' ? <Notice role="status">Notifications are blocked. Allow notifications for this page in your
+    {notifications.kind === 'denied' ? <Notice tone="warn" role="status">Notifications are blocked. Allow notifications for this page in your
       browser's site settings, then turn them on here. The banner still shows what needs you.</Notice>
-      : notifications.kind === 'unsupported' || notifications.kind === 'unavailable' ? <Notice role="status">
+      : notifications.kind === 'unsupported' || notifications.kind === 'unavailable' ? <Notice tone="warn" role="status">
         Desktop notifications are unavailable in this browser. The banner still shows what needs you.</Notice> : null}
-    {!notifications.remembered ? <Notice role="status">This choice lasts only for this page because browser storage is unavailable.</Notice> : null}
+    {!notifications.remembered ? <Notice tone="warn" role="status">This choice lasts only for this page because browser storage is unavailable.</Notice> : null}
   </Group>;
 }
 

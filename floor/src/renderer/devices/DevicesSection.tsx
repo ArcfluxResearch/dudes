@@ -3,8 +3,8 @@
 import { RelativeTime } from '../RelativeTime.tsx';
 import { useSyncExternalStore } from 'react';
 
-import { Button } from '../../ui/index.ts';
-import { Group, HINT, Notice, Tag } from '../PageParts.tsx';
+import { Button, Notice } from '../../ui/index.ts';
+import { Group, HINT, Tag } from '../PageParts.tsx';
 import { getDevicesState, answerBrowser, subscribeToDevices } from './devices.ts';
 import { signOutHere } from './signOut.ts';
 import type { Device } from './devices.ts';
@@ -42,7 +42,7 @@ export function DevicesSection() {
       description="A browser stays signed in for 30 days without use and 90 days in all. Signing one out here ends it at once.">
       {!loaded ? <p role="status" className={HINT}>Reading the signed-in browsers.</p> : <ul className="m-0 grid list-none divide-y divide-line p-0">
         {devices.map((device) => <Row key={device.id} device={device} />)}</ul>}
-      {signOutFailed ? <Notice role="alert">Could not sign out, so this browser is still signed in. Try again.</Notice> : null}
+      {signOutFailed ? <Notice tone="warn" role="alert">Could not sign out, so this browser is still signed in. Try again.</Notice> : null}
     </Group>
   );
 }
