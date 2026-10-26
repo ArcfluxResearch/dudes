@@ -10,12 +10,14 @@ import { renderToStaticMarkup } from './helpers/markup.mjs';
 let server;
 let AgentDetail;
 let AgentDrawer;
+let MessagesPanel;
 let store;
 before(async () => {
   server = await createServer({ root: resolve(import.meta.dirname, '..'),
     server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
   ({ AgentDetail } = await server.ssrLoadModule('/src/renderer/AgentDetail.tsx'));
   ({ AgentDrawer } = await server.ssrLoadModule('/src/renderer/AgentDrawer.tsx'));
+  ({ MessagesPanel } = await server.ssrLoadModule('/src/renderer/MessagesPanel.tsx'));
   store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
 });
 after(async () => { await server?.close(); });
@@ -84,4 +86,30 @@ test('real threads with identical people stay separate from each other and legac
   assert.match(memberHtml, /role="tab"[^>]*>Messages<\/button>/);
   assert.equal((memberHtml.match(/data-message-thread=/g) ?? []).length, 2);
   assert.equal((memberHtml.match(/data-message-pair=/g) ?? []).length, 0);
+});
+
+
+test('Messages cards distinguish subject, sender claim and reply state while keeping legacy rows visible', () => {
+  const messages = [
+    { ...message(A, A, B, '1', 1, 'acked'), subject: '<Review the patch>', act: 'request', reply_status: 'awaiting' },
+    { ...message(B, B, A, '2', 2, 'notified'), subject: '', act: 'message' },
+    message(C, A, B, '3', 3, 'durable'),
+  ];
+  const render = messages => renderToStaticMarkup(createElement(MessagesPanel, {
+    messages, threads: [], agent: A, agents: [row], retiredAgents: [],
+  }));
+  const html = render(messages);
+  assert.equal((html.match(/data-message-id=/g) ?? []).length, 3);
+  assert.equal((html.match(/<details/g) ?? []).length, 3);
+  assert.equal((html.match(/data-message-subject/g) ?? []).length, 1);
+  assert.match(html, /<h4[^>]*data-message-subject[^>]*><bdi>&lt;Review the patch&gt;<\/bdi><\/h4>/);
+  const text = html.replace(/<[^>]*>/g, '');
+  assert.match(text, /Sender marked this as request/);
+  assert.match(text, /Sender marked this as message/);
+  assert.match(html, /data-reply-status="awaiting"/);
+  assert.match(text, /Awaiting reply/);
+  assert.match(text, /Acknowledged/);
+  assert.match(html, new RegExp(`data-message-id="${C}"`));
+  assert.match(render([]), /No recent messages\./);
+  assert.match(render([message(A, B, C, '1', 1, 'durable')]), /No recent messages\./);
 });
