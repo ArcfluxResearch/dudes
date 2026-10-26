@@ -38,6 +38,8 @@ export const MARKDOWN = cn(
   '[&_.chat-inline-code]:font-mono [&_.chat-inline-code]:text-small',
   '[&_.chat-code]:my-2 [&_.chat-code]:overflow-x-auto [&_.chat-code]:whitespace-pre [&_.chat-code]:rounded-md',
   '[&_.chat-code]:border [&_.chat-code]:border-line [&_.chat-code]:bg-surface-2 [&_.chat-code]:p-3',
+  '[&_.chat-code:focus-visible]:outline-2 [&_.chat-code:focus-visible]:outline-solid [&_.chat-code:focus-visible]:outline-focus',
+  '[&_.chat-code:focus-visible]:outline-offset-2',
   '[&_.chat-code]:font-mono [&_.chat-code]:text-small [&_.chat-code]:leading-normal [&_.chat-code_code]:font-[inherit]',
   '[&_.tok-keyword]:text-tok-keyword [&_.tok-string]:text-tok-string [&_.tok-number]:text-tok-number',
   '[&_.tok-comment]:text-tok-comment [&_.tok-literal]:text-tok-literal [&_.tok-key]:text-tok-key',
