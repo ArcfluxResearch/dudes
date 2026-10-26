@@ -216,14 +216,14 @@ test('parse time grows linearly for repeated link and image openers', () => {
 test('the person\'s own messages and other text keep today\'s rendering', () => {
   const text = 'Use **bold** and `code`\n# not a heading\n- not a list\n[a](http://x.example)\n```\nfenced\n```';
   const own = renderToStaticMarkup(createElement(ChatText, { text }));
-  assert.equal(own, '<div class="chat-text"><span>Use <strong>bold</strong> and <code class="chat-inline-code">code</code>\n'
+  assert.equal(own.replace(/^<div class="chat-text [^"]*">/, '<div class="chat-text">'), '<div class="chat-text"><span>Use <strong>bold</strong> and <code class="chat-inline-code">code</code>\n'
     + '# not a heading\n- not a list\n[a](http://x.example)</span><pre class="chat-code"><code>fenced</code></pre></div>');
   const agent = renderToStaticMarkup(createElement(ChatText, { text, mode: 'agent', final: true }));
-  assert.match(agent, /^<div class="chat-text chat-md chat-final-reply">/);
+  assert.match(agent, /^<div class="chat-text [^"]*\bchat-md\b[^"]*\bchat-final-reply">/);
   assert.match(agent, /md-heading/);
   assert.match(agent, /<ul>/);
   const memory = renderToStaticMarkup(createElement(MemoryText, { text: '**x** a‮b' }));
-  assert.equal(memory, '<div class="memory-text" dir="ltr">**x** a<span class="memory-marker">\\u{202e}</span>b</div>');
+  assert.equal(memory.replace(/^<div class="memory-text [^"]*"/, '<div class="memory-text"'), '<div class="memory-text" dir="ltr">**x** a<span class="memory-marker">\\u{202e}</span>b</div>');
 });
 
 test('the 5 second budget holds for the whole hostile set at once', () => {

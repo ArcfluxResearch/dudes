@@ -445,10 +445,8 @@ const ADMITTED_HANDLERS = [
     }` },
   { file: 'src/renderer/chat/Steps.tsx', tag: 'details', handler: 'onToggle',
     expression: '(event) => { if (event.currentTarget.open && hasKeptText(step)) requestStepResult(step.id); }' },
-  { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
-    expression: '(event) => setFilters({ ...filters, agentId: event.currentTarget.value })' },
-  { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
-    expression: '(event) => setFilters({ ...filters, kind: event.currentTarget.value })' },
+  { file: ACTIVITY_PANEL, tag: 'select', handler: 'onValueChange', expression: '(agentId) => setFilters({ ...filters, agentId })' },
+  { file: ACTIVITY_PANEL, tag: 'select', handler: 'onValueChange', expression: '(kind) => setFilters({ ...filters, kind })' },
   { file: ACTIVITY_PANEL, tag: 'input', handler: 'onChange',
     expression: '(event) => setFilters({ ...filters, query: event.currentTarget.value })' },
   ...[['onPointerDown', 'startDrag'], ['onPointerMove', 'moveDrag'], ['onPointerUp', 'endDrag'],
@@ -459,7 +457,9 @@ const ADMITTED_HANDLERS = [
   { file: RENAME_PANEL, tag: 'input', handler: 'onKeyDown' },
   { file: ADD_PROJECT_FORM, tag: 'form', className: 'flex w-full max-w-xl flex-col gap-3', handler: 'onSubmit' },
   { file: ADD_PROJECT_FORM, tag: 'input', handler: 'onChange' },
-  { file: SETTINGS_VIEW, tag: 'form', className: 'settings-limit', handler: 'onSubmit' },
+  { file: SETTINGS_VIEW, tag: 'form', handler: 'onSubmit' },
+  { file: SETTINGS_VIEW, tag: 'button', handler: 'onCheckedChange',
+    expression: '() => { if (edit.sending === null) void changeSetting(settingKey, next); }' },
   { file: SETTINGS_VIEW, tag: 'input', handler: 'onChange',
     expression: '(event) => { setTyped(event.target.value); setProblem(null); }' },
   { file: LOOK_PANEL, tag: 'form', handler: 'onSubmit',
@@ -501,7 +501,7 @@ const ADMITTED_HANDLERS = [
   { file: CHAT_PANEL, tag: 'section', className: 'chat-compose', handler: 'onDragOver', expression: 'overChatFiles' },
   { file: CHAT_PANEL, tag: 'section', className: 'chat-compose', handler: 'onDrop', expression: '(event) => dropChatFiles(event, gate)' },
   { file: CHAT_PANEL, tag: 'textarea', handler: 'onKeyDown',
-    expression: '(event) => {\n          if (!queuesChatOnKey(event) || blocked || action.sending) return;\n          event.preventDefault();\n          void submitChat(gate, browserChatDeps);\n        }' },
+    expression: '(event) => {\n            if (!queuesChatOnKey(event) || blocked || action.sending) return;\n            event.preventDefault();\n            void submitChat(gate, browserChatDeps);\n          }' },
   { file: CHAT_PANEL, tag: 'div', className: 'chat-scroll', handler: 'onScroll',
     expression: 'event => {\n        const node = event.currentTarget;\n        if (node.clientWidth !== size.current.width || node.clientHeight !== size.current.height) return;\n        follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;\n      }' },
   // ControlPanel.tsx: Pause and Resume keep keyboard focus while they wait, so a
@@ -516,10 +516,10 @@ const ADMITTED_HANDLERS = [
   // TerminalPanel.tsx: the same for the Attach confirmation, which opens nothing.
   { file: TERMINAL_PANEL, tag: 'dialog', className: 'retire-dialog', handler: 'onCancel', expression: 'onCancel' },
   { file: CREW_LIST, tag: 'button', handler: 'onFocus', expression: '() => reveal(row.id)' },
-  { file: OVERVIEW_DIALOG, tag: 'dialog', className: 'overview-dialog', handler: 'onCancel',
+  { file: OVERVIEW_DIALOG, tag: 'dialog', handler: 'onCancel',
     expression: '(event) => { event.preventDefault(); onClose(); }' },
   // ArchivedAgents.tsx: the Memory disclosure mounts its panel only while open, so closing it forgets what was read.
-  { file: ARCHIVED_AGENTS, tag: 'details', className: 'archive-memory', handler: 'onToggle',
+  { file: ARCHIVED_AGENTS, tag: 'details', handler: 'onToggle',
     expression: '(event) => setOpen(event.currentTarget.open)' },
   { file: FLOOR_SHELL, tag: 'div', className: null, handler: 'onKeyDown', expression: CLOSE_DRAWER_ON_ESCAPE },
   { file: FLOOR_SHELL, tag: 'main', className: null, handler: 'onKeyDown', expression: CLOSE_PAGE_ON_ESCAPE },
@@ -581,12 +581,16 @@ test("Roster.tsx's top-level imports include its live activity expiry hook, it b
     "reveal's body is no longer its one scrollIntoView statement");
 });
 
-/** An element's `className` string literal, or null if it has no `className` or its value is not one. */
+/**
+ * An element's `className` string literal, or null if it has none or its value is not one.
+ * Utilities share the attribute with the name a rule is pinned by, so a rule names that one class.
+ */
 function classNameOf(node, syntax) {
   const found = node.attributes.properties
     .find((entry) => ts.isJsxAttribute(entry) && entry.name.getText(syntax) === 'className');
   if (found === undefined || found.initializer === undefined) return null;
-  return ts.isStringLiteral(found.initializer) ? found.initializer.text : null;
+  if (ts.isStringLiteral(found.initializer)) return found.initializer.text;
+  return null;
 }
 
 /**
@@ -1229,7 +1233,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
   // The folder form submits with a button that has no click handler of its own.
   clickExpected.splice(clickExpected.indexOf(ADD_PROJECT_FORM), 1);
-  // Each spending limit's Save button submits its form.
+  // Each spending limit's Save button submits its form, and the switch takes its press through onCheckedChange.
+  clickExpected.splice(clickExpected.indexOf(SETTINGS_VIEW), 1);
   clickExpected.splice(clickExpected.indexOf(SETTINGS_VIEW), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
   // A tab carries no click handler of its own: the call site's runs when a key activates it. The select's trigger and its
@@ -1308,7 +1313,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   const archiveSyntax = parsedByExtension(archive, ARCHIVED_AGENTS);
   assert.deepEqual(archiveSyntax.statements.filter(ts.isImportDeclaration).map((node) =>
     [node.moduleSpecifier.text, node.importClause?.isTypeOnly]), [
-    ['./RelativeTime.tsx', false], ['./engines.ts', false], ['react', false], ['./archive.ts', true], ['./appearance.ts', false], ['./Portrait.tsx', false],
+    ['../ui/index.ts', false], ['./PageParts.tsx', false], ['./RelativeTime.tsx', false], ['./engines.ts', false], ['react', false], ['react', true], ['./archive.ts', true], ['./appearance.ts', false], ['./Portrait.tsx', false],
     ['./worktree.ts', false], ['./ReadError.tsx', false],
     ['./floor/reads.ts', false], ['./floor/store.ts', true],
     ['./scene/label.ts', false], ['./onboarding/HireEntry.tsx', false], ['./memory/MemoryPanel.tsx', false], ['./view.ts', false],
@@ -1356,7 +1361,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(shell, /function openView\(next: ControlView\): void \{\s*setFocused\(false\);\s*if \(isPageView\(next\)\) \{\s*setPanel\(null\);\s*openPage\(next\);\s*\} else \{\s*openPage\(null\);\s*setPanel\(next\);\s*\}\s*\}/);
   assert.match(shell, /if \(page === null\) return;\s*setFocused\(false\);\s*setPanel\(null\);\s*setGuide\('closed'\);\s*if \(hiring\) \{\s*closeHire\('navigation'\);\s*document\.getElementById\(CONTROL_TITLE_ID\)\?\.focus\(\);\s*\}\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === page && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}, \[page\]\)/);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup', 'onSetup',
-    '() => { void changeSetting(settingKey, next); }', '() => { void confirmSetting(); }', '() => cancelSetting()',
+    '() => { void confirmSetting(); }', '() => cancelSetting()',
     "() => { void changeSetting(settingKey, 'unset',\n        `This removes the daily dollar limit of ${formatUsdMicros(current)}. After a restart, there will be no daily dollar limit.`, 'Clear limit'); }",
     '() => { void desktopNotificationPreference.setEnabled(!on); }', '() => setOfficePin(id)']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETUP_VIEW), 'utf8')).sort(), [
@@ -1416,7 +1421,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => void stopAndSend(gate, stopControl, browserChatDeps)',
     '() => removeChatFile(row.id, file.id)',
     '() => setAsking(true)', '() => setAsking(false)',
-    '() => {\n        setAsking(false);\n        void clearQueuedChat(chatGate(floor, row), browserChatDeps);\n      }',
+    '() => {\n          setAsking(false);\n          void clearQueuedChat(chatGate(floor, row), browserChatDeps);\n        }',
   ].sort());
   assert.deepEqual(clicksIn(await readFile(resolve(floor, 'src/renderer/chat/Steps.tsx'), 'utf8')), [
     '() => requestStepResult(step.id)',
@@ -2658,7 +2663,7 @@ test('Chat requires its own fresh sibling and revokes its mounted history and ac
   assert.equal(chatGate(on, row).open, true);
   const draw = floor => renderToStaticMarkup(createElement(ChatPanelView, { floor, row, action }));
   assert.match(draw(on), /Browser note/);
-  assert.match(draw(on), /class="chat-cancel"/);
+  assert.match(draw(on), /class="[^"]*\bchat-cancel\b/);
   for (const floor of [base, { ...on, chat: null }, { ...on, phase: 'closed' }, { ...on, stale: true },
     { ...on, snapshotEpoch: on.epoch - 1 }, { ...on, agents: [] }]) {
     assert.equal(chatGate(floor, row).open, false);

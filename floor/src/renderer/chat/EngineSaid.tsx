@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import './engine-said.css';
+import { TriangleAlert } from 'lucide-react';
+import { ICON, cn } from '../../ui/index.ts';
+import { ASSISTANT_BUBBLE, SPEAKER } from './look.ts';
 
 /** Controls, format characters and line or paragraph separators, other than a line break. */
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
@@ -16,8 +18,9 @@ export function visibleFailure(text: string): string {
 
 /** The engine's own words for a failed turn. Plain text, never Markdown, and never a reply. */
 export function EngineSaid({ failure }: { readonly failure: string }) {
-  return <div className="chat-message chat-engine-said" data-chat-failure="true">
-    <p className="chat-speaker">The engine said</p>
-    <pre className="chat-failure-text">{visibleFailure(failure)}</pre>
+  return <div className={cn('chat-message chat-engine-said border-danger/40 bg-danger-soft', ASSISTANT_BUBBLE)} data-chat-failure="true">
+    <p className={cn('chat-speaker flex items-center gap-1.5 text-danger', SPEAKER)}>
+      <TriangleAlert {...ICON} aria-hidden="true" className="shrink-0" />The engine said</p>
+    <pre className="chat-failure-text m-0 font-sans text-base leading-normal whitespace-pre-wrap text-ink [overflow-wrap:anywhere]">{visibleFailure(failure)}</pre>
   </div>;
 }

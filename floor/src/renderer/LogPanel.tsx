@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { Disclosure, Field, Input, Select } from '../ui/index.ts';
+import { Code, HINT } from './PageParts.tsx';
 import { RelativeTime } from './RelativeTime.tsx';
 import { ACTIVITY_LABELS, activityText } from './activity.ts';
 import { useEffect, useState, useSyncExternalStore } from 'react';
@@ -25,39 +27,44 @@ export function LogPanel({ floor }: { readonly floor: FloorState }) {
 
   useEffect(() => { writeActivityFilters(filters); }, [filters]);
 
+  const agentOptions = [{ value: '', label: 'All agents' }, ...[...agents].map(([id, name]) => ({ value: id, label: name }))];
+  const kindOptions = [{ value: '', label: 'All events' }, ...[...kinds].sort().map((kind) => ({
+    value: kind, label: ACTIVITY_LABELS[kind as keyof typeof ACTIVITY_LABELS] ?? 'Unavailable event' }))];
+
   return (
-    <section className="log-panel" aria-label="Recent activity">
+    <section data-ui="log" className="grid gap-4 font-sans text-ink" aria-label="Recent activity">
       <ReadNotice state={state} label="Activity" message="Activity was not reported, or this page could not read every event. Retry to load the latest activity." />
-      {state !== 'ready' ? null : <p role="status">{floor.stale ? 'Connection interrupted. This activity may be out of date.' : 'Recent activity, newest first.'}</p>}
-      <div className="activity-filters" role="group" aria-label="Filter recent activity">
-        <label>Agent
-          <select value={filters.agentId} onChange={(event) => setFilters({ ...filters, agentId: event.currentTarget.value })}>
-            <option value="">All agents</option>
-            {[...agents].map(([id, name]) => <option value={id} key={id}>{name}</option>)}
-          </select>
-        </label>
-        <label>Event
-          <select value={filters.kind} onChange={(event) => setFilters({ ...filters, kind: event.currentTarget.value })}>
-            <option value="">All events</option>
-            {[...kinds].sort().map((kind) => <option value={kind} key={kind}>{ACTIVITY_LABELS[kind as keyof typeof ACTIVITY_LABELS] ?? 'Unavailable event'}</option>)}
-          </select>
-        </label>
-        <label>Search
-          <input type="search" value={filters.query} maxLength={128} placeholder="Search activity"
+      {state !== 'ready' ? null : <p role="status" className={HINT}>{floor.stale ? 'Connection interrupted. This activity may be out of date.' : 'Recent activity, newest first.'}</p>}
+      <div className="grid gap-3 min-[641px]:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,2fr)]" role="group" aria-label="Filter recent activity">
+        <Field label="Agent">
+          <Select options={agentOptions} value={filters.agentId} name="agent"
+            onValueChange={(agentId) => setFilters({ ...filters, agentId })} />
+        </Field>
+        <Field label="Event">
+          <Select options={kindOptions} value={filters.kind} name="event"
+            onValueChange={(kind) => setFilters({ ...filters, kind })} />
+        </Field>
+        <Field label="Search">
+          <Input type="search" value={filters.query} maxLength={128} placeholder="Search activity"
             onChange={(event) => setFilters({ ...filters, query: event.currentTarget.value })} />
-        </label>
+        </Field>
       </div>
-      {rows.length === 0 ? state === 'ready' ? <p>{floor.activity.length === 0 ? 'No recent activity.' : 'No matching activity.'}</p> : null : (
-        <ol aria-label="Recent events">
+      {rows.length === 0 ? state === 'ready' ? <p className={HINT}>{floor.activity.length === 0 ? 'No recent activity.' : 'No matching activity.'}</p> : null : (
+        <ol aria-label="Recent events" className="m-0 list-none divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface p-0 shadow-card">
           {rows.map((row) => (
-            <li key={row.lsn} data-activity-lsn={row.lsn}>
-              <p>{activityText(row)}</p>
-              <small><RelativeTime at={row.at} /></small>
-              <details><summary>Details</summary><p>{recordedTime(row.at)}</p><p>Record position: {journalPosition(row.lsn)}</p>
-                <p>Event: <code>{row.kind}</code></p>
-                {'agent' in row ? <p>Agent: <code>{row.agent.id}</code></p> : null}
-                {'card' in row ? <p>Ticket: <code>{row.card.id}</code></p> : null}
-              </details>
+            <li key={row.lsn} data-activity-lsn={row.lsn} className="px-3 py-1 hover:bg-surface-2">
+              <Disclosure summaryClassName="w-full font-normal" summary={<>
+                <span className="min-w-0 flex-1 text-ink [overflow-wrap:anywhere]">{activityText(row)}</span>
+                <span className="shrink-0 text-small tabular-nums text-muted"><RelativeTime at={row.at} /></span>
+              </>}>
+                <div className="grid gap-0.5 pb-2 text-small text-muted">
+                  <p className="m-0">{recordedTime(row.at)}</p>
+                  <p className="m-0">Record position: {journalPosition(row.lsn)}</p>
+                  <p className="m-0">Event: <Code>{row.kind}</Code></p>
+                  {'agent' in row ? <p className="m-0">Agent: <Code>{row.agent.id}</Code></p> : null}
+                  {'card' in row ? <p className="m-0">Ticket: <Code>{row.card.id}</Code></p> : null}
+                </div>
+              </Disclosure>
             </li>
           ))}
         </ol>

@@ -60,6 +60,9 @@ function find(node, test) {
   if (test(node)) return node.props;
   return find(node.props?.children, test);
 }
+/** The element a tree node draws: the owned `Textarea` is a `textarea`, and a class attribute may carry utilities beside its name. */
+const isTextarea = (node) => node.type === 'textarea' || node.type?.name === 'Textarea';
+const wears = (node, name) => String(node.props.className ?? '').split(/\s+/).includes(name);
 function view(row = { id: A, name: 'Ada', mode: 'managed' }) {
   return panel.ChatPanelView({ floor: store.getFloorState(), row, action: chat.getChatState() });
 }
@@ -70,8 +73,8 @@ test('the file input, paste and drop each show a chip and upload through the one
   const d = daemon(log);
   const tree = view();
   const input = find(tree, node => node.type === 'input' && node.props.type === 'file');
-  const textarea = find(tree, node => node.type === 'textarea');
-  const section = find(tree, node => node.type === 'section' && node.props.className === 'chat-compose');
+  const textarea = find(tree, node => isTextarea(node));
+  const section = find(tree, node => node.type === 'section' && wears(node, 'chat-compose'));
   assert.equal(input.multiple, true);
 
   const originalDeps = chat.browserChatDeps;
@@ -96,7 +99,7 @@ test('the file input, paste and drop each show a chip and upload through the one
 
 test('a paste without files stays an ordinary text paste', () => {
   live();
-  const textarea = find(view(), node => node.type === 'textarea');
+  const textarea = find(view(), node => isTextarea(node));
   let prevented = 0;
   textarea.onPaste({ clipboardData: { files: [] }, preventDefault() { prevented += 1; } });
   assert.equal(prevented, 0);
@@ -158,7 +161,7 @@ test('Send is blocked while a file uploads and when the paths would pass 4096 by
   await chat.submitChat(gate, slow);
   assert.deepEqual(log, [], 'no message was sent while the file was still uploading');
   assert.match(renderToStaticMarkup(createElement(panel.ChatPanelView, { floor: store.getFloorState(), row: store.getFloorState().agents[0], action: chat.getChatState() })),
-    /class="chat-send" disabled=""/);
+    /disabled="" class="[^"]*\bchat-send"/);
   await chat.chatUploadsSettled();
   assert.equal(log.length, 1);
 
@@ -168,7 +171,7 @@ test('Send is blocked while a file uploads and when the paths would pass 4096 by
   await chat.submitChat(gate, slow);
   assert.equal(log.length, 1);
   assert.match(renderToStaticMarkup(createElement(panel.ChatPanelView, { floor: store.getFloorState(), row: store.getFloorState().agents[0], action: chat.getChatState() })),
-    /class="chat-send" disabled=""[\s\S]*The message and the file paths are/);
+    /disabled="" class="[^"]*\bchat-send"[\s\S]*The message and the file paths are/);
 });
 
 test('a busy answer is retried and the daemon refusals read plainly', async () => {
@@ -209,7 +212,7 @@ test('a failed chip blocks Send until it is removed', async () => {
   assert.equal(log.length, before, 'nothing was posted');
   assert.equal(chat.chatFiles(chat.getChatState(), A).length, 2, 'the chips are kept');
   assert.match(renderToStaticMarkup(createElement(panel.ChatPanelView, { floor: store.getFloorState(), row: store.getFloorState().agents[0], action: chat.getChatState() })),
-    /class="chat-send" disabled=""[\s\S]*did not upload/);
+    /disabled="" class="[^"]*\bchat-send"[\s\S]*did not upload/);
   chat.removeChatFile(A, chat.chatFiles(chat.getChatState(), A)[1].id);
   assert.equal(chat.chatSendProblem(chat.getChatState(), A), null);
 });
@@ -223,8 +226,8 @@ test('an Attached agent gets no plus button, ignores pasted and dropped files, a
   assert.match(markup, /Files work with agents Dudes launches\./);
 
   const tree = view(row);
-  const textarea = find(tree, node => node.type === 'textarea');
-  const section = find(tree, node => node.type === 'section' && node.props.className === 'chat-compose');
+  const textarea = find(tree, node => isTextarea(node));
+  const section = find(tree, node => node.type === 'section' && wears(node, 'chat-compose'));
   const d = daemon(log);
   Object.assign(chat.browserChatDeps, d);
   textarea.onPaste({ clipboardData: { files: [png()] }, preventDefault() { throw new Error('a paste for an attached agent was taken'); } });

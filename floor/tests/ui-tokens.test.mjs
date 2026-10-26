@@ -20,6 +20,9 @@ const SPEC = {
   'accent-soft': ['#e3f1ee', '#163029'], focus: ['#2a8a7f', '#6fd0c3'],
   ok: ['#256a40', '#5cbf83'], 'ok-soft': ['#e4f1e8', '#1a3326'], warn: ['#7a560c', '#e0ad4b'], 'warn-soft': ['#f7eed8', '#3a2f16'],
   danger: ['#b23b2e', '#ec7d6d'], 'danger-soft': ['#f9e4e0', '#3a1f1b'], info: ['#3b6aa0', '#7ea6d8'], 'info-soft': ['#e5edf7', '#1c2836'],
+  'tok-keyword': ['#0000ff', '#569cd6'], 'tok-string': ['#a31515', '#ce9178'], 'tok-number': ['#076c49', '#b5cea8'],
+  'tok-comment': ['#007000', '#6a9955'], 'tok-literal': ['#0000ff', '#569cd6'], 'tok-key': ['#0451a5', '#9cdcfe'],
+  'tok-add': ['#076c49', '#b5cea8'], 'tok-remove': ['#a31515', '#f48771'], 'tok-meta': ['#795e26', '#c586c0'],
 };
 
 function block(head, from = 0) {
@@ -82,6 +85,8 @@ test('text reads at 4.5 to 1 on every surface it is drawn on, day and night', ()
       ['text', 'warn-soft'], ['text', 'ok-soft'], ['text', 'danger-soft'], ['text', 'info-soft'], ['text', 'accent-soft'],
       ['ok', 'ok-soft'], ['warn', 'warn-soft'], ['danger', 'danger-soft'], ['info', 'info-soft'],
       ['ok', 'ui-surface'], ['warn', 'ui-surface'], ['danger', 'ui-surface'], ['info', 'ui-surface'],
+      // The code colours are drawn on the inset colour a code block has.
+      ...Object.keys(SPEC).filter((name) => name.startsWith('tok-')).map((name) => [name, 'surface-2']),
     ];
     for (const [ink, surface] of pairs) {
       const ratio = contrast(t[ink], t[surface]);

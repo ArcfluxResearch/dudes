@@ -5,6 +5,8 @@
 // one marker per run, each code point written `\u{…}` in lowercase hex.
 
 import type { ReactNode } from 'react';
+import { cn } from '../../ui/index.ts';
+import { MARKER } from '../chat/look.ts';
 
 /**
  * Controls other than LF and TAB, format characters, default-ignorable, private-use and
@@ -100,5 +102,6 @@ export function splitHidden(text: string, emoji = false): readonly HiddenPiece[]
 export function MemoryText({ text }: { readonly text: string }) {
   const parts: ReactNode[] = splitHidden(text).map((piece, index) => typeof piece === 'string' ? piece
     : <span key={index} className="memory-marker">{piece.marker}</span>);
-  return <div className="memory-text" dir="ltr">{parts}</div>;
+  return <div className={cn('memory-text m-0 mb-1 overflow-hidden font-mono text-small leading-normal whitespace-pre-wrap text-ink',
+    '[overflow-wrap:anywhere] [unicode-bidi:isolate]', MARKER)} dir="ltr">{parts}</div>;
 }

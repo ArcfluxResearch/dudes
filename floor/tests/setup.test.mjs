@@ -129,11 +129,11 @@ test('the Setup view renders text, offers Retry for missing reads, and holds no 
   subscribe({ daemon: { ...structuredClone(REPORT), providers: [{ ...FOUND, path: '<img src=x onerror=alert(1)>' },
     MISSING] } });
   const html = setup();
-  assert.match(html, /<dt>State directory<\/dt><dd><code>~\/\.local\/share\/dudes<\/code><\/dd>/);
-  assert.match(html, /Dudes found it at <code>&lt;img src=x onerror=alert\(1\)&gt;<\/code>/);
-  assert.match(html, /Dudes could not find <code>codex<\/code>\./);
+  assert.match(html, /<dt[^>]*>State directory<\/dt><dd[^>]*><code[^>]*>~\/\.local\/share\/dudes<\/code><\/dd>/);
+  assert.match(html, /Dudes found it at <code[^>]*>&lt;img src=x onerror=alert\(1\)&gt;<\/code>/);
+  assert.match(html, /Dudes could not find <code[^>]*>codex<\/code>\./);
   assert.match(html, /searches the same folders it had when it started/);
-  assert.match(html, /<button type="button" class="setup-recheck">Recheck<\/button>/);
+  assert.match(html, /<button type="button"[^>]*>(?:<svg[^>]*>.*?<\/svg>)?Recheck<\/button>/);
   for (const report of [null, { providers: 'claude' }]) {
     resetFloorStore();
     subscribe({ daemon: report });
@@ -150,10 +150,10 @@ test('the Setup view renders text, offers Retry for missing reads, and holds no 
 test('a not-found row shows its install command, a Copy button that only writes it, and the guide', async () => {
   subscribe({ daemon: { providers: [{ provider: 'claude', program: 'claude', found: false }] } });
   const html = setup();
-  assert.match(html, /<code>npm install -g @anthropic-ai\/claude-code<\/code><button type="button" class="setup-copy">Copy<\/button>/);
-  assert.match(html, /<a href="https:\/\/code\.claude\.com\/docs\/en\/setup" target="_blank" rel="noopener noreferrer">/);
+  assert.match(html, /<code[^>]*>npm install -g @anthropic-ai\/claude-code<\/code><button type="button"[^>]*>(?:<svg[^>]*>.*?<\/svg>)?Copy<\/button>/);
+  assert.match(html, /<a class="[^"]*" href="https:\/\/code\.claude\.com\/docs\/en\/setup" target="_blank" rel="noopener noreferrer">/);
   subscribe({ daemon: { providers: [FOUND] } });
-  assert.doesNotMatch(setup(), /setup-copy|<a /, 'a found row offers no install');
+  assert.doesNotMatch(setup(), />Copy<\/button>|<a /, 'a found row offers no install');
 
   const written = [];
   const previous = Object.getOwnPropertyDescriptor(globalThis.navigator, 'clipboard');
@@ -185,7 +185,7 @@ test('the Setup view shows the daemon\'s refusal detail and no install command',
   assert.match(setup(), /found Windows command shim/);
   assert.match(setup(), /~\\AppData\\Roaming\\npm\\claude\.cmd/);
   assert.match(setup(), /which the daemon does not launch/);
-  assert.doesNotMatch(setup(), /setup-install/, 'the npm install that produced the shim is not offered again');
+  assert.doesNotMatch(setup(), /data-part="install"/, 'the npm install that produced the shim is not offered again');
   assert.equal(decodeDaemonReport({ providers: [row] })?.providers[0].detail, detail);
 });
 
