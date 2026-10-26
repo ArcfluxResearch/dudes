@@ -23,26 +23,68 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Decides which areas a pull request touches so a Floor-only change skips the Rust work. Every
+  # other job keeps running and reporting under its own name, because the required checks are
+  # matched by name; only its steps are skipped. A missing output counts as "run", so a failure
+  # here costs time and never skips a check.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.decide.outputs.rust }}
+      floor: ${{ steps.decide.outputs.floor }}
+      any: ${{ steps.decide.outputs.any }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: sh .github/ci/changes.sh
+
   checks:
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Note the skipped steps
+        if: needs.changes.outputs.rust == 'false'
+        run: echo "No Rust or shared files changed; Rust steps skipped (the naming scan still runs)" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.any != 'false'
         with:
           persist-credentials: false
       - run: rustup toolchain install
+        if: needs.changes.outputs.any != 'false'
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: needs.changes.outputs.any != 'false'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
+        if: needs.changes.outputs.rust != 'false'
       - name: dudes-types builds without its default feature
+        if: needs.changes.outputs.rust != 'false'
         run: cargo check -p dudes-types --no-default-features --locked
       - run: cargo xtask layering --strict
+        if: needs.changes.outputs.rust != 'false'
       - run: cargo xtask schemas --check
+        if: needs.changes.outputs.rust != 'false'
+      - run: cargo xtask floor-reads
+        if: needs.changes.outputs.rust != 'false'
       - run: cargo xtask naming
+        if: needs.changes.outputs.any != 'false'
       - run: cargo xtask env-pairs
+        if: needs.changes.outputs.rust != 'false'
 
   clippy:
+    needs: changes
+    if: ${{ !cancelled() }}
     name: clippy (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -51,16 +93,25 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
+      - name: Note the skipped steps
+        if: needs.changes.outputs.rust == 'false'
+        run: echo "No Rust or shared files changed; Rust steps skipped" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.rust != 'false'
         with:
           persist-credentials: false
       - run: rustup toolchain install
+        if: needs.changes.outputs.rust != 'false'
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: needs.changes.outputs.rust != 'false'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        if: needs.changes.outputs.rust != 'false'
 
   test:
+    needs: changes
+    if: ${{ !cancelled() }}
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -74,34 +125,42 @@ jobs:
               && fromJSON('["ubuntu-latest","macos-latest","windows-latest"]')
               || fromJSON('["ubuntu-latest","macos-latest"]') }}
     steps:
+      - name: Note the skipped steps
+        if: needs.changes.outputs.rust == 'false'
+        run: echo "No Rust or shared files changed; Rust steps skipped" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.rust != 'false'
         with:
           persist-credentials: false
       - run: rustup toolchain install
+        if: needs.changes.outputs.rust != 'false'
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: needs.changes.outputs.rust != 'false'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        if: needs.changes.outputs.rust != 'false'
         with:
           tool: cargo-nextest
       - run: cargo nextest run --workspace --locked --no-fail-fast
+        if: needs.changes.outputs.rust != 'false'
       - run: cargo nextest run --locked -p duded --features stub-provider --bin duded
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
       - name: Closing-time before-spawn crash recovery
-        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        if: ${{ !cancelled() && runner.os != 'Windows' && needs.changes.outputs.rust != 'false' }}
         run: >-
           cargo nextest run --locked -p duded --features fault-injection --test closing_time
           -E 'test(a_real_before_spawn_crash_reissues_the_same_durable_saving_turn_once)'
           --no-fail-fast --no-tests=fail
       - run: cargo test --workspace --doc --locked
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
       - name: macOS process identity (pidversion) controls
-        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        if: ${{ !cancelled() && runner.os == 'macOS' && needs.changes.outputs.rust != 'false' }}
         env:
           CLANG_PATH: /usr/bin/clang
         run: cargo test --manifest-path vendor/libproc/Cargo.toml --test pidversion -- --test-threads 1
       - name: Chrome pipe smoke
-        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        if: ${{ !cancelled() && runner.os == 'Linux' && needs.changes.outputs.rust != 'false' }}
         env:
           DUDES_SMOKE_REQUIRE_CHROME: "1"
         run: |
@@ -115,79 +174,122 @@ jobs:
           grep -E '^ok [0-9]+ - Chrome drives the page over pipes without a DevTools TCP endpoint$' "$RUNNER_TEMP/chrome-pipe-smoke.tap"
 
   msrv:
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Note the skipped steps
+        if: needs.changes.outputs.rust == 'false'
+        run: echo "No Rust or shared files changed; Rust steps skipped" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.rust != 'false'
         with:
           persist-credentials: false
       - id: msrv
+        if: needs.changes.outputs.rust != 'false'
         run: |
           msrv=$(sed -nE 's/^rust-version *= *"([^"]+)".*/\1/p' Cargo.toml)
           test -n "$msrv" || { echo "Cargo.toml has no workspace rust-version" >&2; exit 1; }
           echo "version=$msrv" >> "$GITHUB_OUTPUT"
       - run: rustup toolchain install "$MSRV" --profile minimal
+        if: needs.changes.outputs.rust != 'false'
         env:
           MSRV: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: needs.changes.outputs.rust != 'false'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The environment variable outranks rust-toolchain.toml.
       - run: cargo check --workspace --all-targets --locked
+        if: needs.changes.outputs.rust != 'false'
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.version }}
 
   deny:
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Note the skipped steps
+        if: needs.changes.outputs.rust == 'false'
+        run: echo "No Rust or shared files changed; Rust steps skipped" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.rust != 'false'
         with:
           persist-credentials: false
       - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        if: needs.changes.outputs.rust != 'false'
         with:
           tool: cargo-deny
       - run: cargo deny --locked check
+        if: needs.changes.outputs.rust != 'false'
 
   floor:
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
       run:
         working-directory: floor
     steps:
+      - name: Note the skipped steps
+        if: needs.changes.outputs.floor == 'false'
+        working-directory: .
+        run: echo "No Floor files changed; Floor steps skipped" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.floor != 'false'
         with:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.floor != 'false'
         with:
           node-version: "24.21.0"
           package-manager-cache: false
       # The Floor tests read the workspace through `cargo metadata`.
       - run: rustup toolchain install
+        if: needs.changes.outputs.floor != 'false'
       - name: Verify runtime versions
+        if: needs.changes.outputs.floor != 'false'
         run: |
           test "$(node --version)" = "v24.21.0"
           test "$(npm --version)" = "11.19.0"
       - run: npm ci --ignore-scripts
+        if: needs.changes.outputs.floor != 'false'
       - run: npm run check:licenses
+        if: needs.changes.outputs.floor != 'false'
       - run: npm run typecheck
+        if: needs.changes.outputs.floor != 'false'
       - run: npm test
+        if: needs.changes.outputs.floor != 'false'
       - name: Pi MCP extension unit tests
+        if: needs.changes.outputs.floor != 'false'
         working-directory: .
         run: node --test crates/dudes-providers/src/pi/mcp-extension.test.mjs
 
   e2e:
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Note the skipped steps
+        if: needs.changes.outputs.rust == 'false'
+        run: echo "No Rust or shared files changed; Rust steps skipped" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.rust != 'false'
         with:
           persist-credentials: false
       - run: rustup toolchain install
+        if: needs.changes.outputs.rust != 'false'
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: needs.changes.outputs.rust != 'false'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo xtask gate
+        if: needs.changes.outputs.rust != 'false'
       - name: Agent mail round trip
+        if: needs.changes.outputs.rust != 'false'
         run: ./examples/two-roles/mail.sh
