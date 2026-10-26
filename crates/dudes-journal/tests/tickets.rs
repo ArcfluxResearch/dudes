@@ -108,7 +108,7 @@ fn project(records: impl IntoIterator<Item = Record>) -> Projections {
     let mut projections = Projections::in_memory().unwrap();
     for (index, record) in records.into_iter().enumerate() {
         let entry = Entry {
-            at: Timestamp::from_unix_millis(1_000 + i64::try_from(index).unwrap()),
+            at: Timestamp::UNIX_EPOCH,
             record,
         };
         projections
@@ -610,4 +610,243 @@ fn a_ticket_keeps_the_step_digest_of_its_newest_turn() {
     ]);
     let (_, ticket) = projections.ticket(card()).unwrap().unwrap();
     assert_eq!(ticket.last_turn_end.unwrap().step_digest, Some(digest));
+}
+
+fn issued(turn: dudes_types::TurnId, goal: GoalId) -> Record {
+    let mut record = samples::record(RecordKind::TurnIssued);
+    if let Record::TurnIssued {
+        agent: owner,
+        turn: id,
+        goal: scope,
+        ..
+    } = &mut record
+    {
+        *owner = agent();
+        *id = turn;
+        *scope = goal;
+    }
+    record
+}
+
+fn ended(turn: dudes_types::TurnId, message: Option<&str>, code: i32) -> Record {
+    let mut record = samples::record(RecordKind::TurnEnded);
+    if let Record::TurnEnded {
+        agent: owner,
+        turn: id,
+        last_message,
+        exit,
+        ..
+    } = &mut record
+    {
+        *owner = agent();
+        *id = turn;
+        *last_message = message.map(str::to_owned);
+        exit.code = Some(code);
+    }
+    record
+}
+
+fn ready_ticket() -> Vec<Record> {
+    let goal = GoalId::from_parts(8, 1);
+    let turn = dudes_types::TurnId::from_parts(9, 1);
+    vec![
+        hire("service"),
+        created(card()),
+        assigned(card(), 0, None),
+        started(card(), goal, 1),
+        issued(turn, goal),
+        ended(turn, Some("The parser now accepts empty input."), 0),
+        Record::LoopDecided {
+            agent: agent(),
+            input_digest: "completed".into(),
+            gate_trace: Vec::new(),
+            decision: dudes_proto::LoopDecision::Done,
+        },
+        transition(card(), CardStatus::Doing, CardStatus::Review, 2),
+    ]
+}
+
+#[test]
+fn a_chat_after_ready_keeps_the_ticket_result_and_engine_exit() {
+    let mut records = ready_ticket();
+    let (_, before) = project(records.clone()).ticket(card()).unwrap().unwrap();
+    let goal = before.goal.unwrap();
+    let turn = dudes_types::TurnId::from_parts(9, 2);
+    let note_lsn = Lsn(9);
+    let completion_lsn = Lsn(7);
+    let task = dudes_proto::identified_taught_note_task(
+        &dudes_proto::IdentityLine::new(agent(), "Cody", "test"),
+        "Thanks. What did you change?",
+    )
+    .unwrap();
+    let mut note = samples::record(RecordKind::BrowserNoteQueued);
+    if let Record::BrowserNoteQueued {
+        agent: owner,
+        text,
+        destination,
+        ..
+    } = &mut note
+    {
+        *owner = agent();
+        *text = "Thanks. What did you change?".into();
+        *destination = dudes_proto::BrowserNoteDestination::ManagedGoal { goal };
+    }
+    records.extend([
+        note,
+        Record::IdentifiedTaughtNoteTurnDecided {
+            agent: agent(),
+            goal,
+            note_lsn,
+            completion_lsn,
+            input_digest: "chat".into(),
+            gate_trace: work_trace(),
+            decision: dudes_proto::NoteAdmission::Issue { task: task.clone() },
+        },
+        Record::IdentifiedTaughtNoteOnlyTurnIssued {
+            agent: agent(),
+            turn,
+            goal,
+            task,
+            session: None,
+            mode: dudes_types::Mode::Managed,
+            model_selection: dudes_types::ModelSelection::default(),
+            lsn_of_decision: Lsn(10),
+            answers: Vec::new(),
+            note_lsn,
+            completion_lsn,
+        },
+        ended(turn, None, 1),
+    ]);
+    let (_, after) = project(records).ticket(card()).unwrap().unwrap();
+    assert_eq!(after.summary, before.summary);
+    assert_eq!(after.last_turn_end, before.last_turn_end);
+}
+
+fn work_trace() -> Vec<dudes_proto::GateStep> {
+    dudes_proto::Gate::ORDER
+        .into_iter()
+        .map(|gate| dudes_proto::GateStep {
+            gate,
+            fired: gate == dudes_proto::Gate::Work,
+            note: None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_mail_wake_after_ready_keeps_the_ticket_result_and_engine_exit() {
+    let mut records = ready_ticket();
+    let (_, before) = project(records.clone()).ticket(card()).unwrap().unwrap();
+    let goal = before.goal.unwrap();
+    let turn = dudes_types::TurnId::from_parts(9, 2);
+    let mut mail = samples::record(RecordKind::Mail);
+    let Record::Mail { id, to, state, .. } = &mut mail else {
+        unreachable!("mail sample");
+    };
+    *to = dudes_proto::MailTo::Agent { agent: agent() };
+    *state = dudes_types::MailState::Durable;
+    let receipt = dudes_proto::MailRef {
+        id: *id,
+        lsn: Lsn(9),
+    };
+    let task = dudes_proto::MailWakeTask::new(1).unwrap();
+    records.extend([
+        mail,
+        Record::MailWakeTurnDecided(dudes_proto::MailWakeDecision {
+            agent: agent(),
+            goal,
+            completion_lsn: Lsn(7),
+            purpose: dudes_proto::MailWakePurpose::FreshPreparation {
+                plan: dudes_proto::MailWakePlan {
+                    trigger: receipt,
+                    frontier: receipt.lsn,
+                    unread_count: 1,
+                    task: task.clone(),
+                    targets: vec![dudes_proto::MailWakeTarget {
+                        mail: receipt,
+                        original_count: 0,
+                        target_count: 1,
+                    }],
+                },
+            },
+            input_digest: dudes_proto::MailWakeDigest {
+                domain: dudes_proto::MailWakeDigestDomain::Fresh,
+                value: dudes_proto::record::Hex32::new([1; 32]),
+            },
+            gate_trace: work_trace(),
+            decision: dudes_proto::MailWakeAdmission::Issue { task: task.clone() },
+        }),
+        Record::MailState {
+            id: receipt.id,
+            state: dudes_types::MailState::Notified { n: 1 },
+        },
+        Record::MailWakeTurnDecided(dudes_proto::MailWakeDecision {
+            agent: agent(),
+            goal,
+            completion_lsn: Lsn(7),
+            purpose: dudes_proto::MailWakePurpose::ExistingPreparation { root_lsn: Lsn(10) },
+            input_digest: dudes_proto::MailWakeDigest {
+                domain: dudes_proto::MailWakeDigestDomain::Resume,
+                value: dudes_proto::record::Hex32::new([2; 32]),
+            },
+            gate_trace: work_trace(),
+            decision: dudes_proto::MailWakeAdmission::Issue { task: task.clone() },
+        }),
+        Record::MailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue {
+            agent: agent(),
+            goal,
+            turn,
+            completion_lsn: Lsn(7),
+            root_lsn: Lsn(10),
+            lsn_of_decision: Lsn(12),
+            task,
+            session: None,
+            mode: dudes_types::Mode::Managed,
+            model_selection: dudes_types::ModelSelection::default(),
+            answers: Vec::new(),
+        }),
+        ended(turn, Some("I read the request."), 1),
+    ]);
+    let (_, after) = project(records).ticket(card()).unwrap().unwrap();
+    assert_eq!(after.summary, before.summary);
+    assert_eq!(after.last_turn_end, before.last_turn_end);
+}
+
+#[test]
+fn asking_for_changes_clears_the_previous_exit_and_replaces_the_result() {
+    let mut records = ready_ticket();
+    let next_goal = GoalId::from_parts(8, 2);
+    let turn = dudes_types::TurnId::from_parts(9, 2);
+    records.extend([
+        assigned(card(), 3, Some("Also cover whitespace.")),
+        started(card(), next_goal, 4),
+    ]);
+    let (_, fresh) = project(records.clone()).ticket(card()).unwrap().unwrap();
+    assert_eq!((fresh.summary, fresh.last_turn_end), (None, None));
+    records.extend([
+        issued(turn, next_goal),
+        ended(turn, Some("Whitespace is covered too."), 0),
+    ]);
+    let (_, after) = project(records).ticket(card()).unwrap().unwrap();
+    assert_eq!(after.summary.as_deref(), Some("Whitespace is covered too."));
+    assert_eq!(after.last_turn_end.unwrap().exit.code, Some(0));
+}
+
+#[test]
+fn a_working_ticket_keeps_its_last_nonempty_summary() {
+    for message in [None, Some(""), Some("\u{7}")] {
+        let mut records = ready_ticket();
+        records.truncate(6);
+        let turn = dudes_types::TurnId::from_parts(9, 2);
+        records.extend([
+            issued(turn, GoalId::from_parts(8, 1)),
+            ended(turn, message, 1),
+        ]);
+        let (_, ticket) = project(records).ticket(card()).unwrap().unwrap();
+        assert_eq!(
+            ticket.summary.as_deref(),
+            Some("The parser now accepts empty input.")
+        );
+        assert_eq!(ticket.last_turn_end.unwrap().exit.code, Some(1));
+    }
 }

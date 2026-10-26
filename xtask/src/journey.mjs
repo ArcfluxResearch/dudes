@@ -25,11 +25,15 @@ case "$*" in
   '--version') printf 'journey stand-in\\n'; exit 0 ;;
   'auth status'|'login status') exit 0 ;;
 esac
-cat >/dev/null 2>&1 || true
+task="$*"
+case "$task" in
+  *'Summarize our conversation.'*) reply='stand-in chat reply' ;;
+  *) reply='stand-in reply' ;;
+esac
 printf 'written by the stand-in engine\\n' >> journey-note.txt
 printf '%s\\n' '{"type":"thread.started","thread_id":"11111111-1111-4111-8111-111111111111"}'
 printf '%s\\n' '{"type":"turn.started"}'
-printf '%s\\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"stand-in reply"}}'
+printf '%s\\n' "{\\"type\\":\\"item.completed\\",\\"item\\":{\\"id\\":\\"item_0\\",\\"type\\":\\"agent_message\\",\\"text\\":\\"$reply\\"}}"
 printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":2}}'
 `;
 
@@ -200,6 +204,24 @@ export class Journey {
     await this.until(`Boolean([...document.querySelectorAll('.ticket-action')].find((el) => el.textContent.trim() === 'Accept'))`,
       'the agent did not finish the ticket', 90_000);
     await this.screen('ticket ready for review');
+    await this.until(`document.querySelector('.ticket-summary')?.textContent === 'stand-in reply'`,
+      'the ticket does not show its result');
+    const card = await this.evaluate(`document.querySelector('.ticket-panel').dataset.selectedCardId`);
+    await this.click('.ticket-dialog-close');
+    await this.click('#view-board');
+    await this.click('[aria-label="Inspect Journey agent"]');
+    await this.clickButton('Chat', '[role="tab"]');
+    await this.fill('#chat-text', 'Summarize our conversation.');
+    await this.click('.chat-send');
+    await this.until(`Boolean([...document.querySelectorAll('[data-chat-turn-state="ended"] .chat-final-reply')]
+      .find((el) => el.textContent === 'stand-in chat reply'))`, 'the chat did not finish');
+    await this.click('#selection-clear');
+    await this.click('#view-board');
+    await this.click('[data-ticket-column="ready"] .ticket-card');
+    await this.until(`document.querySelector('.ticket-panel')?.dataset.selectedCardId === ${JSON.stringify(card)}
+      && document.querySelector('.ticket-summary')?.textContent === 'stand-in reply'`,
+    'the later chat replaced the ticket result');
+    await this.screen('ticket result after chat');
     await this.clickButton('Accept', '.ticket-action');
     await this.until(`Boolean(document.querySelector('[data-ticket-column="done"] .ticket-card'))`, 'the accepted ticket is not in Done');
     await this.screen('ticket accepted');

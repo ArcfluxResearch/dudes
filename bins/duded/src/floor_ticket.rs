@@ -1174,6 +1174,21 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_read_keeps_the_summary_before_instruction_evidence() {
+        let read = instruction_read_fixture();
+        assert!(serde_json::to_vec(&read_value(&read)).unwrap().len() > MAX_TICKET_BODY_BYTES);
+        let body = read_body(&read);
+        assert!(serde_json::to_vec(&body).unwrap().len() <= MAX_TICKET_BODY_BYTES);
+        assert_eq!(body["ticket"]["summary"], read.ticket.summary.unwrap());
+        assert!(
+            body["ticket"]["truncated"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("instruction_evidence"))
+        );
+    }
+
+    #[test]
     fn optional_recovered_history_yields_before_current_review_evidence() {
         use dudes_proto::rpc::ticket::{
             TicketAcknowledgedReview, TicketAcknowledgmentAction, TicketHistoryState,
