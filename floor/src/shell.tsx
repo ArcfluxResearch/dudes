@@ -53,7 +53,7 @@ import {
 } from './renderer/view';
 
 const TOP_BAR = 'top-bar relative z-(--layer-top-bar) flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface px-4 py-2 font-sans';
-const WORDMARK = 'wordmark m-0 text-title font-semibold tracking-tight text-ink';
+const WORDMARK = 'wordmark m-0 text-title font-semibold tracking-[-0.01em] text-ink';
 const STAGE_ROW = 'row-[2/-1] min-h-0';
 
 function reloadPage(): void {
@@ -75,7 +75,7 @@ export function PastedLinkNotice({ variant = 'card' }: { readonly variant?: 'car
   const buildMismatch = useSyncExternalStore(subscribeToPastedLink, pastedLinkBuildMismatch, pastedLinkBuildMismatch);
   const waiting = useSyncExternalStore(subscribeToPastedLink, pastedLinkWaitsForReload, pastedLinkWaitsForReload);
   const line = (children: ReactNode) => (
-    <p className={cn('link-refused', variant === 'card' ? noticeCard('danger') : 'm-0 font-sans text-body leading-reading text-ink')} role="alert">
+    <p className={cn('link-refused', variant === 'card' ? noticeCard('danger') : 'm-0 font-sans text-body font-normal leading-reading text-ink')} role="alert">
       <NoticeIcon tone="danger" />{children}
     </p>
   );
@@ -131,8 +131,8 @@ function SignedOutShell() {
         <h1 id="floor-title" className={WORDMARK}>dudes</h1>
       </header>
       <div className="grid content-start justify-items-center overflow-auto px-4 py-12">
-        <Card className="grid w-full max-w-xl gap-4 p-6">
-          <p className="signed-out-line m-0 text-title font-semibold leading-snug" role="status">This tab is not signed in, so the Floor shows no agents yet.</p>
+        <Card className="grid w-full max-w-[576px] gap-4 p-6">
+          <p className="signed-out-line m-0 text-title font-semibold text-ink" role="status">This tab is not signed in, so the Floor shows no agents yet.</p>
           <PastedLinkNotice variant="page" />
         </Card>
       </div>
@@ -526,7 +526,7 @@ function SignedInShell() {
               aria-controls={hiring ? 'hire-wizard' : undefined}
               onClick={(event) => openHire(event.currentTarget)}>Hire an agent</Button> : null}
             <PauseAllControl floor={floor} />
-            <Menu label="More" id="header-more-toggle" className="size-auto gap-1 px-3"
+            <Menu label="More" id="header-more-toggle" className="size-auto h-8 gap-1 px-3"
               trigger={<>More<ChevronDown {...ICON} aria-hidden="true" /></>}>
               {page === null ? null : <MenuItem id="office-open" icon={<Building2 {...ICON} />} onSelect={closeView}>Office</MenuItem>}
               <MenuItem id="crew-toggle" icon={<Users {...ICON} />} checked={crewPressed}

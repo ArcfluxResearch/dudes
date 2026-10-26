@@ -13,7 +13,7 @@ const WASH: Readonly<Record<NoticeTone, string>> = { info: 'bg-surface', warn: '
 /** The notice stack's host, fixed over the bottom-left corner of the stage, and the banner row under the top bar. */
 export const NOTICE_AREA = cn(
   'notice-area pointer-events-none fixed bottom-[max(16px,env(safe-area-inset-bottom,0px))] left-4 z-(--layer-notices) box-border flex',
-  'max-h-[min(70dvh,448px)] w-[min(416px,calc(100vw-32px))] flex-col justify-end max-[800px]:left-2 max-[800px]:right-2 max-[800px]:w-auto',
+  'max-h-[min(70dvh,448px)] w-[min(416px,calc(100vw-32px))] flex-col justify-end in-data-[focus=true]:left-auto in-data-[focus=true]:right-4 max-[800px]:left-2 max-[800px]:right-2 max-[800px]:w-auto',
 );
 export const NOTICE_BANNER = cn(
   'notice-banner relative z-(--layer-notices) box-border data-[host=fixed]:fixed data-[host=fixed]:inset-x-0 data-[host=fixed]:top-0',
@@ -22,13 +22,13 @@ export const NOTICE_BANNER = cn(
 
 /** A floating notice: one card for every kind, its edge naming how serious it is. */
 export function noticeCard(tone: NoticeTone = 'info', className?: string): string {
-  return cn('pointer-events-auto m-0 box-border w-fit max-w-full rounded-lg border bg-surface p-3 font-sans text-base leading-normal text-ink shadow-pop [overflow-wrap:anywhere]',
+  return cn('pointer-events-auto m-0 box-border w-fit max-w-full rounded-lg border bg-surface p-3 font-sans text-base font-normal leading-normal text-ink shadow-pop [overflow-wrap:anywhere]',
     EDGE[tone], className);
 }
 
 /** A line of the banner under the top bar: full width, washed with the tone's colour. */
 export function noticeLine(tone: NoticeTone = 'info', className?: string): string {
-  return cn('m-0 box-border border-b px-4 py-2 font-sans text-base leading-normal text-ink [overflow-wrap:anywhere]', EDGE[tone], WASH[tone], className);
+  return cn('m-0 box-border border-b px-4 py-2 font-sans text-base font-normal leading-normal text-ink [overflow-wrap:anywhere]', EDGE[tone], WASH[tone], className);
 }
 
 /** The icon that opens a notice's first line. It sits in the text, so the notice keeps its own element and wording. */

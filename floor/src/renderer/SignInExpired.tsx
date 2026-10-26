@@ -31,7 +31,7 @@ export function SignInExpired({ why, variant = 'card' }: { readonly why?: string
   const reason = signedOutReason();
   return (
     <p className={cn('link-refused', variant === 'card' ? noticeCard('danger') : variant === 'line' ? noticeLine('danger')
-      : 'm-0 font-sans text-body leading-reading text-ink')} role="alert">
+      : 'm-0 font-sans text-body font-normal leading-reading text-ink')} role="alert">
       <NoticeIcon tone="danger" />
       {why !== undefined ? why : reason === null
         ? 'You are signed out of this Floor. That happens when you sign out, when the browser is removed, or after 30 days without use or 90 days in all.'

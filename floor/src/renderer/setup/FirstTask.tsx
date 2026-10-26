@@ -15,7 +15,7 @@ import { Button, ICON, IconButton, cn } from '../../ui/index.ts';
 
 const CARD = 'first-task box-border grid gap-3 overflow-auto rounded-lg border border-line bg-surface p-4 font-sans text-body leading-reading text-ink shadow-pop [&_p]:m-0';
 const DOCKED = 'min-[801px]:absolute min-[801px]:inset-x-0 min-[801px]:bottom-auto min-[801px]:top-3 min-[801px]:z-(--layer-panels) min-[801px]:mx-auto min-[801px]:max-h-[calc(100%-32px)] min-[801px]:w-[min(480px,calc(100%-32px))]';
-const CENTRED = 'fixed left-1/2 top-1/2 z-(--layer-panels) m-0 max-h-[calc(100dvh-32px)] w-[min(480px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2';
+const CENTRED = 'fixed inset-0 z-(--layer-panels) m-auto h-fit max-h-[calc(100dvh-32px)] w-[min(480px,calc(100vw-32px))] transform-none';
 
 function Install({ command }: { readonly command: string }) {
   return <p className="first-task-install flex flex-wrap items-center gap-2">

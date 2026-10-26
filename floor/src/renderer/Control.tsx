@@ -183,7 +183,7 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
       <header className="control-panel-head flex flex-none items-center justify-between gap-2">
         <div className="control-heading-copy min-w-0">
           <h2 id={CONTROL_TITLE_ID} tabIndex={-1} ref={focusOnArrival}
-            className="m-0 text-page font-semibold tracking-tight text-ink focus:outline-0">{label}</h2>
+            className="m-0 text-page font-semibold tracking-[-0.01em] text-ink focus:outline-0">{label}</h2>
           {view === 'board' ? <p className="board-description m-0 mt-1 text-small text-muted">Give work a clear next step.</p> : null}
         </div>
         {page ? null : <IconButton label={`Close ${label}`} title="Close (Escape)" className="panel-close" icon={<X {...ICON} />}
