@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { cn } from '../ui';
+import { cn } from '../ui/index.ts';
 import { RelativeTime } from './RelativeTime.tsx';
 import type { RetiredAgentRow } from './archive.ts';
 import { messageGroups } from './messages.ts';
