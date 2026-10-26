@@ -138,7 +138,7 @@ test('the Give form reads before it offers a hire, and takes the project from th
   assert.match(giveForm(null), /Reading the ticket…/);
   assert.ok(!/No agent yet/.test(giveForm(null)));
   assert.match(giveForm(null, 'The daemon did not answer.'), /The daemon did not answer\./);
-  assert.match(giveForm('service'), /<select/);
+  assert.match(giveForm('service'), /role="combobox"/);
   assert.match(giveForm('elsewhere'), /No agent works in this project yet\. Hire one into it, then give this ticket to it\./);
   // Opened with no detail loaded, a queued ticket's project comes from the agent that holds it.
   store.resetFloorStore();

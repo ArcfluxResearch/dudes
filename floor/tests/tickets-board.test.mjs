@@ -344,23 +344,23 @@ test('the new ticket form is a title, and everything else is optional', () => {
   assert.match(html, /<label[^>]*>Title<\/label><input[^>]*required=""[^>]*name="title"/);
   assert.match(html, /Note \(optional\)/);
   assert.match(html, /Done when/);
-  assert.match(html, /<option value="default" selected="">default passes \(may already be true\)<\/option>|<option value="default">default passes \(may already be true\)<\/option>/);
-  assert.match(html, /<option value="second">second passes<\/option>/);
+  assert.match(html, /data-value="default" aria-selected="true"[^>]*><span>default passes \(may already be true\)<\/span>/);
+  assert.match(html, /data-value="second"[^>]*><span>second passes<\/span>/);
   assert.match(html, /Give to agent \(optional\)/);
-  assert.match(html, /<option value=""[^>]*>Not yet<\/option>/);
-  assert.match(html, /<option value="01JBQ8XK2M3N4P5Q6R7S8T9VWX">Ada<\/option>/);
+  assert.match(html, /data-value=""[^>]*><span>Not yet<\/span>/);
+  assert.match(html, /data-value="01JBQ8XK2M3N4P5Q6R7S8T9VWX"[^>]*><span>Ada<\/span>/);
   assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create ticket<\/button>/, 'empty title: nothing to create');
 });
 
 test('Project is asked for only when there is more than one', () => {
   subscribe(store, { agents: [agent()] });
-  assert.ok(!/name="project"/.test(form()));
+  assert.ok(!/data-field="project"/.test(form()));
   store.resetFloorStore();
   subscribe(store, { agents: [agent()], checks: TWO_PROJECTS });
   const html = form();
   assert.match(html, /<label[^>]*>Project<\/label>/);
-  assert.match(html, /<option value="service"[^>]*>Service<\/option>/);
-  assert.match(html, /<option value="website"[^>]*>Project 2<\/option>/);
+  assert.match(html, /data-value="service" aria-selected="true"[^>]*><span>Service<\/span>/);
+  assert.match(html, /data-value="website"[^>]*><span>Project 2<\/span>/);
 });
 
 test('with no agent hired the Give choice is the sentence and a link to hire', () => {
@@ -368,7 +368,7 @@ test('with no agent hired the Give choice is the sentence and a link to hire', (
   const html = form({ onboarding: { workspaces: [] } });
   assert.match(html, /No agent yet\. Hire one, then give this ticket to it\./);
   assert.match(html, /<button type="button" class="ticket-hire">Hire an agent<\/button>/);
-  assert.ok(!/name="agent"/.test(html), 'the select is replaced');
+  assert.ok(!/data-field="agent"/.test(html), 'the select is replaced');
   const withoutHire = form();
   assert.match(withoutHire, /No agent yet\. Hire one, then give this ticket to it\./);
   assert.match(withoutHire, /Open Settings to check whether hiring is available\./);
@@ -398,8 +398,8 @@ test('the agent choice lists agents of the project and shows the rest as unavail
     agents: [agent(), agent(GRACE, 'Grace', { workspace: undefined }), agent('01ARZ3NDEKTSV4RRFFQ69G5FAW', 'Other', { workspace: { id: 'website', label: 'Website' } })],
   });
   const html = form();
-  assert.match(html, /<option value="01JBQ8XK2M3N4P5Q6R7S8T9VWX">Ada<\/option>/);
-  assert.match(html, /<option value="01ARZ3NDEKTSV4RRFFQ69G5FAV" disabled="">Grace \(hired before projects were recorded\)<\/option>/);
+  assert.match(html, /data-value="01JBQ8XK2M3N4P5Q6R7S8T9VWX"[^>]*><span>Ada<\/span>/);
+  assert.match(html, /data-value="01ARZ3NDEKTSV4RRFFQ69G5FAV"[^>]*aria-disabled="true"[^>]*><span>Grace \(hired before projects were recorded\)<\/span>/);
   assert.ok(!/>Other</.test(html), 'an agent of another project is not offered');
   assert.match(html, /Grace was hired before projects were recorded, so it can&#x27;t take tickets\./);
 });

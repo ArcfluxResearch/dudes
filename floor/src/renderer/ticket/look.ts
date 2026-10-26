@@ -1,11 +1,6 @@
-import { cn } from '../../ui/index.ts';
-import { FIELD_BOX } from '../../ui/Field.tsx';
 
 /** A line of guidance under a heading or beside a control. The hook class is what the tests and the page find it by. */
 export const HINT = 'ticket-hint m-0 text-small text-muted';
-
-/** The native select, drawn as the same box the other text controls use. */
-export const SELECT_BOX = cn(FIELD_BOX, 'h-8 cursor-pointer');
 
 /** The row a form's buttons sit in. */
 export const FORM_ACTIONS = 'flex flex-wrap items-center gap-2';

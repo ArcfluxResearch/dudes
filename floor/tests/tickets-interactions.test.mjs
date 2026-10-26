@@ -121,6 +121,8 @@ function pageForTickets() {
 }
 
 const propsOf = (element) => element[Object.keys(element).find((key) => key.startsWith('__reactProps$'))];
+const pick = (page, select, value) => propsOf(page.host.querySelector(`#${select.getAttribute('aria-controls')}`).querySelector(`[data-value="${value}"]`)).onClick();
+const pickedValue = (page, select) => page.host.querySelector(`#${select.getAttribute('aria-controls')}`).querySelector('[aria-selected="true"]')?.getAttribute('data-value');
 const textOf = (element) => element.nodeType === 3 ? element.nodeValue : element.childNodes.map(textOf).join('');
 
 async function closeHireCallback(page, dialog, opener, onLeave = () => {}) {
@@ -272,7 +274,7 @@ test('a refused optional assignment stays visible on the auto-opened created car
   try {
     await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
     await act(async () => propsOf(app.page.host.querySelector('[name="title"]')).onChange({ target: { value: 'Keep the saved ticket' } }));
-    await act(async () => propsOf(app.page.host.querySelector('[name="agent"]')).onChange({ target: { value: ADA } }));
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="agent"]'), ADA));
     const ordinaryReply = reply;
     reply = (url, body) => url === '/floor/ticket'
       ? { status: 200, text: async () => JSON.stringify({ state: 'created', card: cardId(2), seq: 0, lsn: '4097' }) }
@@ -299,7 +301,7 @@ test('the working notice goes once the ticket is ready for review', async () => 
   try {
     await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
     await act(async () => propsOf(app.page.host.querySelector('[name="title"]')).onChange({ target: { value: 'Say who is working' } }));
-    await act(async () => propsOf(app.page.host.querySelector('[name="agent"]')).onChange({ target: { value: ADA } }));
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="agent"]'), ADA));
     const ordinaryReply = reply;
     reply = (url, body) => url === '/floor/ticket'
       ? { status: 200, text: async () => JSON.stringify({ state: 'created', card: cardId(2), seq: 0, lsn: '4097' }) }
@@ -593,9 +595,9 @@ test('Give, Edit and changes retain unsent fields while authority is unavailable
         await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
         await act(async () => press(app.page.host.querySelector(`[data-action="${action}"]`)));
         const mode = app.page.host.querySelector('.ticket-mode');
-        const field = mode.querySelector(action === 'edit' ? 'input' : action === 'changes' ? 'textarea' : 'select');
+        const field = mode.querySelector(action === 'edit' ? 'input' : action === 'changes' ? 'textarea' : '[data-ui="select"]');
         const value = action === 'give' ? ADA : 'Keep this unsent field.';
-        await act(async () => propsOf(field).onChange({ target: { value } }));
+        await act(async () => action === 'give' ? pick(app.page, field, value) : propsOf(field).onChange({ target: { value } }));
         seen.length = 0;
         await app.render({ ...app.floor, ...closed });
         assert.notEqual(mode.getAttribute('hidden'), null);
@@ -607,7 +609,7 @@ test('Give, Edit and changes retain unsent fields while authority is unavailable
         assert.deepEqual(seen, [], `${action} sends nothing while authority is unavailable`);
         await app.render({ ...app.floor, stale: false, ticket: true });
         assert.equal(mode.getAttribute('hidden'), null);
-        assert.equal(field.value, value);
+        assert.equal(action === 'give' ? pickedValue(app.page, field) : field.value, value);
       } finally { await app.close(); }
     }
   }
@@ -810,9 +812,10 @@ test('New ticket keeps its fields after closing and a fresh mount, and clears on
   let app = await mount([]);
   try {
     await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
-    for (const [name, value] of [['title', 'Keep this task'], ['note', 'Keep the details too'], ['agent', ADA]]) {
+    for (const [name, value] of [['title', 'Keep this task'], ['note', 'Keep the details too']]) {
       await act(async () => propsOf(app.page.host.querySelector(`[name="${name}"]`)).onChange({ target: { value } }));
     }
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="agent"]'), ADA));
     await act(async () => press(app.page.host.querySelector('.ticket-form-cancel')));
     await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
     assert.equal(app.page.host.querySelector('[name="title"]').value, 'Keep this task');
@@ -821,7 +824,7 @@ test('New ticket keeps its fields after closing and a fresh mount, and clears on
     await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
     assert.equal(app.page.host.querySelector('[name="title"]').value, 'Keep this task');
     assert.equal(propsOf(app.page.host.querySelector('[name="note"]')).value, 'Keep the details too');
-    assert.equal(app.page.host.querySelector('[name="agent"]').value, ADA);
+    assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="agent"]')), ADA);
     reply = (url) => ({ status: url.endsWith('/assign') ? 409 : 200, text: async () => JSON.stringify(url.endsWith('/assign')
       ? { state: 'refused', reason: 'agent_unavailable' } : { state: 'created', card: cardId(2), seq: 0, lsn: '4097' }) });
     await act(async () => propsOf(app.page.host.querySelector('.ticket-composer').querySelector('form')).onSubmit({ preventDefault() {} }));
@@ -878,7 +881,7 @@ test('a restored ticket draft requires a new project choice when its project dis
     assert.equal(app.page.host.querySelector('[name="title"]').value, 'Keep this in its project');
     assert.match(textOf(app.page.host), /saved project is no longer available/);
     assert.equal(app.page.host.querySelector('.ticket-create').disabled, true);
-    await act(async () => propsOf(app.page.host.querySelector('[name="project"]')).onChange({ target: { value: 'website' } }));
+    await act(async () => pick(app.page, app.page.host.querySelector('[data-field="project"]'), 'website'));
     assert.equal(app.page.host.querySelector('.ticket-create').disabled, false);
   } finally { await app.close(); }
 });
