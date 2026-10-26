@@ -534,11 +534,9 @@ fn finish_owned_retry(fixture: &Fixture, host: &common::SharedHost, turn: dudes_
 #[test]
 fn a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work() {
     let started = Instant::now();
-    common::test_timing("test begin", started);
     let fixture = Fixture::new();
     let settings = fixture.settings();
     one_run(&fixture, UnconfirmedHost::new(true), 1_787_394_600_000);
-    common::test_timing("initial prefix complete", started);
     let (agent, turn, task) =
         fixture.await_record("immutable issued work", |record| match record {
             Record::TurnIssued {
@@ -573,9 +571,7 @@ fn a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work() {
     host.bind_child_ends(Arc::clone(&seams.children));
     common::test_timing("retry boot begin", started);
     let mut running = common::start(boot(&fixture.settings(), seams).unwrap());
-    common::test_timing("retry boot complete", started);
     authorize_owed_issue(&fixture, &settings, agent, turn);
-    common::test_timing("retry authorized", started);
     fixture.await_record("the exact owed retry actually spawned", |record| {
         matches!(record, Record::TurnSpawned { turn: owned, reissued: true, .. }
             if *owned == turn)
@@ -583,12 +579,10 @@ fn a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work() {
     });
     running.handle.ask(duded::ports::Ask::Pause(agent)).unwrap();
     finish_owned_retry(&fixture, &host, turn);
-    common::test_timing("retry complete", started);
     let next_goal = common::set_goal(
         &running.handle,
         common::goal_params(agent, &[common::true_program()]),
     );
-    common::test_timing("next goal set", started);
     running
         .handle
         .ask(duded::ports::Ask::Resume(agent))
@@ -619,7 +613,6 @@ fn a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work() {
         },
     );
     assert_ne!(next, turn);
-    common::test_timing("next spawn observed", started);
     assert_eq!(host.spawned().len(), 2);
     let records = fixture.records();
     assert_eq!(
