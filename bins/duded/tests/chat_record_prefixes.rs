@@ -44,8 +44,6 @@ impl Prefix {
     }
 
     fn with_fsync(fsync: dudes_journal::Fsync) -> Self {
-        let started = std::time::Instant::now();
-        common::test_timing("prefix create begin", started);
         let dir = tempfile::tempdir().unwrap();
         let (writer, _) = open(
             &dir.path().join("journal"),
@@ -56,7 +54,6 @@ impl Prefix {
             },
         )
         .unwrap();
-        common::test_timing("prefix writer opened", started);
         let mut prefix = Self {
             dir,
             writer,
@@ -77,15 +74,12 @@ impl Prefix {
     }
 
     fn fold(&mut self, value: Value) -> Lsn {
-        let started = std::time::Instant::now();
         let entry = Entry {
             at: Timestamp::UNIX_EPOCH,
             record: serde_json::from_value(value).unwrap(),
         };
         let (lsn, crc) = self.writer.append_witnessed(&entry).unwrap();
-        common::test_timing("prefix append durable", started);
         self.projected.apply(lsn, crc, &entry).unwrap();
-        common::test_timing("prefix projected", started);
         self.world.apply(lsn, &entry);
         self.count += 1;
         let browser = match &entry.record {
@@ -116,13 +110,9 @@ impl Prefix {
     }
 
     fn assert_replayed(&self) {
-        let started = std::time::Instant::now();
-        common::test_timing("prefix replay begin", started);
         let (reader, _) = Reader::open(&self.dir.path().join("journal")).unwrap();
-        common::test_timing("prefix reader opened", started);
         let mut rebuilt = Projections::in_memory().unwrap();
         replay(&reader, &mut rebuilt).unwrap();
-        common::test_timing("prefix replayed", started);
         assert_eq!(
             rebuilt.export().unwrap(),
             self.projected.export().unwrap(),
@@ -130,7 +120,6 @@ impl Prefix {
             self.count
         );
         assert_eq!(rebuilt.chat().unwrap(), self.projected.chat().unwrap());
-        common::test_timing("prefix exports compared", started);
         let mut world = World::default();
         for entry in reader.iter_from(Lsn::ZERO).unwrap() {
             let (position, entry) = entry.unwrap();
@@ -142,7 +131,6 @@ impl Prefix {
             "World at acknowledged prefix {}",
             self.count
         );
-        common::test_timing("prefix world compared", started);
     }
 
     fn daemon_replayed(&self) -> anyhow::Result<DaemonReplay> {
@@ -1225,8 +1213,6 @@ fn conversation_question_prefix() -> (Prefix, Lsn, Lsn) {
 
 #[test]
 fn conversation_answer_replay_closes_only_the_exact_origin_and_queues_once() {
-    let started = std::time::Instant::now();
-    common::test_timing("test begin", started);
     for field in ["question_lsn", "origin", "task"] {
         let (mut p, context, question) = conversation_question_prefix();
         let mut answer = json!({"t":"conversation_answer_queued","agent":agent(),"question_lsn":question,"origin":{"turn":turn(120),"context_lsn":context},"text":"main","task":dudes_proto::conversation_answer_task("Which branch?", "main"),"authority":{"kind":"operator","provenance":null},"charge_scope":"agent_and_floor"});
@@ -1259,7 +1245,6 @@ fn conversation_answer_replay_closes_only_the_exact_origin_and_queues_once() {
         p.world.browser_note(answer).unwrap().answer_to,
         Some(question)
     );
-    common::test_timing("test complete", started);
 }
 
 #[test]
@@ -1332,8 +1317,6 @@ fn conversation_retry_reserve_refuses_duplicate_or_unmatched_dispatch() {
 
 #[test]
 fn startup_reserves_uncertain_conversation_before_all_admission() {
-    let started = std::time::Instant::now();
-    common::test_timing("test begin", started);
     let (mut p, context, note, decision) = conversation_prefix();
     p.append(conversation_issue(context, note, decision));
     let prior = p.intent(turn(120), note);
@@ -1345,7 +1328,6 @@ fn startup_reserves_uncertain_conversation_before_all_admission() {
     let runtime = tempfile::tempdir().unwrap();
     let mut settings = common::settings_at(dir.path(), runtime.path());
     settings.floor_usd_per_day = Some(dudes_types::Usd::from_micros(1));
-    common::test_timing("prefix seeded", started);
     for _ in 0..2 {
         let host = common::SharedHost::new();
         let clock = Arc::new(common::TestClock::new());
@@ -1364,11 +1346,9 @@ fn startup_reserves_uncertain_conversation_before_all_admission() {
         )) as Box<dyn dudes_providers::adapter::Adapter>]
         .into_iter()
         .collect();
-        common::test_timing("boot begin", started);
         let daemon =
             duded::boot_with_options(&settings, seams, duded::settings::RunOptions::default())
                 .unwrap();
-        common::test_timing("boot complete", started);
         assert_eq!(
             daemon
                 .world()
@@ -1379,9 +1359,7 @@ fn startup_reserves_uncertain_conversation_before_all_admission() {
         );
         assert!(host.spawned().is_empty());
         drop(daemon);
-        common::test_timing("daemon dropped", started);
         let projected = Projections::open(&dir.path().join(duded::boot::PROJECTION_FILE)).unwrap();
-        common::test_timing("projection reopened", started);
         let day = dudes_supervisor::Clock::now(clock.as_ref()).utc_day();
         let spend = projected.conversation_spend_views(agent(), day).unwrap();
         assert_eq!(spend.agent_unknown_ends_today, 1);
@@ -1395,8 +1373,6 @@ fn startup_reserves_uncertain_conversation_before_all_admission() {
 
 #[test]
 fn conversation_issued_under_previous_credentials_stays_owned_when_replay_needs_a_ceiling() {
-    let started = std::time::Instant::now();
-    common::test_timing("test begin", started);
     let (mut p, context, note, decision) = conversation_prefix();
     p.append(conversation_issue(context, note, decision));
     let Prefix { dir, writer, .. } = p;
@@ -1411,7 +1387,6 @@ fn conversation_issued_under_previous_credentials_stays_owned_when_replay_needs_
             "owned-fixture-marker",
         ));
     let host = common::SharedHost::new();
-    common::test_timing("first boot begin", started);
     let daemon = duded::boot_with_options(
         &settings,
         common::seams(
@@ -1424,18 +1399,15 @@ fn conversation_issued_under_previous_credentials_stays_owned_when_replay_needs_
         duded::settings::RunOptions::default(),
     )
     .unwrap();
-    common::test_timing("first boot complete", started);
     assert!(host.spawned().is_empty());
     assert!(daemon.world().turns[&turn(120)].is_issued_not_spawned());
     assert!(!daemon.world().browser_issue_cancelled(turn(120)));
     assert_eq!(daemon.world().agents[&agent()].open_turn, Some(turn(120)));
     drop(daemon);
-    common::test_timing("first daemon dropped", started);
     settings
         .daemon_env
         .retain(|entry| entry.name() != std::ffi::OsStr::new("ANTHROPIC_API_KEY"));
     let host = common::SharedHost::new();
-    common::test_timing("second boot begin", started);
     let daemon = duded::boot_with_options(
         &settings,
         common::seams(
@@ -1448,13 +1420,10 @@ fn conversation_issued_under_previous_credentials_stays_owned_when_replay_needs_
         duded::settings::RunOptions::default(),
     )
     .unwrap();
-    common::test_timing("second boot complete", started);
     let mut running = common::start(daemon);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let records = loop {
-        common::test_timing("spawn read begin", started);
         let (reader, _) = Reader::open(&dir.path().join("journal")).unwrap();
-        common::test_timing("spawn reader opened", started);
         let records: Vec<_> = reader
             .iter_from(Lsn::ZERO)
             .unwrap()
@@ -1475,9 +1444,7 @@ fn conversation_issued_under_previous_credentials_stays_owned_when_replay_needs_
         1
     );
     assert_eq!(host.spawned().len(), 1);
-    common::test_timing("spawn observed", started);
     running.stop(duded::ExitCause::Signal);
-    common::test_timing("daemon stopped", started);
 }
 
 #[test]
