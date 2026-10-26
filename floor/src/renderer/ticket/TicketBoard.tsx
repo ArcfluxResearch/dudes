@@ -277,7 +277,7 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
         <Badge state={STATE_BADGE[card.status]} className="ticket-card-state">{card.ticket?.stopping ? 'Stopping…'
           : card.ticket === null && plainColumnOf(card) === null ? otherStateName(card.status) : stateName(card.status)}</Badge>
       </span>
-      <strong className="text-body leading-snug font-semibold">{card.title}</strong>
+      <strong className="text-body leading-normal font-semibold">{card.title}</strong>
       {failure === null ? null : <span className="ticket-note text-small whitespace-pre-wrap text-muted" title={failure}>An earlier engine attempt stopped. Open the ticket for details.</span>}
       {words.note === null ? null : <span className="ticket-note text-small whitespace-pre-wrap text-muted">{words.note}</span>}
       <span className="ticket-card-footer mt-auto flex items-center justify-between gap-2">

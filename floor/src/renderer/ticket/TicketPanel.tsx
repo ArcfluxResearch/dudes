@@ -414,10 +414,10 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
     }
   }
 
-  return <section className={cn('card-detail ticket-panel group/panel flex flex-col gap-3 px-6 pt-6 pb-6 font-sans text-body leading-[1.55] text-ink focus:outline-none',
+  return <section className={cn('card-detail ticket-panel group/panel flex flex-col gap-3 px-6 pt-6 pb-6 font-sans text-body leading-reading text-ink focus:outline-none',
     'max-[800px]:px-4 max-[800px]:pt-4 max-[800px]:pb-0', SHEET_SECTIONS)} aria-labelledby="card-detail-title" data-selected-card-id={card.id}
     data-ticket-status={card.status} data-mode={mode} ref={focusSheet} tabIndex={-1} data-focus-on-leave="view-board">
-    <h3 id="card-detail-title" tabIndex={-1} className="m-0 text-page leading-tight font-semibold wrap-anywhere focus:outline-none">{card.title}</h3>
+    <h3 id="card-detail-title" tabIndex={-1} className="m-0 text-page leading-normal font-semibold wrap-anywhere focus:outline-none">{card.title}</h3>
     <Facts floor={floor} card={card} />
     <StuckActions floor={floor} card={card} onReviewRecovery={onReviewRecovery} />
     {shown?.context == null ? null : <RecoveredReview context={shown.context} fresh={fresh} />}

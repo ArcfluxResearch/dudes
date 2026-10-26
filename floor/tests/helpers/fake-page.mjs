@@ -66,11 +66,11 @@ export function fakePage(layout = {}) {
     focus() { if (page.document.body.contains(this) && (layout.shown?.(this) ?? true)) page.document.activeElement = this; }
     querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
     querySelectorAll(selector) {
-      const [, name, value] = /^\[([a-z-]+)="([^"]*)"\]$/.exec(selector) ?? [];
+      const [, name, word, value] = /^\[([a-z-]+)(~?)="([^"]*)"\]$/.exec(selector) ?? [];
       const found = [];
       for (const child of this.childNodes) {
         if (!(child instanceof Element)) continue;
-        if (child.getAttribute(name) === value) found.push(child);
+        if (word === '~' ? (child.getAttribute(name) ?? '').split(/\s+/).includes(value) : child.getAttribute(name) === value) found.push(child);
         found.push(...child.querySelectorAll(selector));
       }
       return found;

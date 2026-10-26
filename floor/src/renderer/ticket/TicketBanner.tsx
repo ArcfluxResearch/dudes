@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useEffect, useRef, useState } from 'react';
-
-import { Button } from '../../ui/index.ts';
 import { useAutoDismiss } from '../useAutoDismiss.ts';
 
 import type { FloorState } from '../floor/store.ts';
 import { announcement, arrivals, bannerCounts, bannerText, viewConfirmed } from './model.ts';
+import { Button } from '../../ui/index.ts';
+import { NoticeIcon, noticeCard } from '../notices/look.tsx';
 
 /** The page title for a banner, or `base` alone when nothing waits. */
 export function titleFor(base: string, text: string | null): string {
@@ -44,11 +44,12 @@ export function TicketBanner({ floor, onOpen }: { readonly floor: FloorState; re
 
   return <>
     <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true" data-ticket-announcement="true">{said}</div>
-    {text === null || dismissed === text ? null : <div className="ticket-banner box-border flex flex-wrap items-center gap-2 border-warn bg-warn-soft py-2 pr-2 pl-3 font-sans text-base text-ink"
-      ref={banner} role="group" aria-label="Tickets waiting on you">
-      <span className="ticket-banner-text mr-1 font-medium">{text}</span>
-      <Button size="sm" className="ticket-banner-open" onClick={onOpen}>Open Board</Button>
-      <Button variant="ghost" size="sm" className="ticket-banner-dismiss" aria-label="Dismiss ticket banner" onClick={() => setDismissed(text)}>Dismiss</Button>
+    {text === null || dismissed === text ? null : <div className={noticeCard('warn', 'ticket-banner flex flex-wrap items-center gap-x-3 gap-y-2')} ref={banner} role="group" aria-label="Tickets waiting on you">
+      <span className="ticket-banner-text min-w-0 flex-[1_1_192px] font-medium"><NoticeIcon tone="warn" />{text}</span>
+      <div className="flex gap-2">
+        <Button variant="primary" size="sm" className="ticket-banner-open" onClick={onOpen}>Open Board</Button>
+        <Button size="sm" className="ticket-banner-dismiss" aria-label="Dismiss ticket banner" onClick={() => setDismissed(text)}>Dismiss</Button>
+      </div>
     </div>}
   </>;
 }

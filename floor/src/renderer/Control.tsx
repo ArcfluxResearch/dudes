@@ -20,7 +20,7 @@ import { TicketOffHint } from './ticket/TicketGuidance.tsx';
 import { TicketPanel } from './ticket/TicketPanel.tsx';
 import { HireEntry } from './onboarding/HireEntry.tsx';
 import { isPageView } from '../navigation.ts';
-import { Dialog, ICON, IconButton, cn } from '../ui/index.ts';
+import { Button, Dialog, ICON, IconButton, cn } from '../ui/index.ts';
 
 export type ControlView = 'overview' | 'board' | 'log' | 'setup' | 'settings';
 
@@ -81,11 +81,11 @@ export function FocusRoster({ collapsed, onToggle, ...roster }: Parameters<typeo
   readonly onToggle: () => void;
 }) {
   return (
-    <section className="focus-roster" aria-label="Focus roster">
-      <button type="button" className="focus-roster-toggle" aria-expanded={!collapsed}
+    <section className="focus-roster grid min-h-0 content-start gap-3 overflow-auto max-[800px]:order-first max-[800px]:max-h-56" aria-label="Focus roster">
+      <Button className="focus-roster-toggle w-full" aria-expanded={!collapsed}
         aria-controls="focus-roster-list" onClick={onToggle}>
         {collapsed ? 'Show roster' : 'Hide roster'}
-      </button>
+      </Button>
       {collapsed ? null : <div id="focus-roster-list"><AgentsRoster {...roster} /></div>}
     </section>
   );
@@ -97,13 +97,14 @@ export function ControlNav({ floor, view, onToggle }: {
   readonly onToggle: (view: ControlView) => void;
 }) {
   return (
-    <nav className="control-nav" aria-label="Views">
-      {CONTROL_VIEWS.map((entry) => <button key={entry.view} type="button" id={viewButtonId(entry.view)}
+    <nav className="control-nav flex flex-wrap items-center gap-1" aria-label="Views">
+      {CONTROL_VIEWS.map((entry) => <Button key={entry.view} variant="ghost" id={viewButtonId(entry.view)}
+        className={cn(view === entry.view && 'bg-accent-soft text-accent hover:bg-accent-soft hover:text-accent')}
         aria-pressed={view === entry.view}
         aria-controls={view === entry.view ? entry.view === 'overview' ? 'overview-dialog' : 'control-panel' : undefined}
         onClick={() => onToggle(entry.view)}>
         {entry.label}
-      </button>)}
+      </Button>)}
     </nav>
   );
 }
@@ -170,20 +171,25 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
     settings: <SettingsView floor={floor} onSetup={() => onView('setup')} />,
   };
   const label = labelOf(view);
+  const page = isPageView(view);
   return (
-    <section className="control-panel has-[dialog[open]]:overflow-y-hidden" id="control-panel" data-view={view} aria-labelledby={CONTROL_TITLE_ID}
-      data-page={isPageView(view) ? 'true' : undefined}
+    <section id="control-panel" data-view={view} aria-labelledby={CONTROL_TITLE_ID}
+      className={cn('control-panel has-[dialog[open]]:overflow-y-hidden relative z-(--layer-panels) box-border flex min-h-0 min-w-0 flex-col overflow-y-auto border-0 bg-bg font-sans text-ink',
+        page ? 'static col-[1/-1] row-1 gap-4 px-[max(16px,calc((100%-832px)/2))] py-6'
+          : 'col-[1/-1] row-2 gap-6 px-9 pb-8 pt-6 max-[800px]:p-5')}
+      data-page={page ? 'true' : undefined}
       ref={handFocusOnLeave} data-focus-on-leave={viewButtonId(view)}
       onKeyDown={(event) => { if (closesPanel(event)) { event.stopPropagation(); onClose(); } }}>
-      <header className="control-panel-head">
-        <div className="control-heading-copy">
-          <h2 id={CONTROL_TITLE_ID} tabIndex={-1} ref={focusOnArrival}>{label}</h2>
-          {view === 'board' ? <p className="board-description">Give work a clear next step.</p> : null}
+      <header className="control-panel-head flex flex-none items-center justify-between gap-2">
+        <div className="control-heading-copy min-w-0">
+          <h2 id={CONTROL_TITLE_ID} tabIndex={-1} ref={focusOnArrival}
+            className="m-0 text-page font-semibold tracking-[-0.01em] text-ink focus:outline-0">{label}</h2>
+          {view === 'board' ? <p className="board-description m-0 mt-1 text-small text-muted">Give work a clear next step.</p> : null}
         </div>
-        {isPageView(view) ? null : <button type="button" className="panel-close" aria-label={`Close ${label}`} title="Close (Escape)"
-          onClick={onClose}>×</button>}
+        {page ? null : <IconButton label={`Close ${label}`} title="Close (Escape)" className="panel-close" icon={<X {...ICON} />}
+          onClick={onClose} />}
       </header>
-      <div className="control-view">{panels[view]}</div>
+      <div className={cn('control-view min-h-0 min-w-0 overflow-auto', page || view === 'board' ? 'flex-none overflow-visible' : 'flex-auto')}>{panels[view]}</div>
       {view === 'board' ? <TicketNotice floor={floor}
         card={showing ? overlay?.kind === 'card' ? overlay.id : null : undefined} /> : null}
       {view === 'board' ? <Dialog className="ticket-dialog m-0 ml-auto h-dvh max-h-none w-[min(100vw,56rem,max(35rem,70vw))] max-w-[100vw] rounded-none rounded-l-xl border-y-0 border-r-0 data-[composer=true]:m-auto data-[composer=true]:h-fit data-[composer=true]:max-h-[calc(100dvh-4rem)] data-[composer=true]:w-[min(36rem,calc(100vw-2rem))] data-[composer=true]:rounded-xl data-[composer=true]:border max-[800px]:data-[composer=false]:w-screen max-[800px]:data-[composer=false]:rounded-none"

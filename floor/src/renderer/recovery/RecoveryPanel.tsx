@@ -12,8 +12,6 @@ import { blocksDraft, browserRecoveryDeps, checkRecoveryReceipt, chooseRecovery,
 import type { Draft, RecoveryRequest, RecoveryState } from './recovery.ts';
 import { Button, Disclosure, cn } from '../../ui/index.ts';
 
-/** The receipts column gives a focused receipt the room to scroll inside the drawer. */
-export const RECEIPTS = 'receipts has-[.recovery-receipt:focus-within]:max-h-[calc(100dvh-8rem)]';
 const CARD = 'min-w-0 wrap-anywhere rounded-lg border border-line bg-surface p-4 font-sans text-base text-ink [&_h3]:m-0 [&_h3]:text-title [&_h3]:font-semibold [&_h4]:m-0 [&_h4]:text-body [&_h4]:font-semibold [&_p]:m-0';
 const WARNING = 'recovery-warning rounded-md border-l-4 border-warn bg-warn-soft px-3 py-2';
 const FACTS = 'recovery-facts m-0 grid min-w-0 grid-cols-[minmax(0,1fr)] [&>div]:grid [&>div]:min-w-0 [&>div]:gap-0.5 [&>div]:border-t [&>div]:border-line [&>div]:py-2 [&_dt]:text-caption [&_dt]:font-semibold [&_dt]:tracking-label [&_dt]:text-muted [&_dt]:uppercase [&_dd]:m-0 [&_dd]:min-w-0 [&_dd]:font-mono [&_dd]:text-small [&_dd]:wrap-anywhere';

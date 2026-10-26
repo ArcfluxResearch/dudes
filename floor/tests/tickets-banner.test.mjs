@@ -15,10 +15,7 @@ import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 
 import { createElement } from 'react';
-import { renderToStaticMarkup as renderRaw } from 'react-dom/server';
-import { plainMarkup } from './helpers/plain-markup.mjs';
-
-const renderToStaticMarkup = (...args) => plainMarkup(renderRaw(...args));
+import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { ADA, GRACE, agent, plainCard, subscribe, ticketCard } from './helpers/tickets.mjs';
@@ -93,7 +90,7 @@ test('the banner says it in plain words', () => {
 test('the banner is drawn for a waiting ticket and carries the words and an Open Board button', () => {
   subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'review', { claimed_by: ADA })] });
   const html = banner();
-  assert.match(html, /<span class="ticket-banner-text">1 ticket is ready for you\.<\/span>/);
+  assert.match(html, /<span class="ticket-banner-text [^"]*">(?:<svg[^]*?<\/svg>)?1 ticket is ready for you\.<\/span>/);
   assert.match(html, /Open Board<\/button>/);
   assert.match(html, /aria-live="polite"/);
 });

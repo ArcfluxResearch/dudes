@@ -2,9 +2,6 @@
 
 /* The older screens' rules, kept as they were and in their original order until each screen moves. */
 @import './legacy/base.css';
-@import './legacy/shell.css';
-@import './legacy/layout.css';
-@import './legacy/focus.css';
 @import './legacy/office.css';
 @import './legacy/agent-panel.css';
 @import './legacy/memory.css';
@@ -21,7 +18,6 @@
 @import './legacy/chat.css';
 @import './legacy/agent-detail.css';
 @import './legacy/roster.css';
-@import './legacy/notices.css';
 @import './legacy/engine-sign-in.css';
 @import './legacy/touch-and-phone.css';
 

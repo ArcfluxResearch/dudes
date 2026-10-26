@@ -188,7 +188,7 @@ test('the roster chip and the top bar say a ticket is ready for you, not done', 
   assert.equal(state([agent(ADA, 'Ada', { status: 'running' })], []), 'working');
   assert.equal(state([row], [ticketCard(1, 'done', { claimed_by: ADA })]), 'done');
   const html = renderToStaticMarkup(createElement(CrewStats, { agents: [row], cards: review }));
-  assert.match(html, /data-status="ready">1 ready for you</);
+  assert.match(html, /data-status="ready"[^>]*>1 ready for you</);
   assert.ok(!/ done</.test(html));
 });
 

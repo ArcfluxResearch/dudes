@@ -147,8 +147,8 @@ test('snapshot and delta activity renders newest journal position first with ine
   assert.doesNotMatch(html, /<script|<button|<textarea|<form|<a\b/);
   assert.match(html, /<time dateTime="[^"]*" title="Jan 1, 1970[^"]*">[^<]*ago<\/time><\/small><details><summary>Details<\/summary><p>Jan 1, 1970[^<]*<\/p><p>Record position: segment 0 · byte 3<\/p>/);
   const center = await render('Control', { floor, selectedId: null, onClose() {}, onView() {}, view: 'log' });
-  assert.match(center, /<section class="control-panel[^"]*" id="control-panel" data-view="log" aria-labelledby="control-title"/);
-  assert.match(center, /<h2 id="control-title" tabindex="-1">Log<\/h2>/);
+  assert.match(center, /<section id="control-panel" data-view="log" aria-labelledby="control-title" class="control-panel /);
+  assert.match(center, /<h2 id="control-title" tabindex="-1" class="[^"]*">Log<\/h2>/);
   assert.match(center, /Recent activity, newest first/);
   assert.doesNotMatch(center, new RegExp(SECRET));
 });
