@@ -59,11 +59,11 @@ export function Receipts({ floor, leaveFocusTo, focused = false }: {
 }
 
 const DRAWER = cn('agent-drawer m-0 box-border flex min-w-0 flex-col overflow-hidden border-0 border-solid border-line bg-surface text-ink',
-  'max-[800px]:fixed max-[800px]:inset-0 max-[800px]:z-1 max-[800px]:px-4 max-[800px]:pt-4 max-[800px]:pb-8',
+  'max-[800px]:fixed max-[800px]:inset-0 max-[800px]:z-1 max-[800px]:px-4 max-[800px]:pt-4 max-[800px]:pb-[calc(2rem+var(--notice-room,0px))]',
   'max-[800px]:not-has-[[data-detail-tab=chat]]:top-[var(--banner-height,0px)]',
   'max-[800px]:has-[[data-detail-tab=chat]]:top-[var(--chat-viewport-top,0px)] max-[800px]:has-[[data-detail-tab=chat]]:bottom-auto',
   'max-[800px]:has-[[data-detail-tab=chat]]:h-[var(--chat-viewport-height,100dvh)]',
-  'max-[800px]:has-[[data-detail-tab=chat]]:pb-[max(1rem,env(safe-area-inset-bottom,0px))]',
+  'max-[800px]:has-[[data-detail-tab=chat]]:pb-[calc(max(1rem,env(safe-area-inset-bottom,0px))+var(--notice-room,0px))]',
   '[&_[class~=agent-detail]]:border-0 [&_[class~=agent-detail]]:bg-transparent [&_[class~=agent-detail]]:p-0 [&_[class~=agent-detail]]:shadow-none',
   '[&_[class~=agent-detail-identity]]:pr-8');
 const DOCKED = 'min-[801px]:relative min-[801px]:z-(--layer-panels) min-[801px]:w-[min(var(--side-width),45vw)] min-[801px]:flex-none min-[801px]:border-l min-[801px]:p-4';

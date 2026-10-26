@@ -196,6 +196,8 @@ function SignedInShell() {
     const sync = () => {
       const pinned = noticeBanner.parentElement?.classList.contains('top-region') === true;
       shell.style.setProperty('--banner-height', `${pinned ? noticeBanner.offsetHeight : 0}px`);
+      const room = noticeArea.parentElement === shell ? noticeArea.offsetHeight : 0;
+      shell.style.setProperty('--notice-room', `${room === 0 ? 0 : room + 16}px`);
     };
     const update = () => {
       const dialogs = shell.querySelectorAll<HTMLDialogElement>('.hire-dialog:modal, .retire-dialog:modal, .ticket-dialog:modal, .overview-dialog:modal');
@@ -213,6 +215,7 @@ function SignedInShell() {
     observer.observe(shell, { childList: true, subtree: true, attributes: true, attributeFilter: ['open'] });
     const height = new ResizeObserver(sync);
     height.observe(noticeBanner);
+    height.observe(noticeArea);
     update();
     return () => { observer.disconnect(); height.disconnect(); noticeArea.remove(); noticeBanner.remove(); };
   }, [noticeArea, noticeBanner]);
@@ -577,7 +580,7 @@ function SignedInShell() {
           <TerminalPanel floor={floor} theme={effectiveTheme} />
         </div>
         <div className={cn('stage-side pointer-events-none z-(--layer-panels) col-4 flex min-w-0 flex-col gap-2 [&>*]:pointer-events-auto max-[800px]:p-0',
-          STAGE_ROW, drawerOpen && 'max-[800px]:z-[calc(var(--layer-top-bar)+1)]', focused && 'col-1 p-2', fullPanel && 'hidden')}>
+          STAGE_ROW, drawerOpen && 'max-[800px]:z-[calc(var(--layer-top-bar)+1)]', focused && 'col-1 p-2 pb-[calc(0.5rem+var(--notice-room,0px))]', fullPanel && 'hidden')}>
           <Receipts floor={floor} leaveFocusTo={displayRow === null ? home : AGENT_DETAIL_HEADING_ID} focused={focused} />
           {focused ? <section className="focus-mode flex min-h-0 flex-auto flex-col gap-2" aria-label="Focus mode" ref={handFocusOnLeave}
             data-focus-on-leave="header-more-toggle">
