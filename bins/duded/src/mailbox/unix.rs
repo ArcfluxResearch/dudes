@@ -303,8 +303,11 @@ impl Mailbox {
         redactor: dudes_supervisor::Redactor,
     ) {
         self.subject_contexts.remove(&agent);
+        if !self.live_agents.contains(&agent) {
+            return;
+        }
         let admitted = (|| -> io::Result<_> {
-            let tree = Tree::open(&self.root, agent, grant_opening())?;
+            let tree = Tree::open(&self.root, agent, self.opening(&Rc::default(), agent, true))?;
             let outbox = tree.outbox_grant()?;
             if !snapshot(&tree.outbox, OUTBOX_SCAN)?.is_some_and(|names| names.is_empty()) {
                 return Err(io::Error::other("outbox predates this child context"));
@@ -2171,6 +2174,7 @@ mod tests {
         let redactor = dudes_supervisor::Redactor::new();
         h.mailbox
             .begin_subject_context(sender, holder, redactor.clone());
+        assert!(h.path(sender, "outbox", "").is_dir());
         redactor.hold_env(holder, &[]);
         h.pass();
         let outbox = Harness::mail(1);
@@ -2183,6 +2187,21 @@ mod tests {
         let id = dudes_journal::mail_recipient_id(outbox, recipient);
         assert_eq!(h.mailbox.rows[&id].item.subject, "round trip request");
         assert_eq!(h.mailbox.rows[&id].subject_admission, Some(1));
+    }
+
+    #[test]
+    fn subject_context_setup_does_not_create_mailboxes_for_unknown_or_retired_agents() {
+        let mut h = Harness::new(1);
+        let retired = Harness::id(1);
+        h.retire(retired);
+        std::fs::remove_dir_all(h.path(retired, "", "")).unwrap();
+        for agent in [retired, Harness::id(2)] {
+            let holder = dudes_supervisor::Holder::Pty(agent);
+            h.mailbox
+                .begin_subject_context(agent, holder, dudes_supervisor::Redactor::new());
+            assert!(!h.path(agent, "", "").exists());
+            assert!(!h.mailbox.subject_contexts.contains_key(&agent));
+        }
     }
 
     #[test]
