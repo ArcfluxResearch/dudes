@@ -3,6 +3,7 @@
 import { useRef } from 'react';
 import { recordedTime } from '../format.ts';
 import { intervalText } from './context.ts';
+import { Disclosure } from '../../ui/index.ts';
 import type { TicketContext } from './context.ts';
 
 const ACTION = {
@@ -17,7 +18,7 @@ export function RecoveredReview({ context, fresh }: { readonly context: TicketCo
   if (context.binding === null || (history.relations.length === 0 && history.state === 'complete')) return null;
   return <section aria-label="Recovered attempt review"><h4>Review the recovered attempt</h4>
     <p>This ticket continued after an interruption.</p>
-    <details><summary>Details</summary><p>This is the same ticket and round {context.binding.round}.</p></details>
+    <Disclosure summary="Details"><p>This is the same ticket and round {context.binding.round}.</p></Disclosure>
     {fresh ? null : <p role="status">This view may be out of date. Read the current ticket before acting.</p>}
     {history.state === 'complete' ? null : <p role="status">{history.state === 'truncated'
       ? 'Some recovery review history is omitted by the display limit.'
@@ -32,7 +33,7 @@ export function RecoveredReview({ context, fresh }: { readonly context: TicketCo
           ? 'The earlier tracked launch boundary is now settled. Effects of earlier work may still be unknown.'
           : 'The exact earlier launch boundary is unavailable. Effects of earlier work may still be unknown.'}
       {' '}{row.acknowledgment.state === 'found'
-        ? <a href="#earlier-acknowledged-reviews" onClick={(event) => {
+        ? <a href="#earlier-acknowledged-reviews" className="text-accent underline" onClick={(event) => {
           event.preventDefault();
           if (row.acknowledgment.state === 'found') {
             const section = acknowledged.current.get(row.acknowledgment.lsn);
@@ -42,17 +43,17 @@ export function RecoveredReview({ context, fresh }: { readonly context: TicketCo
         : row.acknowledgment.state === 'none' ? 'The earlier attempt has no acknowledged review.'
           : row.acknowledgment.state === 'truncated' ? 'The earlier acknowledged review is omitted by the display limit.'
             : 'The earlier acknowledged review is unavailable.'}
-      <details><summary>Details</summary><p>Interval: {intervalText(row.interval)}</p>
+      <Disclosure summary="Details"><p>Interval: {intervalText(row.interval)}</p>
         {row.boundary.state === 'no_host_call' ? <p>Proof record: {row.boundary.proof_lsn}</p> : null}
-      </details>
+      </Disclosure>
     </li>)}</ul>
-    <div id="earlier-acknowledged-reviews">{history.acknowledgments.map((ack) => <details id={`earlier-review-${ack.lsn}`} key={ack.lsn} tabIndex={-1}
-      ref={(node) => { if (node === null) acknowledged.current.delete(ack.lsn); else acknowledged.current.set(ack.lsn, node); }}>
-      <summary>Earlier acknowledged review</summary>
+    <div id="earlier-acknowledged-reviews">{history.acknowledgments.map((ack) => <Disclosure id={`earlier-review-${ack.lsn}`} key={ack.lsn} tabIndex={-1}
+      ref={(node) => { if (node === null) acknowledged.current.delete(ack.lsn); else acknowledged.current.set(ack.lsn, node); }}
+      summary="Earlier acknowledged review">
       <p>Review record {ack.lsn}. {ACTION[ack.action]} at {recordedTime(ack.at)}. Recorded ticket sequence {ack.expected_seq}.</p>
       <p>Review through record {ack.watermark.through_lsn}. Review digest <code>{ack.watermark.set_digest}</code>.</p>
       <ul>{ack.intervals.map((interval, at) => <li key={at}>Earlier interval with {intervalText(interval)}.</li>)}</ul>
       <p>This acknowledgment does not acknowledge the current review or undo earlier effects.</p>
-    </details>)}</div>
+    </Disclosure>)}</div>
   </section>;
 }

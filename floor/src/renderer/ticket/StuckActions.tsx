@@ -9,6 +9,8 @@ import {
 import type { CardRow } from '../board.ts';
 import type { FloorState } from '../floor/store.ts';
 import { stuckOffer } from './stuck.ts';
+import { Button } from '../../ui/index.ts';
+import { HINT } from './look.ts';
 
 /** Resume, or Review recovery, beside the sentence that says the agent is held or interrupted. */
 export function StuckActions({ floor, card, onReviewRecovery }: {
@@ -25,15 +27,15 @@ export function StuckActions({ floor, card, onReviewRecovery }: {
   const sent = !mine ? null : control.sending ? 'Sending…'
     : outcome?.kind === 'applied' ? 'Resume recorded. This ticket changes when the agent starts its next turn.'
       : outcome?.kind === 'refused' ? REFUSAL_REASONS[outcome.reason] : null;
-  return <div className="ticket-stuck" role="group" aria-label="Agent actions">
-    {offer.resume === null ? null : <button type="button" className="ticket-action" data-action="resume"
+  return <div className="ticket-stuck flex flex-wrap items-center gap-2 rounded-lg border border-line bg-surface-2 p-3" role="group" aria-label="Agent actions">
+    {offer.resume === null ? null : <Button variant="primary" className="ticket-action" data-action="resume"
       aria-disabled={blocked || undefined}
       onClick={(event) => { if (event.detail < 2) void submitControl('resume', offer.resume!, browserControlDeps); }}>
-      Resume agent</button>}
-    {offer.recovery === null ? null : <button type="button" className="ticket-action" data-action="review_recovery"
-      onClick={() => onReviewRecovery?.(offer.recovery!)}>Review recovery</button>}
-    {offer.switchOff === null ? null : <p className="ticket-hint" role="note">
+      Resume agent</Button>}
+    {offer.recovery === null ? null : <Button className="ticket-action" data-action="review_recovery"
+      onClick={() => onReviewRecovery?.(offer.recovery!)}>Review recovery</Button>}
+    {offer.switchOff === null ? null : <p className={HINT} role="note">
       Turn on {offer.switchOff} under Floor switches in Settings to do this here.</p>}
-    {sent === null ? null : <p className="ticket-hint" role="status">{sent}</p>}
+    {sent === null ? null : <p className={HINT} role="status">{sent}</p>}
   </div>;
 }

@@ -15,7 +15,10 @@ import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
-import { renderToStaticMarkup } from 'react-dom/server';
+import { renderToStaticMarkup as renderRaw } from 'react-dom/server';
+import { plainMarkup } from './helpers/plain-markup.mjs';
+
+const renderToStaticMarkup = (...args) => plainMarkup(renderRaw(...args));
 import { createServer } from 'vite';
 import { fakePage, press } from './helpers/fake-page.mjs';
 import { DIFF_CARD, DIFF_ENTRY, DIFF_MANIFEST, diffBinding, diffContent, diffEntry, diffFile, diffPage } from './helpers/diff-fixtures.mjs';
@@ -36,6 +39,7 @@ beforeEach(() => { store.resetFloorStore(); });
 
 const response = (value) => ({ kind: 'response', response: value });
 const text = (node) => node.nodeType === 3 ? node.nodeValue : node.childNodes.map(text).join('');
+const hasClass = (node, name) => (node.getAttribute('class') ?? '').split(/\s+/).includes(name);
 const elements = (node) => node.childNodes.flatMap((child) => child.nodeType === 1 ? [child, ...elements(child)] : []);
 const buttons = (app) => elements(app.page.host).filter((node) => node.tagName === 'BUTTON');
 const button = (app, label) => buttons(app).find((node) => text(node) === label);
@@ -94,14 +98,14 @@ test('an open file shows its old and current text side by side, and closes again
   try {
     await app.click('Show changes');
     await app.click('Open side by side');
-    const sides = elements(app.page.host).filter((node) => node.getAttribute('class') === 'diff-sides');
+    const sides = elements(app.page.host).filter((node) => hasClass(node, 'diff-sides'));
     assert.equal(sides.length, 1);
     const headings = elements(sides[0]).filter((node) => node.tagName === 'H6').map(text);
     assert.deepEqual(headings, ['Old', 'Current']);
     const code = elements(sides[0]).filter((node) => node.tagName === 'CODE').map(text);
     assert.deepEqual(code, ['fn count() -> u8 {\n    1\n}\n', 'fn count() -> u8 {\n    2\n}\n']);
     await app.click('Close file');
-    assert.equal(elements(app.page.host).filter((node) => node.getAttribute('class') === 'diff-sides').length, 0);
+    assert.equal(elements(app.page.host).filter((node) => hasClass(node, 'diff-sides')).length, 0);
     assert.equal(app.seen.length, 2, 'closing a file reads nothing');
   } finally { await app.close(); }
 });
@@ -112,15 +116,15 @@ const html = (page, extra = {}) => renderToStaticMarkup(createElement(DiffReview
 
 test('each freshness label says what it means and never reads as fresh or as a pass', () => {
   const matches = html(diffPage({ freshness: 'matches_review_sample' }));
-  assert.match(matches, /<span class="diff-badge" data-freshness="matches_review_sample">Unchanged since the check<\/span>/);
+  assert.match(matches, /<span class="diff-badge" data-freshness="matches_review_sample">[^]*?Unchanged since the check<\/span>/);
   assert.match(matches, /does not show that the check passed on these changes/);
 
   const changed = html(diffPage({ freshness: 'changed_after_check' }));
-  assert.match(changed, /<span class="diff-badge" data-freshness="changed_after_check">Changed since the check<\/span>/);
+  assert.match(changed, /<span class="diff-badge" data-freshness="changed_after_check">[^]*?Changed since the check<\/span>/);
   assert.match(changed, /not the files the check saw/);
 
   const unknown = html(diffPage({ freshness: 'unknown', binding: diffBinding({ check_lsn: null }) }));
-  assert.match(unknown, /<span class="diff-badge" data-freshness="unknown">Unknown<\/span>/);
+  assert.match(unknown, /<span class="diff-badge" data-freshness="unknown">[^]*?Unknown<\/span>/);
   assert.match(unknown, /Dudes cannot tell whether this is what the check saw\./);
   assert.match(unknown, /It cannot make a complete comparison with the sample from just after the check/);
   assert.match(unknown, /leaving out any one file makes a sample incomplete/);
@@ -325,11 +329,11 @@ test('source text keeps tabs, CRLF, CR and an absent final newline, and numbers 
   const app = await mount((request) => response(request.mode === 'content' ? diffContent({ files: [diffFile({ old, current })] }) : diffPage()));
   try {
     await app.click('Show changes'); await app.click('Open side by side');
-    const panes = elements(app.page.host).filter((node) => node.getAttribute('class') === 'diff-source');
+    const panes = elements(app.page.host).filter((node) => hasClass(node, 'diff-source'));
     const source = (pane) => elements(pane).filter((node) => node.tagName === 'CODE').map(text).join('');
     assert.equal(source(panes[0]), old);
     assert.equal(source(panes[1]), current);
-    for (const pane of panes) assert.equal(elements(pane).filter((node) => node.getAttribute('class') === 'diff-line-number').map(text).join('\n'), '1\n2\n3\n4\n5');
+    for (const pane of panes) assert.equal(elements(pane).filter((node) => hasClass(node, 'diff-line-number')).map(text).join('\n'), '1\n2\n3\n4\n5');
     assert.match(text(app.page.host), /No final newline\./);
   } finally { await app.close(); }
 });
@@ -423,4 +427,20 @@ test('the request is one POST and every status has one reading', async () => {
   assert.equal(none.calls.length, 0, 'no session, no request');
   const offline = await postDiff({ mode: 'manifest', card: DIFF_CARD, expected_seq: 4 }, 'c'.repeat(43), async () => { throw new Error('offline'); });
   assert.equal(offline.kind, 'unavailable');
+});
+
+test('the lines taken out and put in are found by the longest run the two texts share', async () => {
+  const { changedLines } = await server.ssrLoadModule('/src/renderer/diff/diff.ts');
+  const found = changedLines('one\ntwo\nthree\nfour\n', 'one\n2\nthree\nfour\nfive\n');
+  assert.deepEqual([...found.removed], [1]);
+  assert.deepEqual([...found.added], [1, 4]);
+  const same = changedLines('a\nb', 'a\nb');
+  assert.equal(same.removed.size + same.added.size, 0);
+  const whole = changedLines('', 'new\nfile\n');
+  assert.deepEqual([...whole.added], [0, 1]);
+  assert.equal(whole.removed.size, 0);
+  const crlf = changedLines('a\r\nb\r\n', 'a\r\nc\r\n');
+  assert.deepEqual([[...crlf.removed], [...crlf.added]], [[1], [1]]);
+  const huge = 'x\n'.repeat(3000);
+  assert.equal(changedLines(`${huge}a\n`, `b\n${huge}`), null, 'a file too big to compare cheaply is shown without colour');
 });

@@ -3,8 +3,20 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { DiffContent, DiffEntry, DiffFreshness, DiffKind, DiffOmissionReason, DiffOutcome, DiffPage,
   DiffRefusalReason, DiffRequest, DiffTransport } from './diff.ts';
-import { sameDiffBinding } from './diff.ts';
-import './diff.css';
+import { changedLines, sameDiffBinding } from './diff.ts';
+import { Badge, Button, Disclosure, cn } from '../../ui/index.ts';
+import type { BadgeState } from '../../ui/index.ts';
+
+const NOTE = 'diff-note m-0 text-small text-muted';
+const FRESH_BADGE: Readonly<Record<DiffFreshness, BadgeState>> = {
+  matches_review_sample: 'done', changed_after_check: 'needs-you', unknown: 'idle',
+};
+const CALLOUT = 'm-0 rounded-md border-l-4 px-3 py-2 text-small';
+const LINE_TINT = {
+  added: 'border-ok bg-ok-soft before:content-["+"]',
+  removed: 'border-danger bg-danger-soft before:content-["-"]',
+  same: 'border-transparent',
+} as const;
 
 const BADGE: Readonly<Record<DiffFreshness, string>> = {
   matches_review_sample: 'Unchanged since the check',
@@ -88,21 +100,26 @@ function failureText(reason: Failure): string {
   return REFUSALS[reason];
 }
 
-function SourceLines({ label, text, absent }: {
+function SourceLines({ label, text, absent, changes }: {
   readonly label: 'Old' | 'Current';
   readonly text: string;
   readonly absent: string;
+  /** The zero-based lines to colour, or `null` for plain text. */
+  readonly changes: ReadonlySet<number> | null;
 }) {
   const endsWithNewline = /[\r\n]$/.test(text);
   const lineCount = text === '' ? 0 : (text.match(/\r\n|\r|\n/g)?.length ?? 0) + (endsWithNewline ? 0 : 1);
   const numbers = Array.from({ length: lineCount }, (_, index) => index + 1).join('\n');
-  return <section className="diff-side">
-    <h6>{label}</h6>
-    {text === '' ? <p className="diff-note">{absent}</p> : <>
-      <div className="diff-source" tabIndex={0} role="region" aria-label={label === 'Old' ? 'Old source lines' : 'Current source lines'}>
-        <pre><span className="diff-line-number" aria-hidden="true">{numbers}</span><code>{text}</code></pre>
+  const rows = text.match(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g) ?? [];
+  return <section className="diff-side min-w-0">
+    <h6 className="m-0 bg-surface-2 px-3 py-1.5 text-small font-semibold text-muted">{label}</h6>
+    {text === '' ? <p className={cn(NOTE, 'px-3 py-2')}>{absent}</p> : <>
+      <div className="diff-source max-h-96 max-w-full overflow-auto overscroll-contain bg-field focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus" tabIndex={0} role="region" aria-label={label === 'Old' ? 'Old source lines' : 'Current source lines'}>
+        <pre className="m-0 flex min-w-max py-2 font-mono text-caption leading-[1.7] whitespace-pre"><span className="diff-line-number box-border w-12 shrink-0 pr-3 text-right text-subtle select-none" aria-hidden="true">{numbers}</span><code className="min-w-0 flex-1 font-[inherit]">{changes === null ? text
+          : rows.map((row, index) => <span key={index} className={cn('relative block border-l-2 pr-3 pl-4 before:absolute before:left-1',
+            changes.has(index) ? LINE_TINT[label === 'Old' ? 'removed' : 'added'] : LINE_TINT.same)}>{row}</span>)}</code></pre>
       </div>
-      {!endsWithNewline ? <p className="diff-note">No final newline.</p> : null}
+      {!endsWithNewline ? <p className={cn(NOTE, 'px-3 py-2')}>No final newline.</p> : null}
     </>}
   </section>;
 }
@@ -110,16 +127,17 @@ function SourceLines({ label, text, absent }: {
 function Compare({ content, entry }: { readonly content: DiffContent; readonly entry: DiffEntry }) {
   const file = content.files.find((row) => row.entry_id === entry.entry_id);
   const omission = content.omitted.find((row) => row.entry_id === entry.entry_id);
-  return <div className="diff-compare">
+  const changes = useMemo(() => file === undefined ? null : changedLines(file.old, file.current), [file]);
+  return <div className="diff-compare col-span-full flex min-w-0 flex-col gap-2">
     {file === undefined ? null : <>
-      {file.old_path === null ? null : <p className="diff-note">Renamed from <span className="diff-path">{file.old_path}</span></p>}
-      <div className="diff-sides">
-        <SourceLines label="Old" text={file.old} absent={ABSENT_SIDE[file.kind].old} />
-        <SourceLines label="Current" text={file.current} absent={ABSENT_SIDE[file.kind].current} />
+      {file.old_path === null ? null : <p className={NOTE}>Renamed from <span className="diff-path font-mono wrap-anywhere">{file.old_path}</span></p>}
+      <div className="diff-sides grid grid-cols-2 divide-line overflow-hidden rounded-lg border border-line min-[801px]:divide-x max-[800px]:grid-cols-1 max-[800px]:divide-y">
+        <SourceLines label="Old" text={file.old} absent={ABSENT_SIDE[file.kind].old} changes={changes?.removed ?? null} />
+        <SourceLines label="Current" text={file.current} absent={ABSENT_SIDE[file.kind].current} changes={changes?.added ?? null} />
       </div>
     </>}
-    {omission === undefined ? null : <p className="diff-omission">{OMISSIONS[omission.reason]}</p>}
-    {content.truncated ? <p className="diff-omission">The reply reached its size limit, so the file is not shown.</p> : null}
+    {omission === undefined ? null : <p className={cn('diff-omission', CALLOUT, 'border-line-strong bg-surface-2')}>{OMISSIONS[omission.reason]}</p>}
+    {content.truncated ? <p className={cn('diff-omission', CALLOUT, 'border-line-strong bg-surface-2')}>The reply reached its size limit, so the file is not shown.</p> : null}
   </div>;
 }
 
@@ -132,38 +150,38 @@ export function DiffReview({ review, loading, onOpen, onPage }: {
   const id = useId();
   const { page, entries, opened, content } = review;
   return <>
-    <p className="diff-fresh">
-      <span className="diff-badge" data-freshness={page.freshness}>{BADGE[page.freshness]}</span>{' '}
-      <span className="diff-fresh-line">{FRESHNESS[page.freshness]}</span>
+    <p className={cn('diff-fresh flex flex-wrap items-center gap-x-3 gap-y-1', CALLOUT, 'border-line-strong bg-surface-2')}>
+      <span className="diff-badge" data-freshness={page.freshness}><Badge state={FRESH_BADGE[page.freshness]}>{BADGE[page.freshness]}</Badge></span>{' '}
+      <span className="diff-fresh-line min-w-0 flex-1 basis-64">{FRESHNESS[page.freshness]}</span>
     </p>
-    {page.binding.preexisting_tracked ? <p className="diff-warning">
+    {page.binding.preexisting_tracked ? <p className={cn('diff-warning', CALLOUT, 'border-warn bg-warn-soft')}>
       Some tracked files already had changes when this attempt began, so the list below can include changes the agent did not make.</p> : null}
-    {page.binding.preexisting_untracked ? <p className="diff-warning">
+    {page.binding.preexisting_untracked ? <p className={cn('diff-warning', CALLOUT, 'border-warn bg-warn-soft')}>
       Some new files already existed when this attempt began, so the list below can include files the agent did not create.</p> : null}
-    <p className="diff-note">This comparison leaves out ignored files and files Dudes could not read.</p>
-    <details><summary>Details</summary><p>Round {page.binding.round}.</p></details>
-    {page.omitted > 0 || page.truncated ? <p className="diff-omission">{page.omitted_lower_bound ? 'At least ' : ''}{page.omitted} changed {page.omitted === 1 ? 'file was' : 'files were'} left out of this list.{page.truncated ? ' The list reached its limit.' : ''}</p> : null}
-    {page.untracked > 0 ? <p className="diff-note">{page.untracked_lower_bound ? 'At least ' : ''}{page.untracked} new {page.untracked === 1 ? 'file is' : 'files are'} not listed because the list is full or its name cannot be shown.</p>
-      : page.untracked_lower_bound ? <p className="diff-note">The list of new files was cut short, so some may be missing.</p> : null}
-    {entries.length === 0 ? <p>No file differs from where this attempt began.</p> : <ul className="diff-selection">
+    <p className={NOTE}>This comparison leaves out ignored files and files Dudes could not read.</p>
+    <Disclosure summary="Details"><p>Round {page.binding.round}.</p></Disclosure>
+    {page.omitted > 0 || page.truncated ? <p className={cn('diff-omission', CALLOUT, 'border-line-strong bg-surface-2')}>{page.omitted_lower_bound ? 'At least ' : ''}{page.omitted} changed {page.omitted === 1 ? 'file was' : 'files were'} left out of this list.{page.truncated ? ' The list reached its limit.' : ''}</p> : null}
+    {page.untracked > 0 ? <p className={NOTE}>{page.untracked_lower_bound ? 'At least ' : ''}{page.untracked} new {page.untracked === 1 ? 'file is' : 'files are'} not listed because the list is full or its name cannot be shown.</p>
+      : page.untracked_lower_bound ? <p className={NOTE}>The list of new files was cut short, so some may be missing.</p> : null}
+    {entries.length === 0 ? <p className="m-0">No file differs from where this attempt began.</p> : <ul className="diff-selection m-0 flex list-none flex-col overflow-hidden rounded-lg border border-line p-0">
       {entries.map((entry, index) => {
         const isOpen = entry.entry_id !== null && opened === entry.entry_id;
-        return <li key={index}>
-          <div className="diff-row-name"><span className="diff-kind">{KINDS[entry.kind]}</span>{' '}<span className="diff-path" id={`${id}-${index}`}>{entry.path}</span></div>
+        return <li key={index} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-b border-line px-3 py-2 last:border-b-0 max-[800px]:grid-cols-[minmax(0,1fr)]">
+          <div className="diff-row-name flex min-w-0 items-baseline gap-3"><span className="diff-kind w-24 shrink-0 text-caption font-medium text-muted">{KINDS[entry.kind]}</span>{' '}<span className="diff-path font-mono text-small wrap-anywhere" id={`${id}-${index}`}>{entry.path}</span></div>
           {entry.availability.state === 'unavailable' || entry.entry_id === null
-            ? <p className="diff-note">{entry.availability.state === 'unavailable' ? (entry.kind === 'nested_repository' ? NESTED_OMISSION : OMISSIONS[entry.availability.reason]) : ''}</p>
-            : <button type="button" aria-describedby={`${id}-${index}`} aria-pressed={isOpen} disabled={loading}
-              onClick={() => { onOpen(entry); }}>{isOpen ? 'Close file' : 'Open side by side'}</button>}
+            ? <p className={cn(NOTE, 'col-span-full')}>{entry.availability.state === 'unavailable' ? (entry.kind === 'nested_repository' ? NESTED_OMISSION : OMISSIONS[entry.availability.reason]) : ''}</p>
+            : <Button variant={isOpen ? 'secondary' : 'ghost'} size="sm" className="max-[800px]:justify-self-start" aria-describedby={`${id}-${index}`} aria-pressed={isOpen} disabled={loading}
+              onClick={() => { onOpen(entry); }}>{isOpen ? 'Close file' : 'Open side by side'}</Button>}
           {isOpen && content !== null ? <Compare content={content} entry={entry} /> : null}
         </li>;
       })}
     </ul>}
-    {page.next_cursor === null ? null : <div className="diff-actions">
-      <button type="button" disabled={loading} onClick={onPage}>Show more files</button>
+    {page.next_cursor === null ? null : <div className="diff-actions flex flex-wrap items-center gap-2">
+      <Button size="sm" disabled={loading} onClick={onPage}>Show more files</Button>
     </div>}
-    <details className="diff-note"><summary>Local review details</summary>
-      <p>For omitted files or a bigger review, run <code>dudes ticket open {page.binding.card}</code> in your terminal.</p>
-    </details>
+    <Disclosure summary="Local review details" className="diff-note">
+      <p>For omitted files or a bigger review, run <code className="font-mono">dudes ticket open {page.binding.card}</code> in your terminal.</p>
+    </Disclosure>
   </>;
 }
 
@@ -243,23 +261,23 @@ export function DiffPanel({ card, expectedSeq, transport, ownCopy = false }: {
 
   const refresh = () => { void read({ mode: 'manifest', card, expected_seq: expectedSeq }, null); };
 
-  return <section className="diff-panel" aria-label="Changes">
+  return <section className="diff-panel min-w-0" aria-label="Changes">
     <h4>Changes</h4>
-    {ownCopy ? <p className="diff-note">{OWN_COPY}</p> : null}
+    {ownCopy ? <p className={NOTE}>{OWN_COPY}</p> : null}
     {closed ? <>
-      <p className="diff-note">Read the files changed or created during this attempt, side by side. Nothing is read until you ask.</p>
-      <button type="button" onClick={refresh}>Show changes</button>
+      <p className={NOTE}>Read the files changed or created during this attempt, side by side. Nothing is read until you ask.</p>
+      <Button className="self-start" onClick={refresh}>Show changes</Button>
     </> : <>
-      <div className="diff-actions">
-        <button type="button" disabled={loading} onClick={refresh}>Refresh</button>
-        <button type="button" onClick={() => { latest.current += 1; inflight.current = null; setState({ owner, phase: 'closed' }); }}>Hide changes</button>
+      <div className="diff-actions flex flex-wrap items-center gap-2">
+        <Button size="sm" disabled={loading} onClick={refresh}>Refresh</Button>
+        <Button size="sm" onClick={() => { latest.current += 1; inflight.current = null; setState({ owner, phase: 'closed' }); }}>Hide changes</Button>
       </div>
-      <p className="diff-status" role="status">{loading ? 'Reading the checkout…' : state.phase === 'refused' ? failureText(state.reason) : ''}</p>
+      <p className="diff-status m-0 min-h-[1.5em] text-small" role="status">{loading ? 'Reading the checkout…' : state.phase === 'refused' ? failureText(state.reason) : ''}</p>
       {review === null ? null : <DiffReview review={review} loading={loading} onOpen={open}
         onPage={() => { if (review.page.next_cursor !== null) void read({ mode: 'page', manifest_id: review.page.manifest_id, cursor: review.page.next_cursor }, review); }} />}
-      {review === null ? <details className="diff-note"><summary>Local review details</summary>
-        <p>For a local review, run <code>dudes ticket open {card}</code> in your terminal.</p>
-      </details> : null}
+      {review === null ? <Disclosure summary="Local review details" className="diff-note">
+        <p>For a local review, run <code className="font-mono">dudes ticket open {card}</code> in your terminal.</p>
+      </Disclosure> : null}
     </>}
   </section>;
 }
