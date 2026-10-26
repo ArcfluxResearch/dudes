@@ -432,9 +432,9 @@ const ADMITTED_HANDLERS = [
     expression: '(event) => {\n            if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;\n            const target = detailTabTarget(tabs, id, event.key);\n            if (target === null) return;\n            event.preventDefault();\n            onTabChange(target);\n            event.currentTarget.ownerDocument.getElementById(`agent-detail-tab-${target}`)?.focus();\n          }' },
   { file: TERMINAL_PANEL, tag: 'div', className: 'terminal-actions', handler: 'onKeyDown', expression: TERMINAL_HEADER_KEYS },
   { file: TERMINAL_PANEL, tag: 'textarea', handler: 'onFocus', expression: '(event) => event.currentTarget.select()' },
-  { file: FIRST_RUN_GUIDE, tag: 'aside', className: 'first-run-guide', handler: 'onKeyDown',
+  { file: FIRST_RUN_GUIDE, tag: 'aside', className: null, handler: 'onKeyDown',
     expression: "(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }" },
-  { file: FIRST_TASK, tag: 'section', className: 'first-task', handler: 'onKeyDown',
+  { file: FIRST_TASK, tag: 'section', className: null, handler: 'onKeyDown',
     expression: `(event) => {
       if (offer.kind !== 'task' || current.mode !== 'open' || !closesPanel(event)) return;
       event.preventDefault();
@@ -518,28 +518,27 @@ const ADMITTED_HANDLERS = [
   // ArchivedAgents.tsx: the Memory disclosure mounts its panel only while open, so closing it forgets what was read.
   { file: ARCHIVED_AGENTS, tag: 'details', className: 'archive-memory', handler: 'onToggle',
     expression: '(event) => setOpen(event.currentTarget.open)' },
-  { file: FLOOR_SHELL, tag: 'div', className: 'floor-stage', handler: 'onKeyDown', expression: CLOSE_DRAWER_ON_ESCAPE },
-  { file: FLOOR_SHELL, tag: 'main', className: 'shell', handler: 'onKeyDown', expression: CLOSE_PAGE_ON_ESCAPE },
-  { file: CONTROL_VIEW, tag: 'section', className: 'control-panel', handler: 'onKeyDown', expression: CLOSE_ON_ESCAPE },
+  { file: FLOOR_SHELL, tag: 'div', className: null, handler: 'onKeyDown', expression: CLOSE_DRAWER_ON_ESCAPE },
+  { file: FLOOR_SHELL, tag: 'main', className: null, handler: 'onKeyDown', expression: CLOSE_PAGE_ON_ESCAPE },
+  { file: CONTROL_VIEW, tag: 'section', className: null, handler: 'onKeyDown', expression: CLOSE_ON_ESCAPE },
   { file: CONTROL_VIEW, tag: 'dialog', className: 'ticket-dialog', handler: 'onCancel',
     expression: '(event) => { event.preventDefault(); closeOverlay(); }' },
   { file: CONTROL_VIEW, tag: 'dialog', className: 'ticket-dialog', handler: 'onKeyDown',
     expression: "(event) => { if (event.key === 'Escape') event.stopPropagation(); }" },
-  { file: FLOOR_SHELL, tag: 'details', className: 'header-more', handler: 'onKeyDown',
-    expression: `(event) => {
-              if (event.key === 'Escape') {
-                event.currentTarget.open = false;
-                event.currentTarget.querySelector('summary')?.focus();
-                event.stopPropagation();
-              }
-            }` },
   { file: TICKET_BOARD, tag: 'div', className: 'ticket-card-regions', handler: 'onKeyDown', expression: 'moveCardFocus' },
-  { file: FLOOR_SHELL, tag: 'div', className: 'panel-splitter', handler: 'onPointerDown', expression: 'startResize' },
-  { file: FLOOR_SHELL, tag: 'div', className: 'panel-splitter', handler: 'onPointerMove', expression: 'moveResize' },
-  { file: FLOOR_SHELL, tag: 'div', className: 'panel-splitter', handler: 'onPointerUp', expression: 'endResize' },
-  { file: FLOOR_SHELL, tag: 'div', className: 'panel-splitter', handler: 'onPointerCancel', expression: 'endResize' },
-  { file: FLOOR_SHELL, tag: 'div', className: 'panel-splitter', handler: 'onKeyDown', expression: 'keyResize' },
-  { file: FLOOR_SHELL, tag: 'div', className: 'panel-splitter', handler: 'onDoubleClick', expression: 'resetSidebar' },
+  // The More menu's items run their action after the menu has closed, so each is one named, fixed call.
+  { file: FLOOR_SHELL, tag: 'button', className: null, handler: 'onSelect', expression: 'closeView' },
+  { file: FLOOR_SHELL, tag: 'button', className: null, handler: 'onSelect', expression: 'toggleCrew' },
+  { file: FLOOR_SHELL, tag: 'button', className: null, handler: 'onSelect', expression: 'toggleFocus' },
+  { file: FLOOR_SHELL, tag: 'button', className: 'theme-toggle', handler: 'onSelect',
+    expression: '() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))' },
+  { file: FLOOR_SHELL, tag: 'button', className: 'sign-out', handler: 'onSelect', expression: 'signOut' },
+  { file: FLOOR_SHELL, tag: 'div', className: null, handler: 'onPointerDown', expression: 'startResize' },
+  { file: FLOOR_SHELL, tag: 'div', className: null, handler: 'onPointerMove', expression: 'moveResize' },
+  { file: FLOOR_SHELL, tag: 'div', className: null, handler: 'onPointerUp', expression: 'endResize' },
+  { file: FLOOR_SHELL, tag: 'div', className: null, handler: 'onPointerCancel', expression: 'endResize' },
+  { file: FLOOR_SHELL, tag: 'div', className: null, handler: 'onKeyDown', expression: 'keyResize' },
+  { file: FLOOR_SHELL, tag: 'div', className: null, handler: 'onDoubleClick', expression: 'resetSidebar' },
   { file: FLOOR_SHELL, tag: 'dialog', className: 'hire-dialog', handler: 'onPointerDown',
     expression: '(event) => {\n          backdropPress.current = event.target === event.currentTarget && event.button === 0 && event.isPrimary\n            ? event.pointerId : null;\n        }' },
   { file: FLOOR_SHELL, tag: 'dialog', className: 'hire-dialog', handler: 'onPointerUp',
@@ -571,7 +570,7 @@ test("Roster.tsx's top-level imports include its live activity expiry hook, it b
     }
     ts.forEachChild(node, collect);
   })(syntax);
-  assert.deepEqual(specifiers.sort(), ['./AgentOrder.tsx', './Portrait.tsx', './appearance.ts', './board.ts', './needs.ts', './needs.ts', './scene/cast.ts', './useHeldLayout.ts', './useHeldLayout.ts', './useLiveActivityExpiry.ts', './view.ts', 'react', 'react'],
+  assert.deepEqual(specifiers.sort(), ['../ui/index.ts', './AgentOrder.tsx', './Portrait.tsx', './appearance.ts', './board.ts', './needs.ts', './needs.ts', './scene/cast.ts', './useHeldLayout.ts', './useHeldLayout.ts', './useLiveActivityExpiry.ts', './view.ts', 'react', 'react'],
     "Roster.tsx's top-level imports changed; inspect any new path for an answer input");
   assert.equal(bindingNamesIn(syntax).filter(({ name }) => name === 'reveal').length, 1,
     'Roster.tsx binds reveal more than once, so the pinned body may not be the one onFocus calls');
@@ -580,7 +579,7 @@ test("Roster.tsx's top-level imports include its live activity expiry hook, it b
 });
 
 /**
- * An element's `className` as a string literal, or the first string literal of a `cn(...)` call, or null if it has none.
+ * An element's `className` string literal, or null if it has none or its value is not one.
  * Utilities share the attribute with the name a rule is pinned by, so a rule names that one class.
  */
 function classNameOf(node, syntax) {
@@ -588,11 +587,6 @@ function classNameOf(node, syntax) {
     .find((entry) => ts.isJsxAttribute(entry) && entry.name.getText(syntax) === 'className');
   if (found === undefined || found.initializer === undefined) return null;
   if (ts.isStringLiteral(found.initializer)) return found.initializer.text;
-  const value = ts.isJsxExpression(found.initializer) ? found.initializer.expression : undefined;
-  if (value !== undefined && ts.isCallExpression(value) && value.expression.getText(syntax) === 'cn') {
-    const first = value.arguments[0];
-    if (first !== undefined && ts.isStringLiteralLike(first)) return first.text;
-  }
   return null;
 }
 
@@ -676,7 +670,7 @@ function isAdmittedHandler(file, entry) {
   if (entry.handler === '{...}' && file.startsWith('src/ui/')) return true;
   return ADMITTED_HANDLERS.some((rule) => rule.file === file && rule.tag === entry.tag
     && rule.handler === entry.handler
-    && (rule.className === undefined || wearsClass(entry.className, rule.className))
+    && (rule.className === undefined || rule.className === entry.className || wearsClass(entry.className, rule.className))
     && (rule.expression === undefined || rule.expression === entry.expression));
 }
 
@@ -862,7 +856,7 @@ test('every handler prop other than onClick on a lowercase intrinsic tag under f
     const handlers = seen.get(rule.file) ?? [];
     assert.ok(
       handlers.some((entry) => entry.tag === rule.tag && entry.handler === rule.handler
-        && (rule.className === undefined || wearsClass(entry.className, rule.className))
+        && (rule.className === undefined || rule.className === entry.className || wearsClass(entry.className, rule.className))
         && (rule.expression === undefined || entry.expression === rule.expression)),
       `${rule.file} was not scanned as itself for ${rule.handler} on <${rule.tag}>`,
     );
@@ -1247,6 +1241,9 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   clickExpected.splice(clickExpected.indexOf('src/ui/Tabs.tsx'), 1);
   clickExpected.push('src/ui/Select.tsx');
   clickExpected.push(RECOVERED_REVIEW);
+  // The More menu's five items take onSelect, which runs after the menu has closed, and Hire, the notice's Reload and the Menu's
+  // trigger are the shell's only click handlers.
+  for (let item = 0; item < 6; item += 1) clickExpected.splice(clickExpected.indexOf(FLOOR_SHELL), 1);
   assert.deepEqual(clicks.sort(), clickExpected.sort());
   const readError = await readFile(resolve(source, 'renderer/ReadError.tsx'), 'utf8');
   assert.deepEqual(clicksIn(await readFile(resolve(floor, RECOVERY_PANEL), 'utf8')), [
@@ -1407,18 +1404,6 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.deepEqual(clicksIn(await readFile(resolve(source, 'shell.tsx'), 'utf8')), [
     'reloadPage',
     '(event) => openHire(event.currentTarget)',
-    `(event) => {
-                if (!(event.target as HTMLElement).closest('button')) return;
-                const menu = event.currentTarget;
-                const details = menu.closest('details');
-                details?.removeAttribute('open');
-                if (menu.contains(menu.ownerDocument.activeElement)) details?.querySelector('summary')?.focus();
-              }`,
-    'closeView',
-    'toggleCrew',
-    'toggleFocus',
-    '() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))',
-    'signOut',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, ANSWER_FORM), 'utf8')).sort(), [
     'dismissReceipt',
@@ -2937,7 +2922,7 @@ test('the answer form renders when the snapshot carries the answer sibling', () 
   // Where the live case looks for it: in the selected agent's own panel, under its question.
   assert.match(html,
     /id="selected-agent-detail"[\s\S]*<aside class="agent-detail"[\s\S]*<section class="agent-detail-question"[\s\S]*<textarea/);
-  assert.doesNotMatch(center(floorWith(waiting(), SIBLING), 'overview').split('<div class="receipts">')[0], /<textarea|name="answer"/,
+  assert.doesNotMatch(center(floorWith(waiting(), SIBLING), 'overview').split('<div class="receipts ')[0], /<textarea|name="answer"/,
     'Overview lists the question but answers only through the agent\'s own panel');
 });
 

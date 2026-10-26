@@ -11,6 +11,8 @@ import { restoreFocusAfterDialog } from './focus.ts';
 import { StreamReadStatus } from './ReadError.tsx';
 import { Roster } from './Roster.tsx';
 import { checkoutSummary } from './worktree.ts';
+import { X } from 'lucide-react';
+import { ICON, IconButton } from '../ui/index.ts';
 
 export const OVERVIEW_TITLE_ID = 'overview-title';
 
@@ -46,7 +48,7 @@ export function OverviewDialog({ floor, selectedId, onClose, onSelectAgent, onOp
       onCancel={(event) => { event.preventDefault(); onClose(); }}>
       <header className="overview-head">
         <h2 id={OVERVIEW_TITLE_ID} tabIndex={-1}>Overview</h2>
-        <button type="button" className="panel-close" aria-label="Close Overview" title="Close (Escape)" onClick={onClose}>×</button>
+        <IconButton className="panel-close" label="Close Overview" title="Close (Escape)" icon={<X {...ICON} />} onClick={onClose} />
       </header>
       <div className="overview-body">
         <StreamReadStatus floor={floor} />

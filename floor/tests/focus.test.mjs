@@ -118,11 +118,11 @@ test('each element that can leave while focused passes handFocusOnLeave itself a
 
 test('focus mode hands the keyboard to More when Escape closes it from the roster or the splitter', async () => {
   const shell = jsxElementsIn(await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8'), 'shell.tsx');
-  const mode = shell.filter((entry) => entry.tag === 'section' && entry.props.className === 'focus-mode');
+  const mode = shell.filter((entry) => entry.tag === 'section' && /^focus-mode\b/.test(entry.props.className ?? ''));
   assert.equal(mode.length, 1, 'the focus mode section is not in the shell exactly once');
   assert.equal(mode[0].props.ref, 'handFocusOnLeave', 'focus mode drops a focused roster row to the page body when it closes');
   assert.equal(mode[0].props['data-focus-on-leave'], 'header-more-toggle');
-  assert.ok(shell.some((entry) => entry.tag === 'summary' && entry.props.id === 'header-more-toggle'), 'the hand-off target is not in the shell');
+  assert.ok(shell.some((entry) => entry.tag === 'Menu' && entry.props.id === 'header-more-toggle'), 'the hand-off target is not in the shell');
 });
 
 test('controls that leave when pressed name a surviving focus target', async () => {

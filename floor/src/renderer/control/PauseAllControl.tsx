@@ -11,6 +11,7 @@ import {
   subscribeToPauseAll,
 } from './pauseAll.ts';
 import type { PauseAllState } from './pauseAll.ts';
+import { Button } from '../../ui/index.ts';
 
 interface Confirmation {
   readonly targets: string;
@@ -82,21 +83,25 @@ export function PauseAllControlView({ floor, currentFloor = floor, state, confir
   const problem = state.phase === 'idle' ? state.problem : null;
   if (!available && problem === null && notice === null) return null;
   const active = state.phase === 'sending' || state.phase === 'unresolved';
-  return <div className="pause-all-control">
-    {available ? <button type="button" className="pause-all-open" id="pause-all-open" aria-expanded={confirming}
+  return <div className="pause-all-control relative">
+    {available ? <Button className="pause-all-open" id="pause-all-open" aria-expanded={confirming}
       aria-controls={confirming ? 'pause-all-confirm' : undefined} disabled={active || count === 0}
       title={active ? 'Pause all is already running.' : count === 0 ? 'There are no agents to pause.' : undefined}
-      onClick={onOpen}>Pause all</button> : null}
-    {confirming && available ? <section className="pause-all-confirm" id="pause-all-confirm" aria-label="Confirm Pause all">
-      <p>Pause {count} current {count === 1 ? 'agent' : 'agents'}? Work an agent is doing now continues until it ends.</p>
-      <div className="pause-all-actions">
-        <button type="button" id="pause-all-cancel" onClick={onCancel}>Cancel</button>
-        <button type="button" className="pause-all-submit" onClick={onConfirm}>Confirm pause all</button>
+      onClick={onOpen}>Pause all</Button> : null}
+    {confirming && available ? <section className="pause-all-confirm absolute right-0 top-full z-10 mt-2 grid w-[min(352px,calc(100vw-32px))] animate-pop gap-4 rounded-lg border border-line bg-surface p-4 text-base text-ink shadow-pop"
+      id="pause-all-confirm" aria-label="Confirm Pause all">
+      <p className="m-0 leading-normal">Pause {count} current {count === 1 ? 'agent' : 'agents'}? Work an agent is doing now continues until it ends.</p>
+      <div className="pause-all-actions flex flex-wrap justify-end gap-2">
+        <Button id="pause-all-cancel" onClick={onCancel}>Cancel</Button>
+        <Button variant="danger" className="pause-all-submit" onClick={onConfirm}>Confirm pause all</Button>
       </div>
     </section> : null}
-    {notice !== null ? <p role="alert">{notice}</p> : problem !== null ? <p role="alert">{problem}</p> : null}
+    {notice !== null ? <p className={PAUSE_PROBLEM} role="alert">{notice}</p>
+      : problem !== null ? <p className={PAUSE_PROBLEM} role="alert">{problem}</p> : null}
   </div>;
 }
+
+const PAUSE_PROBLEM = 'absolute right-0 top-full z-10 m-0 mt-2 box-border w-max max-w-[min(352px,calc(100vw-32px))] rounded-lg border border-danger bg-surface p-3 text-small leading-normal text-danger shadow-pop';
 
 export function PauseAllReceiptView({ state, onCheck, onDismiss, leaveFocusTo = 'crew-toggle' }: {
   readonly state: PauseAllState;
@@ -104,19 +109,20 @@ export function PauseAllReceiptView({ state, onCheck, onDismiss, leaveFocusTo = 
   readonly onDismiss: () => void;
   readonly leaveFocusTo?: string;
 }) {
-  return state.phase === 'idle' ? null : <section className="pause-all-receipt" aria-live="polite" aria-label="Pause all result">
-      <p id={RECEIPT_STATUS_ID} tabIndex={-1}>{state.phase === 'sending' ? `Pausing agents… ${state.paused} of ${state.total} paused.`
+  return state.phase === 'idle' ? null : <section className="pause-all-receipt pointer-events-auto m-0 box-border grid gap-2 rounded-lg border border-line bg-surface p-3 text-base text-ink shadow-card [overflow-wrap:anywhere]"
+      aria-live="polite" aria-label="Pause all result">
+      <p className="m-0" id={RECEIPT_STATUS_ID} tabIndex={-1}>{state.phase === 'sending' ? `Pausing agents… ${state.paused} of ${state.total} paused.`
         : `Paused ${state.paused} ${state.paused === 1 ? 'agent' : 'agents'}.`}</p>
-      {state.refusals.length > 0 ? <ul aria-label="Pause refusals">{state.refusals.map((refusal, at) =>
+      {state.refusals.length > 0 ? <ul className="m-0 list-disc pl-5" aria-label="Pause refusals">{state.refusals.map((refusal, at) =>
         <li key={`${refusal.name}-${at}`}>Refused {refusal.name}: {REFUSAL_REASONS[refusal.reason as keyof typeof REFUSAL_REASONS]
           ?? refusal.reason}</li>)}</ul> : null}
-      {state.phase === 'complete' && state.problem !== null ? <p role="alert">{state.problem}</p> : null}
+      {state.phase === 'complete' && state.problem !== null ? <p className="m-0 text-danger" role="alert">{state.problem}</p> : null}
       {state.phase === 'unresolved' ? <>
-        <p role="status">The pause for {state.remaining[0]?.name} is unresolved. Check its status before continuing.</p>
-        {state.problem === null ? null : <p role="alert">{state.problem}</p>}
-        <button type="button" onClick={onCheck}>Check status</button>
+        <p className="m-0" role="status">The pause for {state.remaining[0]?.name} is unresolved. Check its status before continuing.</p>
+        {state.problem === null ? null : <p className="m-0 text-danger" role="alert">{state.problem}</p>}
+        <Button size="sm" className="justify-self-start" onClick={onCheck}>Check status</Button>
       </> : null}
-      {state.phase === 'complete' ? <button type="button" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}
-        onClick={onDismiss}>Dismiss receipt</button> : null}
+      {state.phase === 'complete' ? <Button size="sm" className="justify-self-start" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}
+        onClick={onDismiss}>Dismiss receipt</Button> : null}
     </section>;
 }
