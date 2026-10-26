@@ -2161,6 +2161,31 @@ mod tests {
     }
 
     #[test]
+    fn a_cold_live_agent_keeps_its_subject_when_the_first_mailbox_pass_follows_launch() {
+        let mut h = Harness::new(2);
+        let sender = Harness::id(1);
+        let recipient = Harness::id(2);
+        std::fs::remove_dir_all(h.path(sender, "", "")).unwrap();
+        assert!(!h.path(sender, "outbox", "").exists());
+        let holder = dudes_supervisor::Holder::Turn(dudes_types::TurnId::from_parts(1, 1));
+        let redactor = dudes_supervisor::Redactor::new();
+        h.mailbox
+            .begin_subject_context(sender, holder, redactor.clone());
+        redactor.hold_env(holder, &[]);
+        h.pass();
+        let outbox = Harness::mail(1);
+        h.outgoing(
+            sender,
+            outbox,
+            &json!({"to":{"agent":recipient},"act":"request","subject":"round trip request"}),
+        );
+        h.pass();
+        let id = dudes_journal::mail_recipient_id(outbox, recipient);
+        assert_eq!(h.mailbox.rows[&id].item.subject, "round trip request");
+        assert_eq!(h.mailbox.rows[&id].subject_admission, Some(1));
+    }
+
+    #[test]
     fn subject_admission_survives_exit_and_replay_without_disclosing_body_or_marker() {
         let mut h = Harness::new(2);
         let sender = Harness::id(1);
