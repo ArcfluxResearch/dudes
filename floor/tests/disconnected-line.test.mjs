@@ -10,7 +10,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { classesIn, themeTokens, utilityColour } from './helpers/theme-colour.mjs';
 import { legacyStyles } from './helpers/legacy-css.mjs';
-import { bare } from './helpers/shell-bare.mjs';
+import { bare } from './helpers/markup.mjs';
 
 /** The notice tones the stream lines wear: a stopped Dudes is danger, an unconfirmed view is warn. */
 const lineColour = async (name, theme) => utilityColour(name === 'CLOSED' ? 'text-danger' : 'text-warn', theme);

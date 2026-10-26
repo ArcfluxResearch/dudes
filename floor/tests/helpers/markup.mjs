@@ -47,3 +47,35 @@ export function renderToStaticMarkup(...args) {
   return render(...args).replace(NOISE, '').replace(/<([a-z][a-z0-9]*)((?:\s+[^\s>=]+(?:="[^"]*")?)*)(\s*\/?)>/g,
     (whole, tag, attributes, close) => `<${tag}${keep(tag, attributes)}${close}>`);
 }
+
+/** The `data-` marks the owned components draw for styling; a markup test about words and structure ignores them. */
+const MARKS = { hook: 'ui|part|variant|size|loading', plain: 'ui|variant|size|loading|part|state', bare: 'ui|variant|size|loading' };
+
+/**
+ * Markup with the styling taken out: icons go, the components' `data-` marks named by `marks` go, and a class attribute
+ * keeps only the names `keep` accepts (a RegExp or a list of names).
+ */
+function strip(html, { keep, marks }) {
+  const accepts = Array.isArray(keep) ? (name) => keep.includes(name) : (name) => keep.test(name);
+  return html
+    .replace(/<svg\b[\s\S]*?<\/svg>/g, '')
+    .replace(new RegExp(` data-(?:${marks})="[^"]*"`, 'g'), '')
+    .replace(/ class="([^"]*)"/g, (_, names) => {
+      const kept = names.split(/\s+/).filter(accepts);
+      return kept.length === 0 ? '' : ` class="${kept.join(' ')}"`;
+    });
+}
+
+const HOOK_NAMES = /^(?:chat|step|memory|git|md|tok|completion)-/;
+const PLAIN_NAMES = /^(?:ticket-|diff-|git-|recovery-|login-|card-|first-task|board-|notification-|receipts$|md$|data$|visually-hidden$)/;
+
+/** Keeps the structure and the hook classes a screen is read by: the chat, step, memory, git, markdown and token names. */
+export const hooks = (html) => strip(html, { keep: HOOK_NAMES, marks: MARKS.hook });
+
+/** Also unwraps a disclosure's body, so a test about words and order does not change when the design does. */
+export const plainMarkup = (html) => strip(html, { keep: PLAIN_NAMES, marks: MARKS.plain })
+  .replace(/<\/summary><div>/g, '</summary>')
+  .replace(/<\/div><\/details>/g, '</details>');
+
+/** Keeps only the class names the test lists. */
+export const bare = (html, keep = []) => strip(html, { keep, marks: MARKS.bare });

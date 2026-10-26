@@ -16,7 +16,7 @@ import test, { after, before, beforeEach } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup as renderRaw } from 'react-dom/server';
-import { plainMarkup } from './helpers/plain-markup.mjs';
+import { plainMarkup } from './helpers/markup.mjs';
 
 const renderToStaticMarkup = (...args) => plainMarkup(renderRaw(...args));
 import { createServer } from 'vite';

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import assert from 'node:assert/strict';
-import { bare } from './helpers/shell-bare.mjs';
+import { bare } from './helpers/markup.mjs';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach, mock } from 'node:test';
 
