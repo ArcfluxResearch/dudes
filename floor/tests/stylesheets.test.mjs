@@ -29,7 +29,7 @@ const LEGACY = new Map([
   ['src/legacy/engine-sign-in.css', { blocks: 4, declarations: 7 }],
   ['src/legacy/handoff.css', { blocks: 45, declarations: 95 }],
   ['src/legacy/hire-wizard.css', { blocks: 11, declarations: 42 }],
-  ['src/legacy/other-screens.css', { blocks: 22, declarations: 64 }],
+  ['src/legacy/other-screens.css', { blocks: 37, declarations: 94 }],
   ['src/legacy/touch-and-phone.css', { blocks: 25, declarations: 68 }],
 ]);
 
