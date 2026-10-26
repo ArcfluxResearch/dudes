@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useId, useState, useSyncExternalStore } from 'react';
+import type { ReactNode } from 'react';
 
 import {
   cancelSetting, changeSetting, confirmSetting, editLine, getSettingsEditState, limitChange,
@@ -17,6 +18,10 @@ import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import { getOfficePin, setOfficePin, subscribeToOfficePin } from '../view.ts';
 import { desktopNotificationPreference } from '../desktopNotifications.ts';
 import { releaseNotesLabel, releaseNotesUrl } from '../releaseLinks.ts';
+import { Bell, BellOff } from 'lucide-react';
+
+import { Button, Disclosure, Field, ICON, Input, Switch, cn } from '../../ui/index.ts';
+import { Code, Fact, Facts, Group, HINT, LINK, Notice } from '../PageParts.tsx';
 import { DevicesSection } from '../devices/DevicesSection.tsx';
 import { AddProject, RemoveNotice, RemoveProject } from '../project/AddProject.tsx';
 
@@ -63,15 +68,17 @@ export function UnavailableControls({ floor, control }: {
 }) {
   if (control === 'hire') {
     const reason = hireUnavailable(floor);
-    return reason === null ? null : <p className="settings-guidance">{reason}</p>;
+    return reason === null ? null : <Notice>{reason}</Notice>;
   }
   if (!switchedOffControls(floor).includes(control)) return null;
   if (control === 'retire') {
-    return <p className="settings-guidance">Retire is off. Turn on Pause, resume and rename and Retire agents under
-      Floor switches in Settings.</p>;
+    return <Notice>Retire is off. Turn on Pause, resume and rename and Retire agents under
+      Floor switches in Settings.</Notice>;
   }
-  return <p className="settings-guidance">To open the real CLI, turn on Attach terminals under Floor switches in Settings.</p>;
+  return <Notice>To open the real CLI, turn on Attach terminals under Floor switches in Settings.</Notice>;
 }
+
+const TEXT_LINK_LIST = 'm-0 grid list-none gap-1 p-0 text-base';
 
 export function SettingsView({ floor, onSetup }: {
   readonly floor: FloorState;
@@ -80,70 +87,84 @@ export function SettingsView({ floor, onSetup }: {
   const edit = useSyncExternalStore(subscribeToSettingsEdit, getSettingsEditState, getSettingsEditState);
   const report = floor.settings;
   const state = snapshotReadState(floor, report !== null);
-  if (state !== 'ready' || report === null) return <div className="settings-view"><DesktopNotificationChoice />
+  if (state !== 'ready' || report === null) return <div data-ui="settings" className="grid gap-4 font-sans text-ink"><DesktopNotificationChoice />
     <ReadNotice state={state} label="Settings"
       message="Settings are not reported by Dudes, or this page could not read them." /></div>;
-  return <div className="settings-view">
-    <p>Manage engines, projects and spending. Choices for this browser are below.</p>
-    {floor.stale ? <p role="status">Connection interrupted. These settings may be out of date.</p> : null}
-    <section aria-labelledby="settings-providers"><h3 id="settings-providers">Engines</h3>
-      <p>Check which engines Dudes can find. Sign in when you hire an agent. <button type="button" onClick={onSetup}>Open Setup</button></p>
-      <ul className="settings-engines">{report.providers.filter((provider) => !ENGINES.some(([id]) => id === provider)).map((provider) =>
-        <li key={provider}><button type="button" onClick={onSetup} aria-label={`Check ${engineName(provider)} in Setup`}>{engineName(provider)}</button>
-          <span>Available in Setup.</span></li>)}
+  return <div data-ui="settings" className="grid gap-4 font-sans text-ink">
+    <p className={HINT}>Manage engines, projects and spending. Choices for this browser are below.</p>
+    {floor.stale ? <p role="status" className={HINT}>Connection interrupted. These settings may be out of date.</p> : null}
+    <Group title="Engines" headingId="settings-providers"
+      description="Check which engines Dudes can find. Sign in when you hire an agent."
+      action={<Button size="sm" onClick={onSetup}>Open Setup</Button>}>
+      <ul className="m-0 grid list-none divide-y divide-line p-0">
+        {report.providers.filter((provider) => !ENGINES.some(([id]) => id === provider)).map((provider) =>
+          <li key={provider} className="flex flex-wrap items-center justify-between gap-2 py-3 first:pt-0 last:pb-0">
+            <div className="grid gap-0.5">
+              <span className="text-base font-medium">{engineName(provider)}</span>
+              <span className="text-small text-muted">Available in Setup.</span>
+            </div>
+            <Button variant="ghost" size="sm" onClick={onSetup} aria-label={`Check ${engineName(provider)} in Setup`}>Check in Setup</Button>
+          </li>)}
         {ENGINES.map(([id, label]) => {
           const on = report.providers.includes(id);
-          return <li key={id}><button type="button" onClick={onSetup} aria-label={`Check ${label} in Setup`}>{label}</button>
-            <span> {label} is {on ? 'on' : 'off'}.</span>
-            <SwitchButton settingKey={`providers.${id}`} label={label} next={on ? 'off' : 'on'} /></li>;
-        })}</ul>
-    </section>
+          return <li key={id} className="grid gap-2 py-3 first:pt-0 last:pb-0">
+            <SettingSwitch settingKey={`providers.${id}`} label={label} checked={on} description={`${label} is ${on ? 'on' : 'off'}.`}
+              extra={<Button variant="ghost" size="sm" onClick={onSetup} aria-label={`Check ${label} in Setup`}>Check in Setup</Button>} />
+          </li>;
+        })}
+      </ul>
+    </Group>
     <WorkspaceSettings report={report} floor={floor} />
-    <section aria-labelledby="settings-budget"><h3 id="settings-budget">Spending limits</h3>
-      <p className="settings-spending-line">Daily spending limit: {spendingLimit(report.budget.floor_usd_per_day_micros)}.
+    <Group title="Spending limits" headingId="settings-budget">
+      <p className={HINT} data-part="spending-line">Daily spending limit: {spendingLimit(report.budget.floor_usd_per_day_micros)}.
         {report.budget.floor_usd_per_day_micros !== null && edit.pendingDailyCeilingClear
           ? <span role="status"> Saved from this page. No daily dollar limit after restart.</span> : null}</p>
-      <details className="settings-spending"><summary>Change</summary>
-        <dl>
-          <div><dt>Daily dollar limit</dt><dd>{spendingLimit(report.budget.floor_usd_per_day_micros)}
-            <LimitEditor settingKey="budget.floor_usd_per_day" unit="usd" label="Daily dollar limit"
-              current={report.budget.floor_usd_per_day_micros} /></dd></div>
-          <div><dt>Available dollars needed to start work</dt><dd>{formatUsdMicros(report.budget.per_turn_usd_micros)}
-            <LimitEditor settingKey="budget.per_turn_floor.usd" unit="usd" label="Available dollars needed to start work"
-              current={report.budget.per_turn_usd_micros} /></dd></div>
-          <div><dt>Available tokens needed to start work</dt><dd>{report.budget.per_turn_tokens} tokens
-            <LimitEditor settingKey="budget.per_turn_floor.tokens" unit="tokens" label="Available tokens needed to start work"
-              current={report.budget.per_turn_tokens} /></dd></div>
-        </dl>
-        <p>Raising a limit or clearing the daily limit asks you to confirm. The minimum for each work attempt must stay above zero.
-          The defaults are $0.25 and 20,000 tokens.</p>
-      </details>
-    </section>
+      <Disclosure summary="Change" data-part="spending">
+        <div className="grid gap-4 pt-2">
+          <LimitEditor settingKey="budget.floor_usd_per_day" unit="usd" title="Daily dollar limit" label="Daily dollar limit"
+            shown={spendingLimit(report.budget.floor_usd_per_day_micros)} current={report.budget.floor_usd_per_day_micros} />
+          <LimitEditor settingKey="budget.per_turn_floor.usd" unit="usd" title="Available dollars needed to start work"
+            label="Available dollars needed to start work" shown={formatUsdMicros(report.budget.per_turn_usd_micros)}
+            current={report.budget.per_turn_usd_micros} />
+          <LimitEditor settingKey="budget.per_turn_floor.tokens" unit="tokens" title="Available tokens needed to start work"
+            label="Available tokens needed to start work" shown={`${report.budget.per_turn_tokens} tokens`}
+            current={report.budget.per_turn_tokens} />
+          <p className={HINT}>Raising a limit or clearing the daily limit asks you to confirm. The minimum for each work attempt must stay above zero.
+            The defaults are $0.25 and 20,000 tokens.</p>
+        </div>
+      </Disclosure>
+    </Group>
     <DesktopNotificationChoice />
     <DevicesSection />
     <FloorSwitches report={report} />
     <UnavailableControls floor={floor} control="hire" />
     <OfficeLayoutChoice />
-    <section className="settings-about" aria-labelledby="settings-about"><h3 id="settings-about">About</h3>
-      {report.about.daemon_version === __FLOOR_BUILD_VERSION__ ? null : <p role="status">
+    <Group title="About" headingId="settings-about">
+      {report.about.daemon_version === __FLOOR_BUILD_VERSION__ ? null : <Notice role="status">
         This page is version {__FLOOR_BUILD_VERSION__}, but Dudes is version {report.about.daemon_version}.
         {' '}Open Dudes to load the matching page. Keep any draft text before leaving this page.
-      </p>}
-      <details><summary>Build details</summary><dl><div><dt>Daemon</dt><dd>{report.about.daemon_version}</dd></div>
-        <div><dt>Floor build</dt><dd>{__FLOOR_BUILD_VERSION__}</dd></div>
-        <div><dt>Browser wire</dt><dd>browser-wire-v{report.about.browser_wire_version}</dd></div></dl></details>
-      <ul>
-        <li><a href={releaseNotesUrl(report.about.daemon_version)} target="_blank" rel="noopener noreferrer">
+      </Notice>}
+      <ul className={TEXT_LINK_LIST}>
+        <li><a className={LINK} href={releaseNotesUrl(report.about.daemon_version)} target="_blank" rel="noopener noreferrer">
           {releaseNotesLabel(report.about.daemon_version)}</a></li>
-        <li><a href="https://github.com/ArcfluxResearch/dudes" target="_blank" rel="noopener noreferrer">Source repository</a></li>
-        <li><a href="https://github.com/ArcfluxResearch/dudes/issues" target="_blank" rel="noopener noreferrer">Issue tracker</a></li>
+        <li><a className={LINK} href="https://github.com/ArcfluxResearch/dudes" target="_blank" rel="noopener noreferrer">Source repository</a></li>
+        <li><a className={LINK} href="https://github.com/ArcfluxResearch/dudes/issues" target="_blank" rel="noopener noreferrer">Issue tracker</a></li>
       </ul>
-      <p>This page does not check for updates automatically.</p>
-      <details><summary>Update and restart details</summary>
-        <p>To check for a newer version, run <code>dudes upgrade --check</code>.</p>
-        <p>To restart after a configuration edit, run <code>dudes quickstart --restart</code>. A restart ends any running turn.</p>
-      </details>
-    </section>
+      <p className={HINT}>This page does not check for updates automatically.</p>
+      <Disclosure summary="Build details">
+        <Facts className="pt-1">
+          <Fact label="Daemon">{report.about.daemon_version}</Fact>
+          <Fact label="Floor build">{__FLOOR_BUILD_VERSION__}</Fact>
+          <Fact label="Browser wire">browser-wire-v{report.about.browser_wire_version}</Fact>
+        </Facts>
+      </Disclosure>
+      <Disclosure summary="Update and restart details">
+        <div className="grid gap-2 pt-1">
+          <p className={HINT}>To check for a newer version, run <Code>dudes upgrade --check</Code>.</p>
+          <p className={HINT}>To restart after a configuration edit, run <Code>dudes quickstart --restart</Code>. A restart ends any running turn.</p>
+        </div>
+      </Disclosure>
+    </Group>
   </div>;
 }
 
@@ -151,65 +172,95 @@ export function FloorSwitches({ report, headingId = 'settings-switches' }: {
   readonly report: SettingsReport;
   readonly headingId?: string;
 }) {
-  return <section aria-labelledby={headingId}><h3 id={headingId}>Floor switches</h3>
-    <dl><div><dt>Chat messages</dt><dd>Always on, with no setting</dd></div>
-    {SWITCHES.map(([key, label, says]) => {
-      const on = report.switches[key];
-      return <div key={key}><dt>{label}</dt>
-        <dd><span className="settings-says">{says}</span>{' '}
-          {key === 'diff' && on && !report.switches.git ? 'On, but it needs Show changed files' : on ? 'On' : 'Off'}
-          {key === 'renew' && !on ? ' It needs Change tasks and Hire agents.' : null}{' '}
-          <SwitchButton settingKey={`floor.${key}`} label={label} next={on ? 'off' : 'on'} /></dd></div>;
-    })}</dl>
-    <p>Recovery also needs Pause, resume and rename. Spending limits still apply.</p>
-    <details><summary>Configuration details</summary><dl>{SWITCHES.map(([key, label]) =>
-      <div key={key}><dt>{label}</dt><dd><code>floor.{key}</code></dd></div>)}</dl></details>
-  </section>;
+  return <Group title="Floor switches" headingId={headingId}
+    description="What this page may do for you. Each switch is saved by Dudes, and most apply at once.">
+    <ul className="m-0 grid list-none divide-y divide-line p-0">
+      <li className="pb-3">
+        <div className="grid gap-0.5">
+          <span className="text-base font-medium text-ink">Chat messages</span>
+          <span className="text-small text-muted">Always on, with no setting</span>
+        </div>
+      </li>
+      {SWITCHES.map(([key, label, says]) => {
+        const on = report.switches[key];
+        const needs = key === 'diff' && on && !report.switches.git ? 'On, but it needs Show changed files.'
+          : key === 'renew' && !on ? 'It needs Change tasks and Hire agents.' : null;
+        return <li key={key} data-switch={key} className="py-3 last:pb-0">
+          <SettingSwitch settingKey={`floor.${key}`} label={label} checked={on}
+            description={needs === null ? says : <>{says} <span className="font-medium text-ink">{needs}</span></>} />
+        </li>;
+      })}
+    </ul>
+    <p className={HINT}>Recovery also needs Pause, resume and rename. Spending limits still apply.</p>
+    <Disclosure summary="Configuration details">
+      <ul className="m-0 grid list-none gap-1 p-0 pt-1">{SWITCHES.map(([key, label]) =>
+        <li key={key} className="flex flex-wrap items-baseline justify-between gap-2 text-small text-muted">
+          <span>{label}</span><Code>floor.{key}</Code></li>)}</ul>
+    </Disclosure>
+  </Group>;
 }
 
-/** Turns one switch or engine on or off through the daemon, which keeps the file's start rules. */
-function SwitchButton({ settingKey, label, next }: { readonly settingKey: string; readonly label: string; readonly next: 'on' | 'off' }) {
+/** One setting the daemon keeps as on or off, drawn as a switch that shows only what the daemon last reported. */
+function SettingSwitch({ settingKey, label, checked, description, extra }: {
+  readonly settingKey: string;
+  readonly label: string;
+  readonly checked: boolean;
+  readonly description: ReactNode;
+  readonly extra?: ReactNode;
+}) {
   const edit = useSyncExternalStore(subscribeToSettingsEdit, getSettingsEditState, getSettingsEditState);
-  return <>
-    <button type="button" aria-disabled={edit.sending !== null || undefined}
-      title={edit.sending === null ? undefined : 'Wait for the current setting to be saved.'}
-      onClick={() => { void changeSetting(settingKey, next); }}>Turn {next}</button>
+  const next = checked ? 'off' : 'on';
+  return <div className="grid gap-2">
+    <Switch checked={checked} label={label} description={description} busy={edit.sending === settingKey}
+      onCheckedChange={() => { if (edit.sending === null) void changeSetting(settingKey, next); }} />
+    {extra === undefined ? null : <div className="flex">{extra}</div>}
     <EditOutcome settingKey={settingKey} label={`Turn ${next} ${label}`} />
-  </>;
+  </div>;
 }
 
 /** The question the page is asking about this setting, and the sentence after its last request. */
 function EditOutcome({ settingKey, label }: { readonly settingKey: string; readonly label: string }) {
   const edit = useSyncExternalStore(subscribeToSettingsEdit, getSettingsEditState, getSettingsEditState);
-  return <>
-    {edit.asking?.key === settingKey ? <span role="group" aria-label={label}> {edit.asking.question}
-      {' '}<button type="button" onClick={() => { void confirmSetting(); }}>{edit.asking.confirm}</button>
-      {' '}<button type="button" onClick={() => cancelSetting()}>Cancel</button></span> : null}
-    {edit.last?.key === settingKey ? <>
-      <span role="status"> {editLine(edit.last.result)}</span>
-      {settingKey === 'floor.terminal' && edit.last.value === 'on' && edit.last.result.kind === 'saved' && !pageDrawsTerminal()
-        ? <span role="status"> {RELOAD_FOR_TERMINAL}</span> : null}
-      {edit.last.result.kind === 'refused' ? <details><summary>Details</summary>
-        <p>Reason: <code>{edit.last.result.reason}</code></p>
-        {edit.last.result.detail === null ? null : <p>{edit.last.result.detail}</p>}
-      </details> : edit.last.result.kind === 'saved' && edit.last.result.restart.length > 0
-        ? <details><summary>Details</summary><p>Restart needed for <code>{edit.last.result.restart.join(', ')}</code>.</p></details> : null}
-    </> : null}
-  </>;
+  const asking = edit.asking?.key === settingKey ? edit.asking : null;
+  const last = edit.last?.key === settingKey ? edit.last : null;
+  if (asking === null && last === null) return null;
+  return <div className="grid gap-1.5 text-small text-muted">
+    {asking === null ? null : <div role="group" aria-label={label}
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-line bg-surface-2 p-3 text-base text-ink">
+      <span className="min-w-0 flex-1 basis-60 leading-reading">{asking.question}</span>
+      <span className="flex gap-2">
+        <Button variant="primary" size="sm" onClick={() => { void confirmSetting(); }}>{asking.confirm}</Button>
+        <Button variant="ghost" size="sm" onClick={() => cancelSetting()}>Cancel</Button>
+      </span>
+    </div>}
+    {last === null ? null : <>
+      <p role="status" className="m-0 text-base text-muted">{editLine(last.result)}</p>
+      {settingKey === 'floor.terminal' && last.value === 'on' && last.result.kind === 'saved' && !pageDrawsTerminal()
+        ? <p role="status" className="m-0 text-base text-muted">{RELOAD_FOR_TERMINAL}</p> : null}
+      {last.result.kind === 'refused' ? <Disclosure summary="Details" className="text-small">
+        <div className="grid gap-1 text-muted">
+          <p className="m-0">Reason: <Code>{last.result.reason}</Code></p>
+          {last.result.detail === null ? null : <p className="m-0">{last.result.detail}</p>}
+        </div>
+      </Disclosure> : last.result.kind === 'saved' && last.result.restart.length > 0
+        ? <Disclosure summary="Details" className="text-small"><p className="m-0 text-muted">Restart needed for <Code>{last.result.restart.join(', ')}</Code>.</p></Disclosure> : null}
+    </>}
+  </div>;
 }
 
 const LIMIT_HINT = { usd: 'Enter dollars, such as 5 or 2.50.', tokens: 'Enter a whole number of tokens.' } as const;
 
 /** A box for one limit. It asks before the limit goes up and says nothing when it goes down. */
-function LimitEditor({ settingKey, unit, label, current }: {
-  readonly settingKey: string; readonly unit: LimitUnit; readonly label: string; readonly current: string | null;
+function LimitEditor({ settingKey, unit, title, label, shown, current }: {
+  readonly settingKey: string; readonly unit: LimitUnit; readonly title: string; readonly label: string;
+  readonly shown: string; readonly current: string | null;
 }) {
   const edit = useSyncExternalStore(subscribeToSettingsEdit, getSettingsEditState, getSettingsEditState);
   const [typed, setTyped] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
   const id = useId();
   const dailyCeiling = settingKey === 'budget.floor_usd_per_day';
-  return <form className="settings-limit" onSubmit={(event) => {
+  return <form data-ui="limit-form" className="grid gap-2 border-t border-line pt-3 first:border-t-0 first:pt-0" onSubmit={(event) => {
     event.preventDefault();
     if (edit.sending !== null) return;
     const change = limitChange(unit, typed, current);
@@ -218,17 +269,23 @@ function LimitEditor({ settingKey, unit, label, current }: {
     if (change.kind === 'same') { setProblem('That is already the limit.'); return; }
     void changeSetting(settingKey, change.value, change.question, current === null ? 'Set limit' : 'Raise limit');
   }}>
-    <label htmlFor={id}>New {label.toLowerCase()}</label>
-    <input id={id} type="text" inputMode="decimal" autoComplete="off" spellCheck={false} value={typed}
-      onChange={(event) => { setTyped(event.target.value); setProblem(null); }} />
-    <button type="submit" aria-disabled={edit.sending !== null || typed.trim() === '' || undefined}
-      title={edit.sending !== null ? 'Wait for the current setting to be saved.' : typed.trim() === '' ? 'Enter a new limit first.' : undefined}>Save</button>
-    {dailyCeiling && current !== null ? <button type="button" className="settings-clear-limit"
-      aria-disabled={edit.sending !== null || undefined}
-      title={edit.sending === null ? undefined : 'Wait for the current setting to be saved.'}
-      onClick={() => { void changeSetting(settingKey, 'unset',
-        `This removes the daily dollar limit of ${formatUsdMicros(current)}. After a restart, there will be no daily dollar limit.`, 'Clear limit'); }}>Clear limit</button> : null}
-    {problem === null ? null : <span role="alert"> {problem}</span>}
+    <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+      <span className="text-base font-medium text-ink">{title}</span>
+      <span className="text-base text-muted">{shown}</span>
+    </div>
+    <Field id={id} label={`New ${label.toLowerCase()}`} error={problem ?? undefined}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input type="text" inputMode="decimal" autoComplete="off" spellCheck={false} value={typed} className="w-40"
+          onChange={(event) => { setTyped(event.target.value); setProblem(null); }} />
+        <Button type="submit" variant="primary" aria-disabled={edit.sending !== null || undefined}
+          title={edit.sending !== null ? 'Wait for the current setting to be saved.' : typed.trim() === '' ? 'Enter a new limit first.' : undefined}>Save</Button>
+        {dailyCeiling && current !== null ? <Button
+          aria-disabled={edit.sending !== null || undefined}
+          title={edit.sending === null ? undefined : 'Wait for the current setting to be saved.'}
+          onClick={() => { void changeSetting(settingKey, 'unset',
+        `This removes the daily dollar limit of ${formatUsdMicros(current)}. After a restart, there will be no daily dollar limit.`, 'Clear limit'); }}>Clear limit</Button> : null}
+      </div>
+    </Field>
     <EditOutcome settingKey={settingKey} label={`Change ${label}`} />
   </form>;
 }
@@ -237,34 +294,36 @@ export function DesktopNotificationChoice() {
   const notifications = useSyncExternalStore(desktopNotificationPreference.subscribe,
     desktopNotificationPreference.getState, desktopNotificationPreference.getState);
   const on = notifications.kind === 'on';
-  return <section aria-labelledby="settings-notifications"><h3 id="settings-notifications">Desktop notifications</h3>
-    <p>Get a desktop notification when a ticket is ready, needs you, or an agent asks a question.
-      This browser keeps the choice. Keep the Floor tab open.</p>
-    <button type="button" aria-pressed={on} disabled={notifications.kind === 'unsupported' || notifications.kind === 'asking'}
-      title={notifications.kind === 'unsupported' ? 'This browser does not support desktop notifications.'
-        : notifications.kind === 'asking' ? 'Answer the notification permission request in your browser.' : undefined}
-      onClick={() => { void desktopNotificationPreference.setEnabled(!on); }}>
-      {on ? 'Turn notifications off' : notifications.kind === 'asking' ? 'Waiting for browser permission' : 'Turn notifications on'}
-    </button>
-    {notifications.kind === 'denied' ? <p role="status">Notifications are blocked. Allow notifications for this page in your
-      browser's site settings, then turn them on here. The banner still shows what needs you.</p>
-      : notifications.kind === 'unsupported' || notifications.kind === 'unavailable' ? <p role="status">
-        Desktop notifications are unavailable in this browser. The banner still shows what needs you.</p> : null}
-    {!notifications.remembered ? <p role="status">This choice lasts only for this page because browser storage is unavailable.</p> : null}
-  </section>;
+  return <Group title="Desktop notifications" headingId="settings-notifications"
+    description="Get a desktop notification when a ticket is ready, needs you, or an agent asks a question. This browser keeps the choice. Keep the Floor tab open.">
+    <div className="flex">
+      <Button aria-pressed={on} disabled={notifications.kind === 'unsupported' || notifications.kind === 'asking'}
+        icon={on ? <BellOff {...ICON} /> : <Bell {...ICON} />}
+        title={notifications.kind === 'unsupported' ? 'This browser does not support desktop notifications.'
+          : notifications.kind === 'asking' ? 'Answer the notification permission request in your browser.' : undefined}
+        onClick={() => { void desktopNotificationPreference.setEnabled(!on); }}>
+        {on ? 'Turn notifications off' : notifications.kind === 'asking' ? 'Waiting for browser permission' : 'Turn notifications on'}
+      </Button>
+    </div>
+    {notifications.kind === 'denied' ? <Notice role="status">Notifications are blocked. Allow notifications for this page in your
+      browser's site settings, then turn them on here. The banner still shows what needs you.</Notice>
+      : notifications.kind === 'unsupported' || notifications.kind === 'unavailable' ? <Notice role="status">
+        Desktop notifications are unavailable in this browser. The banner still shows what needs you.</Notice> : null}
+    {!notifications.remembered ? <Notice role="status">This choice lasts only for this page because browser storage is unavailable.</Notice> : null}
+  </Group>;
 }
 
 /** A viewer preference kept in this browser, like the theme: the daemon never sees it. */
 function OfficeLayoutChoice() {
   const pin = useSyncExternalStore(subscribeToOfficePin, getOfficePin, getOfficePin);
-  return <section aria-labelledby="settings-office"><h3 id="settings-office">Office layout</h3>
-    <p>Automatic draws the smallest office that seats the whole crew. Pin an office to keep it whatever the crew
-      size. This browser keeps the choice.</p>
-    <div className="settings-office" role="group" aria-labelledby="settings-office">
-      {OFFICE_CHOICES.map(({ id, label }) => <button key={label} type="button" aria-pressed={pin === id}
-        onClick={() => setOfficePin(id)}>{label}</button>)}
+  return <Group title="Office layout" headingId="settings-office"
+    description="Automatic draws the smallest office that seats the whole crew. Pin an office to keep it whatever the crew size. This browser keeps the choice.">
+    <div role="group" aria-labelledby="settings-office" className="flex flex-wrap gap-2">
+      {OFFICE_CHOICES.map(({ id, label }) => <Button key={label} aria-pressed={pin === id}
+        className={cn(pin === id && 'border-accent bg-accent-soft hover:bg-accent-soft')}
+        onClick={() => setOfficePin(id)}>{label}</Button>)}
     </div>
-  </section>;
+  </Group>;
 }
 
 export function WorkspaceSettings({ report, floor, headingId = 'settings-workspaces' }: {
@@ -272,20 +331,28 @@ export function WorkspaceSettings({ report, floor, headingId = 'settings-workspa
   readonly floor?: FloorState;
   readonly headingId?: string;
 }) {
-  return <section aria-labelledby={headingId}><h3 id={headingId}>Projects</h3>
-      {report.workspaces.length === 0 ? <p>No projects yet.</p> : <ul>{report.workspaces.map((workspace) =>
-        <li key={workspace.workspace_id}><h4>{workspace.label}</h4><details><summary>Project details</summary><p>Project <code>{workspace.workspace_id}</code></p></details>
-          <details><summary>Spending details</summary><dl>
-            <div><dt>Daily dollar limit per agent</dt><dd>{spendingLimit(workspace.agent_usd_per_day_micros)}</dd></div>
-            <div><dt>Daily token limit per agent</dt><dd>{spendingLimit(workspace.agent_tokens_per_day, false)}</dd></div>
-            <div><dt>Dollar limit for a new task</dt><dd>{spendingLimit(workspace.goal_usd_micros)}</dd></div>
-            <div><dt>Token limit for a new task</dt><dd>{spendingLimit(workspace.goal_tokens, false)}</dd></div>
-          </dl></details>
+  return <Group title="Projects" headingId={headingId}>
+    {report.workspaces.length === 0 ? <p className={HINT}>No projects yet.</p> : <ul className="m-0 grid list-none gap-3 p-0">{report.workspaces.map((workspace) =>
+      <li key={workspace.workspace_id} className="grid gap-2 rounded-md border border-line bg-surface-2 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h4 className="m-0 text-body font-semibold text-ink [overflow-wrap:anywhere]">{workspace.label}</h4>
           {floor === undefined ? null
             : <RemoveProject floor={floor} projectId={workspace.workspace_id} label={workspace.label} />}
-        </li>)}</ul>}
-      <RemoveNotice />
-      {floor === undefined ? null : <AddProject floor={floor} off={<p>Adding a project from this page is off. Turn on the project switch under Floor switches.</p>} />}
-      <details><summary>Configuration details</summary><p>For a config-file edit, use <code>dudes project reload</code>, then <code>dudes project reload --apply &lt;sha256&gt;</code>.</p></details>
-    </section>;
+        </div>
+        <div className="flex flex-wrap gap-x-6 gap-y-1">
+          <Disclosure summary="Project details"><p className={HINT}>Project <Code>{workspace.workspace_id}</Code></p></Disclosure>
+          <Disclosure summary="Spending details">
+            <Facts className="pt-1">
+              <Fact label="Daily dollar limit per agent">{spendingLimit(workspace.agent_usd_per_day_micros)}</Fact>
+              <Fact label="Daily token limit per agent">{spendingLimit(workspace.agent_tokens_per_day, false)}</Fact>
+              <Fact label="Dollar limit for a new task">{spendingLimit(workspace.goal_usd_micros)}</Fact>
+              <Fact label="Token limit for a new task">{spendingLimit(workspace.goal_tokens, false)}</Fact>
+            </Facts>
+          </Disclosure>
+        </div>
+      </li>)}</ul>}
+    <RemoveNotice />
+    {floor === undefined ? null : <AddProject floor={floor} off={<p className={HINT}>Adding a project from this page is off. Turn on the project switch under Floor switches.</p>} />}
+    <Disclosure summary="Configuration details"><p className={HINT}>For a config-file edit, use <Code>dudes project reload</Code>, then <Code>dudes project reload --apply &lt;sha256&gt;</Code>.</p></Disclosure>
+  </Group>;
 }

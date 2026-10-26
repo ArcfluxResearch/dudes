@@ -74,8 +74,8 @@ test('Overview and the drawer report only published stream and selected-agent fa
       'Ship now, or wait for a review?',
     ]) assert.ok(html.includes(text), `Overview or the drawer omitted ${text}`);
     assert.match(html, /<span class="agent-detail-state-text">Paused<\/span>/);
-    assert.match(html, /<h2 id="overview-title" tabindex="-1">Overview<\/h2>/);
-    assert.match(html, /<summary>Archived \(0\)<\/summary>/);
+    assert.match(html, /<h2 id="overview-title" tabindex="-1"[^>]*>Overview<\/h2>/);
+    assert.match(html, /<summary[^>]*>(?:<svg[^>]*>.*?<\/svg>)?Archived \(0\)<\/summary>/);
     assert.doesNotMatch(html, /<input|<form|<textarea|contenteditable|Terminal|Workers/);
     const other = center(live, grace, GRACE);
     assert.ok(other.includes(GRACE) && other.includes('Grace') && other.includes('$0.11 · 111 tok'));

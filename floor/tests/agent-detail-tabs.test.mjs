@@ -409,7 +409,7 @@ test('the Attach note does not fold into Enable more controls, which keeps the o
   };
   const claude = { ...row, provider: 'claude' };
   const DISCLOSURE = /<details class="enable-controls"><summary>Enable more controls <span class="enable-controls-count">(\d)<\/span><\/summary>([\s\S]*?)<\/details>/;
-  const notes = (html) => [...html.matchAll(/<p class="(?:settings-guidance|agent-attach-note)">([\s\S]*?)<\/p>/g)]
+  const notes = (html) => [...html.matchAll(/<p (?:data-ui="notice" class="[^"]*"|class="agent-attach-note")>([\s\S]*?)<\/p>/g)]
     .map(([, words]) => words.replace(/<[^>]+>/g, '').replace(/\s+/g, ' '));
   const RETIRE = 'Retire is off. Turn on Pause, resume and rename and Retire agents under Floor switches in Settings.';
   const TERMINAL = 'To open the real CLI, turn on Attach terminals in Settings.';

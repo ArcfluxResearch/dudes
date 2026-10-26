@@ -26,7 +26,6 @@ const THIRD_PARTY = new Map([['src/renderer/terminal/xterm.css', "@import '@xter
  */
 const LEGACY = new Map([
   ['src/failure.css', { blocks: 4, declarations: 4 }],
-  ['src/legacy/activity-log.css', { blocks: 32, declarations: 80 }],
   ['src/legacy/agent-actions.css', { blocks: 26, declarations: 66 }],
   ['src/legacy/agent-detail.css', { blocks: 54, declarations: 168 }],
   ['src/legacy/agent-panel.css', { blocks: 71, declarations: 164 }],
@@ -41,12 +40,11 @@ const LEGACY = new Map([
   ['src/legacy/live-work.css', { blocks: 10, declarations: 28 }],
   ['src/legacy/memory.css', { blocks: 16, declarations: 39 }],
   ['src/legacy/notices.css', { blocks: 65, declarations: 244 }],
+  ['src/legacy/other-screens.css', { blocks: 44, declarations: 113 }],
   ['src/legacy/office-controls.css', { blocks: 6, declarations: 13 }],
   ['src/legacy/office.css', { blocks: 56, declarations: 177 }],
   ['src/legacy/retire-terminal.css', { blocks: 28, declarations: 88 }],
   ['src/legacy/roster.css', { blocks: 49, declarations: 137 }],
-  ['src/legacy/settings.css', { blocks: 56, declarations: 161 }],
-  ['src/legacy/setup.css', { blocks: 19, declarations: 46 }],
   ['src/legacy/shell.css', { blocks: 29, declarations: 143 }],
   ['src/legacy/task.css', { blocks: 26, declarations: 71 }],
   ['src/legacy/touch-and-phone.css', { blocks: 25, declarations: 68 }],

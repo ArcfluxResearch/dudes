@@ -19,6 +19,7 @@ import { freeTaskAgents } from './setup/nextStep.ts';
 import { GoalForm, GoalStatus } from './goal/GoalPanel.tsx';
 import { OverviewOutput, SelectionBar, streamStatus } from './LiveWork.tsx';
 import { MemoryPanel } from './memory/MemoryPanel.tsx';
+import { Notice } from './PageParts.tsx';
 import { LookStatus } from './look/LookEditor.tsx';
 import { ModelStatus } from './model/ModelEditor.tsx';
 import { MessagesPanel } from './MessagesPanel.tsx';
@@ -126,7 +127,7 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, rec
           git={floor.git ? <GitPanel row={row} active={detailTab === 'git'} /> : null}
           memory={<MemoryPanel agent={row.id} active={detailTab === 'memory'} crew={floor} />}
           control={floor.settings && !floor.control && automaticHoldOf(row) !== null
-            ? <p className="settings-guidance">Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</p>
+            ? <Notice>Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</Notice>
             : <ControlStrip floor={floor} row={row} />}
           recovery={<RecoveryPanel floor={floor} row={row} onReadReceipt={onReadRecoveryReceipt} />}
           retire={switchedOff.includes('retire') ? null : <RetireStrip floor={floor} row={row} />}
