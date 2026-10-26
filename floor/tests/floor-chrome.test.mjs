@@ -36,6 +36,7 @@ import { createServer } from 'vite';
 import ts from 'typescript';
 
 import { closesDrawer, closesPanel } from '../src/renderer/focus.ts';
+import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
@@ -140,7 +141,7 @@ test('a view button opens its view, and closes it only when it is open beside th
 });
 
 test('a Control view that covers Crew between the narrow layout and 1200 pixels takes Crew out of the tab order', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const block = /@media \(min-width: 801px\) and \(max-width: 1199px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
   assert.match(block, /\.control-panel \{\s*grid-column: 1;\s*\}/, 'the view no longer covers Crew in this range');
   assert.match(block, /\.floor-stage:has\(\.control-panel\) \.crew-list \{\s*visibility: hidden;\s*\}/,
@@ -201,7 +202,7 @@ function gridColumn(rules, matches) {
 }
 
 test('the office takes the columns the docked panels leave outside Board', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const office = (width, open) => gridColumn(rulesAt(css, width), (selector) => {
     const [target, ...context] = selector.split(/\s+/).reverse();
     if (target !== '.office-slot') return false;
@@ -225,7 +226,7 @@ const onTerminalStage = (target, { focus = false, expanded = false } = {}) => (s
 };
 
 test('an expanded terminal takes the stage under the top bar and its banners, above every panel, in focus mode too', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const controls = await readFile(resolve(root, 'src/renderer/terminal/controls.css'), 'utf8');
   const layers = Object.fromEntries([.../:root\s*\{([^}]+)\}/.exec(css)[1].matchAll(/--(layer-[a-z-]+):\s*(\d+);/g)]
     .map(([, name, value]) => [name, Number(value)]));
@@ -245,7 +246,7 @@ test('an expanded terminal takes the stage under the top bar and its banners, ab
 });
 
 test('a Done notice keeps its goal text beside the agent name and Dismiss', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const goal = declared(rulesAt(css, 1440), (selector) => selector === '.notice-list .done-notice-goal', 'text-overflow');
   assert.equal(goal, 'ellipsis', 'long goals cover Dismiss');
   assert.equal(declared(rulesAt(css, 1440), (selector) => selector === '.notice-list .done-notice-goal', 'clip-path'), undefined,
@@ -253,7 +254,7 @@ test('a Done notice keeps its goal text beside the agent name and Dismiss', asyn
 });
 
 test('Board takes the working area at every width with one vertical scroll region', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const stage = ".floor-stage:has(.control-panel[data-view='board'])";
   for (const width of [640, 1024, 1280, 1440]) {
     const rules = rulesAt(css, width);
@@ -273,7 +274,7 @@ test('Board takes the working area at every width with one vertical scroll regio
 });
 
 test('Board steps the mounted office, crew, terminal and drawer aside at every width', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const stage = ".floor-stage:has(.control-panel[data-view='board'])";
   for (const width of [640, 1024, 1280, 1440]) {
     for (const target of ['.office-slot', '.crew-list', '.stage-center', '.stage-side']) {
@@ -305,7 +306,7 @@ test('Crew reveals its roster from Board, a page or focus mode', async () => {
 });
 
 test('Board reserves no hidden terminal row while the first-run guide is open', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const active = new Set([
     '.floor-stage', '.floor-stage:has(.terminal-panel)',
     ".floor-stage:has(.control-panel[data-view='board'])",
@@ -330,7 +331,7 @@ test('Needs you keeps card metadata visible above the title at every width', asy
 });
 
 test('the first-run guide has a separate row above an expanded terminal and its controls', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const stage = ".shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide):not(:has(.control-panel[data-view='board']))";
   const rules = rulesAt(css, 1024);
   const of = (target, property) => declared(rules, selector => selector === `${stage} > ${target}`, property);
@@ -342,7 +343,7 @@ test('the first-run guide has a separate row above an expanded terminal and its 
 });
 
 test('detail tab focus rings stay inside the scrolling row', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const rules = rulesAt(css, 1024);
   const selector = '.agent-detail-tabs button:focus-visible';
   assert.equal(declared(rules, rule => rule.split(',').map(part => part.trim()).includes(selector), 'outline-offset'), '-2px');
@@ -352,14 +353,14 @@ test('detail tab focus rings stay inside the scrolling row', async () => {
 test('below 1440 the view tabs tighten even without Hire or Pause all', async () => {
   const { bar } = topBar();
   assert.doesNotMatch(bar, /id="hire-open"|id="pause-all-open"/);
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const space = width => declared(rulesAt(css, width), selector => selector === '.top-bar', '--tab-space');
   assert.equal(space(1439), '0.4rem');
   assert.equal(space(1440), '0.5rem');
 });
 
 test('the top bar hides its crew count below 1440 pixels, and shows it from 1440 beside every button', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const clips = (width) => rulesAt(css, width).filter(({ selectors }) => /^\s*\.top-bar(:has\(.*\))?\s*$/s.test(selectors))
     .flatMap(({ body }) => [...body.matchAll(/--total-clip:\s*([^;]+);/g)].map(([, value]) => value.trim()));
   for (const width of [1440, 1920]) assert.deepEqual([...new Set(clips(width))], ['none'], `${width}: the crew count is hidden`);
@@ -367,7 +368,7 @@ test('the top bar hides its crew count below 1440 pixels, and shows it from 1440
 });
 
 test('the tightened top bar spends no more on spacing than Chrome measured room for at 1280 and 1440 pixels', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const spacing = (width, actions) => {
     const space = {};
     const bar = rulesAt(css, width).filter(({ selectors }) => /^\s*\.top-bar(:has\(.*\))?\s*$/s.test(selectors))
@@ -382,7 +383,7 @@ test('the tightened top bar spends no more on spacing than Chrome measured room 
 });
 
 test('seven detail tabs keep to one row and scroll sideways, with no scrollbar to take their height', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const rules = rulesAt(css, 1440);
   const list = (property) => declared(rules, (selector) => selector === '.agent-detail-tabs', property);
   assert.notEqual(list('flex-wrap'), 'wrap', 'the seventh tab wraps to a second row');

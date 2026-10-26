@@ -1,0 +1,105 @@
+@layer legacy, theme, base, components, utilities;
+
+@layer legacy {
+.setup-view {
+  overflow-wrap: anywhere;
+}
+
+.setup-home {
+  margin: 0 0 0.6rem;
+}
+
+.setup-home dt {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.setup-home dd {
+  margin: 0.15rem 0 0;
+}
+
+.setup-providers {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-provider {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--card-background);
+}
+
+.setup-provider[data-found='false'] {
+  border-color: var(--accent-ink);
+  background: var(--question);
+}
+
+.setup-provider h3,
+.setup-provider p {
+  margin: 0 0 0.35rem;
+}
+
+.setup-install {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.stream-state {
+  margin: 0 0 0.45rem;
+  font-weight: 700;
+}
+
+.board-view .stream-state {
+  margin-bottom: 0.5rem;
+  color: var(--muted-ink);
+  font-size: 0.8rem;
+}
+
+.no-selection {
+  margin: 0;
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+}
+
+.pause-all-control {
+  display: grid;
+  justify-items: end;
+  gap: 0.35rem;
+  max-width: 22rem;
+}
+
+.pause-all-confirm,
+.pause-all-receipt {
+  box-sizing: border-box;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--output);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.pause-all-confirm p,
+.pause-all-receipt p {
+  margin: 0 0 0.35rem;
+}
+
+.pause-all-receipt ul {
+  margin: 0.2rem 0 0.4rem;
+  padding-left: 1.25rem;
+}
+
+.pause-all-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.pause-all-control .pause-all-submit {
+  background: var(--danger-background);
+}
+}

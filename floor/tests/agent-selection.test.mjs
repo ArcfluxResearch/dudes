@@ -10,6 +10,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { selectedAgentRow } from '../src/renderer/scene/selection.ts';
+import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const ADA = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const GRACE = '01M31CGZJMEFDYMJ4YBV76DJHQ';
@@ -91,7 +92,7 @@ test('the detail renders selected values and offers navigation to its waiting qu
 test('selection marker and keyboard-native button use the shared shell callback', async () => {
   const component = await readFile(resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx'), 'utf8');
   const shell = await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8');
-  const styles = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
+  const styles = await legacyStyles();
   assert.match(component, /<button\s+[\s\S]*?type="button"[\s\S]*?className="agent-select"/);
   assert.match(component, /aria-pressed=\{selectedId === id\}/);
   assert.match(component, /onClick=\{\(\) => onSelectAgent\(id\)\}/);

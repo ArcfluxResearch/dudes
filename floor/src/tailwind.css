@@ -1,0 +1,244 @@
+@layer legacy, theme, base, components, utilities;
+
+/* The older screens' rules, kept as they were and in their original order until each screen moves. */
+@import './legacy/base.css';
+@import './legacy/shell.css';
+@import './legacy/layout.css';
+@import './legacy/focus.css';
+@import './legacy/office.css';
+@import './legacy/agent-panel.css';
+@import './legacy/memory.css';
+@import './legacy/crew.css';
+@import './legacy/hire-entry.css';
+@import './legacy/live-work.css';
+@import './legacy/setup.css';
+@import './legacy/office-controls.css';
+@import './legacy/hire-wizard.css';
+@import './legacy/agent-actions.css';
+@import './legacy/retire-terminal.css';
+@import './legacy/task.css';
+@import './legacy/activity-log.css';
+@import './legacy/settings.css';
+@import './legacy/chat.css';
+@import './legacy/agent-detail.css';
+@import './legacy/roster.css';
+@import './legacy/notices.css';
+@import './legacy/engine-sign-in.css';
+@import './legacy/touch-and-phone.css';
+
+/*
+ * No preflight: the older screens keep the browser's own element styles. Only utilities are brought in, in their own
+ * layer above every older rule, and the whole of `src` is read for class names. A test fails when a generated utility
+ * has the same name as an older rule.
+ */
+@import 'tailwindcss/utilities.css' layer(utilities) source('.');
+
+/*
+ * The design tokens. A day set on the bare root, and a night set that follows the system unless the shell pins a
+ * theme, the way the older sheets draw theirs. `--ui-surface` is the panel colour: the plain name `--surface` is the
+ * older screens' paper and keeps that meaning until the last of them is gone.
+ */
+@layer theme {
+  :root {
+    --bg: #f7f8f7;
+    --ui-surface: #ffffff;
+    --surface-2: #f1f4f3;
+    --border: #e1e6e4;
+    --border-strong: #8c9793;
+    --text: #16201d;
+    --text-muted: #5b6863;
+    --text-subtle: #6b7672;
+    --accent: #1f6f66;
+    --accent-hover: #185b53;
+    --accent-fg: #ffffff;
+    --accent-soft: #e3f1ee;
+    --focus: #2a8a7f;
+    --ok: #256a40;
+    --ok-soft: #e4f1e8;
+    --warn: #7a560c;
+    --warn-soft: #f7eed8;
+    --danger: #b23b2e;
+    --danger-soft: #f9e4e0;
+    --info: #3b6aa0;
+    --info-soft: #e5edf7;
+    --field: var(--ui-surface);
+    --shadow-1: 0 1px 2px rgb(22 32 29 / 6%);
+    --shadow-2: 0 4px 14px rgb(22 32 29 / 10%), 0 1px 3px rgb(22 32 29 / 8%);
+    --shadow-3: 0 16px 40px rgb(22 32 29 / 16%), 0 2px 8px rgb(22 32 29 / 8%);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not(:has(.shell[data-theme='light'])) {
+      --bg: #0f1312;
+      --ui-surface: #151a19;
+      --surface-2: #1b2120;
+      --border: #262e2c;
+      --border-strong: #5c6b66;
+      --text: #e6ecea;
+      --text-muted: #9ba9a4;
+      --text-subtle: #8a9893;
+      --accent: #4fb3a6;
+      --accent-hover: #66c4b8;
+      --accent-fg: #0b1110;
+      --accent-soft: #163029;
+      --focus: #6fd0c3;
+      --ok: #5cbf83;
+      --ok-soft: #1a3326;
+      --warn: #e0ad4b;
+      --warn-soft: #3a2f16;
+      --danger: #ec7d6d;
+      --danger-soft: #3a1f1b;
+      --info: #7ea6d8;
+      --info-soft: #1c2836;
+      --field: var(--surface-2);
+      --shadow-1: 0 1px 2px rgb(0 0 0 / 30%);
+      --shadow-2: 0 4px 14px rgb(0 0 0 / 40%), 0 0 0 1px rgb(255 255 255 / 4%);
+      --shadow-3: 0 16px 40px rgb(0 0 0 / 55%), 0 0 0 1px rgb(255 255 255 / 5%);
+    }
+  }
+
+  :root:has(.shell[data-theme='dark']) {
+    --bg: #0f1312;
+    --ui-surface: #151a19;
+    --surface-2: #1b2120;
+    --border: #262e2c;
+    --border-strong: #5c6b66;
+    --text: #e6ecea;
+    --text-muted: #9ba9a4;
+    --text-subtle: #8a9893;
+    --accent: #4fb3a6;
+    --accent-hover: #66c4b8;
+    --accent-fg: #0b1110;
+    --accent-soft: #163029;
+    --focus: #6fd0c3;
+    --ok: #5cbf83;
+    --ok-soft: #1a3326;
+    --warn: #e0ad4b;
+    --warn-soft: #3a2f16;
+    --danger: #ec7d6d;
+    --danger-soft: #3a1f1b;
+    --info: #7ea6d8;
+    --info-soft: #1c2836;
+    --field: var(--surface-2);
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 30%);
+    --shadow-2: 0 4px 14px rgb(0 0 0 / 40%), 0 0 0 1px rgb(255 255 255 / 4%);
+    --shadow-3: 0 16px 40px rgb(0 0 0 / 55%), 0 0 0 1px rgb(255 255 255 / 5%);
+  }
+}
+
+/* Served as files from the build, never from the network or inlined, so the page policy's font rule holds. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2') format('woff2-variations');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2') format('woff2-variations');
+}
+
+
+/* Named for what they mean, so a class string carries no ARIA attribute name for a markup search to trip on. */
+@custom-variant waiting ([aria-disabled='true']);
+@custom-variant invalid ([aria-invalid='true']);
+@custom-variant selected ([aria-selected='true']);
+@custom-variant on ([aria-checked='true']);
+@custom-variant group-on (&:is(:where(.group)[aria-checked='true'] *));
+
+@theme static {
+  --spacing: 4px;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --tracking-label: 0.04em;
+  --text-caption: 11px;
+  --text-caption--line-height: 1.45;
+  --text-small: 12px;
+  --text-small--line-height: 1.45;
+  --text-base: 13px;
+  --text-base--line-height: 1.45;
+  --text-body: 14px;
+  --text-body--line-height: 1.55;
+  --text-title: 16px;
+  --text-title--line-height: 1.4;
+  --text-page: 20px;
+  --text-page--line-height: 1.3;
+  --text-display: 24px;
+  --text-display--line-height: 1.25;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-pill: 999px;
+  --default-transition-duration: 120ms;
+  --default-transition-timing-function: ease-out;
+  --leading-normal: 1.45;
+  --leading-reading: 1.55;
+  --animate-pop: pop 160ms ease-out;
+  --animate-spin: spin 900ms linear infinite;
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes pop {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--ui-surface);
+  --color-surface-2: var(--surface-2);
+  --color-field: var(--field);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-muted: var(--text-muted);
+  --color-subtle: var(--text-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-focus: var(--focus);
+  --color-scrim: #000000;
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --shadow-card: var(--shadow-1);
+  --shadow-pop: var(--shadow-2);
+  --shadow-sheet: var(--shadow-3);
+}
+
+@layer base {
+  @media (prefers-reduced-motion: reduce) {
+    [data-ui],
+    [data-ui] *,
+    [data-ui]::backdrop {
+      transition: none !important;
+      animation: none !important;
+    }
+  }
+}

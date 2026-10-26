@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
 
+@layer legacy, theme, base, components, utilities;
+
+@layer legacy {
 .ticket-banner {
   box-sizing: border-box;
   display: flex;
@@ -636,4 +639,5 @@
 @media (max-width: 800px) {
   .board-give { grid-template-columns: minmax(0, 1fr) auto; }
   .board-give label, .board-give input { grid-column: 1 / -1; }
+}
 }

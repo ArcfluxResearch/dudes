@@ -325,6 +325,10 @@ const ADMITTED_WITHOUT_HANDLER = new Map([
   [GOAL_PANEL, Object.freeze(['a link'])],
   // The sign-in link the engine printed, drawn whole in a read-only field and offered as one link to open in a new tab.
   [LOGIN_PANEL, Object.freeze(['an input', 'a link'])],
+  // The owned components. Field draws the input and textarea its call sites hand props to, and the tab list activates
+  // the tab a key moved to.
+  ['src/ui/Field.tsx', Object.freeze(['an input', 'a textarea'])],
+  ['src/ui/Tabs.tsx', Object.freeze([ACTIVATION])],
 ]);
 /**
  * The `FORBIDDEN` kinds each listed file may carry. "the floor ships no
@@ -351,6 +355,9 @@ const ADMITTED = new Map([
   [TERMINAL_PANEL, Object.freeze(['a textarea', 'a key handler'])],
   [FIRST_RUN_GUIDE, Object.freeze(['a key handler'])],
   [FIRST_TASK, Object.freeze(['a key handler'])],
+  ['src/ui/Menu.tsx', Object.freeze(['a key handler'])],
+  ['src/ui/Select.tsx', Object.freeze(['a key handler', 'a mouse handler', 'a pointer handler'])],
+  ['src/ui/Tabs.tsx', Object.freeze(['a key handler'])],
 ]);
 /** The slot's one key handler: a held key's repeats are not presses. It sends nothing. */
 const REFUSE_REPEAT = '(event) => { if (event.repeat) event.preventDefault(); }';
@@ -406,6 +413,16 @@ const TERMINAL_HEADER_KEYS = `(event) => {
 const CREW_LIST = 'src/renderer/Roster.tsx';
 const OVERVIEW_DIALOG = 'src/renderer/OverviewDialog.tsx';
 const ADMITTED_HANDLERS = [
+  // src/ui: the menu moves focus between its items and closes on Escape, the select does the same through
+  // aria-activedescendant, and the tab list moves to a neighbouring tab. None sends anything.
+  { file: 'src/ui/Menu.tsx', tag: 'button', handler: 'onKeyDown', expression: 'triggerKey' },
+  { file: 'src/ui/Menu.tsx', tag: 'div', handler: 'onKeyDown', expression: 'keyOf' },
+  { file: 'src/ui/Select.tsx', tag: 'button', handler: 'onKeyDown', expression: 'keyOf' },
+  { file: 'src/ui/Select.tsx', tag: 'button', handler: 'onBlur', expression: 'blurred' },
+  { file: 'src/ui/Select.tsx', tag: 'div', handler: 'onMouseDown', expression: '(event) => event.preventDefault()' },
+  { file: 'src/ui/Select.tsx', tag: 'div', handler: 'onPointerMove',
+    expression: '() => { if (option.disabled !== true && at !== active) setActive(at); }' },
+  { file: 'src/ui/Tabs.tsx', tag: 'div', handler: 'onKeyDown', expression: 'keyOf' },
   { file: 'src/renderer/AgentDetail.tsx', tag: 'button', className: 'agent-detail-tab', handler: 'onFocus', expression: '() => setFocusedSection(id)' },
   { file: 'src/renderer/AgentDetail.tsx', tag: 'button', className: 'agent-detail-tab', handler: 'onBlur', expression: '() => setFocusedSection(null)' },
   { file: 'src/renderer/AgentDetail.tsx', tag: 'section', handler: 'onFocus', expression: '() => setFocusedSection(id)' },
@@ -570,9 +587,26 @@ function classNameOf(node, syntax) {
   return ts.isStringLiteral(found.initializer) ? found.initializer.text : null;
 }
 
-/** Whether a JSX tag name identifier is a lowercase (DOM) intrinsic rather than a component's. */
+/**
+ * The owned components in src/ui draw one native element each and pass their props to it, so a call site is read as that
+ * element: its handler props are admitted or refused as the element's would be, and its fields are counted. Another
+ * capitalized tag is a component this scan leaves to its own file.
+ */
+const OWNED_TAG = Object.freeze({
+  Button: 'button', IconButton: 'button', Tab: 'button', MenuItem: 'button', Switch: 'button',
+  Input: 'input', Textarea: 'textarea', Select: 'select', Dialog: 'dialog', Disclosure: 'details',
+});
+
+/** The element a JSX tag name stands for, or `null` when it is a component of another kind. */
+function elementNameOf(tag) {
+  if (!ts.isIdentifier(tag)) return null;
+  if (/^[a-z]/.test(tag.text)) return tag.text;
+  return OWNED_TAG[tag.text] ?? null;
+}
+
+/** Whether a JSX tag name identifier is a DOM intrinsic, or an owned component that draws one. */
 function isIntrinsicTagName(tag) {
-  return ts.isIdentifier(tag) && /^[a-z]/.test(tag.text);
+  return elementNameOf(tag) !== null;
 }
 
 /**
@@ -596,7 +630,7 @@ function handlerPropsIn(text, file) {
   const syntax = parsedByExtension(text, file);
   const found = [];
   for (const element of intrinsicElementsIn(syntax)) {
-    const tag = element.tagName.text;
+    const tag = elementNameOf(element.tagName);
     const className = classNameOf(element, syntax);
     for (const attribute of element.attributes.properties) {
       if (ts.isJsxSpreadAttribute(attribute)) {
@@ -626,6 +660,8 @@ function intrinsicHandlersIn(syntax) {
 
 /** Whether an `ADMITTED_HANDLERS` rule covers this one found handler, on this file. */
 function isAdmittedHandler(file, entry) {
+  // An owned component hands its props to the one element it draws, so the spread is how its call sites' handlers arrive.
+  if (entry.handler === '{...}' && file.startsWith('src/ui/')) return true;
   return ADMITTED_HANDLERS.some((rule) => rule.file === file && rule.tag === entry.tag
     && rule.handler === entry.handler
     && (rule.className === undefined || rule.className === entry.className)
@@ -709,7 +745,7 @@ function urlAttributesIn(text, file) {
   const assets = staticAssetImportIdentifiersIn(syntax);
   const found = [];
   for (const element of intrinsicElementsIn(syntax)) {
-    const tag = element.tagName.text;
+    const tag = elementNameOf(element.tagName);
     for (const attribute of element.attributes.properties) {
       if (!ts.isJsxAttribute(attribute)) continue;
       const name = attribute.name.getText(syntax);
@@ -1029,13 +1065,13 @@ function fieldsIn(text) {
     return value.expression?.getText(syntax) ?? value.getText(syntax);
   }
   function collect(node) {
-    if ((ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node))
-      && ['input', 'textarea', 'select'].includes(node.tagName.getText(syntax))) {
+    const element = ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node) ? elementNameOf(node.tagName) : null;
+    if (element !== null && ['input', 'textarea', 'select'].includes(element)) {
       fields.push({
-        tag: node.tagName.getText(syntax),
+        tag: element,
         name: attribute(node, 'name'),
         type: attribute(node, 'type'),
-        change: attribute(node, 'onChange'),
+        change: attribute(node, 'onChange') ?? attribute(node, 'onValueChange'),
       });
     }
     ts.forEachChild(node, collect);
@@ -1126,7 +1162,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   for (const path of await filesUnder(source, ['.ts', '.tsx', '.html'])) {
     const relative = path.slice(floor.length + 1);
     const text = await readFile(path, 'utf8');
-    buttons.push(...[...text.matchAll(/<button[\s/>]/gi)].map(() => relative));
+    buttons.push(...[...text.matchAll(/<(?:button|iconbutton|menuitem|tab|switch)[\s/>]/gi)].map(() => relative));
     clicks.push(...[...text.matchAll(/\bonclick\s*=/gi)].map(() => relative));
   }
   const expected = [
@@ -1176,6 +1212,9 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(7).fill('src/shell.tsx'),
     'src/renderer/SignInExpired.tsx',
     'src/renderer/StreamNotice.tsx',
+    // The owned components: the one button each draws, the menu's trigger and item, and the toast's action and Dismiss.
+    'src/ui/Button.tsx', 'src/ui/IconButton.tsx', ...Array(2).fill('src/ui/Menu.tsx'), 'src/ui/Select.tsx', 'src/ui/Switch.tsx',
+    'src/ui/Tabs.tsx', ...Array(2).fill('src/ui/Toast.tsx'),
   ];
   assert.deepEqual(buttons.sort(), [...expected, AGENT_ORDER].sort());
   expected.sort();
@@ -1191,6 +1230,10 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   // Each spending limit's Save button submits its form.
   clickExpected.splice(clickExpected.indexOf(SETTINGS_VIEW), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
+  // A tab carries no click handler of its own: the call site's runs when a key activates it. The select's trigger and its
+  // options each take a click.
+  clickExpected.splice(clickExpected.indexOf('src/ui/Tabs.tsx'), 1);
+  clickExpected.push('src/ui/Select.tsx');
   clickExpected.push(RECOVERED_REVIEW);
   assert.deepEqual(clicks.sort(), clickExpected.sort());
   const readError = await readFile(resolve(source, 'renderer/ReadError.tsx'), 'utf8');
@@ -2532,7 +2575,7 @@ const OTHER_AUTHORITY = [
  */
 const TERMINAL_GRID = 'src/renderer/terminal/grid.ts';
 const ADMITTED_TERMINAL_LINES = Object.freeze({
-  [TERMINAL_GRID]: ["import '@xterm/xterm/css/xterm.css';", "export { Terminal } from '@xterm/xterm';"],
+  [TERMINAL_GRID]: ["import './xterm.css';", "export { Terminal } from '@xterm/xterm';"],
   [TERMINAL_CONTROLS]: ["const drawn = term.element?.querySelector('.xterm-screen')?.getBoundingClientRect();"],
   [LOGIN_PANEL]: ["const drawn = term.element?.querySelector('.xterm-screen')?.getBoundingClientRect();"],
 });
@@ -2744,6 +2787,10 @@ const ADMITTED_LISTENERS = Object.freeze([
   { path: 'src/signer.ts', line: "target.addEventListener(success, () => resolve(), { once: true });" },
   { path: 'src/signer.ts', line: "target.addEventListener('error', () => reject(new Error('storage failed')), { once: true });" },
   { path: 'src/signer.ts', line: "opening.addEventListener('upgradeneeded', () => {" },
+  // An open menu or select closes on a press outside it and keeps its list beside its button as the page scrolls.
+  { path: 'src/ui/popover.ts', line: "window.addEventListener('resize', replace);" },
+  { path: 'src/ui/popover.ts', line: "window.addEventListener('scroll', replace, true);" },
+  { path: 'src/ui/popover.ts', line: "document.addEventListener('pointerdown', away, true);" },
 ]);
 const SOCKET_LISTENER = /(socket|live)\.addEventListener\('(open|message|close)'|addEventListener\(type: '(open|close|message)'/;
 

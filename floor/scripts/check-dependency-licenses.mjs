@@ -5,6 +5,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const floorRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const allowed = new Set(['MIT', 'Apache-2.0', 'ISC', 'BSD-3-Clause', 'MPL-2.0']);
 const direct = new Map([
+  ['node_modules/@fontsource-variable/inter', '5.3.0'],
+  ['node_modules/@fontsource-variable/jetbrains-mono', '5.3.0'],
+  ['node_modules/@tailwindcss/vite', '4.3.3'],
+  ['node_modules/lucide-react', '1.55.0'],
+  ['node_modules/tailwind-merge', '3.7.0'],
+  ['node_modules/tailwindcss', '4.3.3'],
   ['node_modules/@xterm/xterm', '6.0.0'],
   ['node_modules/react', '19.3.1'],
   ['node_modules/react-dom', '19.3.1'],
@@ -16,6 +22,8 @@ const direct = new Map([
   ['node_modules/@types/react-dom', '19.3.0'],
   ['node_modules/@types/three', '0.186.0'],
 ]);
+// The font packages are the only OFL-1.1 code. Nothing else may carry that licence in without a review of its own.
+const fonts = new Set(['node_modules/@fontsource-variable/inter', 'node_modules/@fontsource-variable/jetbrains-mono']);
 const forbidden = new Set(['node_modules/pixi.js', 'node_modules/zustand']);
 const mpl = new Set([
   'node_modules/lightningcss',
@@ -37,10 +45,14 @@ export function checkLock(lock) {
   for (const [path, pkg] of Object.entries(lock.packages ?? {})) {
     if (path === '') continue;
     packages += 1;
-    if (!pkg.license || !allowed.has(pkg.license)) throw new Error(`${path}: unreviewed licence ${pkg.license}`);
+    const fontLicence = fonts.has(path) && pkg.license === 'OFL-1.1';
+    if (!pkg.license || (!allowed.has(pkg.license) && !fontLicence)) throw new Error(`${path}: unreviewed licence ${pkg.license}`);
     if (forbidden.has(path)) throw new Error(`${path}: outside A01`);
     if (pkg.license === 'MPL-2.0') {
-      if (!mpl.has(path) || pkg.version !== '1.33.0') throw new Error(`${path}: unreviewed MPL package`);
+      if (!mpl.has(path) || pkg.version !== '1.33.0') {
+        throw new Error(`${path}: unreviewed MPL package. Only lightningcss 1.33.0 is reviewed. Tailwind pins its own copy, so keep the `
+          + '"overrides" entry for lightningcss in package.json at 1.33.0, or review the new version and update this list.');
+      }
       seenMpl += 1;
     }
   }

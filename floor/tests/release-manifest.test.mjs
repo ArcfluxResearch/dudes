@@ -43,13 +43,29 @@ test('tree digest is byte-sorted and canonical', () => {
 
 test('dependency licence check rejects missing and unreviewed MPL entries', async () => {
   const lock = JSON.parse(await readFile(resolve(import.meta.dirname, '../package-lock.json'), 'utf8'));
-  assert.equal(checkLock(lock).direct, 10);
+  assert.equal(checkLock(lock).direct, 16);
   const missing = structuredClone(lock);
   delete missing.packages['node_modules/react'].license;
   assert.throws(() => checkLock(missing), /unreviewed licence/);
   const mpl = structuredClone(lock);
   mpl.packages['node_modules/lightningcss-unreviewed'] = { version: '1.33.0', license: 'MPL-2.0' };
   assert.throws(() => checkLock(mpl), /unreviewed MPL package/);
+});
+
+test('the Open Font Licence is accepted for the two font packages and for nothing else', async () => {
+  const lock = JSON.parse(await readFile(resolve(import.meta.dirname, '../package-lock.json'), 'utf8'));
+  for (const font of ['inter', 'jetbrains-mono']) assert.equal(lock.packages[`node_modules/@fontsource-variable/${font}`].license, 'OFL-1.1');
+  const other = structuredClone(lock);
+  other.packages['node_modules/some-other-font'] = { version: '1.0.0', license: 'OFL-1.1' };
+  assert.throws(() => checkLock(other), /some-other-font: unreviewed licence OFL-1.1/);
+});
+
+test('a Tailwind release that pins another lightningcss fails with the way out', async () => {
+  const lock = JSON.parse(await readFile(resolve(import.meta.dirname, '../package-lock.json'), 'utf8'));
+  assert.equal(lock.packages['node_modules/lightningcss'].version, '1.33.0', 'the override holds one reviewed copy');
+  const nested = structuredClone(lock);
+  nested.packages['node_modules/@tailwindcss/node/node_modules/lightningcss'] = { version: '1.34.0', license: 'MPL-2.0' };
+  assert.throws(() => checkLock(nested), /unreviewed MPL package\. Only lightningcss 1\.33\.0 is reviewed.*"overrides"/);
 });
 
 test('hash suffix and served extensions use the shared finite contract', () => {
@@ -77,4 +93,11 @@ test('runtime notices are exactly the copied code set', () => {
   }
   assert.throws(() => validateRuntimeNotices([...notices, notices[0]]), /runtime notice set/);
   assert.throws(() => validateRuntimeNotices(notices.slice(1)), /runtime notice set/, 'the bundled xterm lost its notice');
+  const libraries = [
+    { name: 'lucide-react', version: '1.55.0', identifier: 'ISC', text: 'notice' },
+    { name: 'tailwind-merge', version: '3.7.0', identifier: 'MIT', text: 'notice' },
+  ];
+  assert.doesNotThrow(() => validateRuntimeNotices([...notices, ...libraries]), 'the interface libraries may be bundled');
+  assert.doesNotThrow(() => validateRuntimeNotices([...notices, libraries[0]]));
+  assert.throws(() => validateRuntimeNotices([...notices, { ...libraries[0], version: '1.56.0' }]), /runtime notice set/, 'an unreviewed icon release');
 });

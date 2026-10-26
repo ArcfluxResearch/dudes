@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
 
+@layer legacy, theme, base, components, utilities;
+
+@layer legacy {
 .recovery-panel, .recovery-receipt {
   border: 1px solid var(--line, #555);
   border-radius: .5rem;
@@ -65,3 +68,4 @@ dl.recovery-facts dd {
 .recovery-details summary { min-height: 2.75rem; align-content: center; cursor: pointer; color: var(--muted-ink); }
 .recovery-receipt { background: var(--surface); }
 .receipts:has(.recovery-receipt:focus-within) { max-height: calc(100dvh - 8rem); }
+}

@@ -14,6 +14,7 @@ import { createServer } from 'vite';
 
 import { selectedAgentRow } from '../src/renderer/scene/selection.ts';
 import { ADA, GRACE, agent, subscribe, ticketCard } from './helpers/tickets.mjs';
+import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const KIM = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
@@ -205,7 +206,7 @@ test('a running agent whose ticket needs recovery needs you instead of appearing
 });
 
 test('on a phone the roster is a bottom sheet, and below 1100 pixels it narrows but keeps names and actions', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const phone = /@media \(max-width: 800px\) \{\s*\.crew-list\.roster\[data-sheet\] \{([^}]*)\}/.exec(css)?.[1] ?? '';
   assert.match(phone, /position: fixed;/);
   assert.match(phone, /inset: auto 0 0;/);

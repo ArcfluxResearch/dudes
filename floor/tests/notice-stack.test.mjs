@@ -8,6 +8,7 @@ import test, { before, after } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 let server;
@@ -74,7 +75,7 @@ test('a lost connection is the banner and the first wait is the stack', () => {
 });
 
 test('no notice reserves room: the page has no rail, no bottom padding for it, and no dialog shrinks for it', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   assert.doesNotMatch(css, /notice-rail/);
   const block = (selector) => new RegExp(`(?:^|\\n)${selector.replace(/[.[\]]/g, '\\$&')} \\{([^}]*)\\}`).exec(css)?.[1] ?? '';
   const area = block('.notice-area');
