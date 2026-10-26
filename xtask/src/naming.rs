@@ -205,7 +205,7 @@ fn line_kinds(line: &str) -> Vec<Kind> {
 /// A symlink is pushed as a file rather than followed as a directory: this walk has no loop
 /// detection, and a symlink that resolves to a directory then fails at the read, which is
 /// fail-closed.
-fn files_under(path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+pub(crate) fn files_under(path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let file_type = fs::symlink_metadata(path)
         .with_context(|| format!("reading {}", path.display()))?
         .file_type();
@@ -339,7 +339,7 @@ mod tests {
             ("xtask/src/main.rs", "fn main() {}\n"),
             ("schemas/thing.schema.json", "{}\n"),
             ("examples/demo/README.md", "# a demo\n"),
-            ("floor/package.json", "{}\n"),
+            ("floor/placeholder.txt", "{}\n"),
             (".github/workflows/ci.yml", "name: ci\n"),
             ("docs/page.md", "# a page\n"),
             ("README.md", "# a repository\n"),
