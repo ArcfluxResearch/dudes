@@ -402,7 +402,7 @@ test('Claude Attach shows the workspace trust warning in a confirmation before o
   const view = (agent) => renderToStaticMarkup(createElement(TerminalAttachView, { floor, offer: { kind: 'attach', agent } }));
   const claude = view(ADA);
   assert.doesNotMatch(claude, /trust this folder/);
-  assert.match(claude, /<button type="button" class="terminal-attach" title="[^"]*" aria-describedby="terminal-hint" aria-haspopup="dialog">Open the real CLI<\/button>/);
+  assert.match(claude, /<button type="button" class="terminal-attach" title="[^"]*" aria-describedby="terminal-hint" aria-haspopup="dialog"[^>]*>Open the real CLI<\/button>/);
   assert.doesNotMatch(view(GRACE), /aria-haspopup/);
   const dialog = renderToStaticMarkup(createElement(AttachConfirmation, { name: 'Ada', onConfirm() {}, onCancel() {} }));
   assert.match(dialog, /Claude Code may ask you to trust this folder/);

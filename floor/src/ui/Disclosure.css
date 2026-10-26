@@ -1,0 +1,41 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+@layer tokens, legacy, ui;
+
+@layer ui {
+  [data-ui='disclosure'] > summary {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-6);
+    min-height: var(--h-sm);
+    border-radius: var(--r-2);
+    color: var(--text-muted);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 500;
+    list-style: none;
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease);
+  }
+
+  [data-ui='disclosure'] > summary::-webkit-details-marker { display: none; }
+  [data-ui='disclosure'] > summary::marker { content: ''; }
+  [data-ui='disclosure'] > summary:hover { color: var(--text); }
+
+  /* A chevron drawn from two borders, so the markup stays a bare details and summary and needs no image. */
+  [data-ui='disclosure'] > summary::before {
+    flex: none;
+    box-sizing: border-box;
+    width: 6px;
+    height: 6px;
+    margin: 0 var(--sp-4) 0 var(--sp-2);
+    border-right: 1.75px solid currentcolor;
+    border-bottom: 1.75px solid currentcolor;
+    rotate: -45deg;
+    content: '';
+    transition: rotate var(--dur-fast) var(--ease);
+  }
+
+  [data-ui='disclosure'][open] > summary::before { rotate: 45deg; }
+
+  [data-ui='disclosure'] > :not(summary) { margin-left: var(--sp-20); }
+}

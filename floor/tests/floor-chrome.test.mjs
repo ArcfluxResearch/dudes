@@ -448,7 +448,7 @@ test('the drawer opens only on a selection and hands focus to the target it is g
   }));
   const open = drawer(floor.agents.find((row) => row.id === ADA));
   assert.match(open, new RegExp(`^<div class="agent-drawer" id="selected-agent-detail" data-focus-on-leave="crew-row-${ADA}">`));
-  assert.match(open, /<button type="button" id="selection-clear" class="drawer-close" aria-label="Close agent details" title="Close \(Escape\)" data-focus-on-leave="crew-row-[^"]+">×<\/button>/);
+  assert.match(open, /<button(?=[^>]*id="selection-clear")(?=[^>]*aria-label="Close agent details")(?=[^>]*data-focus-on-leave="crew-row-[^"]+")[^>]*>/);
   assert.match(open, new RegExp(`data-selected-agent-id="${ADA}"`));
   assert.equal(drawer(null), '');
 });

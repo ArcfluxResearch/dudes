@@ -9,6 +9,10 @@ import ts from 'typescript';
 
 import { handFocusOnLeave } from '../src/renderer/focus.ts';
 
+/** The owned components draw one native element each, so the guards read them as that element. */
+const OWNED_TAG = { Button: 'button', IconButton: 'button', Input: 'input', Textarea: 'textarea', Select: 'select',
+  Dialog: 'dialog', Disclosure: 'details' };
+
 function jsxElementsIn(text, file) {
   const syntax = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   assert.deepEqual(syntax.parseDiagnostics, [], `${file} no longer parses`);
@@ -21,7 +25,8 @@ function jsxElementsIn(text, file) {
         props[entry.name.getText(syntax)] = value === undefined ? ''
           : ts.isStringLiteral(value) ? value.text : value.expression?.getText(syntax);
       }
-      elements.push({ tag: node.tagName.getText(syntax), props });
+      const tag = node.tagName.getText(syntax);
+      elements.push({ tag: OWNED_TAG[tag] ?? tag, props });
     }
     ts.forEachChild(node, visit);
   })(syntax);

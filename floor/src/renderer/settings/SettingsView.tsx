@@ -2,6 +2,11 @@
 
 import { useId, useState, useSyncExternalStore } from 'react';
 
+import { Card } from '../../ui/Card.tsx';
+import { Disclosure } from '../../ui/Disclosure.tsx';
+import { Switch } from '../../ui/Switch.tsx';
+import './SettingsView.css';
+
 import {
   cancelSetting, changeSetting, confirmSetting, editLine, getSettingsEditState, limitChange,
   pageDrawsTerminal, RELOAD_FOR_TERMINAL, subscribeToSettingsEdit,
@@ -151,19 +156,29 @@ export function FloorSwitches({ report, headingId = 'settings-switches' }: {
   readonly report: SettingsReport;
   readonly headingId?: string;
 }) {
-  return <section aria-labelledby={headingId}><h3 id={headingId}>Floor switches</h3>
-    <dl><div><dt>Chat messages</dt><dd>Always on, with no setting</dd></div>
-    {SWITCHES.map(([key, label, says]) => {
-      const on = report.switches[key];
-      return <div key={key}><dt>{label}</dt>
-        <dd><span className="settings-says">{says}</span>{' '}
-          {key === 'diff' && on && !report.switches.git ? 'On, but it needs Show changed files' : on ? 'On' : 'Off'}
-          {key === 'renew' && !on ? ' It needs Change tasks and Hire agents.' : null}{' '}
-          <SwitchButton settingKey={`floor.${key}`} label={label} next={on ? 'off' : 'on'} /></dd></div>;
-    })}</dl>
+  const edit = useSyncExternalStore(subscribeToSettingsEdit, getSettingsEditState, getSettingsEditState);
+  return <section className="floor-switches" data-ui-scope="" aria-labelledby={headingId}>
+    <h3 id={headingId}>Floor switches</h3>
+    <Card className="floor-switches-card">
+      <div className="ui-switch-row">
+        <div className="ui-switch-text"><span className="ui-switch-label">Chat messages</span>
+          <span className="ui-switch-desc">Always on, with no setting</span></div>
+      </div>
+      {SWITCHES.map(([key, label, says]) => {
+        const on = report.switches[key];
+        const needs = key === 'diff' && on && !report.switches.git ? 'It needs Show changed files.'
+          : key === 'renew' && !on ? 'It needs Change tasks and Hire agents.' : null;
+        return <Switch key={key} label={label} checked={on}
+          description={<>{says}{needs === null ? null : <span className="floor-switches-needs"> {needs}</span>}</>}
+          busy={edit.sending !== null} busyTitle="Wait for the current setting to be saved."
+          onCheckedChange={(next) => { void changeSetting(`floor.${key}`, next ? 'on' : 'off'); }}>
+          <EditOutcome settingKey={`floor.${key}`} label={`Turn ${on ? 'off' : 'on'} ${label}`} />
+        </Switch>;
+      })}
+    </Card>
     <p>Recovery also needs Pause, resume and rename. Spending limits still apply.</p>
-    <details><summary>Configuration details</summary><dl>{SWITCHES.map(([key, label]) =>
-      <div key={key}><dt>{label}</dt><dd><code>floor.{key}</code></dd></div>)}</dl></details>
+    <Disclosure summary="Configuration details"><dl>{SWITCHES.map(([key, label]) =>
+      <div key={key}><dt>{label}</dt><dd><code>floor.{key}</code></dd></div>)}</dl></Disclosure>
   </section>;
 }
 

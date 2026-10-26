@@ -1,0 +1,16 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+@layer tokens, legacy, ui;
+
+@layer ui {
+  [data-ui='dialog'] {
+    box-sizing: border-box;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--r-4);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow-3);
+  }
+
+  [data-ui='dialog']::backdrop { background: rgb(15 19 18 / 45%); }
+}

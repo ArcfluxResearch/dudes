@@ -12,6 +12,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { RefObject } from 'react';
 
 import { currentFloorSession } from '../../session.ts';
+import { Button } from '../../ui/Button.tsx';
 import type { FloorState } from '../floor/store.ts';
 import { browserSocket } from '../floor/stream.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from '../focus.ts';
@@ -100,9 +101,9 @@ export function TerminalAttachView({ floor, offer }: { readonly floor: FloorStat
   const claudeTrust = target !== null && floor.agents.find((row) => row.id === target)?.provider === 'claude';
   return (
     <div className="agent-detail-terminal" data-terminal-offer={offer.kind}>
-      <button type="button" className="terminal-attach" title={hint} aria-describedby="terminal-hint"
+      <Button className="terminal-attach" title={hint} aria-describedby="terminal-hint"
         aria-haspopup={claudeTrust ? 'dialog' : undefined} aria-disabled={target === null || undefined}
-        onClick={() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }}>Open the real CLI</button>
+        onClick={() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }}>Open the real CLI</Button>
       {confirming && target !== null && claudeTrust ? <AttachConfirmation name={nameOf(floor, target)}
         onCancel={() => setConfirming(false)}
         onConfirm={() => { setConfirming(false); attachTerminal(target, browserTerminalPorts()); }} /> : null}

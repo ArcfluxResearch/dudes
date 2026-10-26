@@ -10,6 +10,10 @@ import { useSyncExternalStore } from 'react';
 import type { ReactNode, RefCallback } from 'react';
 
 import { floorSessionGeneration } from '../../session.ts';
+import { Button } from '../../ui/Button.tsx';
+import { Dialog } from '../../ui/Dialog.tsx';
+import { TrashIcon } from '../../ui/icons.tsx';
+import { MenuItem, MenuNote } from '../../ui/Menu.tsx';
 import {
   blocksControls, browserControlDeps, controlGate, getControlState, submitControl, subscribeToControl,
 } from '../control/control.ts';
@@ -34,6 +38,22 @@ const STATUS_TITLE = 'retire-status-title';
 export function RetireStrip({ floor, row }: { readonly floor: FloorState; readonly row: AgentRow | null }) {
   const retire = useSyncExternalStore(subscribeToRetire, getRetireState, getRetireState);
   return <RetireStripView retire={retire} floor={floor} row={row} session={floorSessionGeneration()} />;
+}
+
+/** Retire as an entry in the agent panel's More actions menu. The confirmation it opens is RetireDialog. */
+export function RetireMenuItem({ floor, row }: { readonly floor: FloorState; readonly row: AgentRow | null }) {
+  const retire = useSyncExternalStore(subscribeToRetire, getRetireState, getRetireState);
+  const offer = retireOffer(floor, row);
+  if (offer.kind === 'none') return null;
+  if (offer.kind === 'halted') return <MenuNote>{HALTED_LINE}</MenuNote>;
+  const session = floorSessionGeneration();
+  const blocked = blocksRetire(retire, offer, session);
+  return <>
+    <MenuItem danger icon={<TrashIcon />} className="retire-open" data-retire-offer={offer.agent} disabled={blocked}
+      title={blocked ? 'Wait for the current retirement request or check its status.' : undefined}
+      onSelect={() => confirmRetire(offer, session)}>Retire</MenuItem>
+    {retire.problem === null || retire.attempt !== null ? null : <MenuNote>{retire.problem}</MenuNote>}
+  </>;
 }
 
 export function RetireStripView({ retire, floor, row, session }: {
@@ -97,23 +117,23 @@ export function RetireDialogView({ retire, control, floor, session }: {
   const pause = controlGate(floor, row);
   const pauseInstead = pause.open && pause.offer === 'pause' && !blocksControls(control, pause, session);
   return (
-    <dialog ref={openConfirmation} className="retire-dialog" data-retire-dialog={offer.agent}
+    <Dialog ref={openConfirmation} className="retire-dialog" data-retire-dialog={offer.agent}
       aria-labelledby="retire-dialog-title" aria-describedby="retire-dialog-text" onCancel={cancelRetire}>
       <h2 id="retire-dialog-title">{`Retire ${offer.name}?`}</h2>
       <p id="retire-dialog-text">{CONSEQUENCES}</p>
       <div className="retire-actions">
         {/* The second click of a double-click on Retire outside would land here. */}
-        <button type="button" className="retire-confirm"
-          onClick={(event) => { if (event.detail < 2) void submitRetire(offer, browserControlDeps); }}>Retire</button>
-        <button type="button" className="retire-cancel" onClick={cancelRetire}>Cancel</button>
+        <Button variant="danger" className="retire-confirm"
+          onClick={(event) => { if (event.detail < 2) void submitRetire(offer, browserControlDeps); }}>Retire</Button>
+        <Button className="retire-cancel" onClick={cancelRetire}>Cancel</Button>
         {pauseInstead ? (
-          <button type="button" className="retire-pause"
+          <Button variant="ghost" className="retire-pause"
             onClick={() => { cancelRetire(); void submitControl('pause', pause, browserControlDeps); }}>
             Pause instead
-          </button>
+          </Button>
         ) : null}
       </div>
-    </dialog>
+    </Dialog>
   );
 }
 

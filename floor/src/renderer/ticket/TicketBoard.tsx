@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, FormEvent, KeyboardEvent } from 'react';
+import { Toast } from '../../ui/Toast.tsx';
 import { createPortal } from 'react-dom';
 import { handFocusAfterLeave } from '../focus.ts';
 
@@ -94,11 +95,10 @@ export function TicketNotice({ card, floor }: { readonly card?: string | null; r
     return () => clearTimeout(timer);
   }, [notice]);
   if (notice === null) return null;
-  const content = <p className="ticket-notice" data-tone={notice.tone} role="status" ref={handFocusAfterLeave}
-    data-focus-on-leave={host?.id}>
-    {notice.text}{' '}
-    <button type="button" className="ticket-dismiss" onClick={() => dismissNotice(notice)}>Dismiss</button>
-  </p>;
+  const content = <Toast tone={notice.tone} className="ticket-notice" data-tone={notice.tone} ref={handFocusAfterLeave}
+    data-focus-on-leave={host?.id} dismissClassName="ticket-dismiss" onDismiss={() => dismissNotice(notice)}>
+    {notice.text}
+  </Toast>;
   return host === null ? null : createPortal(content, host);
 }
 

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { Disclosure } from '../ui/Disclosure.tsx';
+import { Field, SearchInput } from '../ui/Field.tsx';
+import { Select } from '../ui/Select.tsx';
 import { RelativeTime } from './RelativeTime.tsx';
+import './LogPanel.css';
 import { ACTIVITY_LABELS, activityText } from './activity.ts';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { filterActivity } from './activityFilters.ts';
@@ -25,39 +29,39 @@ export function LogPanel({ floor }: { readonly floor: FloorState }) {
 
   useEffect(() => { writeActivityFilters(filters); }, [filters]);
 
+  const agentOptions = [{ value: '', label: 'All agents' }, ...[...agents].map(([value, label]) => ({ value, label }))];
+  const eventOptions = [{ value: '', label: 'All events' }, ...[...kinds].sort().map((value) => ({
+    value, label: ACTIVITY_LABELS[value as keyof typeof ACTIVITY_LABELS] ?? 'Unavailable event' }))];
+
   return (
-    <section className="log-panel" aria-label="Recent activity">
+    <section className="log-panel" data-ui-scope="" aria-label="Recent activity">
       <ReadNotice state={state} label="Activity" message="Activity was not reported, or this page could not read every event. Retry to load the latest activity." />
-      {state !== 'ready' ? null : <p role="status">{floor.stale ? 'Connection interrupted. This activity may be out of date.' : 'Recent activity, newest first.'}</p>}
+      {state !== 'ready' ? null : <p role="status" className="log-status">{floor.stale ? 'Connection interrupted. This activity may be out of date.' : 'Recent activity, newest first.'}</p>}
       <div className="activity-filters" role="group" aria-label="Filter recent activity">
-        <label>Agent
-          <select value={filters.agentId} onChange={(event) => setFilters({ ...filters, agentId: event.currentTarget.value })}>
-            <option value="">All agents</option>
-            {[...agents].map(([id, name]) => <option value={id} key={id}>{name}</option>)}
-          </select>
-        </label>
-        <label>Event
-          <select value={filters.kind} onChange={(event) => setFilters({ ...filters, kind: event.currentTarget.value })}>
-            <option value="">All events</option>
-            {[...kinds].sort().map((kind) => <option value={kind} key={kind}>{ACTIVITY_LABELS[kind as keyof typeof ACTIVITY_LABELS] ?? 'Unavailable event'}</option>)}
-          </select>
-        </label>
-        <label>Search
-          <input type="search" value={filters.query} maxLength={128} placeholder="Search activity"
+        <Field label="Agent">
+          <Select value={filters.agentId} options={agentOptions}
+            onValueChange={(agentId) => setFilters({ ...filters, agentId })} />
+        </Field>
+        <Field label="Event">
+          <Select value={filters.kind} options={eventOptions}
+            onValueChange={(kind) => setFilters({ ...filters, kind })} />
+        </Field>
+        <Field label="Search">
+          <SearchInput value={filters.query} maxLength={128} placeholder="Search activity"
             onChange={(event) => setFilters({ ...filters, query: event.currentTarget.value })} />
-        </label>
+        </Field>
       </div>
       {rows.length === 0 ? state === 'ready' ? <p>{floor.activity.length === 0 ? 'No recent activity.' : 'No matching activity.'}</p> : null : (
-        <ol aria-label="Recent events">
+        <ol aria-label="Recent events" className="log-rows">
           {rows.map((row) => (
             <li key={row.lsn} data-activity-lsn={row.lsn}>
               <p>{activityText(row)}</p>
               <small><RelativeTime at={row.at} /></small>
-              <details><summary>Details</summary><p>{recordedTime(row.at)}</p><p>Record position: {journalPosition(row.lsn)}</p>
+              <Disclosure summary="Details"><p>{recordedTime(row.at)}</p><p>Record position: {journalPosition(row.lsn)}</p>
                 <p>Event: <code>{row.kind}</code></p>
                 {'agent' in row ? <p>Agent: <code>{row.agent.id}</code></p> : null}
                 {'card' in row ? <p>Ticket: <code>{row.card.id}</code></p> : null}
-              </details>
+              </Disclosure>
             </li>
           ))}
         </ol>

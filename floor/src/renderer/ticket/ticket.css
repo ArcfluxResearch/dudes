@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
+@layer tokens, legacy, ui;
+@layer legacy {
 
 .ticket-banner {
   box-sizing: border-box;
@@ -75,7 +77,7 @@
 .ticket-field :is(input, textarea, select) {
   padding: 0.35rem 0.5rem;
   border: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   font: inherit;
 }
@@ -122,7 +124,7 @@
   padding: 0.9rem 1.1rem;
   border: 1px solid var(--line);
   border-left: 3px solid var(--status-waiting);
-  background: color-mix(in srgb, var(--question) 47%, var(--surface));
+  background: color-mix(in srgb, var(--question) 47%, var(--page-surface));
 }
 
 .ticket-card-regions > .task-columns {
@@ -337,9 +339,9 @@
   width: 1.5rem;
   height: 1.5rem;
   border-radius: 50%;
-  border: 1px solid color-mix(in srgb, var(--agent) 38%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--agent) 38%, var(--page-surface));
   color: var(--agent);
-  background: color-mix(in srgb, var(--agent) 12%, var(--surface));
+  background: color-mix(in srgb, var(--agent) 12%, var(--page-surface));
   font-size: 0.65rem;
   font-weight: 700;
 }
@@ -398,7 +400,7 @@
   border: 0;
   border-left: 1px solid var(--line);
   color: var(--ink);
-  background: var(--surface);
+  background: var(--page-surface);
   box-shadow: -12px 0 40px -15px var(--panel-shadow);
 }
 
@@ -583,7 +585,7 @@
   padding: 0.35rem 0.5rem;
   border: 1px solid var(--line);
   border-radius: 0.4rem;
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   font-size: 0.8rem;
   line-height: 1.25;
@@ -626,7 +628,7 @@
   padding: 0.4rem 0.6rem;
   border: 1px solid var(--line);
   border-radius: 0.35rem;
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   font: inherit;
 }
@@ -636,4 +638,5 @@
 @media (max-width: 800px) {
   .board-give { grid-template-columns: minmax(0, 1fr) auto; }
   .board-give label, .board-give input { grid-column: 1 / -1; }
+}
 }

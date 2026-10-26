@@ -1,0 +1,22 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+@layer tokens, legacy, ui;
+
+@layer ui {
+  .ui-menu { position: relative; display: inline-flex; }
+
+  .ui-menu-panel { min-width: 200px; max-width: 280px; }
+
+  .ui-menu-separator {
+    height: 1px;
+    margin: var(--sp-4) calc(var(--sp-4) * -1);
+    border: 0;
+    background: var(--border);
+  }
+
+  .ui-menu-note {
+    margin: 0;
+    padding: var(--sp-6) var(--sp-8);
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+}

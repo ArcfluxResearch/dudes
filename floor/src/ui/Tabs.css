@@ -1,0 +1,37 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+@layer tokens, legacy, ui;
+
+@layer ui {
+  [data-ui='tabs'] {
+    display: flex;
+    gap: var(--sp-4);
+    overflow-x: auto;
+    scrollbar-width: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  [data-ui='tabs']::-webkit-scrollbar { display: none; }
+
+  [data-ui='tabs'] > [role='tab'] {
+    position: relative;
+    flex: none;
+    height: var(--h-md);
+    margin: 0 0 -1px;
+    padding: 0 var(--sp-12);
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  }
+
+  [data-ui='tabs'] > [role='tab']:hover { color: var(--text); }
+  [data-ui='tabs'] > [role='tab'][aria-selected='true'] { color: var(--text); border-bottom-color: var(--accent); }
+  [data-ui='tabs'] > [role='tab']:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: var(--r-2); }
+}

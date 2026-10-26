@@ -331,19 +331,21 @@ test('the retire sibling reaches the store as exactly {}, apart from control, an
 test('Retire is offered in the detail and the terminal view only with the sibling, and never for a halted agent', () => {
   subscribe({ agents: [agent(), GRACE_ROW({ halted: true, paused: true })] });
   const button = `<button type="button" class="retire-open" data-retire-offer="${ADA}" aria-haspopup="dialog">Retire</button>`;
-  // In the selected agent's detail, after Pause.
+  // In the selected agent's detail, in the More actions menu after Pause.
+  const item = new RegExp(`<button type="button" role="menuitem" tabindex="-1" class="retire-open ui-pop-item ui-pop-item--danger" data-retire-offer="${ADA}"[^>]*>(?:<svg[^]*?</svg>)?Retire</button>`);
   const detail = center();
-  assert.ok(detail.includes(`<div class="retire-offer">${button}</div>`), 'Retire is not in the agent’s detail');
-  assert.match(detail, /<aside class="agent-detail"[\s\S]*class="control-pause"[\s\S]*class="retire-open"/);
+  assert.match(detail, item, 'Retire is not in the agent’s detail');
+  assert.match(detail, /<aside class="agent-detail"[\s\S]*class="control-pause"[\s\S]*class="retire-open /);
   // In the header of the agent's terminal view.
   assert.match(terminalHeader(), new RegExp(`<div class="terminal-actions">[\\s\\S]*${button}`));
   // A paused agent is retired like any other.
   delta([agent({ paused: true, control_lsn: RETIRE_LSN }), GRACE_ROW({ halted: true, paused: true })], 10);
-  assert.ok(center().includes(button), 'a paused agent is not offered Retire');
+  assert.match(center(), item, 'a paused agent is not offered Retire');
 
   const halted = `<div class="retire-offer"><p class="hire-note">${HALTED_LINE}</p></div>`;
-  for (const html of [center(GRACE), terminalHeader(GRACE)]) {
-    assert.ok(html.includes(halted), 'a halted agent is not told how it is retired');
+  const haltedNote = `<div class="ui-menu-note" role="none">${HALTED_LINE}</div>`;
+  for (const [html, said] of [[center(GRACE), haltedNote], [terminalHeader(GRACE), halted]]) {
+    assert.ok(html.includes(said), 'a halted agent is not told how it is retired');
     assert.doesNotMatch(html, /data-retire-offer/);
   }
   assert.deepEqual(offer(GRACE), { kind: 'halted' });
@@ -384,7 +386,7 @@ test('the confirmation comes before any request, and Cancel and the dialog’s c
     assert.equal(calls.length, 0, 'pressing Retire sent a request before the confirmation');
     const html = dialog();
     assert.match(html, new RegExp(`^<dialog class="retire-dialog" data-retire-dialog="${ADA}" `
-      + 'aria-labelledby="retire-dialog-title" aria-describedby="retire-dialog-text">'));
+      + 'aria-labelledby="retire-dialog-title" aria-describedby="retire-dialog-text"[^>]*>'));
     assert.equal(accessibleNameOfHeading(html, 'retire-dialog-title'), 'Retire Ada?');
     assert.ok(html.includes(`<p id="retire-dialog-text">${CONSEQUENCES}</p>`), 'the consequences are not said');
     assert.deepEqual(buttonsIn(html), ['Retire', 'Cancel', 'Pause instead']);
@@ -392,7 +394,7 @@ test('the confirmation comes before any request, and Cancel and the dialog’s c
 
     // Cancel sends nothing, and neither does the dialog's cancel, which Escape fires on a modal dialog.
     const tree = DialogView(dialogProps(1));
-    assert.equal(tree.type, 'dialog');
+    assert.equal(tree.type.name, 'Dialog', 'the confirmation is the page’s modal dialog component');
     assert.equal(tree.props.ref, openConfirmation, 'the confirmation is not opened as a modal dialog');
     find(tree, byClass('retire-cancel')).props.onClick();
     assert.equal(retire.getRetireState().confirming, null);
@@ -480,7 +482,7 @@ test('focus starts on Cancel, and closing the confirmation hands it back', () =>
   // The element that selector names is the confirmation's Cancel.
   subscribe();
   retire.confirmRetire(offer(), 1);
-  assert.match(dialog(), /<button type="button" class="retire-cancel">Cancel<\/button>/);
+  assert.match(dialog(), /<button type="button" class="retire-cancel"[^>]*>Cancel<\/button>/);
 });
 
 test('Pause instead appears only while the control module offers Pause, sends that pause, and closes the confirmation', async () => {

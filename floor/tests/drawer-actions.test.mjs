@@ -64,8 +64,8 @@ test('Pause stays in view, Retire sits in the More actions menu, and Attach sits
   const block = actionsOf(html);
   const labels = [...block.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label);
   assert.equal(labels[0], 'Pause');
-  const menu = /<details class="agent-more"><summary aria-label="More actions" title="More actions">…<\/summary>([\s\S]*?)<\/details>/.exec(block)?.[1] ?? '';
-  assert.deepEqual([...menu.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label).filter((label) => label !== 'Edit look'),
+  const menu = /<div class="ui-pop ui-menu-panel"[^>]*role="menu"[^>]*>([\s\S]*?)<\/div><\/div>/.exec(block)?.[1] ?? '';
+  assert.deepEqual([...menu.matchAll(/<button\b[^>]*role="menuitem"[^>]*>(?:<svg[\s\S]*?<\/svg>)?([^<]*)<\/button>/g)].map(([, label]) => label).filter((label) => label !== 'Edit look'),
     ['Retire']);
   assert.ok(html.indexOf('class="terminal-attach"') > html.indexOf('class="agent-model'), 'Attach follows the model');
   assert.doesNotMatch(menu, /Open the real CLI/);

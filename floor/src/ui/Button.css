@@ -1,0 +1,78 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+@layer tokens, legacy, ui;
+
+@layer ui {
+  [data-ui='button'] {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-6);
+    box-sizing: border-box;
+    min-width: 0;
+    height: var(--h-md);
+    margin: 0;
+    padding: 0 var(--sp-12);
+    border: 1px solid transparent;
+    border-radius: var(--r-2);
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1;
+    text-align: center;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+      color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  }
+
+  [data-ui='button'][data-size='sm'] { height: var(--h-sm); padding: 0 var(--sp-8); font-size: 12px; }
+  [data-ui='button'][data-size='lg'] { height: var(--h-lg); padding: 0 var(--sp-16); }
+
+  [data-ui='button'] svg { flex: none; }
+
+  [data-ui='button'][data-variant='primary'] { background: var(--accent); color: var(--accent-fg); }
+  [data-ui='button'][data-variant='primary']:hover { background: var(--accent-hover); }
+  [data-ui='button'][data-variant='secondary'] { background: var(--surface); border-color: var(--border-strong); }
+  [data-ui='button'][data-variant='secondary']:hover { background: var(--surface-2); }
+  [data-ui='button'][data-variant='ghost'] { color: var(--text-muted); }
+  [data-ui='button'][data-variant='ghost']:hover { background: var(--surface-2); color: var(--text); }
+  [data-ui='button'][data-variant='danger'] { background: var(--surface); border-color: var(--border-strong); color: var(--danger); }
+  [data-ui='button'][data-variant='danger']:hover { background: var(--danger-soft); border-color: var(--danger); }
+
+  [data-ui='button']:active { transform: translateY(0.5px); }
+
+  [data-ui='button'][data-icon-only] { width: var(--h-md); padding: 0; }
+  [data-ui='button'][data-icon-only][data-ui='button'][data-size='sm'] { width: var(--h-sm); }
+  [data-ui='button'][data-icon-only][data-ui='button'][data-size='lg'] { width: var(--h-lg); }
+
+  [data-ui='button']:disabled,
+  [data-ui='button'][aria-disabled='true'] {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  [data-ui='button']:disabled:hover,
+  [data-ui='button'][aria-disabled='true']:hover {
+    background: var(--surface);
+  }
+
+  [data-ui='button'][data-variant='primary']:disabled:hover,
+  [data-ui='button'][data-variant='primary'][aria-disabled='true']:hover { background: var(--accent); }
+  [data-ui='button'][data-variant='ghost']:disabled:hover,
+  [data-ui='button'][data-variant='ghost'][aria-disabled='true']:hover { background: transparent; }
+
+  [data-ui='button'][aria-busy='true'] { cursor: progress; }
+
+  .ui-spin { animation: ui-spin 900ms linear infinite; }
+
+  @keyframes ui-spin { to { transform: rotate(360deg); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ui-spin { animation: none; }
+    [data-ui='button'] { transition: none; }
+  }
+}

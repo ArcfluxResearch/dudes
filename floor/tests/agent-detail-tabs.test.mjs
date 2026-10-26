@@ -36,7 +36,7 @@ const tabs = html => [...html.matchAll(/role="tab" class="agent-detail-tab"[^>]*
 const header = html => html.match(/<header class="agent-detail-head">([\s\S]*?)<\/header>/)?.[1] ?? '';
 const panel = (html, id) => html.match(
   new RegExp(`<section id="agent-detail-panel-${id}"[\\s\\S]*?(?=<section id="agent-detail-panel-|</aside>)`))?.[0] ?? '';
-const CLOSE = /<button type="button" id="selection-clear" class="drawer-close" aria-label="Close agent details"[^>]*>×<\/button>/;
+const CLOSE = /<button(?=[^>]*id="selection-clear")(?=[^>]*class="drawer-close")(?=[^>]*aria-label="Close agent details")[^>]*>/;
 const STREAM_STATE = /<(?:p|span) class="stream-state" role="status">([^<]*)<\/(?:p|span)>/g;
 
 async function drawer() {
@@ -97,7 +97,7 @@ test('the header retains identity and actions outside every panel', () => {
 test('Overview follows the current ticket from work to a hold and keeps its draft when changing tabs', async () => {
   const idle = render({ task: createElement('form', null, 'Task form') });
   assert.match(idle, /<span class="agent-detail-state-text">Idle, ready for a task<\/span>/);
-  assert.match(idle, /<details class="agent-overview-task"><summary>Give a task<\/summary>/);
+  assert.match(idle, /<details class="agent-overview-task" data-ui="disclosure"><summary>Give a task<\/summary>/);
   assert.match(idle, /<details class="agent-overview-details"><summary>Details<\/summary>/);
   assert.doesNotMatch(idle, /aria-label="Needs you"/);
   assert.match(render({ row: { ...row, status: 'unavailable' } }),
@@ -408,15 +408,14 @@ test('the Attach note does not fold into Enable more controls, which keeps the o
     providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 8 },
   };
   const claude = { ...row, provider: 'claude' };
-  const DISCLOSURE = /<details class="enable-controls"><summary>Enable more controls <span class="enable-controls-count">(\d)<\/span><\/summary>([\s\S]*?)<\/details>/;
+  const DISCLOSURE = /<div class="ui-menu-note" role="none">((?:(?!<div)[\s\S])*?<p class="settings-guidance">[\s\S]*?)<\/div>/;
   const notes = (html) => [...html.matchAll(/<p class="(?:settings-guidance|agent-attach-note)">([\s\S]*?)<\/p>/g)]
     .map(([, words]) => words.replace(/<[^>]+>/g, '').replace(/\s+/g, ' '));
   const RETIRE = 'Retire is off. Turn on Pause, resume and rename and Retire agents under Floor switches in Settings.';
   const TERMINAL = 'To open the real CLI, turn on Attach terminals in Settings.';
 
   const both = header(center({ settings, retire: false, terminal: false }, claude));
-  const [, count, inside] = DISCLOSURE.exec(both) ?? [];
-  assert.equal(count, '1');
+  const [, inside] = DISCLOSURE.exec(both) ?? [];
   assert.deepEqual(notes(inside ?? ''), [RETIRE]);
   assert.deepEqual(notes(both.replace(DISCLOSURE, '')), [TERMINAL], 'the Attach note stays outside the menu');
 
@@ -424,6 +423,6 @@ test('the Attach note does not fold into Enable more controls, which keeps the o
   assert.doesNotMatch(terminalOnly, DISCLOSURE);
   assert.deepEqual(notes(terminalOnly), [TERMINAL]);
 
-  assert.doesNotMatch(center({ settings, retire: true, terminal: true }, claude), /enable-controls/);
-  assert.doesNotMatch(center({ settings: null, retire: false, terminal: false }, claude), /enable-controls/);
+  assert.doesNotMatch(center({ settings, retire: true, terminal: true }, claude), /settings-guidance/);
+  assert.doesNotMatch(center({ settings: null, retire: false, terminal: false }, claude), /settings-guidance/);
 });

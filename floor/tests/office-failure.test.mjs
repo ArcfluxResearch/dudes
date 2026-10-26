@@ -95,7 +95,7 @@ test('the failure line reads against the page at the brief threshold', async () 
   const css = await readFile(stylesheet, 'utf8');
   for (const theme of ['light', 'dark']) {
     const colour = themeColour(css, 'office-failure', theme);
-    const onPage = contrast(colour, themeTokens(css, theme).surface);
+    const onPage = contrast(colour, themeTokens(css, theme)['page-surface']);
     assert.ok(onPage >= READABLE,
       `${colour} reads at ${onPage.toFixed(2)}:1 on the ${theme} page, under the ${READABLE}:1 bar`);
   }
@@ -110,7 +110,7 @@ test('the failure line reads against the page at the brief threshold', async () 
 test('the failure line is held to the same bar as the unconfirmed line', async () => {
   const css = await readFile(stylesheet, 'utf8');
   for (const theme of ['light', 'dark']) {
-    const page = themeTokens(css, theme).surface;
+    const page = themeTokens(css, theme)['page-surface'];
     const failure = contrast(themeColour(css, 'office-failure', theme), page);
     const stale = contrast(themeColour(css, 'office-stale', theme), page);
     assert.ok(Math.abs(failure - stale) < 1,

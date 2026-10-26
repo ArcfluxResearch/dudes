@@ -102,7 +102,7 @@ test('the disconnected line reads against the page at the brief threshold', asyn
   const css = await readFile(stylesheet, 'utf8');
   for (const theme of ['light', 'dark']) {
     const colour = themeColour(css, 'office-closed', theme);
-    const onPage = contrast(colour, themeTokens(css, theme).surface);
+    const onPage = contrast(colour, themeTokens(css, theme)['page-surface']);
     assert.ok(onPage >= READABLE,
       `${colour} reads at ${onPage.toFixed(2)}:1 on the ${theme} page, under the ${READABLE}:1 bar`);
   }
@@ -118,7 +118,7 @@ test('all three lines below the floor are on the same footing', async () => {
   const css = await readFile(stylesheet, 'utf8');
   for (const theme of ['light', 'dark']) {
     const read = ['office-failure', 'office-stale', 'office-closed']
-      .map((name) => [name, contrast(themeColour(css, name, theme), themeTokens(css, theme).surface)]);
+      .map((name) => [name, contrast(themeColour(css, name, theme), themeTokens(css, theme)['page-surface'])]);
     const ratios = read.map(([, ratio]) => ratio);
     assert.ok(Math.max(...ratios) - Math.min(...ratios) < 1,
       `the ${theme} lines read at ` + read.map(([name, ratio]) => `${name} ${ratio.toFixed(2)}:1`).join(', ')

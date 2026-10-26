@@ -6,7 +6,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { accentOf, accessoryOf, lookOf } from './appearance.ts';
 import { Portrait } from './Portrait.tsx';
 import { AgentOverview } from './AgentOverview.tsx';
-import { detailTabSelection, detailTabTarget, revealedTabScroll } from './detailTabs.ts';
+import { detailTabSelection, revealedTabScroll } from './detailTabs.ts';
 import type { DetailTab } from './detailTabs.ts';
 import type { CardRow } from './board.ts';
 import { stateSentenceOf } from './agentState.ts';
@@ -15,13 +15,19 @@ import type { NeedAction } from './needs.ts';
 import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
 import { HIRE_ENGINES } from './onboarding/catalog.ts';
 import { NameEditor } from './rename/NameEditor.tsx';
-import { LookEditor } from './look/LookEditor.tsx';
+import { LookEditor, LookMenuItem } from './look/LookEditor.tsx';
 import { ModelEditor } from './model/ModelEditor.tsx';
 import { beginRename } from './rename/rename.ts';
 import { automaticHoldOf } from './automaticHold.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from './focus.ts';
 import type { AgentRow } from './scene/cast.ts';
 import { fieldsOf } from './scene/label.ts';
+import { Badge } from '../ui/Badge.tsx';
+import { Button } from '../ui/Button.tsx';
+import { Disclosure } from '../ui/Disclosure.tsx';
+import { Menu } from '../ui/Menu.tsx';
+import { Tab, TabList } from '../ui/Tabs.tsx';
+import './AgentDetail.css';
 
 function providerLabel(provider: string): string {
   return (HIRE_ENGINES as Readonly<Record<string, string>>)[provider] ?? provider;
@@ -83,18 +89,18 @@ export function AgentDetail({
     { id: 'messages', label: 'Messages', content: messages },
   ];
   function act(action: NeedAction): ReactNode {
-    if (action.kind === 'question') return <button type="button" onClick={(event) => {
+    if (action.kind === 'question') return <Button variant="primary" onClick={(event) => {
       const question = event.currentTarget.closest('.agent-detail')?.querySelector<HTMLElement>('.agent-detail-question');
       question?.focus();
       question?.scrollIntoView({ block: 'nearest' });
-    }}>{action.label}</button>;
+    }}>{action.label}</Button>;
     if (action.kind === 'ticket') return onOpenTicket === undefined ? null
-      : <button type="button" onClick={() => onOpenTicket(action.card)}>{action.label}</button>;
+      : <Button variant="primary" onClick={() => onOpenTicket(action.card)}>{action.label}</Button>;
     if (action.label !== 'Talk') return null;
     return <>
       {tab !== 'chat' && panels.some((panel) => panel.id === 'chat' && panel.content !== null)
-        ? <button type="button" onClick={() => onTabChange('chat')}>{action.label}</button> : null}
-      {taskForm === null ? null : <details className="agent-overview-task"><summary>Give a task</summary>{taskForm}</details>}
+        ? <Button onClick={() => onTabChange('chat')}>{action.label}</Button> : null}
+      {taskForm === null ? null : <Disclosure className="agent-overview-task" summary="Give a task">{taskForm}</Disclosure>}
     </>;
   }
   const available = panels.filter((panel) => panel.content !== null);
@@ -131,7 +137,7 @@ export function AgentDetail({
   }, []);
 
   return (
-    <aside ref={detail} className="agent-detail" aria-label="Selected agent details" data-selected-agent-id={row.id} data-detail-tab={selected}
+    <aside ref={detail} className="agent-detail" data-ui-scope="" aria-label="Selected agent details" data-selected-agent-id={row.id} data-detail-tab={selected}
       style={{ '--agent': accentOf(row) } as CSSProperties}>
       <div className="agent-detail-context">
       <header className="agent-detail-head">
@@ -151,7 +157,7 @@ export function AgentDetail({
         </div>
         {selection}
         <section className="agent-detail-state" aria-label="State" data-state={need.state}>
-          <p className="agent-detail-state-line"><span className="crew-chip" data-state={need.state}>{NEED_LABEL[need.state]}</span>
+          <p className="agent-detail-state-line"><Badge className="crew-chip" state={need.state}>{NEED_LABEL[need.state]}</Badge>
             {' '}<span className="agent-detail-state-text">{sentence}</span></p>
           <div className="agent-detail-primary">
             {resumeInOverview ? control : null}
@@ -161,11 +167,11 @@ export function AgentDetail({
         </section>
         <div className="agent-detail-actions">
           {resumeInOverview ? null : control}
-          <details className="agent-more">
-            <summary aria-label="More actions" title="More actions">…</summary>
-            <div className="agent-more-body"><LookEditor row={row} />{retire}{enable}</div>
-          </details>
+          <Menu className="agent-more" label="More actions">
+            <LookMenuItem row={row} />{retire}{enable}
+          </Menu>
         </div>
+        <LookEditor row={row} />
         <ModelEditor row={row} />
         {terminal}
         {attachNote}
@@ -177,22 +183,14 @@ export function AgentDetail({
           </section>
         )}
       </header>
-      <div ref={tabRow} className="agent-detail-tabs" role="tablist" aria-label="Agent detail sections"
+      <TabList ref={tabRow} className="agent-detail-tabs" aria-label="Agent detail sections"
         aria-describedby={tabs.length > 1 ? 'agent-detail-tab-hint' : undefined}>
-        {available.map(({ id, label }) => <button key={id} type="button" role="tab" className="agent-detail-tab"
+        {available.map(({ id, label }) => <Tab key={id} className="agent-detail-tab" selected={selected === id}
           id={`agent-detail-tab-${id}`} data-detail-section={id} aria-controls={`agent-detail-panel-${id}`}
-          aria-selected={selected === id} tabIndex={selected === id ? 0 : -1}
           ref={handFocusOnLeave} data-focus-on-leave="agent-detail-tab-overview"
           onFocus={() => setFocusedSection(id)} onBlur={() => setFocusedSection(null)}
-          onClick={() => onTabChange(id)} onKeyDown={(event) => {
-            if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-            const target = detailTabTarget(tabs, id, event.key);
-            if (target === null) return;
-            event.preventDefault();
-            onTabChange(target);
-            event.currentTarget.ownerDocument.getElementById(`agent-detail-tab-${target}`)?.focus();
-          }}>{label}</button>)}
-      </div>
+          onClick={() => onTabChange(id)}>{label}</Tab>)}
+      </TabList>
       {tabs.length > 1 ? <p id="agent-detail-tab-hint" className="agent-detail-tab-hint">Scroll for more sections · Use arrow keys</p> : null}
       </div>
       {available.map(({ id, content }) => <section key={id} id={`agent-detail-panel-${id}`}

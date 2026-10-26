@@ -14,6 +14,8 @@
 
 import { useSyncExternalStore } from 'react';
 
+import { Button } from '../../ui/Button.tsx';
+
 import { floorSessionGeneration } from '../../session.ts';
 import { automaticHoldOf } from '../automaticHold.ts';
 import { journalPosition } from '../format.ts';
@@ -108,28 +110,28 @@ export function ControlStripView({ control, floor, row, session }: {
           {gate.offer === 'none' && !gate.stop ? null : (
             <div className="control-actions">
               {gate.offer !== 'pause' && gate.offer !== 'resume' ? null : gate.offer === 'pause' ? (
-                <button key="pause" ref={handFocusOnLeave} type="button" className="control-pause"
+                <Button key="pause" ref={handFocusOnLeave} className="control-pause"
                   aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
                   title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
                   onClick={(event) => { if (event.detail < 2) void submitControl('pause', gate, browserControlDeps); }}>
                   {busy ? 'Sending…' : 'Pause'}
-                </button>
+                </Button>
               ) : (
-                <button key="resume" ref={handFocusOnLeave} type="button" className="control-resume"
+                <Button key="resume" ref={handFocusOnLeave} variant="primary" className="control-resume"
                   aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
                   title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
                   onClick={(event) => { if (event.detail < 2) void submitControl('resume', gate, browserControlDeps); }}>
                   {busy ? 'Sending…' : 'Resume'}
-                </button>
+                </Button>
               )}
               {gate.stop ? (
-                <button key="halt" type="button" className="control-stop" ref={handFocusOnLeave}
+                <Button key="halt" variant="danger" className="control-stop" ref={handFocusOnLeave}
                   aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
                   title={HINTS.halt} aria-describedby="control-stop-note"
                   onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
                   onClick={(event) => { if (event.detail < 2) void submitControl('halt', gate, browserControlDeps); }}>
                   {busy && attempt?.verb === 'halt' ? 'Sending…' : 'Stop this turn'}
-                </button>
+                </Button>
               ) : null}
             </div>
           )}

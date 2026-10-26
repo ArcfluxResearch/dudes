@@ -1,0 +1,39 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+@layer tokens, legacy, ui;
+
+@layer ui {
+  .ui-toast {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    column-gap: var(--sp-12);
+    row-gap: var(--sp-8);
+    box-sizing: border-box;
+    margin: 0;
+    padding: var(--sp-12) var(--sp-16);
+    border: 1px solid var(--border);
+    border-radius: var(--r-3);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow-2);
+    animation: ui-toast-in var(--dur-pop) var(--ease);
+  }
+
+  @keyframes ui-toast-in {
+    from { opacity: 0; translate: 0 8px; }
+  }
+
+  .ui-toast-icon { margin-top: 2px; color: var(--info); }
+  .ui-toast[data-tone='done'] .ui-toast-icon { color: var(--ok); }
+  .ui-toast[data-tone='problem'] .ui-toast-icon { color: var(--danger); }
+  .ui-toast[data-tone='problem'] { border-color: var(--danger); }
+
+  .ui-toast-message { margin: 0; font-size: 13px; line-height: 1.45; }
+
+  .ui-toast-actions {
+    grid-column: 2;
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--sp-8);
+  }
+}

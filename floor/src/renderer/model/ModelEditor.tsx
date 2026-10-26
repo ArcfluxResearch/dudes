@@ -3,6 +3,7 @@
 import { useSyncExternalStore } from 'react';
 
 import { floorSessionGeneration } from '../../session.ts';
+import { Button } from '../../ui/Button.tsx';
 import { getFloorState, subscribeToFloor } from '../floor/store.ts';
 import { visibleFailure } from '../chat/EngineSaid.tsx';
 import type { AgentRow } from '../scene/cast.ts';
@@ -35,8 +36,8 @@ export function ModelEditor({ row }: { readonly row: AgentRow }) {
     {ran.length === 0 ? null : <p className="agent-model-line" data-model-ran={ran.join(' ')}>
       {ran.length === 1 ? <>In use: <strong>{visibleFailure(ran[0])}</strong></> : <>Ran: <strong>{ran.map(visibleFailure).join(', ')}</strong></>}
     </p>}
-    {!available ? null : view.pinned ? <button type="button" disabled={blocked}
-      onClick={() => { void removeOverride(row, browserModelDeps); }}>Remove my override</button> : editing ? <form onSubmit={(event) => { event.preventDefault(); void submitModel(row, browserModelDeps); }}
+    {!available ? null : view.pinned ? <Button variant="ghost" size="sm" disabled={blocked}
+      onClick={() => { void removeOverride(row, browserModelDeps); }}>Remove my override</Button> : editing ? <form onSubmit={(event) => { event.preventDefault(); void submitModel(row, browserModelDeps); }}
       onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelModel(); } }}>
       <fieldset className="hire-choices model-choices">
         <legend>Model for the next turn</legend>
@@ -52,11 +53,11 @@ export function ModelEditor({ row }: { readonly row: AgentRow }) {
         value={state.draft} aria-invalid={modelProblem(state.draft) !== null}
         onChange={(event) => editModel(event.currentTarget.value)} />
       <ModelListBar provider={String(row.provider)} id="agent-model-list" />
-      <button type="submit" disabled={modelProblem(state.draft) !== null}>Save</button>
-      <button type="button" onClick={cancelModel}>Cancel</button>
+      <Button type="submit" variant="primary" disabled={modelProblem(state.draft) !== null}>Save</Button>
+      <Button onClick={cancelModel}>Cancel</Button>
       <small>A run already under way keeps its model. Dudes checks only the spelling; the app reports a name it does not know when the agent next runs.</small>
       {modelProblem(state.draft) === null ? null : <small role="status">{modelProblem(state.draft)}</small>}
-    </form> : <button type="button" disabled={blocked} onClick={() => beginModel(row)}>Change model</button>}
+    </form> : <Button variant="ghost" size="sm" className="agent-model-change" disabled={blocked} onClick={() => beginModel(row)}>Change model</Button>}
     {mine && state.sending ? <small role="status">Saving model…</small> : null}
     {mine && state.outcome === 'changed' ? <small role="status">Saved. It applies from the next turn.</small> : null}
     {mine && state.outcome === 'refused' && state.reason !== null ? <small role="status">{REFUSAL_WORDS[state.reason]}</small> : null}

@@ -1,0 +1,38 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+@layer tokens, legacy, ui;
+
+@layer ui {
+  [data-ui='badge'] {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-6);
+    box-sizing: border-box;
+    height: 20px;
+    padding: 0 var(--sp-8);
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--surface-2);
+    color: var(--text-muted);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  [data-ui='badge']::before {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--r-pill);
+    background: currentcolor;
+  }
+
+  [data-ui='badge'][data-state='needs-you'] { background: var(--warn-soft); color: var(--warn); }
+  [data-ui='badge'][data-state='ready'] { background: var(--accent-soft); color: var(--accent); }
+  [data-ui='badge'][data-state='working'] { background: var(--info-soft); color: var(--info); }
+  [data-ui='badge'][data-state='done'] { background: var(--ok-soft); color: var(--ok); }
+  [data-ui='badge'][data-state='waiting'] { background: var(--surface-2); color: var(--text-muted); }
+  [data-ui='badge'][data-state='idle'] { background: var(--surface-2); color: var(--text-muted); }
+  [data-ui='badge'][data-state='idle'] [data-ui='badge']::before { background: transparent; box-shadow: inset 0 0 0 1.5px currentcolor; }
+  [data-ui='badge'][data-state='waiting'] [data-ui='badge']::before { border-radius: 1px; }
+}

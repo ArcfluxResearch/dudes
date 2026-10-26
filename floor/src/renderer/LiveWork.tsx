@@ -5,6 +5,8 @@ import { useState } from 'react';
 import type { FloorState } from './floor/store.ts';
 import { selectOutputAgent } from './floor/store.ts';
 import { handFocusOnLeave } from './focus.ts';
+import { IconButton } from '../ui/Button.tsx';
+import { CloseIcon } from '../ui/icons.tsx';
 import type { AgentRow } from './scene/cast.ts';
 
 const UNAVAILABLE: Record<string, string> = {
@@ -38,8 +40,8 @@ export function SelectionBar({ floor, onClear, leaveFocusTo, showStatus = true }
   readonly showStatus?: boolean;
 }) {
   const close = (
-    <button type="button" id="selection-clear" className="drawer-close" aria-label="Close agent details"
-      title="Close (Escape)" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo} onClick={onClear}>×</button>
+    <IconButton id="selection-clear" className="drawer-close" variant="ghost" size="sm" label="Close agent details"
+      icon={<CloseIcon />} title="Close (Escape)" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo} onClick={onClear} />
   );
   return showStatus ? (
     <div className="selection-bar">

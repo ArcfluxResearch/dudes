@@ -42,7 +42,7 @@ function contrast(a, b) {
 test('every text colour reads at 4.5:1 on every surface it is drawn on, day and night', () => {
   const text = ['ink', 'accent-ink', 'muted-ink', 'danger-ink', 'status-exhausted', 'status-idle', 'status-attached',
     'status-running', 'status-done', 'status-waiting'];
-  const surfaces = ['surface', 'surface-muted', 'output', 'card-background', 'button-background'];
+  const surfaces = ['page-surface', 'surface-muted', 'output', 'card-background', 'button-background'];
   const low = [];
   for (const theme of ['light', 'dark']) {
     const tokens = themeTokens(css, theme);
@@ -61,7 +61,7 @@ test('every text colour reads at 4.5:1 on every surface it is drawn on, day and 
 test('every focus ring is at least 2 pixels wide and reads at 3:1 on every panel surface, day and night', async () => {
   const sheets = [css, ...await Promise.all(['src/failure.css', 'src/renderer/cardNotes.css', 'src/renderer/terminal/controls.css']
     .map((sheet) => readFile(resolve(floor, sheet), 'utf8')))].join('\n');
-  const surfaces = ['surface', 'surface-muted', 'output', 'card-background', 'button-background', 'question'];
+  const surfaces = ['page-surface', 'surface-muted', 'output', 'card-background', 'button-background', 'question'];
   const rings = [];
   for (const [, selector, body] of sheets.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     if (!/:focus/.test(selector) || /\.agent-select|\.board-select/.test(selector)) continue;

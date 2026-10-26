@@ -100,12 +100,12 @@ test('Floor actions uses the Settings switches instead of config commands', () =
   snapshot();
   const html = view('actions');
   for (const label of ['Hire agents', 'Pause, resume and rename', 'Attach terminals', 'Add and remove projects']) {
-    assert.match(html, new RegExp(`<dt>${label}</dt><dd><span class="settings-says">[^<]*</span> Off[^]*?<button type="button">Turn on</button>`));
+    assert.match(html, new RegExp(`<span class="ui-switch-label" id="[^"]*">${label}</span>[^]*?<button type="button" role="switch" class="ui-switch" aria-checked="false"`));
   }
   assert.doesNotMatch(html, /dudes config|quickstart|>Copy</);
   assert.doesNotMatch(html, /First hire|Open Hire wizard/);
   snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, control: true, terminal: true, hire: true } } });
-  assert.match(view('actions'), /<dt>Hire agents<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button>/);
+  assert.match(view('actions'), /<span class="ui-switch-label" id="[^"]*">Hire agents<\/span>[^]*?<button type="button" role="switch" class="ui-switch" aria-checked="true"/);
 });
 
 test('ACTIONS_GATED_ON_SWITCHES mutant: Floor actions is Optional until seen, never Not done, whatever is on', () => {

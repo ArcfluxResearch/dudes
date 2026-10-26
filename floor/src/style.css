@@ -1,3 +1,5 @@
+@layer tokens, legacy, ui;
+@layer legacy {
 :root {
   --layer-panels: 1;
   --layer-terminal: 1;
@@ -10,7 +12,7 @@
   --accent-ink: #2a6150;
   --on-accent: #fbf6ea;
   --danger-ink: #a8432e;
-  --surface: #fdf9ef;
+  --page-surface: #fdf9ef;
   --surface-muted: #efe8d8;
   --muted-ink: #655b4f;
   --selected: #e3eee6;
@@ -53,7 +55,7 @@
     --accent-ink: #86cdb5;
     --on-accent: #10201a;
     --danger-ink: #e8937e;
-    --surface: #262119;
+    --page-surface: #262119;
     --surface-muted: #1b1814;
     --muted-ink: #b8ad99;
     --selected: #304237;
@@ -88,7 +90,7 @@
   --accent-ink: #86cdb5;
   --on-accent: #10201a;
   --danger-ink: #e8937e;
-  --surface: #262119;
+  --page-surface: #262119;
   --surface-muted: #1b1814;
   --muted-ink: #b8ad99;
   --selected: #304237;
@@ -174,7 +176,7 @@ samp,
   gap: 0.5rem var(--bar-space);
   padding: 0.4rem var(--bar-space);
   border-bottom: 1px solid var(--line);
-  background-color: var(--surface);
+  background-color: var(--page-surface);
   box-shadow: 0 6px 14px -10px var(--panel-shadow);
 }
 
@@ -269,7 +271,7 @@ samp,
 .header-more { position: relative; }
 .header-more > summary { padding: .3rem .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--card-background); font-size: .86rem; cursor: pointer; }
 .header-more > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
-.header-menu { position: absolute; top: calc(100% + .4rem); right: 0; display: grid; gap: .35rem; width: max-content; min-width: 11rem; max-width: calc(100vw - 2rem); padding: .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 4px 16px var(--panel-shadow); }
+.header-menu { position: absolute; top: calc(100% + .4rem); right: 0; display: grid; gap: .35rem; width: max-content; min-width: 11rem; max-width: calc(100vw - 2rem); padding: .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--page-surface); box-shadow: 0 4px 16px var(--panel-shadow); }
 .header-menu button { padding: .3rem .6rem; border: 1px solid var(--line); background: var(--card-background); color: var(--ink); font: inherit; font-size: .86rem; text-align: left; cursor: pointer; }
 
 .shell-signed-out .top-bar > .link-refused {
@@ -322,7 +324,7 @@ samp,
   padding: 1.1rem 1.3rem;
   overflow: auto;
   border: 0 solid var(--line);
-  background-color: var(--surface);
+  background-color: var(--page-surface);
   color: var(--ink);
 }
 
@@ -780,7 +782,7 @@ samp,
   margin: 0;
   padding: 0.35rem 0.75rem;
   border: 2px solid var(--ink);
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   font-weight: 700;
 }
@@ -884,7 +886,7 @@ samp,
   padding: 0.4rem 0.7rem;
   border: 1px solid var(--line);
   border-radius: 4px;
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   font-size: 0.86rem;
 }
@@ -905,7 +907,7 @@ samp,
   padding: 0.35rem 0.7rem;
   border: 1px solid var(--line);
   border-radius: 4px;
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   font-size: 0.86rem;
 }
@@ -937,7 +939,7 @@ samp,
   width: min(18rem, calc(100% - 2rem));
   padding: 0.75rem;
   border: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   text-align: center;
   transform: translate(-50%, -50%);
@@ -974,14 +976,14 @@ samp,
 .agent-select:focus-visible,
 .board-select:focus-visible {
   outline-color: var(--ink);
-  box-shadow: 0 0 0 7px var(--surface);
+  box-shadow: 0 0 0 7px var(--page-surface);
 }
 
 .agent-detail,
 .done-notice {
   padding: 0.9rem;
   border: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   box-shadow: 0 8px 28px var(--panel-shadow);
 }
@@ -1447,7 +1449,7 @@ samp,
   padding: 0.05rem 0.45rem;
   border: 1px solid var(--status-ink);
   border-radius: 999px;
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--status-ink);
   font-size: 0.68rem;
   font-weight: 600;
@@ -1475,7 +1477,7 @@ samp,
 
 .agent-portrait {
   align-self: start;
-  background-color: var(--surface);
+  background-color: var(--page-surface);
   box-shadow: inset 0 0 0 1px var(--portrait-border);
 }
 
@@ -1554,7 +1556,7 @@ samp,
   padding: 0.7rem 0.8rem;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   line-height: 1.5;
 }
@@ -1982,7 +1984,7 @@ samp,
   overflow: auto;
   padding: 0.75rem;
   border: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   box-shadow: 0 8px 28px var(--panel-shadow);
 }
@@ -2487,7 +2489,7 @@ samp,
   max-width: min(34rem, calc(100vw - 2rem));
   padding: 0.75rem 1rem;
   border: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   font: inherit;
 }
@@ -2543,7 +2545,7 @@ samp,
   gap: 0.4rem;
   padding: 0.5rem 0.6rem;
   border: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--page-surface);
 }
 
 .terminal-head {
@@ -2613,7 +2615,7 @@ samp,
 .login-panel {
   padding: 0.5rem 0.6rem;
   border: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--page-surface);
 }
 
 .login-state {
@@ -2814,7 +2816,7 @@ samp,
   width: min(var(--hire-wizard-width), 100%);
   padding: .75rem;
   border: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   box-shadow: 0 8px 28px var(--panel-shadow);
 }
@@ -3121,7 +3123,7 @@ samp,
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: .5rem;
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   box-shadow: 0 8px 28px var(--panel-shadow);
 }
@@ -3192,7 +3194,7 @@ samp,
   margin: 0 -.75rem -.75rem;
   padding: .6rem .75rem;
   border-top: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--page-surface);
 }
 .hire-more { margin: .4rem 0; }
 .hire-more > summary { cursor: pointer; font-weight: 700; }
@@ -3262,7 +3264,7 @@ samp,
   width: 2.25rem;
   height: 2.25rem;
   border-radius: 50%;
-  background-color: var(--surface);
+  background-color: var(--page-surface);
   box-shadow: inset 0 0 0 2px var(--agent, var(--line));
 }
 
@@ -3335,7 +3337,7 @@ samp,
   padding: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   box-shadow: 0 8px 28px var(--panel-shadow);
 }
@@ -3467,7 +3469,7 @@ samp,
   margin: 0;
   padding: 0.35rem 1rem;
   border-bottom: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--page-surface);
   font-size: 0.9rem;
   overflow-wrap: anywhere;
 }
@@ -3558,7 +3560,7 @@ samp,
   padding: 0.15rem 0.6rem;
   border: 1px solid var(--line);
   border-radius: 4px;
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--ink);
   font: inherit;
   font-size: 0.8rem;
@@ -3579,7 +3581,7 @@ samp,
   overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 0.4rem;
-  background: var(--surface);
+  background: var(--page-surface);
   box-shadow: 0 8px 28px var(--panel-shadow);
   font-size: 0.82rem;
   pointer-events: auto;
@@ -3656,7 +3658,7 @@ dialog > .notice-banner {
   padding: 0.55rem 0.8rem;
   border: 1px solid var(--line);
   border-radius: 0.4rem;
-  background: var(--surface);
+  background: var(--page-surface);
   box-shadow: 0 8px 28px var(--panel-shadow);
   overflow-wrap: anywhere;
   pointer-events: auto;
@@ -3730,7 +3732,7 @@ dialog > .notice-banner {
 
 .device-notice-gone {
   border-color: var(--line);
-  background: var(--surface);
+  background: var(--page-surface);
 }
 
 .device-time {
@@ -3826,7 +3828,7 @@ dialog > .notice-banner {
   margin: 0;
   padding: 0.1rem 0.5rem;
   border-radius: 0.4rem;
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--muted-ink);
   font-size: 0.8rem;
   pointer-events: auto;
@@ -3892,7 +3894,7 @@ dialog > .notice-banner {
   box-sizing: border-box;
   padding: 0.45rem 0.6rem;
   border: 1px solid var(--danger-ink);
-  background: var(--surface);
+  background: var(--page-surface);
   color: var(--danger-ink);
 }
 
@@ -4040,7 +4042,7 @@ dialog > .notice-banner {
     margin: 1rem -1rem 0;
     padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
     border-top: 1px solid var(--line);
-    background: var(--surface);
+    background: var(--page-surface);
   }
 
   .ticket-panel[data-mode='none'] .ticket-action-pair {
@@ -4103,3 +4105,4 @@ dialog > .notice-banner {
 
 .agent-model form { display: grid; gap: .4rem; margin-top: .4rem; }
 .agent-model form > input[type='text'] { box-sizing: border-box; width: 100%; font: inherit; }
+}

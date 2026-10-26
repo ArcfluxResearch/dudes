@@ -38,7 +38,7 @@ test('BACKDROP_PRESS_RELEASE and TOUCH_BACKDROP_CAPTURE mutants dismiss only a c
   const syntax = ts.createSourceFile('shell.tsx', shell, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let dialog;
   function visit(node) {
-    if (ts.isJsxOpeningElement(node) && node.tagName.getText(syntax) === 'dialog') dialog = node;
+    if (ts.isJsxOpeningElement(node) && ['dialog', 'Dialog'].includes(node.tagName.getText(syntax))) dialog = node;
     ts.forEachChild(node, visit);
   }
   visit(syntax);

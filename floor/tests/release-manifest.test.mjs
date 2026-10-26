@@ -43,13 +43,18 @@ test('tree digest is byte-sorted and canonical', () => {
 
 test('dependency licence check rejects missing and unreviewed MPL entries', async () => {
   const lock = JSON.parse(await readFile(resolve(import.meta.dirname, '../package-lock.json'), 'utf8'));
-  assert.equal(checkLock(lock).direct, 10);
+  assert.equal(checkLock(lock).direct, 13);
   const missing = structuredClone(lock);
   delete missing.packages['node_modules/react'].license;
   assert.throws(() => checkLock(missing), /unreviewed licence/);
   const mpl = structuredClone(lock);
   mpl.packages['node_modules/lightningcss-unreviewed'] = { version: '1.33.0', license: 'MPL-2.0' };
   assert.throws(() => checkLock(mpl), /unreviewed MPL package/);
+  // The two bundled font packages are the only ones allowed under the font licence.
+  const font = structuredClone(lock);
+  font.packages['node_modules/another-font'] = { version: '1.0.0', license: 'OFL-1.1' };
+  assert.throws(() => checkLock(font), /unreviewed licence/);
+  assert.doesNotThrow(() => checkLock(lock));
 });
 
 test('hash suffix and served extensions use the shared finite contract', () => {
@@ -62,6 +67,7 @@ test('hash suffix and served extensions use the shared finite contract', () => {
 test('runtime notices are exactly the copied code set', () => {
   const notices = [
     { name: '@xterm/xterm', version: '6.0.0', identifier: 'MIT', text: 'notice' },
+    { name: 'lucide-react', version: '1.61.0', identifier: 'ISC', text: 'notice' },
     { name: 'react', version: '19.3.1', identifier: 'MIT', text: 'notice' },
     { name: 'react-dom', version: '19.3.1', identifier: 'MIT', text: 'notice' },
     { name: 'scheduler', version: '0.28.0', identifier: 'MIT', text: 'notice' },

@@ -18,12 +18,13 @@ import { FirstTaskForm, ticketActionsOpen } from './ticket/TicketBoard.tsx';
 import { freeTaskAgents } from './setup/nextStep.ts';
 import { GoalForm, GoalStatus } from './goal/GoalPanel.tsx';
 import { OverviewOutput, SelectionBar, streamStatus } from './LiveWork.tsx';
+import { MenuNote } from '../ui/Menu.tsx';
 import { MemoryPanel } from './memory/MemoryPanel.tsx';
 import { LookStatus } from './look/LookEditor.tsx';
 import { ModelStatus } from './model/ModelEditor.tsx';
 import { MessagesPanel } from './MessagesPanel.tsx';
 import { RenameStatus } from './rename/NameEditor.tsx';
-import { RetireStatus, RetireStrip } from './retire/RetirePanel.tsx';
+import { RetireMenuItem, RetireStatus } from './retire/RetirePanel.tsx';
 import { automaticHoldOf } from './automaticHold.ts';
 import { RESUME_SWITCH } from './ticket/stuck.ts';
 import { RecoveryPanel, RecoveryReceipts } from './recovery/RecoveryPanel.tsx';
@@ -129,14 +130,13 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, rec
             ? <p className="settings-guidance">Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</p>
             : <ControlStrip floor={floor} row={row} />}
           recovery={<RecoveryPanel floor={floor} row={row} onReadReceipt={onReadRecoveryReceipt} />}
-          retire={switchedOff.includes('retire') ? null : <RetireStrip floor={floor} row={row} />}
+          retire={switchedOff.includes('retire') ? null : <RetireMenuItem floor={floor} row={row} />}
           terminal={attachOff ? null : <TerminalAttach floor={floor} row={row} />}
           attachNote={attachOff && row.provider === 'claude'
             ? <p className="agent-attach-note">To open the real CLI, turn on Attach terminals in Settings.</p> : null}
-          enable={switchedOff.length === 0 ? null : <details className="enable-controls">
-            <summary>Enable more controls <span className="enable-controls-count">{switchedOff.length}</span></summary>
+          enable={switchedOff.length === 0 ? null : <MenuNote>
             {switchedOff.map((control) => <UnavailableControls key={control} floor={floor} control={control} />)}
-          </details>}
+          </MenuNote>}
           answer={detailTab === 'chat' && chatGate(floor, row).open ? null
             : <AnswerForm floor={floor} row={row} leaveFocusTo={AGENT_DETAIL_HEADING_ID} />}
           onOpenTicket={onOpenTicket}

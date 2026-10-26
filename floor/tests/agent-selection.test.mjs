@@ -73,7 +73,7 @@ test('the detail renders selected values and offers navigation to its waiting qu
     }
     const tabs = [...html.matchAll(/<button type="button" role="tab" class="agent-detail-tab"[^>]*>([^<]*)<\/button>/g)];
     assert.deepEqual(tabs.map((tab) => tab[1]), ['Overview']);
-    assert.match(html, /<button type="button">Answer<\/button>/);
+    assert.match(html, /<button type="button" data-ui="button" data-variant="primary" data-size="md">Answer<\/button>/);
     assert.doesNotMatch(html, /<input|<form|<textarea|contenteditable/i,
       'question navigation must not invent an answer form');
 

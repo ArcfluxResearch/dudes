@@ -237,7 +237,7 @@ function controlsIn(text) {
 const HIRE_FORM = 'src/renderer/onboarding/HireWizard.tsx';
 const HIRE_FIELDS = Object.freeze([
   { tag: 'input', name: 'name', type: 'text', change: '(event) => editDraft({ name: event.target.value })' },
-  { tag: 'select', name: 'character', type: null, change: '(event) => editDraft({ character: event.target.value })' },
+  { tag: 'select', name: 'character', type: null, change: '(character) => editDraft({ character })' },
   { tag: 'input', name: 'accent', type: 'radio', change: '() => editDraft({ accent: void 0 })' },
   { tag: 'input', name: 'accent', type: 'radio', change: '() => editDraft({ accent })' },
   { tag: 'textarea', name: 'role', type: null, change: '(event) => editDraft({ role: event.target.value })' },
@@ -325,6 +325,9 @@ const ADMITTED_WITHOUT_HANDLER = new Map([
   [GOAL_PANEL, Object.freeze(['a link'])],
   // The sign-in link the engine printed, drawn whole in a read-only field and offered as one link to open in a new tab.
   [LOGIN_PANEL, Object.freeze(['an input', 'a link'])],
+  // The owned components. Field draws the input and textarea its call sites hand props to, the tab list activates the tab a key moved to.
+  ['src/ui/Field.tsx', Object.freeze(['an input', 'a textarea'])],
+  ['src/ui/Tabs.tsx', Object.freeze([ACTIVATION])],
 ]);
 /**
  * The `FORBIDDEN` kinds each listed file may carry. "the floor ships no
@@ -334,7 +337,7 @@ const ADMITTED_WITHOUT_HANDLER = new Map([
  */
 const ADMITTED = new Map([
   [HIRE_FORM, ADMITTED_IN_HIRE_FORM], [ANSWER_FORM, ADMITTED_IN_ANSWER_FORM], [CONTROL_PANEL, ADMITTED_IN_CONTROL_PANEL],
-  [ACTIVITY_PANEL, Object.freeze(['an input', 'a select', 'a change handler'])],
+  [ACTIVITY_PANEL, Object.freeze(['a select', 'a change handler'])],
   [GOAL_PANEL, ADMITTED_IN_GOAL_FORM],
   [TICKET_BOARD, Object.freeze([...ADMITTED_IN_TICKET_FORM, 'a key handler'])], [TICKET_PANEL, ADMITTED_IN_TICKET_FORM],
   [CHAT_PANEL, Object.freeze(['a textarea', 'an input', 'a change handler', 'a key handler'])],
@@ -346,11 +349,13 @@ const ADMITTED = new Map([
   [MODEL_PANEL, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler', 'a key handler'])],
   [FLOOR_SHELL, Object.freeze(['a key handler', 'a pointer handler'])],
   [AGENT_ORDER, Object.freeze(['a key handler', 'a pointer handler'])],
-  ['src/renderer/AgentDetail.tsx', Object.freeze(['a key handler'])],
   [CONTROL_VIEW, Object.freeze(['a key handler'])],
   [TERMINAL_PANEL, Object.freeze(['a textarea', 'a key handler'])],
   [FIRST_RUN_GUIDE, Object.freeze(['a key handler'])],
   [FIRST_TASK, Object.freeze(['a key handler'])],
+  ['src/ui/Menu.tsx', Object.freeze(['a key handler'])],
+  ['src/ui/Select.tsx', Object.freeze(['a key handler', 'a mouse handler'])],
+  ['src/ui/Tabs.tsx', Object.freeze(['a key handler'])],
 ]);
 /** The slot's one key handler: a held key's repeats are not presses. It sends nothing. */
 const REFUSE_REPEAT = '(event) => { if (event.repeat) event.preventDefault(); }';
@@ -411,8 +416,19 @@ const ADMITTED_HANDLERS = [
   { file: 'src/renderer/AgentDetail.tsx', tag: 'section', handler: 'onFocus', expression: '() => setFocusedSection(id)' },
   { file: 'src/renderer/AgentDetail.tsx', tag: 'section', handler: 'onBlur',
     expression: '(event) => {\n          if (!event.currentTarget.contains(event.relatedTarget)) setFocusedSection(null);\n        }' },
-  { file: 'src/renderer/AgentDetail.tsx', tag: 'button', className: 'agent-detail-tab', handler: 'onKeyDown',
-    expression: '(event) => {\n            if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;\n            const target = detailTabTarget(tabs, id, event.key);\n            if (target === null) return;\n            event.preventDefault();\n            onTabChange(target);\n            event.currentTarget.ownerDocument.getElementById(`agent-detail-tab-${target}`)?.focus();\n          }' },
+  // src/ui: the menu moves focus between its items and closes on Escape; the select does the same through
+  // aria-activedescendant; the tab list moves to a neighbouring tab. None sends anything.
+  { file: 'src/ui/Menu.tsx', tag: 'button', handler: 'onKeyDown', expression: 'onTriggerKey' },
+  { file: 'src/ui/Menu.tsx', tag: 'div', className: 'ui-pop ui-menu-panel', handler: 'onKeyDown', expression: 'onPanelKey' },
+  { file: 'src/ui/Select.tsx', tag: 'button', className: 'ui-select-trigger', handler: 'onKeyDown', expression: 'onKeyDown' },
+  { file: 'src/ui/Select.tsx', tag: 'div', className: 'ui-pop ui-select-panel', handler: 'onMouseDown',
+    expression: '(event) => event.preventDefault()' },
+  { file: 'src/ui/Select.tsx', tag: 'div', className: 'ui-pop-item ui-select-option', handler: 'onMouseMove',
+    expression: '() => { if (at !== active && option.disabled !== true) setActive(at); }' },
+  { file: 'src/ui/Tabs.tsx', tag: 'div', handler: 'onKeyDown', expression: 'move' },
+  { file: LOOK_PANEL, tag: 'button', className: 'agent-look-open', handler: 'onSelect', expression: '() => beginLook(row)' },
+  { file: RETIRE_PANEL, tag: 'button', className: 'retire-open', handler: 'onSelect',
+    expression: '() => confirmRetire(offer, session)' },
   { file: TERMINAL_PANEL, tag: 'div', className: 'terminal-actions', handler: 'onKeyDown', expression: TERMINAL_HEADER_KEYS },
   { file: TERMINAL_PANEL, tag: 'textarea', handler: 'onFocus', expression: '(event) => event.currentTarget.select()' },
   { file: FIRST_RUN_GUIDE, tag: 'aside', className: 'first-run-guide', handler: 'onKeyDown',
@@ -427,11 +443,11 @@ const ADMITTED_HANDLERS = [
     }` },
   { file: 'src/renderer/chat/Steps.tsx', tag: 'details', handler: 'onToggle',
     expression: '(event) => { if (event.currentTarget.open && hasKeptText(step)) requestStepResult(step.id); }' },
-  { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
-    expression: '(event) => setFilters({ ...filters, agentId: event.currentTarget.value })' },
-  { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
-    expression: '(event) => setFilters({ ...filters, kind: event.currentTarget.value })' },
-  { file: ACTIVITY_PANEL, tag: 'input', handler: 'onChange',
+  { file: ACTIVITY_PANEL, tag: 'select', handler: 'onValueChange',
+    expression: '(agentId) => setFilters({ ...filters, agentId })' },
+  { file: ACTIVITY_PANEL, tag: 'select', handler: 'onValueChange',
+    expression: '(kind) => setFilters({ ...filters, kind })' },
+  { file: ACTIVITY_PANEL, tag: 'search', handler: 'onChange',
     expression: '(event) => setFilters({ ...filters, query: event.currentTarget.value })' },
   ...[['onPointerDown', 'startDrag'], ['onPointerMove', 'moveDrag'], ['onPointerUp', 'endDrag'],
     ['onPointerCancel', 'endDrag'], ['onLostPointerCapture', 'endDrag'], ['onKeyDown', 'keyMove']]
@@ -448,8 +464,8 @@ const ADMITTED_HANDLERS = [
     expression: '(event) => { event.preventDefault(); void submitLook(row, browserLookDeps); }' },
   { file: LOOK_PANEL, tag: 'form', handler: 'onKeyDown',
     expression: "(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelLook(); } }" },
-  { file: LOOK_PANEL, tag: 'select', handler: 'onChange',
-    expression: '(event) => editLook({ character: event.currentTarget.value || null })' },
+  { file: LOOK_PANEL, tag: 'select', handler: 'onValueChange',
+    expression: "(character) => editLook({ character: character || null })" },
   { file: LOOK_PANEL, tag: 'input', handler: 'onChange', expression: '() => editLook({ accent: null })' },
   { file: LOOK_PANEL, tag: 'input', handler: 'onChange', expression: '() => editLook({ accent })' },
   { file: LOOK_PANEL, tag: 'textarea', handler: 'onChange',
@@ -461,7 +477,7 @@ const ADMITTED_HANDLERS = [
   { file: MODEL_PANEL, tag: 'input', handler: 'onChange', expression: '() => editModel(choice)' },
   { file: MODEL_PANEL, tag: 'input', handler: 'onChange', expression: '(event) => editModel(event.currentTarget.value)' },
   { file: 'src/renderer/AgentDetail.tsx', tag: 'h2', handler: 'onDoubleClick', expression: '() => beginRename(`detail:${row.id}`, row)' },
-  ...HIRE_FIELDS.map(({ tag, change }) => ({ file: HIRE_FORM, tag, handler: 'onChange', expression: change })),
+  ...HIRE_FIELDS.map(({ tag, change }) => ({ file: HIRE_FORM, tag, handler: tag === 'select' ? 'onValueChange' : 'onChange', expression: change })),
   { file: ANSWER_FORM, tag: 'textarea', handler: 'onChange' },
   { file: ANSWER_FORM, tag: 'textarea', handler: 'onKeyDown' },
   { file: ANSWER_FORM, tag: 'button', className: 'answer-send', handler: 'onKeyDown', expression: REFUSE_REPEAT },
@@ -570,9 +586,23 @@ function classNameOf(node, syntax) {
   return ts.isStringLiteral(found.initializer) ? found.initializer.text : null;
 }
 
-/** Whether a JSX tag name identifier is a lowercase (DOM) intrinsic rather than a component's. */
+/**
+ * The owned components in src/ui draw one native element each and pass their props through to it, so a call site is
+ * read as that element: its handler props are admitted or refused as the element's would be, and its fields are counted.
+ */
+const OWNED_TAG = Object.freeze({ Button: 'button', IconButton: 'button', Tab: 'button', MenuItem: 'button', Input: 'input', Textarea: 'textarea',
+  SearchInput: 'search', Select: 'select', Dialog: 'dialog', Disclosure: 'details' });
+
+/** The element a JSX tag name stands for, or `null` when it is a component this scan leaves to its own file. */
+function elementNameOf(tag) {
+  if (!ts.isIdentifier(tag)) return null;
+  if (/^[a-z]/.test(tag.text)) return tag.text;
+  return OWNED_TAG[tag.text] ?? null;
+}
+
+/** Whether a JSX tag name identifier is a DOM intrinsic, or an owned component that draws one. */
 function isIntrinsicTagName(tag) {
-  return ts.isIdentifier(tag) && /^[a-z]/.test(tag.text);
+  return elementNameOf(tag) !== null;
 }
 
 /**
@@ -596,7 +626,7 @@ function handlerPropsIn(text, file) {
   const syntax = parsedByExtension(text, file);
   const found = [];
   for (const element of intrinsicElementsIn(syntax)) {
-    const tag = element.tagName.text;
+    const tag = elementNameOf(element.tagName);
     const className = classNameOf(element, syntax);
     for (const attribute of element.attributes.properties) {
       if (ts.isJsxSpreadAttribute(attribute)) {
@@ -626,6 +656,9 @@ function intrinsicHandlersIn(syntax) {
 
 /** Whether an `ADMITTED_HANDLERS` rule covers this one found handler, on this file. */
 function isAdmittedHandler(file, entry) {
+  // The owned components pass their props to the one element each draws. A call site is read as that element
+  // (`OWNED_TAG`), so a handler handed through is still seen where it is written.
+  if (entry.handler === '{...}' && file.startsWith('src/ui/')) return true;
   return ADMITTED_HANDLERS.some((rule) => rule.file === file && rule.tag === entry.tag
     && rule.handler === entry.handler
     && (rule.className === undefined || rule.className === entry.className)
@@ -709,7 +742,7 @@ function urlAttributesIn(text, file) {
   const assets = staticAssetImportIdentifiersIn(syntax);
   const found = [];
   for (const element of intrinsicElementsIn(syntax)) {
-    const tag = element.tagName.text;
+    const tag = elementNameOf(element.tagName);
     for (const attribute of element.attributes.properties) {
       if (!ts.isJsxAttribute(attribute)) continue;
       const name = attribute.name.getText(syntax);
@@ -1029,13 +1062,13 @@ function fieldsIn(text) {
     return value.expression?.getText(syntax) ?? value.getText(syntax);
   }
   function collect(node) {
-    if ((ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node))
-      && ['input', 'textarea', 'select'].includes(node.tagName.getText(syntax))) {
+    const element = ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node) ? elementNameOf(node.tagName) : null;
+    if (element !== null && ['input', 'textarea', 'select'].includes(element)) {
       fields.push({
-        tag: node.tagName.getText(syntax),
+        tag: element,
         name: attribute(node, 'name'),
         type: attribute(node, 'type'),
-        change: attribute(node, 'onChange'),
+        change: attribute(node, 'onChange') ?? attribute(node, 'onValueChange'),
       });
     }
     ts.forEachChild(node, collect);
@@ -1126,7 +1159,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   for (const path of await filesUnder(source, ['.ts', '.tsx', '.html'])) {
     const relative = path.slice(floor.length + 1);
     const text = await readFile(path, 'utf8');
-    buttons.push(...[...text.matchAll(/<button[\s/>]/gi)].map(() => relative));
+    buttons.push(...[...text.matchAll(/<(?:button|iconbutton|menuitem|tab|switch)[\s/>]/gi)].map(() => relative));
     clicks.push(...[...text.matchAll(/\bonclick\s*=/gi)].map(() => relative));
   }
   const expected = [
@@ -1152,12 +1185,12 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(3).fill(GOAL_PANEL),
     ...Array(2).fill('src/renderer/ticket/StuckActions.tsx'),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
-    ...Array(8).fill(TICKET_BOARD),
+    ...Array(7).fill(TICKET_BOARD),
     ...Array(2).fill(NOTIFICATION_OFFER),
     ...Array(10).fill(TICKET_PANEL),
     ...Array(13).fill(HIRE_FORM),
     HIRE_ENTRY,
-    ...Array(6).fill(RETIRE_PANEL),
+    ...Array(7).fill(RETIRE_PANEL),
     ...Array(2).fill(GIT_PANEL),
     ...Array(5).fill(DIFF_PANEL),
     ...Array(4).fill(MEMORY_PANEL),
@@ -1168,7 +1201,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     LISTS_BAR,
     ...Array(3).fill(NOTICE_STACK),
     ...Array(3).fill(SETUP_VIEW),
-    ...Array(10).fill(SETTINGS_VIEW),
+    ...Array(11).fill(SETTINGS_VIEW),
     ...Array(5).fill(FIRST_RUN_GUIDE),
     ...Array(6).fill(FIRST_TASK),
     ...Array(10).fill(TERMINAL_PANEL),
@@ -1176,6 +1209,9 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(7).fill('src/shell.tsx'),
     'src/renderer/SignInExpired.tsx',
     'src/renderer/StreamNotice.tsx',
+    // The owned components: the one button each draws, and the menu's trigger and item.
+    ...Array(2).fill('src/ui/Button.tsx'), ...Array(2).fill('src/ui/Menu.tsx'), 'src/ui/Select.tsx', 'src/ui/Switch.tsx',
+    'src/ui/Tabs.tsx', 'src/ui/Toast.tsx',
   ];
   assert.deepEqual(buttons.sort(), [...expected, AGENT_ORDER].sort());
   expected.sort();
@@ -1191,6 +1227,18 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   // Each spending limit's Save button submits its form.
   clickExpected.splice(clickExpected.indexOf(SETTINGS_VIEW), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
+  // A menu item, a switch and the tab's own markup carry no onClick: the item calls onSelect, the switch onCheckedChange,
+  // and the owned Button, IconButton and Tab only spread the props their call sites give them.
+  clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
+  clickExpected.splice(clickExpected.indexOf(RETIRE_PANEL), 1);
+  clickExpected.splice(clickExpected.indexOf(SETTINGS_VIEW), 1);
+  clickExpected.splice(clickExpected.indexOf('src/ui/Button.tsx'), 1);
+  clickExpected.splice(clickExpected.indexOf('src/ui/Button.tsx'), 1);
+  clickExpected.splice(clickExpected.indexOf('src/ui/Tabs.tsx'), 1);
+  // The select's trigger and each of its options take a click.
+  clickExpected.push('src/ui/Select.tsx');
+  // The menu's panel closes it when one of its items was pressed.
+  clickExpected.push('src/ui/Menu.tsx');
   clickExpected.push(RECOVERED_REVIEW);
   assert.deepEqual(clicks.sort(), clickExpected.sort());
   const readError = await readFile(resolve(source, 'renderer/ReadError.tsx'), 'utf8');
@@ -1251,7 +1299,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => hide(row.id, !hidden.includes(row.id))',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, LOOK_PANEL), 'utf8')), [
-    '() => beginLook(row)', 'cancelLook', '() => { void checkLook(browserLookDeps); }',
+    'cancelLook', '() => { void checkLook(browserLookDeps); }',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, MODEL_PANEL), 'utf8')), [
     '() => { void removeOverride(row, browserModelDeps); }', 'cancelModel', '() => beginModel(row)',
@@ -1298,7 +1346,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => { void desktopNotificationPreference.setEnabled(true); }', 'desktopNotificationPreference.dismissOffer',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TICKET_BOARD), 'utf8')), [
-    '() => dismissNotice(notice)', '(event) => onHire(event.currentTarget)', 'onCancel',
+    '(event) => onHire(event.currentTarget)', 'onCancel',
     '(event) => onSelect(card.id, event.currentTarget)', '(event) => onNewTicket(event.currentTarget)', '() => setDoneShown(doneShown + DONE_SHOWN)',
   ]);
   // Opening Setup or Settings takes a fresh snapshot: the same resubscription Recheck starts.
@@ -2744,6 +2792,10 @@ const ADMITTED_LISTENERS = Object.freeze([
   { path: 'src/signer.ts', line: "target.addEventListener(success, () => resolve(), { once: true });" },
   { path: 'src/signer.ts', line: "target.addEventListener('error', () => reject(new Error('storage failed')), { once: true });" },
   { path: 'src/signer.ts', line: "opening.addEventListener('upgradeneeded', () => {" },
+  // An open menu or select closes on a press outside it and keeps its panel beside its button as the page scrolls.
+  { path: 'src/ui/popover.ts', line: "document.addEventListener('pointerdown', outside, true);" },
+  { path: 'src/ui/popover.ts', line: "window.addEventListener('resize', move);" },
+  { path: 'src/ui/popover.ts', line: "window.addEventListener('scroll', move, true);" },
 ]);
 const SOCKET_LISTENER = /(socket|live)\.addEventListener\('(open|message|close)'|addEventListener\(type: '(open|close|message)'/;
 
@@ -3079,7 +3131,7 @@ test('Attach renders when the snapshot carries the terminal sibling', () => {
   // The positive control for the absence checks below: with the terminal on, Attach is there.
   const html = center(floorWith(resting(), undefined, undefined, undefined, TERMINAL));
   assert.match(html,
-    /<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<details class="agent-more">[\s\S]*?<div class="agent-detail-terminal" data-terminal-offer="attach"><button type="button" class="terminal-attach"[^>]*>Open the real CLI<\/button>/);
+    /<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<div class="agent-more ui-menu">[\s\S]*?<div class="agent-detail-terminal" data-terminal-offer="attach"><button type="button" class="terminal-attach"[^>]*>Open the real CLI<\/button>/);
 });
 
 test('the terminal offer stays none without the sibling, a live confirmed view, or the agent on the floor', () => {
@@ -3126,9 +3178,9 @@ test('Retire renders when the snapshot carries the retire sibling', () => {
   // The positive control for the absence checks below: with retiring on, Retire is there.
   const html = center(floorWith(working(), undefined, CONTROL, undefined, undefined, RETIRE));
   assert.match(html,
-    new RegExp(`<div class="retire-offer"><button type="button" class="retire-open" data-retire-offer="${ADA}"[^>]*>Retire</button>`));
+    new RegExp(`<button type="button" role="menuitem" tabindex="-1" class="retire-open ui-pop-item ui-pop-item--danger" data-retire-offer="${ADA}"[^>]*>(?:<svg[^]*?</svg>)?Retire</button>`));
   // Where the live case looks for it: in the selected agent's own panel, after Pause.
-  assert.match(html, /<aside class="agent-detail"[\s\S]*class="control-pause"[\s\S]*class="retire-open"/);
+  assert.match(html, /<aside class="agent-detail"[\s\S]*class="control-pause"[\s\S]*class="retire-open /);
   const halted = center(floorWith(working({ halted: true }), undefined, CONTROL, undefined, undefined, RETIRE));
   assert.match(halted, /Lift the halt from the command line before retiring it from this page\./);
   assert.doesNotMatch(halted, /data-retire-offer/);

@@ -1,3 +1,5 @@
+@layer tokens, legacy, ui;
+@layer legacy {
 .chat-engine-said { margin-inline-end: 1.5rem; background: var(--output); border-end-start-radius: 4px; }
 .chat-engine-said .chat-failure-text {
   margin: 0;
@@ -6,4 +8,5 @@
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
 }

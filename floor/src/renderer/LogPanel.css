@@ -1,0 +1,63 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+@layer tokens, legacy, ui;
+
+@layer ui {
+  .control-panel[data-view='log'] .control-panel-head h2 {
+    font-family: var(--font-sans);
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .log-panel[data-ui-scope] { display: grid; gap: var(--sp-16); }
+
+  .log-status { margin: 0; color: var(--text-muted); font-size: 12px; }
+
+  .log-panel .activity-filters {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--sp-12);
+    margin: 0;
+  }
+
+  .log-rows {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border: 1px solid var(--border);
+    border-radius: var(--r-3);
+    background: var(--surface);
+    box-shadow: var(--shadow-1);
+  }
+
+  .log-rows > li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-12);
+    margin: 0;
+    padding: var(--sp-6) var(--sp-12);
+    border-bottom: 1px solid var(--border);
+    min-height: var(--h-lg);
+  }
+
+  .log-rows > li:last-child { border-bottom: 0; }
+
+  .log-rows > li > p {
+    flex: 1 1 14rem;
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .log-rows > li > small {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .log-rows > li > [data-ui='disclosure'] { flex: 0 0 auto; }
+  .log-rows > li > [data-ui='disclosure'][open] { flex-basis: 100%; }
+  .log-rows [data-ui='disclosure'] > :not(summary) { margin-top: var(--sp-2); margin-bottom: var(--sp-2); color: var(--text-muted); font-size: 12px; }
+}

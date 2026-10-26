@@ -613,7 +613,7 @@ test('a second Hire is refused while the first is in flight', async () => {
   const second = hire.submitHire(getFloorState(), slow);
   assert.equal(hire.getHireState().sending, true);
   hire.showSection('engine');
-  assert.match(render(), /class="hire-submit" aria-disabled="true"[^>]*aria-busy="true">Hiring…/);
+  assert.match(render(), /class="hire-submit" aria-disabled="true"[^>]*aria-busy="true"[^>]*>Hiring…/);
   release();
   await Promise.all([first, second]);
   assert.equal(net.calls.length, 1, 'the second press sent a second Hire');
@@ -1178,8 +1178,8 @@ test('Identity offers the authored characters and palette with a live portrait p
   fillDraft();
   hire.showSection('identity');
   assert.match(render(), /Assigned on hire/);
-  const characters = [...render().matchAll(/<option value="([^"]*)"/g)].map((match) => match[1]);
-  assert.deepEqual(characters, ['', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l']);
+  const characters = [...render().matchAll(/role="option"[^>]*><span class="ui-select-option-label">([^<]*)</g)].map((match) => match[1]);
+  assert.deepEqual(characters, ['Automatic', ...'cdefghijkl'.split('').map((letter) => `Character ${letter.toUpperCase()}`)]);
   const accents = [...render().matchAll(/<input type="radio"[^>]*name="accent"[^>]*value="([^"]*)"/g)].map((match) => match[1]);
   assert.deepEqual(accents, ['', 'amber', 'coral', 'mint', 'sky', 'violet', 'rose']);
   hire.editDraft({ character: 'h', accent: 'sky' });

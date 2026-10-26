@@ -2,6 +2,12 @@
 
 import { useSyncExternalStore } from 'react';
 
+import { Button } from '../../ui/Button.tsx';
+import { Disclosure } from '../../ui/Disclosure.tsx';
+import { Field, Input, Textarea } from '../../ui/Field.tsx';
+import { Select } from '../../ui/Select.tsx';
+import './HireWizard.css';
+
 import { ACCENT_COLOURS, CAST_CHARACTERS, accessoryOf, isAccentColour, lookOf } from '../appearance.ts';
 import { Portrait } from '../Portrait.tsx';
 
@@ -37,6 +43,9 @@ const ENGINE_REACH: Readonly<Record<HireEngine, string>> = Object.freeze({
     + "project's own code without that protection.",
   pi: 'Nothing stops it changing files. It can change any file your account can.',
 });
+
+const CHARACTER_OPTIONS = [{ value: '', label: 'Automatic' },
+  ...CAST_CHARACTERS.map((character) => ({ value: character, label: `Character ${character.toUpperCase()}` }))];
 
 function text(value: unknown): string {
   return typeof value === 'string' && value !== '' ? value : '—';
@@ -213,11 +222,11 @@ export function HireWizardView({ hire, floor, onClose, onSettings }: {
   readonly onSettings?: () => void;
 }) {
   return (
-    <section className="hire-wizard" id="hire-wizard" aria-labelledby="hire-title">
+    <section className="hire-wizard" data-ui-scope="" id="hire-wizard" aria-labelledby="hire-title">
       <header className="hire-head">
         <h2 id="hire-title" tabIndex={-1}>Hire an agent</h2>
-        {hire.outcome === null ? null : <button type="button" ref={handFocusOnLeave}
-          data-focus-on-leave="hire-open" onClick={onClose}>Close</button>}
+        {hire.outcome === null ? null : <Button ref={handFocusOnLeave}
+          data-focus-on-leave="hire-open" onClick={onClose}>Close</Button>}
       </header>
       {floor.onboarding === null && noProjects(floor) && floor.settings?.switches.hire !== false
         ? null : <UnavailableControls floor={floor} control="hire" />}
@@ -280,25 +289,21 @@ function HireForm({ hire, floor, onClose, onSettings }: {
           {hire.section !== 'identity' ? null : (
             <>
               <div className="hire-field">
-                <label htmlFor="hire-name">Name</label>
-                <input id="hire-name" name="name" type="text" required autoComplete="off" spellCheck={false}
-                  value={hire.draft.name} disabled={frozen}
-                  aria-invalid={invalid('name')} aria-describedby={described('name')}
-                  onChange={(event) => editDraft({ name: event.target.value })} />
+                <Field label="Name" id="hire-name">
+                  <Input id="hire-name" name="name" type="text" required autoComplete="off" spellCheck={false}
+                    value={hire.draft.name} disabled={frozen}
+                    aria-invalid={invalid('name')} aria-describedby={described('name')}
+                    onChange={(event) => editDraft({ name: event.target.value })} />
+                </Field>
                 <LengthNote value={hire.draft.name} limit={LIMITS.name} />
               </div>
-              <details className="hire-more" open={invalid('role')}>
-              <summary>Role and look</summary>
+              <Disclosure className="hire-more" open={invalid('role')} summary="Role and look">
               <div className="hire-appearance">
                 <div className="hire-field">
-                  <label htmlFor="hire-character">Character</label>
-                  <select id="hire-character" name="character" value={hire.draft.character ?? ''} disabled={frozen}
-                    onChange={(event) => editDraft({ character: event.target.value })}>
-                    <option value="">Automatic</option>
-                    {CAST_CHARACTERS.map((character) => <option key={character} value={character}>
-                      Character {character.toUpperCase()}
-                    </option>)}
-                  </select>
+                  <Field label="Character" id="hire-character">
+                    <Select id="hire-character" name="character" value={hire.draft.character ?? ''} disabled={frozen}
+                      options={CHARACTER_OPTIONS} onValueChange={(character) => editDraft({ character })} />
+                  </Field>
                 </div>
                 <fieldset className="hire-accents" disabled={frozen}>
                   <legend>Accent colour</legend>
@@ -316,16 +321,15 @@ function HireForm({ hire, floor, onClose, onSettings }: {
                 <HirePortrait draft={hire.draft} />
               </div>
               <div className="hire-field">
-                <label htmlFor="hire-role">Role</label>
-                <textarea id="hire-role" name="role" rows={2} autoComplete="off"
-                  value={hire.draft.role} disabled={frozen}
-                  aria-invalid={invalid('role')} aria-describedby={described('role')}
-                  onChange={(event) => editDraft({ role: event.target.value })} />
+                <Field label="Role" id="hire-role" hint="A label shown to people and other agents, not instructions for the agent. Leave empty to use engineer.">
+                  <Textarea id="hire-role" name="role" rows={2} autoComplete="off"
+                    value={hire.draft.role} disabled={frozen}
+                    aria-invalid={invalid('role')} aria-describedby={described('role')}
+                    onChange={(event) => editDraft({ role: event.target.value })} />
+                </Field>
                 <LengthNote value={hire.draft.role} limit={LIMITS.role} />
-                <p className="hire-count">A label shown to people and other agents, not instructions for the agent.
-                  Leave empty to use engineer.</p>
               </div>
-              </details>
+              </Disclosure>
             </>
           )}
           {hire.section !== 'workspace' ? null : (
@@ -410,19 +414,19 @@ function HireForm({ hire, floor, onClose, onSettings }: {
       </div>
       <Reconciliation floor={floor} />
       <footer className="hire-actions">
-        <button type="button" ref={handFocusOnLeave} data-focus-on-leave="hire-open"
-          onClick={onClose}>Cancel</button>
-        <button type="button" aria-disabled={at === 0 || frozen || stuck}
-          onClick={() => { if (at !== 0 && !frozen && !stuck) moveSection(-1, floor); }}>Back</button>
+        <Button ref={handFocusOnLeave} data-focus-on-leave="hire-open"
+          onClick={onClose}>Cancel</Button>
+        <Button variant="ghost" aria-disabled={at === 0 || frozen || stuck}
+          onClick={() => { if (at !== 0 && !frozen && !stuck) moveSection(-1, floor); }}>Back</Button>
         {at === SECTIONS.length - 1
-          ? <button type="button" className="hire-submit" aria-disabled={blocked !== null || frozen || hire.sending}
+          ? <Button variant="primary" className="hire-submit" aria-disabled={blocked !== null || frozen || hire.sending}
             ref={handFocusOnLeave} data-focus-on-leave="hire-title" aria-busy={hire.sending}
             onClick={() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }}>
             {hire.sending ? 'Hiring…' : 'Hire'}
-          </button>
-          : <button type="button" className="hire-next" aria-disabled={frozen || stuck
+          </Button>
+          : <Button variant="primary" className="hire-next" aria-disabled={frozen || stuck
             || stepProblems.some((problem) => problem.section === hire.section)}
-            onClick={() => { if (!frozen && !stuck) moveSection(1, floor); }}>Next</button>}
+            onClick={() => { if (!frozen && !stuck) moveSection(1, floor); }}>Next</Button>}
       </footer>
       {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <NoHireProjectHint floor={floor} />)
         : blocked === null || stuck ? null : <p className="hire-note" role="status">{blocked}</p>}
@@ -464,8 +468,8 @@ function HirePortrait({ draft }: { readonly draft: HireDraft }) {
 /** What the journal already holds, for an operator who lost track of a Hire. */
 function Reconciliation({ floor }: { readonly floor: FloorState }) {
   return (
-    <details className="hire-roster hire-more" aria-labelledby="hire-roster-title">
-      <summary id="hire-roster-title">Agents already on the floor</summary>
+    <Disclosure className="hire-roster hire-more" aria-labelledby="hire-roster-title"
+      summary={<span id="hire-roster-title">Agents already on the floor</span>}>
       <p>
         This page forgets a hire in progress if it reloads. Look here for that agent before hiring again: every
         hire makes a new agent.
@@ -482,7 +486,7 @@ function Reconciliation({ floor }: { readonly floor: FloorState }) {
           ))}
         </ul>
       )}
-    </details>
+    </Disclosure>
   );
 }
 

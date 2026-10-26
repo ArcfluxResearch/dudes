@@ -45,7 +45,7 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.deepEqual([...html.matchAll(/<h3[^>]*>([^<]+)<\/h3>/g)].map(match => match[1]), [
       'Engines', 'Projects', 'Spending limits', 'Desktop notifications', 'Signed-in browsers', 'Floor switches', 'Office layout', 'About',
     ]);
-    assert.match(html, /<details><summary>Configuration details<\/summary><dl>[\s\S]*<code>floor\.git<\/code>/);
+    assert.match(html, /<details data-ui="disclosure"><summary>Configuration details<\/summary><dl>[\s\S]*<code>floor\.git<\/code>/);
 
     const anchors = [...html.matchAll(/<a ([^>]*)>/g)].map((match) => match[1]).filter((attrs) => attrs.includes('github.com'));
     const link = (href) => `href="${href}" target="_blank" rel="noopener noreferrer"`;
@@ -62,16 +62,18 @@ test('Settings shows read-only running values, local commands, Setup and About',
       assert.ok(dev.includes(`<a href="https://github.com/ArcfluxResearch/dudes/releases" target="_blank" rel="noopener noreferrer">Release notes</a>`), version);
       assert.ok(!dev.includes('/releases/tag/'), version);
     }
-    assert.match(html, /Chat messages<\/dt><dd>Always on, with no setting<\/dd>/);
+    assert.match(html, /Chat messages<\/span><span class="ui-switch-desc">Always on, with no setting<\/span>/);
     assert.doesNotMatch(html, /floor\.chat/);
+    const switchRow = (label, on) => new RegExp(`<span class="ui-switch-label" id="[^"]*">${label}</span>[^]*?<button type="button" role="switch" class="ui-switch" aria-checked="${on}"`);
     const gitRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, git } }), onSetup() {} }));
-    assert.match(gitRow(false), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> Off <button type="button">Turn on<\/button><\/dd>/);
-    assert.match(gitRow(true), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
-    assert.match(html, /<dt>Start new tasks<\/dt><dd><span class="settings-says">[^<]*<\/span> Off It needs Change tasks and Hire agents\. <button type="button">Turn on<\/button><\/dd>/);
+    assert.match(gitRow(false), switchRow('Show changed files', false));
+    assert.match(gitRow(true), switchRow('Show changed files', true));
+    assert.match(html, switchRow('Start new tasks', false));
+    assert.match(html, /<span class="floor-switches-needs"> It needs Change tasks and Hire agents\.<\/span>/);
     const renewOn = renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, renew: true } }), onSetup() {} }));
-    assert.match(renewOn, /<dt>Start new tasks<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
+    assert.match(renewOn, switchRow('Start new tasks', true));
     const hint = (control) => renderToStaticMarkup(createElement(UnavailableControls, { floor: floor(), control }));
     assert.match(hint('retire'), /Turn on Pause, resume and rename and Retire agents under\s+Floor switches in Settings/);
     assert.match(hint('terminal'), /turn on Attach terminals under Floor switches in Settings\./);
@@ -81,8 +83,10 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.doesNotMatch(html, /Check whether each engine is installed and signed in/);
     const diffRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, diff: true, git } }), onSetup() {} }));
-    assert.match(diffRow(false), /<dt>Read ticket changes<\/dt><dd><span class="settings-says">[^<]*<\/span> On, but it needs Show changed files /);
-    assert.match(diffRow(true), /<dt>Read ticket changes<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button/);
+    assert.match(diffRow(false), switchRow('Read ticket changes', true));
+    assert.match(diffRow(false), /<span class="floor-switches-needs"> It needs Show changed files\.<\/span>/);
+    assert.match(diffRow(true), switchRow('Read ticket changes', true));
+    assert.doesNotMatch(diffRow(true), /It needs Show changed files/);
     noteTransport('close');
     const closed = renderToStaticMarkup(createElement(SettingsView, { floor: getFloorState(), onSetup() {} }));
     assert.match(closed, /Settings is unavailable while disconnected/);
