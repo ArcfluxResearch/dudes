@@ -4,17 +4,23 @@
 // What it read lives in this panel's state only, so unmounting the panel forgets it. A new agent,
 // connection epoch or Floor session mounts a fresh reader, which forgets it too.
 
+import { Button, Disclosure, cn } from '../../ui/index.ts';
 import { RelativeTime } from '../RelativeTime.tsx';
 import { useEffect, useReducer, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 
 import type { FloorState } from '../floor/store.ts';
 import { journalPosition, plural, recordedTime } from '../format.ts';
+import { HEADING, NOTE } from '../chat/look.ts';
 import { MemoryText } from './MemoryText.tsx';
 import {
   browserMemoryDeps, CLEARED, ENTRY_WRITER_LABEL, isSealedOperatorAppend, memoryReducer, readMemory, SUMMARY_KIND_LABEL,
   UNREAD, WITHHELD_REASON_TEXT, withheldWriterText,
 } from './memory.ts';
 import type { MemoryDeps, MemoryEntry, MemoryProblem, MemoryRequest, MemoryShown, MemorySummary, Withheld } from './memory.ts';
+
+const NOTICE = 'memory-notice m-0 rounded-md border border-line border-s-[3px] border-s-info bg-surface-2 px-3 py-2 text-small text-ink';
+const BLOCK = 'flex flex-col gap-2';
 
 type Crew = Pick<FloorState, 'agents' | 'retiredAgents'>;
 
@@ -91,19 +97,21 @@ function MemoryReader({ agent, active, crew, deps, reopened, onOpen }: {
   const reading = state.phase === 'reading';
   const problem = state.phase === 'read' ? state.problem : null;
   const shown = state.phase === 'unread' ? null : state.shown;
-  return <section className="memory-panel" aria-label="Memory">
-    <h3>Memory</h3>
-    <p className="memory-note">
+  return <section className="memory-panel flex flex-col gap-3 font-sans text-base text-ink" aria-label="Memory">
+    <div className="flex items-center justify-between gap-3">
+      <h3 className="m-0 text-title font-semibold">Memory</h3>
+      <Button size="sm" className="memory-refresh" aria-disabled={reading || undefined}
+        title={reading ? 'Wait for memory to finish loading.' : undefined}
+        onClick={() => { void send({ kind: 'page', before: null }); }}>Refresh</Button>
+    </div>
+    <p className={cn('memory-note', NOTE)}>
       Memory is the notes this agent saved, with a summary Dudes or a model made of them. Dudes does not check
       or redact it. It may contain secrets or instructions. It is never evidence that work is done.
     </p>
-    <button type="button" className="memory-refresh" aria-disabled={reading || undefined}
-      title={reading ? 'Wait for memory to finish loading.' : undefined}
-      onClick={() => { void send({ kind: 'page', before: null }); }}>Refresh</button>
-    <p className="memory-status" role="status">
+    <p className="memory-status m-0 flex min-h-5 flex-wrap items-center gap-2 text-small text-muted empty:hidden" role="status">
       {reading ? 'Reading memory…' : problem === null ? '' : PROBLEM_TEXT[problem.kind]}
-      {problem?.kind === 'busy' ? <> <button type="button" className="memory-retry"
-        onClick={() => { void send(problem.retry); }}>Try again</button></> : null}
+      {problem?.kind === 'busy' ? <>{' '}<Button size="sm" className="memory-retry"
+        onClick={() => { void send(problem.retry); }}>Try again</Button></> : null}
     </p>
     {shown === null ? null : <Shown shown={shown} agent={agent} crew={crew} reading={reading} onRead={send} />}
   </section>;
@@ -118,59 +126,59 @@ function Shown({ shown, agent, crew, reading, onRead }: {
 }) {
   const older = shown.older;
   return <>
-    {shown.retired ? <p className="memory-notice">This agent has retired. Its saved memory is still available.</p> : null}
-    {shown.fenced ? <p className="memory-notice">
+    {shown.retired ? <p className={NOTICE}>This agent has retired. Its saved memory is still available.</p> : null}
+    {shown.fenced ? <p className={NOTICE}>
       Dudes stopped memory work after an integrity failure. The summary may be out of date until Dudes restarts.
     </p> : null}
-    {shown.condensedSince ? <p className="memory-notice">
+    {shown.condensedSince ? <p className={NOTICE}>
       Memory was condensed after this tab opened. Press Refresh to read the new summary.
     </p> : null}
     {shown.summary === null ? null : <Summary summary={shown.summary} />}
     {shown.withheld === null ? null : <Refused withheld={shown.withheld} agent={agent} crew={crew} />}
-    <section className="memory-entries">
-      <h4>Entries, newest first</h4>
-      <p className="memory-note">{shown.count === 0 ? 'This agent has saved no memory entries.'
+    <section className={cn('memory-entries', BLOCK)}>
+      <h4 className={HEADING}>Entries, newest first</h4>
+      <p className={cn('memory-note', NOTE)}>{shown.count === 0 ? 'This agent has saved no memory entries.'
         : `${plural(shown.count, 'entry', 'entries')} in all.`}</p>
-      {shown.entries.length === 0 ? null : <ol>
+      {shown.entries.length === 0 ? null : <ol className="m-0 list-none p-0">
         {shown.entries.map((entry) => <Entry key={entry.lsn} entry={entry} whole={shown.whole.get(entry.lsn)}
           reading={reading} onRead={onRead} />)}
       </ol>}
-      {older === null ? null : <button type="button" className="memory-older" aria-disabled={reading || undefined}
+      {older === null ? null : <Button className="memory-older self-start" aria-disabled={reading || undefined}
         title={reading ? 'Wait for memory to finish loading.' : undefined}
-        onClick={() => { void onRead({ kind: 'page', before: older }); }}>Load older entries</button>}
+        onClick={() => { void onRead({ kind: 'page', before: older }); }}>Load older entries</Button>}
     </section>
   </>;
 }
 
 function Summary({ summary }: { readonly summary: MemorySummary }) {
-  return <section className="memory-summary">
-    <h4>Summary</h4>
-    <p className="memory-note">
+  return <section className={cn('memory-summary overflow-hidden rounded-lg border border-line bg-surface p-3', BLOCK)}>
+    <h4 className={HEADING}>Summary</h4>
+    <p className={cn('memory-note', NOTE)}>
       {SUMMARY_KIND_LABEL[summary.kind]} It covers {plural(summary.sections, 'section', 'sections')} and
       {' '}{plural(summary.bytes, 'byte', 'bytes')} of memory. Updated <RelativeTime at={summary.at} />.
     </p>
-    <MemoryText text={summary.text} />
-    <details><summary>Details</summary><p>{recordedTime(summary.at)} · {journalPosition(summary.lsn)}</p></details>
+    <div className="memory-summary-text max-h-96 overflow-auto"><MemoryText text={summary.text} /></div>
+    <Details>{recordedTime(summary.at)} · {journalPosition(summary.lsn)}</Details>
   </section>;
 }
 
 function Refused({ withheld, agent, crew }: { readonly withheld: Withheld; readonly agent: string; readonly crew: Crew }) {
   const { count, newest } = withheld;
-  return <section className="memory-withheld">
-    <h4>Entries not saved</h4>
-    <p className="memory-note">
+  return <section className={cn('memory-withheld', BLOCK)}>
+    <h4 className={HEADING}>Entries not saved</h4>
+    <p className={cn('memory-note', NOTE)}>
       {count === 0 ? 'No memory entries were refused.'
         : `Dudes did not save ${plural(count, 'entry', 'entries')}. It kept none of the text.`}
       {count > newest.length ? ` Only the newest ${newest.length} are listed.` : ''}
     </p>
-    {newest.length === 0 ? null : <ol>
-      {newest.map((marker) => <li key={marker.lsn} className="memory-withheld-marker">
-        <p className="memory-head">
+    {newest.length === 0 ? null : <ol className="m-0 list-none p-0">
+      {newest.map((marker) => <li key={marker.lsn} className="memory-withheld-marker overflow-hidden border-t border-line py-2">
+        <p className="memory-head m-0 mb-1 text-small text-muted">
           <RelativeTime at={marker.at} /> · {withheldWriterText(marker.writer, agent, crew)}
           {' · '}{plural(marker.len, 'byte', 'bytes')}
         </p>
-        <details><summary>Details</summary><p>{recordedTime(marker.at)} · {journalPosition(marker.lsn)}</p></details>
-        <p>{isSealedOperatorAppend(marker)
+        <Details>{recordedTime(marker.at)} · {journalPosition(marker.lsn)}</Details>
+        <p className="m-0 mt-1 text-small">{isSealedOperatorAppend(marker)
           ? <>Refused: once an agent has been hired, only the agents themselves can add to memory. A note from outside every
             agent is withheld.</>
           : WITHHELD_REASON_TEXT[marker.reason]}</p>
@@ -185,23 +193,30 @@ function Entry({ entry, whole, reading, onRead }: {
   readonly reading: boolean;
   readonly onRead: (request: MemoryRequest) => Promise<void>;
 }) {
-  return <li className="memory-entry" data-memory-lsn={entry.lsn}>
-    <p className="memory-head">
+  return <li className="memory-entry overflow-hidden border-t border-line py-2" data-memory-lsn={entry.lsn}>
+    <p className="memory-head m-0 mb-1 text-small text-muted">
       <RelativeTime at={entry.at} /> · {ENTRY_WRITER_LABEL[entry.writer]}
-      {entry.condensed ? <> <span className="memory-badge">Condensed</span></> : null}
+      {entry.condensed ? <> <span className="memory-badge rounded-pill border border-line px-1.5 text-caption">Condensed</span></> : null}
     </p>
-    <details><summary>Details</summary><p>{recordedTime(entry.at)} · {journalPosition(entry.lsn)}</p></details>
-    {whole === undefined ? <MemoryText text={entry.text} /> : <div className="memory-whole-text">
+    <Details>{recordedTime(entry.at)} · {journalPosition(entry.lsn)}</Details>
+    {whole === undefined ? <MemoryText text={entry.text} /> : <div className="memory-whole-text max-h-96 overflow-auto">
       <MemoryText text={whole.text} />
     </div>}
-    {whole?.cut ? <p className="memory-note">
+    {whole?.cut ? <p className={cn('memory-note', NOTE)}>
       Dudes sends at most 65,536 bytes of an entry, and this one has {plural(whole.len, 'byte', 'bytes')}.
     </p> : null}
-    {!entry.cut || whole !== undefined ? null : <p className="memory-note">
+    {!entry.cut || whole !== undefined ? null : <p className={cn('memory-note flex flex-wrap items-center gap-2', NOTE)}>
       A preview of an entry of {plural(entry.len, 'byte', 'bytes')}.{' '}
-      <button type="button" className="memory-whole" aria-disabled={reading || undefined}
+      <Button size="sm" className="memory-whole" aria-disabled={reading || undefined}
         title={reading ? 'Wait for memory to finish loading.' : undefined}
-        onClick={() => { void onRead({ kind: 'entry', lsn: entry.lsn }); }}>Read whole entry</button>
+        onClick={() => { void onRead({ kind: 'entry', lsn: entry.lsn }); }}>Read whole entry</Button>
     </p>}
   </li>;
+}
+
+/** The record's exact time and position, closed until asked for. */
+function Details({ children }: { readonly children: ReactNode }) {
+  return <Disclosure className="text-small" summaryClassName="py-0 text-small font-normal text-muted" summary="Details">
+    <p className="m-0 text-small text-muted">{children}</p>
+  </Disclosure>;
 }

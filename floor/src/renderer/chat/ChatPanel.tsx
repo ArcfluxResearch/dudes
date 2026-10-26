@@ -21,6 +21,13 @@ import { ChatText } from './ChatText.tsx';
 import { Steps } from './Steps.tsx';
 import { EngineSaid } from './EngineSaid.tsx';
 import { FullOutput } from '../LiveWork.tsx';
+import { MessageSquare, Paperclip, SendHorizontal } from 'lucide-react';
+import { Button, Disclosure, Field, ICON, RING, Textarea, buttonClass, cn } from '../../ui/index.ts';
+import { ASSISTANT_BUBBLE, HEADING, NOTE, SPEAKER, USER_BUBBLE } from './look.ts';
+import { SHORT_THREAD } from './shortLayout.ts';
+
+const WARNING = 'chat-warning m-0 text-small font-semibold leading-normal text-ink';
+const BOX = 'rounded-lg border border-line bg-surface p-3';
 
 export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
   agent_absent: 'The agent is no longer on the floor.',
@@ -88,73 +95,81 @@ export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOu
   const target = action.answerTargets.get(row.id);
   const replying = target !== undefined && question.open && target.questionLsn === question.questionLsn;
   const waitingQuestion = row.status === 'waiting' && typeof row.question === 'string' && canonicalLsn(row.question_lsn);
-  return <div className="chat-panel" data-chat-agent-id={row.id}>
+  return <div className="chat-panel flex h-full min-h-0 flex-col gap-3 overflow-y-auto font-sans text-base text-ink" data-chat-agent-id={row.id}>
     <ChatThread key={row.id} entries={entries} floor={floor} row={row} action={action}
       fullOutput={fullOutput} onFullOutput={onFullOutput} />
-    {row.mode === 'attached' ? <p className="chat-guidance">Attached replies are unavailable. Messages are sent as context.</p> : null}
-    <section aria-labelledby="chat-compose-title" className="chat-compose"
+    {row.mode === 'attached' ? <p className={cn('chat-guidance', NOTE)}>Attached replies are unavailable. Messages are sent as context.</p> : null}
+    <section aria-labelledby="chat-compose-title" className="chat-compose sticky bottom-0 z-10 flex shrink-0 flex-col gap-2 border-t border-line bg-surface pt-3"
       onDragOver={overChatFiles} onDrop={(event) => dropChatFiles(event, gate)}>
-      <h3 id="chat-compose-title" tabIndex={-1}>{replying ? 'Reply to' : 'Message'} {name}</h3>
-      {replying ? <div className="chat-question" data-chat-question-lsn={target.questionLsn}>
-        <blockquote>{target.question}</blockquote>
-        <p>Your ordinary message draft is kept separately.</p>
-        <button type="button" onClick={() => selectChatAnswer(row.id, null)}>Back to message</button>
+      <h3 id="chat-compose-title" tabIndex={-1} className={cn(HEADING, RING, 'rounded-sm')}>{replying ? 'Reply to' : 'Message'} {name}</h3>
+      {replying ? <div className={cn('chat-question flex flex-col gap-2 bg-surface-2', BOX)} data-chat-question-lsn={target.questionLsn}>
+        <blockquote className="m-0 border-s-[3px] border-warn ps-3 whitespace-pre-wrap [overflow-wrap:anywhere]">{target.question}</blockquote>
+        <p className={NOTE}>Your ordinary message draft is kept separately.</p>
+        <Button size="sm" className="self-start" onClick={() => selectChatAnswer(row.id, null)}>Back to message</Button>
         <AnswerForm floor={floor} row={row} leaveFocusTo="chat-compose-title" compact />
       </div> : <>
-      {target === undefined ? null : <p role="status">Your reply target changed or closed. Your message draft is below.</p>}
-      {waitingQuestion ? <div className="chat-question">
-        <p>{name} asks:</p><blockquote>{row.question as string}</blockquote>
-        {question.open ? <button type="button" disabled={action.attempt !== null}
+      {target === undefined ? null : <p className={NOTE} role="status">Your reply target changed or closed. Your message draft is below.</p>}
+      {waitingQuestion ? <div className={cn('chat-question flex flex-col gap-2 bg-surface-2', BOX)}>
+        <p className="m-0 font-medium">{name} asks:</p>
+        <blockquote className="m-0 border-s-[3px] border-warn ps-3 whitespace-pre-wrap [overflow-wrap:anywhere]">{row.question as string}</blockquote>
+        {question.open ? <Button size="sm" className="self-start" disabled={action.attempt !== null}
           onClick={() => selectChatAnswer(row.id, { questionLsn: question.questionLsn, question: question.question })}>
-          Reply to question</button> : <p>Answering this question from the Floor is unavailable.</p>}
-        <p>A normal message does not answer this question.</p>
+          Reply to question</Button> : <p className={NOTE}>Answering this question from the Floor is unavailable.</p>}
+        <p className={NOTE}>A normal message does not answer this question.</p>
       </div> : null}
-      <label className="chat-composer-label" htmlFor="chat-text">Your message</label>
-      <textarea id="chat-text" name="chat_text" value={draft} rows={3} placeholder="Write a message…"
-        aria-describedby="chat-text-limit" onChange={(event) => editChatDraft(row.id, event.currentTarget.value)}
-        onPaste={(event) => pasteChatFiles(event, gate)}
-        onKeyDown={(event) => {
-          if (!queuesChatOnKey(event) || blocked || action.sending) return;
-          event.preventDefault();
-          void submitChat(gate, browserChatDeps);
-        }} />
-      {action.attempt !== null && attempt === null ? <p role="status">
+      <Field label="Your message" id="chat-text">
+        <Textarea name="chat_text" value={draft} rows={3} placeholder="Write a message…"
+          className="max-h-72 min-h-20 text-body"
+          aria-describedby="chat-text-limit" onChange={(event) => editChatDraft(row.id, event.currentTarget.value)}
+          onPaste={(event) => pasteChatFiles(event, gate)}
+          onKeyDown={(event) => {
+            if (!queuesChatOnKey(event) || blocked || action.sending) return;
+            event.preventDefault();
+            void submitChat(gate, browserChatDeps);
+          }} />
+      </Field>
+      {action.attempt !== null && attempt === null ? <p className={NOTE} role="status">
         A request for another agent is unresolved. Select that agent to check its status before sending.</p> : null}
-      {files.length === 0 ? null : <ul className="chat-files" aria-label="Attached files">
-        {files.map(file => <li key={file.id} className="chat-file" data-chat-file-status={file.status}>
-          <span className="chat-file-name">{file.name}</span>
-          <span className="chat-file-size">{formatBytes(file.size)}</span>
-          <span className="chat-file-state" role={file.status === 'failed' ? 'alert' : 'status'}>
+      {files.length === 0 ? null : <ul className="chat-files m-0 flex list-none flex-col gap-1.5 p-0" aria-label="Attached files">
+        {files.map(file => <li key={file.id} data-chat-file-status={file.status}
+          className={cn('chat-file flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border bg-surface px-2 py-1.5 text-small',
+            file.status === 'failed' ? 'border-danger' : 'border-line')}>
+          <span className="chat-file-name min-w-0 font-medium [overflow-wrap:anywhere]">{file.name}</span>
+          <span className="chat-file-size text-muted">{formatBytes(file.size)}</span>
+          <span className={cn('chat-file-state min-w-32 flex-1 [overflow-wrap:anywhere]', file.status === 'failed' ? 'font-medium text-danger' : 'text-muted')}
+            role={file.status === 'failed' ? 'alert' : 'status'}>
             {file.status === 'uploading' ? 'Uploading…' : file.status === 'failed' ? file.error : 'Ready'}</span>
-          <button type="button" className="chat-file-remove" aria-label={`Remove ${file.name}`}
-            onClick={() => removeChatFile(row.id, file.id)}>Remove</button>
+          <Button size="sm" variant="ghost" className="chat-file-remove" aria-label={`Remove ${file.name}`}
+            onClick={() => removeChatFile(row.id, file.id)}>Remove</Button>
         </li>)}
       </ul>}
-      <div className="chat-compose-actions">
-        <p id="chat-text-limit">{accepts ? 'Enter to send · Shift+Enter for a newline · Paste or drop files to attach.'
+      <div className="chat-compose-actions flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <p id="chat-text-limit" className={cn(NOTE, 'min-w-48 flex-1 text-caption')}>{accepts ? 'Enter to send · Shift+Enter for a newline · Paste or drop files to attach.'
           : 'Enter to send · Shift+Enter for a newline.'}</p>
-        <div className="chat-compose-buttons">
-          {accepts ? <label className="chat-attach" title="Attach files">
-            <input type="file" multiple className="chat-file-input" aria-label="Attach files"
+        <div className="chat-compose-buttons ms-auto flex items-center gap-2">
+          {accepts ? <label title="Attach files"
+            className={buttonClass('secondary', 'md', true, 'chat-attach relative has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-solid has-[:focus-visible]:outline-focus has-[:focus-visible]:outline-offset-2')}>
+            <input type="file" multiple className="chat-file-input absolute inset-0 size-full cursor-pointer opacity-0" aria-label="Attach files"
               onChange={(event) => pickChatFiles(event, gate)} />
-            <span aria-hidden="true">+</span>
+            <Paperclip {...ICON} aria-hidden="true" />
           </label> : null}
-          {stopControl.open && stopControl.stop ? <button type="button" className="chat-stop-send"
+          {stopControl.open && stopControl.stop ? <Button className="chat-stop-send"
             disabled={blocked || !canStopAndSend(action, gate, stopControl)} aria-describedby="chat-stop-send-note"
             title="Stop this turn, then send your message once it has ended"
-            onClick={() => void stopAndSend(gate, stopControl, browserChatDeps)}>Stop and send</button> : null}
-          <button type="button" className="chat-send" disabled={blocked || action.stopSend !== null}
-            onClick={() => void submitChat(gate, browserChatDeps)}>Send</button>
+            onClick={() => void stopAndSend(gate, stopControl, browserChatDeps)}>Stop and send</Button> : null}
+          <Button variant="primary" className="chat-send" icon={<SendHorizontal {...ICON} aria-hidden="true" />}
+            disabled={blocked || action.stopSend !== null}
+            onClick={() => void submitChat(gate, browserChatDeps)}>Send</Button>
         </div>
       </div>
-      {stopControl.open && stopControl.stop ? <p className="hire-note" id="chat-stop-send-note">
+      {stopControl.open && stopControl.stop ? <p className={NOTE} id="chat-stop-send-note">
         Stop and send ends the running turn, then sends your message as a note. {PARTIAL_EDITS_NOTE}</p> : null}
-      {action.stopSend?.agent === row.id ? <p role="status" data-chat-stop-send={action.stopSend.stopLsn === null ? 'stopping' : 'waiting'}>
+      {action.stopSend?.agent === row.id ? <p className={NOTE} role="status" data-chat-stop-send={action.stopSend.stopLsn === null ? 'stopping' : 'waiting'}>
         {action.stopSend.stopLsn === null ? 'Stopping this turn…'
           : 'Stopped. Sending your note once the turn has ended…'}</p> : null}
-      {accepts ? null : <p className="chat-guidance">Files work with agents Dudes launches.</p>}
-      {(draft !== '' || files.length > 0) && problem !== null ? <p role="alert">{problem}</p> : null}
-      {action.problem === null ? null : <p role="alert">{action.problem}</p>}
+      {accepts ? null : <p className={cn('chat-guidance', NOTE)}>Files work with agents Dudes launches.</p>}
+      {(draft !== '' || files.length > 0) && problem !== null ? <p className="m-0 text-small font-medium text-danger" role="alert">{problem}</p> : null}
+      {action.problem === null ? null : <p className="m-0 text-small font-medium text-danger" role="alert">{action.problem}</p>}
       </>}
     </section>
   </div>;
@@ -207,104 +222,111 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
   const attempt = action.attempt?.payload.agent === row.id ? action.attempt : null;
   const outcome = action.outcome;
   const latestTurn = row.mode === 'managed' ? entries.filter(entry => entry.kind !== 'context' && entry.turn !== null).at(-1) : undefined;
-  return <section className="chat-thread" aria-labelledby="chat-thread-title">
-    <div className="chat-thread-heading"><h3 id="chat-thread-title">Conversation</h3>
+  return <section className={cn('chat-thread flex min-h-72 min-w-0 flex-1 flex-col gap-2', SHORT_THREAD)} aria-labelledby="chat-thread-title">
+    <div className="chat-thread-heading flex flex-wrap items-center justify-between gap-x-3 gap-y-1"><h3 id="chat-thread-title" className={HEADING}>Conversation</h3>
       <ClearQueuedNotes floor={floor} row={row} action={action} />
     </div>
-    <div className="chat-scroll" ref={scroll} role="log" aria-label={`Conversation with ${name}`} aria-relevant="additions"
+    <div className="chat-scroll min-h-0 flex-1 overflow-y-auto rounded-lg border border-line bg-bg p-3 [overflow-anchor:none]"
+      ref={scroll} role="log" aria-label={`Conversation with ${name}`} aria-relevant="additions"
       onScroll={event => {
         const node = event.currentTarget;
         if (node.clientWidth !== size.current.width || node.clientHeight !== size.current.height) return;
         follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
       }}>
-      {entries.length === 0 && attempt === null ? <div className="chat-empty">
-        <p>No messages in the available history</p>
-        <p>Write a message below to continue the conversation.</p>
-      </div> : <ol>{entries.map(entry => {
-        if (entry.kind === 'context') return <li key={entry.noteLsn} className="chat-context" data-chat-context-lsn={entry.noteLsn}>
-          <p>Sent as context</p>
+      {entries.length === 0 && attempt === null ? <div className="chat-empty grid min-h-full content-center justify-items-center gap-1 text-center">
+        <MessageSquare {...ICON} size={24} aria-hidden="true" className="mb-1 text-subtle" />
+        <p className="m-0 font-medium">No messages in the available history</p>
+        <p className={NOTE}>Write a message below to continue the conversation.</p>
+      </div> : <ol className="m-0 grid min-h-full list-none content-end gap-4 p-0">{entries.map(entry => {
+        if (entry.kind === 'context') return <li key={entry.noteLsn} className="chat-context rounded-md border border-dashed border-line-strong px-3 py-2 text-small text-muted" data-chat-context-lsn={entry.noteLsn}>
+          <p className="m-0">Sent as context</p>
         </li>;
         const { pending: note, turn } = entry;
         const preview = turn !== null && previewMatches(floor, row, turn);
         const status = turn !== null && note === null ? turnText(turn, preview ? floor.output.status : null) : null;
-        return <li key={entry.noteLsn} className="chat-exchange" data-chat-note-lsn={entry.noteLsn}
+        const emphasis = turn?.state === 'failed' || note?.state === 'delivery_uncertain' ? 'font-semibold' : '';
+        return <li key={entry.noteLsn} className="chat-exchange grid min-w-0 gap-1.5" data-chat-note-lsn={entry.noteLsn}
           data-chat-pending-state={note?.state} data-chat-turn-id={turn?.turn_id} data-chat-turn-state={turn?.state}>
-          <div className="chat-message chat-user">
-            <p className="chat-speaker">You</p>
+          <div className={cn('chat-message chat-user', USER_BUBBLE)}>
+            <p className={cn('chat-speaker', SPEAKER)}>You</p>
             <ChatText text={entry.text} />
           </div>
-          {turn?.reissued === true ? <div className="chat-warning" data-chat-reissued="true">
-            <p>Restarted after interruption</p>
-            <details><summary>What changed</summary>
-              <p>Previous delivery may have happened and earlier context may be missing.</p></details>
+          {turn?.reissued === true ? <div className={cn(WARNING, 'rounded-md border border-line bg-warn-soft px-3 py-2')} data-chat-reissued="true">
+            <p className="m-0">Restarted after interruption</p>
+            <Disclosure className="font-normal" summaryClassName="py-0 text-small font-normal" summary="What changed">
+              <p className={NOTE}>Previous delivery may have happened and earlier context may be missing.</p></Disclosure>
           </div> : null}
-          {note === null ? turn === null ? <p className="chat-message-state">Message accepted; current status unavailable.</p> : null
-            : <div className="chat-message-state">
-              <p>{pendingText(note)}</p>
+          {note === null ? turn === null ? <p className={cn('chat-message-state mx-2', NOTE)}>Message accepted; current status unavailable.</p> : null
+            : <div className={cn('chat-message-state mx-2 flex flex-col items-start gap-1', NOTE, emphasis)}>
+              <p className="m-0">{pendingText(note)}</p>
               {note.reason === null || note.reason === 'delivery_uncertain' ? null
-                : <p className="chat-reason" data-chat-reason={note.reason}>{CHAT_REASON_TEXT[note.reason]}</p>}
-              {note.cancellable ? <button type="button" className="chat-cancel" disabled={action.attempt !== null || action.clearing != null}
+                : <p className="chat-reason m-0 font-semibold" data-chat-reason={note.reason}>{CHAT_REASON_TEXT[note.reason]}</p>}
+              {note.cancellable ? <Button size="sm" className="chat-cancel" disabled={action.attempt !== null || action.clearing != null}
                 onClick={() => void cancelChat(gate, note, browserChatDeps)}>
-                {note.state === 'delivery_uncertain' ? 'Stop future reissue' : 'Cancel note'}</button>
-                : <p>Cancellation is unavailable for this message.</p>}
+                {note.state === 'delivery_uncertain' ? 'Stop future reissue' : 'Cancel note'}</Button>
+                : <p className="m-0">Cancellation is unavailable for this message.</p>}
             </div>}
-          {status === null ? null : <p className="chat-message-state" role="status">{status}</p>}
+          {status === null ? null : <p className={cn('chat-message-state mx-2', NOTE, emphasis)} role="status">{status}</p>}
           {turn !== null && stepsMatch(floor, row, turn)
             ? <Steps steps={floor.output.steps} truncated={floor.output.stepsTruncated} stopped={floor.output.stepsStopped} results={floor.output.stepResults} /> : null}
           {turn?.failure == null ? null : <EngineSaid failure={turn.failure} />}
-          {turn?.reply == null || turn.reply === turn.failure ? null : <div className="chat-message chat-assistant">
-            <p className="chat-speaker">{name}</p>
+          {turn?.reply == null || turn.reply === turn.failure ? null : <div className={cn('chat-message chat-assistant', ASSISTANT_BUBBLE)}>
+            <p className={cn('chat-speaker', SPEAKER)}>{name}</p>
             <ChatText text={turn.reply} final mode="agent" />
-            {turn.truncated ? <p className="chat-warning">Final reply was truncated.</p> : null}
-            {turn.truncated === null ? <details className="chat-reply-details"><summary>Reply details</summary>
-              <p>Final reply completeness is not recorded.</p></details> : null}
+            {turn.truncated ? <p className={cn(WARNING, 'mt-2')}>Final reply was truncated.</p> : null}
+            {turn.truncated === null ? <Disclosure className="chat-reply-details mt-1" summaryClassName="py-0 text-small font-normal text-muted" summary="Reply details">
+              <p className={NOTE}>Final reply completeness is not recorded.</p></Disclosure> : null}
           </div>}
-          {preview ? <div className="chat-message chat-assistant chat-preview" data-chat-preview="provisional">
-            <p className="chat-speaker">{name}</p>
+          {preview ? <div className={cn('chat-message chat-assistant chat-preview border-s-2 border-s-accent', ASSISTANT_BUBBLE)} data-chat-preview="provisional">
+            <p className={cn('chat-speaker', SPEAKER)}>{name}</p>
             {floor.output.reply !== null && floor.output.reply.text !== '' ? <ChatText text={floor.output.reply.text} mode="agent" />
               : null}
-            {floor.output.truncated ? <p className="chat-warning">Earlier live output was truncated.</p> : null}
-            {floor.output.reply?.gap !== null ? <div className="chat-warning" role="status"><p>Live output is incomplete.</p>
-              <button type="button" onClick={() => selectOutputAgent(row.id, true)}>Refresh live output</button></div> : null}
-            <details className="chat-reply-details"><summary>Reply details</summary>
-              <p>Live output is provisional. It is not a final reply.</p></details>
+            {floor.output.truncated ? <p className={cn(WARNING, 'mt-2')}>Earlier live output was truncated.</p> : null}
+            {floor.output.reply?.gap !== null ? <div className={cn(WARNING, 'mt-2 flex flex-wrap items-center gap-2')} role="status"><p className="m-0">Live output is incomplete.</p>
+              <Button size="sm" onClick={() => selectOutputAgent(row.id, true)}>Refresh live output</Button></div> : null}
+            <Disclosure className="chat-reply-details mt-1" summaryClassName="py-0 text-small font-normal text-muted" summary="Reply details">
+              <p className={NOTE}>Live output is provisional. It is not a final reply.</p></Disclosure>
           </div> : null}
           {entry === latestTurn
             ? <FullOutput floor={floor} row={row} id="chat-full-output" open={fullOutput} onToggle={onFullOutput} /> : null}
         </li>;
       })}</ol>}
-      {attempt === null ? null : <section className="chat-receipt" aria-label="Chat request" aria-live="polite"
+      {attempt === null ? null : <section className={cn('chat-receipt mt-3 flex flex-col items-start gap-2', BOX)} aria-label="Chat request" aria-live="polite"
         data-chat-outcome={action.outcome?.kind ?? 'sending'}
         data-chat-refusal-reason={action.outcome?.kind === 'refused' ? action.outcome.reason : undefined}
         data-chat-receipt-note-lsn={action.outcome !== null && 'noteLsn' in action.outcome ? action.outcome.noteLsn : undefined}>
-        {'text' in attempt.payload ? <><p className="chat-speaker">You</p><ChatText text={attempt.payload.text} /></> : null}
-        <p>{outcomeText(action)}</p>
-        <details><summary>Details</summary>
-          <p>Request: <code>{attempt.payload.request_id}</code></p>
-          {'note_lsn' in attempt.payload ? <p>Note: <code>{attempt.payload.note_lsn}</code></p> : null}
-          <p>Agent: <code>{attempt.payload.agent}</code></p>
-          <p>Status: <code>{outcome?.kind ?? 'sending'}</code></p>
-        </details>
+        {'text' in attempt.payload ? <><p className={cn('chat-speaker', SPEAKER)}>You</p><ChatText text={attempt.payload.text} /></> : null}
+        <p className="m-0">{outcomeText(action)}</p>
+        <Disclosure summaryClassName="py-0 text-small font-normal text-muted" summary="Details">
+          <div className={cn('flex flex-col gap-0.5', NOTE)}>
+            <p className="m-0">Request: <code className="font-mono">{attempt.payload.request_id}</code></p>
+            {'note_lsn' in attempt.payload ? <p className="m-0">Note: <code className="font-mono">{attempt.payload.note_lsn}</code></p> : null}
+            <p className="m-0">Agent: <code className="font-mono">{attempt.payload.agent}</code></p>
+            <p className="m-0">Status: <code className="font-mono">{outcome?.kind ?? 'sending'}</code></p>
+          </div>
+        </Disclosure>
         {outcome?.kind === 'context_lost' && 'after_stop' in attempt.payload
-          ? <p role="status">The stopped turn left no conversation to continue. Press Resume to let the agent work
+          ? <p className="m-0" role="status">The stopped turn left no conversation to continue. Press Resume to let the agent work
             again, then send a new message. Your note is still in the box.</p> : null}
-        {outcome?.kind === 'context_lost' && !('after_stop' in attempt.payload) ? <button type="button" className="chat-start-fresh" disabled={action.sending}
+        {outcome?.kind === 'context_lost' && !('after_stop' in attempt.payload) ? <Button className="chat-start-fresh" disabled={action.sending}
           ref={handFocusOnLeave} data-focus-on-leave="chat-text"
-          onClick={() => void startFreshChat(attempt, outcome, browserChatDeps)}>Start fresh and resend this message</button> : null}
+          onClick={() => void startFreshChat(attempt, outcome, browserChatDeps)}>Start fresh and resend this message</Button> : null}
         {chatReleasable(action)
-          ? <button type="button" className="chat-dismiss" disabled={action.clearing != null} ref={handFocusOnLeave} data-focus-on-leave="chat-text"
-            onClick={releaseChat}>Continue composing</button>
-          : <button type="button" className="chat-retry" disabled={action.sending || chatSettled(action)}
+          ? <Button variant="primary" className="chat-dismiss" disabled={action.clearing != null} ref={handFocusOnLeave} data-focus-on-leave="chat-text"
+            onClick={releaseChat}>Continue composing</Button>
+          : <Button className="chat-retry" disabled={action.sending || chatSettled(action)}
             ref={handFocusOnLeave} data-focus-on-leave="chat-text"
-            onClick={() => void retryChat(browserChatDeps)}>Check status</button>}
+            onClick={() => void retryChat(browserChatDeps)}>Check status</Button>}
       </section>}
-      <details className="chat-guidance"><summary>Conversation details</summary>
-        <p>Only recent history is kept, so some earlier work may be missing.</p>
-        {row.mode === 'attached' ? <p>Messages wait for a supported hook before they are sent as context.</p>
-          : <p>Messages during active goal work join an admitted goal turn. Otherwise, each message can start one conversation turn.
-            Queuing does not confirm delivery, and a reply does not confirm the goal is complete.</p>}
-        <p>Messages can contain up to 4096 UTF-8 bytes. Drafts stay with each agent in this tab until reload.</p>
-      </details>
+      <Disclosure className="chat-guidance mt-3" summaryClassName="py-0 text-small font-normal text-muted" summary="Conversation details">
+        <div className={cn('flex flex-col gap-1', NOTE)}>
+          <p className="m-0">Only recent history is kept, so some earlier work may be missing.</p>
+          {row.mode === 'attached' ? <p className="m-0">Messages wait for a supported hook before they are sent as context.</p>
+            : <p className="m-0">Messages during active goal work join an admitted goal turn. Otherwise, each message can start one conversation turn.
+              Queuing does not confirm delivery, and a reply does not confirm the goal is complete.</p>}
+          <p className="m-0">Messages can contain up to 4096 UTF-8 bytes. Drafts stay with each agent in this tab until reload.</p>
+        </div>
+      </Disclosure>
     </div>
   </section>;
 }
@@ -316,18 +338,20 @@ function ClearQueuedNotes({ floor, row, action }: {
   const queued = queuedChatNotes(floor, row.id);
   const blocked = action.attempt !== null || action.clearing != null;
   if (queued.length === 0 && !asking && action.clearing?.agent !== row.id) return null;
-  return <div className="chat-clear">
-    <button type="button" className="chat-clear-all" ref={handFocusOnLeave} data-focus-on-leave="chat-text" disabled={blocked || queued.length === 0}
-      onClick={() => setAsking(true)}>Clear all</button>
-    {action.clearing?.agent === row.id ? <p role="status">Removing queued notes…</p> : null}
-    {asking ? <div className="chat-clear-question" role="group" aria-label="Clear queued notes">
-      <p>Remove all queued notes for {typeof row.name === 'string' ? row.name : 'this agent'}?
+  return <div className="chat-clear flex flex-wrap items-center gap-2">
+    <Button size="sm" variant="ghost" className="chat-clear-all" ref={handFocusOnLeave} data-focus-on-leave="chat-text" disabled={blocked || queued.length === 0}
+      onClick={() => setAsking(true)}>Clear all</Button>
+    {action.clearing?.agent === row.id ? <p className={NOTE} role="status">Removing queued notes…</p> : null}
+    {asking ? <div className={cn('chat-clear-question flex basis-full flex-col items-start gap-2 bg-surface-2', BOX)} role="group" aria-label="Clear queued notes">
+      <p className="m-0">Remove all queued notes for {typeof row.name === 'string' ? row.name : 'this agent'}?
         Notes already sent or with unknown delivery stay.</p>
-      <button type="button" className="chat-clear-confirm" ref={handFocusOnLeave} data-focus-on-leave="chat-text" disabled={blocked} onClick={() => {
-        setAsking(false);
-        void clearQueuedChat(chatGate(floor, row), browserChatDeps);
-      }}>Remove queued notes</button>{' '}
-      <button type="button" className="chat-clear-keep" onClick={() => setAsking(false)}>Keep notes</button>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="danger" size="sm" className="chat-clear-confirm" ref={handFocusOnLeave} data-focus-on-leave="chat-text" disabled={blocked} onClick={() => {
+          setAsking(false);
+          void clearQueuedChat(chatGate(floor, row), browserChatDeps);
+        }}>Remove queued notes</Button>
+        <Button size="sm" className="chat-clear-keep" onClick={() => setAsking(false)}>Keep notes</Button>
+      </div>
     </div> : null}
   </div>;
 }

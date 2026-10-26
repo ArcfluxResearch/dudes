@@ -67,17 +67,18 @@ export function fakePage(layout = {}) {
     querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
     querySelectorAll(selector) {
       const [, name, value] = /^\[([a-z-]+)="([^"]*)"\]$/.exec(selector) ?? [];
+      const [, hook] = /^\.([\w-]+)$/.exec(selector) ?? [];
       const found = [];
       for (const child of this.childNodes) {
         if (!(child instanceof Element)) continue;
-        if (child.getAttribute(name) === value) found.push(child);
+        if (hook === undefined ? child.getAttribute(name) === value : (child.getAttribute('class') ?? '').split(/\s+/).includes(hook)) found.push(child);
         found.push(...child.querySelectorAll(selector));
       }
       return found;
     }
   }
   page.document = { nodeType: 9, addEventListener() {}, removeEventListener() {},
-    createElement: (tag) => new Element(tag), createTextNode: (text) => new Text(text),
+    createElement: (tag) => new Element(tag), createElementNS: (_namespace, tag) => new Element(tag), createTextNode: (text) => new Text(text),
     getElementById: (id) => page.document.body.querySelector(`[id="${id}"]`) };
   page.document.defaultView = { document: page.document, HTMLIFrameElement: class {} };
   page.document.body = new Element('body');

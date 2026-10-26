@@ -15,6 +15,7 @@
 //   - the tab drawn without the git sibling ............ "the tab exists only when the daemon sent the sibling"
 //   - a read made by the effect after the first ........ "showing the tab reads once…"
 
+import { hooks } from './helpers/hook-markup.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
@@ -250,7 +251,7 @@ test('showing the tab reads once for an agent, and a later look reads nothing', 
   assert.equal(needsRead(getGitState(), '01ARZ3NDEKTSV4RRFFQ69G5FAV', true), true, 'another agent reads');
 });
 
-const render = (props = {}) => renderToStaticMarkup(createElement(GitPanel, { row, active: false, ...props }));
+const render = (props = {}) => hooks(renderToStaticMarkup(createElement(GitPanel, { row, active: false, ...props })));
 
 test('each refusal is a sentence and shows no repository data', async () => {
   for (const [state, pattern] of [
@@ -321,7 +322,7 @@ test('a cut section and a dropped entry are said, and a cut path cannot be copie
   assert.match(html, /At least 9/);
   assert.match(html, /No remote default branch is recorded here/);
   assert.match(html, /long\/pa…/);
-  assert.match(html, /<button type="button" class="git-copy" aria-describedby="git-committed-0" disabled="" title="The path is shortened[^"]*">/);
+  assert.match(html, /<button type="button" aria-describedby="git-committed-0" disabled="" title="The path is shortened[^"]*" class="git-copy">/);
 });
 
 test('no repository string reaches an attribute, a title or an ARIA label', async () => {

@@ -10,9 +10,10 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { splitHidden } from '../memory/MemoryText.tsx';
+import { cn } from '../../ui/index.ts';
 import { languageOf, tokenize } from './highlight.ts';
+import { MARKER } from './look.ts';
 import type { Language } from './highlight.ts';
-import './code.css';
 
 export const PARSE_LIMIT = 16_384;
 export const MAX_DEPTH = 6;
@@ -20,6 +21,29 @@ export const MAX_ROWS = 20;
 export const MAX_COLUMNS = 8;
 export const MAX_ELEMENTS = 2_000;
 const SOFT_ELEMENTS = MAX_ELEMENTS - 200;
+
+/**
+ * How the Markdown's own elements look, set from the container because the elements carry only the closed set of
+ * class names the renderer writes: spacing between blocks, lists, quotes, tables, code and its token colours.
+ */
+export const MARKDOWN = cn(
+  'min-w-0 [overflow-wrap:anywhere]',
+  '[&_:where(p,ul,ol,blockquote,.md-heading,.md-table)]:my-2 [&_li>:where(p,ul,ol,blockquote,.md-heading,.md-table)]:my-0',
+  '[&>:first-child]:mt-0 [&>:last-child]:mb-0 [&_li]:my-0.5 [&_:where(ul,ol)]:ps-5',
+  '[&_blockquote]:ms-0 [&_blockquote]:border-s-[3px] [&_blockquote]:border-line-strong [&_blockquote]:ps-3 [&_blockquote]:text-muted',
+  '[&_.md-heading]:font-semibold [&_.md-plain]:whitespace-pre-wrap [&_.md-table]:overflow-x-auto',
+  '[&_table]:border-collapse [&_table]:text-small [&_:where(th,td)]:border [&_:where(th,td)]:border-line [&_:where(th,td)]:px-2',
+  '[&_:where(th,td)]:py-1 [&_:where(th,td)]:text-start [&_:where(th,td)]:align-top [&_th]:bg-surface-2 [&_th]:font-semibold',
+  '[&_.chat-inline-code]:rounded-sm [&_.chat-inline-code]:bg-surface-2 [&_.chat-inline-code]:px-1 [&_.chat-inline-code]:py-0.5',
+  '[&_.chat-inline-code]:font-mono [&_.chat-inline-code]:text-small',
+  '[&_.chat-code]:my-2 [&_.chat-code]:overflow-x-auto [&_.chat-code]:whitespace-pre [&_.chat-code]:rounded-md',
+  '[&_.chat-code]:border [&_.chat-code]:border-line [&_.chat-code]:bg-surface-2 [&_.chat-code]:p-3',
+  '[&_.chat-code]:font-mono [&_.chat-code]:text-small [&_.chat-code]:leading-normal [&_.chat-code_code]:font-[inherit]',
+  '[&_.tok-keyword]:text-tok-keyword [&_.tok-string]:text-tok-string [&_.tok-number]:text-tok-number',
+  '[&_.tok-comment]:text-tok-comment [&_.tok-literal]:text-tok-literal [&_.tok-key]:text-tok-key',
+  '[&_.tok-add]:text-tok-add [&_.tok-remove]:text-tok-remove [&_.tok-meta]:text-tok-meta',
+  MARKER,
+);
 
 /** Every element the renderer can produce, so no tag name ever comes from the text. */
 type Tag = 'p' | 'br' | 'strong' | 'em' | 'code' | 'pre' | 'div' | 'span' | 'ul' | 'ol' | 'li' | 'blockquote'

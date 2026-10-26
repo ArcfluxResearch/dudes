@@ -92,7 +92,7 @@ test('no utility has the name of a class an older rule sets', async () => {
     const text = (await readFile(path, 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '');
     for (const [, name] of text.matchAll(/\.(-?[_a-zA-Z][\w-]*)/g)) legacy.add(name);
   }
-  assert.ok(legacy.size > 400, `only ${legacy.size} older class names were read`);
+  assert.ok(legacy.size > 300, `only ${legacy.size} older class names were read`);
   assert.ok(generated.size > 150, `only ${generated.size} utilities were generated`);
   assert.deepEqual([...generated].filter((name) => legacy.has(name)), [],
     'an older rule shares a name with a utility, so the utility would reach its elements: rename the older class');

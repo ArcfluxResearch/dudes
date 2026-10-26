@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { hooks } from './helpers/hook-markup.mjs';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
@@ -122,7 +123,7 @@ function view(list) {
     { agent_id: A, turn_id: TURN, note_lsn: '7', text: 'Please check', state: 'running', reply: null,
       truncated: null, failure: null, ran_models: [], reissued: false }] };
   const floor = { ...base, epoch: 1, snapshotEpoch: 1, phase: 'live', stale: false, agents: [row], chat, output };
-  return renderToStaticMarkup(createElement(ChatPanelView, { floor, row, action: chatModule.getChatState() }));
+  return hooks(renderToStaticMarkup(createElement(ChatPanelView, { floor, row, action: chatModule.getChatState() })));
 }
 
 const item = (id, patch) => ({ id, parent: null, kind: 'command', tool: 'Bash', status: 'done', args: [],
@@ -193,7 +194,7 @@ test('the Steps list is absent for an agent that is not the selected turn', () =
 
 test('a long list starts closed and names the latest step, so the reply stays in view', () => {
   const many = Array.from({ length: 9 }, (_, i) => item(`toolu_${i}`, { args: [{ key: 'command', value: `echo ${i}`, cut: false }] }));
-  assert.match(view(many), /<details><summary class="chat-steps-title">Steps <small>\(9\) · latest: Ran echo 8<\/small>/);
+  assert.match(view(many), /<details><summary class="chat-steps-title"><span>Steps <small>\(9\) · latest: Ran echo 8<\/small>/);
   assert.match(view(many.slice(0, 8)), /<details open="">/);
 });
 
