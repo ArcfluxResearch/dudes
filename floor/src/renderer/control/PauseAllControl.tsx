@@ -83,12 +83,12 @@ export function PauseAllControlView({ floor, currentFloor = floor, state, confir
   const problem = state.phase === 'idle' ? state.problem : null;
   if (!available && problem === null && notice === null) return null;
   const active = state.phase === 'sending' || state.phase === 'unresolved';
-  return <div className="pause-all-control relative">
+  return <div className="pause-all-control relative grid max-w-88 justify-items-end max-[800px]:static">
     {available ? <Button className="pause-all-open" id="pause-all-open" aria-expanded={confirming}
       aria-controls={confirming ? 'pause-all-confirm' : undefined} disabled={active || count === 0}
       title={active ? 'Pause all is already running.' : count === 0 ? 'There are no agents to pause.' : undefined}
       onClick={onOpen}>Pause all</Button> : null}
-    {confirming && available ? <section className="pause-all-confirm absolute right-0 top-full z-10 mt-2 grid w-[min(352px,calc(100vw-32px))] animate-pop gap-4 rounded-lg border border-line bg-surface p-4 text-base text-ink shadow-pop"
+    {confirming && available ? <section className="pause-all-confirm absolute right-0 top-full z-10 mt-2 box-border grid w-[min(352px,calc(100vw-32px))] max-[800px]:inset-x-2 max-[800px]:w-auto max-[800px]:max-w-none animate-pop gap-4 rounded-lg border border-line bg-surface p-4 text-base text-ink shadow-pop [overflow-wrap:anywhere]"
       id="pause-all-confirm" aria-label="Confirm Pause all">
       <p className="m-0 leading-normal">Pause {count} current {count === 1 ? 'agent' : 'agents'}? Work an agent is doing now continues until it ends.</p>
       <div className="pause-all-actions flex flex-wrap justify-end gap-2">
@@ -101,7 +101,7 @@ export function PauseAllControlView({ floor, currentFloor = floor, state, confir
   </div>;
 }
 
-const PAUSE_PROBLEM = 'absolute right-0 top-full z-10 m-0 mt-2 box-border w-max max-w-[min(352px,calc(100vw-32px))] rounded-lg border border-danger bg-surface p-3 text-small leading-normal text-danger shadow-pop';
+const PAUSE_PROBLEM = 'absolute right-0 top-full z-10 m-0 mt-2 box-border w-max max-w-[min(352px,calc(100vw-32px))] max-[800px]:inset-x-2 max-[800px]:w-auto max-[800px]:max-w-none rounded-lg border border-danger bg-surface p-3 text-small leading-normal text-danger shadow-pop';
 
 export function PauseAllReceiptView({ state, onCheck, onDismiss, leaveFocusTo = 'crew-toggle' }: {
   readonly state: PauseAllState;

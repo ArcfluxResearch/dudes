@@ -9,7 +9,7 @@ import type { ReactNode } from 'react';
 
 import type { RetiredAgentRow } from './archive.ts';
 import { accessoryOf, lookOf } from './appearance.ts';
-import { Portrait } from './Portrait.tsx';
+import { PORTRAIT_FRAME, Portrait } from './Portrait.tsx';
 import { worktreeText } from './worktree.ts';
 import { ReadNotice, snapshotReadState } from './ReadError.tsx';
 import { getReadAvailability, subscribeToReadAvailability } from './floor/reads.ts';
@@ -104,7 +104,7 @@ function ArchiveLook({ row }: { readonly row: RetiredAgentRow }) {
   const accent = row.accent === undefined ? 'Automatic accent' : `${row.accent[0]?.toUpperCase()}${row.accent.slice(1)} accent`;
   return <span data-character={row.character ?? 'automatic'} data-accent={row.accent ?? 'automatic'}
     title={`${character} · ${accent}`} className="inline-flex shrink-0 overflow-hidden rounded-md border border-line bg-surface-2">
-    <Portrait className="agent-portrait" look={lookOf(row)} accessory={accessoryOf(row.role)} name={row.name} />
+    <Portrait className={`agent-portrait ${PORTRAIT_FRAME}`} look={lookOf(row)} accessory={accessoryOf(row.role)} name={row.name} />
     <span className="sr-only">{character}{' · '}{accent}</span>
   </span>;
 }

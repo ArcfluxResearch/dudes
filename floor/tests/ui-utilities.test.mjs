@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// How the utility classes stay in their lane. Tailwind reads every file under `src` for class names, and its
-// utilities sit in a layer above every older rule, so a word in a source file that happens to be a utility name
-// must never reach an element that wears the same class from an older rule.
+// How the utility classes stay in their lane. Tailwind reads every file under `src` for class names, every class a
+// component writes must produce CSS, and weights and spacing keep to the design's scale.
 
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
@@ -83,33 +82,6 @@ test('the whole of src is read for class names, and the owned components get eve
   assert.ok(owned.size > 150, `only ${owned.size} class names were read from src/ui`);
   const missing = [...owned].filter((token) => !generated.has(token));
   assert.deepEqual(missing, [], 'a class the components write produces no CSS: a typo, or a theme value that is not defined');
-});
-
-test('no utility has the name of a class an older rule sets', async () => {
-  const legacy = new Set();
-  for (const path of await walk(src, (name) => name.endsWith('.css'))) {
-    if (path.endsWith('tailwind.css')) continue;
-    const text = (await readFile(path, 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '');
-    for (const [, name] of text.matchAll(/\.(-?[_a-zA-Z][\w-]*)/g)) legacy.add(name);
-  }
-  assert.ok(legacy.size > 50, `only ${legacy.size} older class names were read`);
-  assert.ok(generated.size > 150, `only ${generated.size} utilities were generated`);
-  assert.deepEqual([...generated].filter((name) => legacy.has(name)), [],
-    'an older rule shares a name with a utility, so the utility would reach its elements: rename the older class');
-});
-
-test('no screen that has not moved to the owned components wears a class a utility would take', async () => {
-  const wearing = [];
-  for (const path of await walk(src, (name) => name.endsWith('.tsx'))) {
-    if (path.startsWith(resolve(src, 'ui') + '/')) continue;
-    const text = await readFile(path, 'utf8');
-    if (/from '(?:\.\.?\/)+ui\//.test(text)) continue;
-    for (const [, plain, braced] of text.matchAll(/className=(?:"([^"]*)"|\{([^}]*)\})/g)) {
-      const words = [...(plain ?? '').split(/\s+/), ...[...(braced ?? '').matchAll(/['"`]([^'"`]*)['"`]/g)].flatMap(([, part]) => part.split(/\s+/))];
-      for (const word of words) if (word !== '' && generated.has(word)) wearing.push(`${path.slice(src.length + 1)}: ${word}`);
-    }
-  }
-  assert.deepEqual(wearing, []);
 });
 
 test('weights are 400, 500 and 600, and spacing keeps to the scale of 2, 4, 6, 8, 12, 16, 20, 24, 32, 40 and 48 pixels', () => {

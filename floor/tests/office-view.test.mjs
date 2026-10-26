@@ -17,7 +17,6 @@ import { OFFICE_FALLBACK, startRenderer } from '../src/renderer/office3d/support
 import { watchCover } from '../src/renderer/office3d/cover.ts';
 import { ZOOM_LIMITS, coveredInsets, fitHalfHeight, followTarget, frustum, keepsWhole, layTags, narrowBand, onCanvas, spreadTags } from '../src/renderer/office3d/view.ts';
 import { themeTokens } from './helpers/theme-colour.mjs';
-import { legacyStyles } from './helpers/legacy-css.mjs';
 
 async function withOffice(run) {
   const server = await createServer({ root: resolve(import.meta.dirname, '..'),
@@ -290,10 +289,9 @@ test('FULL_LINE_CENTRED and FULL_LINE_CATCHES_CLICKS mutants: the full line sits
 });
 
 test('CHIP_OFF_BOARD mutant: the board card count sits in the middle of the button laid over the board, so on its face', async () => {
-  const css = await legacyStyles();
-  const chip = /\.board-note-count\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
-  const declared = (property) => new RegExp(`(?:^|;|\\s)${property}:\\s*([^;]+);`).exec(chip)?.[1].trim();
-  assert.deepEqual(['position', 'left', 'top', 'transform'].map(declared), ['absolute', '50%', '50%', 'translate(-50%, -50%)']);
+  const source = await readFile(resolve(import.meta.dirname, '../src/renderer/BoardNotes.tsx'), 'utf8');
+  const chip = /className="board-note-count ([^"]*)"/.exec(source)?.[1].split(' ') ?? [];
+  for (const utility of ['absolute', 'top-1/2', 'left-1/2', '-translate-x-1/2', '-translate-y-1/2']) assert.ok(chip.includes(utility), `the count lacks ${utility}`);
   await withOffice(async (_, server) => {
     const { BoardNotes } = await server.ssrLoadModule('/src/renderer/BoardNotes.tsx');
     assert.match(renderToStaticMarkup(createElement(BoardNotes, { count: 3, hidden: 1, onOpenTasks() {} })),

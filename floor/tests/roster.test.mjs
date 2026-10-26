@@ -14,7 +14,6 @@ import { createServer } from 'vite';
 
 import { selectedAgentRow } from '../src/renderer/scene/selection.ts';
 import { ADA, GRACE, agent, subscribe, ticketCard } from './helpers/tickets.mjs';
-import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const KIM = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
@@ -115,7 +114,7 @@ test('from the store: the roster lists every agent once, in need order, with one
   const html = render({ agents: floor.agents, cards: floor.cards });
   assert.match(html, /<h2 id="crew-title" class="roster-title[^"]*">1 ready for you · 1 needs you<\/h2>/);
   assert.deepEqual([...html.matchAll(/<strong class="crew-name[^"]*"><bdi>([^<]+)<\/bdi>/g)].map((m) => m[1]), ['Ada', 'Grace', 'Kim', 'Oli']);
-  assert.deepEqual([...html.matchAll(/<span data-ui="badge" data-state="([^"]+)" class="[^"]*roster-state[^"]*"><span aria-hidden="true" class="[^"]*"><\/span><span class="visually-hidden">Status: <\/span>([^<]+)</g)]
+  assert.deepEqual([...html.matchAll(/<span data-ui="badge" data-state="([^"]+)" class="[^"]*roster-state[^"]*"><span aria-hidden="true" class="[^"]*"><\/span><span class="sr-only">Status: <\/span>([^<]+)</g)]
     .map((m) => [m[1], m[2]]), [['ready', 'Ready for you'], ['needs-you', 'Needs you'], ['working', 'Working'], ['idle', 'Idle']]);
   assert.deepEqual([...html.matchAll(/<button[^>]*aria-label="([^"]+)"[^>]*class="[^"]*roster-act/g)].map((m) => m[1]),
     ['Review, Ada', 'Answer, Grace', 'Talk, Kim', 'Talk, Oli']);

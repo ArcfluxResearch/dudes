@@ -38,7 +38,7 @@ export function ModelEditor({ row }: { readonly row: AgentRow }) {
       {ran.length === 1 ? <>In use: <strong>{visibleFailure(ran[0])}</strong></> : <>Ran: <strong>{ran.map(visibleFailure).join(', ')}</strong></>}
     </p>}
     {!available ? null : view.pinned ? <Button variant="ghost" size="sm" disabled={blocked}
-      onClick={() => { void removeOverride(row, browserModelDeps); }}>Remove my override</Button> : editing ? <form className="grid basis-full gap-3 rounded-lg border border-line bg-surface p-4" onSubmit={(event) => { event.preventDefault(); void submitModel(row, browserModelDeps); }}
+      onClick={() => { void removeOverride(row, browserModelDeps); }}>Remove my override</Button> : editing ? <form className="mt-[0.4rem] grid basis-full gap-3 rounded-lg border border-line bg-surface p-4" onSubmit={(event) => { event.preventDefault(); void submitModel(row, browserModelDeps); }}
       onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelModel(); } }}>
       <fieldset className="model-choices m-0 grid max-h-56 min-w-0 gap-1.5 overflow-y-auto border-0 p-0">
         <legend className={`mb-1.5 p-0 ${LABEL}`}>Model for the next turn</legend>

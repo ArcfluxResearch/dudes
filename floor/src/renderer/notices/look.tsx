@@ -17,6 +17,7 @@ const WASH: Readonly<Record<NoticeTone, string>> = { info: 'bg-surface', warn: '
 export const NOTICE_AREA = cn(
   'notice-area pointer-events-none fixed bottom-[max(16px,env(safe-area-inset-bottom,0px))] left-4 z-(--layer-notices) box-border flex',
   'max-h-[min(70dvh,448px)] w-[min(416px,calc(100vw-32px))] flex-col justify-end in-data-[focus=true]:left-auto in-data-[focus=true]:right-4 max-[800px]:left-2 max-[800px]:right-2 max-[800px]:w-auto',
+  'in-data-[focus=true]:max-h-[min(40dvh,224px)] max-[800px]:max-h-[min(40dvh,224px)]',
 );
 export const NOTICE_BANNER = cn(
   'notice-banner relative z-(--layer-notices) box-border data-[host=fixed]:fixed data-[host=fixed]:inset-x-0 data-[host=fixed]:top-0',

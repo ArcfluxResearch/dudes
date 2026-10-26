@@ -14,11 +14,10 @@ import { useId, useSyncExternalStore } from 'react';
 import { floorSessionGeneration } from '../../session.ts';
 import { Button, Textarea, cn } from '../../ui/index.ts';
 import type { FloorState } from '../floor/store.ts';
-import { journalPosition } from '../format.ts';
 import { handFocusOnLeave } from '../focus.ts';
 import { trimAsciiSpace, utf8Bytes } from '../onboarding/hire.ts';
 import {
-  ACTIONS, FACT, FACTS, FACT_NAME, FACT_VALUE, KICKER as KICKER_TEXT, MESSAGE_CLASS, NOTE, QUOTE, RECEIPT, RECEIPT_TITLE,
+  ACTIONS, KICKER as KICKER_TEXT, MESSAGE_CLASS, NOTE, QUOTE, RECEIPT, RECEIPT_TITLE,
 } from '../receipt.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import {
@@ -124,10 +123,6 @@ export function AnswerStatusView({ answer, floor, session, leaveFocusTo }: {
       data-answer-outcome={outcome?.kind ?? 'sending'} data-answer-agent-id={agent}
       data-answer-question-lsn={questionLsn}>
       <h3 id="answer-status-title" tabIndex={-1} className={RECEIPT_TITLE}><span className={cn('agent-detail-kicker', KICKER_TEXT)}>Your answer</span> {name}</h3>
-      <dl className={FACTS}>
-        <div className={FACT}><dt className={FACT_NAME}>AgentId</dt><dd className={FACT_VALUE}>{agent}</dd></div>
-        <div className={FACT}><dt className={FACT_NAME}>Question</dt><dd className={FACT_VALUE}>{journalPosition(questionLsn)}</dd></div>
-      </dl>
       {outcome === null ? <p className={cn('answer-pending', MESSAGE_CLASS.pending)} role="status">Sending…</p>
         : <OutcomeBody outcome={outcome} attempt={attempt} answer={answer} floor={floor} session={session} />}
       {answer.problem === null ? null : <p className={cn('answer-problem', MESSAGE_CLASS.error)} role="alert">{answer.problem}</p>}

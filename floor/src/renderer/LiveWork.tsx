@@ -46,7 +46,7 @@ export function SelectionBar({ floor, onClear, leaveFocusTo, showStatus = true }
   );
   return showStatus ? (
     <div className="selection-bar">
-      <p className="stream-state" role="status">{streamStatus(floor)}</p>
+      <p className="stream-state m-0 mb-[0.45rem] font-[700]" role="status">{streamStatus(floor)}</p>
       {close}
     </div>
   ) : close;

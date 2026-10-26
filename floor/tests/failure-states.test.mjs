@@ -6,7 +6,7 @@ import test, { after, before } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { bare } from './helpers/shell-bare.mjs';
+import { bare } from './helpers/markup.mjs';
 import { getFloorState, resetFloorStore } from '../src/renderer/floor/store.ts';
 
 let server;

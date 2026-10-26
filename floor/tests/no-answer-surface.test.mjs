@@ -492,7 +492,7 @@ const ADMITTED_HANDLERS = [
     { file, tag: 'form', className: 'ticket-form', handler: 'onSubmit', expression: '(event) => { void submit(event); }' },
     { file, tag: 'input', handler: 'onChange' },
     { file, tag: 'textarea', handler: 'onChange' },
-    { file, tag: 'select', handler: 'onChange' },
+    { file, tag: 'select', handler: 'onValueChange' },
   ]),
   { file: GOAL_PANEL, tag: 'input', handler: 'onChange', expression: "() => choose('keep')" },
   { file: GOAL_PANEL, tag: 'input', handler: 'onChange', expression: '() => choose({ id: option.id })' },

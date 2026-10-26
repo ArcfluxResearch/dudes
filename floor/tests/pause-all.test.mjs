@@ -15,9 +15,8 @@ import {
 import {
   beginPauseAll, checkPauseAllStatus, getPauseAllState, pauseAllTargets, resetPauseAll,
 } from '../src/renderer/control/pauseAll.ts';
-import { renderToStaticMarkup } from './helpers/markup.mjs';
+import { bare, renderToStaticMarkup } from './helpers/markup.mjs';
 import { loadStage } from './helpers/page.mjs';
-import { bare } from './helpers/shell-bare.mjs';
 
 const floorRoot = resolve(import.meta.dirname, '..');
 const IDS = [

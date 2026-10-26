@@ -25,7 +25,7 @@ import { getFloorState, resetFloorStore } from '../src/renderer/floor/store.ts';
 import { streamProtocols } from '../src/renderer/floor/stream.ts';
 import { currentFloorSession, reauthenticateFloorSessionWith, resetFloorSession } from '../src/session.ts';
 import { fakeDaemon } from './helpers/fake-daemon.mjs';
-import { bare } from './helpers/shell-bare.mjs';
+import { bare } from './helpers/markup.mjs';
 import { testSigner } from './helpers/signer.mjs';
 
 const KEEP = ['link-refused', 'open-command', 'open-command-copy'];

@@ -51,7 +51,7 @@ export function RecoveredReview({ context, fresh }: { readonly context: TicketCo
       ref={(node) => { if (node === null) acknowledged.current.delete(ack.lsn); else acknowledged.current.set(ack.lsn, node); }}
       summary="Earlier acknowledged review">
       <p>Review record {ack.lsn}. {ACTION[ack.action]} at {recordedTime(ack.at)}. Recorded ticket sequence {ack.expected_seq}.</p>
-      <p>Review through record {ack.watermark.through_lsn}. Review digest <code>{ack.watermark.set_digest}</code>.</p>
+      <p>Review through record {ack.watermark.through_lsn}. Review digest <code className="font-mono text-[0.88em]">{ack.watermark.set_digest}</code>.</p>
       <ul>{ack.intervals.map((interval, at) => <li key={at}>Earlier interval with {intervalText(interval)}.</li>)}</ul>
       <p>This acknowledgment does not acknowledge the current review or undo earlier effects.</p>
     </Disclosure>)}</div>

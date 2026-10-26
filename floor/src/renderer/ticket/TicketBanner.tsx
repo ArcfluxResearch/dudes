@@ -43,7 +43,7 @@ export function TicketBanner({ floor, onOpen }: { readonly floor: FloorState; re
   }, [text]);
 
   return <>
-    <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true" data-ticket-announcement="true">{said}</div>
+    <div className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-ticket-announcement="true">{said}</div>
     {text === null || dismissed === text ? null : <div className={noticeCard('warn', 'ticket-banner flex flex-wrap items-center gap-x-3 gap-y-2')} ref={banner} role="group" aria-label="Tickets waiting on you">
       <span className="ticket-banner-text min-w-0 flex-[1_1_192px] font-medium"><NoticeIcon tone="warn" />{text}</span>
       <div className="flex gap-2">

@@ -17,11 +17,10 @@ import { useSyncExternalStore } from 'react';
 import { floorSessionGeneration } from '../../session.ts';
 import { Button, cn } from '../../ui/index.ts';
 import { automaticHoldOf } from '../automaticHold.ts';
-import { journalPosition } from '../format.ts';
 import type { FloorState } from '../floor/store.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from '../focus.ts';
 import {
-  ACTIONS, FACT, FACTS, FACT_NAME, FACT_VALUE, KICKER as KICKER_TEXT, MESSAGE_CLASS, NOTE, RECEIPT, RECEIPT_TITLE,
+  ACTIONS, KICKER as KICKER_TEXT, MESSAGE_CLASS, NOTE, RECEIPT, RECEIPT_TITLE,
 } from '../receipt.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import {
@@ -138,7 +137,7 @@ export function ControlStripView({ control, floor, row, session }: {
             </div>
           )}
           {gate.stop ? <p className={cn('control-stop-note sr-only', NOTE)} id="control-stop-note">{PARTIAL_EDITS_NOTE}</p> : null}
-          {hint === undefined ? null : <span className="visually-hidden" id="control-hint">{hint}</span>}
+          {hint === undefined ? null : <span className="sr-only" id="control-hint">{hint}</span>}
           {gate.halted && !gate.haltedByFloor ? <p className={cn('control-halt-note basis-full', NOTE)}>{HALT_NOTE}</p> : null}
           {blocked && !control.sending ? <p className={cn('basis-full', NOTE)}>{heldBecause(control)}</p> : null}
           {control.problem === null || attempt !== null ? null : (
@@ -179,10 +178,6 @@ export function ControlStatusView({ control, floor, session, leaveFocusTo = 'cre
       <h3 id="control-status-title" tabIndex={-1} className={RECEIPT_TITLE}>
         <span className={cn('agent-detail-kicker', KICKER_TEXT)}>{KICKER[attempt.verb]}</span> {name}
       </h3>
-      <dl className={FACTS}>
-        <div className={FACT}><dt className={FACT_NAME}>AgentId</dt><dd className={FACT_VALUE}>{agent}</dd></div>
-        <div className={FACT}><dt className={FACT_NAME}>Control position</dt><dd className={FACT_VALUE}>{controlLsn === null ? 'none yet' : journalPosition(controlLsn)}</dd></div>
-      </dl>
       {outcome === null ? <p className={cn('control-pending', MESSAGE_CLASS.pending)} role="status">Sending…</p>
         : <OutcomeBody outcome={outcome} attempt={attempt} control={control} floor={floor} session={session} />}
       {control.problem === null ? null : <p className={cn('control-problem', MESSAGE_CLASS.error)} role="alert">{control.problem}</p>}

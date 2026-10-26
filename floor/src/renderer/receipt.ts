@@ -11,8 +11,8 @@ export const RECEIPT = 'box-border grid gap-3 rounded-lg border border-line bg-s
 /** A receipt's heading. It takes focus when the page hands it over, so it carries the ring. */
 export const RECEIPT_TITLE = `m-0 flex flex-wrap items-baseline gap-x-2 rounded-sm font-sans text-title font-semibold text-ink ${RING}`;
 
-/** The small uppercase word before a receipt's heading. */
-export const KICKER = 'text-caption font-semibold uppercase tracking-label text-muted';
+/** The quiet word before a receipt's heading. */
+export const KICKER = 'font-sans text-base font-medium text-muted';
 
 export const FACTS = 'm-0 grid grid-cols-1 gap-1 text-small';
 export const FACT = 'flex flex-wrap gap-x-2 border-0 p-0';

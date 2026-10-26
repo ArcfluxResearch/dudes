@@ -11,7 +11,7 @@ import { Button, RING, cn } from '../../ui/index.ts';
 /** Containers that stay in the list so a screen reader knows their live region; a notice is what they hold. */
 const HOLDERS = '.done-notices, .device-notices';
 /** Lines that come and go with the connection and are not worth keeping. */
-const UNKEPT = '.stream-notice, .visually-hidden';
+const UNKEPT = '.stream-notice, .sr-only';
 
 function noticeText(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? '';
@@ -24,7 +24,7 @@ function isHolder(node: Element): boolean {
 }
 
 function shown(node: Element): boolean {
-  return !node.matches('.visually-hidden') && (!isHolder(node) || (node.textContent ?? '').trim() !== '');
+  return !node.matches('.sr-only') && (!isHolder(node) || (node.textContent ?? '').trim() !== '');
 }
 
 /**
@@ -39,6 +39,7 @@ export function NoticeStack({ host, children }: {
   const list = useRef<HTMLDivElement | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [folded, setFolded] = useState(0);
+  const [present, setPresent] = useState(false);
   const [history, setHistory] = useState<readonly HistoryEntry[]>([]);
   const [reading, setReading] = useState(false);
   const attach = useCallback((node: HTMLDivElement | null) => { list.current = node; host(node); }, [host]);
@@ -54,6 +55,7 @@ export function NoticeStack({ host, children }: {
         node.toggleAttribute('data-folded', plan.folded[at]);
       });
       setFolded(plan.folded.filter(Boolean).length);
+      setPresent(notices.length > 0);
     };
     const observer = new MutationObserver((records) => {
       const gone: string[] = [];
@@ -77,7 +79,7 @@ export function NoticeStack({ host, children }: {
     <div className="notice-stack flex min-h-0 flex-col gap-2" data-expanded={expanded ? 'true' : 'false'}>
       <div className={cn('notice-list flex min-h-0 flex-col gap-2 overflow-y-auto overscroll-contain rounded-lg [&>*]:flex-none [&>*]:max-w-full',
         '[&>[data-folded]]:hidden [&>.done-notices:empty]:absolute [&>.device-notices:empty]:absolute', RING)}
-        ref={attach} id="floor-notices" role="region" aria-label="Floor notices" tabIndex={0}>
+        ref={attach} id="floor-notices" role="region" aria-label="Floor notices" tabIndex={present ? 0 : -1}>
         {children}
       </div>
       {folded > 0 || expanded || history.length > 0 ? (

@@ -1,16 +1,14 @@
 # Building a Floor screen
 
-This is the guide for whoever builds the next screen. The Floor is styled with Tailwind utilities on owned components, and the
-old hand-written CSS is on its way out.
+This is the guide for whoever builds the next screen. The Floor is styled with Tailwind utilities on owned components. There
+is no hand-written CSS except the entry file, the third-party terminal wrapper and the component lab's entry.
 
 ## The rule
 
-New styling is Tailwind utilities on components and screens. A screen's legacy CSS file is deleted in the pull request that
-moves the screen. Nothing new goes into a CSS file, except a token or a keyframe in the entry file, `src/tailwind.css`.
+Styling is Tailwind utilities on components and screens. Nothing goes into a CSS file, except a token or a keyframe in the
+entry file, `src/tailwind.css`.
 
-`tests/stylesheets.test.mjs` enforces it. It lists every stylesheet that may exist, so a new `.css` file fails the test. It
-pins each legacy file's rule and declaration counts, so adding a rule to one fails the test too. When your pull request
-deletes or shrinks a legacy file, remove or lower its line in that test. The last screen to move deletes the legacy layer.
+`tests/stylesheets.test.mjs` enforces it. It lists every stylesheet that may exist, so a new `.css` file fails the test.
 
 ## Layers
 
@@ -20,15 +18,15 @@ deletes or shrinks a legacy file, remove or lower its line in that test. The las
 @layer legacy, theme, base, components, utilities;
 ```
 
-Every older rule sits in `legacy`, the lowest layer. A rule in a higher layer beats every legacy rule whatever its selector's
-specificity, so a utility on an element needs no `!important` and no longer selector. Do not add `!important`.
+Only the terminal's third-party stylesheet sits in `legacy`, the lowest layer. A rule in a higher layer beats every legacy
+rule whatever its selector's specificity, so a utility on an element needs no `!important` and no longer selector. Do not add
+`!important`.
 
-Three things follow.
+Two things follow.
 
-- A screen that has not moved looks the same, because Tailwind's preflight is not loaded. Elements keep the browser's own
-  styles until the last screen moves, then the entry file gains a minimal base (body font and colour).
-- A utility has the same class name as a legacy rule it would restyle, so a test fails when a generated utility name equals a
-  legacy class (`hidden`, `flex` and `grid` are the likely ones). Rename the legacy class in its screen's file.
+- Tailwind's preflight is not loaded, so elements keep the browser's own styles: a `p`, `ul`, `h3` or `button` has its default
+  margin, padding and font until a utility says otherwise. The entry file's `base` layer sets only the page's colour, font and
+  scheme on the root, and the body's margin and minimum size.
 - Never set `display` on an element with the `popover` attribute. The browser hides a closed popover with `display: none`, and
   an author `display` would show it.
 
@@ -37,10 +35,11 @@ Three things follow.
 The colour tokens are custom properties on `:root`, for day and night, in `src/tailwind.css`: `--bg`, `--ui-surface`,
 `--surface-2`, `--border`, `--border-strong`, `--text`, `--text-muted`, `--text-subtle`, `--accent` (with `-hover`, `-fg` and
 `-soft`), `--focus`, and `--ok`, `--warn`, `--danger` and `--info` (each with `-soft`). Night follows the system unless the
-shell pins a theme, the way the older sheets do.
+shell pins a theme.
 
-One token has a prefix you might not expect: the panel colour is `--ui-surface`, because the older screens already use
-`--surface` for their own paper. Rename it when the last legacy rule is gone.
+The panel colour is `--ui-surface`, not `--surface`, for historical reasons. A few warm-paper values from the first design
+remain as tokens because screens still draw them: `--surface-muted`, `--studio-background`, `--portrait-border`, the four
+`--terminal-*` colours that the terminal reads, and the `--layer-*` stacking numbers.
 
 Tailwind sees the tokens as theme colours, so a utility uses them by name:
 
@@ -125,8 +124,8 @@ How the pieces behave:
 
 - `tests/ui-components.test.mjs` renders each component to markup and checks its structure and attributes.
 - `tests/ui-tokens.test.mjs` pins the token values and checks text at 4.5 to 1, and input edges and the focus ring at 3 to 1.
-- `tests/ui-utilities.test.mjs` checks that every class a component writes produces CSS, that no generated utility shares a
-  name with a legacy class, and that spacing keeps to the scale.
+- `tests/ui-utilities.test.mjs` checks that every class a component writes produces CSS, and that spacing keeps to the
+  scale.
 - `tests/no-answer-surface.test.mjs` and `tests/focus.test.mjs` read the source for controls. They read each owned component as
   the one native element it draws (`Button` as `button`, `Switch` as `button`, `Select` as `select`). A handler you add at a
   call site is checked and must be admitted there as it would be on the native element.
@@ -144,14 +143,11 @@ It uses the Chrome or Chromium it finds in a usual place. Set `FLOOR_BROWSER` to
 `FLOOR_BROWSER_WAIT_MS` to wait longer for the browser to start. When you add a component, add it to `lab/main.tsx` and add a
 check to `browser/checks.mjs`. The lab is under `floor/lab`, outside `src`, so no release build contains it.
 
-## Moving a screen
+## Building or changing a screen
 
-1. Rebuild the screen from the components, with utilities for its layout.
-2. Delete the legacy CSS file for the screen, and any rule of another legacy file that only this screen used.
-3. Remove or lower the file's line in `tests/stylesheets.test.mjs`.
-4. Update the tests that read the old markup. Prefer a `data-` hook to a class string.
-5. Run `npm run typecheck`, `npm test` and `npm run test:browser`, and look at the screen in light and dark.
-
-The legacy files are contiguous slices of the old `style.css` in its original order, and a few surfaces appear in more than
-one file, so search every file under `src/legacy` and the stylesheets beside the components for a screen's class names before
-you call it done.
+1. Build the screen from the components, with utilities for its layout.
+2. Put a hook class on an element only when a test, the focus handoff or a script looks it up, and say in the test what the hook is
+   for. A class that exists only to style does not belong.
+3. Update the tests that read the markup. Prefer a `data-` hook to a class string. `tests/helpers/markup.mjs` holds the helpers
+   that take utility classes and component marks out of rendered markup.
+4. Run `npm run typecheck`, `npm test` and `npm run test:browser`, and look at the screen in light and dark.
