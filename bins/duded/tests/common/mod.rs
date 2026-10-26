@@ -45,6 +45,31 @@ use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
+pub(crate) fn test_timing(stage: &str, started: Instant) {
+    #[cfg(windows)]
+    {
+        use std::io::Write as _;
+        let current = std::thread::current();
+        let name = current.name().unwrap_or("unnamed");
+        if matches!(
+            name,
+            "conversation_answer_replay_closes_only_the_exact_origin_and_queues_once"
+                | "conversation_issued_under_previous_credentials_stays_owned_when_replay_needs_a_ceiling"
+                | "startup_reserves_uncertain_conversation_before_all_admission"
+                | "a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work"
+                | "cleanup_unconfirmed_is_run_local_across_any_daemon_exit"
+        ) {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "test timing {name} {stage}: {}us",
+                started.elapsed().as_micros()
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (stage, started);
+}
+
 use duded::predicate::{PredicateOutcome, PredicateRunner};
 use duded::pty_output::{OutputSink, PtyOutput};
 use duded::settings::{SOCKET_NAME, Seams, Settings};

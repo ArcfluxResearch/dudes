@@ -53,3 +53,8 @@ slow-timeout = { period = "5s", terminate-after = 2 }
 [[profile.default.overrides]]
 filter = 'package(=dudes) & binary(=quickstart) & test(=capture_timeout_reaps_a_retained_handle_daemon_at_an_alternate_root)'
 threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+platform = 'cfg(windows)'
+filter = 'package(=duded) & (binary(=chat_record_prefixes) | binary(=crash))'
+success-output = "immediate"

@@ -186,6 +186,8 @@ fn await_abrupt_ready(child: &mut Child, ready: &Path) -> String {
 }
 
 fn abrupt_exit_arm() {
+    let started = Instant::now();
+    common::test_timing("abrupt arm begin", started);
     let fixture = Fixture::new();
     let settings = fixture.settings();
     let ready = fixture.state.path().join("abrupt-uncertain.ready");
@@ -193,6 +195,7 @@ fn abrupt_exit_arm() {
         .spawn()
         .expect("start helper daemon");
     let readiness = await_abrupt_ready(&mut child, &ready);
+    common::test_timing("abrupt helper ready", started);
     assert_eq!(
         readiness, ABRUPT_READY_PAYLOAD,
         "the abrupt exit must intersect one real retained uncertain launch"
@@ -200,6 +203,7 @@ fn abrupt_exit_arm() {
 
     child.kill().expect("abruptly terminate helper daemon");
     let status = child.wait().expect("reap helper daemon");
+    common::test_timing("abrupt helper reaped", started);
     assert!(!status.success(), "the abrupt helper exit ran cleanly");
 
     let prefix = fixture.records();
@@ -223,6 +227,7 @@ fn abrupt_exit_arm() {
     );
 
     let restarted = UnconfirmedHost::new(false);
+    common::test_timing("abrupt restart begin", started);
     let daemon = boot(
         &fixture.settings(),
         seams(
@@ -234,6 +239,7 @@ fn abrupt_exit_arm() {
         ),
     )
     .expect("restart after abrupt uncertain exit");
+    common::test_timing("abrupt restart complete", started);
     let mut running = common::start(daemon);
     let (agent, turn) = prefix
         .iter()
@@ -243,10 +249,12 @@ fn abrupt_exit_arm() {
         })
         .unwrap();
     authorize_owed_issue(&fixture, &settings, agent, turn);
+    common::test_timing("abrupt recovery authorized", started);
     fixture.await_record("reissued TurnSpawned", |record| {
         matches!(record, Record::TurnSpawned { .. }).then_some(())
     });
     running.stop(ExitCause::Ended);
+    common::test_timing("abrupt arm stopped", started);
 
     assert_eq!(restarted.children(), 1, "replay reissued exactly once");
     let records = fixture.records();
@@ -347,6 +355,8 @@ fn abrupt_ready_waits_for_complete_payload() {
 /// Run one daemon over `fixture` with `host`, hire an agent, set it a goal, and wait for the turn
 /// to be issued.
 fn one_run(fixture: &Fixture, host: UnconfirmedHost, start_millis: i64) {
+    let started = Instant::now();
+    common::test_timing("first run begin", started);
     let settings = fixture.settings();
     let daemon = boot(
         &fixture.settings(),
@@ -359,24 +369,32 @@ fn one_run(fixture: &Fixture, host: UnconfirmedHost, start_millis: i64) {
         ),
     )
     .expect("boot");
+    common::test_timing("first run booted", started);
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
+    common::test_timing("first run hired", started);
     common::set_goal(
         &running.handle,
         common::goal_params(agent, &[common::true_program()]),
     );
+    common::test_timing("first run goal set", started);
     fixture.await_turn();
+    common::test_timing("first run turn issued", started);
     running.stop(ExitCause::Ended);
+    common::test_timing("first run stopped", started);
 }
 
 #[test]
 fn cleanup_unconfirmed_is_run_local_across_any_daemon_exit() {
+    let started = Instant::now();
+    common::test_timing("test begin", started);
     let fixture = Fixture::new();
     let settings = fixture.settings();
 
     // Run one: the turn is journaled and the launch never happens.
     let crashed = UnconfirmedHost::new(true);
     one_run(&fixture, crashed.clone(), 1_787_394_600_000);
+    common::test_timing("initial prefix complete", started);
 
     let after_first = fixture.records();
     assert_eq!(
@@ -411,6 +429,7 @@ fn cleanup_unconfirmed_is_run_local_across_any_daemon_exit() {
 
     // Run two: the same state directory, replayed.
     let restarted = UnconfirmedHost::new(false);
+    common::test_timing("clean restart begin", started);
     let daemon = boot(
         &fixture.settings(),
         seams(
@@ -422,6 +441,7 @@ fn cleanup_unconfirmed_is_run_local_across_any_daemon_exit() {
         ),
     )
     .expect("the same state directory boots again");
+    common::test_timing("clean restart complete", started);
     let mut running = common::start(daemon);
     let (agent, turn) = after_first
         .iter()
@@ -431,10 +451,12 @@ fn cleanup_unconfirmed_is_run_local_across_any_daemon_exit() {
         })
         .unwrap();
     authorize_owed_issue(&fixture, &settings, agent, turn);
+    common::test_timing("clean recovery authorized", started);
     fixture.await_record("TurnSpawned", |record| {
         matches!(record, Record::TurnSpawned { .. }).then_some(())
     });
     running.stop(ExitCause::Ended);
+    common::test_timing("clean restart stopped", started);
 
     assert_eq!(
         restarted.children(),
@@ -463,9 +485,12 @@ fn cleanup_unconfirmed_is_run_local_across_any_daemon_exit() {
     );
 
     abrupt_exit_arm();
+    common::test_timing("test complete", started);
 }
 
 fn finish_owned_retry(fixture: &Fixture, host: &common::SharedHost, turn: dudes_types::TurnId) {
+    let started = Instant::now();
+    common::test_timing("retry finish begin", started);
     common::end_turn_with_native_payload(
         fixture,
         host,
@@ -486,6 +511,7 @@ fn finish_owned_retry(fixture: &Fixture, host: &common::SharedHost, turn: dudes_
             last_message: None,
         },
     );
+    common::test_timing("retry child end delivered", started);
     fixture.await_record("the actual retry comparison completed", |record| {
         matches!(record, Record::InstructionObservationFinished {
             owner: dudes_proto::InstructionObservationOwner::Managed { turn: owned, .. },
@@ -493,6 +519,7 @@ fn finish_owned_retry(fixture: &Fixture, host: &common::SharedHost, turn: dudes_
         } if *owned == turn)
         .then_some(())
     });
+    common::test_timing("retry comparison observed", started);
     fixture.await_record(
         "the exact retry's observed command check completed",
         |record| {
@@ -501,13 +528,17 @@ fn finish_owned_retry(fixture: &Fixture, host: &common::SharedHost, turn: dudes_
             .then_some(())
         },
     );
+    common::test_timing("retry predicate observed", started);
 }
 
 #[test]
 fn a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work() {
+    let started = Instant::now();
+    common::test_timing("test begin", started);
     let fixture = Fixture::new();
     let settings = fixture.settings();
     one_run(&fixture, UnconfirmedHost::new(true), 1_787_394_600_000);
+    common::test_timing("initial prefix complete", started);
     let (agent, turn, task) =
         fixture.await_record("immutable issued work", |record| match record {
             Record::TurnIssued {
@@ -540,8 +571,11 @@ fn a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work() {
         Witness::default(),
     );
     host.bind_child_ends(Arc::clone(&seams.children));
+    common::test_timing("retry boot begin", started);
     let mut running = common::start(boot(&fixture.settings(), seams).unwrap());
+    common::test_timing("retry boot complete", started);
     authorize_owed_issue(&fixture, &settings, agent, turn);
+    common::test_timing("retry authorized", started);
     fixture.await_record("the exact owed retry actually spawned", |record| {
         matches!(record, Record::TurnSpawned { turn: owned, reissued: true, .. }
             if *owned == turn)
@@ -549,10 +583,12 @@ fn a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work() {
     });
     running.handle.ask(duded::ports::Ask::Pause(agent)).unwrap();
     finish_owned_retry(&fixture, &host, turn);
+    common::test_timing("retry complete", started);
     let next_goal = common::set_goal(
         &running.handle,
         common::goal_params(agent, &[common::true_program()]),
     );
+    common::test_timing("next goal set", started);
     running
         .handle
         .ask(duded::ports::Ask::Resume(agent))
@@ -583,6 +619,7 @@ fn a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work() {
         },
     );
     assert_ne!(next, turn);
+    common::test_timing("next spawn observed", started);
     assert_eq!(host.spawned().len(), 2);
     let records = fixture.records();
     assert_eq!(
@@ -602,6 +639,7 @@ fn a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work() {
         "the later retry's absence is never assigned to the old unknown attempt"
     );
     running.stop(ExitCause::Ended);
+    common::test_timing("test complete", started);
 }
 
 /// The control: the same fixture *without* the refusal also yields exactly one.
