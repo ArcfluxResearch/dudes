@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // Every stylesheet in the Floor. New styling is Tailwind utilities on components and screens, so the only hand-written
-// CSS that may exist is the Tailwind entry file, the third-party wrapper, and the older screens' rules, which sit in the
-// legacy layer until each screen moves and can only shrink.
+// CSS that may exist is the Tailwind entry file, the component lab's entry, the third-party wrapper, and the Messages
+// tab's rules, which sit in the legacy layer until that tab is rebuilt and can only shrink.
 
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 import test from 'node:test';
-
-import { legacyFileNames } from './helpers/legacy-css.mjs';
 
 const floor = resolve(import.meta.dirname, '..');
 const LAYERS = '@layer legacy, theme, base, components, utilities;';
@@ -20,17 +18,12 @@ const LAB_TEXT = "@import '../src/tailwind.css';\n@source '.';\n";
 const THIRD_PARTY = new Map([['src/renderer/terminal/xterm.css', "@import '@xterm/xterm/css/xterm.css' layer(legacy);"]]);
 
 /**
- * The older screens' stylesheets and what each holds now: its rule blocks and its declarations, counted with comments
- * removed. A screen lane deletes its files and removes their lines here. A file may not grow, and when one shrinks its line
- * is lowered to the new count, so the set only ever gets smaller. The last lane deletes the legacy layer.
+ * The Messages tab's stylesheet and what it holds now: its rule blocks and its declarations, counted with comments
+ * removed. It may not grow, and when it shrinks its line is lowered to the new count. It is deleted, with this entry
+ * and the layer, when the tab is rebuilt on the owned components.
  */
 const LEGACY = new Map([
-  ['src/legacy/base.css', { blocks: 9, declarations: 126 }],
-  ['src/legacy/engine-sign-in.css', { blocks: 4, declarations: 7 }],
-  ['src/legacy/handoff.css', { blocks: 45, declarations: 95 }],
-  ['src/legacy/hire-wizard.css', { blocks: 11, declarations: 42 }],
-  ['src/legacy/other-screens.css', { blocks: 37, declarations: 94 }],
-  ['src/legacy/touch-and-phone.css', { blocks: 25, declarations: 68 }],
+  ['src/legacy/messages.css', { blocks: 10, declarations: 20 }],
 ]);
 
 async function stylesheets(dirs = [resolve(floor, 'src'), resolve(floor, 'lab')]) {
@@ -73,15 +66,15 @@ function topLevel(text) {
   return found;
 }
 
-test('the stylesheets are the Tailwind entry file, the third-party wrapper and the listed older screens, and no others', async () => {
+test('the stylesheets are the Tailwind entry file, the third-party wrapper and the Messages file, and no others', async () => {
   const actual = await stylesheets();
   const expected = [ENTRY, LAB, ...THIRD_PARTY.keys(), ...LEGACY.keys()].sort();
   assert.deepEqual(actual, expected,
     'a new CSS file is not allowed: style with Tailwind utilities, and put a token or keyframe in src/tailwind.css. '
-    + 'A deleted older file must also leave the LEGACY list in this test.');
+    + 'The Messages file leaves the LEGACY list in this test when it is deleted.');
 });
 
-test('an older screen file never grows, and a shrunken one has its count lowered', async () => {
+test('the Messages file never grows, and a shrunken one has its count lowered', async () => {
   const off = [];
   for (const [file, pinned] of LEGACY) {
     const text = bare(await readFile(resolve(floor, file), 'utf8'));
@@ -127,15 +120,13 @@ test('the Tailwind entry file holds imports, layers, theme and keyframes and no 
   assert.deepEqual(rules, [], 'a style rule belongs on a component as utilities, not in the entry file');
 });
 
-test('the entry file imports every older file once, in the order the cascade had before the split', async () => {
-  const names = await legacyFileNames();
-  const files = (await stylesheets()).filter((file) => file.startsWith('src/legacy/')).map((file) => file.slice('src/legacy/'.length)).sort();
-  assert.deepEqual([...names].sort(), files);
-  assert.equal(new Set(names).size, names.length);
-  assert.equal(names[0], 'base.css');
+test('the entry file imports the Messages file once, before the utilities', async () => {
+  const entry = await readFile(resolve(floor, ENTRY), 'utf8');
+  const imports = [...entry.matchAll(/@import '([^']+)'/g)].map(([, spec]) => spec);
+  assert.deepEqual(imports.slice(0, 2), ['./legacy/messages.css', 'tailwindcss/utilities.css']);
 });
 
-test('a module imports only the entry file, a listed older sheet or the third-party wrapper', async () => {
+test('a module imports only the entry file or the third-party wrapper', async () => {
   const sources = [];
   async function walk(dir) {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -151,7 +142,7 @@ test('a module imports only the entry file, a listed older sheet or the third-pa
       imported.push({ from: relative(floor, path), file: relative(floor, resolve(path, '..', spec)), spec });
     }
   }
-  const unlisted = imported.filter(({ file, spec }) => !spec.startsWith('.') || ![ENTRY, ...THIRD_PARTY.keys(), ...LEGACY.keys()].includes(file));
+  const unlisted = imported.filter(({ file, spec }) => !spec.startsWith('.') || ![ENTRY, ...THIRD_PARTY.keys()].includes(file));
   assert.deepEqual(unlisted, [], 'a module imports a stylesheet that is not listed');
   assert.ok(imported.some(({ from, file }) => from === 'src/main.tsx' && file === ENTRY), 'the entry file is loaded from main.tsx');
 });

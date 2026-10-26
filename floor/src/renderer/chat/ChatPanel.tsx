@@ -299,10 +299,10 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
         <p className="m-0">{outcomeText(action)}</p>
         <Disclosure summaryClassName="py-0 text-small font-normal text-muted" summary="Details">
           <div className={cn('flex flex-col gap-0.5', NOTE)}>
-            <p className="m-0">Request: <code className="font-mono">{attempt.payload.request_id}</code></p>
-            {'note_lsn' in attempt.payload ? <p className="m-0">Note: <code className="font-mono">{attempt.payload.note_lsn}</code></p> : null}
-            <p className="m-0">Agent: <code className="font-mono">{attempt.payload.agent}</code></p>
-            <p className="m-0">Status: <code className="font-mono">{outcome?.kind ?? 'sending'}</code></p>
+            <p className="m-0">Request: <code className="font-mono text-[0.88em]">{attempt.payload.request_id}</code></p>
+            {'note_lsn' in attempt.payload ? <p className="m-0">Note: <code className="font-mono text-[0.88em]">{attempt.payload.note_lsn}</code></p> : null}
+            <p className="m-0">Agent: <code className="font-mono text-[0.88em]">{attempt.payload.agent}</code></p>
+            <p className="m-0">Status: <code className="font-mono text-[0.88em]">{outcome?.kind ?? 'sending'}</code></p>
           </div>
         </Disclosure>
         {outcome?.kind === 'context_lost' && 'after_stop' in attempt.payload

@@ -11,7 +11,7 @@ import { Button, RING, cn } from '../../ui/index.ts';
 /** Containers that stay in the list so a screen reader knows their live region; a notice is what they hold. */
 const HOLDERS = '.done-notices, .device-notices';
 /** Lines that come and go with the connection and are not worth keeping. */
-const UNKEPT = '.stream-notice, .visually-hidden';
+const UNKEPT = '.stream-notice, .sr-only';
 
 function noticeText(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? '';
@@ -24,7 +24,7 @@ function isHolder(node: Element): boolean {
 }
 
 function shown(node: Element): boolean {
-  return !node.matches('.visually-hidden') && (!isHolder(node) || (node.textContent ?? '').trim() !== '');
+  return !node.matches('.sr-only') && (!isHolder(node) || (node.textContent ?? '').trim() !== '');
 }
 
 /**

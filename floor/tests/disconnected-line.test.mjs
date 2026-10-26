@@ -8,8 +8,7 @@ import test, { before, after } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { classesIn, themeTokens, utilityColour } from './helpers/theme-colour.mjs';
-import { legacyStyles } from './helpers/legacy-css.mjs';
+import { classesIn, entryTokens, utilityColour } from './helpers/theme-colour.mjs';
 import { bare } from './helpers/markup.mjs';
 
 /** The notice tones the stream lines wear: a stopped Dudes is danger, an unconfirmed view is warn. */
@@ -102,10 +101,9 @@ test('the reconnecting notice names the attempts actually spent rather than a st
 });
 
 test('the disconnected line reads against the page at the brief threshold', async () => {
-  const css = await legacyStyles();
   for (const theme of ['light', 'dark']) {
     const colour = await lineColour('CLOSED', theme);
-    const onPage = contrast(colour, themeTokens(css, theme).surface);
+    const onPage = contrast(colour, (await entryTokens(theme)).bg);
     assert.ok(onPage >= READABLE,
       `${colour} reads at ${onPage.toFixed(2)}:1 on the ${theme} page, under the ${READABLE}:1 bar`);
   }
@@ -118,11 +116,11 @@ test('the disconnected line reads against the page at the brief threshold', asyn
 });
 
 test('all three lines below the floor are on the same footing', async () => {
-  const css = await legacyStyles();
   for (const theme of ['light', 'dark']) {
+    const page = (await entryTokens(theme)).bg;
     const failure = await utilityColour(await classesIn('ReadError.tsx', /className=\{cn\(className, '([^']*)'\)\}/), theme);
     const read = [['office-failure', failure], ['office-stale', await lineColour('STALE', theme)], ['office-closed', await lineColour('CLOSED', theme)]]
-      .map(([name, colour]) => [name, contrast(colour, themeTokens(css, theme).surface)]);
+      .map(([name, colour]) => [name, contrast(colour, page)]);
     const ratios = read.map(([, ratio]) => ratio);
     assert.ok(Math.min(...ratios) >= READABLE,
       `the ${theme} lines read at ` + read.map(([name, ratio]) => `${name} ${ratio.toFixed(2)}:1`).join(', ')

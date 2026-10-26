@@ -152,12 +152,12 @@ function InstructionEvidence({ floor, review, reviewing }: {
     <Disclosure summary="Observation details">
       <p>These observations compare sampled endpoints. They do not identify an exclusive writer or prove that instructions were unchanged between samples.</p>
       <p>Review through record {review.watermark.through_lsn}.</p>
-      <p>Review digest <code>{review.watermark.set_digest}</code>.</p>
+      <p>Review digest <code className="font-mono text-[0.88em]">{review.watermark.set_digest}</code>.</p>
       {review.gaps.length === 0 ? null : <>
         <h5>Gap details</h5>
         <ul>{review.gaps.map((row, at) => <li key={at}>
           Coverage gap {at + 1}. {row.reason.replaceAll('_', ' ')}. {instructionContextDetails(row.context)}.
-          {row.agent === null ? null : <> Participant <code>{row.agent}</code>.</>}
+          {row.agent === null ? null : <> Participant <code className="font-mono text-[0.88em]">{row.agent}</code>.</>}
           {row.display === null ? null : <> <span className={PATH}>{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>.</>}
           {row.origin === 'declared' ? ' Standing engine limit.' : ' Found during this ticket.'}
         </li>)}</ul>
@@ -169,9 +169,9 @@ function InstructionEvidence({ floor, review, reviewing }: {
       </>}
       <h5>Observed intervals</h5>
       <ul>{review.intervals.map((row, at) => <li key={at}>
-        {row.kind.replaceAll('_', ' ')} for agent <code>{row.agent}</code>
-        {row.turn === null ? null : <> and turn <code>{row.turn}</code></>}.
-        {' '}Goal <code>{row.goal}</code>. Assignment record {row.assignment_lsn}, recorded ticket sequence {row.seq_at_start}.
+        {row.kind.replaceAll('_', ' ')} for agent <code className="font-mono text-[0.88em]">{row.agent}</code>
+        {row.turn === null ? null : <> and turn <code className="font-mono text-[0.88em]">{row.turn}</code></>}.
+        {' '}Goal <code className="font-mono text-[0.88em]">{row.goal}</code>. Assignment record {row.assignment_lsn}, recorded ticket sequence {row.seq_at_start}.
         {row.attachment_lsn === null ? null : <> Attachment record {row.attachment_lsn}.</>}
         {row.issue_lsn === null ? null : <> Actual issue record {row.issue_lsn}.</>}
         {row.missing_start ? (row.kind === 'managed'

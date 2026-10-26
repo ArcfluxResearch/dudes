@@ -19,8 +19,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test from 'node:test';
-import { classesIn, themeTokens, utilityColour } from './helpers/theme-colour.mjs';
-import { legacyStyles } from './helpers/legacy-css.mjs';
+import { classesIn, entryTokens, utilityColour } from './helpers/theme-colour.mjs';
 
 const source = resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx');
 
@@ -94,10 +93,9 @@ test('the failure line is a sibling of the office box, not a child of it', async
 });
 
 test('the failure line reads against the page at the brief threshold', async () => {
-  const css = await legacyStyles();
   for (const theme of ['light', 'dark']) {
     const colour = await failureColour(theme);
-    const onPage = contrast(colour, themeTokens(css, theme).surface);
+    const onPage = contrast(colour, (await entryTokens(theme)).bg);
     assert.ok(onPage >= READABLE,
       `${colour} reads at ${onPage.toFixed(2)}:1 on the ${theme} page, under the ${READABLE}:1 bar`);
   }
@@ -110,9 +108,8 @@ test('the failure line reads against the page at the brief threshold', async () 
 });
 
 test('the failure line is held to the same bar as the unconfirmed line', async () => {
-  const css = await legacyStyles();
   for (const theme of ['light', 'dark']) {
-    const page = themeTokens(css, theme).surface;
+    const page = (await entryTokens(theme)).bg;
     const failure = contrast(await failureColour(theme), page);
     const stale = contrast(await utilityColour('text-warn', theme), page);
     assert.ok(Math.min(failure, stale) >= READABLE,

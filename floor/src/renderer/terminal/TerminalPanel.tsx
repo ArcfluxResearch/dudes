@@ -110,7 +110,7 @@ export function TerminalAttachView({ floor, offer }: { readonly floor: FloorStat
       {confirming && target !== null && claudeTrust ? <AttachConfirmation name={nameOf(floor, target)}
         onCancel={() => setConfirming(false)}
         onConfirm={() => { setConfirming(false); attachTerminal(target, browserTerminalPorts()); }} /> : null}
-      <span className={offer.kind === 'unavailable' && offer.reason === 'engine' ? 'agent-attach-note text-small text-muted' : 'visually-hidden'} id="terminal-hint">{hint}</span>
+      <span className={offer.kind === 'unavailable' && offer.reason === 'engine' ? 'agent-attach-note text-small text-muted' : 'sr-only'} id="terminal-hint">{hint}</span>
     </div>
   );
 }
@@ -210,7 +210,7 @@ export function TerminalPanelView({ channel, floor, theme = 'light' }: {
   const failed = ended && channel.ending !== 'detached';
   const detaching = channel.phase === 'detaching';
   return (
-    <section className="terminal-panel relative z-(--layer-terminal) box-border flex min-h-0 flex-1 flex-col gap-3 rounded-lg border border-line bg-surface p-3 font-sans text-ink" aria-labelledby="terminal-title" data-terminal-agent-id={channel.agent}
+    <section className="terminal-panel relative z-(--layer-terminal) max-[800px]:data-[terminal-expanded=true]:h-screen box-border flex min-h-0 flex-1 flex-col gap-3 rounded-lg border border-line bg-surface p-3 font-sans text-ink" aria-labelledby="terminal-title" data-terminal-agent-id={channel.agent}
       data-terminal-phase={channel.phase} data-terminal-ending={ended ? channel.ending : undefined}
       data-terminal-expanded={expanded ? 'true' : 'false'}>
       <header className="terminal-head flex flex-wrap items-center justify-between gap-x-3 gap-y-2">

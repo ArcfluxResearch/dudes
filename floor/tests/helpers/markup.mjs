@@ -10,7 +10,7 @@ const PREFIX = ['m', 'mx', 'my', 'mt', 'mb', 'ml', 'mr', 'p', 'px', 'py', 'pt', 
   'space-y', 'w', 'h', 'min-w', 'max-w', 'min-h', 'max-h', 'size', 'text', 'font', 'leading', 'tracking', 'bg', 'border', 'rounded',
   'shadow', 'ring', 'outline', 'opacity', 'z', 'inset', 'grid-cols', 'grid-rows', 'col-span', 'row-span', 'flex', 'items', 'justify',
   'self', 'place', 'overflow', 'whitespace', 'cursor', 'transition', 'animate', 'accent', 'basis', 'grow', 'shrink', 'translate',
-  'object', 'aspect', 'decoration', 'align', 'sr', 'box', 'divide'];
+  'object', 'aspect', 'decoration', 'align', 'box', 'divide'];
 /** Prefixes that also begin a hook's name (`top-bar`), so only a number, a size word or an arbitrary value after them is a utility. */
 const POSITION = /^-?(?:top|right|bottom|left)-(?:\d|px$|full$|auto$|\[|\()/;
 const KEYWORD = new Set(['flex', 'grid', 'block', 'inline', 'inline-flex', 'inline-block', 'contents', 'hidden', 'relative', 'absolute',
@@ -67,7 +67,7 @@ function strip(html, { keep, marks }) {
 }
 
 const HOOK_NAMES = /^(?:chat|step|memory|git|md|tok|completion)-/;
-const PLAIN_NAMES = /^(?:ticket-|diff-|git-|recovery-|login-|card-|first-task|board-|notification-|receipts$|md$|data$|visually-hidden$)/;
+const PLAIN_NAMES = /^(?:ticket-|diff-|git-|recovery-|login-|card-|first-task|board-|notification-|receipts$|md$|data$|sr-only$)/;
 
 /** Keeps the structure and the hook classes a screen is read by: the chat, step, memory, git, markdown and token names. */
 export const hooks = (html) => strip(html, { keep: HOOK_NAMES, marks: MARKS.hook });

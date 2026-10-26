@@ -1185,7 +1185,7 @@ test('Identity offers the authored characters and palette with a live portrait p
   hire.editDraft({ character: 'h', accent: 'sky' });
   const preview = render();
   assert.match(preview, /aria-label="Portrait preview" data-character="h" data-accent="sky"/);
-  assert.match(preview, /<canvas class="size-full object-contain portrait-figure" aria-hidden="true" data-portrait="figure" data-skin="#e8b98f" data-hair="#6b3b2a" data-shirt="#397ca9"><\/canvas>/);
+  assert.match(preview, /<canvas class="[^"]*size-full object-contain portrait-figure" aria-hidden="true" data-portrait="figure" data-skin="#e8b98f" data-hair="#6b3b2a" data-shirt="#397ca9"><\/canvas>/);
   assert.doesNotMatch(preview, /Assigned on hire/);
 });
 

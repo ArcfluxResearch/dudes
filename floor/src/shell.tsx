@@ -125,7 +125,7 @@ export function PastedLinkNotice({ variant = 'card' }: { readonly variant?: 'car
  */
 function SignedOutShell() {
   return (
-    <main className="shell shell-signed-out grid h-screen grid-rows-[auto_minmax(0,1fr)] bg-bg font-sans text-ink"
+    <main className="shell shell-signed-out grid h-screen grid-rows-[auto_minmax(0,1fr)] content-start bg-bg font-sans text-ink"
       aria-labelledby="floor-title" data-theme={readViewPreferences().theme}>
       <header className={TOP_BAR}>
         <h1 id="floor-title" className={WORDMARK}>dudes</h1>
@@ -509,8 +509,8 @@ function SignedInShell() {
   return (
     <TicketNoticeHost value={noticeStack}><main ref={shellRef} aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
       data-page={page ?? undefined}
-      className={cn('shell grid grid-rows-[auto_minmax(0,1fr)] bg-bg font-sans text-ink max-[800px]:pt-[var(--banner-height,0px)]',
-        fullPanel ? 'h-dvh' : 'h-screen max-[800px]:h-auto max-[800px]:min-h-screen')}
+      className={cn('shell grid grid-rows-[auto_minmax(0,1fr)] bg-bg has-[.roster[data-sheet]]:pb-16 font-sans text-ink max-[800px]:min-h-screen max-[800px]:pt-[var(--banner-height,0px)]',
+        fullPanel ? 'h-dvh' : 'h-screen max-[800px]:h-auto')}
       onKeyDown={(event) => {
         if (page !== null && closesPanel(event)) { event.stopPropagation(); closeView(); }
       }}
@@ -542,11 +542,11 @@ function SignedInShell() {
               <MenuItem className="sign-out" icon={<LogOut {...ICON} />} onSelect={signOut}>Sign out</MenuItem>
             </Menu>
           </div>
-          <div className={cn('office-bar', fullPanel && 'hidden')} ref={setOfficeBar} />
+          <div className={cn('office-bar flex basis-full shrink-0 grow-0 flex-wrap items-center gap-x-3 gap-y-[0.4rem] empty:hidden', fullPanel && 'hidden')} ref={setOfficeBar} />
         </header>
       </div>
       <div data-page={page ?? undefined}
-        className={cn('floor-stage group/stage relative min-h-0 grid grid-rows-[auto_minmax(0,1fr)]',
+        className={cn('floor-stage group/stage relative min-h-0 grid grid-rows-[auto_minmax(0,1fr)] min-[801px]:max-[1200px]:has-[.control-panel]:[&_.crew-list]:invisible',
           fullPanel ? 'grid-cols-[minmax(0,1fr)]'
             : focused ? 'grid-cols-[minmax(0,1fr)] has-[[data-terminal-agent-id]]:grid-cols-[minmax(0,1fr)_minmax(384px,0.85fr)] max-[800px]:flex max-[800px]:flex-col'
               : 'grid-cols-[auto_auto_minmax(0,1fr)_auto] max-[800px]:flex max-[800px]:flex-col',
@@ -564,7 +564,7 @@ function SignedInShell() {
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className={cn('office-slot col-[3/-1] flex min-w-0 flex-col', STAGE_ROW, 'max-[800px]:order-first max-[800px]:min-h-80',
           drawerOpen && !focused && 'col-[3/4]', (focused || fullPanel) && 'hidden')}>
-          <div className="office-area [&>[data-office]]:relative [&>[data-office]]:isolate [&>[data-office]]:min-h-72 [&>[data-office]]:flex-auto [&>[data-office]]:overflow-hidden [&>[data-office]]:bg-(--studio-background)">
+          <div className="office-area relative flex min-h-0 flex-auto flex-col [&>[data-office]]:relative [&>[data-office]]:isolate [&>[data-office]]:min-h-72 [&>[data-office]]:flex-auto [&>[data-office]]:overflow-hidden [&>[data-office]]:bg-(--studio-background)">
             {page === null ? <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
               onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} /> : null}
             <FirstTask floor={floor} onHire={openHire} />
@@ -605,7 +605,7 @@ function SignedInShell() {
       {noticeArea === null ? null : createPortal(notices, noticeArea)}
       {noticeBanner === null ? null : createPortal(banner, noticeBanner)}
       <RetireDialog floor={floor} />
-      {hiring ? <Dialog size="lg" className="hire-dialog" ref={hireDialog}
+      {hiring ? <Dialog size="lg" className="hire-dialog max-[800px]:h-dvh" ref={hireDialog}
         aria-labelledby="hire-title" onCancel={(event) => { event.preventDefault(); closeHire(); }}
         onPointerDown={(event) => {
           backdropPress.current = event.target === event.currentTarget && event.button === 0 && event.isPrimary

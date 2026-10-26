@@ -65,8 +65,8 @@ export function AgentsRoster({ floor, selectedId, onSelectAgent, onOpenQuestion,
   readonly onAddAgent?: (opener: HTMLButtonElement) => void;
 }) {
   return (
-    <div className="agents-roster">
-      <StreamReadStatus floor={floor} />
+    <div className="agents-roster h-full overflow-auto">
+      <StreamReadStatus floor={floor} className="m-0 mb-[0.45rem] font-[700]" />
       <Roster base="focus" order="focus" agents={floor.agents} cards={floor.cards} stepLabels={floor.stepLabels}
         selectedId={selectedId} selectable={floor.phase === 'live' && !floor.stale} stale={floor.stale}
         onSelectAgent={onSelectAgent} onOpenQuestion={onOpenQuestion} onOpenTicket={onOpenTicket} />
@@ -176,7 +176,7 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
     <section id="control-panel" data-view={view} aria-labelledby={CONTROL_TITLE_ID}
       className={cn('control-panel relative z-(--layer-panels) box-border flex min-h-0 min-w-0 flex-col overflow-y-auto border-0 bg-bg font-sans text-ink',
         page ? 'static col-[1/-1] row-1 gap-4 px-[max(16px,calc((100%-832px)/2))] py-6'
-          : 'col-[1/-1] row-2 gap-6 px-9 pb-8 pt-6 max-[800px]:p-5', view === 'board' && 'has-[dialog[open]]:overflow-y-hidden')}
+          : 'col-[1/-1] row-2 gap-6 px-9 pb-8 pt-6 max-[800px]:m-2 max-[800px]:max-h-128 max-[800px]:rounded-[10px] max-[800px]:p-5', view === 'board' && 'has-[dialog[open]]:overflow-y-hidden')}
       data-page={page ? 'true' : undefined}
       ref={handFocusOnLeave} data-focus-on-leave={viewButtonId(view)}
       onKeyDown={(event) => { if (closesPanel(event)) { event.stopPropagation(); onClose(); } }}>

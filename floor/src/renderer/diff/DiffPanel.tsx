@@ -180,7 +180,7 @@ export function DiffReview({ review, loading, onOpen, onPage }: {
       <Button size="sm" disabled={loading} onClick={onPage}>Show more files</Button>
     </div>}
     <Disclosure summary="Local review details" className="diff-note">
-      <p>For omitted files or a bigger review, run <code className="font-mono">dudes ticket open {page.binding.card}</code> in your terminal.</p>
+      <p>For omitted files or a bigger review, run <code className="font-mono text-[0.88em]">dudes ticket open {page.binding.card}</code> in your terminal.</p>
     </Disclosure>
   </>;
 }
@@ -276,7 +276,7 @@ export function DiffPanel({ card, expectedSeq, transport, ownCopy = false }: {
       {review === null ? null : <DiffReview review={review} loading={loading} onOpen={open}
         onPage={() => { if (review.page.next_cursor !== null) void read({ mode: 'page', manifest_id: review.page.manifest_id, cursor: review.page.next_cursor }, review); }} />}
       {review === null ? <Disclosure summary="Local review details" className="diff-note">
-        <p>For a local review, run <code className="font-mono">dudes ticket open {card}</code> in your terminal.</p>
+        <p>For a local review, run <code className="font-mono text-[0.88em]">dudes ticket open {card}</code> in your terminal.</p>
       </Disclosure> : null}
     </>}
   </section>;
