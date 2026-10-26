@@ -237,9 +237,7 @@ function controlsIn(text) {
 const HIRE_FORM = 'src/renderer/onboarding/HireWizard.tsx';
 const HIRE_FIELDS = Object.freeze([
   { tag: 'input', name: 'name', type: 'text', change: '(event) => editDraft({ name: event.target.value })' },
-  { tag: 'select', name: 'character', type: null, change: '(event) => editDraft({ character: event.target.value })' },
-  { tag: 'input', name: 'accent', type: 'radio', change: '() => editDraft({ accent: void 0 })' },
-  { tag: 'input', name: 'accent', type: 'radio', change: '() => editDraft({ accent })' },
+  { tag: 'select', name: 'character', type: null, change: '(value) => editDraft({ character: value })' },
   { tag: 'textarea', name: 'role', type: null, change: '(event) => editDraft({ role: event.target.value })' },
   { tag: 'input', name: 'workspace_id', type: 'radio', change: '() => editDraft({ workspaceId: space.workspaceId })' },
   { tag: 'input', name: 'engine', type: 'radio', change: '() => editDraft({ engine: name })' },
@@ -248,6 +246,8 @@ const HIRE_FIELDS = Object.freeze([
   { tag: 'input', name: 'own_copy', type: 'checkbox',
     change: '(event) => editDraft({ ownCopy: event.target.checked })' },
 ]);
+/** The accent radios Hire and the look form share: each writes only the draft the caller passes. */
+const LOOK_FIELDS = 'src/renderer/look/LookFields.tsx';
 const ADMITTED_IN_HIRE_FORM = Object.freeze(['an input', 'a textarea', 'a select', 'a change handler']);
 
 const ANSWER_FORM = 'src/renderer/answer/AnswerPanel.tsx';
@@ -328,6 +328,7 @@ const ADMITTED_WITHOUT_HANDLER = new Map([
   // The owned components. Field draws the input and textarea its call sites hand props to, and the tab list activates
   // the tab a key moved to.
   ['src/ui/Field.tsx', Object.freeze(['an input', 'a textarea'])],
+  ['src/ui/Choice.tsx', Object.freeze(['an input'])],
   ['src/ui/Tabs.tsx', Object.freeze([ACTIVATION])],
 ]);
 /**
@@ -337,7 +338,7 @@ const ADMITTED_WITHOUT_HANDLER = new Map([
  * `FORBIDDEN` names needs both.
  */
 const ADMITTED = new Map([
-  [HIRE_FORM, ADMITTED_IN_HIRE_FORM], [ANSWER_FORM, ADMITTED_IN_ANSWER_FORM], [CONTROL_PANEL, ADMITTED_IN_CONTROL_PANEL],
+  [HIRE_FORM, ADMITTED_IN_HIRE_FORM], [LOOK_FIELDS, Object.freeze(['an input', 'a change handler'])], [ANSWER_FORM, ADMITTED_IN_ANSWER_FORM], [CONTROL_PANEL, ADMITTED_IN_CONTROL_PANEL],
   [ACTIVITY_PANEL, Object.freeze(['an input', 'a select', 'a change handler'])],
   [GOAL_PANEL, ADMITTED_IN_GOAL_FORM],
   [TICKET_BOARD, Object.freeze([...ADMITTED_IN_TICKET_FORM, 'a key handler'])], [TICKET_PANEL, ADMITTED_IN_TICKET_FORM],
@@ -454,7 +455,7 @@ const ADMITTED_HANDLERS = [
   { file: RENAME_PANEL, tag: 'input', handler: 'onFocus', expression: '(event) => event.currentTarget.select()' },
   { file: RENAME_PANEL, tag: 'input', handler: 'onChange' },
   { file: RENAME_PANEL, tag: 'input', handler: 'onKeyDown' },
-  { file: ADD_PROJECT_FORM, tag: 'form', className: 'add-project', handler: 'onSubmit' },
+  { file: ADD_PROJECT_FORM, tag: 'form', className: 'flex w-full max-w-xl flex-col gap-3', handler: 'onSubmit' },
   { file: ADD_PROJECT_FORM, tag: 'input', handler: 'onChange' },
   { file: SETTINGS_VIEW, tag: 'form', handler: 'onSubmit' },
   { file: SETTINGS_VIEW, tag: 'button', handler: 'onCheckedChange',
@@ -478,7 +479,9 @@ const ADMITTED_HANDLERS = [
   { file: MODEL_PANEL, tag: 'input', handler: 'onChange', expression: '() => editModel(choice)' },
   { file: MODEL_PANEL, tag: 'input', handler: 'onChange', expression: '(event) => editModel(event.currentTarget.value)' },
   { file: 'src/renderer/AgentDetail.tsx', tag: 'h2', handler: 'onDoubleClick', expression: '() => beginRename(`detail:${row.id}`, row)' },
-  ...HIRE_FIELDS.map(({ tag, change }) => ({ file: HIRE_FORM, tag, handler: 'onChange', expression: change })),
+  { file: LOOK_FIELDS, tag: 'input', handler: 'onChange', expression: '() => onChange(null)' },
+  { file: LOOK_FIELDS, tag: 'input', handler: 'onChange', expression: '() => onChange(accent)' },
+  ...HIRE_FIELDS.map(({ tag, change }) => ({ file: HIRE_FORM, tag, handler: tag === 'select' ? 'onValueChange' : 'onChange', expression: change })),
   { file: ANSWER_FORM, tag: 'textarea', handler: 'onChange' },
   { file: ANSWER_FORM, tag: 'textarea', handler: 'onKeyDown' },
   { file: ANSWER_FORM, tag: 'button', className: 'answer-send', handler: 'onKeyDown', expression: REFUSE_REPEAT },
@@ -593,7 +596,7 @@ function classNameOf(node, syntax) {
  */
 const OWNED_TAG = Object.freeze({
   Button: 'button', IconButton: 'button', Tab: 'button', MenuItem: 'button', Switch: 'button',
-  Input: 'input', Textarea: 'textarea', Select: 'select', Dialog: 'dialog', Disclosure: 'details',
+  Input: 'input', Choice: 'input', Textarea: 'textarea', Select: 'select', Dialog: 'dialog', Disclosure: 'details',
 });
 
 /** The element a JSX tag name stands for, or `null` when it is a component of another kind. */
@@ -1110,9 +1113,9 @@ test('the Hire form has exactly nine named fields, and no field name but workspa
     "a Hire field's change handler is not the one pinned for that field");
   // Each choice's value comes from what the daemon offered: a workspace from
   // `catalog.workspaces` and an engine from that workspace's `engines`.
-  assert.match(form, /<input type="radio" name="workspace_id" value=\{space\.workspaceId\}/);
+  assert.match(form, /<Choice key=\{space\.workspaceId\} type="radio" name="workspace_id" value=\{space\.workspaceId\}/);
   assert.match(form, /catalog\.workspaces\.map\(\(space\) =>/);
-  assert.match(form, /<input type="radio" name="engine" value=\{name\}/);
+  assert.match(form, /<Choice key=\{name\} type="radio" name="engine" value=\{name\}/);
   assert.match(form, /workspace\.engines\.map\(\(name\) =>/);
 });
 

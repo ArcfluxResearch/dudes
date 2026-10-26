@@ -10,9 +10,6 @@
 .theme-toggle,
 .settings-office button,
 .focus-roster-toggle,
-.hire-head button,
-.hire-actions button,
-.hire-index button,
 .answer-actions button,
 .control-actions button,
 .retire-offer button,
@@ -37,8 +34,6 @@
 .crew-toggle[aria-pressed='true'],
 .focus-toggle[aria-pressed='true'],
 .settings-office button[aria-pressed='true'],
-.hire-actions .hire-submit,
-.hire-actions .hire-next,
 .answer-actions .answer-send,
 .goal-actions .goal-send {
   border-color: var(--accent-ink);
@@ -87,10 +82,8 @@
   content: '';
 }
 
-.hire-wizard button:disabled,
 .pause-all-control button:disabled,
 .pause-all-receipt button:disabled,
-.hire-wizard button[aria-disabled='true'],
 .answer-actions button:disabled,
 .answer-actions button[aria-disabled='true'],
 .control-actions button:disabled,
@@ -117,9 +110,6 @@
 .theme-toggle:focus-visible,
 .settings-office button:focus-visible,
 .focus-roster-toggle:focus-visible,
-.hire-wizard button:focus-visible,
-.hire-wizard input:focus-visible,
-.hire-wizard textarea:focus-visible,
 .answer-actions button:focus-visible,
 .control-actions button:focus-visible,
 .retire-offer button:focus-visible,
@@ -135,142 +125,10 @@
   outline-offset: 2px;
 }
 
-.hire-dialog {
-  position: fixed;
-  inset: 0;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100vw;
-  height: 100vh;
-  max-width: none;
-  max-height: none;
-  margin: 0;
-  padding: 1rem;
-  border: 0;
-  background: transparent;
-}
-
-.hire-dialog:not([open]) {
-  display: none;
-}
-
-.hire-dialog::backdrop {
-  background: rgba(20, 17, 15, 0.55);
-}
-
-.hire-wizard {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  width: min(54rem, 100%);
-  max-height: 100%;
-  overflow: auto;
-  padding: 0.75rem;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--ink);
-  box-shadow: 0 8px 28px var(--panel-shadow);
-}
-
-.hire-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
-.hire-head h2 {
-  margin: 0.2rem 0 0;
-  font-size: 1.1rem;
-}
-
-.hire-body {
-  display: grid;
-  flex: 1 1 auto;
-  align-content: start;
-  grid-template-columns: 10.5rem minmax(0, 1fr);
-  gap: 0.75rem;
-}
-
-.hire-index ol {
-  display: grid;
-  gap: 0.35rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.hire-index button {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  column-gap: 0.45rem;
-  width: 100%;
-  padding: 0.35rem 0.5rem;
-  text-align: left;
-}
-
-.hire-index button[aria-current='step'] {
-  border-color: var(--ink);
-  background: var(--selected);
-}
-
-.hire-index-number {
-  grid-row: span 2;
-  font-weight: 700;
-}
-
-.hire-index-label {
-  font-size: 0.8rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.hire-index-hint {
-  font-size: 0.75rem;
-  color: var(--muted-ink);
-}
-
-/* #6b5d4a on the selected yellow is 4.4:1, under the bar; ink is not. */
-.hire-index button[aria-current='step'] .hire-index-hint {
-  color: var(--ink);
-}
-
-.hire-section h3 {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
-}
-
-.hire-field {
-  display: grid;
-  gap: 0.25rem;
-  margin-bottom: 0.6rem;
-}
-
-.hire-field label,
 .hire-choices legend {
   font-weight: 700;
 }
 
-.hire-field input,
-.hire-field select,
-.hire-field textarea {
-  box-sizing: border-box;
-  width: 100%;
-  padding: 0.35rem 0.45rem;
-  border: 1px solid var(--line);
-  background: var(--output);
-  color: var(--ink);
-  font: inherit;
-}
-
-.hire-field textarea {
-  resize: vertical;
-}
-
-.hire-field [aria-invalid='true'],
 .hire-choices[aria-invalid='true'] {
   border-color: var(--ink);
   box-shadow: inset 0 0 0 2px var(--accent-ink);
@@ -345,11 +203,6 @@
   overflow-wrap: anywhere;
 }
 
-.hire-problem,
-.hire-success,
-.hire-warning,
-.hire-pending,
-.hire-error,
 .answer-problem,
 .answer-success,
 .answer-pending,
@@ -373,8 +226,6 @@
   font-weight: 700;
 }
 
-.hire-problem,
-.hire-error,
 .answer-problem,
 .answer-error,
 .control-problem,
@@ -386,7 +237,6 @@
   background: var(--danger-background);
 }
 
-.hire-success,
 .answer-success,
 .control-success,
 .retire-success,
@@ -395,57 +245,11 @@
   background: var(--success-background);
 }
 
-.hire-warning {
-  background: var(--question);
-}
-
-.hire-pending,
 .answer-pending,
 .control-pending,
 .retire-pending,
 .goal-pending {
   border-color: var(--muted-ink);
   background: var(--surface-muted);
-}
-
-.hire-roster {
-  padding: 0.5rem 0.6rem;
-  border: 2px dashed var(--accent-ink);
-}
-
-.hire-roster h3 {
-  margin: 0;
-  font-size: 0.9rem;
-}
-
-.hire-roster p {
-  margin: 0.3rem 0;
-}
-
-.hire-roster ul {
-  display: grid;
-  gap: 0.3rem;
-  margin: 0.3rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.hire-roster li {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.2rem 0.5rem;
-  overflow-wrap: anywhere;
-}
-
-.hire-roster-goal {
-  flex-basis: 100%;
-  color: var(--muted-ink);
-}
-
-.hire-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.4rem;
 }
 }
