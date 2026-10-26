@@ -4,7 +4,7 @@ use dudes_proto::{Entry, MailFrom, MailTo, Record};
 use dudes_types::{AgentId, MailId, ThreadId, Timestamp, UtcDay};
 use serde::Deserialize;
 
-use super::{Item, Row};
+use super::Row;
 
 #[derive(Clone, Deserialize)]
 #[serde(untagged)]
@@ -40,7 +40,7 @@ pub(super) struct SendPlan {
     pub sequence: u32,
     pub members: Vec<AgentId>,
     pub recipients: Vec<AgentId>,
-    pub receipt: Option<Item>,
+    pub receipt: Option<Row>,
 }
 
 struct Thread {
@@ -200,7 +200,7 @@ impl MailIndex {
                 sequence: row.item.thread_seq,
                 members,
                 recipients,
-                receipt: Some(row.item.clone()),
+                receipt: Some(row.clone()),
             });
         }
         let recipients = match route {

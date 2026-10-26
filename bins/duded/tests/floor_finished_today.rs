@@ -28,7 +28,7 @@ use common::{Fixture, ScriptedRunner, SharedHost, TestClock, fails, goal_params,
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v8"
+    "/tests/fixtures/floor-release-v9"
 );
 
 /// 2026-10-07T08:00:00Z, which is 21:00 on 7 October in Auckland and 01:00 in Los Angeles.
@@ -78,7 +78,7 @@ impl Browser {
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("read timeout");
-        let request = page.upgrade_head("/floor/stream", "dudes-floor-v4");
+        let request = page.upgrade_head("/floor/stream", "dudes-floor-v5");
         stream.write_all(request.as_bytes()).expect("upgrade");
         let head = read_head(&mut stream);
         assert!(head.starts_with("HTTP/1.1 101"), "{head}");

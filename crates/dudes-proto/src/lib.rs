@@ -101,8 +101,8 @@ pub use mail_wake::{
     MailWakeIssue, MailWakePlan, MailWakePurpose, MailWakeTarget, MailWakeTask,
 };
 pub use messages::{
-    MAX_MESSAGES, MAX_MESSAGES_BYTES, MAX_THREADS, MAX_THREADS_BYTES, MessageState, MessageView,
-    ThreadView,
+    MAX_MESSAGES, MAX_MESSAGES_BYTES, MAX_THREADS, MAX_THREADS_BYTES, MessageAct, MessageState,
+    MessageView, ReplyStatus, ThreadView,
 };
 pub use projection::{
     ActivityAgent, ActivityCard, ActivityEvent, ActivityView, AgentView, CardTicket, CardView,

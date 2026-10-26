@@ -163,6 +163,7 @@ def verify(journal_path, store_path, work):
     assert reply["from"]["agent"] == agents["recipient"]
     assert reply["to"]["agent"] == agents["sender"]
     assert request["act"] == "request" and reply["act"] == "message"
+    assert request["subject"] == "round trip request"
     assert reply["subject"] == "Re: " + request["subject"]
     assert answered(records, request), "the request's recipient later wrote in the same thread"
     assert not answered(records, reply), "a message does not expect another reply"
@@ -234,9 +235,10 @@ def agent(session):
         time.sleep(0.01)
     ready["outbox_after_wait"] = True
     readiness.write_text(json.dumps(ready))
+    queued = None
     if plan["role"] == "sender" and run_number == 1:
-        command([cli, "mail", "send", "--to", plan["peer"], "--act", "request",
-                 "--subject", "round trip request", "--body", "Please reply when you read this."])
+        queued = command([cli, "mail", "send", "--to", plan["peer"], "--act", "request",
+                          "--subject", "round trip request", "--body", "Please reply when you read this."])
     else:
         inbox = Path(os.environ["DUDES_MAILBOX"]) / "inbox"
         ready["inbox_at_read"] = any(inbox.glob("*.json"))
@@ -252,10 +254,18 @@ def agent(session):
         assert delivered is not None, "the agent read its delivered mail id"
         incoming = delivered.group(1)
         if plan["role"] == "recipient":
-            command([cli, "mail", "send", "--reply-to", incoming, "--act", "message",
-                     "--body", "Reply received."])
+            queued = command([cli, "mail", "send", "--reply-to", incoming, "--act", "message",
+                              "--body", "Reply received."])
         ack = command([cli, "mail", "done", incoming])
         (directory / "ack.txt").write_text(ack)
+    if queued is not None:
+        receipt = re.fullmatch(r"mail queued ([0-9A-Z]{26})\n", queued)
+        assert receipt is not None, "the CLI reported the queued outbox id"
+        pending = outbox / f"{receipt.group(1)}.json"
+        deadline = time.monotonic() + 3
+        while pending.exists():
+            assert time.monotonic() < deadline, "the daemon consumed the queued mail before the sender exited"
+            time.sleep(0.01)
     (directory / "done").touch()
     transcripts = work / "transcripts"
     transcripts.mkdir(exist_ok=True)

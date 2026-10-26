@@ -111,7 +111,7 @@ fn export_rpc() -> Exported {
     let window = serde_json::json!({
         "type": "array", "maxItems": crate::MAX_MESSAGES,
         "items": { "$ref": "#/$defs/MessageView" },
-        "description": "Complete replacement window, at most 65,536 serialized-array bytes.",
+        "description": "Complete replacement window; messages and threads together fit 65,536 serialized-array bytes.",
     });
     for (name, kind, key, view, required) in [
         (
@@ -319,6 +319,9 @@ mod tests {
         }
         let messages = jsonschema::validator_for(&def_of(&rpc, "MessageView")).unwrap();
         let modern = crate::MessageView {
+            subject: None,
+            act: None,
+            reply_status: crate::ReplyStatus::NotExpected,
             id: dudes_types::MailId::from_parts(1, 1),
             from: a,
             to: b,
@@ -337,6 +340,9 @@ mod tests {
     fn messages_schema_validates_serialized_rows_and_replacement_frames() {
         let rpc = exported_file("rpc.schema.json");
         let row = crate::MessageView {
+            subject: None,
+            act: None,
+            reply_status: crate::ReplyStatus::NotExpected,
             id: dudes_types::MailId::from_parts(1, 1),
             from: dudes_types::AgentId::from_parts(1, 2),
             to: dudes_types::AgentId::from_parts(1, 3),
@@ -365,10 +371,16 @@ mod tests {
         assert_valid(&delta_schema, &cleared, "cleared Messages delta");
         let validator = jsonschema::validator_for(&def_of(&rpc, "MessageView")).unwrap();
         let encoded = serde_json::to_value(&row).unwrap();
+        for field in ["subject", "act", "reply_status"] {
+            let mut legacy = encoded.clone();
+            legacy.as_object_mut().unwrap().remove(field);
+            assert!(!validator.is_valid(&legacy));
+            assert!(serde_json::from_value::<crate::MessageView>(legacy).is_err());
+        }
+
         for private in [
-            "subject",
             "body",
-            "act",
+            "subject_admission",
             "body_len",
             "body_path",
             "body_blake3",

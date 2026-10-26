@@ -3454,6 +3454,9 @@ mod tests {
         let a = AgentId::from_parts(u64::MAX, u128::MAX);
         let b = AgentId::from_parts(u64::MAX, u128::MAX - 1);
         let message = dudes_proto::MessageView {
+            subject: None,
+            act: None,
+            reply_status: dudes_proto::ReplyStatus::NotExpected,
             id: dudes_types::MailId::from_parts(u64::MAX, u128::MAX),
             from: a,
             to: b,
@@ -3471,6 +3474,9 @@ mod tests {
         };
         let messages: Vec<_> = (0..128)
             .map(|n| dudes_proto::MessageView {
+                subject: None,
+                act: None,
+                reply_status: dudes_proto::ReplyStatus::NotExpected,
                 id: dudes_types::MailId::from_parts(u64::MAX, n),
                 lsn: (u64::MAX - 127 + u64::try_from(n).unwrap()).to_string(),
                 thread: Some(dudes_types::ThreadId::from_parts(u64::MAX, n)),
@@ -3590,8 +3596,17 @@ mod tests {
         assert_eq!(replay.applied, 129);
         let snapshot = crate::floor::snapshot(&mut rebuilt, Timestamp::UNIX_EPOCH).unwrap();
         assert_eq!(snapshot.cards[0].title, title);
-        assert_eq!(snapshot.mail.messages.len(), 128);
-        assert_eq!(snapshot.mail.threads.len(), 128);
+        assert!(!snapshot.mail.messages.is_empty() && snapshot.mail.messages.len() < 128);
+        assert_eq!(snapshot.mail.threads.len(), snapshot.mail.messages.len());
+        assert_eq!(
+            snapshot.mail.messages.last().unwrap().id,
+            dudes_types::MailId::from_parts(1, 128)
+        );
+        assert!(
+            serde_json::to_vec(&snapshot.mail.messages).unwrap().len()
+                + serde_json::to_vec(&snapshot.mail.threads).unwrap().len()
+                <= dudes_proto::MAX_MESSAGES_BYTES
+        );
         let chat = dudes_proto::ChatView::empty();
         let frame = serialize_snapshot_with(
             &snapshot,
@@ -3663,7 +3678,7 @@ mod tests {
             )
             .unwrap();
         let after = crate::floor::snapshot(&mut store, Timestamp::UNIX_EPOCH).unwrap();
-        let expected = serde_json::json!([{"id":id,"from":sender,"to":recipient,"at":399,"lsn":"1","state":"bounced"}]);
+        let expected = serde_json::json!([{"id":id,"from":sender,"to":recipient,"at":399,"lsn":"1","state":"bounced","subject":null,"act":"message","reply_status":"not_expected"}]);
         let full = serialize_snapshot(&after).unwrap();
         let snapshot: Value = serde_json::from_slice(text_payload(&full).unwrap()).unwrap();
         streams.publish(after.clone()).unwrap();
@@ -3707,6 +3722,9 @@ mod tests {
     #[test]
     fn messages_delta_replaces_departing_and_historically_entering_rows_and_clears() {
         let row = |lsn: u64| dudes_proto::MessageView {
+            subject: None,
+            act: None,
+            reply_status: dudes_proto::ReplyStatus::NotExpected,
             id: dudes_types::MailId::from_parts(lsn, 1),
             from: AgentId::from_parts(1, 1),
             to: AgentId::from_parts(1, 2),

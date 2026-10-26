@@ -18,7 +18,7 @@ use common::{Cli, Fixture, OpenRunner, SharedHost, start};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../duded/tests/fixtures/floor-release-v8"
+    "/../duded/tests/fixtures/floor-release-v9"
 );
 
 fn with_floor(fixture: &Fixture) -> Settings {

@@ -1921,6 +1921,7 @@ fn seed_mail(fixture: &Fixture, body: &str) {
                 to: dudes_proto::MailTo::Human,
                 act: dudes_proto::MailAct::Message,
                 subject: "planted".to_owned(),
+                subject_admission: None,
                 body: Some(body.to_owned()),
                 body_len: body.len() as u64,
                 body_path: None,

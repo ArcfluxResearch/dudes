@@ -34,7 +34,7 @@ use serde_json::{Value, json};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v8"
+    "/tests/fixtures/floor-release-v9"
 );
 const WAIT: Duration = Duration::from_secs(10);
 const PROTOCOL: &str = "dudes-engine-login-v1";
@@ -380,7 +380,7 @@ impl Socket {
 fn engine_sign_in(page: &Page) -> Value {
     let mut word = Value::Null;
     for _ in 0..4 {
-        let mut stream = Socket::open(page, "/floor/stream", "dudes-floor-v4");
+        let mut stream = Socket::open(page, "/floor/stream", "dudes-floor-v5");
         stream.send(&json!({"type": "floor.subscribe"}));
         let snapshot = stream.until("floor.snapshot");
         word = snapshot["daemon"]["providers"][0]["sign_in"].clone();

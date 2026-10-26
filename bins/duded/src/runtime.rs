@@ -1378,6 +1378,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .map(|(agent, _)| agent)
             .collect();
         for agent in gone {
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            if let Some(mailbox) = &mut self.ctx.mailbox {
+                mailbox.end_subject_context(agent);
+            }
             self.pump(Input::PtyExited { agent })?;
         }
         Ok(())
@@ -8205,6 +8209,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             self.start_attached_boundary(sup, agent, &spec.cwd, queue, waiting)?;
         self.pending_attached_calls
             .insert(instruction_started, instruction_owner);
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if let Some(mailbox) = &mut self.mailbox {
+            mailbox.begin_subject_context(
+                agent,
+                dudes_supervisor::Holder::Pty(agent),
+                self.children.redactor(),
+            );
+        }
         self.children
             .redactor()
             .hold_env(dudes_supervisor::Holder::Pty(agent), &spec.env);
@@ -8247,6 +8259,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 self.children
                     .redactor()
                     .release(dudes_supervisor::Holder::Pty(agent));
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                if let Some(mailbox) = &mut self.mailbox {
+                    mailbox.end_subject_context(agent);
+                }
+
                 queue.push_back(Input::InstructionAttachedOpenFailed {
                     started_lsn: instruction_started,
                     cleanup_unconfirmed: false,
@@ -8277,6 +8294,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                         self.children
                             .redactor()
                             .release(dudes_supervisor::Holder::Pty(agent));
+                        #[cfg(any(target_os = "macos", target_os = "linux"))]
+                        if let Some(mailbox) = &mut self.mailbox {
+                            mailbox.end_subject_context(agent);
+                        }
+
                         queue.push_back(Input::PtyExited { agent });
                     }
                     PtyCloseOutcome::Failed(error) => {
@@ -9813,7 +9835,7 @@ mod mail_wake_fence_tests {
     #[test]
     fn a_peer_outbox_file_wakes_the_idle_recipient_through_the_live_mailbox_pass() {
         let mut owned = Owned::completed(Usd::from_dollars(10));
-        let (sender, _) = owned.fake_open_child();
+        let (sender, sender_turn) = owned.fake_open_child();
         for _ in 0..4 {
             owned.daemon.mailbox_pass();
         }
@@ -9825,11 +9847,22 @@ mod mail_wake_fence_tests {
             .join(sender.to_string())
             .join("outbox");
         assert!(outbox.is_dir());
+        let token = "mail_secret_9fQ2LmZx81KdPvR4sWbN7hYc";
+        let redactor = owned.daemon.ctx.children.redactor();
+        let holder = dudes_supervisor::Holder::Turn(sender_turn);
+        redactor.hold_env(holder, &[EnvVar::new("API_TOKEN", token)]);
+        owned
+            .daemon
+            .ctx
+            .mailbox
+            .as_mut()
+            .unwrap()
+            .begin_subject_context(sender, holder, redactor.clone());
         let id = MailId::from_parts(8, 1);
         std::fs::write(
             outbox.join(format!("{id}.json")),
             serde_json::to_vec(&serde_json::json!({
-                "to":{"agents":[owned.agent]}, "act":"message", "subject":"wake me"
+                "to":{"agents":[owned.agent]}, "act":"request", "subject":format!("review {token}"), "body":"private request body"
             }))
             .unwrap(),
         )
@@ -9844,7 +9877,7 @@ mod mail_wake_fence_tests {
                     _ => None,
                 })
         };
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
             owned.daemon.mailbox_pass();
             if issued(&owned).is_some() {
@@ -9894,6 +9927,57 @@ mod mail_wake_fence_tests {
             &|record| matches!(record, Record::TurnSpawned { turn, .. } if *turn == issue.turn),
         );
         assert!(root < advance && advance < issue_at && issue_at < spawn);
+        redactor.release(holder);
+        reply_and_check_floor_answer(
+            &mut owned,
+            sender,
+            dudes_journal::mail_recipient_id(id, issue.agent),
+            token,
+        );
+    }
+
+    fn reply_and_check_floor_answer(
+        owned: &mut Owned,
+        sender: AgentId,
+        request_id: MailId,
+        token: &str,
+    ) {
+        let reply_id = MailId::from_parts(8, 2);
+        let reply_outbox = owned
+            .fixture
+            .state
+            .path()
+            .join("agents")
+            .join(owned.agent.to_string())
+            .join("outbox");
+        std::fs::write(reply_outbox.join(format!("{reply_id}.json")), serde_json::to_vec(&serde_json::json!({
+            "in_reply_to":request_id, "act":"message", "subject":"Re: review (redacted)", "body":"private reply body"
+        })).unwrap()).unwrap();
+        for _ in 0..4 {
+            owned.daemon.mailbox_pass();
+        }
+        let view = owned.daemon.ctx.projections.mail_view().unwrap();
+        let request = view
+            .messages
+            .iter()
+            .find(|row| row.id == request_id)
+            .unwrap();
+        assert_eq!(request.reply_status, dudes_proto::ReplyStatus::Answered);
+        assert_eq!(request.subject.as_deref(), Some("review (redacted)"));
+        let reply = view
+            .messages
+            .iter()
+            .find(|row| row.id == dudes_journal::mail_recipient_id(reply_id, sender))
+            .unwrap();
+        assert_eq!(reply.subject.as_deref(), Some("Re: review (redacted)"));
+
+        let wire = serde_json::to_string(&view.messages).unwrap();
+        assert!(
+            !wire.contains(token)
+                && !wire.contains("private request")
+                && !wire.contains("private reply")
+                && !wire.contains("body")
+        );
     }
 
     #[test]

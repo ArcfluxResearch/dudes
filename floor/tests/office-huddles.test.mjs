@@ -40,7 +40,7 @@ const rowsById = (rows) => new Map(rows.map((row) => [row.id, row]));
 const key = (point) => `${Math.floor(point.x)},${Math.floor(point.y)}`;
 
 function mail(id, from, to, lsn, thread) {
-  return { id: `01JBQ8XK2M3N4P5Q6R7S8T9W${String(id).padStart(2, '0')}`, from, to, at: 100, lsn, state: 'durable', thread };
+  return { id: `01JBQ8XK2M3N4P5Q6R7S8T9W${String(id).padStart(2, '0')}`, from, to, at: 100, lsn, state: 'durable', subject: null, act: null, reply_status: 'not_expected', thread };
 }
 
 function event(rows, threads, { cut = '2', previous = '1', kind = 'delta', phase = 'live' } = {}) {

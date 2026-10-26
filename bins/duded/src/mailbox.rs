@@ -67,6 +67,7 @@ impl From<Item> for Record {
             to: item.to,
             act: item.act,
             subject: item.subject,
+            subject_admission: Some(1),
             body: item.body,
             body_len: item.body_len,
             body_path: item.body_path,
@@ -85,6 +86,7 @@ impl From<Item> for Record {
 #[derive(Clone, Debug)]
 struct Row {
     item: Item,
+    subject_admission: Option<u32>,
     lsn: Lsn,
     state: MailState,
     bounce: bool,
@@ -140,6 +142,8 @@ pub(crate) struct Mailbox {
     rows: BTreeMap<MailId, Row>,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     mail_index: index::MailIndex,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    subject_contexts: BTreeMap<AgentId, unix::SubjectContext>,
     /// The `Durable` and `Notified` rows of each recipient, in original lsn order. Its recipients
     /// join the rotation, and its order assigns the inbox slots.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -235,6 +239,7 @@ impl Mailbox {
             root,
             rows: BTreeMap::new(),
             mail_index: index::MailIndex::default(),
+            subject_contexts: BTreeMap::new(),
             pending: BTreeMap::new(),
             bodies: BTreeMap::new(),
             hired: 0,
@@ -313,6 +318,19 @@ impl Mailbox {
                 self.live_agents.remove(id);
                 self.codex_agents.remove(id);
                 self.outboxes.borrow_mut().remove(id);
+                self.subject_contexts.remove(id);
+            }
+            Record::Detached { agent, .. } => {
+                self.subject_contexts.remove(agent);
+            }
+            Record::TurnEnded { agent, turn, .. } => {
+                if self
+                    .subject_contexts
+                    .get(agent)
+                    .is_some_and(|context| context.holder == dudes_supervisor::Holder::Turn(*turn))
+                {
+                    self.subject_contexts.remove(agent);
+                }
             }
             Record::Mail {
                 id,
@@ -320,6 +338,7 @@ impl Mailbox {
                 to,
                 act,
                 subject,
+                subject_admission,
                 body,
                 body_len,
                 body_path,
@@ -337,6 +356,7 @@ impl Mailbox {
                 let bounce =
                     matches!(to, MailTo::Agent { agent } if !self.live_agents.contains(agent));
                 vacant.insert(Row {
+                    subject_admission: *subject_admission,
                     item: Item {
                         id: *id,
                         from: *from,
@@ -504,6 +524,7 @@ mod wake_tests {
             root: PathBuf::new(),
             rows: BTreeMap::new(),
             mail_index: index::MailIndex::default(),
+            subject_contexts: BTreeMap::new(),
             pending: BTreeMap::new(),
             bodies: BTreeMap::new(),
             hired: 0,

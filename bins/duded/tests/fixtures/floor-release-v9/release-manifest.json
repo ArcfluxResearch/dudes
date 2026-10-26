@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "base_path": "/floor/",
+  "daemon_version": "0.98.0",
+  "browser_wire_version": 9,
+  "asset_tree_sha256": "71b4c0e742621fa9c8bfead689171428fe3b83fac9098b4c5fa1b6533670a6e4",
+  "files": [
+    {
+      "path": "assets/app-01234567.js",
+      "bytes": 50,
+      "sha256": "5e6e440cfb0b291a68d4140aa516fbdf0412fecd5fafb3154b4cded0275e1d2f",
+      "cache": "immutable"
+    },
+    {
+      "path": "index.html",
+      "bytes": 83,
+      "sha256": "3453aeb34d8584c03632c1429ac25a06435c8374db94af4114c184622fabfa88",
+      "cache": "no-store"
+    }
+  ]
+}

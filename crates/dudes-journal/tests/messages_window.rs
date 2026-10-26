@@ -22,6 +22,7 @@ fn mail(number: u64) -> Entry {
             },
             act: MailAct::Message,
             subject: "private subject".into(),
+            subject_admission: None,
             body: Some("private body".into()),
             body_len: 12,
             body_path: None,
@@ -123,7 +124,7 @@ fn message_bytes_preserve_the_floor_contract_through_state_changes() {
     *recipient = MailTo::Agent { agent: to };
     let mut store = Projections::in_memory().unwrap();
     store.apply(Lsn(1), 0, &entry).unwrap();
-    assert_eq!(serde_json::to_vec(&store.messages().unwrap()).unwrap(), br#"[{"id":"01ARZ3NDEKTSV4RRFFQ69G5FB0","from":"01ARZ3NDEKTSV4RRFFQ69G5FB1","to":"01ARZ3NDEKTSV4RRFFQ69G5FB2","at":900,"lsn":"1","state":"durable"}]"#);
+    assert_eq!(serde_json::to_vec(&store.messages().unwrap()).unwrap(), br#"[{"id":"01ARZ3NDEKTSV4RRFFQ69G5FB0","from":"01ARZ3NDEKTSV4RRFFQ69G5FB1","to":"01ARZ3NDEKTSV4RRFFQ69G5FB2","at":900,"lsn":"1","state":"durable","subject":null,"act":"message","reply_status":"not_expected"}]"#);
     let mut human = mail(2);
     if let Record::Mail { from, .. } = &mut human.record {
         *from = MailFrom::Human;
@@ -144,7 +145,7 @@ fn message_bytes_preserve_the_floor_contract_through_state_changes() {
         },
     };
     store.apply(Lsn(4), 0, &state).unwrap();
-    assert_eq!(serde_json::to_vec(&store.messages().unwrap()).unwrap(), br#"[{"id":"01ARZ3NDEKTSV4RRFFQ69G5FB0","from":"01ARZ3NDEKTSV4RRFFQ69G5FB1","to":"01ARZ3NDEKTSV4RRFFQ69G5FB2","at":900,"lsn":"1","state":"bounced"}]"#);
+    assert_eq!(serde_json::to_vec(&store.messages().unwrap()).unwrap(), br#"[{"id":"01ARZ3NDEKTSV4RRFFQ69G5FB0","from":"01ARZ3NDEKTSV4RRFFQ69G5FB1","to":"01ARZ3NDEKTSV4RRFFQ69G5FB2","at":900,"lsn":"1","state":"bounced","subject":null,"act":"message","reply_status":"not_expected"}]"#);
 }
 
 #[test]
@@ -165,6 +166,7 @@ fn the_row_count_bound_keeps_even_the_largest_messages_under_the_byte_bound() {
             },
             act: MailAct::Message,
             subject: String::new(),
+            subject_admission: None,
             body: None,
             body_len: 0,
             body_path: None,
@@ -189,7 +191,7 @@ fn the_row_count_bound_keeps_even_the_largest_messages_under_the_byte_bound() {
     }
     let rows = store.messages().unwrap();
     assert_eq!(rows.len(), 128);
-    assert_eq!(serde_json::to_vec(&rows).unwrap().len(), 23_041);
+    assert_eq!(serde_json::to_vec(&rows).unwrap().len(), 30_849);
     assert_eq!(rows.first().unwrap().lsn, "18446744073709551488");
     assert_eq!(rows.last().unwrap().lsn, "18446744073709551615");
 }

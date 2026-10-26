@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use dudes_proto::mail_wake::{MailRef, MailWakeMail};
 use dudes_proto::{
-    Entry, MAX_MESSAGES, MAX_MESSAGES_BYTES, MAX_THREADS, MAX_THREADS_BYTES, MailFrom, MailTo,
-    MessageState, MessageView, Record, ThreadView,
+    Entry, MAX_MESSAGES, MAX_MESSAGES_BYTES, MAX_THREADS, MailAct, MailFrom, MailTo, MessageAct,
+    MessageState, MessageView, Record, ReplyStatus, ThreadView,
 };
 use dudes_types::{AgentId, Lsn, MailId, MailState, ThreadId, Timestamp};
 use redb::{ReadableTable, Table};
@@ -30,6 +30,9 @@ pub(super) struct MailRow {
     thread: Option<ThreadId>,
     #[serde(default)]
     members: Vec<AgentId>,
+    act: MailAct,
+    subject: Option<String>,
+    thread_seq: u32,
 }
 
 impl MailRow {
@@ -73,6 +76,10 @@ pub(super) fn apply(
             state,
             thread,
             members,
+            act,
+            subject,
+            subject_admission,
+            thread_seq,
             ..
         } => {
             if get_row::<MailRow>(table, &id.to_bytes())?.is_some() {
@@ -88,6 +95,10 @@ pub(super) fn apply(
                 state_lsn: lsn,
                 thread: *thread,
                 members: members.clone(),
+                act: *act,
+                subject: (*subject_admission == Some(1))
+                    .then(|| dudes_proto::messages::mail_subject_caption(subject)),
+                thread_seq: *thread_seq,
             };
             put_row(table, &id.to_bytes(), &row)?;
             index(pending, &row)?;
@@ -134,7 +145,7 @@ fn index(table: &mut Table<'_, &'static [u8; 32], &'static [u8]>, row: &MailRow)
     Ok(())
 }
 
-/// One canonical cut and its complete content-free mail window and thread graph.
+/// One canonical cut and its complete bounded mail window and thread graph.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MailView {
     /// The last applied journal position read with both tables.
@@ -148,77 +159,128 @@ pub struct MailView {
 pub(super) fn view(
     table: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
     window: &impl ReadableTable<&'static str, &'static [u8]>,
+    retired: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
     lsn: Lsn,
 ) -> Result<MailView> {
-    let messages = messages(window)?;
-    let mut threads = BTreeMap::new();
+    let mut facts = messages(window)?;
     let mut ids = BTreeSet::new();
-    let mut previous = 0;
-    if messages.len() > MAX_MESSAGES || encoded_len(&messages)? > MAX_MESSAGES_BYTES {
+    let mut previous = Lsn::ZERO;
+    if facts.len() > MAX_MESSAGES {
         return Err(Error::MailViewCorrupt { mail: None });
     }
-    for message in &messages {
+    let mut retired_agents = BTreeSet::new();
+    for fact in &facts {
         let corrupt = || Error::MailViewCorrupt {
-            mail: Some(message.id),
+            mail: Some(fact.id),
         };
-        let creation = message.lsn.parse::<u64>().map_err(|_| corrupt())?;
-        if creation == 0
-            || creation <= previous
-            || creation > lsn.0
-            || creation.to_string() != message.lsn
-            || !ids.insert(message.id)
+        if fact.lsn <= previous
+            || fact.lsn > lsn
+            || !ids.insert(fact.id)
+            || get_row::<MailRow>(table, &fact.id.to_bytes())?.as_ref() != Some(fact)
         {
             return Err(corrupt());
         }
-        previous = creation;
-        let row = get_row::<MailRow>(table, &message.id.to_bytes())?.ok_or_else(corrupt)?;
-        if row.id != message.id
-            || row.from
-                != (MailFrom::Agent {
-                    agent: message.from,
-                })
-            || row.to != (MailTo::Agent { agent: message.to })
-            || row.at != message.at
-            || row.lsn.0 != creation
-            || row.thread != message.thread
-            || message_state(&row.state) != message.state
-        {
+        previous = fact.lsn;
+        let (MailFrom::Agent { agent: from }, MailTo::Agent { agent: to }) = (fact.from, fact.to)
+        else {
             return Err(corrupt());
+        };
+        if retired.get(&to.to_bytes())?.is_some() {
+            retired_agents.insert(to);
         }
-        let Some(thread) = row.thread else {
-            if !row.members.is_empty() {
+        if fact.thread.is_some() {
+            if !(2..=8).contains(&fact.members.len())
+                || fact.members.windows(2).any(|pair| pair[0] >= pair[1])
+                || from == to
+                || !fact.members.contains(&from)
+                || !fact.members.contains(&to)
+            {
                 return Err(corrupt());
             }
-            continue;
-        };
-        if !(2..=8).contains(&row.members.len())
-            || row.members.windows(2).any(|pair| pair[0] >= pair[1])
-            || message.from == message.to
-            || !row.members.contains(&message.from)
-            || !row.members.contains(&message.to)
-        {
+        } else if !fact.members.is_empty() {
             return Err(corrupt());
-        }
-        if let Some(members) = threads.get(&thread) {
-            if members != &row.members {
-                return Err(corrupt());
-            }
-        } else {
-            threads.insert(thread, row.members);
         }
     }
-    let threads: Vec<_> = threads
+    loop {
+        let messages = derive_messages(&facts, &retired_agents);
+        let threads = thread_graph(&facts)?;
+        if threads.len() <= MAX_THREADS
+            && encoded_len(&messages)? + encoded_len(&threads)? <= MAX_MESSAGES_BYTES
+        {
+            return Ok(MailView {
+                lsn,
+                messages,
+                threads,
+            });
+        }
+        facts.remove(0);
+    }
+}
+
+fn thread_graph(facts: &[MailRow]) -> Result<Vec<ThreadView>> {
+    let mut threads = BTreeMap::new();
+    for fact in facts {
+        if let Some(id) = fact.thread
+            && threads
+                .insert(id, fact.members.clone())
+                .is_some_and(|members| members != fact.members)
+        {
+            return Err(Error::MailViewCorrupt {
+                mail: Some(fact.id),
+            });
+        }
+    }
+    Ok(threads
         .into_iter()
         .map(|(id, members)| ThreadView { id, members })
-        .collect();
-    if threads.len() > MAX_THREADS || encoded_len(&threads)? > MAX_THREADS_BYTES {
-        return Err(Error::MailViewCorrupt { mail: None });
-    }
-    Ok(MailView {
-        lsn,
-        messages,
-        threads,
-    })
+        .collect())
+}
+
+fn derive_messages(facts: &[MailRow], retired: &BTreeSet<AgentId>) -> Vec<MessageView> {
+    facts
+        .iter()
+        .filter_map(|fact| {
+            let (MailFrom::Agent { agent: from }, MailTo::Agent { agent: to }) =
+                (fact.from, fact.to)
+            else {
+                return None;
+            };
+            let reply_status = if fact.act != MailAct::Request {
+                ReplyStatus::NotExpected
+            } else if facts.iter().any(|answer| {
+                answer.lsn > fact.lsn
+                    && answer.from == (MailFrom::Agent { agent: to })
+                    && answer.to == (MailTo::Agent { agent: from })
+                    && fact.thread.is_some()
+                    && answer.thread == fact.thread
+                    && !matches!(answer.state, MailState::Bounced { .. })
+            }) {
+                ReplyStatus::Answered
+            } else if matches!(fact.state, MailState::Bounced { .. }) || retired.contains(&to) {
+                ReplyStatus::Undeliverable
+            } else if fact.thread.is_some() && fact.thread_seq == 12 {
+                ReplyStatus::ThreadFull
+            } else {
+                ReplyStatus::Awaiting
+            };
+            Some(MessageView {
+                id: fact.id,
+                from,
+                to,
+                at: fact.at,
+                lsn: fact.lsn.0.to_string(),
+                state: message_state(&fact.state),
+                thread: fact.thread,
+                subject: fact.subject.clone(),
+                act: match fact.act {
+                    MailAct::Message => Some(MessageAct::Message),
+                    MailAct::Request => Some(MessageAct::Request),
+                    _ => None,
+                },
+                reply_status,
+            })
+        })
+        .collect()
 }
 
 fn encoded_len(value: &impl Serialize) -> Result<usize> {
@@ -238,9 +300,7 @@ fn message_state(state: &MailState) -> MessageState {
 
 const WINDOW: &str = "window";
 
-pub(super) fn messages(
-    table: &impl ReadableTable<&'static str, &'static [u8]>,
-) -> Result<Vec<MessageView>> {
+fn messages(table: &impl ReadableTable<&'static str, &'static [u8]>) -> Result<Vec<MailRow>> {
     table
         .get(WINDOW)?
         .map(|value| serde_json::from_slice(value.value()).map_err(|source| Error::Row { source }))
@@ -252,69 +312,24 @@ fn update_messages(
     table: &mut Table<'_, &'static str, &'static [u8]>,
     row: &MailRow,
 ) -> Result<()> {
-    let (MailFrom::Agent { agent: from }, MailTo::Agent { agent: to }) = (row.from, row.to) else {
+    if !matches!(
+        (row.from, row.to),
+        (MailFrom::Agent { .. }, MailTo::Agent { .. })
+    ) {
         return Ok(());
-    };
-    let state = message_state(&row.state);
-    let mut window = MessageWindow::new();
-    for view in messages(table)? {
-        if view.id != row.id {
-            let lsn = view.lsn.parse().map_err(|source| Error::Row {
-                source: <serde_json::Error as serde::de::Error>::custom(source),
-            })?;
-            window.insert(Lsn(lsn), view)?;
-        }
     }
-    window.insert(
-        row.lsn,
-        MessageView {
-            id: row.id,
-            from,
-            to,
-            at: row.at,
-            lsn: row.lsn.0.to_string(),
-            state,
-            thread: row.thread,
-        },
-    )?;
-    let rows: Vec<_> = window.rows.into_iter().map(|(_, row, _)| row).collect();
-    let bytes = serde_json::to_vec(&rows).map_err(|source| Error::Row { source })?;
+    let mut window = messages(table)?;
+    window.retain(|fact| fact.id != row.id);
+    let at = window
+        .binary_search_by_key(&row.lsn, |fact| fact.lsn)
+        .unwrap_or_else(|at| at);
+    window.insert(at, row.clone());
+    if window.len() > MAX_MESSAGES {
+        window.remove(0);
+    }
+    let bytes = serde_json::to_vec(&window).map_err(|source| Error::Row { source })?;
     table.insert(WINDOW, bytes.as_slice())?;
     Ok(())
-}
-
-struct MessageWindow<T> {
-    rows: Vec<(Lsn, T, usize)>,
-    bytes: usize,
-}
-
-impl<T: Serialize> MessageWindow<T> {
-    fn new() -> Self {
-        Self {
-            rows: Vec::with_capacity(MAX_MESSAGES + 1),
-            bytes: 2,
-        }
-    }
-
-    fn insert(&mut self, lsn: Lsn, row: T) -> Result<()> {
-        let bytes = serde_json::to_vec(&row)
-            .map_err(|source| Error::Row { source })?
-            .len();
-        if bytes + 2 > MAX_MESSAGES_BYTES {
-            return Ok(());
-        }
-        let index = self
-            .rows
-            .binary_search_by_key(&lsn, |(lsn, _, _)| *lsn)
-            .unwrap_or_else(|index| index);
-        self.bytes += bytes + usize::from(!self.rows.is_empty());
-        self.rows.insert(index, (lsn, row, bytes));
-        while self.rows.len() > MAX_MESSAGES || self.bytes > MAX_MESSAGES_BYTES {
-            let (_, _, removed) = self.rows.remove(0);
-            self.bytes -= removed + usize::from(!self.rows.is_empty());
-        }
-        Ok(())
-    }
 }
 
 /// Count agent-addressed mail whose latest state remains unread.
@@ -346,46 +361,6 @@ fn bounded_unread_count(agent: AgentId, count: u64) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn messages_window_counts_exact_escaped_array_bytes_and_omits_an_oversize_row() {
-        let mut window = MessageWindow::new();
-        let escaped = "\"\\\u{0001}€".repeat(1_000);
-        let row_bytes = serde_json::to_vec(&escaped).unwrap().len();
-        assert_eq!(row_bytes, 13_002);
-        for lsn in (1..=20).rev() {
-            window.insert(Lsn(lsn), escaped.clone()).unwrap();
-            assert!(window.rows.len() <= 128);
-            let rows: Vec<_> = window.rows.iter().map(|(_, row, _)| row).collect();
-            assert_eq!(window.bytes, serde_json::to_vec(&rows).unwrap().len());
-            assert!(window.bytes <= 65_536);
-        }
-        assert_eq!(
-            window
-                .rows
-                .iter()
-                .map(|(lsn, _, _)| lsn.0)
-                .collect::<Vec<_>>(),
-            vec![16, 17, 18, 19, 20]
-        );
-        let oversized = "\u{0001}".repeat(11_000);
-        assert!(serde_json::to_vec(&vec![&oversized]).unwrap().len() > 65_536);
-        window.insert(Lsn(21), oversized).unwrap();
-        assert_eq!(window.rows.last().unwrap().0, Lsn(20));
-        assert_eq!(window.rows.len(), 5);
-    }
-
-    #[test]
-    fn messages_window_keeps_the_newest_rows_under_continuing_out_of_order_arrivals() {
-        let mut window = MessageWindow::new();
-        for lsn in (1..=1_000).rev() {
-            window.insert(Lsn(lsn), lsn).unwrap();
-            assert!(window.rows.len() <= 128);
-        }
-        assert_eq!(window.rows.len(), 128);
-        assert_eq!(window.rows.first().unwrap().0, Lsn(873));
-        assert_eq!(window.rows.last().unwrap().0, Lsn(1_000));
-    }
 
     #[test]
     fn unread_count_range_is_not_row_corruption() {

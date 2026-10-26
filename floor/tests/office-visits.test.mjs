@@ -43,7 +43,7 @@ const working = (...ids) => ids.map((id) => ({ id, status: 'running' }));
 const idle = (...ids) => ids.map((id) => ({ id, status: 'idle' }));
 
 function row(id, from, to, lsn, patch = {}) {
-  return { id, from, to, at: 100, lsn, state: 'durable', ...patch };
+  return { id, from, to, at: 100, lsn, state: 'durable', subject: null, act: null, reply_status: 'not_expected', ...patch };
 }
 
 function event(rows, { cut = '2', previous = '1', kind = 'delta', phase = 'live', agents = [] } = {}) {

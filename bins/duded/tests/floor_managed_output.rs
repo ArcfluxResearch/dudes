@@ -39,7 +39,7 @@ const STEP_SECRET: &str = "STEPS_API_TOKEN";
 const SECRET_VALUE: &str = "synthetic-steps-token-0123456789abcdef";
 const ASSETS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v8"
+    "/tests/fixtures/floor-release-v9"
 );
 
 #[test]
@@ -514,7 +514,7 @@ impl WebSocket {
             .unwrap();
         stream
             .write_all(
-                page.upgrade_head("/floor/stream", "dudes-floor-v4")
+                page.upgrade_head("/floor/stream", "dudes-floor-v5")
                     .as_bytes(),
             )
             .unwrap();
@@ -1273,7 +1273,7 @@ fn step_results_are_fetched_scrubbed_and_only_by_the_socket_that_selected_the_ag
         .unwrap();
     signed_out
         .write_all(
-            page.upgrade_head_with("/floor/stream", "dudes-floor-v4", None)
+            page.upgrade_head_with("/floor/stream", "dudes-floor-v5", None)
                 .as_bytes(),
         )
         .unwrap();

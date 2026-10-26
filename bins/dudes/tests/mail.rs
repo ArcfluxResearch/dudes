@@ -261,6 +261,29 @@ fn a_reply_can_derive_its_subject_from_a_pending_or_acknowledged_parent() {
     assert_eq!(explicit.code(), 0, "{}", explicit.output());
 }
 
+fn start_mail_pair(
+    fixture: &Fixture,
+    running: &common::Running,
+    settings: &duded::settings::Settings,
+) -> [AgentId; 2] {
+    let sender = hire(running, fixture.state.path());
+    let recipient = hire(running, fixture.state.path());
+    for agent in [sender, recipient] {
+        let goal = Cli::new(&settings.socket(), &settings.runtime_dir)
+            .args(common::goal_args(
+                &agent.to_string(),
+                "exchange the fixture mail",
+            ))
+            .run();
+        assert_eq!(goal.code(), exit::SUCCESS, "{}", goal.output());
+        fixture.await_record("owned mail sender context", |record| {
+            matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent)
+                .then_some(())
+        });
+    }
+    [sender, recipient]
+}
+
 fn round_trip(body: &str) {
     let fixture = Fixture::new();
     let mut settings = fixture.settings();
@@ -270,8 +293,7 @@ fn round_trip(body: &str) {
         SharedHost::new(),
         Arc::new(OpenRunner::default()),
     );
-    let sender = hire(&running, fixture.state.path());
-    let recipient = hire(&running, fixture.state.path());
+    let [sender, recipient] = start_mail_pair(&fixture, &running, &settings);
     let source = fixture.state.path().join("agents").join(sender.to_string());
     let destination = fixture
         .state
@@ -356,6 +378,12 @@ fn round_trip(body: &str) {
         _ => None,
     });
     acknowledge_once(&fixture, &destination, id);
+    assert!(
+        !fixture.records().iter().any(|record| {
+            matches!(record, Record::TurnEnded { agent, .. } if [sender, recipient].contains(agent))
+        }),
+        "both owned sender contexts remain held through the round trip"
+    );
     running.stop();
 }
 

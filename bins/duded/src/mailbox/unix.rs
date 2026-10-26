@@ -207,6 +207,23 @@ pub(super) struct OutboxIdentity {
 }
 
 impl OutboxIdentity {
+    fn matches(&self, tree: &Tree) -> io::Result<bool> {
+        for (actual, retained) in [
+            &tree.root.file,
+            &tree.agents.file,
+            &tree.agent.file,
+            &tree.outbox.file,
+        ]
+        .into_iter()
+        .zip(&self.retained)
+        {
+            if !same(&actual.metadata()?, &retained.metadata()?) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     pub(super) fn check(&self, granted: &Path) -> io::Result<()> {
         let named = self
             .root
@@ -272,7 +289,82 @@ pub(super) fn outbox_fixture(root: &Path, agent: AgentId) -> Arc<super::OutboxGr
     tree.outbox_grant().unwrap()
 }
 
+pub(super) struct SubjectContext {
+    pub(super) holder: dudes_supervisor::Holder,
+    redactor: dudes_supervisor::Redactor,
+    outbox: Arc<super::OutboxGrant>,
+}
+
 impl Mailbox {
+    pub(crate) fn begin_subject_context(
+        &mut self,
+        agent: AgentId,
+        holder: dudes_supervisor::Holder,
+        redactor: dudes_supervisor::Redactor,
+    ) {
+        self.subject_contexts.remove(&agent);
+        if !self.live_agents.contains(&agent) {
+            return;
+        }
+        let admitted = (|| -> io::Result<_> {
+            let tree = Tree::open(&self.root, agent, self.opening(&Rc::default(), agent, true))?;
+            let outbox = tree.outbox_grant()?;
+            if !snapshot(&tree.outbox, OUTBOX_SCAN)?.is_some_and(|names| names.is_empty()) {
+                return Err(io::Error::other("outbox predates this child context"));
+            }
+            tree.validate()?;
+            outbox.check()?;
+            Ok(outbox)
+        })();
+        if let Ok(outbox) = admitted {
+            self.subject_contexts.insert(
+                agent,
+                SubjectContext {
+                    holder,
+                    redactor,
+                    outbox,
+                },
+            );
+        }
+    }
+
+    pub(crate) fn end_subject_context(&mut self, agent: AgentId) {
+        self.subject_contexts.remove(&agent);
+    }
+
+    fn admitted_subject(&self, sender: &Tree, outgoing: &Outgoing, plan: &SendPlan) -> String {
+        if let Some(receipt) = &plan.receipt {
+            return if receipt.subject_admission == Some(1) {
+                receipt.item.subject.clone()
+            } else {
+                String::new()
+            };
+        }
+        if outgoing.in_reply_to.is_some_and(|parent| {
+            self.rows
+                .get(&parent)
+                .is_none_or(|row| row.subject_admission != Some(1))
+        }) {
+            return String::new();
+        }
+        let Some(context) = self.subject_contexts.get(&sender.id) else {
+            return String::new();
+        };
+        if context.outbox.check().is_err()
+            || !context.outbox.identity.matches(sender).unwrap_or(false)
+        {
+            return String::new();
+        }
+        context
+            .redactor
+            .scrub_held(
+                context.holder,
+                &outgoing.subject,
+                dudes_proto::messages::normalize_mail_subject,
+            )
+            .unwrap_or_default()
+    }
+
     pub(super) fn unix_admit_outbox(&self, agent: AgentId) -> io::Result<Arc<super::OutboxGrant>> {
         let named = self
             .root
@@ -1341,7 +1433,8 @@ impl Mailbox {
         plan: &SendPlan,
         after_verify: impl FnOnce(&Tree, &Item) -> io::Result<()>,
     ) -> Result<Vec<(Item, Option<StagedBody>)>, MailboxProblem> {
-        if let Some(receipt) = &plan.receipt {
+        if let Some(row) = &plan.receipt {
+            let receipt = &row.item;
             let same_body =
                 match referenced(receipt).map_err(|_| MailboxProblem::DeliveryCollision)? {
                     None => receipt.body == outgoing.body,
@@ -1364,10 +1457,15 @@ impl Mailbox {
                         })
                     }
                 };
-            if receipt.act != outgoing.act || receipt.subject != outgoing.subject || !same_body {
+            if receipt.act != outgoing.act
+                || (row.subject_admission != Some(1) && receipt.subject != outgoing.subject)
+                || !same_body
+            {
                 return Err(MailboxProblem::DeliveryCollision);
             }
         }
+        let mut outgoing = outgoing.clone();
+        outgoing.subject = self.admitted_subject(sender, &outgoing, plan);
         let mut prepared = Vec::new();
         for recipient in &plan.recipients {
             let id = dudes_journal::mail_recipient_id(outbox, *recipient);
@@ -1714,6 +1812,10 @@ mod tests {
                 world.apply(lsn, &entry);
                 mailbox.apply(lsn, &entry.record);
                 Tree::open(root.path(), id, Opening::default()).unwrap();
+                let redactor = dudes_supervisor::Redactor::new();
+                let holder = dudes_supervisor::Holder::Pty(id);
+                redactor.hold_env(holder, &[]);
+                mailbox.begin_subject_context(id, holder, redactor);
             }
             Self {
                 root,
@@ -2062,6 +2164,258 @@ mod tests {
     }
 
     #[test]
+    fn a_cold_live_agent_keeps_its_subject_when_the_first_mailbox_pass_follows_launch() {
+        let mut h = Harness::new(2);
+        let sender = Harness::id(1);
+        let recipient = Harness::id(2);
+        std::fs::remove_dir_all(h.path(sender, "", "")).unwrap();
+        assert!(!h.path(sender, "outbox", "").exists());
+        let holder = dudes_supervisor::Holder::Turn(dudes_types::TurnId::from_parts(1, 1));
+        let redactor = dudes_supervisor::Redactor::new();
+        h.mailbox
+            .begin_subject_context(sender, holder, redactor.clone());
+        assert!(h.path(sender, "outbox", "").is_dir());
+        redactor.hold_env(holder, &[]);
+        h.pass();
+        let outbox = Harness::mail(1);
+        h.outgoing(
+            sender,
+            outbox,
+            &json!({"to":{"agent":recipient},"act":"request","subject":"round trip request"}),
+        );
+        h.pass();
+        let id = dudes_journal::mail_recipient_id(outbox, recipient);
+        assert_eq!(h.mailbox.rows[&id].item.subject, "round trip request");
+        assert_eq!(h.mailbox.rows[&id].subject_admission, Some(1));
+    }
+
+    #[test]
+    fn subject_context_setup_does_not_create_mailboxes_for_unknown_or_retired_agents() {
+        let mut h = Harness::new(1);
+        let retired = Harness::id(1);
+        h.retire(retired);
+        std::fs::remove_dir_all(h.path(retired, "", "")).unwrap();
+        for agent in [retired, Harness::id(2)] {
+            let holder = dudes_supervisor::Holder::Pty(agent);
+            h.mailbox
+                .begin_subject_context(agent, holder, dudes_supervisor::Redactor::new());
+            assert!(!h.path(agent, "", "").exists());
+            assert!(!h.mailbox.subject_contexts.contains_key(&agent));
+        }
+    }
+
+    #[test]
+    fn subject_admission_survives_exit_and_replay_without_disclosing_body_or_marker() {
+        let mut h = Harness::new(2);
+        let sender = Harness::id(1);
+        let recipient = Harness::id(2);
+        let outbox = Harness::mail(1);
+        let token = "secret_9fQ2LmZx81KdPvR4sWbN7hYc";
+        let redactor = dudes_supervisor::Redactor::new();
+        let holder = dudes_supervisor::Holder::Turn(dudes_types::TurnId::from_parts(1, 1));
+        redactor.hold_env(
+            holder,
+            &[dudes_providers::launch::EnvVar::new("API_TOKEN", token)],
+        );
+        h.mailbox
+            .begin_subject_context(sender, holder, redactor.clone());
+        let (head, tail) = token.split_at(14);
+        h.outgoing(sender, outbox, &json!({"to":{"agent":recipient}, "act":"request",
+            "subject":format!("hello {head}\u{202e}{tail}\n world"), "body":token, "subject_admission":999}));
+        h.pass();
+        let id = dudes_journal::mail_recipient_id(outbox, recipient);
+        let row = &h.mailbox.rows[&id];
+        assert_eq!(row.item.subject, "hello (redacted) world");
+        assert_eq!(row.item.body.as_deref(), Some(token));
+        assert_eq!(row.subject_admission, Some(1));
+        let marker: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(h.path(recipient, "inbox", &format!("{id}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert!(marker.get("subject_admission").is_none());
+        redactor.release(holder);
+        assert_eq!(redactor.scrub(token), token);
+        let reader = Reader::new(&h.root.path().join("journal"));
+        h.mailbox = Mailbox::replay(h.root.path().to_owned(), &reader).unwrap();
+        let mut projection = dudes_journal::Projections::in_memory().unwrap();
+        for entry in reader.iter_from(Lsn::ZERO).unwrap() {
+            let (lsn, entry) = entry.unwrap();
+            projection.apply(lsn, 0, &entry).unwrap();
+        }
+        let floor = serde_json::to_string(&projection.mail_view().unwrap().messages).unwrap();
+        assert!(floor.contains("hello (redacted) world"));
+        assert!(
+            !floor.contains(token)
+                && !floor.contains("body")
+                && !floor.contains("subject_admission")
+        );
+        assert_eq!(h.mailbox.rows[&id].item.subject, "hello (redacted) world");
+    }
+
+    #[test]
+    fn ended_backlogged_and_replaced_outboxes_cannot_borrow_a_new_context() {
+        for case in ["ended", "backlog", "replaced"] {
+            let mut h = Harness::new(2);
+            let sender = Harness::id(1);
+            let recipient = Harness::id(2);
+            let outbox = Harness::mail(1);
+            let redactor = dudes_supervisor::Redactor::new();
+            let holder = dudes_supervisor::Holder::Turn(dudes_types::TurnId::from_parts(1, 2));
+            let value = json!({"to":{"agent":recipient},"act":"request","subject":"old-context-secret","subject_admission":1});
+            if case == "backlog" {
+                h.outgoing(sender, outbox, &value);
+            }
+            h.mailbox
+                .begin_subject_context(sender, holder, redactor.clone());
+            redactor.hold_env(holder, &[]);
+            if case == "ended" {
+                redactor.release(holder);
+            }
+            if case == "replaced" {
+                let path = h.path(sender, "outbox", "");
+                std::fs::rename(&path, h.path(sender, "old-outbox", "")).unwrap();
+                std::fs::create_dir(&path).unwrap();
+            }
+            if case != "backlog" {
+                h.outgoing(sender, outbox, &value);
+            }
+            h.pass();
+            let id = dudes_journal::mail_recipient_id(outbox, recipient);
+            assert_eq!(h.mailbox.rows[&id].item.subject, "", "{case}");
+            assert_eq!(h.mailbox.rows[&id].subject_admission, Some(1));
+        }
+    }
+
+    #[test]
+    fn a_reply_to_an_unmarked_parent_withholds_even_an_explicit_cut_subject() {
+        let mut h = Harness::new(2);
+        let sender = Harness::id(1);
+        let recipient = Harness::id(2);
+        let outbox = Harness::mail(1);
+        h.send(sender, recipient, outbox, "body");
+        h.pass();
+        let parent = dudes_journal::mail_recipient_id(outbox, recipient);
+        h.mailbox.rows.get_mut(&parent).unwrap().subject_admission = None;
+        h.outgoing(
+            recipient,
+            Harness::mail(2),
+            &json!({"in_reply_to":parent,"act":"message","subject":"Re: secret_9fQ2LmZx81Kd"}),
+        );
+        h.pass();
+        let reply = dudes_journal::mail_recipient_id(Harness::mail(2), sender);
+        assert!(h.mailbox.rows[&reply].item.subject.is_empty());
+    }
+
+    #[test]
+    fn partial_fanout_reuses_the_durable_subject_even_when_raw_subject_changes() {
+        let mut h = Harness::new(3);
+        let sender = Harness::id(1);
+        let outbox = Harness::mail(1);
+        h.outgoing(
+            sender,
+            outbox,
+            &json!({"to":{"everyone":true},"act":"request","subject":"frozen","body":"same"}),
+        );
+        let writer = &mut h.writer;
+        let mut written = false;
+        h.mailbox.pass(
+            &h.agents,
+            || Timestamp::from_unix_millis(1),
+            mint_thread,
+            |record, at| {
+                if written {
+                    anyhow::bail!("crash after first receipt");
+                }
+                let entry = Entry {
+                    at: at.unwrap_or(Timestamp::from_unix_millis(1)),
+                    record: record.clone(),
+                };
+                let lsn = writer.append(&entry)?;
+                written = true;
+                Ok((lsn, entry))
+            },
+        );
+        h.mailbox = Mailbox::replay(
+            h.root.path().to_owned(),
+            &Reader::new(&h.root.path().join("journal")),
+        )
+        .unwrap();
+        h.outgoing(sender, outbox, &json!({"to":{"everyone":true},"act":"request","subject":"changed-secret","body":"same"}));
+        h.pass();
+        assert_eq!(h.mailbox.rows.len(), 2);
+        assert!(
+            h.mailbox
+                .rows
+                .values()
+                .all(|row| row.item.subject == "frozen")
+        );
+    }
+
+    #[test]
+    fn legacy_partial_fanout_checks_raw_subject_then_withholds_remaining_copies() {
+        let mut h = Harness::new(3);
+        let sender = Harness::id(1);
+        let outbox = Harness::mail(1);
+        let original =
+            json!({"to":{"everyone":true},"act":"request","subject":"legacy","body":"same"});
+        h.outgoing(sender, outbox, &original);
+        let writer = &mut h.writer;
+        let mut written = false;
+        h.mailbox.pass(
+            &h.agents,
+            || Timestamp::from_unix_millis(1),
+            mint_thread,
+            |record, at| {
+                if written {
+                    anyhow::bail!("crash after first receipt");
+                }
+                let mut entry = Entry {
+                    at: at.unwrap_or(Timestamp::from_unix_millis(1)),
+                    record: record.clone(),
+                };
+                if let Record::Mail {
+                    subject_admission, ..
+                } = &mut entry.record
+                {
+                    *subject_admission = None;
+                }
+                let lsn = writer.append(&entry)?;
+                written = true;
+                Ok((lsn, entry))
+            },
+        );
+        h.mailbox = Mailbox::replay(
+            h.root.path().to_owned(),
+            &Reader::new(&h.root.path().join("journal")),
+        )
+        .unwrap();
+        let mut changed = original.clone();
+        changed["subject"] = json!("changed");
+        h.outgoing(sender, outbox, &changed);
+        h.pass();
+        assert_eq!(h.mailbox.rows.len(), 1);
+        h.outgoing(sender, outbox, &original);
+        h.pass();
+        assert_eq!(h.mailbox.rows.len(), 2);
+        assert_eq!(
+            h.mailbox
+                .rows
+                .values()
+                .filter(|row| row.subject_admission.is_none() && row.item.subject == "legacy")
+                .count(),
+            1
+        );
+        assert_eq!(
+            h.mailbox
+                .rows
+                .values()
+                .filter(|row| row.subject_admission == Some(1) && row.item.subject.is_empty())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn threaded_partial_delivery_recovers_without_duplicate_receipts() {
         for prefix in [0, 1] {
             let mut h = Harness::new(4);
@@ -2138,7 +2492,10 @@ mod tests {
                         ..
                     } = entry.record
                     {
-                        (subject == "group").then_some((id, thread_seq, members))
+                        ((subject == "group" || subject.is_empty())
+                            && members.len() == 4
+                            && thread_seq == 1)
+                            .then_some((id, thread_seq, members))
                     } else {
                         None
                     }

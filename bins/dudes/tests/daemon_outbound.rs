@@ -22,7 +22,7 @@ use common::{Cli, Lifeline, run_program};
 const SPAWN_MARKER: &str = "quickstart started duded pid ";
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../duded/tests/fixtures/floor-release-v8"
+    "/../duded/tests/fixtures/floor-release-v9"
 );
 
 fn sibling_daemon() -> PathBuf {

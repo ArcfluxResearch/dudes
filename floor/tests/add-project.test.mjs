@@ -25,7 +25,7 @@ function floor(project) {
   const switches = { answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false,
     hire: true, git: false, renew: false, board: false, diff: false, project };
   const settings = { folder_picker: false, switches, budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '1', per_turn_tokens: '1' },
-    providers: ['claude'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 8 } };
+    providers: ['claude'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 9 } };
   applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 1, agents: [] }, settings }), epoch);
   return getFloorState();
 }
