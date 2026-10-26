@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 
 import './lab.css';
 import {
-  Badge, Button, Card, Dialog, Disclosure, Field, IconButton, Input, Menu, MenuItem, MenuSeparator, Panel, Select, Switch, Tab,
+  Badge, Button, Card, Choice, Dialog, Disclosure, Field, IconButton, Input, Menu, MenuItem, MenuSeparator, Notice, Panel, Select, Switch, Tab,
   TabList, Textarea, Toast, cn,
 } from '../src/ui/index.ts';
 
@@ -49,6 +49,8 @@ function Lab() {
   const [inDialog, setInDialog] = useState('c');
   const [pageEnabled, setPageEnabled] = useState(false);
   const [wired, setWired] = useState(true);
+  const [engine, setEngine] = useState('claude');
+  const [ownCopy, setOwnCopy] = useState(false);
   const [tab, setTab] = useState(0);
   const [toast, setToast] = useState(true);
   const [presses, setPresses] = useState(0);
@@ -74,6 +76,28 @@ function Lab() {
       <div className="w-72"><Field label="Character" id="field-character">
         <Select options={CHARACTERS} value={page} onValueChange={setPage} placeholder="Choose one" />
       </Field></div>
+    </Section>
+
+    <Section id="choices" title="Choice">
+      <div className="flex w-96 flex-col gap-2">
+        <Choice type="radio" name="lab-engine" value="claude" checked={engine === 'claude'} onChange={() => setEngine('claude')}
+          label="Claude" note="Does not ask before it acts." />
+        <Choice type="radio" name="lab-engine" value="codex" checked={engine === 'codex'} onChange={() => setEngine('codex')}
+          label="Codex" note="Can only write inside this project." />
+        <Choice type="checkbox" name="lab-copy" checked={ownCopy} onChange={(event) => setOwnCopy(event.target.checked)}
+          label="Work in its own copy of the project" />
+        <Choice plain type="radio" name="lab-plain" value="a" defaultChecked label="A plain row" />
+      </div>
+      <output id="choice-now" className="text-muted">{engine}{ownCopy ? ' copy' : ''}</output>
+    </Section>
+
+    <Section id="notices" title="Notice">
+      <div className="flex w-96 flex-col gap-2">
+        <Notice tone="info" role="status">The model list is being asked.</Notice>
+        <Notice tone="ok" role="status">Hired Ada.</Notice>
+        <Notice tone="warn" role="status">Tickets are off.</Notice>
+        <Notice tone="danger" role="alert">Name is required.</Notice>
+      </div>
     </Section>
 
     <Section id="menus" title="Menu">

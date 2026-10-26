@@ -1,46 +1,6 @@
 @layer legacy, theme, base, components, utilities;
 
 @layer legacy {
-.hire-entry {
-  align-self: center;
-  flex: 0 0 auto;
-  padding: 0.45rem 0.75rem;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--selected);
-  color: var(--ink);
-  font: inherit;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.hire-entry:focus-visible {
-  outline: 2px solid var(--accent-ink);
-  outline-offset: 2px;
-}
-
-.hire-entry-off {
-  margin: 0.4rem;
-  color: var(--muted-ink);
-}
-
-.hire-off {
-  margin-top: auto;
-  padding: 0.5rem 0.25rem 0;
-  font-size: 0.8rem;
-}
-
-.hire-off > .hire-entry-off {
-  margin: 0.5rem 0 0;
-  padding: 0.7rem 0.8rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--ink);
-  line-height: 1.5;
-}
-
-.hire-off > summary,
 .enable-controls > summary {
   display: inline-flex;
   align-items: center;
@@ -56,16 +16,10 @@
   cursor: pointer;
 }
 
-.hire-off > summary {
-  border-style: dashed;
-}
-
-.hire-off > summary::-webkit-details-marker,
 .enable-controls > summary::-webkit-details-marker {
   display: none;
 }
 
-.hire-off > summary::before,
 .enable-controls > summary::before {
   flex: none;
   width: 0.5rem;
@@ -75,18 +29,15 @@
   content: '';
 }
 
-.hire-off > summary::after,
 .enable-controls > summary::after {
   font-weight: 700;
   content: '+' / '';
 }
 
-.hire-off[open] > summary::after,
 .enable-controls[open] > summary::after {
   content: '\2212' / '';
 }
 
-.hire-off > summary:focus-visible,
 .enable-controls > summary:focus-visible {
   outline: 2px solid var(--accent-ink);
   outline-offset: 2px;
