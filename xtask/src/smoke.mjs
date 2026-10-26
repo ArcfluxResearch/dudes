@@ -407,18 +407,18 @@ exec /bin/sleep 120
       Object.getOwnPropertyDescriptor(el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(value)});
       el.dispatchEvent(new Event('input', { bubbles: true })); return true;
     })()`);
-    const next = () => this.cdp.evaluate(`(() => { const el = [...document.querySelectorAll('.hire-actions button')].find(el => el.textContent === 'Next'); if (!el) return false; el.click(); return true; })()`);
+    const next = () => click('[data-hire-action="next"]');
     check(await click('#hire-open'), 'Hire opener missing');
     await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-name'))`), 'Hire wizard did not open');
     check(await fill('#hire-name', 'Smoke agent'), 'Hire name missing');
     check(await fill('#hire-role', 'First-run smoke'), 'Hire role missing');
-    await next();
+    check(await next(), 'Hire Next button missing');
     await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('input[name="workspace_id"]'))`), 'quickstart did not enroll the scratch repository');
-    await click('input[name="workspace_id"]');
-    await next();
+    check(await click('input[name="workspace_id"]'), 'project choice missing');
+    check(await next(), 'Hire Next button missing on the project step');
     await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('input[name="engine"][value="codex"]'))`), 'stand-in engine was not offered');
-    await click('input[name="engine"][value="codex"]');
-    await click('.hire-submit');
+    check(await click('input[name="engine"][value="codex"]'), 'stand-in engine choice missing');
+    check(await click('[data-hire-action="submit"]'), 'Hire button missing');
     this.agent = await waitFor(async () => {
       const id = await this.cdp.evaluate(`document.querySelector('.crew-row[data-agent-id]')?.dataset.agentId ?? null`);
       return id;

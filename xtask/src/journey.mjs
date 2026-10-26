@@ -142,9 +142,9 @@ export class Journey {
     await this.screen('first visit');
     await this.fill('input[name="folder"]', this.run.repo);
     await this.clickButton('Look at folder');
-    await this.until(`Boolean(document.querySelector('.add-project-submit'))`, 'the folder was not offered for adding');
+    await this.until(`Boolean(document.querySelector('[data-add-project="submit"]'))`, 'the folder was not offered for adding');
     await this.screen('folder found');
-    await this.click('.add-project-submit');
+    await this.click('[data-add-project="submit"]');
     await this.until(`Boolean(document.querySelector('.first-task-start'))`, 'the project was not added');
     await this.screen('project added');
   }
@@ -155,15 +155,15 @@ export class Journey {
     await this.screen('hire: who');
     await this.fill('#hire-name', 'Journey agent');
     await this.fill('#hire-role', 'Journey');
-    await this.clickButton('Next', '.hire-actions button');
+    await this.clickButton('Next', '[data-hire-action="next"]');
     await this.until(`Boolean(document.querySelector('input[name="workspace_id"]'))`, 'the new project was not offered for the hire');
     await this.screen('hire: project');
     await this.click('input[name="workspace_id"]');
-    await this.clickButton('Next', '.hire-actions button');
+    await this.clickButton('Next', '[data-hire-action="next"]');
     await this.until(`Boolean(document.querySelector('input[name="engine"][value="codex"]'))`, 'the stand-in engine was not offered');
     await this.screen('hire: app');
     await this.click('input[name="engine"][value="codex"]');
-    await this.click('.hire-submit');
+    await this.click('[data-hire-action="submit"]');
     await this.until(`!document.querySelector('.hire-dialog')`, 'the hire dialog did not close');
     await this.until(`Boolean(document.querySelector('[data-first-task="task"] .first-task-open'))`,
       'the first-task card did not offer to give the new agent a task');
@@ -237,7 +237,7 @@ export class Journey {
     }
     const loaded = await this.evaluate('performance.timeOrigin');
     await this.run.cdp.send('Page.reload', {}, this.run.cdp.session);
-    await this.until(`performance.timeOrigin !== ${loaded} && Boolean(document.querySelector('.device-row .device-this'))`, 'Settings does not list this browser');
+    await this.until(`performance.timeOrigin !== ${loaded} && Boolean(document.querySelector('button[aria-label$="(this browser)"]'))`, 'Settings does not list this browser');
     check(await this.evaluate(`location.hash === '#/settings'`), 'reload did not keep the Settings address');
     await this.click('#office-open');
     await this.until(`location.hash === '' && Boolean(document.querySelector('.office-canvas'))`, 'Office did not return to the office');
@@ -246,14 +246,14 @@ export class Journey {
     await this.evaluate('history.back()');
     await this.until(`location.hash === '' && Boolean(document.querySelector('.office-canvas'))`, 'Back did not return to the office');
     await this.click('#view-settings');
-    await this.until(`Boolean(document.querySelector('.device-row .device-this'))`, 'Settings did not reopen');
+    await this.until(`Boolean(document.querySelector('button[aria-label$="(this browser)"]'))`, 'Settings did not reopen');
     await this.screen('settings');
   }
 
   /** The last step: Sign out from this browser's row signs the page out, and the page says why. */
   async signOut() {
-    await this.until(`(() => { const row = document.querySelector('.device-row .device-this')?.closest('.device-row');
-      const button = row?.querySelector('button'); if (!button) return false; button.click(); return true; })()`,
+    await this.until(`(() => { const button = document.querySelector('button[aria-label$="(this browser)"]');
+      if (!button) return false; button.click(); return true; })()`,
     'this browser has no Sign out button in the list');
     await this.until(`document.body.innerText.includes('You signed out of this Floor in this browser')`,
       'the page did not say that this browser signed out');
