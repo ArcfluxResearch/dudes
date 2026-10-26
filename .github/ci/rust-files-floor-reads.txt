@@ -1,0 +1,17 @@
+# Files outside floor/ that the Floor job reads. A pull request that changes one of them runs the
+# Floor job even when it touches nothing under floor/. Shell glob patterns, one per line; `*`
+# matches `/` as well.
+
+# Floor tests read these sources and the project docs.
+README.md
+docs/*
+bins/dudes/src/args.rs
+crates/dudes-types/src/provider.rs
+# The release manifest step runs `cargo metadata`.
+Cargo.toml
+Cargo.lock
+*/Cargo.toml
+# The Pi extension test runs in the Floor job.
+crates/dudes-providers/src/pi/*
+# The browser tests and the journey share the smoke harness.
+xtask/src/smoke.mjs

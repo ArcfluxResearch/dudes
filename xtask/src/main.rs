@@ -9,6 +9,8 @@
 //! - `schemas [--check]` — regenerate `schemas/*.json` from `dudes-proto`; `--check` diffs instead of
 //!   writing. See [`schemas`].
 //! - `naming` — public text carries no ticket ids, decision-record numbers or private paths. See [`naming`].
+//! - `floor-reads` — the CI path lists cover every file Rust and the Floor read from each other. See
+//!   [`floor_reads`].
 //! - `journal --state <dir>` — the journal as text, one line per record. See [`gate`].
 //! - `export --state <dir> [--from-journal]` — the projection export. See [`gate`].
 //! - `gate` — run the end-to-end gate transcript's three arms. See [`gate`].
@@ -32,6 +34,7 @@
 mod blake3_pure;
 mod dist;
 mod env_pairs;
+mod floor_reads;
 mod gate;
 mod gate_instructions;
 mod layering;
@@ -83,6 +86,10 @@ fn run() -> Result<()> {
         "naming" => {
             let workspace = announce()?;
             naming::run(&workspace)
+        }
+        "floor-reads" => {
+            let workspace = announce()?;
+            floor_reads::run(&workspace)
         }
         // The two readers below print a document a caller compares, so their banner goes to
         // stderr: stdout is the artefact.
@@ -193,6 +200,7 @@ fn print_usage() {
          env-pairs          reject raw environment pairs in workspace source types\n  \
          schemas [--check]  regenerate schemas/ from dudes-proto (or diff with --check)\n  \
          naming             check that public text has no ticket ids, decision-record numbers or private paths\n  \
+         floor-reads        check that the CI path lists cover every file Rust and the Floor read from each other\n  \
          journal --state <dir>\n                     \
          print the journal under <dir>, one line per record\n  \
          export --state <dir> [--from-journal]\n                     \
