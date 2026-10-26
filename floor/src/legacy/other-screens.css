@@ -55,24 +55,6 @@
   background: var(--danger-background);
 }
 
-.agent-reorder-handle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  width: 100%;
-  padding: 0.2rem 0.5rem;
-  font: inherit;
-  border: 1px solid var(--accent-ink);
-  background: var(--surface-muted);
-  color: var(--ink);
-  cursor: grab;
-  touch-action: none;
-}
-.agent-reorder-handle[data-dragging='true'] { cursor: grabbing; }
-.agent-reorder-handle:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
-.reorder-position { font-size: 0.75rem; }
-
 .agent-drawer:has(.agent-detail[data-detail-tab='chat']) { display: flex; flex-direction: column; overflow: clip; }
 .agent-detail-context { display: contents; }
 .agent-detail[data-detail-tab='chat'] { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
