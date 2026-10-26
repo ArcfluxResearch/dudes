@@ -2,7 +2,10 @@
 
 import { CircleAlert, CircleCheck, Info, TriangleAlert } from 'lucide-react';
 
-import { ICON, cn } from '../../ui/index.ts';
+import { ICON, RING, cn } from '../../ui/index.ts';
+
+/** A link in running text: the accent colour, underlined, with the one focus ring. */
+export const LINK = cn('rounded-sm text-accent underline underline-offset-2 hover:text-accent-hover', RING);
 
 export type NoticeTone = 'info' | 'warn' | 'danger' | 'ok';
 

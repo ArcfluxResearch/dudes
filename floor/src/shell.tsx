@@ -504,8 +504,7 @@ function SignedInShell() {
     </NoticeStack>
   );
   const fullPanel = view === 'board' || page !== null;
-  const crewShown = crewOpen && !focused && view !== 'board';
-  const crewPressed = page === null && crewShown;
+  const crewPressed = page === null && crewOpen && !focused && view !== 'board';
 
   return (
     <TicketNoticeHost value={noticeStack}><main ref={shellRef} aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}

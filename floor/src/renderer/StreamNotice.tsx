@@ -7,7 +7,7 @@ import { getAway, subscribeToAway } from './floor/away.ts';
 import { getStreamRetry, refreshFloorSnapshot, subscribeToStreamRetry, STALE_AFTER_MS } from './floor/stream.ts';
 import { OpenCommand, SignInExpired } from './SignInExpired.tsx';
 import { Button, cn } from '../ui/index.ts';
-import { NoticeIcon, noticeCard, noticeLine } from './notices/look.tsx';
+import { LINK, NoticeIcon, noticeCard, noticeLine } from './notices/look.tsx';
 import type { NoticeTone } from './notices/look.tsx';
 
 /** The one action a connection notice offers: ask the page's stream to try again now. */
@@ -41,7 +41,7 @@ export function StreamNotice({ floor, placement }: { readonly floor: FloorState;
     'Dudes stopped answering. This page keeps checking and will ask you to reload when it is back.');
   if (away.kind === 'updated') return line('danger', 'office-closed stream-notice', <>
     Dudes was updated. Reload this tab to continue.
-    {' '}<a className="text-accent underline underline-offset-2" href="https://github.com/ArcfluxResearch/dudes/releases" target="_blank" rel="noopener noreferrer">See the release notes</a>.
+    {' '}<a className={LINK} href="https://github.com/ArcfluxResearch/dudes/releases" target="_blank" rel="noopener noreferrer">See the release notes</a>.
   </>);
   if (away.kind === 'restarted') return line('danger', 'office-closed stream-notice', 'Dudes restarted. Reload this tab to continue.');
   if (away.kind === 'expired') return <SignInExpired variant={kind} />;

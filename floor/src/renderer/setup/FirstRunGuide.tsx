@@ -9,7 +9,7 @@ import { FloorSwitches, WorkspaceSettings } from '../settings/SettingsView.tsx';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { Button, cn } from '../../ui/index.ts';
 
-const GUIDE = cn('first-run-guide absolute inset-y-0 right-0 z-(--layer-hire-wizard) box-border flex w-[min(var(--hire-wizard-width),100%)] flex-col gap-4 border-l border-line bg-surface p-4 font-sans text-ink shadow-sheet [grid-area:auto] group-has-[[data-terminal-expanded=true]]/stage:relative group-has-[[data-terminal-expanded=true]]/stage:inset-auto group-has-[[data-terminal-expanded=true]]/stage:row-2 group-has-[[data-terminal-expanded=true]]/stage:col-[1/-1] group-has-[[data-terminal-expanded=true]]/stage:w-auto');
+const GUIDE = cn('first-run-guide absolute inset-y-0 right-0 z-(--layer-hire-wizard) box-border flex w-[min(var(--hire-wizard-width),100%)] flex-col gap-4 border-l max-[800px]:pb-14 border-line bg-surface p-4 font-sans text-ink shadow-sheet [grid-area:auto] group-has-[[data-terminal-expanded=true]]/stage:relative group-has-[[data-terminal-expanded=true]]/stage:inset-auto group-has-[[data-terminal-expanded=true]]/stage:row-2 group-has-[[data-terminal-expanded=true]]/stage:col-[1/-1] group-has-[[data-terminal-expanded=true]]/stage:w-auto');
 
 function FloorActions({ floor }: { readonly floor: FloorState }) {
   const report = floor.settings;

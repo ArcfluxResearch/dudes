@@ -12,6 +12,7 @@ import { viewConfirmed } from '../ticket/model.ts';
 import { AddProject, projectAddOn } from '../project/AddProject.tsx';
 import { X } from 'lucide-react';
 import { Button, ICON, IconButton, cn } from '../../ui/index.ts';
+import { LINK } from '../notices/look.tsx';
 
 const CARD = 'first-task box-border grid gap-3 overflow-auto rounded-lg border border-line bg-surface p-4 font-sans text-body leading-reading text-ink shadow-pop [&_p]:m-0';
 const DOCKED = 'min-[801px]:absolute min-[801px]:inset-x-0 min-[801px]:bottom-auto min-[801px]:top-3 min-[801px]:z-(--layer-panels) min-[801px]:mx-auto min-[801px]:max-h-[calc(100%-32px)] min-[801px]:w-[min(480px,calc(100%-32px))]';
@@ -66,7 +67,7 @@ export function FirstTask({ floor, onHire }: {
       <h2 className="m-0 text-title font-semibold">Find {offer.engine === null ? 'the engine' : appName(offer.engine)} for {offer.agent}</h2>
       <p>Dudes could not find {offer.engine === null ? 'the engine' : appName(offer.engine)} for {offer.agent}.{offer.engine !== null && INSTALL_COMMANDS[offer.engine] !== undefined
           ? ' If it is not installed, run this in a terminal, then press Recheck.' : ''}</p>
-      <p>If it is already installed, check its location in <a className="text-accent underline underline-offset-2" href="#/setup">Setup</a>. Dudes may need a restart to find it.</p>
+      <p>If it is already installed, check its location in <a className={LINK} href="#/setup">Setup</a>. Dudes may need a restart to find it.</p>
       {offer.engine !== null && INSTALL_COMMANDS[offer.engine] !== undefined
         ? <Install command={INSTALL_COMMANDS[offer.engine]!} /> : <p><Button size="sm"
           onClick={() => refreshFloorSnapshot()}>Recheck</Button></p>}
@@ -80,16 +81,16 @@ export function FirstTask({ floor, onHire }: {
           Hire an agent</Button></p></> : null}
       {offer.why === 'no_app' ? <>
         <p>Dudes could not find Claude or Codex. If neither engine is installed, install one, then press Recheck.</p>
-        <p>If one is already installed, check <a className="text-accent underline underline-offset-2" href="#/setup">Setup</a>. Dudes may need a restart to find it.</p>
+        <p>If one is already installed, check <a className={LINK} href="#/setup">Setup</a>. Dudes may need a restart to find it.</p>
         <Install command={INSTALL_COMMANDS.claude!} /></> : null}
       {offer.why === 'no_project' ? <>
         {projectAddOn(floor) ? <>
           <p>Agents work in a project folder, and none is set up yet. Add the folder of your project.</p>
           <AddProject floor={floor} /></> : <>
           <p>Agents work in a project folder, and none is set up yet. Turn on Add and remove projects under
-            Floor switches in <a className="text-accent underline underline-offset-2" href="#/settings">Settings</a>, then add your project folder.</p></>}</> : null}
+            Floor switches in <a className={LINK} href="#/settings">Settings</a>, then add your project folder.</p></>}</> : null}
       {offer.why === 'off' ? <p>Hiring from this page is turned off. Turn on Hire agents under Floor switches in{' '}
-        <a className="text-accent underline underline-offset-2" href="#/settings">Settings</a>.</p> : null}
+        <a className={LINK} href="#/settings">Settings</a>.</p> : null}
     </> : null}
   </section>;
 }
