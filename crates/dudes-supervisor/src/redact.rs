@@ -735,6 +735,32 @@ mod tests {
         redactor
     }
 
+    #[test]
+    fn held_subject_capture_distinguishes_empty_context_from_ended_context() {
+        let redactor = Redactor::new();
+        let holder = Holder::Turn(TurnId::NIL);
+        assert_eq!(redactor.scrub_held(holder, "hello", str::to_owned), None);
+        redactor.hold_env(holder, &[]);
+        assert_eq!(redactor.scrub_held(holder, "hello", str::to_owned), Some("hello".into()));
+        redactor.release(holder);
+        assert_eq!(redactor.scrub_held(holder, "hello", str::to_owned), None);
+    }
+
+    #[test]
+    fn held_subject_capture_scrubs_again_after_normalization_with_the_same_matcher() {
+        let redactor = Redactor::new();
+        let holder = Holder::Turn(TurnId::NIL);
+        redactor.hold_env(holder, &vars(&[("API_TOKEN", TOKEN)]));
+        let (head, tail) = TOKEN.split_at(10);
+        let text = format!("{head}\u{202e}{tail}");
+        let scrubbed = redactor.scrub_held(holder, &text, |text| {
+            redactor.release(holder);
+            text.replace('\u{202e}', "")
+        });
+        assert_eq!(scrubbed, Some(REDACTED.into()));
+        assert_eq!(redactor.scrub(TOKEN), TOKEN);
+    }
+
     fn b64(bytes: &[u8]) -> String {
         let mut text = base64(bytes);
         while !text.len().is_multiple_of(4) {
