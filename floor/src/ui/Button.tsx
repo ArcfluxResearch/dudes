@@ -7,10 +7,10 @@ export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 export type ButtonSize = 'sm' | 'md' | 'lg';
 
 const VARIANT: Readonly<Record<ButtonVariant, string>> = {
-  primary: 'bg-accent text-accent-fg hover:bg-accent-hover',
-  secondary: 'bg-surface text-ink border-line-strong hover:bg-surface-2',
-  ghost: 'bg-transparent text-muted hover:bg-surface-2 hover:text-ink',
-  danger: 'bg-danger text-accent-fg hover:bg-danger/90',
+  primary: 'border-transparent bg-accent text-accent-fg hover:bg-accent-hover',
+  secondary: 'border-line-strong bg-surface text-ink hover:bg-surface-2',
+  ghost: 'border-transparent bg-transparent text-muted hover:bg-surface-2 hover:text-ink',
+  danger: 'border-transparent bg-danger text-accent-fg hover:bg-danger/90',
 };
 
 const SIZE: Readonly<Record<ButtonSize, { readonly text: string; readonly icon: string }>> = {
@@ -20,7 +20,7 @@ const SIZE: Readonly<Record<ButtonSize, { readonly text: string; readonly icon: 
 };
 
 export const BUTTON_BASE = cx(
-  'ui box-border m-0 inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-transparent',
+  'ui box-border m-0 inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border',
   'font-sans text-base font-medium leading-none whitespace-nowrap select-none cursor-pointer no-underline',
   'transition-colors active:translate-y-px waiting:cursor-not-allowed waiting:opacity-50',
   'disabled:cursor-not-allowed disabled:opacity-50', RING,

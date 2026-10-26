@@ -8,10 +8,13 @@
 // and the only input this file hands on is what the screen received from the
 // operator. With the terminal off, it explains how to turn it on.
 
+import { Terminal as TerminalIcon } from 'lucide-react';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { RefObject } from 'react';
 
 import { currentFloorSession } from '../../session.ts';
+import { ICON } from '../../ui/cx.ts';
+import { Button, Dialog } from '../../ui/index.ts';
 import type { FloorState } from '../floor/store.ts';
 import { browserSocket } from '../floor/stream.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from '../focus.ts';
@@ -62,16 +65,18 @@ export function AttachConfirmation({ name, onConfirm, onCancel }: {
   readonly name: string; readonly onConfirm: () => void; readonly onCancel: () => void;
 }) {
   return (
-    <dialog ref={openConfirmation} className="retire-dialog" data-attach-dialog
+    <Dialog ref={openConfirmation} size="sm" className="retire-dialog" data-attach-dialog
       aria-labelledby="attach-dialog-title" aria-describedby="attach-dialog-text" onCancel={onCancel}>
-      <h2 id="attach-dialog-title">{`Attach to ${name}?`}</h2>
-      <p id="attach-dialog-text">{TRUST_WARNING}</p>
-      <div className="retire-actions">
-        <button type="button" className="terminal-attach-confirm"
-          onClick={(event) => { if (event.detail < 2) onConfirm(); }}>Attach</button>
-        <button type="button" className="retire-cancel" onClick={onCancel}>Cancel</button>
+      <div className="grid gap-4 p-6">
+        <h2 id="attach-dialog-title" className="m-0 font-sans text-title font-semibold text-ink">{`Attach to ${name}?`}</h2>
+        <p id="attach-dialog-text" className="m-0 text-body text-muted">{TRUST_WARNING}</p>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button className="retire-cancel" onClick={onCancel}>Cancel</Button>
+          <Button variant="primary" className="terminal-attach-confirm"
+            onClick={(event) => { if (event.detail < 2) onConfirm(); }}>Attach</Button>
+        </div>
       </div>
-    </dialog>
+    </Dialog>
   );
 }
 
@@ -99,14 +104,14 @@ export function TerminalAttachView({ floor, offer }: { readonly floor: FloorStat
   const hint = offer.kind === 'attach' ? ATTACH_HINT : whyNoAttach(floor, offer);
   const claudeTrust = target !== null && floor.agents.find((row) => row.id === target)?.provider === 'claude';
   return (
-    <div className="agent-detail-terminal" data-terminal-offer={offer.kind}>
-      <button type="button" className="terminal-attach" title={hint} aria-describedby="terminal-hint"
+    <div className="agent-detail-terminal flex flex-wrap items-center gap-x-3 gap-y-1" data-terminal-offer={offer.kind}>
+      <Button className="terminal-attach" title={hint} aria-describedby="terminal-hint" icon={<TerminalIcon {...ICON} />}
         aria-haspopup={claudeTrust ? 'dialog' : undefined} aria-disabled={target === null || undefined}
-        onClick={() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }}>Open the real CLI</button>
+        onClick={() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }}>Open the real CLI</Button>
       {confirming && target !== null && claudeTrust ? <AttachConfirmation name={nameOf(floor, target)}
         onCancel={() => setConfirming(false)}
         onConfirm={() => { setConfirming(false); attachTerminal(target, browserTerminalPorts()); }} /> : null}
-      <span className={offer.kind === 'unavailable' && offer.reason === 'engine' ? 'agent-attach-note' : 'visually-hidden'} id="terminal-hint">{hint}</span>
+      <span className={offer.kind === 'unavailable' && offer.reason === 'engine' ? 'agent-attach-note text-small text-muted' : 'visually-hidden'} id="terminal-hint">{hint}</span>
     </div>
   );
 }

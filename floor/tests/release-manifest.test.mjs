@@ -43,7 +43,7 @@ test('tree digest is byte-sorted and canonical', () => {
 
 test('dependency licence check rejects missing and unreviewed MPL entries', async () => {
   const lock = JSON.parse(await readFile(resolve(import.meta.dirname, '../package-lock.json'), 'utf8'));
-  assert.equal(checkLock(lock).direct, 10);
+  assert.equal(checkLock(lock).direct, 15);
   const missing = structuredClone(lock);
   delete missing.packages['node_modules/react'].license;
   assert.throws(() => checkLock(missing), /unreviewed licence/);
@@ -62,6 +62,7 @@ test('hash suffix and served extensions use the shared finite contract', () => {
 test('runtime notices are exactly the copied code set', () => {
   const notices = [
     { name: '@xterm/xterm', version: '6.0.0', identifier: 'MIT', text: 'notice' },
+    { name: 'lucide-react', version: '1.55.0', identifier: 'ISC', text: 'notice' },
     { name: 'react', version: '19.3.1', identifier: 'MIT', text: 'notice' },
     { name: 'react-dom', version: '19.3.1', identifier: 'MIT', text: 'notice' },
     { name: 'scheduler', version: '0.28.0', identifier: 'MIT', text: 'notice' },

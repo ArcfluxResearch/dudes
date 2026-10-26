@@ -5,6 +5,7 @@
 /* Only the files that use the utilities are read, so a word in an older screen's source never becomes a class. */
 @source './**/*.tsx';
 @source '../renderer/AgentDetail.tsx';
+@source '../renderer/Control.tsx';
 @source '../renderer/AgentDrawer.tsx';
 @source '../renderer/LogPanel.tsx';
 @source '../renderer/control/ControlPanel.tsx';

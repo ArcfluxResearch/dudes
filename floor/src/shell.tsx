@@ -21,6 +21,7 @@ import { OfficeCanvas } from './renderer/OfficeCanvas';
 import { getFloorState, selectOutputAgent, subscribeToFloor } from './renderer/floor/store';
 import { refreshFloorSnapshot } from './renderer/floor/stream';
 import { HireWizard } from './renderer/onboarding/HireWizard';
+import { Dialog } from './ui/index.ts';
 import { HireEntry, hireSwitchOn } from './renderer/onboarding/HireEntry';
 import { FirstRunGuide } from './renderer/setup/FirstRunGuide';
 import { NotificationOffer } from './renderer/NotificationOffer.tsx';
@@ -603,7 +604,7 @@ function SignedInShell() {
       {noticeArea === null ? null : createPortal(notices, noticeArea)}
       {noticeBanner === null ? null : createPortal(banner, noticeBanner)}
       <RetireDialog floor={floor} />
-      {hiring ? <dialog className="hire-dialog" ref={hireDialog}
+      {hiring ? <Dialog size="lg" className="hire-dialog" ref={hireDialog}
         aria-labelledby="hire-title" onCancel={(event) => { event.preventDefault(); closeHire(); }}
         onPointerDown={(event) => {
           backdropPress.current = event.target === event.currentTarget && event.button === 0 && event.isPrimary
@@ -619,7 +620,7 @@ function SignedInShell() {
         onPointerCancel={() => { backdropPress.current = null; }}>
         {archiveHireKept ? <p role="status">The current Hire is kept. Resolve it before preparing another agent.</p> : null}
         <HireWizard floor={floor} onClose={() => closeHire()} onSettings={openSettingsFromHire} />
-      </dialog> : null}
+      </Dialog> : null}
     </main></TicketNoticeHost>
   );
 }

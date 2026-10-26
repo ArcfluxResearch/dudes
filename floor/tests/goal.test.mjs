@@ -380,8 +380,8 @@ test('while a turn runs the form cannot send, says so in the specified words, an
   assert.doesNotMatch(html, /<textarea[^>]*readonly/i, 'the draft cannot be written while the turn ends');
   // The same detail keeps Pause live and mounts the task draft inside Change.
   assert.match(html,
-    /<button type="button" class="control-pause"[^>]*>Pause<\/button>[\s\S]*?<section id="agent-detail-panel-overview"[^>]*>[\s\S]*?<details class="agent-overview-change"><summary>Change<\/summary><section class="agent-detail-goal"/);
-  assert.doesNotMatch(html.match(/<button type="button" class="control-pause"[^>]*>/)[0], /aria-disabled/);
+    /<button type="button" class="[^"]*\bcontrol-pause"[^>]*>Pause<\/button>[\s\S]*?<section id="agent-detail-panel-overview"[^>]*>[\s\S]*?<details class="agent-overview-change"><summary>Change<\/summary><section class="agent-detail-goal"/);
+  assert.doesNotMatch(html.match(/<button type="button" class="[^"]*\bcontrol-pause"[^>]*>/)[0], /aria-disabled/);
   const net = daemon(CHANGED);
   await goal.submitGoal(gate(), net);
   assert.equal(net.calls.length, 0, 'a change was sent while a turn runs');

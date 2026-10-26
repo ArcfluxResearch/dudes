@@ -101,22 +101,6 @@
   outline-offset: 2px;
 }
 
-.ticket-notice {
-  margin: 0 0 0.6rem;
-  padding: 0.5rem 0.6rem;
-  border: 1px solid var(--line);
-  font-weight: 700;
-}
-
-.ticket-notice[data-tone='problem'] {
-  background: var(--danger-background);
-}
-
-.ticket-notice[data-tone='done'] {
-  border-color: var(--success-border);
-  background: var(--success-background);
-}
-
 .ticket-lane {
   margin: 0 0 1.5rem;
   padding: 0.9rem 1.1rem;
@@ -565,14 +549,6 @@
     grid-template-columns: minmax(0, 1fr);
     gap: 1.1rem;
   }
-}
-
-.notice-list > .ticket-notice {
-  width: fit-content;
-  margin: 0;
-  border-radius: 0.4rem;
-  box-shadow: 0 8px 28px var(--panel-shadow);
-  overflow-wrap: anywhere;
 }
 
 .notification-offer {

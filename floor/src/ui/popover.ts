@@ -20,8 +20,8 @@ export function placePopover(anchor: HTMLElement, pop: HTMLElement, matchWidth: 
   const height = Math.min(wanted, room);
   const top = flip ? rect.top - GAP - height : rect.bottom + GAP;
   const width = pop.offsetWidth;
-  const from_left = alignEnd ? rect.right - width : rect.left;
-  const left = Math.max(EDGE, Math.min(from_left, view.clientWidth - width - EDGE));
+  const startLeft = alignEnd ? rect.right - width : rect.left;
+  const left = Math.max(EDGE, Math.min(startLeft, view.clientWidth - width - EDGE));
   pop.style.top = `${Math.round(top)}px`;
   pop.style.left = `${Math.round(left)}px`;
 }

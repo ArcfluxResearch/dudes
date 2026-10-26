@@ -6,10 +6,13 @@
 // one confirmation serves both. The status lives in the receipts beside the drawer,
 // because the agent's detail leaves with the agent.
 
+import { UserMinus } from 'lucide-react';
 import { useSyncExternalStore } from 'react';
 import type { ReactNode, RefCallback } from 'react';
 
 import { floorSessionGeneration } from '../../session.ts';
+import { ICON } from '../../ui/cx.ts';
+import { Button, Dialog, MenuItem } from '../../ui/index.ts';
 import {
   blocksControls, browserControlDeps, controlGate, getControlState, submitControl, subscribeToControl,
 } from '../control/control.ts';
@@ -34,6 +37,21 @@ const STATUS_TITLE = 'retire-status-title';
 export function RetireStrip({ floor, row }: { readonly floor: FloorState; readonly row: AgentRow | null }) {
   const retire = useSyncExternalStore(subscribeToRetire, getRetireState, getRetireState);
   return <RetireStripView retire={retire} floor={floor} row={row} session={floorSessionGeneration()} />;
+}
+
+/** Retire as an item of the agent's More menu. It opens the same confirmation as the strip's button. */
+export function RetireMenuItem({ floor, row }: { readonly floor: FloorState; readonly row: AgentRow | null }) {
+  const retire = useSyncExternalStore(subscribeToRetire, getRetireState, getRetireState);
+  const offer = retireOffer(floor, row);
+  if (offer.kind === 'none') return null;
+  if (offer.kind === 'halted') return <MenuItem danger disabled icon={<UserMinus {...ICON} />} title={HALTED_LINE}
+    className="retire-open" onSelect={() => {}}>Retire agent</MenuItem>;
+  const session = floorSessionGeneration();
+  const waiting = blocksRetire(retire, offer, session);
+  return <MenuItem danger icon={<UserMinus {...ICON} />} className="retire-open" data-retire-offer={offer.agent}
+    aria-haspopup="dialog" aria-disabled={waiting || undefined}
+    title={waiting ? 'Wait for the current retirement request or check its status.' : undefined}
+    onSelect={() => confirmRetire(offer, session)}>Retire agent</MenuItem>;
 }
 
 export function RetireStripView({ retire, floor, row, session }: {
@@ -97,23 +115,25 @@ export function RetireDialogView({ retire, control, floor, session }: {
   const pause = controlGate(floor, row);
   const pauseInstead = pause.open && pause.offer === 'pause' && !blocksControls(control, pause, session);
   return (
-    <dialog ref={openConfirmation} className="retire-dialog" data-retire-dialog={offer.agent}
+    <Dialog ref={openConfirmation} size="sm" className="retire-dialog" data-retire-dialog={offer.agent}
       aria-labelledby="retire-dialog-title" aria-describedby="retire-dialog-text" onCancel={cancelRetire}>
-      <h2 id="retire-dialog-title">{`Retire ${offer.name}?`}</h2>
-      <p id="retire-dialog-text">{CONSEQUENCES}</p>
-      <div className="retire-actions">
-        {/* The second click of a double-click on Retire outside would land here. */}
-        <button type="button" className="retire-confirm"
-          onClick={(event) => { if (event.detail < 2) void submitRetire(offer, browserControlDeps); }}>Retire</button>
-        <button type="button" className="retire-cancel" onClick={cancelRetire}>Cancel</button>
-        {pauseInstead ? (
-          <button type="button" className="retire-pause"
-            onClick={() => { cancelRetire(); void submitControl('pause', pause, browserControlDeps); }}>
-            Pause instead
-          </button>
-        ) : null}
+      <div className="grid gap-4 p-6">
+        <h2 id="retire-dialog-title" className="m-0 font-sans text-title font-semibold text-ink">{`Retire ${offer.name}?`}</h2>
+        <p id="retire-dialog-text" className="m-0 text-body text-muted">{CONSEQUENCES}</p>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button className="retire-cancel" onClick={cancelRetire}>Cancel</Button>
+          {pauseInstead ? (
+            <Button className="retire-pause"
+              onClick={() => { cancelRetire(); void submitControl('pause', pause, browserControlDeps); }}>
+              Pause instead
+            </Button>
+          ) : null}
+          {/* The second click of a double-click on Retire outside would land here. */}
+          <Button variant="danger" className="retire-confirm"
+            onClick={(event) => { if (event.detail < 2) void submitRetire(offer, browserControlDeps); }}>Retire</Button>
+        </div>
       </div>
-    </dialog>
+    </Dialog>
   );
 }
 

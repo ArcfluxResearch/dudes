@@ -601,7 +601,7 @@ test('losing authentication clears the panel: a 403, no session, or a new sessio
 });
 
 test('the Memory tab sits after Git, and the drawer always offers it for a live agent', () => {
-  const tabs = (html) => [...html.matchAll(/role="tab" class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1]);
+  const tabs = (html) => [...html.matchAll(/role="tab"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1]);
   const panel = (label) => createElement('p', null, label);
   assert.deepEqual(tabs(renderToStaticMarkup(createElement(AgentDetail, { row: ada, git: panel('Git'), memory: panel('Memory'),
     messages: panel('Messages') }))), ['Overview', 'Git', 'Memory', 'Messages']);

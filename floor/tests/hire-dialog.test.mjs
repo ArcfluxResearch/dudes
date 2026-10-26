@@ -33,11 +33,12 @@ test('ESCAPE_DISMISS and OUTSIDE_DISMISS mutants route native dialog exits throu
   const syntax = ts.createSourceFile('shell.tsx', shell, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let dialog;
   function visit(node) {
-    if (ts.isJsxOpeningElement(node) && node.tagName.getText(syntax) === 'dialog') dialog = node;
+    if (ts.isJsxOpeningElement(node) && node.tagName.getText(syntax) === 'Dialog') dialog = node;
     ts.forEachChild(node, visit);
   }
   visit(syntax);
   assert.ok(dialog, 'the Hire wizard needs a native modal dialog');
+  assert.match(await readFile(resolve(root, 'src/ui/Dialog.tsx'), 'utf8'), /<dialog ref=\{ref\}/, 'Dialog draws the native dialog element');
   const props = Object.fromEntries(dialog.attributes.properties.filter(ts.isJsxAttribute)
     .map((entry) => [entry.name.getText(syntax), entry.initializer?.getText(syntax)]));
   assert.equal(props.onCancel, '{(event) => { event.preventDefault(); closeHire(); }}');

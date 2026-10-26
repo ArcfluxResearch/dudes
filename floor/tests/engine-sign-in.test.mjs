@@ -360,9 +360,9 @@ const wizard = () => renderToStaticMarkup(createElement(HireWizardView, {
   hire: hire.getHireState(), floor: getFloorState(), onClose() {},
 }));
 
-const NEXT_DISABLED = /<button type="button" class="hire-next" aria-disabled="true">Next<\/button>/;
-const HIRE_DISABLED = /<button type="button" class="hire-submit" aria-disabled="true"/;
-const HIRE_OFFERED = /class="hire-submit"/;
+const NEXT_DISABLED = /<button type="button" class="[^"]*\bhire-next" aria-disabled="true">Next<\/button>/;
+const HIRE_DISABLED = /<button type="button" class="[^"]*\bhire-submit" aria-disabled="true"/;
+const HIRE_OFFERED = /class="[^"]*\bhire-submit"/;
 
 test('the Hire wizard holds on Engine while the chosen engine is signed out, offers Sign in, and shows no command', () => {
   const found = { provider: 'claude', program: 'claude', found: true, path: '~/bin/claude' };
@@ -371,7 +371,7 @@ test('the Hire wizard holds on Engine while the chosen engine is signed out, off
   hire.showSection('engine');
   const html = wizard();
   assert.match(html, /role="alert"><p>Claude is installed but not signed in, so this agent could not start\./);
-  assert.match(html, /<button type="button">Check again<\/button>/);
+  assert.match(html, /<button type="button" class="[^"]*">Check again<\/button>/);
   assert.match(html, />Sign in to Claude</);
   assert.match(html, HIRE_DISABLED);
   assert.doesNotMatch(html, /<code>/, 'no terminal command is shown on this path');
@@ -395,7 +395,7 @@ test('a missing engine keeps its install command and Check again, and offers no 
   const html = wizard();
   assert.match(html, /was not found on this computer/);
   assert.match(html, /<code>npm install -g @anthropic-ai\/claude-code<\/code>/);
-  assert.match(html, /<button type="button">Check again<\/button>/);
+  assert.match(html, /<button type="button" class="[^"]*">Check again<\/button>/);
   assert.doesNotMatch(html, /Sign in to/);
 });
 

@@ -331,21 +331,23 @@ test('the retire sibling reaches the store as exactly {}, apart from control, an
 test('Retire is offered in the detail and the terminal view only with the sibling, and never for a halted agent', () => {
   subscribe({ agents: [agent(), GRACE_ROW({ halted: true, paused: true })] });
   const button = `<button type="button" class="retire-open" data-retire-offer="${ADA}" aria-haspopup="dialog">Retire</button>`;
-  // In the selected agent's detail, after Pause.
+  // In the selected agent's detail, as an item of the More actions menu.
+  const item = new RegExp(`<button type="button" role="menuitem" tabindex="-1" data-retire-offer="${ADA}" aria-haspopup="dialog"[^>]*class="[^"]*\\bretire-open"[^>]*>(?:<svg[^>]*>[\\s\\S]*?</svg>)?Retire agent</button>`);
   const detail = center();
-  assert.ok(detail.includes(`<div class="retire-offer">${button}</div>`), 'Retire is not in the agent’s detail');
-  assert.match(detail, /<aside class="agent-detail"[\s\S]*class="control-pause"[\s\S]*class="retire-open"/);
+  assert.match(detail, item, 'Retire is not in the agent’s detail');
+  assert.match(detail, /<aside class="agent-detail"[\s\S]*role="menu"[\s\S]*\bretire-open"/);
+  assert.match(detail, /<aside class="agent-detail"[\s\S]*class="[^"]*\bcontrol-pause"/);
   // In the header of the agent's terminal view.
   assert.match(terminalHeader(), new RegExp(`<div class="terminal-actions">[\\s\\S]*${button}`));
   // A paused agent is retired like any other.
   delta([agent({ paused: true, control_lsn: RETIRE_LSN }), GRACE_ROW({ halted: true, paused: true })], 10);
-  assert.ok(center().includes(button), 'a paused agent is not offered Retire');
+  assert.match(center(), item, 'a paused agent is not offered Retire');
 
   const halted = `<div class="retire-offer"><p class="hire-note">${HALTED_LINE}</p></div>`;
-  for (const html of [center(GRACE), terminalHeader(GRACE)]) {
-    assert.ok(html.includes(halted), 'a halted agent is not told how it is retired');
-    assert.doesNotMatch(html, /data-retire-offer/);
-  }
+  assert.ok(terminalHeader(GRACE).includes(halted), 'a halted agent is not told how it is retired');
+  assert.match(center(GRACE), new RegExp(`<button type="button" role="menuitem" tabindex="-1" disabled="" title="${HALTED_LINE}"[^>]*class="[^"]*\\bretire-open"`),
+    'a halted agent’s menu item is not disabled with the reason');
+  for (const html of [center(GRACE), terminalHeader(GRACE)]) assert.doesNotMatch(html, /data-retire-offer/);
   assert.deepEqual(offer(GRACE), { kind: 'halted' });
   retire.confirmRetire(offer(GRACE), 1);
   assert.equal(retire.getRetireState().confirming, null, 'a halted agent’s confirmation opened');
@@ -354,7 +356,7 @@ test('Retire is offered in the detail and the terminal view only with the siblin
   const none = /retire-|data-retire-|>Retire<|agent\.retire/;
   resetFloorStore();
   subscribe({ agents: [agent(), GRACE_ROW({ halted: true })], retire: null });
-  assert.match(center(), /class="control-pause"/, 'the detail is not drawn, so the absence below proves nothing');
+  assert.match(center(), /class="[^"]*\bcontrol-pause"/, 'the detail is not drawn, so the absence below proves nothing');
   for (const html of [center(), center(GRACE), terminalHeader(), terminalHeader(GRACE)]) assert.doesNotMatch(html, none);
   resetFloorStore();
   subscribe();
@@ -383,16 +385,16 @@ test('the confirmation comes before any request, and Cancel and the dialog’s c
     assert.equal(retire.getRetireState().confirming, ADA);
     assert.equal(calls.length, 0, 'pressing Retire sent a request before the confirmation');
     const html = dialog();
-    assert.match(html, new RegExp(`^<dialog class="retire-dialog" data-retire-dialog="${ADA}" `
-      + 'aria-labelledby="retire-dialog-title" aria-describedby="retire-dialog-text">'));
+    assert.match(html, new RegExp(`^<dialog data-retire-dialog="${ADA}" `
+      + 'aria-labelledby="retire-dialog-title" aria-describedby="retire-dialog-text" class="[^"]*retire-dialog">'));
     assert.equal(accessibleNameOfHeading(html, 'retire-dialog-title'), 'Retire Ada?');
-    assert.ok(html.includes(`<p id="retire-dialog-text">${CONSEQUENCES}</p>`), 'the consequences are not said');
-    assert.deepEqual(buttonsIn(html), ['Retire', 'Cancel', 'Pause instead']);
+    assert.match(html, new RegExp(`<p id="retire-dialog-text" class="[^"]*">${CONSEQUENCES}</p>`), 'the consequences are not said');
+    assert.deepEqual(buttonsIn(html), ['Cancel', 'Pause instead', 'Retire']);
     assert.equal([...center().matchAll(/<dialog /g)].length, 1, 'the stage does not draw the one confirmation');
 
     // Cancel sends nothing, and neither does the dialog's cancel, which Escape fires on a modal dialog.
     const tree = DialogView(dialogProps(1));
-    assert.equal(tree.type, 'dialog');
+    assert.equal(tree.type.name, 'Dialog');
     assert.equal(tree.props.ref, openConfirmation, 'the confirmation is not opened as a modal dialog');
     find(tree, byClass('retire-cancel')).props.onClick();
     assert.equal(retire.getRetireState().confirming, null);
@@ -480,7 +482,7 @@ test('focus starts on Cancel, and closing the confirmation hands it back', () =>
   // The element that selector names is the confirmation's Cancel.
   subscribe();
   retire.confirmRetire(offer(), 1);
-  assert.match(dialog(), /<button type="button" class="retire-cancel">Cancel<\/button>/);
+  assert.match(dialog(), /<button type="button" class="[^"]*retire-cancel">Cancel<\/button>/);
 });
 
 test('Pause instead appears only while the control module offers Pause, sends that pause, and closes the confirmation', async () => {
@@ -508,7 +510,7 @@ test('Pause instead appears only while the control module offers Pause, sends th
     control.resetControl();
     subscribe(snapshot);
     retire.confirmRetire(offer(), 1);
-    assert.deepEqual(buttonsIn(dialog()), ['Retire', 'Cancel'], `${label} was offered Pause instead`);
+    assert.deepEqual(buttonsIn(dialog()), ['Cancel', 'Retire'], `${label} was offered Pause instead`);
   }
   resetFloorStore();
   retire.resetRetire();
@@ -516,7 +518,7 @@ test('Pause instead appears only while the control module offers Pause, sends th
   subscribe();
   await control.submitControl('pause', control.controlGate(getFloorState(), rowOf()), daemon(PENDING));
   retire.confirmRetire(offer(), 1);
-  assert.deepEqual(buttonsIn(dialog()), ['Retire', 'Cancel'], 'Pause instead was offered while a pause is unresolved');
+  assert.deepEqual(buttonsIn(dialog()), ['Cancel', 'Retire'], 'Pause instead was offered while a pause is unresolved');
 });
 
 // --- the request --------------------------------------------------------------------------
@@ -566,7 +568,7 @@ test('each state wording is rendered from projection rows and module memory', as
     + `data-retire-outcome="sending" data-retire-agent-id="${ADA}">`));
   assert.equal(accessibleNameOfHeading(html, 'retire-status-title'), 'Retire request Ada');
   assert.ok(html.includes('<p class="retire-pending" role="status">Retiring Ada.</p>'));
-  for (const id of [ADA, GRACE]) assert.match(stripView(id), /class="retire-open"[^>]*aria-disabled="true"/, id);
+  for (const id of [ADA, GRACE]) assert.match(stripView(id), /class="[^"]*\bretire-open"[^>]*aria-disabled="true"/, id);
   retire.confirmRetire(offer(GRACE), net.generation);
   assert.equal(retire.getRetireState().confirming, null, 'a confirmation opened while a request was out');
   reply.release(RETIRED);

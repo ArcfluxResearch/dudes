@@ -17,6 +17,7 @@ import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import { getOfficePin, setOfficePin, subscribeToOfficePin } from '../view.ts';
 import { desktopNotificationPreference } from '../desktopNotifications.ts';
 import { releaseNotesLabel, releaseNotesUrl } from '../releaseLinks.ts';
+import { Disclosure, Panel, Switch } from '../../ui/index.ts';
 import { DevicesSection } from '../devices/DevicesSection.tsx';
 import { AddProject, RemoveNotice, RemoveProject } from '../project/AddProject.tsx';
 
@@ -151,20 +152,34 @@ export function FloorSwitches({ report, headingId = 'settings-switches' }: {
   readonly report: SettingsReport;
   readonly headingId?: string;
 }) {
-  return <section aria-labelledby={headingId}><h3 id={headingId}>Floor switches</h3>
-    <dl><div><dt>Chat messages</dt><dd>Always on, with no setting</dd></div>
-    {SWITCHES.map(([key, label, says]) => {
-      const on = report.switches[key];
-      return <div key={key}><dt>{label}</dt>
-        <dd><span className="settings-says">{says}</span>{' '}
-          {key === 'diff' && on && !report.switches.git ? 'On, but it needs Show changed files' : on ? 'On' : 'Off'}
-          {key === 'renew' && !on ? ' It needs Change tasks and Hire agents.' : null}{' '}
-          <SwitchButton settingKey={`floor.${key}`} label={label} next={on ? 'off' : 'on'} /></dd></div>;
-    })}</dl>
-    <p>Recovery also needs Pause, resume and rename. Spending limits still apply.</p>
-    <details><summary>Configuration details</summary><dl>{SWITCHES.map(([key, label]) =>
-      <div key={key}><dt>{label}</dt><dd><code>floor.{key}</code></dd></div>)}</dl></details>
-  </section>;
+  const edit = useSyncExternalStore(subscribeToSettingsEdit, getSettingsEditState, getSettingsEditState);
+  return <Panel title="Floor switches" headingId={headingId} className="floor-switches">
+    <ul className="ui m-0 grid list-none divide-y divide-line p-0">
+      <li className="pb-3">
+        <div className="grid gap-0.5">
+          <span className="text-base font-medium text-ink">Chat messages</span>
+          <span className="text-small text-muted">Always on, with no setting</span>
+        </div>
+      </li>
+      {SWITCHES.map(([key, label, says]) => {
+        const on = report.switches[key];
+        const needs = key === 'diff' && on && !report.switches.git ? 'On, but it needs Show changed files.'
+          : key === 'renew' && !on ? 'It needs Change tasks and Hire agents.' : null;
+        return <li key={key} className="py-3 last:pb-0" data-switch={key}>
+          <Switch checked={on} label={label} aria-disabled={edit.sending !== null || undefined}
+            title={edit.sending === null ? undefined : 'Wait for the current setting to be saved.'}
+            description={needs === null ? says : <>{says} {needs}</>}
+            onCheckedChange={(next) => { if (edit.sending === null) void changeSetting(`floor.${key}`, next ? 'on' : 'off'); }} />
+          <div className="mt-2 text-small text-muted empty:hidden"><EditOutcome settingKey={`floor.${key}`} label={`Turn ${on ? 'off' : 'on'} ${label}`} /></div>
+        </li>;
+      })}
+    </ul>
+    <p className="mt-4 mb-0 text-small text-muted">Recovery also needs Pause, resume and rename. Spending limits still apply.</p>
+    <Disclosure className="mt-2" summary="Configuration details">
+      <ul className="ui m-0 grid list-none gap-1 p-0">{SWITCHES.map(([key, label]) =>
+        <li key={key} className="flex flex-wrap items-baseline justify-between gap-2 text-small text-muted"><span>{label}</span><code className="font-mono">floor.{key}</code></li>)}</ul>
+    </Disclosure>
+  </Panel>;
 }
 
 /** Turns one switch or engine on or off through the daemon, which keeps the file's start rules. */

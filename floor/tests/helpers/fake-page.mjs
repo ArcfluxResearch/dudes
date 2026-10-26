@@ -77,7 +77,7 @@ export function fakePage(layout = {}) {
     }
   }
   page.document = { nodeType: 9, addEventListener() {}, removeEventListener() {},
-    createElement: (tag) => new Element(tag), createTextNode: (text) => new Text(text),
+    createElement: (tag) => new Element(tag), createElementNS: (_namespace, tag) => new Element(tag), createTextNode: (text) => new Text(text),
     getElementById: (id) => page.document.body.querySelector(`[id="${id}"]`) };
   page.document.defaultView = { document: page.document, HTMLIFrameElement: class {} };
   page.document.body = new Element('body');

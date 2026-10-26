@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Ellipsis } from 'lucide-react';
+import { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 
+import { ICON } from '../ui/cx.ts';
+import { Badge, Button, Disclosure, Menu, MenuSeparator, Tab, TabList } from '../ui/index.ts';
 import { accentOf, accessoryOf, lookOf } from './appearance.ts';
 import { Portrait } from './Portrait.tsx';
 import { AgentOverview } from './AgentOverview.tsx';
@@ -15,7 +18,9 @@ import type { NeedAction } from './needs.ts';
 import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
 import { HIRE_ENGINES } from './onboarding/catalog.ts';
 import { NameEditor } from './rename/NameEditor.tsx';
-import { LookEditor } from './look/LookEditor.tsx';
+import { LookEditor, LookMenuItem } from './look/LookEditor.tsx';
+import { lookAvailable } from './look/look.ts';
+import { getFloorState, subscribeToFloor } from './floor/store.ts';
 import { ModelEditor } from './model/ModelEditor.tsx';
 import { beginRename } from './rename/rename.ts';
 import { automaticHoldOf } from './automaticHold.ts';
@@ -83,18 +88,18 @@ export function AgentDetail({
     { id: 'messages', label: 'Messages', content: messages },
   ];
   function act(action: NeedAction): ReactNode {
-    if (action.kind === 'question') return <button type="button" onClick={(event) => {
+    if (action.kind === 'question') return <Button variant="primary" onClick={(event) => {
       const question = event.currentTarget.closest('.agent-detail')?.querySelector<HTMLElement>('.agent-detail-question');
       question?.focus();
       question?.scrollIntoView({ block: 'nearest' });
-    }}>{action.label}</button>;
+    }}>{action.label}</Button>;
     if (action.kind === 'ticket') return onOpenTicket === undefined ? null
-      : <button type="button" onClick={() => onOpenTicket(action.card)}>{action.label}</button>;
+      : <Button variant="primary" onClick={() => onOpenTicket(action.card)}>{action.label}</Button>;
     if (action.label !== 'Talk') return null;
     return <>
       {tab !== 'chat' && panels.some((panel) => panel.id === 'chat' && panel.content !== null)
-        ? <button type="button" onClick={() => onTabChange('chat')}>{action.label}</button> : null}
-      {taskForm === null ? null : <details className="agent-overview-task"><summary>Give a task</summary>{taskForm}</details>}
+        ? <Button variant="primary" onClick={() => onTabChange('chat')}>{action.label}</Button> : null}
+      {taskForm === null ? null : <Disclosure className="agent-overview-task basis-full" summary="Give a task">{taskForm}</Disclosure>}
     </>;
   }
   const available = panels.filter((panel) => panel.content !== null);
@@ -134,52 +139,54 @@ export function AgentDetail({
     <aside ref={detail} className="agent-detail" aria-label="Selected agent details" data-selected-agent-id={row.id} data-detail-tab={selected}
       style={{ '--agent': accentOf(row) } as CSSProperties}>
       <div className="agent-detail-context">
-      <header className="agent-detail-head">
-        <Portrait className="agent-portrait agent-detail-portrait" look={lookOf(row)} accessory={accessoryOf(row.role)}
-          name={row.name} />
-        <div className="agent-detail-identity">
-          <div className="agent-detail-name">
-            <h2 id={AGENT_DETAIL_HEADING_ID} tabIndex={-1} onDoubleClick={() => beginRename(`detail:${row.id}`, row)}>{value(row.name)}</h2>
-            <NameEditor row={row} surface="detail" showName={false} />
+      <header className="agent-detail-head ui grid gap-4 font-sans text-ink">
+        <div className="flex items-start gap-3 pr-8">
+          <Portrait className="agent-portrait agent-detail-portrait shrink-0" look={lookOf(row)} accessory={accessoryOf(row.role)}
+            name={row.name} />
+          <div className="grid min-w-0 flex-1 gap-0.5" data-agent-identity="">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <h2 id={AGENT_DETAIL_HEADING_ID} tabIndex={-1} onDoubleClick={() => beginRename(`detail:${row.id}`, row)}
+                className="ui m-0 min-w-0 rounded-md font-sans text-page font-semibold text-ink outline-0 [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-solid focus-visible:outline-focus">{value(row.name)}</h2>
+              <NameEditor row={row} surface="detail" showName={false} />
+            </div>
+            <p className="agent-detail-status m-0 text-base text-muted [overflow-wrap:anywhere]">
+              {value(row.role)}
+              {typeof row.provider === 'string' && row.provider !== '' ? ` · ${providerLabel(row.provider)}` : ''}
+              {fields.liveActivity === null ? null : <>{' · '}<span data-live-activity={fields.liveActivity}>{fields.liveActivity}</span></>}
+              {streamState === null ? null : <>{' · '}<span className="stream-state" role="status">{streamState}</span></>}
+            </p>
           </div>
-          <p className="agent-detail-status">
-            {value(row.role)}
-            {typeof row.provider === 'string' && row.provider !== '' ? ` · ${providerLabel(row.provider)}` : ''}
-            {fields.liveActivity === null ? null : <>{' · '}<span data-live-activity={fields.liveActivity}>{fields.liveActivity}</span></>}
-            {streamState === null ? null : <>{' · '}<span className="stream-state" role="status">{streamState}</span></>}
-          </p>
+          <MoreActions row={row} retire={retire} />
         </div>
         {selection}
-        <section className="agent-detail-state" aria-label="State" data-state={need.state}>
-          <p className="agent-detail-state-line"><span className="crew-chip" data-state={need.state}>{NEED_LABEL[need.state]}</span>
-            {' '}<span className="agent-detail-state-text">{sentence}</span></p>
-          <div className="agent-detail-primary">
+        <section className="grid gap-3" aria-label="State" data-state={need.state}>
+          <p className="m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-body"><Badge state={need.state} />
+            {' '}<span className="text-ink" data-state-sentence="">{sentence}</span></p>
+          <div className="flex flex-wrap items-center gap-2 empty:hidden" data-primary-actions="">
             {resumeInOverview ? control : null}
             {act(need.action)}
             {need.second === null ? null : act(need.second)}
           </div>
         </section>
-        <div className="agent-detail-actions">
-          {resumeInOverview ? null : control}
-          <details className="agent-more">
-            <summary aria-label="More actions" title="More actions">…</summary>
-            <div className="agent-more-body"><LookEditor row={row} />{retire}{enable}</div>
-          </details>
+        {resumeInOverview ? null : control}
+        <LookEditor row={row} />
+        <div className="grid gap-1">
+          <ModelEditor row={row} />
+          {terminal}
+          {attachNote}
         </div>
-        <ModelEditor row={row} />
-        {terminal}
-        {attachNote}
+        {enable}
         {fields.question === '' ? null : (
-          <section className="agent-detail-question" aria-label="Waiting question" tabIndex={-1}>
-            <h3>Waiting question</h3>
-            <p>{fields.question}</p>
+          <section className="agent-detail-question grid gap-2 rounded-lg border border-line bg-warn-soft p-3 outline-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-solid focus-visible:outline-focus" aria-label="Waiting question" tabIndex={-1}>
+            <h3 className="ui m-0 font-sans text-title font-semibold text-ink">Waiting question</h3>
+            <p className="m-0 text-body text-ink">{fields.question}</p>
             {answer}
           </section>
         )}
       </header>
-      <div ref={tabRow} className="agent-detail-tabs" role="tablist" aria-label="Agent detail sections"
+      <TabList ref={tabRow} className="agent-detail-tabs mt-4 mb-3 [scrollbar-width:none]" aria-label="Agent detail sections"
         aria-describedby={tabs.length > 1 ? 'agent-detail-tab-hint' : undefined}>
-        {available.map(({ id, label }) => <button key={id} type="button" role="tab" className="agent-detail-tab"
+        {available.map(({ id, label }) => <Tab key={id} className="agent-detail-tab"
           id={`agent-detail-tab-${id}`} data-detail-section={id} aria-controls={`agent-detail-panel-${id}`}
           aria-selected={selected === id} tabIndex={selected === id ? 0 : -1}
           ref={handFocusOnLeave} data-focus-on-leave="agent-detail-tab-overview"
@@ -191,9 +198,9 @@ export function AgentDetail({
             event.preventDefault();
             onTabChange(target);
             event.currentTarget.ownerDocument.getElementById(`agent-detail-tab-${target}`)?.focus();
-          }}>{label}</button>)}
-      </div>
-      {tabs.length > 1 ? <p id="agent-detail-tab-hint" className="agent-detail-tab-hint">Scroll for more sections · Use arrow keys</p> : null}
+          }}>{label}</Tab>)}
+      </TabList>
+      {tabs.length > 1 ? <p id="agent-detail-tab-hint" className="agent-detail-tab-hint m-0 mb-3 text-caption text-subtle">Scroll for more sections · Use arrow keys</p> : null}
       </div>
       {available.map(({ id, content }) => <section key={id} id={`agent-detail-panel-${id}`}
         role="tabpanel" data-detail-section={id} aria-labelledby={`agent-detail-tab-${id}`} tabIndex={0} hidden={selected !== id}
@@ -205,4 +212,15 @@ export function AgentDetail({
       </section>)}
     </aside>
   );
+}
+
+/** The More actions menu: what is not the main action. It is not drawn when it would hold nothing. */
+function MoreActions({ row, retire }: { readonly row: AgentRow; readonly retire: ReactNode }) {
+  const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
+  if (!lookAvailable(floor, row) && retire === null) return null;
+  return <Menu label="More actions" trigger={<Ellipsis {...ICON} />}>
+    <LookMenuItem row={row} />
+    {lookAvailable(floor, row) && retire !== null ? <MenuSeparator /> : null}
+    {retire}
+  </Menu>;
 }

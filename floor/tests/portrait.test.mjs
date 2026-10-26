@@ -50,9 +50,11 @@ const row = { id: '01ARZ3NDEKTSV4RRFFQ69G5FAV', name: 'Jonas', role: 'frontend b
 
 test('the drawer portrait is the agent\'s figure, hidden from assistive technology beside its name', () => {
   const html = renderToStaticMarkup(createElement(AgentDetail, { row }));
-  const header = html.match(/<header class="agent-detail-head">([\s\S]*?)<\/header>/)?.[1] ?? '';
-  assert.match(header, /^<canvas class="agent-portrait agent-detail-portrait portrait-figure" aria-hidden="true" data-portrait="figure" data-skin="#e8b98f" data-hair="#6b3b2a" data-shirt="#397ca9"><\/canvas><div class="agent-detail-identity"><div class="agent-detail-name"><h2 id="agent-detail-title" tabindex="-1">Jonas<\/h2>/);
-  assert.doesNotMatch(html, /<svg|crispEdges/, 'the pixel portrait is still drawn');
+  const header = html.match(/<header class="agent-detail-head[^"]*">([\s\S]*?)<\/header>/)?.[1] ?? '';
+  assert.match(header, /^<div class="[^"]*"><canvas class="agent-portrait agent-detail-portrait[^"]*portrait-figure" aria-hidden="true" data-portrait="figure" data-skin="#e8b98f" data-hair="#6b3b2a" data-shirt="#397ca9"><\/canvas><div[^>]*><div class="[^"]*"><h2 id="agent-detail-title" tabindex="-1"[^>]*>Jonas<\/h2>/);
+  // The icons of the controls are inline svg, so the portrait is checked on its own: a canvas, and no pixel markup.
+  assert.doesNotMatch(header.slice(0, header.indexOf('</canvas>')), /<svg/, 'the pixel portrait is still drawn');
+  assert.doesNotMatch(html, /crispEdges/, 'the pixel portrait is still drawn');
 });
 
 test('the badge is the agent\'s initial on its Crew colour', () => {

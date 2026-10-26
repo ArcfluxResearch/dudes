@@ -10,7 +10,7 @@ const ITEMS = '[role="menuitem"]:not([aria-disabled="true"])';
 
 /**
  * A menu button and its `role="menu"` list. Focus moves into the list on open and comes back to the button on
- * Escape or after an item is chosen. The list is a child of the button's own wrapper, so it works inside a modal
+ * Escape or after an item is chosen. The list is drawn beside the button, so it works inside a modal
  * `dialog`, and it shows in the top layer so the dialog cannot clip it.
  */
 export function Menu({ label, trigger, children, className, align = 'end', ref }: {
@@ -74,7 +74,7 @@ export function Menu({ label, trigger, children, className, align = 'end', ref }
         if (event.key === 'ArrowDown') { event.preventDefault(); enter('first'); }
         else if (event.key === 'ArrowUp') { event.preventDefault(); enter('last'); }
       }}
-      className={cx(BUTTON_BASE, 'size-8 border-line-strong bg-surface text-ink hover:bg-surface-2', className)}>{trigger}</button>
+      className={cx(BUTTON_BASE, 'size-8 border-transparent bg-transparent text-muted hover:bg-surface-2 hover:text-ink', className)}>{trigger}</button>
     <div ref={list} id={`${made}-menu`} role="menu" aria-label={label} popover="manual" tabIndex={-1}
       onKeyDown={keyOf}
       className="ui fixed inset-auto m-0 box-border min-w-48 animate-pop overflow-y-auto rounded-lg border border-line bg-surface p-1 font-sans text-ink shadow-pop">

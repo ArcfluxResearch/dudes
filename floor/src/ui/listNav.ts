@@ -9,11 +9,11 @@ export function moveActive(entries: readonly Entry[], from: number, key: string)
   if (enabled.length === 0) return null;
   if (key === 'Home') return enabled[0]!;
   if (key === 'End') return enabled[enabled.length - 1]!;
-  const step = key === 'ArrowDown' ? 1 : key === 'ArrowUp' ? -1 : 0;
-  if (step === 0) return null;
-  const place = enabled.indexOf(from);
-  if (place === -1) return step === 1 ? enabled[0]! : enabled[enabled.length - 1]!;
-  return enabled[Math.min(enabled.length - 1, Math.max(0, place + step))]!;
+  if (key !== 'ArrowDown' && key !== 'ArrowUp') return null;
+  const last = enabled[enabled.length - 1]!;
+  if (key === 'ArrowDown') return enabled.find((at) => at > from) ?? (enabled.includes(from) ? from : last);
+  if (from === -1) return last;
+  return [...enabled].reverse().find((at) => at < from) ?? (enabled.includes(from) ? from : enabled[0]!);
 }
 
 export const TYPEAHEAD_MS = 600;

@@ -56,7 +56,7 @@ test('an idle agent with an accepted ticket shows it as Last finished and its Cu
   assert.match(html, /<h3>Current work<\/h3><\/div><p class="agent-overview-work-text">None<\/p>/);
   assert.match(html, /<section class="agent-overview-finished" aria-label="Last finished"><div class="agent-overview-section-head"><h3>Last finished<\/h3>/);
   assert.match(html, /<p class="agent-overview-work-text">Fix the parser<\/p><p class="agent-overview-finished-words">Done, accepted (13:41|1:41 PM)<\/p>/);
-  assert.match(html, /<span class="crew-chip" data-state="idle">Idle<\/span> <span class="agent-detail-state-text">Ready for a new task<\/span>/);
+  assert.match(html, /<span data-state="idle" class="[^"]*"><span aria-hidden="true" class="[^"]*"><\/span>Idle<\/span> <span class="text-ink" data-state-sentence="">Ready for a new task<\/span>/);
   assert.match(roster, /Last finished: Fix the parser/);
   assert.doesNotMatch(roster, /Nothing assigned/);
   const [need] = needs.needsOf(floor.agents, floor.cards);
@@ -74,7 +74,7 @@ test('an abandoned goal reads Abandoned, and work still under way stays Current 
   const adaHtml = panel(floor.agents.find((row) => row.id === ADA));
   assert.match(adaHtml, /<p class="agent-overview-work-text">Fix the parser<\/p>/);
   assert.doesNotMatch(adaHtml, /Last finished/);
-  assert.match(adaHtml, /<span class="agent-detail-state-text">Working on Fix the parser<\/span>/);
+  assert.match(adaHtml, /<span class="text-ink" data-state-sentence="">Working on Fix the parser<\/span>/);
 });
 
 test('a ticket queued for an agent with no goal reads the same in the panel and the roster', () => {

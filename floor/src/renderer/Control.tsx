@@ -3,6 +3,8 @@
 import type { ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
 
+import { cx } from '../ui/cx.ts';
+
 import { ArchivedAgents } from './ArchivedAgents.tsx';
 import type { RetiredAgentRow } from './archive.ts';
 import { LogPanel } from './LogPanel.tsx';
@@ -168,14 +170,17 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
     settings: <SettingsView floor={floor} onSetup={() => onView('setup')} />,
   };
   const label = labelOf(view);
+  // The Log and Settings pages are drawn with the owned components, so their page takes the neutral tokens too.
+  const neutral = view === 'log' || view === 'settings';
   return (
-    <section className="control-panel" id="control-panel" data-view={view} aria-labelledby={CONTROL_TITLE_ID}
+    <section className={cx('control-panel', neutral && 'ui bg-bg bg-none text-ink')} id="control-panel" data-view={view} aria-labelledby={CONTROL_TITLE_ID}
       data-page={isPageView(view) ? 'true' : undefined}
       ref={handFocusOnLeave} data-focus-on-leave={viewButtonId(view)}
       onKeyDown={(event) => { if (closesPanel(event)) { event.stopPropagation(); onClose(); } }}>
       <header className="control-panel-head">
         <div className="control-heading-copy">
-          <h2 id={CONTROL_TITLE_ID} tabIndex={-1} ref={focusOnArrival}>{label}</h2>
+          <h2 id={CONTROL_TITLE_ID} tabIndex={-1} ref={focusOnArrival}
+            className={neutral ? 'ui font-sans text-page font-semibold text-ink' : undefined}>{label}</h2>
           {view === 'board' ? <p className="board-description">Give work a clear next step.</p> : null}
         </div>
         {isPageView(view) ? null : <button type="button" className="panel-close" aria-label={`Close ${label}`} title="Close (Escape)"

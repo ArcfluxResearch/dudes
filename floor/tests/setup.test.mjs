@@ -240,9 +240,9 @@ const wizard = () => renderToStaticMarkup(createElement(HireWizardView, {
   hire: hire.getHireState(), floor: getFloorState(), onClose() {},
 }));
 
-const NEXT_DISABLED = /<button type="button" class="hire-next" aria-disabled="true">Next<\/button>/;
-const HIRE_DISABLED = /<button type="button" class="hire-submit" aria-disabled="true"/;
-const HIRE_OFFERED = /class="hire-submit"/;
+const NEXT_DISABLED = /<button type="button" class="[^"]*\bhire-next" aria-disabled="true">Next<\/button>/;
+const HIRE_DISABLED = /<button type="button" class="[^"]*\bhire-submit" aria-disabled="true"/;
+const HIRE_OFFERED = /class="[^"]*\bhire-submit"/;
 
 test('the Hire wizard holds on Engine when the enrolled engine is not found, and never on an absent report', () => {
   const missing = { providers: [{ provider: 'claude', program: 'claude', found: false }] };
@@ -252,7 +252,7 @@ test('the Hire wizard holds on Engine when the enrolled engine is not found, and
   let html = wizard();
   assert.match(html, /data-engine-found="false">Dudes did not find Claude’s command on this computer\./);
   assert.match(html, /role="alert"><p>Claude was not found on this computer, so this agent could not start\./);
-  assert.match(html, /<button type="button">Check again<\/button>/);
+  assert.match(html, /<button type="button" class="[^"]*">Check again<\/button>/);
   assert.match(html, HIRE_DISABLED);
 
   for (const [name, daemon] of [

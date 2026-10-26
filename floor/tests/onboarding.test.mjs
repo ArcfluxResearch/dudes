@@ -404,7 +404,7 @@ test('the three sections show only enrolled choices without passive limits', () 
     hire.editDraft({ workspaceId: 'repo_2' });
     sections[key] = render();
   }
-  const index = [...sections.identity.matchAll(/class="hire-index-label">([^<]+)</g)].map((match) => match[1]);
+  const index = [...sections.identity.matchAll(/class="hire-index-label[^"]*">([^<]+)</g)].map((match) => match[1]);
   assert.deepEqual(index, ['Who', 'Project', 'Engine']);
   assert.equal((sections.identity.match(/aria-current="step"/g) ?? []).length, 1);
 
@@ -516,8 +516,8 @@ test('with no project the Workspace step names the Settings controls to use', ()
   assert.match(html, /Agents work in a project, and none is set up yet\. Turn on Add and remove projects under Floor switches in Settings, then add your project folder\./);
   assert.equal((html.match(/none is set up yet/g) ?? []).length, 1);
   assert.doesNotMatch(html, /No enrolled project|operator enrolled|Hire needs a project|by its ID/);
-  assert.doesNotMatch(html, /class="hire-submit"/, 'Hire is not offered on the Project step');
-  assert.match(html, /class="hire-next"/);
+  assert.doesNotMatch(html, /class="[^"]*\bhire-submit"/, 'Hire is not offered on the Project step');
+  assert.match(html, /class="[^"]*\bhire-next"/);
   hire.moveSection(1, getFloorState());
   const afterNext = render();
   assert.equal((afterNext.match(/none is set up yet/g) ?? []).length, 1);
@@ -571,13 +571,13 @@ test('Next is the main button on every step but the last, and Hire is offered on
   for (const section of ['identity', 'workspace']) {
     hire.showSection(section);
     const html = render();
-    assert.match(html, /class="hire-next"[^>]*>Next</, section);
-    assert.doesNotMatch(html, /class="hire-submit"/, `${section} offers Hire`);
+    assert.match(html, /class="[^"]*\bhire-next"[^>]*>Next</, section);
+    assert.doesNotMatch(html, /class="[^"]*\bhire-submit"/, `${section} offers Hire`);
   }
   hire.showSection('engine');
   const last = render();
-  assert.match(last, /class="hire-submit"/);
-  assert.doesNotMatch(last, /class="hire-next"|>Next</, 'the last step offers Next');
+  assert.match(last, /class="[^"]*\bhire-submit"/);
+  assert.doesNotMatch(last, /class="[^"]*\bhire-next"|>Next</, 'the last step offers Next');
 });
 
 test('closing the dialog forgets a form nobody sent and a hire that completed, and keeps one the daemon has not settled', async () => {
@@ -613,7 +613,7 @@ test('a second Hire is refused while the first is in flight', async () => {
   const second = hire.submitHire(getFloorState(), slow);
   assert.equal(hire.getHireState().sending, true);
   hire.showSection('engine');
-  assert.match(render(), /class="hire-submit" aria-disabled="true"[^>]*aria-busy="true">Hiring…/);
+  assert.match(render(), /class="[^"]*\bhire-submit" aria-disabled="true"[^>]*aria-busy="true">Hiring…/);
   release();
   await Promise.all([first, second]);
   assert.equal(net.calls.length, 1, 'the second press sent a second Hire');
@@ -727,7 +727,7 @@ test('pending invents no agent and Check status reuses the same attempt', async 
   assert.doesNotMatch(html, new RegExp(AGENT));
   assert.match(html, /data-hire-outcome="pending"/);
   assert.match(html, />Check status</);
-  assert.doesNotMatch(html, /class="hire-submit"/, 'a second Hire is offered while pending');
+  assert.doesNotMatch(html, /class="[^"]*\bhire-submit"/, 'a second Hire is offered while pending');
   assert.equal(net.refreshes, 0);
 
   await hire.checkHireStatus(net);
@@ -960,12 +960,12 @@ test('Hire another waits for a fresh snapshot that offers a workspace', async ()
   await hireOnce(daemon(COMPLETE));
   assert.equal(getFloorState().onboarding !== null, true, 'this test drives the store by hand');
   invalidateFloorEpoch();
-  assert.match(render(), /<button type="button" aria-disabled="true"[^>]*>Hire another<\/button>/);
+  assert.match(render(), /<button type="button" class="[^"]*" aria-disabled="true"[^>]*>Hire another<\/button>/);
   subscribe({ agents: [agentRow(AGENT, 'Kim')], onboarding: null });
-  assert.match(render(), /<button type="button" aria-disabled="true"[^>]*>Hire another<\/button>/);
+  assert.match(render(), /<button type="button" class="[^"]*" aria-disabled="true"[^>]*>Hire another<\/button>/);
   assert.match(render(), /offers no further hires/);
   resubscribe({ agents: [agentRow(AGENT, 'Kim')] });
-  assert.match(render(), /<button type="button" aria-disabled="false"[^>]*>Hire another<\/button>/);
+  assert.match(render(), /<button type="button" class="[^"]*" aria-disabled="false"[^>]*>Hire another<\/button>/);
   hire.startAnotherHire();
   assert.equal(hire.getHireState().attempt, null);
   assert.equal(hire.getHireState().draft.name, '');
@@ -1178,7 +1178,7 @@ test('Identity offers the authored characters and palette with a live portrait p
   fillDraft();
   hire.showSection('identity');
   assert.match(render(), /Assigned on hire/);
-  const characters = [...render().matchAll(/<option value="([^"]*)"/g)].map((match) => match[1]);
+  const characters = [...render().matchAll(/role="option" data-value="([^"]*)"/g)].map((match) => match[1]);
   assert.deepEqual(characters, ['', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l']);
   const accents = [...render().matchAll(/<input type="radio"[^>]*name="accent"[^>]*value="([^"]*)"/g)].map((match) => match[1]);
   assert.deepEqual(accents, ['', 'amber', 'coral', 'mint', 'sky', 'violet', 'rose']);

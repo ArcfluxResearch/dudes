@@ -9,6 +9,9 @@ import ts from 'typescript';
 
 import { handFocusOnLeave } from '../src/renderer/focus.ts';
 
+/** The owned primitives that draw one native element each, read as the element they draw. */
+const OWNED_TAGS = { Button: 'button', Tab: 'button', Dialog: 'dialog' };
+
 function jsxElementsIn(text, file) {
   const syntax = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   assert.deepEqual(syntax.parseDiagnostics, [], `${file} no longer parses`);
@@ -21,7 +24,8 @@ function jsxElementsIn(text, file) {
         props[entry.name.getText(syntax)] = value === undefined ? ''
           : ts.isStringLiteral(value) ? value.text : value.expression?.getText(syntax);
       }
-      elements.push({ tag: node.tagName.getText(syntax), props });
+      const tag = node.tagName.getText(syntax);
+      elements.push({ tag: OWNED_TAGS[tag] ?? tag, props });
     }
     ts.forEachChild(node, visit);
   })(syntax);

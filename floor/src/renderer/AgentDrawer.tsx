@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
+import { Disclosure } from '../ui/index.ts';
 import { AgentDetail } from './AgentDetail.tsx';
 import { AnswerForm, AnswerStatus } from './answer/AnswerPanel.tsx';
 import { ControlStatus, ControlStrip } from './control/ControlPanel.tsx';
@@ -23,7 +24,7 @@ import { LookStatus } from './look/LookEditor.tsx';
 import { ModelStatus } from './model/ModelEditor.tsx';
 import { MessagesPanel } from './MessagesPanel.tsx';
 import { RenameStatus } from './rename/NameEditor.tsx';
-import { RetireStatus, RetireStrip } from './retire/RetirePanel.tsx';
+import { RetireMenuItem, RetireStatus } from './retire/RetirePanel.tsx';
 import { automaticHoldOf } from './automaticHold.ts';
 import { RESUME_SWITCH } from './ticket/stuck.ts';
 import { RecoveryPanel, RecoveryReceipts } from './recovery/RecoveryPanel.tsx';
@@ -101,7 +102,7 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, rec
     ? freeTaskAgents(floor).filter((agent) => agent.id === row.id) : [];
   const changeGoal = row !== null && goalGate(floor, row).open;
   return (
-    <div className="agent-drawer" id="selected-agent-detail" key={selectedId ?? 'none'}
+    <div className="agent-drawer ui bg-surface bg-none text-ink" id="selected-agent-detail" key={selectedId ?? 'none'}
       ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo}>
       {row === null ? (
         <header className="agent-detail-head">
@@ -129,14 +130,14 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, rec
             ? <p className="settings-guidance">Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</p>
             : <ControlStrip floor={floor} row={row} />}
           recovery={<RecoveryPanel floor={floor} row={row} onReadReceipt={onReadRecoveryReceipt} />}
-          retire={switchedOff.includes('retire') ? null : <RetireStrip floor={floor} row={row} />}
+          retire={switchedOff.includes('retire') ? null : <RetireMenuItem floor={floor} row={row} />}
           terminal={attachOff ? null : <TerminalAttach floor={floor} row={row} />}
           attachNote={attachOff && row.provider === 'claude'
             ? <p className="agent-attach-note">To open the real CLI, turn on Attach terminals in Settings.</p> : null}
-          enable={switchedOff.length === 0 ? null : <details className="enable-controls">
-            <summary>Enable more controls <span className="enable-controls-count">{switchedOff.length}</span></summary>
+          enable={switchedOff.length === 0 ? null : <Disclosure className="basis-full"
+            summary={<>Enable more controls <span className="enable-controls-count text-small text-subtle">{switchedOff.length}</span></>}>
             {switchedOff.map((control) => <UnavailableControls key={control} floor={floor} control={control} />)}
-          </details>}
+          </Disclosure>}
           answer={detailTab === 'chat' && chatGate(floor, row).open ? null
             : <AnswerForm floor={floor} row={row} leaveFocusTo={AGENT_DETAIL_HEADING_ID} />}
           onOpenTicket={onOpenTicket}

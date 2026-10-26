@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { Pencil } from 'lucide-react';
 import { useSyncExternalStore } from 'react';
 
 import { floorSessionGeneration } from '../../session.ts';
+import { ICON } from '../../ui/cx.ts';
+import { Button, Input } from '../../ui/index.ts';
 import { getFloorState, subscribeToFloor } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { beginRename, browserRenameDeps, cancelRename, checkRename, editRename, getRenameState,
@@ -20,9 +23,9 @@ export function NameEditor({ row, surface, showName = true }: {
   if (!renameAvailable(floor, row)) return showName ? <>{name}</> : null;
   const blocked = renameBlocked(state, floorSessionGeneration());
   const mine = state.attempt?.payload.agent === row.id;
-  return <span className="agent-name-editor" data-rename-agent-id={row.id}>
-    {state.editor === editor && !blocked ? <span className="agent-name-form">
-      <input autoFocus aria-label={`New name for ${name}`} value={state.draft}
+  return <span className="agent-name-editor inline-flex flex-wrap items-center gap-1.5" data-rename-agent-id={row.id}>
+    {state.editor === editor && !blocked ? <span className="agent-name-form flex flex-wrap items-center gap-1.5">
+      <Input autoFocus aria-label={`New name for ${name}`} value={state.draft} size="sm" className="w-40"
         onFocus={(event) => event.currentTarget.select()}
         onChange={(event) => editRename(event.currentTarget.value)}
         onKeyDown={(event) => {
@@ -33,14 +36,14 @@ export function NameEditor({ row, surface, showName = true }: {
             event.preventDefault(); void submitRename(row, browserRenameDeps);
           }
         }} />
-      <button type="button" aria-label={`Save name for ${name}`} disabled={nameProblem(state.draft) !== null}
-        onClick={() => { void submitRename(row, browserRenameDeps); }}>Save</button>
-      <button type="button" onClick={cancelRename}>Cancel</button>
-      {nameProblem(state.draft) === null ? null : <small role="status">{nameProblem(state.draft)}</small>}
+      <Button variant="primary" size="sm" label={`Save name for ${name}`} disabled={nameProblem(state.draft) !== null}
+        onClick={() => { void submitRename(row, browserRenameDeps); }}>Save</Button>
+      <Button size="sm" onClick={cancelRename}>Cancel</Button>
+      {nameProblem(state.draft) === null ? null : <small role="status" className="text-small text-danger">{nameProblem(state.draft)}</small>}
     </span> : <>
       {showName ? <span>{name}</span> : null}
-      <button type="button" aria-label={`Rename ${name}`} title="Rename" disabled={blocked}
-        onClick={() => beginRename(editor, row)}>✎</button>
+      <Button variant="ghost" size="sm" label={`Rename ${name}`} title="Rename" disabled={blocked}
+        iconOnly={<Pencil {...ICON} />} onClick={() => beginRename(editor, row)} />
     </>}
     {mine && state.sending ? <small role="status">Saving name…</small> : null}
     {mine && state.outcome === 'refused' ? <small role="status">The agent is no longer on the floor.</small> : null}

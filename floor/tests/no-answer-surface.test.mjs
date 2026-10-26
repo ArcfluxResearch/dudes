@@ -237,9 +237,7 @@ function controlsIn(text) {
 const HIRE_FORM = 'src/renderer/onboarding/HireWizard.tsx';
 const HIRE_FIELDS = Object.freeze([
   { tag: 'input', name: 'name', type: 'text', change: '(event) => editDraft({ name: event.target.value })' },
-  { tag: 'select', name: 'character', type: null, change: '(event) => editDraft({ character: event.target.value })' },
-  { tag: 'input', name: 'accent', type: 'radio', change: '() => editDraft({ accent: void 0 })' },
-  { tag: 'input', name: 'accent', type: 'radio', change: '() => editDraft({ accent })' },
+  { tag: 'select', name: 'character', type: null, change: '(value) => editDraft({ character: value })' },
   { tag: 'textarea', name: 'role', type: null, change: '(event) => editDraft({ role: event.target.value })' },
   { tag: 'input', name: 'workspace_id', type: 'radio', change: '() => editDraft({ workspaceId: space.workspaceId })' },
   { tag: 'input', name: 'engine', type: 'radio', change: '() => editDraft({ engine: name })' },
@@ -292,6 +290,7 @@ const RENAME_MODULE = 'src/renderer/rename/rename.ts';
 const RENAME_PANEL = 'src/renderer/rename/NameEditor.tsx';
 const LOOK_MODULE = 'src/renderer/look/look.ts';
 const LOOK_PANEL = 'src/renderer/look/LookEditor.tsx';
+const ACCENT_CHOICE = 'src/renderer/look/AccentChoice.tsx';
 const MODEL_MODULE = 'src/renderer/model/model.ts';
 const MODEL_PANEL = 'src/renderer/model/ModelEditor.tsx';
 const LISTS_MODULE = 'src/renderer/model/lists.ts';
@@ -335,13 +334,17 @@ const ADMITTED_WITHOUT_HANDLER = new Map([
 const ADMITTED = new Map([
   [HIRE_FORM, ADMITTED_IN_HIRE_FORM], [ANSWER_FORM, ADMITTED_IN_ANSWER_FORM], [CONTROL_PANEL, ADMITTED_IN_CONTROL_PANEL],
   [ACTIVITY_PANEL, Object.freeze(['an input', 'a select', 'a change handler'])],
+  [ACCENT_CHOICE, Object.freeze(['an input', 'a change handler'])],
+  ['src/ui/Field.tsx', Object.freeze(['an input', 'a textarea'])],
+  ['src/ui/Menu.tsx', Object.freeze(['a key handler'])],
+  ['src/ui/Select.tsx', Object.freeze(['a key handler', 'a mouse handler', 'a pointer handler'])],
   [GOAL_PANEL, ADMITTED_IN_GOAL_FORM],
   [TICKET_BOARD, Object.freeze([...ADMITTED_IN_TICKET_FORM, 'a key handler'])], [TICKET_PANEL, ADMITTED_IN_TICKET_FORM],
   [CHAT_PANEL, Object.freeze(['a textarea', 'an input', 'a change handler', 'a key handler'])],
   [RENAME_PANEL, Object.freeze(['an input', 'a change handler', 'a key handler'])],
   [ADD_PROJECT_FORM, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
   [SETTINGS_VIEW, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
-  [LOOK_PANEL, Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler',
+  [LOOK_PANEL, Object.freeze(['a form', 'a textarea', 'a select', 'a change handler',
     'a submit handler', 'a key handler'])],
   [MODEL_PANEL, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler', 'a key handler'])],
   [FLOOR_SHELL, Object.freeze(['a key handler', 'a pointer handler'])],
@@ -427,10 +430,10 @@ const ADMITTED_HANDLERS = [
     }` },
   { file: 'src/renderer/chat/Steps.tsx', tag: 'details', handler: 'onToggle',
     expression: '(event) => { if (event.currentTarget.open && hasKeptText(step)) requestStepResult(step.id); }' },
-  { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
-    expression: '(event) => setFilters({ ...filters, agentId: event.currentTarget.value })' },
-  { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
-    expression: '(event) => setFilters({ ...filters, kind: event.currentTarget.value })' },
+  { file: ACTIVITY_PANEL, tag: 'select', handler: 'onValueChange',
+    expression: '(agentId) => setFilters({ ...filters, agentId })' },
+  { file: ACTIVITY_PANEL, tag: 'select', handler: 'onValueChange',
+    expression: '(kind) => setFilters({ ...filters, kind })' },
   { file: ACTIVITY_PANEL, tag: 'input', handler: 'onChange',
     expression: '(event) => setFilters({ ...filters, query: event.currentTarget.value })' },
   ...[['onPointerDown', 'startDrag'], ['onPointerMove', 'moveDrag'], ['onPointerUp', 'endDrag'],
@@ -447,11 +450,25 @@ const ADMITTED_HANDLERS = [
   { file: LOOK_PANEL, tag: 'form', handler: 'onSubmit',
     expression: '(event) => { event.preventDefault(); void submitLook(row, browserLookDeps); }' },
   { file: LOOK_PANEL, tag: 'form', handler: 'onKeyDown',
-    expression: "(event) => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); cancelLook(); } }" },
-  { file: LOOK_PANEL, tag: 'select', handler: 'onChange',
-    expression: '(event) => editLook({ character: event.currentTarget.value || null })' },
-  { file: LOOK_PANEL, tag: 'input', handler: 'onChange', expression: '() => editLook({ accent: null })' },
-  { file: LOOK_PANEL, tag: 'input', handler: 'onChange', expression: '() => editLook({ accent })' },
+    expression: "(event) => { event.stopPropagation(); if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); cancelLook(); } }" },
+  { file: LOOK_PANEL, tag: 'select', handler: 'onValueChange',
+    expression: '(value) => editLook({ character: value || null })' },
+  { file: ACCENT_CHOICE, tag: 'input', handler: 'onChange', expression: '() => onChange(null)' },
+  { file: ACCENT_CHOICE, tag: 'input', handler: 'onChange', expression: '() => onChange(accent)' },
+  // The owned primitives that are not themselves a field pass what they are given to one element each, and the
+  // call sites that give them handlers are scanned above. A spread or handler below belongs to the primitive.
+  ...[['Field', 'input'], ['Field', 'textarea']].map(([file, tag]) => ({ file: `src/ui/${file}.tsx`, tag, handler: '{...}' })),
+  ...[['Badge', 'span'], ['Button', 'button'], ['Card', 'div'], ['Card', 'section'], ['Dialog', 'dialog'],
+    ['Disclosure', 'details'], ['Menu', 'button'], ['Select', 'button'], ['Switch', 'button'], ['Tabs', 'div'],
+    ['Tabs', 'button'], ['Toast', 'div']].map(([file, tag]) => ({ file: `src/ui/${file}.tsx`, tag, handler: '{...}' })),
+  { file: 'src/ui/Menu.tsx', tag: 'button', handler: 'onKeyDown' },
+  { file: 'src/ui/Menu.tsx', tag: 'div', handler: 'onKeyDown', expression: 'keyOf' },
+  { file: SETTINGS_VIEW, tag: 'button', handler: 'onCheckedChange',
+    expression: "(next) => { if (edit.sending === null) void changeSetting(`floor.${key}`, next ? 'on' : 'off'); }" },
+  { file: 'src/ui/Select.tsx', tag: 'button', handler: 'onKeyDown', expression: 'keyOf' },
+  { file: 'src/ui/Select.tsx', tag: 'button', handler: 'onBlur' },
+  { file: 'src/ui/Select.tsx', tag: 'div', handler: 'onMouseDown', expression: '(event) => event.preventDefault()' },
+  { file: 'src/ui/Select.tsx', tag: 'div', handler: 'onPointerMove' },
   { file: LOOK_PANEL, tag: 'textarea', handler: 'onChange',
     expression: '(event) => editLook({ role: event.currentTarget.value })' },
   { file: MODEL_PANEL, tag: 'form', handler: 'onSubmit',
@@ -461,7 +478,7 @@ const ADMITTED_HANDLERS = [
   { file: MODEL_PANEL, tag: 'input', handler: 'onChange', expression: '() => editModel(choice)' },
   { file: MODEL_PANEL, tag: 'input', handler: 'onChange', expression: '(event) => editModel(event.currentTarget.value)' },
   { file: 'src/renderer/AgentDetail.tsx', tag: 'h2', handler: 'onDoubleClick', expression: '() => beginRename(`detail:${row.id}`, row)' },
-  ...HIRE_FIELDS.map(({ tag, change }) => ({ file: HIRE_FORM, tag, handler: 'onChange', expression: change })),
+  ...HIRE_FIELDS.map(({ tag, change }) => ({ file: HIRE_FORM, tag, handler: tag === 'select' && change.startsWith('(value)') ? 'onValueChange' : 'onChange', expression: change })),
   { file: ANSWER_FORM, tag: 'textarea', handler: 'onChange' },
   { file: ANSWER_FORM, tag: 'textarea', handler: 'onKeyDown' },
   { file: ANSWER_FORM, tag: 'button', className: 'answer-send', handler: 'onKeyDown', expression: REFUSE_REPEAT },
@@ -503,7 +520,7 @@ const ADMITTED_HANDLERS = [
     expression: '(event) => setOpen(event.currentTarget.open)' },
   { file: FLOOR_SHELL, tag: 'div', className: 'floor-stage', handler: 'onKeyDown', expression: CLOSE_DRAWER_ON_ESCAPE },
   { file: FLOOR_SHELL, tag: 'main', className: 'shell', handler: 'onKeyDown', expression: CLOSE_PAGE_ON_ESCAPE },
-  { file: CONTROL_VIEW, tag: 'section', className: 'control-panel', handler: 'onKeyDown', expression: CLOSE_ON_ESCAPE },
+  { file: CONTROL_VIEW, tag: 'section', handler: 'onKeyDown', expression: CLOSE_ON_ESCAPE },
   { file: CONTROL_VIEW, tag: 'dialog', className: 'ticket-dialog', handler: 'onCancel',
     expression: '(event) => { event.preventDefault(); closeOverlay(); }' },
   { file: CONTROL_VIEW, tag: 'dialog', className: 'ticket-dialog', handler: 'onKeyDown',
@@ -576,6 +593,17 @@ function isIntrinsicTagName(tag) {
 }
 
 /**
+ * The owned primitives that draw exactly one native element each. A call site that writes `<Input>` or `<Select>`
+ * writes a field, so the scans read it as the element it draws, and a handler on it is admitted by the same rules.
+ */
+const OWNED_PRIMITIVES = new Map([['Input', 'input'], ['Textarea', 'textarea'], ['Select', 'select'],
+  ['Button', 'button'], ['Tab', 'button'], ['Switch', 'button'], ['Dialog', 'dialog']]);
+
+function tagOf(node) {
+  return ts.isIdentifier(node.tagName) ? (OWNED_PRIMITIVES.get(node.tagName.text) ?? node.tagName.text) : node.tagName.getText();
+}
+
+/**
  * Only lowercase intrinsic tags are returned. A capitalized tag is treated as
  * a component and not scanned: its props, spread or named, are its own
  * vocabulary, and it decides what to do with them. A capitalized name bound to
@@ -584,7 +612,8 @@ function isIntrinsicTagName(tag) {
 function intrinsicElementsIn(syntax) {
   const found = [];
   (function walk(node) {
-    if ((ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) && isIntrinsicTagName(node.tagName)) {
+    if ((ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node))
+      && (isIntrinsicTagName(node.tagName) || (ts.isIdentifier(node.tagName) && OWNED_PRIMITIVES.has(node.tagName.text)))) {
       found.push(node);
     }
     ts.forEachChild(node, walk);
@@ -596,7 +625,7 @@ function handlerPropsIn(text, file) {
   const syntax = parsedByExtension(text, file);
   const found = [];
   for (const element of intrinsicElementsIn(syntax)) {
-    const tag = element.tagName.text;
+    const tag = tagOf(element);
     const className = classNameOf(element, syntax);
     for (const attribute of element.attributes.properties) {
       if (ts.isJsxSpreadAttribute(attribute)) {
@@ -709,7 +738,7 @@ function urlAttributesIn(text, file) {
   const assets = staticAssetImportIdentifiersIn(syntax);
   const found = [];
   for (const element of intrinsicElementsIn(syntax)) {
-    const tag = element.tagName.text;
+    const tag = tagOf(element);
     for (const attribute of element.attributes.properties) {
       if (!ts.isJsxAttribute(attribute)) continue;
       const name = attribute.name.getText(syntax);
@@ -1030,12 +1059,12 @@ function fieldsIn(text) {
   }
   function collect(node) {
     if ((ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node))
-      && ['input', 'textarea', 'select'].includes(node.tagName.getText(syntax))) {
+      && ['input', 'textarea', 'select'].includes(OWNED_PRIMITIVES.get(node.tagName.getText(syntax)) ?? node.tagName.getText(syntax))) {
       fields.push({
-        tag: node.tagName.getText(syntax),
+        tag: OWNED_PRIMITIVES.get(node.tagName.getText(syntax)) ?? node.tagName.getText(syntax),
         name: attribute(node, 'name'),
         type: attribute(node, 'type'),
-        change: attribute(node, 'onChange'),
+        change: attribute(node, 'onChange') ?? attribute(node, 'onValueChange'),
       });
     }
     ts.forEachChild(node, collect);
@@ -1130,7 +1159,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     clicks.push(...[...text.matchAll(/\bonclick\s*=/gi)].map(() => relative));
   }
   const expected = [
-    ...Array(4).fill('src/renderer/AgentDetail.tsx'),
+    ...Array(3).fill('src/renderer/AgentDetail.tsx'),
     ...Array(3).fill('src/renderer/AgentOverview.tsx'),
     ...Array(4).fill('src/renderer/Roster.tsx'),
     'src/renderer/OverviewDialog.tsx',
@@ -1152,7 +1181,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(3).fill(GOAL_PANEL),
     ...Array(2).fill('src/renderer/ticket/StuckActions.tsx'),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
-    ...Array(8).fill(TICKET_BOARD),
+    ...Array(7).fill(TICKET_BOARD),
     ...Array(2).fill(NOTIFICATION_OFFER),
     ...Array(10).fill(TICKET_PANEL),
     ...Array(13).fill(HIRE_FORM),
@@ -1163,7 +1192,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(MEMORY_PANEL),
     ...Array(4).fill(RENAME_PANEL),
     ...Array(6).fill(ADD_PROJECT_FORM),
-    ...Array(4).fill(LOOK_PANEL),
+    ...Array(3).fill(LOOK_PANEL),
     ...Array(5).fill(MODEL_PANEL),
     LISTS_BAR,
     ...Array(3).fill(NOTICE_STACK),
@@ -1176,10 +1205,18 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(7).fill('src/shell.tsx'),
     'src/renderer/SignInExpired.tsx',
     'src/renderer/StreamNotice.tsx',
+    // The owned primitives draw one button each, and a menu draws two: its trigger and an item.
+    'src/ui/Button.tsx', 'src/ui/Menu.tsx', 'src/ui/Menu.tsx', 'src/ui/Select.tsx', 'src/ui/Switch.tsx', 'src/ui/Tabs.tsx',
+    'src/ui/Toast.tsx',
   ];
   assert.deepEqual(buttons.sort(), [...expected, AGENT_ORDER].sort());
   expected.sort();
   const clickExpected = [...expected, LOGIN_PANEL, FLOOR_SHELL];
+  // The owned primitives that only forward their caller's props carry no click of their own, and an option of a
+  // select and the detail's tab are clicks on elements that are not counted as buttons.
+  clickExpected.splice(clickExpected.indexOf('src/ui/Button.tsx'), 1);
+  clickExpected.splice(clickExpected.indexOf('src/ui/Tabs.tsx'), 1);
+  clickExpected.push('src/ui/Select.tsx', 'src/renderer/AgentDetail.tsx');
   clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
   clickExpected.splice(clickExpected.indexOf(MODEL_PANEL), 1);
   // The ticket forms each submit with a button that has no click handler of its own.
@@ -1251,7 +1288,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => hide(row.id, !hidden.includes(row.id))',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, LOOK_PANEL), 'utf8')), [
-    '() => beginLook(row)', 'cancelLook', '() => { void checkLook(browserLookDeps); }',
+    'cancelLook', '() => { void checkLook(browserLookDeps); }',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, MODEL_PANEL), 'utf8')), [
     '() => { void removeOverride(row, browserModelDeps); }', 'cancelModel', '() => beginModel(row)',
@@ -1298,7 +1335,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => { void desktopNotificationPreference.setEnabled(true); }', 'desktopNotificationPreference.dismissOffer',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TICKET_BOARD), 'utf8')), [
-    '() => dismissNotice(notice)', '(event) => onHire(event.currentTarget)', 'onCancel',
+    '(event) => onHire(event.currentTarget)', 'onCancel',
     '(event) => onSelect(card.id, event.currentTarget)', '(event) => onNewTicket(event.currentTarget)', '() => setDoneShown(doneShown + DONE_SHOWN)',
   ]);
   // Opening Setup or Settings takes a fresh snapshot: the same resubscription Recheck starts.
@@ -2262,7 +2299,7 @@ test('terminal copy fallback is one readonly selection field and local commands 
   function localUiIn(text) {
     const syntax = parsedByExtension(text, TERMINAL_PANEL);
     return {
-      fields: intrinsicElementsIn(syntax).filter((node) => ['input', 'textarea', 'select'].includes(node.tagName.text))
+      fields: intrinsicElementsIn(syntax).filter((node) => ['input', 'textarea', 'select'].includes(tagOf(node)))
         .map((node) => node.getText(syntax)),
       commands: functionPinsIn(syntax, ['command']),
       bindings: valueBindingsIn(syntax).filter(({ name, declaredBy }) => name === 'command'
@@ -2744,6 +2781,10 @@ const ADMITTED_LISTENERS = Object.freeze([
   { path: 'src/signer.ts', line: "target.addEventListener(success, () => resolve(), { once: true });" },
   { path: 'src/signer.ts', line: "target.addEventListener('error', () => reject(new Error('storage failed')), { once: true });" },
   { path: 'src/signer.ts', line: "opening.addEventListener('upgradeneeded', () => {" },
+  // A popover in the top layer follows its anchor and closes on a press outside it. It reads positions and sends nothing.
+  { path: 'src/ui/popover.ts', line: "window.addEventListener('resize', replace);" },
+  { path: 'src/ui/popover.ts', line: "window.addEventListener('scroll', replace, true);" },
+  { path: 'src/ui/popover.ts', line: "document.addEventListener('pointerdown', away, true);" },
 ]);
 const SOCKET_LISTENER = /(socket|live)\.addEventListener\('(open|message|close)'|addEventListener\(type: '(open|close|message)'/;
 
@@ -2877,7 +2918,7 @@ test('the answer form renders when the snapshot carries the answer sibling', () 
   assert.match(html, new RegExp(`data-answer-agent-id="${ADA}" data-answer-question-lsn="${LSN}"`));
   // Where the live case looks for it: in the selected agent's own panel, under its question.
   assert.match(html,
-    /id="selected-agent-detail"[\s\S]*<aside class="agent-detail"[\s\S]*<section class="agent-detail-question"[\s\S]*<textarea/);
+    /id="selected-agent-detail"[\s\S]*<aside class="agent-detail"[\s\S]*<section class="agent-detail-question[^"]*"[\s\S]*<textarea/);
   assert.doesNotMatch(center(floorWith(waiting(), SIBLING), 'overview').split('<div class="receipts">')[0], /<textarea|name="answer"/,
     'Overview lists the question but answers only through the agent\'s own panel');
 });
@@ -2922,7 +2963,7 @@ test('the answer gate stays closed without the sibling, an open question, a cano
 test('with the same Waiting row but no answer sibling, no answer form renders', () => {
   const html = center(floorWith(waiting(), undefined));
   // The question is on screen, so the absence below is the gate's, not a missing panel's.
-  assert.match(html, /<section class="agent-detail-question"/);
+  assert.match(html, /<section class="agent-detail-question[^"]*"/);
   assert.ok(html.includes(QUESTION), 'the Waiting question is not displayed, so this proves nothing');
   assert.doesNotMatch(html, /<textarea|name="answer"|Send answer|data-answer-/);
   const asking = center(floorWith(waiting(), undefined), 'overview');
@@ -2939,14 +2980,14 @@ test('with the same Waiting row but no answer sibling, no answer form renders', 
 test('Pause and Resume render when the snapshot carries the control sibling', () => {
   // The positive control for the absence checks below: with control on, the buttons are there.
   const html = center(floorWith(working(), undefined, CONTROL));
-  assert.match(html, /<button type="button" class="control-pause"[^>]*>Pause<\/button>/);
+  assert.match(html, /<button type="button" class="[^"]*\bcontrol-pause"[^>]*>Pause<\/button>/);
   assert.match(html, new RegExp(`data-control-agent-id="${ADA}" data-control-lsn="${LSN}"`));
   // Where the live case looks for them: in the selected agent's own panel, under its name.
   assert.match(html,
-    /id="selected-agent-detail"[\s\S]*<aside class="agent-detail"[^>]*>[\s\S]*<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<div class="agent-detail-actions"><div class="agent-detail-control"[\s\S]*class="control-pause"/);
+    /id="selected-agent-detail"[\s\S]*<aside class="agent-detail"[^>]*>[\s\S]*<h2 id="agent-detail-title" tabindex="-1"[^>]*>Ada<\/h2>[\s\S]*?<div class="agent-detail-control[^"]*"[\s\S]*class="[^"]*\bcontrol-pause"/);
   const paused = center(floorWith(working({ paused: true }), undefined, CONTROL));
-  assert.match(paused, /<button type="button" class="control-resume"[^>]*>Resume<\/button>/);
-  assert.doesNotMatch(paused, /class="control-pause"/);
+  assert.match(paused, /<button type="button" class="[^"]*\bcontrol-resume"[^>]*>Resume<\/button>/);
+  assert.doesNotMatch(paused, /\bcontrol-pause"/);
 });
 
 test('the control gate stays closed without the sibling, a live confirmed view, the agent on the floor, or a canonical control_lsn', () => {
@@ -2990,7 +3031,7 @@ test('with the same rows but no control sibling, no Pause or Resume renders', ()
   const none = /control-pause|control-resume|data-control-|>Pause<|>Resume<|Check status/;
   const paused = center(floorWith(working({ paused: true }), undefined, undefined));
   // The paused row is on screen, so the absence below is the gate's, not a missing panel's.
-  assert.match(paused, /<p class="agent-detail-pause" role="status" data-pause-state="pausing">Pausing — /,
+  assert.match(paused, /<p class="[^"]*" role="status" data-pause-state="pausing">Pausing — /,
     'the paused row is not drawn, so this proves nothing');
   assert.doesNotMatch(paused, none);
   const running = center(floorWith(working(), undefined, undefined));
@@ -3024,7 +3065,7 @@ test('the goal form renders when the snapshot carries the goal sibling', () => {
   assert.match(html, new RegExp(`data-goal-agent-id="${ADA}" data-goal-id="${GOAL_ID}"`));
   // Where the live case looks for it: in the selected agent's own panel, after Pause.
   assert.match(html,
-    /id="selected-agent-detail"[\s\S]*<aside class="agent-detail"[\s\S]*class="control-pause"[\s\S]*<section class="agent-detail-goal"[\s\S]*<textarea/);
+    /id="selected-agent-detail"[\s\S]*<aside class="agent-detail"[\s\S]*class="[^"]*\bcontrol-pause"[\s\S]*<section class="agent-detail-goal"[\s\S]*<textarea/);
 });
 
 test('the goal gate stays closed without the sibling, or with any other sibling alone', () => {
@@ -3079,7 +3120,7 @@ test('Attach renders when the snapshot carries the terminal sibling', () => {
   // The positive control for the absence checks below: with the terminal on, Attach is there.
   const html = center(floorWith(resting(), undefined, undefined, undefined, TERMINAL));
   assert.match(html,
-    /<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<details class="agent-more">[\s\S]*?<div class="agent-detail-terminal" data-terminal-offer="attach"><button type="button" class="terminal-attach"[^>]*>Open the real CLI<\/button>/);
+    /<h2 id="agent-detail-title" tabindex="-1"[^>]*>Ada<\/h2>[\s\S]*?role="menu"[\s\S]*?<div class="agent-detail-terminal[^"]*" data-terminal-offer="attach"><button type="button" class="[^"]*\bterminal-attach"[^>]*>(?:<svg[^>]*>[\s\S]*?<\/svg>)?Open the real CLI<\/button>/);
 });
 
 test('the terminal offer stays none without the sibling, a live confirmed view, or the agent on the floor', () => {
@@ -3109,7 +3150,7 @@ test('with the same rows but no terminal sibling, no terminal control renders', 
   const none = /terminal-|data-terminal-|>Attach<|>Detach<|Attach waits|keyboard/;
   const html = center(floorWith(resting(), undefined, CONTROL, undefined, undefined));
   // The agent's own panel is drawn, Pause included, so the absence below is the gate's.
-  assert.match(html, /<aside class="agent-detail"[\s\S]*class="control-pause"/, 'the detail is not drawn, so this proves nothing');
+  assert.match(html, /<aside class="agent-detail"[\s\S]*class="[^"]*\bcontrol-pause"/, 'the detail is not drawn, so this proves nothing');
   assert.doesNotMatch(html, none);
   for (const fields of [{ status: 'running' }, { halted: true }, { mode: 'attached', status: 'attached' },
     { session: undefined }]) {
@@ -3126,9 +3167,10 @@ test('Retire renders when the snapshot carries the retire sibling', () => {
   // The positive control for the absence checks below: with retiring on, Retire is there.
   const html = center(floorWith(working(), undefined, CONTROL, undefined, undefined, RETIRE));
   assert.match(html,
-    new RegExp(`<div class="retire-offer"><button type="button" class="retire-open" data-retire-offer="${ADA}"[^>]*>Retire</button>`));
+    new RegExp(`<button type="button" role="menuitem" tabindex="-1" data-retire-offer="${ADA}"[^>]*>(?:<svg[^>]*>[\\s\\S]*?</svg>)?Retire agent</button>`));
   // Where the live case looks for it: in the selected agent's own panel, after Pause.
-  assert.match(html, /<aside class="agent-detail"[\s\S]*class="control-pause"[\s\S]*class="retire-open"/);
+  assert.match(html, /<aside class="agent-detail"[\s\S]*class="[^"]*\bcontrol-pause"/);
+  assert.match(html, /<aside class="agent-detail"[\s\S]*role="menu"[\s\S]*class="[^"]*\bretire-open"/);
   const halted = center(floorWith(working({ halted: true }), undefined, CONTROL, undefined, undefined, RETIRE));
   assert.match(halted, /Lift the halt from the command line before retiring it from this page\./);
   assert.doesNotMatch(halted, /data-retire-offer/);

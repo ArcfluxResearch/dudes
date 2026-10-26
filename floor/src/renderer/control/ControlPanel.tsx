@@ -14,6 +14,7 @@
 
 import { useSyncExternalStore } from 'react';
 
+import { Button } from '../../ui/index.ts';
 import { floorSessionGeneration } from '../../session.ts';
 import { automaticHoldOf } from '../automaticHold.ts';
 import { journalPosition } from '../format.ts';
@@ -90,13 +91,13 @@ export function ControlStripView({ control, floor, row, session }: {
   const focusOnLeave = pressedHere ? 'control-status-title' : AGENT_DETAIL_HEADING_ID;
   const hint = gate.open && gate.offer !== 'none' ? hintFor(gate.offer, row) : undefined;
   return (
-    <div className="agent-detail-control" data-control-agent-id={gate.open ? gate.agent : undefined}
+    <div className="agent-detail-control grid gap-2" data-control-agent-id={gate.open ? gate.agent : undefined}
       data-control-lsn={gate.open ? gate.controlLsn ?? '' : undefined}>
       {wording === null ? null : (
-        <p className="agent-detail-pause" role="status" data-pause-state={wording.state}>{wording.text}</p>
+        <p className="m-0 rounded-md bg-warn-soft px-3 py-2 text-base font-medium text-warn" role="status" data-pause-state={wording.state}>{wording.text}</p>
       )}
       {stopped === null ? null : (
-        <p className="agent-detail-pause" role="status" data-stop-state={stopped.state}>{stopped.text}</p>
+        <p className="m-0 rounded-md bg-warn-soft px-3 py-2 text-base font-medium text-warn" role="status" data-stop-state={stopped.state}>{stopped.text}</p>
       )}
       {!gate.open ? null : (
         <>
@@ -106,39 +107,39 @@ export function ControlStripView({ control, floor, row, session }: {
               double-click: the verb has flipped by then, and it would undo the
               first. */}
           {gate.offer === 'none' && !gate.stop ? null : (
-            <div className="control-actions">
+            <div className="flex flex-wrap items-center gap-2">
               {gate.offer !== 'pause' && gate.offer !== 'resume' ? null : gate.offer === 'pause' ? (
-                <button key="pause" ref={handFocusOnLeave} type="button" className="control-pause"
+                <Button key="pause" ref={handFocusOnLeave} className="control-pause"
                   aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
                   title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
                   onClick={(event) => { if (event.detail < 2) void submitControl('pause', gate, browserControlDeps); }}>
                   {busy ? 'Sending…' : 'Pause'}
-                </button>
+                </Button>
               ) : (
-                <button key="resume" ref={handFocusOnLeave} type="button" className="control-resume"
+                <Button key="resume" ref={handFocusOnLeave} variant="primary" className="control-resume"
                   aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
                   title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
                   onClick={(event) => { if (event.detail < 2) void submitControl('resume', gate, browserControlDeps); }}>
                   {busy ? 'Sending…' : 'Resume'}
-                </button>
+                </Button>
               )}
               {gate.stop ? (
-                <button key="halt" type="button" className="control-stop" ref={handFocusOnLeave}
+                <Button key="halt" variant="danger" className="control-stop" ref={handFocusOnLeave}
                   aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
                   title={HINTS.halt} aria-describedby="control-stop-note"
                   onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
                   onClick={(event) => { if (event.detail < 2) void submitControl('halt', gate, browserControlDeps); }}>
                   {busy && attempt?.verb === 'halt' ? 'Sending…' : 'Stop this turn'}
-                </button>
+                </Button>
               ) : null}
             </div>
           )}
-          {gate.stop ? <p className="hire-note control-stop-note" id="control-stop-note">{PARTIAL_EDITS_NOTE}</p> : null}
+          {gate.stop ? <p className="control-stop-note m-0 text-small text-muted" id="control-stop-note">{PARTIAL_EDITS_NOTE}</p> : null}
           {hint === undefined ? null : <span className="visually-hidden" id="control-hint">{hint}</span>}
-          {gate.halted && !gate.haltedByFloor ? <p className="hire-note control-halt-note">{HALT_NOTE}</p> : null}
-          {blocked && !control.sending ? <p className="hire-note">{heldBecause(control)}</p> : null}
+          {gate.halted && !gate.haltedByFloor ? <p className="control-halt-note m-0 text-small text-muted">{HALT_NOTE}</p> : null}
+          {blocked && !control.sending ? <p className="m-0 text-small text-muted">{heldBecause(control)}</p> : null}
           {control.problem === null || attempt !== null ? null : (
-            <p className="control-problem" role="alert">{control.problem}</p>
+            <p className="control-problem m-0 text-small font-medium text-danger" role="alert">{control.problem}</p>
           )}
         </>
       )}

@@ -155,7 +155,7 @@ test('the Chat sheet follows the visible viewport while a phone keyboard opens a
 test('a short Chat sheet reserves its composer and lets the header and tabs scroll under notices', async () => {
   const html = renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(), row, selectedId: A,
     onClose() {}, leaveFocusTo: 'crew-toggle' }));
-  assert.match(html, /class="agent-detail-context">[\s\S]*<header class="agent-detail-head">[\s\S]*class="agent-detail-tabs"/);
+  assert.match(html, /class="agent-detail-context">[\s\S]*<header class="agent-detail-head[^"]*">[\s\S]*class="[^"]*agent-detail-tabs[^"]*"/);
   const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
   assert.match(css, /\.agent-detail-context \{ display: contents; \}/);
   assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] \{[^}]*grid-template-rows: minmax\(0, auto\) minmax\(0, 1fr\) auto auto/);
@@ -550,7 +550,7 @@ test('context loss displays the refused message separately from the newer draft 
   chatModule.resetChat();
 });
 
-const tabNames = html => [...html.matchAll(/role="tab" class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map(match => match[1]);
+const tabNames = html => [...html.matchAll(/role="tab"[^>]*>([^<]+)<\/button>/g)].map(match => match[1]);
 
 test('after a chat message the drawer tabs are Overview, Chat, Git and Memory and never Output', () => {
   const output = { ...liveReply('Provisional assistant text'), chunks: ['Raw engine text'] };

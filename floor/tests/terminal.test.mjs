@@ -337,7 +337,7 @@ test('Attach is offered for a Claude agent, and a Codex or Pi agent is told its 
   for (const provider of ['codex', 'pi']) assert.deepEqual(offer(provider), { kind: 'unavailable', reason: 'engine' });
   const floor = floorOf([row({ provider: 'codex' })]);
   const html = renderToStaticMarkup(createElement(TerminalAttachView, { floor, offer: offer('codex') }));
-  assert.match(html, /<span class="agent-attach-note" id="terminal-hint">Opening this engine’s own terminal is not supported yet\.<\/span>/);
+  assert.match(html, /<span class="agent-attach-note[^"]*" id="terminal-hint">Opening this engine’s own terminal is not supported yet\.<\/span>/);
 });
 
 // --- what the views say ------------------------------------------------------------------
@@ -370,7 +370,7 @@ const buttons = (html) => [...html.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)
 test('Attach carries its explanation as a tooltip and description, and a disabled Attach says why', () => {
   const floor = floorOf([row({ provider: 'local' }), row({ id: GRACE, name: 'Grace', provider: 'local' })]);
   const view = (offer) => renderToStaticMarkup(createElement(TerminalAttachView, { floor, offer }));
-  const attachButton = (html) => /<button[^>]*class="terminal-attach"[^>]*>/.exec(html)?.[0] ?? '';
+  const attachButton = (html) => /<button[^>]*class="[^"]*\bterminal-attach"[^>]*>/.exec(html)?.[0] ?? '';
   const described = (html, words) => {
     const button = attachButton(html);
     assert.match(button, new RegExp(`title="${words}"`));
@@ -380,7 +380,7 @@ test('Attach carries its explanation as a tooltip and description, and a disable
   };
   assert.equal(view({ kind: 'none' }), '');
   const open = view({ kind: 'attach', agent: ADA });
-  assert.match(open, />Open the real CLI<\/button>/);
+  assert.match(open, /(?:<\/svg>)?Open the real CLI<\/button>/);
   described(open, 'Open this agent’s real CLI\\. Automatic work waits while you type\\. Detach returns control to Dudes\\.');
   assert.doesNotMatch(attachButton(open), /aria-disabled/);
   for (const [offer, words] of [
@@ -402,13 +402,13 @@ test('Claude Attach shows the workspace trust warning in a confirmation before o
   const view = (agent) => renderToStaticMarkup(createElement(TerminalAttachView, { floor, offer: { kind: 'attach', agent } }));
   const claude = view(ADA);
   assert.doesNotMatch(claude, /trust this folder/);
-  assert.match(claude, /<button type="button" class="terminal-attach" title="[^"]*" aria-describedby="terminal-hint" aria-haspopup="dialog">Open the real CLI<\/button>/);
+  assert.match(claude, /<button type="button" class="[^"]*\bterminal-attach" title="[^"]*" aria-describedby="terminal-hint" aria-haspopup="dialog">(?:<svg[^>]*>[\s\S]*?<\/svg>)?Open the real CLI<\/button>/);
   assert.doesNotMatch(view(GRACE), /aria-haspopup/);
   const dialog = renderToStaticMarkup(createElement(AttachConfirmation, { name: 'Ada', onConfirm() {}, onCancel() {} }));
   assert.match(dialog, /Claude Code may ask you to trust this folder/);
   assert.match(dialog, /No, exit/);
   assert.ok(dialog.indexOf('trust this folder') < dialog.indexOf('>Attach<'));
-  assert.match(dialog, /class="retire-cancel"[^>]*>Cancel</);
+  assert.match(dialog, /class="[^"]*retire-cancel"[^>]*>Cancel</);
 });
 
 test('the panel offers Detach only while attached, and Close only once ended', () => {
