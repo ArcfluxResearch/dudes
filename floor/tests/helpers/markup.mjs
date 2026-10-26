@@ -38,7 +38,8 @@ function keep(tag, attributes) {
 
 /** A class string's hooks, in order: what is left when its Tailwind utilities are taken out. */
 export function hookClasses(className) {
-  return className?.split(/\s+/).filter((name) => name !== '' && !isUtility(name)).join(' ');
+  if (className === null || className === undefined) return null;
+  return className.split(/\s+/).filter((name) => name !== '' && !isUtility(name)).join(' ');
 }
 
 /** `renderToStaticMarkup` with each element's utility classes and component-only attributes left out. */

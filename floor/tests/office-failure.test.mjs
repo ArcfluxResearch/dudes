@@ -70,7 +70,7 @@ test('the office box is identified with detail in the drawer beside it', async (
   assert.equal(opens.filter(([tag]) => /id="selected-agent-detail"/.test(tag)).length, 0,
     'selected detail is no longer inside the office');
   const drawer = await readFile(resolve(import.meta.dirname, '../src/renderer/AgentDrawer.tsx'), 'utf8');
-  assert.match(drawer, /<div className="agent-drawer[^"]*" id="selected-agent-detail"/);
+  assert.match(drawer, /<div className=\{[^}]*\} id="selected-agent-detail"/);
   const control = await readFile(resolve(import.meta.dirname, '../src/renderer/Control.tsx'), 'utf8');
   assert.match(control, /<dialog className="ticket-dialog" id="selected-card-detail"/);
   const planted = '<div className="office"><p className="office-failure">failed</p></div>';

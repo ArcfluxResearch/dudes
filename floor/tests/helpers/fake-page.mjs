@@ -70,8 +70,7 @@ export function fakePage(layout = {}) {
       const found = [];
       for (const child of this.childNodes) {
         if (!(child instanceof Element)) continue;
-        const own = child.getAttribute(name);
-        if (word === '~' ? own?.split(/\s+/).includes(value) : own === value) found.push(child);
+        if (word === '~' ? (child.getAttribute(name) ?? '').split(/\s+/).includes(value) : child.getAttribute(name) === value) found.push(child);
         found.push(...child.querySelectorAll(selector));
       }
       return found;

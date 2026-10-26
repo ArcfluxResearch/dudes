@@ -6,6 +6,7 @@ import test, { after, before } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { bare } from './helpers/shell-bare.mjs';
 import { getFloorState, resetFloorStore } from '../src/renderer/floor/store.ts';
 
 let server;
@@ -86,7 +87,7 @@ for (const [name, component] of [['Setup', () => SetupView], ['Settings', () => 
 test('a silent open stream says it is waiting rather than retrying', () => {
   const rendered = html(StreamNotice, floor({ phase: 'live', epoch: 1, snapshotEpoch: 1, stale: true }));
   assert.match(rendered, /Nothing has come from Dudes for 5 seconds/);
-  assert.match(rendered, /<button type="button" class="notice-action">Reconnect<\/button>/);
+  assert.match(bare(rendered, ['notice-action']), /<button type="button" class="notice-action">Reconnect<\/button>/);
   assert.doesNotMatch(rendered, /not retrying/);
 });
 
