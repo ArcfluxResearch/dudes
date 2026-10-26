@@ -122,6 +122,115 @@ fn send_is_offline_exact_synced_private_and_has_no_sender_metadata() {
     assert!(run.stderr.is_empty());
 }
 
+#[test]
+fn a_request_offers_a_ready_reply_but_a_message_does_not() {
+    let mailbox = Mailbox::new();
+    let id = MailId::from_parts(1, 18);
+    let mut marker = mailbox.marker(id, "Which branch should I use?");
+    marker["act"] = json!("request");
+    mailbox.write(id, &marker);
+    let request = mailbox.cli().args(["mail", "read"]).run();
+    assert_eq!(request.code(), 0, "{}", request.output());
+    assert!(request.stdout.contains("act request\n"));
+    assert!(request.stdout.contains(&format!(
+        "dudes mail send --reply-to {id} --act message --body <text>"
+    )));
+    marker["act"] = json!("message");
+    mailbox.write(id, &marker);
+    let message = mailbox.cli().args(["mail", "read"]).run();
+    assert_eq!(message.code(), 0, "{}", message.output());
+    assert!(message.stdout.contains("act message\n"));
+    assert!(!message.stdout.contains("dudes mail send --reply-to"));
+}
+
+#[test]
+fn list_shows_current_inbox_metadata_without_bodies() {
+    let mailbox = Mailbox::new();
+    let id = MailId::from_parts(1, 19);
+    let marker = mailbox.marker(id, "body stays out of the list");
+    mailbox.write(id, &marker);
+    let listed = mailbox.cli().args(["mail", "list"]).run();
+    assert_eq!(listed.code(), 0, "{}", listed.output());
+    assert!(listed.stdout.contains(&format!("mail {id}\n")));
+    assert!(listed.stdout.contains("act message\n"));
+    assert!(listed.stdout.contains("subject subject\n"));
+    assert!(!listed.stdout.contains("body stays out of the list"));
+    let read = mailbox.cli().args(["mail", "read"]).run();
+    assert!(read.stdout.contains("body stays out of the list"));
+}
+
+#[test]
+fn a_reply_can_derive_its_subject_from_a_pending_or_acknowledged_parent() {
+    for acknowledged in [false, true] {
+        let mailbox = Mailbox::new();
+        let id = MailId::from_parts(1, 20);
+        let mut marker = mailbox.marker(id, "");
+        marker["subject"] = json!("Check 🦀 input");
+        mailbox.write(id, &marker);
+        if acknowledged {
+            let done = mailbox.cli().args(["mail", "done", &id.to_string()]).run();
+            assert_eq!(done.code(), 0, "{}", done.output());
+        }
+        let sent = mailbox
+            .cli()
+            .args([
+                "mail",
+                "send",
+                "--reply-to",
+                &id.to_string(),
+                "--act",
+                "message",
+                "--body",
+                "Use main.",
+            ])
+            .run();
+        assert_eq!(sent.code(), 0, "{}", sent.output());
+        let path = fs::read_dir(mailbox.path.join("outbox"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let request: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            request,
+            json!({"in_reply_to":id,"act":"message", "subject":"Re: Check 🦀 input", "body":"Use main."})
+        );
+    }
+    let mailbox = Mailbox::new();
+    let missing = mailbox
+        .cli()
+        .args([
+            "mail",
+            "send",
+            "--reply-to",
+            &MailId::from_parts(1, 21).to_string(),
+            "--act",
+            "message",
+            "--body",
+            "No parent.",
+        ])
+        .run();
+    assert_eq!(missing.code(), 4, "{}", missing.output());
+    assert_eq!(
+        fs::read_dir(mailbox.path.join("outbox")).unwrap().count(),
+        0
+    );
+    let new_thread = mailbox
+        .cli()
+        .args([
+            "mail",
+            "send",
+            "--to",
+            &AgentId::from_parts(1, 2).to_string(),
+            "--act",
+            "message",
+        ])
+        .run();
+    assert_eq!(new_thread.code(), 1);
+    assert!(new_thread.stderr.contains("--subject"));
+}
+
 fn round_trip(body: &str) {
     let fixture = Fixture::new();
     let mut settings = fixture.settings();
