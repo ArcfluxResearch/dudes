@@ -60,7 +60,9 @@ mailbox without starting a turn. After Kim's goal reaches Done, the script check
 neither an issued nor a spawned turn, then gives him a goal.
 
 Leo uses `dudes mail read`, replies with the delivered mail id, and acknowledges the request with
-`dudes mail done`. Reading alone does not acknowledge mail. The reply wakes Kim once after his
+`dudes mail done`. The request's read output includes its act and a reply command. The reply omits
+`--subject`, so it inherits `Re: round trip request`. Reading alone does not acknowledge mail.
+The reply wakes Kim once after his
 goal has finished; he reads and acknowledges it. An agent hired without a goal is never woken by
 mail, so give it a goal before expecting that automatic response.
 
@@ -69,13 +71,48 @@ sending and for a delivered inbox marker before its single read. It does not ass
 journaled receipt is already readable through the mailbox files.
 
 The stopped daemon's journal must contain exactly two mail records on one thread, numbered 1
-and 2, with both marked acknowledged. It must also contain one mail-only wake and three issued
+and 2, with both marked acknowledged. The first has act `request`; the later message from its
+recipient makes that request answered. This answer is derived from the journal, separately from
+acknowledgement. The offline CLI's current inbox files do not establish answered status.
+The journal must also contain one mail-only wake and three issued
 turns with three matching spawns. Both goals' saved results must point to observed passing
 predicate records before their Done decisions. The daily wake and per-item notification counts
 must stay within their caps.
 
 The script uses a scratch home and state, removes them afterward, and needs no vendor account.
 `DUDED`, `DUDES_CLI` and `DUDES_XTASK` can select binaries from another build directory.
+
+### Rehearse with a live engine
+
+`mail-live.py` uses the installed Claude or Codex engine on your PATH. It starts two real agents
+and can bill your engine account. Run it only after authorizing that spend.
+
+Prepare an absolute scratch home and sign the engine in there through its own sign-in flow.
+For Claude, use `HOME` at that home and `CLAUDE_CONFIG_DIR` at its `.claude` child. For Codex,
+use `HOME` at that home and `CODEX_HOME` at its `.codex` child. Do not copy credential files.
+Then run, substituting that prepared directory:
+
+```sh
+python3 examples/two-roles/mail-live.py --allow-spend --provider claude \
+    --engine-home /absolute/path/to/prepared-scratch-home
+```
+
+Use `--provider codex` for Codex. `--cli`, `--daemon` and `--journal-reader` select absolute build
+outputs when they are outside `target/release`. The script gives Dudes its own temporary home,
+configuration, state, runtime and project, and passes only the selected scratch engine profiles
+to the adapters. It removes the Dudes directories afterward and keeps the prepared engine home.
+
+The recipient finishes a small preparation goal before the sender mails it. The script then
+requires a request, a mail wake, and a later reply from that recipient in the same journaled
+thread. It derives answered from those records. It does not require a stored answer state or a
+browser display. This run does not verify an answered label in CLI or Floor output. A request
+that receives no reply fails the rehearsal.
+
+The floor admission ceiling is $1, with $0.50 per agent per day and $0.50 per goal, one ordinary
+turn per goal, and a 60-second goal timeout. These are admission ceilings; a running turn can
+finish above them. The script prints engine-reported dollars after shutdown and identifies
+unreported usage as unknown. Its live-engine path is opt-in; the unpaid `mail.sh` remains the
+repeatable stand-in check.
 
 ## What each arm proves
 
