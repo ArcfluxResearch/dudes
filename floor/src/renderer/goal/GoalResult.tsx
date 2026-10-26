@@ -10,7 +10,7 @@ const TERM = 'text-base font-normal normal-case tracking-normal text-muted';
 export function GoalResult({ result }: { readonly result: GoalResultView | null }) {
   if (result === null) return null;
   return <section className="grid gap-1.5" aria-label="Latest completion check">
-    <h3 className="m-0 text-base font-semibold text-ink">Latest completion check</h3>
+    <h3 className="m-0 font-sans text-base font-semibold text-ink">Latest completion check</h3>
     {result.kind === 'missing' ? <p className={TEXT}>No completion check result reported</p>
       : result.kind === 'unavailable' ? <p className={TEXT}>Completion check result unavailable</p>
         : <>

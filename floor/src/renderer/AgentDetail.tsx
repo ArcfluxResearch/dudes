@@ -4,7 +4,7 @@ import { Ellipsis } from 'lucide-react';
 import { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 
-import { Badge, Button, Disclosure, ICON, Menu, MenuSeparator, RING, Tab, TabList } from '../ui/index.ts';
+import { Badge, Button, Disclosure, ICON, Menu, MenuSeparator, RING, RING_INSET, Tab, TabList } from '../ui/index.ts';
 import { accentOf, accessoryOf, lookOf } from './appearance.ts';
 import { Portrait } from './Portrait.tsx';
 import { AgentOverview } from './AgentOverview.tsx';
@@ -22,7 +22,6 @@ import { lookAvailable } from './look/look.ts';
 import { getFloorState, subscribeToFloor } from './floor/store.ts';
 import { ModelEditor } from './model/ModelEditor.tsx';
 import { beginRename } from './rename/rename.ts';
-import { automaticHoldOf } from './automaticHold.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from './focus.ts';
 import type { AgentRow } from './scene/cast.ts';
 import { fieldsOf } from './scene/label.ts';
@@ -74,9 +73,6 @@ export function AgentDetail({
   const fields = fieldsOf(row, { live, now: performance.now(), wallNow: Date.now() });
   const need = needsOf([row], cards, { live, now: performance.now(), wallNow: Date.now() })[0]!;
   const sentence = stateSentenceOf(row, cards, fields);
-  const automaticHold = automaticHoldOf(row);
-  const resumeInOverview = automaticHold !== null || (row.paused === true && row.halted !== true)
-    || (row.halted === true && row.halted_by_floor === true);
   const panels: readonly { readonly id: DetailTab; readonly label: string; readonly content: ReactNode }[] = [
     { id: 'overview', label: 'Overview', content: <AgentOverview row={row} cards={cards} fields={fields}
       recovery={recovery} goalForm={goalForm}
@@ -152,7 +148,7 @@ export function AgentDetail({
               {value(row.role)}
               {typeof row.provider === 'string' && row.provider !== '' ? ` · ${providerLabel(row.provider)}` : ''}
               {fields.liveActivity === null ? null : <>{' · '}<span data-live-activity={fields.liveActivity}>{fields.liveActivity}</span></>}
-              {streamState === null ? null : <>{' · '}<span className="stream-state" role="status">{streamState}</span></>}
+              {streamState === null ? null : <>{' · '}<span className="stream-state font-normal" role="status">{streamState}</span></>}
             </p>
           </div>
           <MoreActions row={row} retire={retire} />
@@ -162,12 +158,11 @@ export function AgentDetail({
           <p className="agent-detail-state-line m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-body"><Badge state={need.state} />
             {' '}<span className="agent-detail-state-text text-ink">{sentence}</span></p>
           <div className="agent-detail-primary flex flex-wrap items-center gap-2 empty:hidden">
-            {resumeInOverview ? control : null}
             {act(need.action)}
             {need.second === null ? null : act(need.second)}
+            {control}
           </div>
         </section>
-        {resumeInOverview ? null : control}
         <LookEditor row={row} />
         <div className="grid gap-2">
           <ModelEditor row={row} />
@@ -202,7 +197,7 @@ export function AgentDetail({
       {tabs.length > 1 ? <p id="agent-detail-tab-hint" className="agent-detail-tab-hint m-0 mb-3 text-caption text-subtle">Scroll for more sections · Use arrow keys</p> : null}
       </div>
       {available.map(({ id, content }) => <section key={id} id={`agent-detail-panel-${id}`}
-        role="tabpanel" data-detail-section={id} aria-labelledby={`agent-detail-tab-${id}`} tabIndex={0} hidden={selected !== id}
+        role="tabpanel" className={`rounded-md ${RING_INSET}`} data-detail-section={id} aria-labelledby={`agent-detail-tab-${id}`} tabIndex={0} hidden={selected !== id}
         ref={handFocusOnLeave} data-focus-on-leave="agent-detail-tab-overview"
         onFocus={() => setFocusedSection(id)} onBlur={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget)) setFocusedSection(null);

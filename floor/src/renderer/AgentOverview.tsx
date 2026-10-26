@@ -19,7 +19,7 @@ import { lastTurnOf } from './lastTurn.ts';
 import { workspaceLabel } from './workspace.ts';
 import { decodeWorktree, sharesCheckout, worktreeText } from './worktree.ts';
 
-const HEADING = 'm-0 text-base font-semibold text-ink';
+const HEADING = 'm-0 font-sans text-base font-semibold text-ink';
 const BODY = 'm-0 text-body text-ink whitespace-pre-wrap [overflow-wrap:anywhere]';
 const FACT_LIST = 'm-0 grid grid-cols-[minmax(0,7rem)_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-base';
 const FACT_ROW = 'contents';

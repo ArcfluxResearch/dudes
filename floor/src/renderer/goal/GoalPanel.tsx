@@ -115,7 +115,7 @@ export function GoalFormView({ goal, floor, row, session }: {
   return (
     <section className="agent-detail-goal grid gap-3 text-base text-ink" aria-labelledby={`${field}-title`} data-goal-agent-id={gate.agent}
       data-goal-id={gate.goal} data-goal-form={offer === undefined ? 'change' : 'renew'}>
-      <h3 id={`${field}-title`} className="m-0 text-title font-semibold">{offer === undefined ? 'Change this agent’s task' : 'Start a new task'}</h3>
+      <h3 id={`${field}-title`} className="m-0 font-sans text-title font-semibold">{offer === undefined ? 'Change this agent’s task' : 'Start a new task'}</h3>
       {offer === undefined ? <><p className="m-0">The new task keeps what this one has left:</p><CarryList carry={gate.carry} /></>
         : <RenewList offer={offer} />}
       <fieldset className="m-0 grid min-w-0 gap-1.5 border-0 p-0" data-check-choice="goal">

@@ -94,7 +94,7 @@ export function ControlStripView({ control, floor, row, session }: {
   const focusOnLeave = pressedHere ? 'control-status-title' : AGENT_DETAIL_HEADING_ID;
   const hint = gate.open && gate.offer !== 'none' ? hintFor(gate.offer, row) : undefined;
   return (
-    <div className="agent-detail-control grid gap-2" data-control-agent-id={gate.open ? gate.agent : undefined}
+    <div className="agent-detail-control contents" data-control-agent-id={gate.open ? gate.agent : undefined}
       data-control-lsn={gate.open ? gate.controlLsn ?? '' : undefined}>
       {wording === null ? null : (
         <p className={cn('agent-detail-pause', PAUSED)} role="status" data-pause-state={wording.state}>{wording.text}</p>
@@ -137,12 +137,12 @@ export function ControlStripView({ control, floor, row, session }: {
               ) : null}
             </div>
           )}
-          {gate.stop ? <p className={cn('control-stop-note', NOTE)} id="control-stop-note">{PARTIAL_EDITS_NOTE}</p> : null}
+          {gate.stop ? <p className={cn('control-stop-note basis-full', NOTE)} id="control-stop-note">{PARTIAL_EDITS_NOTE}</p> : null}
           {hint === undefined ? null : <span className="visually-hidden" id="control-hint">{hint}</span>}
-          {gate.halted && !gate.haltedByFloor ? <p className={cn('control-halt-note', NOTE)}>{HALT_NOTE}</p> : null}
-          {blocked && !control.sending ? <p className={NOTE}>{heldBecause(control)}</p> : null}
+          {gate.halted && !gate.haltedByFloor ? <p className={cn('control-halt-note basis-full', NOTE)}>{HALT_NOTE}</p> : null}
+          {blocked && !control.sending ? <p className={cn('basis-full', NOTE)}>{heldBecause(control)}</p> : null}
           {control.problem === null || attempt !== null ? null : (
-            <p className={cn('control-problem', MESSAGE_CLASS.error)} role="alert">{control.problem}</p>
+            <p className={cn('control-problem basis-full', MESSAGE_CLASS.error)} role="alert">{control.problem}</p>
           )}
         </>
       )}
@@ -206,7 +206,7 @@ export function ControlStatusView({ control, floor, session, leaveFocusTo = 'cre
   );
 }
 
-const PAUSED = 'm-0 rounded-md bg-warn-soft px-3 py-2 text-base font-medium text-ink';
+const PAUSED = 'm-0 basis-full rounded-md bg-warn-soft px-3 py-2 text-base font-medium text-ink';
 
 const KICKER: Readonly<Record<ControlVerb, string>> = Object.freeze({
   pause: 'Pause request', halt: 'Stop request', resume: 'Resume request',
