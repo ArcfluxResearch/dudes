@@ -666,7 +666,7 @@ function isAdmittedHandler(file, entry) {
   if (entry.handler === '{...}' && file.startsWith('src/ui/')) return true;
   return ADMITTED_HANDLERS.some((rule) => rule.file === file && rule.tag === entry.tag
     && rule.handler === entry.handler
-    && (rule.className === undefined || rule.className === entry.className)
+    && (rule.className === undefined || rule.className === entry.className || (entry.className ?? '').split(/\s+/).includes(rule.className))
     && (rule.expression === undefined || rule.expression === entry.expression));
 }
 
@@ -852,7 +852,7 @@ test('every handler prop other than onClick on a lowercase intrinsic tag under f
     const handlers = seen.get(rule.file) ?? [];
     assert.ok(
       handlers.some((entry) => entry.tag === rule.tag && entry.handler === rule.handler
-        && (rule.className === undefined || entry.className === rule.className)
+        && (rule.className === undefined || rule.className === entry.className || (entry.className ?? '').split(/\s+/).includes(rule.className))
         && (rule.expression === undefined || entry.expression === rule.expression)),
       `${rule.file} was not scanned as itself for ${rule.handler} on <${rule.tag}>`,
     );

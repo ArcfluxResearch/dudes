@@ -8,7 +8,10 @@ import { handFocusAfterLeave } from '../focus.ts';
 import type { CardRow } from '../board.ts';
 import { accentOf } from '../appearance.ts';
 import { initialOf } from '../Portrait.tsx';
-import './ticket.css';
+import { Plus } from 'lucide-react';
+import { Badge, Button, Field, ICON, Input, RING, Textarea, cn } from '../../ui/index.ts';
+import type { BadgeState } from '../../ui/index.ts';
+import { FORM_ACTIONS, HINT, SELECT_BOX } from './look.ts';
 
 import { useRequestedCard } from '../BoardPanel.tsx';
 import type { FloorState } from '../floor/store.ts';
@@ -30,6 +33,14 @@ const NOTICE_SECONDS = 8;
 
 const COLUMN_TONE: Readonly<Record<TicketColumn | 'needs', string>> = Object.freeze({
   todo: 'todo', working: 'doing', ready: 'review', done: 'done', needs: 'blocked',
+});
+
+const COLUMN_DOT: Readonly<Record<TicketColumn, string>> = Object.freeze({
+  todo: 'bg-subtle', working: 'bg-info', ready: 'bg-accent', done: 'bg-ok',
+});
+
+const STATE_BADGE: Readonly<Record<CardRow['status'], BadgeState>> = Object.freeze({
+  todo: 'waiting', claimed: 'waiting', doing: 'working', review: 'ready', blocked: 'needs-you', done: 'done',
 });
 
 /** With tickets off, only the daemon's recorded states can fill a column, and nothing here can wait on the operator. */
@@ -94,10 +105,12 @@ export function TicketNotice({ card, floor }: { readonly card?: string | null; r
     return () => clearTimeout(timer);
   }, [notice]);
   if (notice === null) return null;
-  const content = <p className="ticket-notice" data-tone={notice.tone} role="status" ref={handFocusAfterLeave}
+  const content = <p className={cn('ticket-notice m-0 flex w-fit max-w-full items-center gap-3 rounded-lg border border-l-4 border-line bg-surface',
+    'py-2 pr-2 pl-3 font-sans text-base font-medium wrap-anywhere text-ink shadow-pop',
+    notice.tone === 'problem' ? 'border-l-danger' : 'border-l-ok')} data-tone={notice.tone} role="status" ref={handFocusAfterLeave}
     data-focus-on-leave={host?.id}>
-    {notice.text}{' '}
-    <button type="button" className="ticket-dismiss" onClick={() => dismissNotice(notice)}>Dismiss</button>
+    <span className="min-w-0 flex-1">{notice.text}</span>
+    <Button variant="ghost" size="sm" className="ticket-dismiss" onClick={() => dismissNotice(notice)}>Dismiss</Button>
   </p>;
   return host === null ? null : createPortal(content, host);
 }
@@ -127,19 +140,19 @@ export function FirstTaskForm({ floor, agents }: { readonly floor: FloorState; r
     if (made.saved && mounted.current) setTask('');
   }
 
-  return <form className="ticket-form" onSubmit={(event) => { void submit(event); }} aria-label={`Give ${agent.name} a task`}>
-    <h2>Give {agent.name} a task</h2>
-    {agents.length > 1 ? <p><label htmlFor={`${ids}-who`}>Who? </label>
-      <select id={`${ids}-who`} value={agent.id} onChange={(event) => setChosen(event.target.value)}>
+  return <form className="ticket-form grid gap-3" onSubmit={(event) => { void submit(event); }} aria-label={`Give ${agent.name} a task`}>
+    <h2 className="m-0 text-title font-semibold">Give {agent.name} a task</h2>
+    {agents.length > 1 ? <Field label="Who?" id={`${ids}-who`}>
+      <select id={`${ids}-who`} className={SELECT_BOX} value={agent.id} onChange={(event) => setChosen(event.target.value)}>
         {agents.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-      </select></p> : null}
-    <label htmlFor={`${ids}-task`} className="first-task-label">What should {agent.name} do?</label>
-    <textarea id={`${ids}-task`} rows={3} maxLength={8192} value={task}
-      placeholder="For example: add a dark mode switch to the settings page"
-      onChange={(event) => setTask(event.target.value)} />
-    <p className="first-task-note">When {agent.name} says it is finished, Dudes checks it itself ({agent.check.label}) before you review it.</p>
-    <button type="submit" className="first-task-start" disabled={!ready}
-      title={ready ? undefined : sending ? 'Wait for the task to be saved.' : !floor.ticket ? 'Turn on Make tickets in Settings.' : 'Describe the task first.'}>{sending ? 'Starting…' : 'Start'}</button>
+      </select></Field> : null}
+    <Field label={<>What should {agent.name} do?</>} id={`${ids}-task`}
+      hint={<span className="first-task-note">When {agent.name} says it is finished, Dudes checks it itself ({agent.check.label}) before you review it.</span>}>
+      <Textarea rows={3} maxLength={8192} value={task} placeholder="For example: add a dark mode switch to the settings page"
+        onChange={(event) => setTask(event.target.value)} />
+    </Field>
+    <Button type="submit" variant="primary" className="first-task-start justify-self-start" disabled={!ready}
+      title={ready ? undefined : sending ? 'Wait for the task to be saved.' : !floor.ticket ? 'Turn on Make tickets in Settings.' : 'Describe the task first.'}>{sending ? 'Starting…' : 'Start'}</Button>
   </form>;
 }
 
@@ -192,56 +205,53 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
     if (made.card !== null) onCreated(made.card);
   }
 
-  return <form className="ticket-form" aria-label="New ticket" onSubmit={(event) => { void submit(event); }}>
-    <div className="ticket-field">
-      <label htmlFor={`${ids}-title`}>Title</label>
-      <input id={`${ids}-title`} name="title" type="text" required maxLength={256} value={title} autoFocus
+  return <form className="ticket-form flex flex-col gap-4" aria-label="New ticket" onSubmit={(event) => { void submit(event); }}>
+    <Field label="Title" id={`${ids}-title`}>
+      <Input name="title" type="text" required maxLength={256} value={title} autoFocus
         onChange={(event) => editDraft({ title: event.target.value })} />
-    </div>
-    <div className="ticket-field">
-      <label htmlFor={`${ids}-note`}>Note (optional)</label>
-      <textarea id={`${ids}-note`} name="note" rows={3} maxLength={8192} value={note}
+    </Field>
+    <Field label="Note (optional)" id={`${ids}-note`}>
+      <Textarea name="note" rows={3} maxLength={8192} value={note}
         onChange={(event) => editDraft({ note: event.target.value })} />
-    </div>
-    {projects.length > 1 || chosenProject !== null && project === null ? <div className="ticket-field">
-      <label htmlFor={`${ids}-project`}>Project</label>
-      <select id={`${ids}-project`} name="project" value={project ?? ''}
+    </Field>
+    {projects.length > 1 || chosenProject !== null && project === null ? <Field label="Project" id={`${ids}-project`}>
+      <select id={`${ids}-project`} className={SELECT_BOX} name="project" value={project ?? ''}
         onChange={(event) => { editDraft({ project: event.target.value, check: null, agent: '' }); }}>
         {project === null ? <option value="">Choose a project</option> : null}
         {projects.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
       </select>
-    </div> : null}
-    {checks.length > 0 ? <div className="ticket-field">
-      <label htmlFor={`${ids}-check`}>Done when</label>
-      <select id={`${ids}-check`} name="check" value={check?.id ?? ''}
+    </Field> : null}
+    {checks.length > 0 ? <Field label="Done when" id={`${ids}-check`}>
+      <select id={`${ids}-check`} className={SELECT_BOX} name="check" value={check?.id ?? ''}
         onChange={(event) => editDraft({ check: event.target.value })}>
         {check === null ? <option value="">Choose a check</option> : null}
         {checks.map((entry) => <option key={entry.id} value={entry.id}>{choiceLabel(entry)}</option>)}
       </select>
-    </div> : null}
-    {chosenCheck !== null && check === null && project !== null ? <p className="ticket-hint" role="status">The saved check is no longer available. Choose a check before creating this ticket.</p> : null}
-    {chosenProject !== null && project === null ? <p className="ticket-hint" role="status">The saved project is no longer available. Choose a project before creating this ticket.</p> : null}
+    </Field> : null}
+    {chosenCheck !== null && check === null && project !== null ? <p className={HINT} role="status">The saved check is no longer available. Choose a check before creating this ticket.</p> : null}
+    {chosenProject !== null && project === null ? <p className={HINT} role="status">The saved project is no longer available. Choose a project before creating this ticket.</p> : null}
     {noProjects(floor) ? <NoTicketProjectHint floor={floor} />
-      : project === null ? <p className="ticket-hint">Project choices are unavailable. Open Setup to check the project and its completion check.</p>
-      : usable.length === 0 ? <div className="ticket-field" data-no-agent="true">
-      <p className="ticket-hint">{agentChoiceSentence(floor, project)}</p>
+      : project === null ? <p className={HINT}>Project choices are unavailable. Open Setup to check the project and its completion check.</p>
+      : usable.length === 0 ? <div className="flex flex-col items-start gap-2 rounded-lg border border-line bg-surface-2 p-3" data-no-agent="true">
+      <p className={HINT}>{agentChoiceSentence(floor, project)}</p>
       {onHire !== undefined && hireSwitchOn(floor)
-        ? <button type="button" className="ticket-hire" onClick={(event) => onHire(event.currentTarget)}>Hire an agent</button>
-        : <p className="ticket-hint">Open Settings to check whether hiring is available.</p>}
-    </div> : <div className="ticket-field">
-      <label htmlFor={`${ids}-agent`}>Give to agent (optional)</label>
-      <select id={`${ids}-agent`} name="agent" value={agent} onChange={(event) => editDraft({ agent: event.target.value })}>
+        ? <Button size="sm" className="ticket-hire" onClick={(event) => onHire(event.currentTarget)}>Hire an agent</Button>
+        : <p className={HINT}>Open Settings to check whether hiring is available.</p>}
+    </div> : <Field label="Give to agent (optional)" id={`${ids}-agent`}>
+      <select id={`${ids}-agent`} className={SELECT_BOX} name="agent" value={agent} onChange={(event) => editDraft({ agent: event.target.value })}>
         <option value="">Not yet</option>
         {usable.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
         {unrecorded.map((row) => <option key={row.id} value={row.id} disabled>{row.name} (hired before projects were recorded)</option>)}
       </select>
-    </div>}
-    {unrecorded.map((row) => <p key={row.id} className="ticket-hint">{agentWithoutProjectSentence(row.name)}</p>)}
-    <button type="submit" className="ticket-create" aria-disabled={!ready || undefined} disabled={!ready}
-      title={ready ? undefined : ticket.sending ? 'Wait for the current request to finish.' : !open
-        ? 'Reconnect to Dudes before creating a ticket.' : title.trim() === '' ? 'Enter a title.'
-          : project === null ? 'Choose a project.' : 'Choose a completion check.'}>Create ticket</button>
-    {onCancel === undefined ? null : <button type="button" className="ticket-form-cancel" onClick={onCancel}>Cancel</button>}
+    </Field>}
+    {unrecorded.map((row) => <p key={row.id} className={HINT}>{agentWithoutProjectSentence(row.name)}</p>)}
+    <div className={FORM_ACTIONS}>
+      <Button type="submit" variant="primary" className="ticket-create" aria-disabled={!ready || undefined} disabled={!ready}
+        title={ready ? undefined : ticket.sending ? 'Wait for the current request to finish.' : !open
+          ? 'Reconnect to Dudes before creating a ticket.' : title.trim() === '' ? 'Enter a title.'
+            : project === null ? 'Choose a project.' : 'Choose a completion check.'}>Create ticket</Button>
+      {onCancel === undefined ? null : <Button className="ticket-form-cancel" onClick={onCancel}>Cancel</Button>}
+    </div>
   </form>;
 }
 
@@ -255,26 +265,31 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
   const words = cardWords(floor, card);
   const row = agentRow(floor, card.claimed_by);
   const failure = engineStopped(card.ticket?.last_turn_end);
-  return <li>
-    <button type="button" className="task-card ticket-card" data-card-id={card.id} data-ticket-status={card.ticket === null && plainColumnOf(card) === null ? undefined : card.status}
+  return <li className="flex min-w-0">
+    <button type="button" data-card-id={card.id}
+      className={cn('ticket-card box-border flex w-full min-w-0 cursor-pointer flex-col items-stretch gap-3 rounded-lg border border-line bg-surface p-3',
+        'text-left font-sans text-base text-ink shadow-card wrap-anywhere transition-[border-color,background-color] hover:border-line-strong',
+        'aria-pressed:border-accent aria-pressed:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-60', RING)} data-ticket-status={card.ticket === null && plainColumnOf(card) === null ? undefined : card.status}
       aria-pressed={selected} aria-controls="selected-card-detail" aria-haspopup="dialog" disabled={!selectable}
       title={selectable ? undefined : 'Reconnect to Dudes before opening this ticket.'}
       onClick={(event) => onSelect(card.id, event.currentTarget)}>
-      <span className="ticket-card-meta"><span className="ticket-card-state">{card.ticket?.stopping ? 'Stopping…'
-          : card.ticket === null && plainColumnOf(card) === null ? otherStateName(card.status) : stateName(card.status)}</span>
+      <span className="ticket-card-meta flex items-center justify-between gap-2">
+        <Badge state={STATE_BADGE[card.status]} className="ticket-card-state">{card.ticket?.stopping ? 'Stopping…'
+          : card.ticket === null && plainColumnOf(card) === null ? otherStateName(card.status) : stateName(card.status)}</Badge>
       </span>
-      <strong>{card.title}</strong>
-      {failure === null ? null : <span className="ticket-note" title={failure}>An earlier engine attempt stopped. Open the ticket for details.</span>}
-      {words.note === null ? null : <span className="ticket-note">{words.note}</span>}
-      <span className="ticket-card-footer">
-        {words.agent === null ? <span className="ticket-unassigned">Unassigned</span> : <span className="ticket-agent">
-          <span className="ticket-avatar" aria-hidden="true"
+      <strong className="text-body leading-normal font-semibold">{card.title}</strong>
+      {failure === null ? null : <span className="ticket-note text-small whitespace-pre-wrap text-muted" title={failure}>An earlier engine attempt stopped. Open the ticket for details.</span>}
+      {words.note === null ? null : <span className="ticket-note text-small whitespace-pre-wrap text-muted">{words.note}</span>}
+      <span className="ticket-card-footer mt-auto flex items-center justify-between gap-2">
+        {words.agent === null ? <span className="ticket-unassigned text-small text-subtle">Unassigned</span> : <span className="ticket-agent inline-flex min-w-0 items-center gap-2 text-small font-medium text-ink">
+          <span className={cn('ticket-avatar inline-flex size-6 shrink-0 items-center justify-center rounded-pill border text-caption font-semibold text-(--agent)',
+            'border-[color-mix(in_srgb,var(--agent)_38%,var(--ui-surface))] bg-[color-mix(in_srgb,var(--agent)_12%,var(--ui-surface))]')} aria-hidden="true"
             style={{ '--agent': accentOf(row ?? { id: card.claimed_by ?? '' }) } as CSSProperties}>{initialOf(words.agent)}</span>
-          <span>{words.agent}</span>
+          <span className="truncate">{words.agent}</span>
         </span>}
-        {words.place === null ? null : <span className="ticket-place">{words.place}</span>}
+        {words.place === null ? null : <span className="ticket-place shrink-0 rounded-sm bg-surface-2 px-1.5 py-0.5 text-caption whitespace-nowrap text-muted">{words.place}</span>}
       </span>
-      {card.ticket !== null && card.status === 'review' ? <span className="ticket-review-link">Review ticket <span aria-hidden="true">↗</span></span> : null}
+      {card.ticket !== null && card.status === 'review' ? <span className="ticket-review-link flex items-center justify-between border-t border-line pt-3 text-small font-medium text-accent">Review ticket <span aria-hidden="true">↗</span></span> : null}
     </button>
   </li>;
 }
@@ -293,37 +308,40 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
   const other = otherCards(floor.cards);
   const draw = (card: CardRow) => <TicketCard key={card.id} floor={floor} card={card} selected={card.id === selectedId}
     selectable={selectable} onSelect={onSelect} />;
-  return <div className="board-view ticket-board">
+  return <div className="board-view ticket-board flex flex-col gap-6 font-sans text-base text-ink">
     {floor.ticket ? <section className="ticket-new" aria-label="New ticket">
-      <button type="button" className="ticket-new-toggle" aria-expanded={forming} disabled={!ticketActionsOpen(floor)}
+      <Button variant="primary" icon={<Plus {...ICON} />} className="ticket-new-toggle absolute top-8 right-20 max-[800px]:top-6 max-[800px]:right-14"
+        aria-expanded={forming} disabled={!ticketActionsOpen(floor)}
         title={ticketActionsOpen(floor) ? undefined : 'Reconnect to Dudes before creating a ticket.'}
-        aria-haspopup="dialog" onClick={(event) => onNewTicket(event.currentTarget)}>New ticket</button>
+        aria-haspopup="dialog" onClick={(event) => onNewTicket(event.currentTarget)}>New ticket</Button>
     </section> : <TicketOffHint floor={floor} />}
-    <div className="ticket-card-regions" onKeyDown={moveCardFocus}>
-    {needsYou.length === 0 ? null : <section className="ticket-lane task-column" data-column={COLUMN_TONE.needs}
-      data-lane="needs-you" aria-label="Needs you">
-      <h3>Needs you ({needsYou.length})</h3>
-      <ul>{needsYou.map(draw)}</ul>
+    <div className="ticket-card-regions flex flex-col gap-6" onKeyDown={moveCardFocus}>
+    {needsYou.length === 0 ? null : <section className="ticket-lane rounded-lg border border-l-4 border-line border-l-warn bg-warn-soft/40 p-4"
+      data-column={COLUMN_TONE.needs} data-lane="needs-you" aria-label="Needs you">
+      <h3 className="m-0 mb-3 text-small font-semibold text-ink">Needs you ({needsYou.length})</h3>
+      <ul className="m-0 grid list-none grid-cols-2 gap-3 p-0 max-[800px]:grid-cols-1">{needsYou.map(draw)}</ul>
     </section>}
-    <div className="task-columns">
+    <div className="grid grid-cols-[repeat(4,minmax(14rem,1fr))] items-stretch gap-4 overflow-x-auto pb-2 max-[1199px]:gap-3 max-[800px]:grid-cols-[minmax(0,1fr)]">
       {TICKET_COLUMNS.map((column) => {
         const cards = columns[column.key];
-        return <section className="task-column" key={column.key} data-column={COLUMN_TONE[column.key]}
+        return <section className="flex min-w-0 flex-col gap-3 rounded-lg bg-surface-2 p-3" key={column.key} data-column={COLUMN_TONE[column.key]}
           data-ticket-column={column.key} aria-label={column.title}>
-          <h3>{column.title} ({cards.length})</h3>
-          <ul>{cards.map(draw)}</ul>
-          {cards.length === 0 ? <p className="ticket-empty">{(floor.ticket ? EMPTY_COLUMN : EMPTY_COLUMN_CARDS)[column.key]}</p> : null}
+          <h3 className="m-0 flex items-center gap-2 text-small font-semibold text-ink">
+            <span aria-hidden="true" className={cn('size-2 shrink-0 rounded-pill', COLUMN_DOT[column.key])} />
+            {column.title} ({cards.length})</h3>
+          <ul className="m-0 flex list-none flex-col gap-3 p-0">{cards.map(draw)}</ul>
+          {cards.length === 0 ? <p className="ticket-empty m-0 rounded-md border border-dashed border-line-strong px-3 py-4 text-small text-muted">{(floor.ticket ? EMPTY_COLUMN : EMPTY_COLUMN_CARDS)[column.key]}</p> : null}
           {column.key === 'done' && doneHidden > 0
-            ? <p className="ticket-hint">{doneHidden} older card{doneHidden === 1 ? '' : 's'} not shown.{' '}
-              <button type="button" className="ticket-more" onClick={() => setDoneShown(doneShown + DONE_SHOWN)}>Show more</button></p> : null}
+            ? <p className={cn(HINT, 'flex flex-wrap items-center gap-x-2')}>{doneHidden} older card{doneHidden === 1 ? '' : 's'} not shown.{' '}
+              <Button variant="secondary" size="sm" className="ticket-more" onClick={() => setDoneShown(doneShown + DONE_SHOWN)}>Show more</Button></p> : null}
         </section>;
       })}
     </div>
     </div>
-    {other.length === 0 ? null : <section className="ticket-plain" aria-label="Other board cards">
-      <h3>Other board cards ({other.length})</h3>
-      <p className="ticket-hint">These cards need a closer look. Open one to see its status.</p>
-      <ul>{other.map(draw)}</ul>
+    {other.length === 0 ? null : <section className="ticket-plain flex flex-col gap-3" aria-label="Other board cards">
+      <h3 className="m-0 text-small font-semibold text-ink">Other board cards ({other.length})</h3>
+      <p className={HINT}>These cards need a closer look. Open one to see its status.</p>
+      <ul className="m-0 grid list-none grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-3 p-0">{other.map(draw)}</ul>
     </section>}
   </div>;
 }

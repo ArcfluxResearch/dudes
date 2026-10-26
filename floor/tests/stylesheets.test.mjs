@@ -42,15 +42,11 @@ const LEGACY = new Map([
   ['src/legacy/office.css', { blocks: 56, declarations: 177 }],
   ['src/legacy/retire-terminal.css', { blocks: 28, declarations: 88 }],
   ['src/legacy/roster.css', { blocks: 49, declarations: 137 }],
-  ['src/legacy/task.css', { blocks: 26, declarations: 71 }],
   ['src/legacy/touch-and-phone.css', { blocks: 25, declarations: 68 }],
   ['src/renderer/cardNotes.css', { blocks: 3, declarations: 16 }],
   ['src/renderer/chat/code.css', { blocks: 14, declarations: 37 }],
   ['src/renderer/chat/engine-said.css', { blocks: 3, declarations: 10 }],
-  ['src/renderer/diff/diff.css', { blocks: 37, declarations: 104 }],
-  ['src/renderer/recovery/recovery.css', { blocks: 23, declarations: 61 }],
   ['src/renderer/terminal/controls.css', { blocks: 5, declarations: 8 }],
-  ['src/renderer/ticket/ticket.css', { blocks: 126, declarations: 385 }],
 ]);
 
 async function stylesheets(dirs = [resolve(floor, 'src'), resolve(floor, 'lab')]) {
