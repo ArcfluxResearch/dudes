@@ -108,7 +108,7 @@ fn project(records: impl IntoIterator<Item = Record>) -> Projections {
     let mut projections = Projections::in_memory().unwrap();
     for (index, record) in records.into_iter().enumerate() {
         let entry = Entry {
-            at: Timestamp::UNIX_EPOCH,
+            at: Timestamp::from_unix_millis(1_000 + i64::try_from(index).unwrap()),
             record,
         };
         projections
@@ -807,7 +807,25 @@ fn a_mail_wake_after_ready_keeps_the_ticket_result_and_engine_exit() {
         }),
         ended(turn, Some("I read the request."), 1),
     ]);
-    let (_, after) = project(records).ticket(card()).unwrap().unwrap();
+    let mut projections = Projections::in_memory().unwrap();
+    for (index, record) in records.into_iter().enumerate() {
+        let time_index = if matches!(record, Record::MailWakeOnlyTurnIssued(_)) {
+            index - 1
+        } else {
+            index
+        };
+        projections
+            .apply(
+                Lsn(u64::try_from(index).unwrap() + 1),
+                u32::try_from(index).unwrap(),
+                &Entry {
+                    at: Timestamp::from_unix_millis(1_000 + i64::try_from(time_index).unwrap()),
+                    record,
+                },
+            )
+            .unwrap();
+    }
+    let (_, after) = projections.ticket(card()).unwrap().unwrap();
     assert_eq!(after.summary, before.summary);
     assert_eq!(after.last_turn_end, before.last_turn_end);
 }
@@ -865,10 +883,10 @@ fn an_old_ticket_result_cache_is_rebuilt_from_the_journal() {
     )
     .unwrap()
     .0;
-    for record in ready_ticket() {
+    for (index, record) in ready_ticket().into_iter().enumerate() {
         writer
             .append(&Entry {
-                at: Timestamp::UNIX_EPOCH,
+                at: Timestamp::from_unix_millis(1_000 + i64::try_from(index).unwrap()),
                 record,
             })
             .unwrap();
