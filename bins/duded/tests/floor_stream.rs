@@ -806,7 +806,7 @@ fn an_unfolded_announcement_never_publishes_a_mismatched_closing_cut() {
 }
 
 #[test]
-fn only_generation_four_upgrades_before_any_domain_frame() {
+fn only_generation_five_upgrades_before_any_domain_frame() {
     let fixture = Fixture::new();
     let settings = settings(&fixture, free_port());
     let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));

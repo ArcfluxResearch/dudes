@@ -3678,7 +3678,7 @@ mod tests {
             )
             .unwrap();
         let after = crate::floor::snapshot(&mut store, Timestamp::UNIX_EPOCH).unwrap();
-        let expected = serde_json::json!([{"id":id,"from":sender,"to":recipient,"at":399,"lsn":"1","state":"bounced"}]);
+        let expected = serde_json::json!([{"id":id,"from":sender,"to":recipient,"at":399,"lsn":"1","state":"bounced","subject":null,"act":"message","reply_status":"not_expected"}]);
         let full = serialize_snapshot(&after).unwrap();
         let snapshot: Value = serde_json::from_slice(text_payload(&full).unwrap()).unwrap();
         streams.publish(after.clone()).unwrap();
