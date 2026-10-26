@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, Metadata};
 use std::io::{self, Read as _, Seek as _, Write};
@@ -20,6 +21,7 @@ const BODY_BYTES: u64 = 1_048_576;
 const INLINE_BYTES: u64 = 4_096;
 const SCAN_CAP: usize = 1_024;
 const INBOX_CAP: usize = 32;
+const REPLY_PREFIX: &str = "Re: ";
 
 #[derive(Serialize)]
 struct Request<'a> {
@@ -295,15 +297,93 @@ impl Mailbox {
     ) -> io::Result<(File, Vec<u8>, Marker, Option<String>)> {
         let name = format!("{id}.json");
         let (file, bytes) = read_file(inbox, OsStr::new(&name), MARKER_BYTES)?;
-        let marker: Marker =
-            serde_json::from_slice(&bytes).map_err(|_| invalid("malformed mail marker"))?;
-        if marker.id != id || marker.to != (MailTo::Agent { agent: self.id }) {
-            return Err(invalid("mail marker id or recipient differs"));
-        }
+        let marker = self.decode_marker(id, &bytes)?;
         let body = self.body(inbox, &marker)?;
         self.validate_child("inbox", inbox)?;
         validate_file(inbox, OsStr::new(&name), &file)?;
         Ok((file, bytes, marker, body))
+    }
+
+    fn decode_marker(&self, id: MailId, bytes: &[u8]) -> io::Result<Marker> {
+        let marker: Marker =
+            serde_json::from_slice(bytes).map_err(|_| invalid("malformed mail marker"))?;
+        if marker.id != id || marker.to != (MailTo::Agent { agent: self.id }) {
+            return Err(invalid("mail marker id or recipient differs"));
+        }
+        Ok(marker)
+    }
+
+    fn reply_subject(&self, id: MailId) -> io::Result<String> {
+        let inbox = self.child("inbox")?;
+        let name = format!("{id}.json");
+        let (file, bytes, done) = match read_file(&inbox, OsStr::new(&name), MARKER_BYTES) {
+            Ok((file, bytes)) => (file, bytes, None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let done = open(&inbox, ".done", OFlags::RDONLY | OFlags::DIRECTORY)?;
+                let (file, bytes) = read_file(&done, OsStr::new(&name), MARKER_BYTES)?;
+                (file, bytes, Some(done))
+            }
+            Err(error) => return Err(error),
+        };
+        let marker = self.decode_marker(id, &bytes)?;
+        self.validate_child("inbox", &inbox)?;
+        if let Some(done) = done {
+            let current = open(&inbox, ".done", OFlags::RDONLY | OFlags::DIRECTORY)?;
+            if !same(&done.metadata()?, &current.metadata()?) {
+                return Err(invalid("acknowledgement directory changed"));
+            }
+            validate_file(&done, OsStr::new(&name), &file)?;
+        } else {
+            validate_file(&inbox, OsStr::new(&name), &file)?;
+        }
+        Ok(format!("{REPLY_PREFIX}{}", marker.subject))
+    }
+
+    fn request(&self, send: &MailSend) -> io::Result<Vec<u8>> {
+        let (to, in_reply_to) = match &send.route {
+            MailRoute::To(address) => (Some(address), None),
+            MailRoute::Reply(id) => (None, Some(*id)),
+        };
+        let mut subject = match (&send.subject, &send.route) {
+            (Some(subject), _) => Cow::Borrowed(subject.as_str()),
+            (None, MailRoute::Reply(id)) => {
+                let subject = self.reply_subject(*id).map_err(|error| {
+                    if error.kind() == io::ErrorKind::NotFound {
+                        io::Error::new(
+                            error.kind(),
+                            "reply parent is unavailable locally; provide --subject explicitly",
+                        )
+                    } else {
+                        error
+                    }
+                })?;
+                Cow::Owned(subject)
+            }
+            (None, MailRoute::To(_)) => return Err(invalid("new mail requires a subject")),
+        };
+        let encode = |subject: &str| {
+            serde_json::to_vec(&Request {
+                to,
+                in_reply_to,
+                act: send.act,
+                subject,
+                body: send.body.as_deref(),
+            })
+        };
+        let mut bytes = encode(&subject)?;
+        if bytes.len() as u64 > BODY_BYTES && send.subject.is_none() {
+            let excess = bytes.len() - usize::try_from(BODY_BYTES).unwrap();
+            let mut cut = subject.len().saturating_sub(excess).max(REPLY_PREFIX.len());
+            while !subject.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            subject.to_mut().truncate(cut);
+            bytes = encode(&subject)?;
+        }
+        if bytes.len() as u64 > BODY_BYTES {
+            return Err(invalid("outgoing mail exceeds its byte cap"));
+        }
+        Ok(bytes)
     }
 
     fn read(&self) -> io::Result<Vec<(Marker, Option<String>)>> {
@@ -441,34 +521,16 @@ fn fresh_id() -> io::Result<MailId> {
     Ok(MailId::from_parts(millis, u128::from_be_bytes(entropy)))
 }
 
-fn send_request(send: &MailSend) -> io::Result<Vec<u8>> {
-    let (to, in_reply_to) = match &send.route {
-        MailRoute::To(address) => (Some(address), None),
-        MailRoute::Reply(id) => (None, Some(*id)),
-    };
-    let bytes = serde_json::to_vec(&Request {
-        to,
-        in_reply_to,
-        act: send.act,
-        subject: &send.subject,
-        body: send.body.as_deref(),
-    })?;
-    if bytes.len() as u64 > BODY_BYTES {
-        return Err(invalid("outgoing mail exceeds its byte cap"));
-    }
-    Ok(bytes)
-}
-
 pub(super) fn run(command: &MailCommand, path: &Path, out: &mut dyn Write) -> io::Result<()> {
     let mailbox = Mailbox::open(path)?;
     match command {
         MailCommand::Send(send) => {
-            let bytes = send_request(send)?;
+            let bytes = mailbox.request(send)?;
             let id = fresh_id()?;
             mailbox.publish(id, &bytes, File::sync_all)?;
             writeln!(out, "mail queued {id}")
         }
-        MailCommand::Read => {
+        MailCommand::Read | MailCommand::List => {
             let items = mailbox.read()?;
             if items.is_empty() {
                 return writeln!(out, "no unread mail");
@@ -480,10 +542,15 @@ pub(super) fn run(command: &MailCommand, path: &Path, out: &mut dyn Write) -> io
                 };
                 writeln!(
                     out,
-                    "mail {}\nfrom {}\nact {:?}\nsubject {}",
+                    "mail {}\nfrom {}\nact {}\nsubject {}",
                     item.id,
                     from,
-                    item.act,
+                    match item.act {
+                        MailAct::Message => "message",
+                        MailAct::Request => "request",
+                        MailAct::Card => "card",
+                        MailAct::Ack => "ack",
+                    },
                     Escaped(&item.subject)
                 )?;
                 if let Some(thread) = item.thread {
@@ -494,8 +561,21 @@ pub(super) fn run(command: &MailCommand, path: &Path, out: &mut dyn Write) -> io
                         item.members.len()
                     )?;
                 }
-                if let Some(body) = body {
-                    writeln!(out, "{}", Escaped(&body))?;
+                if matches!(command, MailCommand::Read) {
+                    if let Some(body) = body {
+                        writeln!(out, "{}", Escaped(&body))?;
+                    }
+                    if item.act == MailAct::Request {
+                        if item.thread.is_some() {
+                            writeln!(
+                                out,
+                                "reply: dudes mail send --reply-to {} --act message --body 'Your reply'",
+                                item.id
+                            )?;
+                        } else {
+                            writeln!(out, "reply unavailable: this mail has no thread")?;
+                        }
+                    }
                 }
             }
             Ok(())
@@ -775,21 +855,56 @@ mod tests {
 
     #[test]
     fn outgoing_bound_is_measured_on_the_complete_serialized_request() {
+        let (_root, mailbox) = owned_mailbox();
         let request = MailSend {
             route: MailRoute::To(MailAddress::Everyone { everyone: true }),
             act: MailAct::Message,
-            subject: "subject".to_owned(),
+            subject: Some("subject".to_owned()),
             body: Some("x".repeat(1_048_576)),
         };
-        assert!(send_request(&request).is_err());
+        assert!(mailbox.request(&request).is_err());
         let request = MailSend {
             body: Some("x".repeat(4_097)),
             ..request
         };
-        let encoded = send_request(&request).unwrap();
+        let encoded = mailbox.request(&request).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(value["to"], serde_json::json!({"everyone":true}));
         assert_eq!(value["body"], "x".repeat(4_097));
         assert!(value.get("from").is_none());
+    }
+
+    #[test]
+    fn only_a_generated_reply_subject_can_shorten_to_fit_the_outgoing_bound() {
+        let (root, mailbox) = owned_mailbox();
+        let id = MailId::from_parts(1, 7);
+        let mut marker: serde_json::Value =
+            serde_json::from_slice(&inbox_marker(&mailbox, id)).unwrap();
+        marker["subject"] = serde_json::json!("🦀🦀🦀");
+        std::fs::write(
+            root.path()
+                .join(mailbox.id.to_string())
+                .join("inbox")
+                .join(format!("{id}.json")),
+            serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        let mut request = MailSend {
+            route: MailRoute::Reply(id),
+            act: MailAct::Message,
+            subject: None,
+            body: Some(String::new()),
+        };
+        let base = mailbox.request(&request).unwrap().len();
+        let body = "x".repeat(usize::try_from(BODY_BYTES).unwrap() - base + 2);
+        request.body = Some(body.clone());
+        let bytes = mailbox.request(&request).unwrap();
+        assert!(bytes.len() as u64 <= BODY_BYTES);
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["body"], body);
+        assert!(value["subject"].as_str().unwrap().starts_with(REPLY_PREFIX));
+        assert_eq!(value["subject"], "Re: 🦀🦀");
+        request.subject = Some("Re: 🦀🦀🦀".to_owned());
+        assert!(mailbox.request(&request).is_err());
     }
 }

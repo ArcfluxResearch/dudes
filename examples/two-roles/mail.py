@@ -72,6 +72,12 @@ def rows(records, kind):
     return [record for record in records if record["t"] == kind]
 
 
+def answered(records, request):
+    return request.get("act") == "request" and request.get("thread") is not None and any(
+        reply.get("thread") == request["thread"] and reply["lsn"] > request["lsn"]
+        and reply["from"] == request["to"] for reply in rows(records, "mail"))
+
+
 def done(records, agent):
     return next((record for record in rows(records, "loop_decided")
                  if record["agent"] == agent and record["decision"]["kind"] == "done"), None)
@@ -156,6 +162,10 @@ def verify(journal_path, store_path, work):
     assert request["to"]["agent"] == agents["recipient"]
     assert reply["from"]["agent"] == agents["recipient"]
     assert reply["to"]["agent"] == agents["sender"]
+    assert request["act"] == "request" and reply["act"] == "message"
+    assert reply["subject"] == "Re: " + request["subject"]
+    assert answered(records, request), "the request's recipient later wrote in the same thread"
+    assert not answered(records, reply), "a message does not expect another reply"
     recipient_goal = next(record for record in rows(records, "goal_set")
                           if record["agent"] == agents["recipient"])
     assert request["lsn"] < recipient_goal["lsn"], "the request arrived before its recipient had a goal"
@@ -173,7 +183,10 @@ def verify(journal_path, store_path, work):
         read = (work / "agents" / agent / "read.txt").read_text()
         incoming = reply if agent == agents["sender"] else request
         assert f"mail {incoming['id']}\n" in read
+        assert f"act {incoming['act']}\n" in read
         assert incoming["body"] in read
+        hint = f"dudes mail send --reply-to {incoming['id']} --act message --body 'Your reply'"
+        assert (hint in read) == (incoming["act"] == "request")
         assert (work / "agents" / agent / "ack.txt").read_text().strip() == f"mail done {incoming['id']}"
     wakes = rows(records, MAIL_WAKE_ISSUED)
     assert len(wakes) == 1 and wakes[0]["agent"] == agents["sender"]
@@ -196,6 +209,7 @@ def verify(journal_path, store_path, work):
         assert record["pass"] is True and record["provenance"] == "observed"
         assert record["lsn"] < goal_row["first_done"]["lsn"]
     print("PASS 2 mail records share one thread with sequences 1 and 2 and both are acknowledged")
+    print("PASS the request is answered by a later journaled message from its recipient")
     print("PASS 1 mail-only wake, within the daily cap of 20; notifications stay within 5 per item")
     print("PASS 3 issued turns have exactly 3 spawns and both goals have observed completion checks")
 
@@ -221,7 +235,7 @@ def agent(session):
     ready["outbox_after_wait"] = True
     readiness.write_text(json.dumps(ready))
     if plan["role"] == "sender" and run_number == 1:
-        command([cli, "mail", "send", "--to", plan["peer"], "--act", "message",
+        command([cli, "mail", "send", "--to", plan["peer"], "--act", "request",
                  "--subject", "round trip request", "--body", "Please reply when you read this."])
     else:
         inbox = Path(os.environ["DUDES_MAILBOX"]) / "inbox"
@@ -239,7 +253,7 @@ def agent(session):
         incoming = delivered.group(1)
         if plan["role"] == "recipient":
             command([cli, "mail", "send", "--reply-to", incoming, "--act", "message",
-                     "--subject", "round trip reply", "--body", "Reply received."])
+                     "--body", "Reply received."])
         ack = command([cli, "mail", "done", incoming])
         (directory / "ack.txt").write_text(ack)
     (directory / "done").touch()
