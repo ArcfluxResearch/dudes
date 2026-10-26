@@ -6,7 +6,7 @@
 // page, the session and the device list share the state they share in the browser.
 
 import assert from 'node:assert/strict';
-import { bare } from './helpers/shell-bare.mjs';
+import { bare } from './helpers/markup.mjs';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 

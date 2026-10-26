@@ -17,7 +17,7 @@ function Reconnect() {
 
 /** The line a sheet over the page draws when the stream is not confirmed, since the notice behind it is covered. */
 export function NotConnected() {
-  return <p className="stream-state m-0 text-small text-danger" role="alert">Not connected to Dudes, so this may be out of date. <Reconnect /></p>;
+  return <p className="stream-state m-0 text-small font-[700] text-danger" role="alert">Not connected to Dudes, so this may be out of date. <Reconnect /></p>;
 }
 
 /**

@@ -154,7 +154,7 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
           <span className="crew-who grid min-w-0 flex-1 gap-0.5">
             <span className="roster-line flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
               <strong className="crew-name truncate text-base font-semibold"><bdi>{crew.name}</bdi></strong>
-              <Badge state={row.state} className="roster-state px-1.5"><span className="visually-hidden">Status: </span>{NEED_LABEL[row.state]}</Badge>
+              <Badge state={row.state} className="roster-state px-1.5"><span className="sr-only">Status: </span>{NEED_LABEL[row.state]}</Badge>
             </span>
             <small className="crew-activity truncate text-small text-muted data-[activity=question]:font-medium data-[activity=question]:text-ink"
             data-activity={crew.activity.kind} title={row.doing}>
@@ -185,7 +185,7 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
   const waiting = rows.some((row) => row.state === 'needs-you' || row.state === 'ready');
   const sheeted = sheet && !open;
   return (
-    <section className={cn('crew-list roster font-sans text-ink', hidden ? 'hidden' : sheet ? [STAGE_FRAME, SHEET] : 'flex flex-col gap-2')}
+    <section className={cn('crew-list roster font-sans text-ink', hidden ? 'hidden' : sheet ? [STAGE_FRAME, SHEET] : 'flex flex-col gap-2 max-[800px]:m-2')}
     id={`${base}-list`} aria-labelledby={title} data-stale={stale ? 'true' : 'false'}
     data-sheet={sheet ? (open ? 'open' : 'closed') : undefined} data-waiting={waiting}>
       <h2 id={title} className={cn('roster-title m-0 text-body font-semibold', !waiting && 'text-muted')}>

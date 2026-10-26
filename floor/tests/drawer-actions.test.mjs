@@ -77,7 +77,7 @@ test('the Attach explanation is the button’s description and tooltip, and a wa
   const text = 'Open this agent’s real CLI\\. Automatic work waits while you type\\. Detach returns control to Dudes\\.';
   assert.match(block, new RegExp(`<button(?=[^>]*class="terminal-attach")(?=[^>]*title="${text}")`));
   assert.match(block, /<button(?=[^>]*class="terminal-attach")(?=[^>]*aria-describedby="terminal-hint")/);
-  assert.match(block, new RegExp(`<span class="visually-hidden" id="terminal-hint">${text}</span>`));
+  assert.match(block, new RegExp(`<span class="sr-only" id="terminal-hint">${text}</span>`));
   assert.doesNotMatch(block, /<button(?=[^>]*class="terminal-attach")(?=[^>]*aria-disabled)/);
   assert.doesNotMatch(drawer(), /agent-detail-tab-terminal|agent-detail-panel-terminal/);
   const running = actionsOf(drawer({ fields: { status: 'running' } }));
@@ -97,13 +97,13 @@ test('the Pause explanation is the button’s description and tooltip, not a par
   const text = 'Pause stops new turns and kills nothing: a turn already running runs to its end.';
   assert.match(block, new RegExp(`<button(?=[^>]*class="control-pause")(?=[^>]*title="${text}")`));
   assert.match(block, /<button(?=[^>]*class="control-pause")(?=[^>]*aria-describedby="control-hint")/);
-  assert.match(block, new RegExp(`<span class="visually-hidden" id="control-hint">${text}</span>`));
+  assert.match(block, new RegExp(`<span class="sr-only" id="control-hint">${text}</span>`));
   assert.doesNotMatch(block, /<p class="hire-note" id="control-hint"/);
 });
 
 test('the header is one status line and the old heading is gone', () => {
   const html = drawer();
-  assert.match(html, /<p class="agent-detail-status">docs writer · Claude(?:<span>)? · <span class="stream-state" role="status">[^<]*<\/span>(?:<\/span>)?<\/p>/);
+  assert.match(html, /<p class="agent-detail-status">docs writer · Claude(?:<span(?: class="sr-only")?>)? · <span class="stream-state" role="status">[^<]*<\/span>(?:<\/span>)?<\/p>/);
   assert.doesNotMatch(html, /<p class="stream-state"/);
 });
 

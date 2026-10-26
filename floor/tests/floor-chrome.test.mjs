@@ -28,7 +28,6 @@ import { createServer } from 'vite';
 import ts from 'typescript';
 
 import { closesDrawer, closesPanel } from '../src/renderer/focus.ts';
-import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
@@ -148,49 +147,11 @@ test('a view button opens its view, and closes it only when it is open beside th
 });
 
 test('a Control view that covers Crew between the narrow layout and 1200 pixels takes Crew out of the tab order', async () => {
-  const css = await legacyStyles();
-  const block = /@media \(min-width: 801px\) and \(max-width: 1199px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
-  assert.match(block, /\.control-panel \{\s*grid-column: 1;\s*\}/, 'the view no longer covers Crew in this range');
-  assert.match(block, /\.floor-stage:has\(\.control-panel\) \.crew-list \{\s*visibility: hidden;\s*\}/,
-    'covered Crew rows stay in the tab order');
-  const visibility = width => declared(rulesAt(css, width), selector => selector === '.crew-list'
-    || selector === '.floor-stage:has(.control-panel) .crew-list', 'visibility');
-  assert.equal(visibility(1024), 'hidden');
-  for (const width of [800, 1440]) assert.notEqual(visibility(width), 'hidden', 'Crew is hidden outside the covered range');
+  const shell = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
+  const stage = /className=\{cn\('floor-stage ([^']*)'/.exec(shell)?.[1].split(' ') ?? [];
+  assert.ok(stage.includes('min-[801px]:max-[1200px]:has-[.control-panel]:[&_.crew-list]:invisible'),
+    'covered Crew rows stay in the tab order between 801 and 1199 pixels');
 });
-
-/**
- * The stylesheet's rules that apply at `width`: top-level ones, and those in a
- * width-only @media block whose bounds hold it. Comments are dropped.
- */
-function rulesAt(css, width) {
-  const holds = (query) => [...query.matchAll(/\(([a-z-]+): ([^)]+)\)/g)].every(([, feature, value]) =>
-    feature === 'min-width' ? width >= Number.parseFloat(value)
-      : feature === 'max-width' ? width <= Number.parseFloat(value) : false);
-  const rules = [];
-  for (const [, query, nested, selectors, body] of css.replace(/\/\*[\s\S]*?\*\//g, '')
-    .matchAll(/@media([^{]+)\{((?:[^{}]*\{[^{}]*\})*)\s*\}|([^{}@]+)\{([^{}]*)\}/g)) {
-    if (query === undefined) rules.push({ selectors, body });
-    else if (holds(query)) for (const [, inner, innerBody] of nested.matchAll(/([^{}]+)\{([^{}]*)\}/g)) rules.push({ selectors: inner, body: innerBody });
-  }
-  return rules.map((rule, order) => ({ ...rule, order }));
-}
-
-/** The rules whose selectors `matches` admits, weakest first: by specificity, then order. */
-function admitted(rules, matches) {
-  return rules.flatMap((rule) => rule.selectors.split(',').map((selector) => selector.trim()).filter(matches)
-    .map((selector) => ({ ...rule, specificity: (selector.match(/[.[]/g) ?? []).length })))
-    .sort((a, b) => a.specificity - b.specificity || a.order - b.order);
-}
-
-/** The value of `property` an element ends up with, from the rules whose selectors `matches` admits. */
-function declared(rules, matches, property) {
-  let value;
-  for (const { body } of admitted(rules, matches)) {
-    for (const [, name, given] of body.matchAll(/([a-z-]+):\s*([^;]+);/g)) if (name === property) value = given.trim();
-  }
-  return value;
-}
 
 test('Crew reveals its roster from Board, a page or focus mode', async () => {
   const source = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');

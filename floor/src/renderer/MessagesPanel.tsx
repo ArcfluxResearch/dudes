@@ -37,7 +37,7 @@ export function MessagesPanel({ messages, threads, agent, agents, retiredAgents 
   }
   const name = (id: string) => names.get(id) || id;
   const groups = messageGroups(messages, threads, agent);
-  return <div className={cn('messages-panel flex min-w-0 flex-col gap-4 font-sans text-base leading-5 text-ink')}>
+  return <div className={cn('flex min-w-0 flex-col gap-4 font-sans text-base leading-5 text-ink')}>
     <p className={cn('m-0 text-small text-muted [overflow-wrap:anywhere]')}>
       Recent agent messages. Older messages may be outside this window.
     </p>

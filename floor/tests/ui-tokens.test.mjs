@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // The design tokens: both themes define every one with the specified value, the night set that follows the system matches
-// the pinned one, none shares a name with a token the older screens define, and the pairs a person reads keep their contrast.
+// the pinned one, and the pairs a person reads keep their contrast.
 
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test from 'node:test';
-
-import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const css = await readFile(resolve(import.meta.dirname, '../src/tailwind.css'), 'utf8');
 
@@ -23,6 +21,9 @@ const SPEC = {
   'tok-keyword': ['#0000ff', '#569cd6'], 'tok-string': ['#a31515', '#ce9178'], 'tok-number': ['#076c49', '#b5cea8'],
   'tok-comment': ['#007000', '#6a9955'], 'tok-literal': ['#0000ff', '#569cd6'], 'tok-key': ['#0451a5', '#9cdcfe'],
   'tok-add': ['#076c49', '#b5cea8'], 'tok-remove': ['#a31515', '#f48771'], 'tok-meta': ['#795e26', '#c586c0'],
+  'surface-muted': ['#efe8d8', '#1b1814'], 'studio-background': ['#efe8d8', '#1b1814'], 'portrait-border': ['#ddd2bb', '#40382d'],
+  'terminal-background': ['#fffcf4', '#201c16'], 'terminal-foreground': ['#2a2520', '#eee6d6'], 'terminal-cursor': ['#2a6150', '#86cdb5'],
+  'terminal-selection': ['#ddd2bb', '#4a4136'],
 };
 
 function block(head, from = 0) {
@@ -64,13 +65,6 @@ test('every token has the specified day and night value, and the system night se
   assert.deepEqual(SYSTEM_NIGHT, NIGHT);
   assert.deepEqual(Object.keys(LIGHT).sort(), Object.keys(SPEC).sort());
   assert.match(themeLayer, /@media \(prefers-color-scheme: dark\)/);
-});
-
-test('no token has the name of a custom property the older screens define', async () => {
-  const legacy = new Set([...(await legacyStyles()).matchAll(/(--[a-z0-9-]+)\s*:/gi)].map(([, name]) => name));
-  const mine = [...new Set([...themeLayer.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map(([, name]) => name))];
-  assert.ok(legacy.size > 40 && mine.length > 20);
-  assert.deepEqual(mine.filter((name) => legacy.has(name)), [], 'a token would silently restyle an older screen');
 });
 
 test('text reads at 4.5 to 1 on every surface it is drawn on, day and night', () => {

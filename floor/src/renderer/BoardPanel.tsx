@@ -57,12 +57,12 @@ export function useRequestedCard(floor: FloorState, selectable: boolean, onSelec
 }
 
 export function CardDetail({ floor, card }: { readonly floor: FloorState; readonly card: CardRow | null }) {
-  if (card === null) return <p className="no-selection">Select a card in Board to inspect it.</p>;
+  if (card === null) return <p className="no-selection m-0 border border-line p-[0.9rem]">Select a card in Board to inspect it.</p>;
   return <section className={CARD_DETAIL} aria-labelledby="card-detail-title" data-selected-card-id={card.id}>
     <h3 id="card-detail-title" ref={focusCardDetailHeading} tabIndex={-1} className={CARD_HEADING}
       data-focus-on-leave="view-board">{card.title}</h3>
     <dl className={CARD_FACTS}>
-      <div><dt>Card</dt><dd className="data">{card.id}</dd></div>
+      <div><dt>Card</dt><dd className="data font-mono text-[0.88em]">{card.id}</dd></div>
       <div><dt>Department</dt><dd>{card.department}</dd></div>
       <div><dt>Status</dt><dd>{card.status}</dd></div>
       <div><dt>Status author</dt><dd>{author(floor, card.status_by)}</dd></div>
@@ -86,12 +86,12 @@ function CardActivity({ floor, cardId }: { readonly floor: FloorState; readonly 
       <p role="status">{floor.stale ? 'Connection interrupted. This activity may be out of date.'
         : 'Events from the current recent activity window. Older events may be absent.'}</p>
       {rows.length === 0 ? <p>No events for this card in the recent activity window.</p>
-        : <ol aria-label="Recent events for this card">
+        : <ol aria-label="Recent events for this card" className="m-0 list-none p-0">
           {rows.map((row) => {
-            return <li key={row.lsn} data-card-activity-lsn={row.lsn}>
-              <p>{activityText(row)}</p>
-              <small><RelativeTime at={row.at} /></small>
-              <details><summary>Details</summary><p>{recordedTime(row.at)} · {journalPosition(row.lsn)}</p></details>
+            return <li key={row.lsn} data-card-activity-lsn={row.lsn} className="border-b border-line py-2 [overflow-wrap:anywhere]">
+              <p className="m-0 mb-1">{activityText(row)}</p>
+              <small className="opacity-75"><RelativeTime at={row.at} /></small>
+              <details><summary>Details</summary><p className="m-0 mb-1">{recordedTime(row.at)} · {journalPosition(row.lsn)}</p></details>
             </li>;
           })}
         </ol>}

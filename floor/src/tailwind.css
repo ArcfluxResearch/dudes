@@ -1,27 +1,25 @@
 @layer legacy, theme, base, components, utilities;
 
-/* The older screens' rules, kept as they were and in their original order until each screen moves. */
-@import './legacy/base.css';
-@import './legacy/hire-wizard.css';
-@import './legacy/other-screens.css';
-@import './legacy/handoff.css';
-@import './legacy/engine-sign-in.css';
-@import './legacy/touch-and-phone.css';
-
 /*
- * No preflight: the older screens keep the browser's own element styles. Only utilities are brought in, in their own
- * layer above every older rule, and the whole of `src` is read for class names. A test fails when a generated utility
- * has the same name as an older rule.
+ * No preflight: elements keep the browser's own styles. Only utilities are brought in, in their own layer, and the
+ * whole of `src` is read for class names.
  */
 @import 'tailwindcss/utilities.css' layer(utilities) source('.');
 
 /*
  * The design tokens. A day set on the bare root, and a night set that follows the system unless the shell pins a
- * theme, the way the older sheets draw theirs. `--ui-surface` is the panel colour: the plain name `--surface` is the
- * older screens' paper and keeps that meaning until the last of them is gone.
+ * theme. `--ui-surface` is the panel colour. The warm-paper values after the token scale are the first design's: the
+ * terminal, the office backdrop and the portrait ring still draw them, and the `--layer-*` numbers order the panels.
  */
 @layer theme {
   :root {
+    color-scheme: light;
+    --layer-panels: 1;
+    --layer-terminal: 1;
+    --layer-expanded-terminal: 2;
+    --layer-hire-wizard: 3;
+    --layer-top-bar: 4;
+    --layer-notices: 6;
     --bg: #f7f8f7;
     --ui-surface: #ffffff;
     --surface-2: #f1f4f3;
@@ -56,10 +54,19 @@
     --tok-add: #076c49;
     --tok-remove: #a31515;
     --tok-meta: #795e26;
+    --surface-muted: #efe8d8;
+    --studio-background: #efe8d8;
+    --portrait-border: #ddd2bb;
+    --terminal-background: #fffcf4;
+    --terminal-foreground: #2a2520;
+    --terminal-cursor: #2a6150;
+    --terminal-selection: #ddd2bb;
+    --panel-shadow: rgb(70 48 12 / 16%);
   }
 
   @media (prefers-color-scheme: dark) {
     :root:not(:has(.shell[data-theme='light'])) {
+      color-scheme: dark;
       --bg: #0f1312;
       --ui-surface: #151a19;
       --surface-2: #1b2120;
@@ -94,10 +101,19 @@
       --tok-add: #b5cea8;
       --tok-remove: #f48771;
       --tok-meta: #c586c0;
+      --surface-muted: #1b1814;
+      --studio-background: #1b1814;
+      --portrait-border: #40382d;
+      --terminal-background: #201c16;
+      --terminal-foreground: #eee6d6;
+      --terminal-cursor: #86cdb5;
+      --terminal-selection: #4a4136;
+      --panel-shadow: rgb(0 0 0 / 45%);
     }
   }
 
   :root:has(.shell[data-theme='dark']) {
+    color-scheme: dark;
     --bg: #0f1312;
     --ui-surface: #151a19;
     --surface-2: #1b2120;
@@ -132,6 +148,14 @@
     --tok-add: #b5cea8;
     --tok-remove: #f48771;
     --tok-meta: #c586c0;
+    --surface-muted: #1b1814;
+    --studio-background: #1b1814;
+    --portrait-border: #40382d;
+    --terminal-background: #201c16;
+    --terminal-foreground: #eee6d6;
+    --terminal-cursor: #86cdb5;
+    --terminal-selection: #4a4136;
+    --panel-shadow: rgb(0 0 0 / 45%);
   }
 }
 
@@ -250,6 +274,18 @@
 }
 
 @layer base {
+  :root {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+  }
+
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     [data-ui],
     [data-ui] *,

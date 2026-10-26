@@ -15,7 +15,7 @@
 //   - the tab drawn without the git sibling ............ "the tab exists only when the daemon sent the sibling"
 //   - a read made by the effect after the first ........ "showing the tab reads once…"
 
-import { hooks } from './helpers/hook-markup.mjs';
+import { hooks } from './helpers/markup.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';

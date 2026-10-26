@@ -65,8 +65,8 @@ export function AgentOverview({ row, cards, fields, recovery, goalForm, liveOutp
     <Disclosure className="agent-overview-check" summary={`Completion check${completionCheck === null ? '' : ` · ${completionCheck.label}`}`}>
       <dl className={FACT_LIST}><div className={FACT_ROW}><dt className={FACT_TERM}>Completion check</dt><dd className={cn(FACT_DEF, 'grid gap-1')}>{completionCheck === null ? 'No name was recorded for this check.' : <>
         <span>{completionCheck.label}</span>
-        <span className="completion-check-identity font-mono text-small text-muted">{completionCheck.id}</span>
-        <span className="completion-check-identity font-mono text-small text-muted">Revision {completionCheck.revision}</span>
+        <span className="completion-check-identity block font-mono text-small text-muted [overflow-wrap:anywhere]">{completionCheck.id}</span>
+        <span className="completion-check-identity block font-mono text-small text-muted [overflow-wrap:anywhere]">Revision {completionCheck.revision}</span>
         <p className="m-0 text-muted">This is the configured check summary. The command is not shown here.</p>
       </>}<p className="m-0 text-muted" data-check-baseline={baseline ?? 'absent'}>{BASELINE_LINES[baseline ?? 'absent']}</p></dd></div></dl>
     </Disclosure>

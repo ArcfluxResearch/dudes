@@ -375,7 +375,7 @@ test('Attach carries its explanation as a tooltip and description, and a disable
     const button = attachButton(html);
     assert.match(button, new RegExp(`title="${words}"`));
     assert.match(button, /aria-describedby="terminal-hint"/);
-    assert.match(html, new RegExp(`<span class="visually-hidden" id="terminal-hint">${words}</span>`));
+    assert.match(html, new RegExp(`<span class="sr-only" id="terminal-hint">${words}</span>`));
     assert.doesNotMatch(html, /<p\b/, 'the words are a tooltip, not a paragraph');
   };
   assert.equal(view({ kind: 'none' }), '');

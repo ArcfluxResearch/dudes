@@ -6,8 +6,13 @@ import type { CSSProperties } from 'react';
 import { lookKey } from './appearance.ts';
 import type { Accessory, Look } from './appearance.ts';
 import { lazyChunk } from '../transport.ts';
+import { cn } from '../ui/index.ts';
 
 type PortraitStyle = 'figure' | 'badge';
+
+const BOX = 'box-content size-12';
+/** The ring and top alignment the drawer's and the archive's portraits wear. */
+export const PORTRAIT_FRAME = 'self-start shadow-[inset_0_0_0_1px_var(--portrait-border)]';
 
 /** Which portrait the Floor draws. A browser that cannot draw the figure gets the badge. */
 const PORTRAIT_STYLE = 'figure' as PortraitStyle;
@@ -53,7 +58,7 @@ export function Portrait({ look, accessory = null, name, className }: {
     return () => { current = false; };
   }, [figure, key]);
   return figure
-    ? <canvas ref={canvas} className={`${className} portrait-figure`} aria-hidden="true" data-portrait="figure"
+    ? <canvas ref={canvas} className={cn(BOX, 'bg-(--surface-muted)', className, 'portrait-figure')} aria-hidden="true" data-portrait="figure"
       data-skin={look.skin} data-hair={look.hair} data-shirt={look.shirt} />
     : <PortraitBadge look={look} name={name} className={className} />;
 }
@@ -63,7 +68,7 @@ export function PortraitBadge({ look, name, className }: {
   readonly name: unknown;
   readonly className: string;
 }) {
-  return <span className={`${className} portrait-badge`} aria-hidden="true" data-portrait="badge"
+  return <span className={cn(BOX, 'bg-[color-mix(in_srgb,var(--agent)_85%,#000000)] text-center font-sans text-[1.5rem] leading-[48px] font-[700] text-white', className, 'portrait-badge')} aria-hidden="true" data-portrait="badge"
     data-skin={look.skin} data-hair={look.hair} data-shirt={look.shirt}
     style={{ '--agent': look.shirt } as CSSProperties}>{initialOf(name)}</span>;
 }

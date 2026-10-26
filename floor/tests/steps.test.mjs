@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { hooks } from './helpers/hook-markup.mjs';
+import { hooks } from './helpers/markup.mjs';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';

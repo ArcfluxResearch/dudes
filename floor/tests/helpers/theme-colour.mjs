@@ -10,6 +10,13 @@ export function themeTokens(css, theme) {
     .matchAll(/--([a-z-]+):\s*(#[0-9a-f]{6})/gi)].map((match) => [match[1], match[2]]));
 }
 
+/** The Tailwind entry file's tokens for `theme`: `bg` is the page the lines of the office are read against. */
+export async function entryTokens(theme) {
+  const { readFile } = await import('node:fs/promises');
+  const { resolve } = await import('node:path');
+  return themeTokens(await readFile(resolve(import.meta.dirname, '../../src/tailwind.css'), 'utf8'), theme);
+}
+
 export function themeColour(css, className, theme) {
   const rule = new RegExp(`\\.${className}\\s*\\{[^}]*?color:\\s*(#[0-9a-f]{6}|var\\(--([a-z-]+)\\))`, 'i').exec(css);
   assert.ok(rule, `.${className} sets a colour`);

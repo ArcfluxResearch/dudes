@@ -4,9 +4,9 @@ import { Ellipsis } from 'lucide-react';
 import { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 
-import { Badge, Button, Disclosure, ICON, Menu, MenuSeparator, RING, RING_INSET, Tab, TabList } from '../ui/index.ts';
+import { Badge, Button, Disclosure, ICON, Menu, MenuSeparator, RING, RING_INSET, Tab, TabList, cn } from '../ui/index.ts';
 import { accentOf, accessoryOf, lookOf } from './appearance.ts';
-import { Portrait } from './Portrait.tsx';
+import { PORTRAIT_FRAME, Portrait } from './Portrait.tsx';
 import { AgentOverview } from './AgentOverview.tsx';
 import { detailTabSelection, detailTabTarget, revealedTabScroll } from './detailTabs.ts';
 import type { DetailTab } from './detailTabs.ts';
@@ -136,7 +136,7 @@ export function AgentDetail({
       <div className="agent-detail-context max-h-[55%] flex-none overflow-y-auto [[data-chat-short=true]_&]:max-h-[30%]">
       <header className="agent-detail-head grid grid-cols-1 gap-3 font-sans text-ink">
         <div className="flex items-start gap-3 pr-8">
-          <Portrait className="agent-portrait agent-detail-portrait shrink-0" look={lookOf(row)} accessory={accessoryOf(row.role)}
+          <Portrait className={cn('agent-portrait agent-detail-portrait shrink-0', PORTRAIT_FRAME)} look={lookOf(row)} accessory={accessoryOf(row.role)}
             name={row.name} />
           <div className="agent-detail-identity grid min-w-0 flex-1 gap-0.5">
             <div className="agent-detail-name flex min-w-0 flex-wrap items-center gap-1.5">
