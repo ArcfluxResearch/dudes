@@ -17,7 +17,7 @@ export function CrewStats({ agents, cards, statuses = true }: {
   readonly statuses?: boolean;
 }) {
   return (
-    <ul className="crew-stats m-0 flex list-none flex-wrap items-center gap-2 p-0 font-sans text-small font-medium tabular-nums" aria-label="Crew by status">
+    <ul className="crew-stats m-0 flex list-none max-[800px]:sr-only flex-wrap items-center gap-2 p-0 font-sans text-small font-medium tabular-nums" aria-label="Crew by status">
       <li className="crew-stats-total text-muted">{`${agents.length} crew`}</li>
       {(statuses ? crewStatuses(agents, cards) : []).map(({ status, label, count }) => <li key={status} data-status={status}
         className={cn('inline-flex h-6 items-center gap-1.5 rounded-pill border border-line bg-surface-2 px-2 text-ink before:size-1.5 before:rounded-pill before:content-[""]', DOT[status])}>

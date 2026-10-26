@@ -97,7 +97,7 @@ export function ControlNav({ floor, view, onToggle }: {
   readonly onToggle: (view: ControlView) => void;
 }) {
   return (
-    <nav className="control-nav flex flex-wrap items-center gap-1" aria-label="Views">
+    <nav className="control-nav flex flex-wrap items-center gap-1 max-[800px]:order-3 max-[800px]:basis-full max-[800px]:justify-between" aria-label="Views">
       {CONTROL_VIEWS.map((entry) => <Button key={entry.view} variant="ghost" id={viewButtonId(entry.view)}
         className={cn(view === entry.view && 'bg-accent-soft text-accent hover:bg-accent-soft hover:text-accent')}
         aria-pressed={view === entry.view}
