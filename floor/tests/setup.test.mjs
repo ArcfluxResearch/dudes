@@ -240,9 +240,9 @@ const wizard = () => renderToStaticMarkup(createElement(HireWizardView, {
   hire: hire.getHireState(), floor: getFloorState(), onClose() {},
 }));
 
-const NEXT_DISABLED = /<button type="button" class="hire-next" aria-disabled="true">Next<\/button>/;
-const HIRE_DISABLED = /<button type="button" class="hire-submit" aria-disabled="true"/;
-const HIRE_OFFERED = /class="hire-submit"/;
+const NEXT_DISABLED = /data-hire-action="next"[^>]*aria-disabled="true"[^>]*>Next<\/button>/;
+const HIRE_DISABLED = /data-hire-action="submit" aria-disabled="true"/;
+const HIRE_OFFERED = /data-hire-action="submit"/;
 
 test('the Hire wizard holds on Engine when the enrolled engine is not found, and never on an absent report', () => {
   const missing = { providers: [{ provider: 'claude', program: 'claude', found: false }] };
@@ -251,8 +251,8 @@ test('the Hire wizard holds on Engine when the enrolled engine is not found, and
   hire.showSection('engine');
   let html = wizard();
   assert.match(html, /data-engine-found="false">Dudes did not find Claude’s command on this computer\./);
-  assert.match(html, /role="alert"><p>Claude was not found on this computer, so this agent could not start\./);
-  assert.match(html, /<button type="button">Check again<\/button>/);
+  assert.match(html, /data-hire-missing="true"[^>]*>.*?<p class="m-0">Claude was not found on this computer, so this agent could not start\./);
+  assert.match(html, /<button type="button" data-ui="button"[^>]*>Check again<\/button>/);
   assert.match(html, HIRE_DISABLED);
 
   for (const [name, daemon] of [
@@ -276,7 +276,7 @@ test('the engine block follows the chosen engine', () => {
   subscribe({ onboarding: both, daemon: REPORT });
   hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'codex' });
   hire.showSection('engine');
-  assert.match(wizard(), /role="alert"><p>Codex was not found on this computer, so this agent could not start\./);
+  assert.match(wizard(), /data-hire-missing="true"[^>]*>.*?<p class="m-0">Codex was not found on this computer, so this agent could not start\./);
   assert.match(wizard(), HIRE_DISABLED);
   hire.editDraft({ engine: 'claude' });
   assert.doesNotMatch(wizard(), /Check again/);

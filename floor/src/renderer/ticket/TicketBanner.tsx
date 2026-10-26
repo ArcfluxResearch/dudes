@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useEffect, useRef, useState } from 'react';
-
-import './ticket.css';
 import { useAutoDismiss } from '../useAutoDismiss.ts';
 
 import type { FloorState } from '../floor/store.ts';

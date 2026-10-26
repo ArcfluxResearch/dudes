@@ -9,6 +9,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
+import { Button, Input, Notice, RING, buttonClass, cn } from '../../ui/index.ts';
 import { currentFloorSession } from '../../session.ts';
 import { browserSocket, refreshFloorSnapshot } from '../floor/stream.ts';
 import { HIRE_ENGINES } from '../onboarding/catalog.ts';
@@ -23,6 +24,8 @@ import {
 } from './login.ts';
 import type { LoginChannel, LoginEnding, LoginPorts } from './login.ts';
 import { hyperlinkTarget, printedLink } from './signInLink.ts';
+
+const LINK = cn('rounded-sm text-accent underline underline-offset-2 hover:text-accent-hover', RING);
 
 type OpenChannel = Exclude<LoginChannel, { readonly phase: 'idle' }>;
 
@@ -90,23 +93,24 @@ export function EngineSignInView({ engine, row, channel, terminal, onSettings }:
   if (!signInOffered(engine, row)) return null;
   if (engine === 'pi' && !terminal) {
     return (
-      <div className="login-offer" data-login-offer="pi">
-        <p className="hire-note" role="status">{ENDINGS.needs_terminal} <a href="#/settings" onClick={onSettings}>Open Settings</a></p>
-        <button type="button" className="login-recheck" onClick={() => refreshFloorSnapshot()}>Check again</button>
+      <div className="mt-2 flex flex-col items-start gap-2" data-login-offer="pi">
+        <Notice tone="warn" role="status">{ENDINGS.needs_terminal}{' '}
+          <a href="#/settings" onClick={onSettings} className={LINK}>Open Settings</a></Notice>
+        <Button data-login="recheck" onClick={() => refreshFloorSnapshot()}>Check again</Button>
       </div>
     );
   }
   const busy = channel.phase !== 'idle' && channel.phase !== 'ended';
   return (
-    <div className="login-offer" data-login-offer={engine}>
-      {engine === 'pi' ? <p className="hire-note">
+    <div className="mt-2 flex flex-col items-start gap-2" data-login-offer={engine}>
+      {engine === 'pi' ? <p className="m-0 text-small text-muted">
         Pi cannot tell Dudes whether it is signed in. If it needs a sign-in, open it here.
       </p> : null}
-      <button type="button" className="login-start" aria-disabled={busy || undefined}
+      <Button variant="primary" data-login="start" aria-disabled={busy || undefined}
         title={busy ? 'Finish or cancel the other sign-in first.' : undefined}
         onClick={() => { if (!busy) startLogin(engine, browserLoginPorts()); }}>
         {engine === 'pi' ? 'Open Pi to sign in' : `Sign in to ${name}`}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -117,17 +121,17 @@ function LoginPanel({ engine, channel }: { readonly engine: HireEngine; readonly
   const progress = channel.phase === 'opening' || channel.phase === 'starting' ? PROGRESS[channel.phase] : null;
   const [link, setLink] = useState<string | null>(null);
   return (
-    <section className="login-panel" aria-label={`Sign in to ${HIRE_ENGINES[engine]}`}
+    <section className="mt-2 flex flex-col gap-3 rounded-lg border border-line bg-surface-2 p-3 font-sans" aria-label={`Sign in to ${HIRE_ENGINES[engine]}`}
       data-login-phase={channel.phase} data-login-ending={ended ? channel.ending : undefined}>
-      <p className={`login-state${failed ? ' login-failed' : ''}`} role={failed ? 'alert' : 'status'}>
+      <Notice tone={failed ? 'danger' : 'info'} data-login="state" role={failed ? 'alert' : 'status'}>
         {ended ? endingText(engine, channel.ending) : progress ?? STEPS[engine]}
-      </p>
+      </Notice>
       {link !== null && !ended ? <SignInLink link={link} /> : null}
       <LoginScreen phase={channel.phase} onLink={setLink} />
-      <div className="login-actions">
-        {failed ? <button type="button" className="login-retry"
-          onClick={() => startLogin(engine, browserLoginPorts())}>Try again</button> : null}
-        <button type="button" className="login-close" onClick={closeLogin}>{ended ? 'Close' : 'Cancel sign-in'}</button>
+      <div className="flex flex-wrap gap-2">
+        {failed ? <Button variant="primary" data-login="retry"
+          onClick={() => startLogin(engine, browserLoginPorts())}>Try again</Button> : null}
+        <Button data-login="close" onClick={closeLogin}>{ended ? 'Close' : 'Cancel sign-in'}</Button>
       </div>
     </section>
   );
@@ -147,12 +151,12 @@ function SignInLink({ link }: { readonly link: string }) {
     else clipboard.writeText(link).then(() => setCopy('copied'), refused);
   };
   return (
-    <div className="login-link">
-      <input ref={field} className="login-link-text" type="text" readOnly value={link} spellCheck={false}
+    <div className="flex flex-wrap items-center gap-2" data-login="link">
+      <Input ref={field} className="min-w-56 flex-1 font-mono text-small" type="text" readOnly value={link} spellCheck={false}
         aria-label="Sign-in link" />
-      <a className="login-link-open" href={link} target="_blank" rel="noopener noreferrer">Open link</a>
-      <button type="button" className="login-link-copy" onClick={copyLink}>Copy link</button>
-      <span className="login-link-note" role="status">
+      <a data-login="open" className={buttonClass('secondary', 'md', false)} href={link} target="_blank" rel="noopener noreferrer">Open link</a>
+      <Button data-login="copy" onClick={copyLink}>Copy link</Button>
+      <span className="basis-full text-small text-muted empty:hidden" role="status">
         {copy === 'copied' ? 'Copied.' : copy === 'select' ? 'The browser blocked copying. The link is selected: press Ctrl+C or Cmd+C.' : ''}
       </span>
     </div>
@@ -264,5 +268,5 @@ function LoginScreen({ phase, onLink }: { readonly phase: OpenChannel['phase']; 
     if (phase === 'running') screen.current.focus();
   }, [phase]);
 
-  return <div ref={host} className="terminal-screen login-screen" />;
+  return <div ref={host} data-login="screen" className="terminal-screen h-52 flex-none overflow-hidden rounded-md border border-line" />;
 }

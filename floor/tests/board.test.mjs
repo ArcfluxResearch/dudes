@@ -112,7 +112,7 @@ test('card detail supplies the existing heading focus and hand-back target', asy
   const detail = await renderModule('/src/renderer/BoardPanel.tsx', 'CardDetail', {
     floor: { ...getFloorState(), agents: [] }, card: card(C, 'doing', 'Inspect parser'),
   });
-  assert.match(detail, /<h3 id="card-detail-title" tabindex="-1" data-focus-on-leave="view-board">Inspect parser<\/h3>/);
+  assert.match(detail, /<h3 id="card-detail-title" tabindex="-1"[^>]*data-focus-on-leave="view-board">Inspect parser<\/h3>/);
   assert.match(detail, /aria-labelledby="card-detail-title"/);
 });
 

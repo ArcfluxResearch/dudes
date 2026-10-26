@@ -33,9 +33,9 @@ test('Choose folder shows only when the snapshot says the daemon can open a dial
   try {
     const { AddProject } = await server.ssrLoadModule('/src/renderer/project/AddProject.tsx');
     const html = (state) => renderToStaticMarkup(createElement(AddProject, { floor: floor(state) }));
-    assert.match(html({ picker: true }), /<button type="button" class="add-project-choose"[^>]*>Choose folder…<\/button>/);
+    assert.match(html({ picker: true }), /data-add-project="choose"[^>]*>(?:<svg.*?<\/svg>)?Choose folder…<\/button>/);
     assert.match(html({ picker: true }), /name="folder"/, 'typing still works');
-    assert.doesNotMatch(html({ picker: false }), /add-project-choose|Choose folder/);
+    assert.doesNotMatch(html({ picker: false }), /data-add-project="choose"|Choose folder/);
     assert.equal(html({ project: false, picker: true }), '', 'with project add off there is no form');
   } finally {
     await server.close();
