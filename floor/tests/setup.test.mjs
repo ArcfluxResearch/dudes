@@ -140,7 +140,7 @@ test('the Setup view renders text, offers Retry for missing reads, and holds no 
     const absent = setup();
     assert.match(absent, /Dudes could not check the engines/);
     assert.match(absent, /role="alert"/);
-    assert.match(absent, /<button type="button">Retry<\/button>/);
+    assert.match(absent, /<button type="button"[^>]*>Retry<\/button>/);
   }
   for (const state of [html, setup()]) {
     assert.doesNotMatch(state, /<(?:input|form|select|textarea)[\s>]/, 'the Setup view holds a field');

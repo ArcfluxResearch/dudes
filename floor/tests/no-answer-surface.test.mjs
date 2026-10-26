@@ -571,7 +571,7 @@ test("Roster.tsx's top-level imports include its live activity expiry hook, it b
     }
     ts.forEachChild(node, collect);
   })(syntax);
-  assert.deepEqual(specifiers.sort(), ['./AgentOrder.tsx', './Portrait.tsx', './appearance.ts', './board.ts', './needs.ts', './needs.ts', './scene/cast.ts', './useHeldLayout.ts', './useHeldLayout.ts', './useLiveActivityExpiry.ts', './view.ts', 'react', 'react'],
+  assert.deepEqual(specifiers.sort(), ['../ui/index.ts', './AgentOrder.tsx', './Portrait.tsx', './appearance.ts', './board.ts', './needs.ts', './needs.ts', './scene/cast.ts', './useHeldLayout.ts', './useHeldLayout.ts', './useLiveActivityExpiry.ts', './view.ts', 'react', 'react'],
     "Roster.tsx's top-level imports changed; inspect any new path for an answer input");
   assert.equal(bindingNamesIn(syntax).filter(({ name }) => name === 'reveal').length, 1,
     'Roster.tsx binds reveal more than once, so the pinned body may not be the one onFocus calls');
@@ -584,7 +584,11 @@ function classNameOf(node, syntax) {
   const found = node.attributes.properties
     .find((entry) => ts.isJsxAttribute(entry) && entry.name.getText(syntax) === 'className');
   if (found === undefined || found.initializer === undefined) return null;
-  return ts.isStringLiteral(found.initializer) ? found.initializer.text : null;
+  if (ts.isStringLiteral(found.initializer)) return found.initializer.text;
+  // A class string built with `cn()` names its element by the first word of its first literal, the way a plain string does.
+  const call = ts.isJsxExpression(found.initializer) ? found.initializer.expression : undefined;
+  const first = call !== undefined && ts.isCallExpression(call) && call.expression.getText(syntax) === 'cn' ? call.arguments[0] : undefined;
+  return first !== undefined && ts.isStringLiteral(first) ? first.text.split(' ')[0] : null;
 }
 
 /**
@@ -1315,20 +1319,20 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   const strip = await readFile(resolve(source, 'renderer/Roster.tsx'), 'utf8');
   const center = await readFile(resolve(source, 'renderer/Control.tsx'), 'utf8');
   assert.match(canvas, /type="button"/);
-  assert.match(canvas, /className="agent-select"/);
+  assert.match(canvas, /className=\{cn\('agent-select', OFFICE_HIT\)\}/);
   assert.match(canvas, /onClick=\{\(\) => onSelectAgent\(id\)\}/);
   assert.deepEqual(clicksIn(canvas), ['() => turn(TURN_STEP)', '() => turn(-TURN_STEP)', '() => zoom(ZOOM_STEP)', '() => zoom(1 / ZOOM_STEP)',
     '() => onSelectAgent(id)', '() => onOpenQuestion(id)']);
   const notes = await readFile(resolve(floor, 'src/renderer/BoardNotes.tsx'), 'utf8');
-  assert.match(notes, /className="board-select"/);
+  assert.match(notes, /className=\{cn\('board-select /);
   assert.match(notes, /onClick=\{onOpenTasks\}/);
   const tasks = await readFile(resolve(floor, 'src/renderer/ticket/TicketBoard.tsx'), 'utf8');
   assert.match(tasks, /onClick=\{\(event\) => onSelect\(card\.id, event\.currentTarget\)\}/);
   assert.match(center, /onSelect=\{openCard\}/);
-  assert.match(strip, /className="crew-row"/);
+  assert.match(strip, /className=\{cn\('crew-row /);
   assert.match(strip, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);
-  assert.match(strip, /className="roster-act"/);
-  assert.match(strip, /className="roster-act"[\s\S]*?disabled=\{!selectable\}/);
+  assert.match(strip, /className=\{cn\('roster-act', /);
+  assert.match(strip, /className=\{cn\('roster-act', [^\n]*\)\}\s*data-primary=[^\n]*\s*disabled=\{!selectable\}/);
   assert.deepEqual(clicksIn(strip).map((handler) => handler.replace(/\s+/g, ' ')), [
     '() => onSelectAgent(row.id)',
     '() => act(row.action, row.id)',
@@ -1476,7 +1480,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   ]);
 
   const planted = `${canvas}\n${notes}\n<button onClick={() => send('agent.answer')}>Answer</button>`;
-  assert.equal([...planted.matchAll(/<button[\s/>]/gi)].length, 8,
+  assert.equal([...planted.matchAll(/<button[\s/>]/gi)].length, 4,
     'the button count must fire on a planted answer button');
   assert.equal([...planted.matchAll(/\bonclick\s*=/gi)].length, 8,
     'the click count must fire on a planted answer handler');
@@ -2973,7 +2977,7 @@ test('with the same Waiting row but no answer sibling, no answer form renders', 
   assert.ok(html.includes(QUESTION), 'the Waiting question is not displayed, so this proves nothing');
   assert.doesNotMatch(html, /<textarea|name="answer"|Send answer|data-answer-/);
   const asking = center(floorWith(waiting(), undefined), 'overview');
-  assert.match(asking, new RegExp(`<button type="button" class="roster-act" data-primary="true"[^>]*aria-label="Answer, Ada"`));
+  assert.match(asking, new RegExp(`<button type="button"[^>]*data-primary="true"[^>]*aria-label="Answer, Ada"`));
   assert.ok(asking.includes(QUESTION), 'Overview does not list the Waiting question, so this proves nothing');
   assert.doesNotMatch(asking, /<textarea|name="answer"|Send answer|data-answer-/);
   // Nor for an agent a person is attached to, even with answering on.

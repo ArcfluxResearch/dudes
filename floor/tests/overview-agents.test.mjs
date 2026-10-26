@@ -197,7 +197,7 @@ test('a recovery-required ticket gives the selected agent and focus roster the s
     const html = focus({ ...live, agents: [row], cards: [card] }, row, ADA);
     assert.match(html, /<section class="agent-detail-state" aria-label="State" data-state="needs-you"><p class="agent-detail-state-line"><span class="crew-chip" data-state="needs-you">Needs you<\/span>/);
     assert.match(html, /<dt>Status<\/dt><dd>Needs you<\/dd>/);
-    assert.match(html, /data-state="needs-you"><span class="visually-hidden">Status: <\/span>Needs you<\/span>/);
+    assert.match(html, /data-state="needs-you"[^>]*><span aria-hidden="true"[^>]*><\/span><span class="visually-hidden">Status: <\/span>Needs you<\/span>/);
     assert.doesNotMatch(html, /<span>running<\/span>|data-status="running"/);
   });
 });

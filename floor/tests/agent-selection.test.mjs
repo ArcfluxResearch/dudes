@@ -10,7 +10,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { selectedAgentRow } from '../src/renderer/scene/selection.ts';
-import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const ADA = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const GRACE = '01M31CGZJMEFDYMJ4YBV76DJHQ';
@@ -92,13 +91,12 @@ test('the detail renders selected values and offers navigation to its waiting qu
 test('selection marker and keyboard-native button use the shared shell callback', async () => {
   const component = await readFile(resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx'), 'utf8');
   const shell = await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8');
-  const styles = await legacyStyles();
-  assert.match(component, /<button\s+[\s\S]*?type="button"[\s\S]*?className="agent-select"/);
+  assert.match(component, /<button\s+[\s\S]*?type="button"[\s\S]*?className=\{cn\('agent-select', OFFICE_HIT\)\}/);
   assert.match(component, /aria-pressed=\{selectedId === id\}/);
   assert.match(component, /onClick=\{\(\) => onSelectAgent\(id\)\}/);
   assert.match(shell, /selectedAgentRow\(floor\.agents, selectedId, floor\.phase, floor\.stale\)/);
   assert.match(shell, /<OfficeCanvas floor=\{floor\} selectedId=\{currentSelectedId\} onSelectAgent=\{selectAgent\}/);
-  assert.match(component, /className="office-tag"[\s\S]*?data-selected=\{selectedId === id \? 'true' : 'false'\}/);
-  assert.match(styles, /\.office-tag\[data-selected='true'\][\s\S]*?background: var\(--studio-selected\)/);
-  assert.match(styles, /\.agent-select:focus-visible/);
+  assert.match(component, /'office-tag group\/tag [\s\S]*?data-selected=\{selectedId === id \? 'true' : 'false'\}/);
+  assert.match(component, /data-\[selected=true\]:bg-accent /, 'the selected tag is filled with the accent');
+  assert.match(component, /const OFFICE_HIT = cn\([\s\S]*?focus-visible:outline-2/, 'the figure button draws its own ring for the keyboard');
 });

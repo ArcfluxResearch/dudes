@@ -64,7 +64,7 @@ test('banner shows fixed CLI guidance without actions or raw errors, separately 
   const html = renderToStaticMarkup(createElement(Banner, { stopped: floor.journalStopped }));
   assert.match(html, /role="alert"/);
   assert.match(html, /Dudes cannot save changes\.[^]*Saving stopped at segment 0 · byte 99\./);
-  assert.match(html, /class="journal-stopped-banner"/);
+  assert.match(html, /class="journal-stopped-banner[ "]/);
   assert.doesNotMatch(html, /button|href|sentinel|private|office-closed/);
   for (const [lsn, position] of [
     ['1099511629824', 'segment 1 · byte 2048'],

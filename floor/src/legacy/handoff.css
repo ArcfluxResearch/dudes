@@ -1,0 +1,356 @@
+@layer legacy, theme, base, components, utilities;
+
+@layer legacy {
+/* Hire: its footer stays in view, so Hire is never below the fold of a phone. */
+.hire-wizard .hire-actions {
+  position: sticky;
+  bottom: -.75rem;
+  margin: 0 -.75rem -.75rem;
+  padding: .6rem .75rem;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.hire-more { margin: .4rem 0; }
+.hire-more > summary { cursor: pointer; font-weight: 700; }
+.hire-shared { border-left: 3px solid var(--accent-ink); padding-left: .5rem; }
+.hire-install { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+@media (max-width: 800px) {
+  .hire-dialog { height: 100dvh; }
+}
+
+.shell:has(.roster[data-sheet]) {
+  padding-bottom: 4rem;
+}
+
+.overview-dialog {
+  box-sizing: border-box;
+  width: min(44rem, calc(100vw - 2rem));
+  max-height: min(46rem, calc(100vh - 2rem));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 8px 28px var(--panel-shadow);
+}
+
+.overview-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.overview-dialog::backdrop {
+  background: rgba(20, 17, 15, 0.55);
+}
+
+.overview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.8rem 1.1rem 0.4rem;
+}
+
+.overview-head h2 {
+  margin: 0;
+  font-family: var(--font-head);
+  font-size: 1.15rem;
+}
+
+.overview-head h2:focus {
+  outline: none;
+}
+
+.overview-body {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0 1.1rem 1rem;
+  overflow: auto;
+}
+
+.overview-body p {
+  margin: 0;
+}
+
+.overview-journal {
+  color: var(--muted-ink);
+  font-size: 0.85rem;
+}
+
+.agent-detail-question {
+  margin: 0 0 0.8rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 3px;
+  background: var(--question);
+  box-shadow: 0 1px 1px rgb(70 48 12 / 22%), 0 8px 12px -8px var(--panel-shadow);
+  overflow-wrap: anywhere;
+}
+
+.agent-detail-question h3,
+.agent-detail-question p {
+  margin: 0;
+}
+
+.agent-detail-question h3 {
+  font-size: 0.95rem;
+}
+
+.agent-detail-question p {
+  margin-top: 0.4rem;
+}
+
+.crew-entry .add-project {
+  display: grid;
+  gap: .4rem;
+  max-width: 34rem;
+  margin: .6rem 0;
+}
+.add-project input[type="text"] {
+  min-width: 0;
+  padding: .45rem .55rem;
+  font: inherit;
+}
+.add-project button {
+  justify-self: start;
+}
+.add-project-preview {
+  display: grid;
+  gap: .3rem;
+  padding: .55rem .7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+}
+.add-project-preview p,
+.add-project > p {
+  margin: 0;
+  font-size: .85rem;
+  line-height: 1.5;
+}
+.remove-project {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  align-items: center;
+  max-width: 34rem;
+  margin: .4rem 0;
+}
+.remove-project > p {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: .85rem;
+  line-height: 1.5;
+}
+
+/* The chip's word says the state, so no reader depends on its colour. */
+.crew-chip {
+  --status-ink: var(--status-idle);
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--status-ink);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--status-ink);
+  font-size: 0.68rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.crew-chip[data-state='working'],
+.crew-stats [data-status='working'] {
+  --status-ink: var(--status-running);
+}
+
+.crew-chip[data-state='needs-you'],
+.crew-chip[data-state='waiting'],
+.crew-stats [data-status='needs-you'],
+.crew-stats [data-status='waiting'] {
+  --status-ink: var(--status-waiting);
+}
+
+.crew-chip[data-state='ready'],
+.crew-chip[data-state='done'],
+.crew-stats [data-status='ready'],
+.crew-stats [data-status='done'] {
+  --status-ink: var(--status-done);
+}
+
+.agent-portrait {
+  align-self: start;
+  background-color: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--portrait-border);
+}
+
+.portrait-figure, .portrait-badge {
+  box-sizing: content-box;
+  width: 48px;
+  height: 48px;
+}
+
+.portrait-figure {
+  background-color: var(--surface-muted);
+}
+
+.portrait-badge {
+  font: 700 1.5rem/48px var(--font-ui);
+  text-align: center;
+}
+
+/* After `.agent-portrait`, whose paper background would hide the Crew colour. Darkened so white reads at 4.5:1 on amber. */
+.portrait-badge {
+  background: color-mix(in srgb, var(--agent) 85%, #000000);
+  color: #ffffff;
+}
+
+.enable-controls {
+  font-size: 0.8rem;
+}
+
+.selection-bar button {
+  border: 1px solid var(--accent-ink);
+  background: var(--button-background);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.agents-roster,
+.setup-view {
+  height: 100%;
+  overflow: auto;
+}
+
+.focus-roster {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.link-refused {
+  max-width: 60rem;
+  margin: 0.25rem 0 0;
+  color: var(--danger-ink);
+  font-weight: 700;
+}
+
+/* Between the narrow layout and 1200 pixels a Control view covers Crew, so Crew leaves the tab order too. */
+@media (min-width: 801px) and (max-width: 1199px) {
+  .control-panel {
+    grid-column: 1;
+  }
+
+  .floor-stage:has(.control-panel) .crew-list {
+    visibility: hidden;
+  }
+}
+
+/* On a narrow screen the panels leave the stage and follow the office down the page. */
+@media (max-width: 800px) {
+  .shell {
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .floor-stage {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .office-slot {
+    order: -1;
+    min-height: 20rem;
+  }
+
+  .crew-list,
+  .control-panel,
+  .control-panel[data-view='board'],
+  .receipts,
+  .agent-drawer {
+    width: auto;
+    margin: 0.5rem;
+    border-width: 1px;
+    border-radius: var(--radius);
+  }
+
+  .receipts {
+    padding: 0;
+  }
+
+  .control-panel {
+    max-height: 32rem;
+  }
+
+  .stage-center,
+  .stage-side {
+    padding: 0;
+  }
+
+  .drawer-frame .panel-splitter {
+    display: none;
+  }
+
+  .agent-drawer {
+    flex: 1 1 auto;
+  }
+
+  .focus-frame {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .focus-frame .focus-roster {
+    order: -1;
+    max-height: 14rem;
+  }
+
+  .focus-frame .panel-splitter {
+    display: none;
+  }
+
+  .terminal-panel[data-terminal-expanded='true'] {
+    height: 100vh;
+  }
+}
+
+/* When the panels leave too narrow a band of the office, its lines and view buttons sit in the top bar. */
+.office-bar {
+  display: flex;
+  flex: 0 0 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.75rem;
+}
+
+.office-bar:empty {
+  display: none;
+}
+
+.agent-detail,
+.done-notice {
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 8px 28px var(--panel-shadow);
+}
+
+.agent-detail-kicker {
+  display: block;
+  margin: 0;
+  color: var(--muted-ink);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.agent-detail-head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.6rem; }
+.agent-detail-head .agent-detail-portrait {
+  grid-area: auto;
+  border: 3px solid var(--agent, var(--portrait-border));
+  border-radius: 50%;
+}
+.agent-detail-head .portrait-figure { background-color: var(--card-background); }
+.agent-detail-identity p { margin: 0.3rem 0; overflow-wrap: anywhere; }
+.agent-detail-actions, .agent-detail-head > .selection-bar,
+.agent-detail-head > .agent-detail-question, .agent-detail-head > .agent-look-editor, .agent-detail-head > .agent-model { grid-column: 1 / -1; }
+.selection-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.selection-bar .stream-state { margin: 0; overflow-wrap: anywhere; }
+}

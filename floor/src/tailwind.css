@@ -5,14 +5,10 @@
 @import './legacy/shell.css';
 @import './legacy/layout.css';
 @import './legacy/focus.css';
-@import './legacy/office.css';
 @import './legacy/agent-panel.css';
 @import './legacy/memory.css';
-@import './legacy/crew.css';
 @import './legacy/hire-entry.css';
-@import './legacy/live-work.css';
 @import './legacy/setup.css';
-@import './legacy/office-controls.css';
 @import './legacy/hire-wizard.css';
 @import './legacy/agent-actions.css';
 @import './legacy/retire-terminal.css';
@@ -21,7 +17,7 @@
 @import './legacy/settings.css';
 @import './legacy/chat.css';
 @import './legacy/agent-detail.css';
-@import './legacy/roster.css';
+@import './legacy/handoff.css';
 @import './legacy/notices.css';
 @import './legacy/engine-sign-in.css';
 @import './legacy/touch-and-phone.css';

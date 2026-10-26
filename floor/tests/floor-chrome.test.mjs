@@ -100,7 +100,7 @@ test('the top bar names the floor and counts the crew by status', () => {
     ['class="crew-stats-total"', '3 crew'],
   ], 'the roster beside the office says each state, so the top bar keeps only the count');
   assert.doesNotMatch(bar, /hire-entry-off/, 'the top bar still carries the Hire reason that Crew folds');
-  const crew = html.match(/<section class="crew-list roster"[\s\S]*?<\/section>/)?.[0] ?? '';
+  const crew = html.match(/<section class="crew-list roster[^"]*"[\s\S]*?<\/section>/)?.[0] ?? '';
   assert.match(crew, /<details class="hire-off"><summary>Hire is unavailable<\/summary><p class="hire-entry-off">Hire is unavailable\. Check Engines and Projects in Settings\./);
   const actions = bar.match(/<div class="top-bar-actions" role="group" aria-label="Floor actions">[\s\S]*<\/div>/)[0];
   assert.match(actions, /<button type="button" class="crew-toggle" id="crew-toggle" aria-pressed="true" aria-controls="crew-list">Crew<\/button>/);
@@ -119,7 +119,7 @@ test('the top bar reaches every Control view, and the office opens with Crew bes
     ['view-setup', 'Setup'],
     ['view-settings', 'Settings'],
   ]);
-  assert.match(html, /<section class="crew-list roster" id="crew-list" aria-labelledby="crew-title"/);
+  assert.match(html, /<section class="crew-list roster[^"]*" id="crew-list" aria-labelledby="crew-title"/);
   assert.doesNotMatch(html, /id="control-panel"/, 'a Control view is open before any was asked for');
   assert.doesNotMatch(html, /id="selected-agent-detail"/, 'the drawer is open before any agent was selected');
 });

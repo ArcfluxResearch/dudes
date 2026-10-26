@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import type { FloorState } from './floor/store.ts';
+import { Button, cn } from '../ui/index.ts';
 import { refreshFloorSnapshot } from './floor/stream.ts';
 
 export type ReadState = 'loading' | 'ready' | 'unavailable' | 'error';
@@ -16,7 +17,8 @@ export function ReadError({ message, onRetry = refreshFloorSnapshot, className =
   readonly onRetry?: () => void;
   readonly className?: string;
 }) {
-  return <p className={className} role="alert">{message} <button type="button" onClick={onRetry}>Retry</button></p>;
+  return <p className={cn(className, 'm-0 flex flex-wrap items-center gap-x-3 gap-y-1 font-sans text-base text-danger')} role="alert">
+    {message} <Button size="sm" onClick={onRetry}>Retry</Button></p>;
 }
 
 export function ReadNotice({ state, label, message }: {

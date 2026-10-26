@@ -86,9 +86,9 @@ test('Overview is a dialog with the count, the journal in plain words and the ro
   assert.match(html, /<h2 id="overview-title" tabindex="-1">Overview<\/h2><button type="button" class="panel-close" aria-label="Close Overview"/);
   assert.match(html, /<strong>2<\/strong> agents/);
   assert.match(html, /<p class="overview-journal" title="Saved up to segment 2 · byte 4182">\s*Everything is saved\.<\/p>/);
-  assert.match(html, /<section class="crew-list roster" id="overview-roster-list" aria-labelledby="overview-roster-title"/);
-  assert.match(html, /<h2 id="overview-roster-title" class="roster-title">1 needs you<\/h2>/);
-  assert.match(html, /<strong class="crew-name"><bdi>Ada<\/bdi>/);
+  assert.match(html, /<section class="crew-list roster[^"]*" id="overview-roster-list" aria-labelledby="overview-roster-title"/);
+  assert.match(html, /<h2 id="overview-roster-title" class="roster-title[^"]*">1 needs you<\/h2>/);
+  assert.match(html, /<strong class="crew-name[^"]*"><bdi>Ada<\/bdi>/);
   assert.match(html, /aria-label="Answer, Ada"/);
   assert.match(html, /Archived \(0\)/);
   assert.doesNotMatch(html, /waiting-on-you|Waiting on you|Workers|Current agents|workers-list/);
@@ -97,7 +97,7 @@ test('Overview is a dialog with the count, the journal in plain words and the ro
 test('an answer cannot be opened while the view is unconfirmed', () => {
   subscribe([ada()]);
   store.noteStale(true);
-  assert.match(overview(), /<button type="button" class="roster-act" data-primary="true" disabled="" aria-label="Answer, Ada">Answer<\/button>/);
+  assert.match(overview(), /<button type="button"[^>]*data-primary="true"[^>]*disabled=""[^>]*aria-label="Answer, Ada"[^>]*class="[^"]*roster-act[^"]*">Answer<\/button>/);
 });
 
 test('with nothing waiting the dialog says so plainly', () => {

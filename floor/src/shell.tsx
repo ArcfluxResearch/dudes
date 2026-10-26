@@ -42,7 +42,6 @@ import { requestCardSelection } from './renderer/BoardPanel';
 import { OpenCommand, SignInExpired } from './renderer/SignInExpired';
 import { StreamNotice } from './renderer/StreamNotice';
 import { NoticeStack } from './renderer/notices/NoticeStack';
-import './failure.css';
 import {
   DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH,
   focusAgentId, isFocusShortcut, keyboardSidebarWidth, pointerSidebarWidth,

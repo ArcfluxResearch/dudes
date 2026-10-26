@@ -9,6 +9,8 @@
 // buttons and name tags over the figures it drew. The renderer and three.js
 // load on demand, so the rest of the page never waits for them.
 
+import { Minus, Plus, RotateCcw, RotateCw } from 'lucide-react';
+import { cn, ICON, IconButton } from '../ui/index.ts';
 import { engineName } from './engines.ts';
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
@@ -126,10 +128,22 @@ export function goalsPastBoard(rows: readonly AgentRow[], id: LayoutId): number 
   return Math.max(0, goalColours(rows).length - built(id).goalSlots);
 }
 
+/** Lines laid over the part of the office no panel covers, clear of the panels on either side. */
+const CLEAR_LEFT = 'left-[calc(var(--covered-left,0px)_+_0.75rem)]';
+const CLEAR_WIDTH = 'max-w-[calc(100%_-_var(--covered-left,0px)_-_var(--covered-right,0px)_-_1.5rem)]';
+const LINE = 'm-0 box-border pointer-events-none font-sans text-base text-ink';
+const IN_BAR = 'static min-w-0 flex-[1_1_16rem] max-w-none';
+
+/** The transparent button laid over a figure or a note: a ring on hover and a doubled one for the keyboard, so it shows on a light floor, a dark one or the backdrop. */
+const OFFICE_HIT = cn('absolute box-border cursor-pointer border-0 bg-transparent p-0 outline-0',
+  'hover:bg-accent/10 hover:outline-2 hover:outline-solid hover:outline-offset-2 hover:outline-accent',
+  'focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ink',
+  'focus-visible:shadow-[0_0_0_7px_var(--ui-surface)]');
+
 /** An agent's name and engine. The name is isolated, so a name written right to left cannot reorder the engine after it. */
 export function NameTag({ row, id }: { readonly row: AgentRow | undefined; readonly id: string }) {
   return <><bdi>{nameOf(row, id)}</bdi>{typeof row?.provider === 'string'
-    ? <span className="office-tag-engine"> · {engineName(row.provider)}</span> : null}</>;
+    ? <span className="office-tag-engine group-data-[compact=true]/tag:hidden"> · {engineName(row.provider)}</span> : null}</>;
 }
 
 export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion, onOpenTasks, onAddAgent, bar = null }: {
@@ -713,22 +727,29 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
   const rows = new Map([...leavers, ...floor.agents].map((row) => [row.id, row]));
   const selectable = floor.phase !== 'closed' && !floor.stale;
   const inBar = narrow && bar !== null;
-  const fullLine = confirmed && fallback === null && full !== null ? <p className="office-full">{full}</p> : null;
+  const fullLine = confirmed && fallback === null && full !== null ? <p className={cn('office-full', LINE, 'rounded-md border border-line bg-surface px-3 py-2',
+    inBar ? IN_BAR : cn('absolute top-2', CLEAR_LEFT, CLEAR_WIDTH))}>{full}</p> : null;
   const pausedOrHalted = mode?.mode === 'live' ? undefined : mode;
-  const modeLine = pausedOrHalted === undefined ? null : <p className="office-mode">{pausedOrHalted.line}</p>;
+  const modeLine = pausedOrHalted === undefined ? null : <p className={cn('office-mode', LINE, 'rounded-lg border px-3 py-2 font-semibold shadow-card',
+    pausedOrHalted.mode === 'halted' ? 'border-danger bg-danger-soft' : 'border-warn bg-warn-soft',
+    inBar ? IN_BAR : cn('absolute bottom-12', CLEAR_LEFT, CLEAR_WIDTH))}>{pausedOrHalted.line}</p>;
   // The arrow keys turn the view from inside the office, so the buttons name them only there.
-  const viewButtons = drawn ? <div className="office-zoom" role="group" aria-label="Office view" ref={zoomRef}>
-    <button type="button" aria-label="Turn left" aria-keyshortcuts={inBar ? undefined : 'ArrowLeft'} onClick={() => turn(TURN_STEP)}>↺</button>
-    <button type="button" aria-label="Turn right" aria-keyshortcuts={inBar ? undefined : 'ArrowRight'} onClick={() => turn(-TURN_STEP)}>↻</button>
-    <button type="button" aria-label="Zoom in" onClick={() => zoom(ZOOM_STEP)}>+</button>
-    <button type="button" aria-label="Zoom out" onClick={() => zoom(1 / ZOOM_STEP)}>−</button>
+  const viewButtons = drawn ? <div className={cn('office-zoom flex gap-0.5 rounded-lg border border-line bg-surface p-0.5 shadow-card',
+    inBar ? 'static ml-auto' : 'absolute bottom-2 right-[calc(var(--covered-right,0px)_+_0.5rem)]')}
+  role="group" aria-label="Office view" ref={zoomRef}>
+    <IconButton size="sm" label="Turn left" aria-keyshortcuts={inBar ? undefined : 'ArrowLeft'} onClick={() => turn(TURN_STEP)} icon={<RotateCcw {...ICON} />} />
+    <IconButton size="sm" label="Turn right" aria-keyshortcuts={inBar ? undefined : 'ArrowRight'} onClick={() => turn(-TURN_STEP)} icon={<RotateCw {...ICON} />} />
+    <IconButton size="sm" label="Zoom in" onClick={() => zoom(ZOOM_STEP)} icon={<Plus {...ICON} />} />
+    <IconButton size="sm" label="Zoom out" onClick={() => zoom(1 / ZOOM_STEP)} icon={<Minus {...ICON} />} />
   </div> : null;
 
   return (
     <>
-      <div className="office" ref={boxRef} data-office={support} data-mode={pausedOrHalted?.mode}
+      <div className="office group/office relative isolate min-h-72 flex-auto overflow-hidden bg-[var(--studio-background)]" ref={boxRef} data-office={support} data-mode={pausedOrHalted?.mode}
         data-layout={choice.id} data-full={confirmed ? choice.full : undefined}>
-        <canvas className="office-canvas" ref={canvasRef} key={attempt} hidden={fallback !== null}>
+        <canvas className={cn('office-canvas block size-full cursor-grab touch-none',
+          'group-data-[dragging=true]/office:cursor-grabbing group-data-[mode=paused]/office:saturate-[.45] group-data-[mode=paused]/office:brightness-[.86]',
+          'group-data-[mode=halted]/office:saturate-[.15] group-data-[mode=halted]/office:brightness-[.72]')} ref={canvasRef} key={attempt} hidden={fallback !== null}>
           {/* The canvas is opaque to anything that is not looking at it. This
               list keeps the cast in stable desk order while characters move,
               with each agent's fields whole: for assistive technology, and for
@@ -771,12 +792,15 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
         {drawn ? <BoardNotes count={board.count} hidden={board.hidden} goalsHidden={goalsPastBoard(floor.agents, choice.id)}
           buttonRef={boardRef} onOpenTasks={onOpenTasks} /> : null}
         {drawn ? [...desks.map(({ agentId }) => agentId), ...leavers.map((row) => row.id)].map((id) => (
-          <span key={id} className="office-tag" aria-hidden="true" data-tag-agent-id={id}
+          <span key={id} className={cn('office-tag group/tag absolute -translate-x-1/2 -translate-y-full rounded-sm border border-line bg-surface/90 px-1.5 py-0.5',
+            'pointer-events-none font-sans text-caption leading-[1.25] whitespace-nowrap text-ink shadow-card [&_bdi]:inline-block [&_bdi]:max-w-[16ch]',
+            '[&_bdi]:overflow-hidden [&_bdi]:align-bottom [&_bdi]:text-ellipsis data-[selected=true]:z-10 data-[selected=true]:border-accent',
+            'data-[selected=true]:bg-accent data-[selected=true]:font-semibold data-[selected=true]:text-accent-fg')} aria-hidden="true" data-tag-agent-id={id}
             data-selected={selectedId === id ? 'true' : 'false'} data-office-state={states.get(id)}
             data-badge={STATIONS[states.get(id) ?? 'idle'].badge ?? ''}
             ref={(tag) => { if (tag === null) tagsRef.current.delete(id); else tagsRef.current.set(id, tag); }}>
             <NameTag row={rows.get(id)} id={id} />
-            {needWords.get(id) ?? fields.get(id)?.liveActivity ? <small className="office-tag-need" data-need={needWords.has(id)}>{needWords.get(id) ?? fields.get(id)?.liveActivity}</small> : null}
+            {needWords.get(id) ?? fields.get(id)?.liveActivity ? <small className="office-tag-need block text-caption group-data-[compact=true]/tag:hidden data-[need=true]:font-semibold data-[need=true]:text-warn group-data-[selected=true]/tag:data-[need=true]:text-accent-fg" data-need={needWords.has(id)}>{needWords.get(id) ?? fields.get(id)?.liveActivity}</small> : null}
           </span>
         )) : null}
         {drawn && selectable ? desks.map(({ agentId: id }) => (
@@ -784,7 +808,7 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
             <button
               ref={(button) => { if (button === null) buttonsRef.current.delete(id); else buttonsRef.current.set(id, button); }}
               type="button"
-              className="agent-select"
+              className={cn('agent-select', OFFICE_HIT)}
               data-select-agent-id={id}
               aria-label={`Inspect ${typeof rows.get(id)?.name === 'string' ? String(rows.get(id)?.name) : id}`}
               aria-pressed={selectedId === id}
@@ -794,7 +818,7 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
             {asking.has(id) ? <button
               ref={(mark) => { if (mark === null) marksRef.current.delete(id); else marksRef.current.set(id, mark); }}
               type="button"
-              className="office-question"
+              className={cn('office-question', OFFICE_HIT)}
               data-question-agent-id={id}
               aria-label={`Open ${nameOf(rows.get(id), id)}'s question`}
               onClick={() => onOpenQuestion(id)}
@@ -802,17 +826,19 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
           </Fragment>
         )) : null}
         {inBar ? null : fullLine}
-        <p className="office-shelf" data-shelf={shelf.state}>
+        <p className={cn('office-shelf', LINE, 'absolute bottom-12 right-[calc(var(--covered-right,0px)_+_0.75rem)] flex flex-wrap items-baseline gap-x-2 gap-y-0.5',
+          'max-w-[min(22rem,calc(100%_-_var(--covered-left,0px)_-_var(--covered-right,0px)_-_1.5rem))] rounded-lg border border-line bg-surface px-3 py-2 shadow-card',
+          'max-[800px]:bottom-[3.75rem] data-[shelf=unavailable]:text-muted')} data-shelf={shelf.state}>
           <span className="office-shelf-label">{caption.label}</span>
-          <strong className="office-shelf-value">{caption.value}</strong>
-          {caption.day === null ? null : <small className="office-shelf-day">{caption.day}</small>}
+          <strong className="office-shelf-value text-title font-semibold tabular-nums">{caption.value}</strong>
+          {caption.day === null ? null : <small className="office-shelf-day basis-full text-small text-muted">{caption.day}</small>}
         </p>
-        <p className="office-full-heard" role="status">{fullHeard}</p>
+        <p className="office-full-heard sr-only" role="status">{fullHeard}</p>
         {inBar ? createPortal(<>{modeLine}{fullLine}{viewButtons}</>, bar) : viewButtons}
         {inBar ? null : modeLine}
-        <p className="office-mode-heard" role="status">{modeHeard}</p>
+        <p className="office-mode-heard sr-only" role="status">{modeHeard}</p>
         {floor.agents.length !== 0 || floor.phase !== 'live' || floor.stale ? null : (
-          <div className="office-empty">
+          <div className="office-empty absolute top-1/2 left-1/2 w-[min(18rem,calc(100%_-_2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-line bg-surface p-4 text-center font-sans text-ink shadow-pop">
 
             {hireSwitchOn(floor) ? null : <HireEntry floor={floor} id="hire-open-office" onAddAgent={onAddAgent} />}
           </div>

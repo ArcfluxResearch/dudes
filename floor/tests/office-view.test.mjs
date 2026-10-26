@@ -105,9 +105,10 @@ test('COMPACT_UNWRITTEN and COMPACT_UNSTYLED mutants: a crowded tag says data-co
   assert.deepEqual(tags.map(({ id, element }) => [id, element.dataset.compact, element.style.left, element.style.top]), [
     ['kay', 'true', '400px', '500px'], ['mo', 'true', '432px', '503px'], ['oz', 'false', '700px', '500px'],
   ], 'the two on the sofa show their names side by side, and the tag with room keeps its engine');
-  const css = await legacyStyles();
-  const rule = /\.office-tag\[data-compact='true'\] \.office-tag-engine,\s*\.office-tag\[data-compact='true'\] small\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
-  assert.match(rule, /display:\s*none;/, 'a compact tag hides the engine and the activity line');
+  const canvas = await readFile(resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx'), 'utf8');
+  assert.match(canvas, /'office-tag group\/tag /, 'the tag names its compact state for the lines inside it');
+  assert.match(canvas, /className="office-tag-engine group-data-\[compact=true\]\/tag:hidden"/, 'a compact tag hides the engine');
+  assert.match(canvas, /<small className="office-tag-need block [^"]*group-data-\[compact=true\]\/tag:hidden /, 'a compact tag hides the activity line');
 });
 
 test('GOALS_UNCOUNTED and GOAL_SLOTS_MISCOUNTED mutants: the board button counts the open goals past each board\'s goal notes', async () => {
@@ -140,12 +141,12 @@ test('FULL_HEARD_DROPPED and FULL_FLAG_UNCONFIRMED mutants: the office renders i
       selectedId: null, onSelectAgent() {}, onOpenTasks() {}, onAddAgent() {},
     }));
     const html = render({ epoch: 1, snapshotEpoch: 1 });
-    assert.match(html, /<div class="office" data-office="loading" data-layout="studio" data-full="false"><canvas class="office-canvas">/);
-    assert.match(render({ epoch: 2, snapshotEpoch: 1 }), /<div class="office" data-office="loading" data-layout="studio"><canvas class="office-canvas">/,
+    assert.match(html, /<div class="office [^"]*" data-office="loading" data-layout="studio" data-full="false"><canvas class="office-canvas[ "]/);
+    assert.match(render({ epoch: 2, snapshotEpoch: 1 }), /<div class="office [^"]*" data-office="loading" data-layout="studio"><canvas class="office-canvas[ "]/,
       'rows no snapshot confirms say nothing of the crew');
     assert.match(html, /<p role="status">Loading the office\.<\/p>/);
     assert.doesNotMatch(html, /office-failure|agent-select|office-zoom/, 'nothing is laid over a drawing that does not exist yet');
-    assert.match(html, /<p class="office-full-heard" role="status"><\/p>/, 'the office-full live region is there, and quiet, from the start');
+    assert.match(html, /<p class="office-full-heard[ "][^>]*role="status"><\/p>/, 'the office-full live region is there, and quiet, from the start');
   });
 });
 
@@ -157,15 +158,15 @@ test('OFFICE_FIXED, FULL_LINE_DROPPED, FULL_LINE_DRAWN_ONLY and FULL_LINE_ROLE m
       floor: { phase: 'live', stale: false, epoch: 1, snapshotEpoch: 1, agents: crew(count), cards: [], settings: null, onboarding: null },
       selectedId: null, onSelectAgent() {}, onOpenTasks() {}, onAddAgent() {},
     }));
-    const office = (html) => html.match(/<div class="office" data-office="loading" data-layout="(\w+)" data-full="(\w+)">/)?.slice(1);
+    const office = (html) => html.match(/<div class="office [^"]*" data-office="loading" data-layout="(\w+)" data-full="(\w+)">/)?.slice(1);
     assert.deepEqual(office(render(8)), ['studio', 'false']);
     assert.deepEqual(office(render(9)), ['workshop', 'false']);
     assert.deepEqual(office(render(13)), ['hq', 'false']);
     const full = render(17);
     assert.deepEqual(office(full), ['hq', 'true']);
     // The line shows while the office loads, as `data-full` does, and leaves only with the drawing, for the fallback.
-    assert.match(full, /<p class="office-full">The office is full\. HQ has 16 desks for 17 agents\. 1 agent has no desk\.<\/p>/);
-    assert.match(full, /<p class="office-full-heard" role="status"><\/p>/, 'the live region renders empty; only a later change of the line speaks there');
+    assert.match(full, /<p class="office-full [^"]*">The office is full\. HQ has 16 desks for 17 agents\. 1 agent has no desk\.<\/p>/);
+    assert.match(full, /<p class="office-full-heard[ "][^>]*role="status"><\/p>/, 'the live region renders empty; only a later change of the line speaks there');
     assert.equal(full.match(/<li data-agent-id=/g)?.length, 17, 'the mirror list carries every agent');
     setOfficePin('studio');
     const pinned = render(12);
@@ -182,7 +183,7 @@ test('NAME_UNISOLATED mutant: a name written right to left cannot reorder the en
   await withOffice(({ NameTag }) => {
     const id = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
     assert.equal(renderToStaticMarkup(createElement(NameTag, { id, row: { id, name: '\u202eAda', provider: 'claude' } })),
-      '<bdi>\u202eAda</bdi><span class="office-tag-engine"> · Claude</span>');
+      '<bdi>\u202eAda</bdi><span class="office-tag-engine group-data-[compact=true]/tag:hidden"> · Claude</span>');
     assert.equal(renderToStaticMarkup(createElement(NameTag, { id, row: { id, name: '' } })), `<bdi>${id}</bdi>`);
   });
 });
@@ -192,14 +193,11 @@ test('NAME_UNCAPPED mutant: a very long name is cut by the stylesheet, while the
   await withOffice(({ NameTag }) => {
     const id = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
     assert.equal(renderToStaticMarkup(createElement(NameTag, { id, row: { id, name, provider: 'claude' } })),
-      `<bdi>${name}</bdi><span class="office-tag-engine"> · Claude</span>`);
+      `<bdi>${name}</bdi><span class="office-tag-engine group-data-[compact=true]/tag:hidden"> · Claude</span>`);
   });
-  const css = await legacyStyles();
-  const rule = /\.office-tag bdi\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
-  assert.match(rule, /max-width:\s*16ch;/);
-  assert.match(rule, /overflow:\s*hidden;/);
-  assert.match(rule, /text-overflow:\s*ellipsis;/);
-  assert.doesNotMatch(css, /\.office-tag-engine\s*\{[^}]*overflow/, 'the engine suffix is not cut');
+  const canvas = await readFile(resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx'), 'utf8');
+  for (const cut of ['[&_bdi]:max-w-[16ch]', '[&_bdi]:overflow-hidden', '[&_bdi]:text-ellipsis']) assert.ok(canvas.includes(cut), cut);
+  assert.doesNotMatch(canvas, /className="office-tag-engine[^"]*overflow/, 'the engine suffix is not cut');
 });
 
 test('PANEL_INSETS and OVERLAY_EDGES_REDUCED mutants: a tall panel covers the edge its middle is on, and a third of the office stays uncovered', () => {
@@ -283,15 +281,12 @@ test('OFF_CANVAS_OVERLAY mutant: a button or tag is laid over the canvas only wh
 });
 
 test('FULL_LINE_CENTRED and FULL_LINE_CATCHES_CLICKS mutants: the full line sits in the part no panel covers and lets clicks through', async () => {
-  const css = await legacyStyles();
-  const rule = /^\.office-full\s*\{([^}]*)\}/m.exec(css)?.[1] ?? '';
-  const declared = (property) => new RegExp(`(?:^|;|\\s)${property}:\\s*([^;]+);`).exec(rule)?.[1].trim();
-  assert.deepEqual(['left', 'max-width', 'pointer-events', 'transform'].map(declared), [
-    'calc(var(--covered-left, 0px) + 0.75rem)',
-    'calc(100% - var(--covered-left, 0px) - var(--covered-right, 0px) - 1.5rem)',
-    'none',
-    undefined,
-  ]);
+  const canvas = await readFile(resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx'), 'utf8');
+  assert.ok(canvas.includes("const CLEAR_LEFT = 'left-[calc(var(--covered-left,0px)_+_0.75rem)]'"));
+  assert.ok(canvas.includes("const CLEAR_WIDTH = 'max-w-[calc(100%_-_var(--covered-left,0px)_-_var(--covered-right,0px)_-_1.5rem)]'"));
+  assert.match(canvas, /const LINE = '[^']*pointer-events-none/, 'a line over the office lets clicks through to the figures under it');
+  assert.match(canvas, /'office-full', LINE, [^\n]*\n\s*inBar \? IN_BAR : cn\('absolute top-2', CLEAR_LEFT, CLEAR_WIDTH\)/);
+  assert.doesNotMatch(canvas, /office-full[^\n]*translate/, 'the full line is not centred');
 });
 
 test('CHIP_OFF_BOARD mutant: the board card count sits in the middle of the button laid over the board, so on its face', async () => {
@@ -302,23 +297,22 @@ test('CHIP_OFF_BOARD mutant: the board card count sits in the middle of the butt
   await withOffice(async (_, server) => {
     const { BoardNotes } = await server.ssrLoadModule('/src/renderer/BoardNotes.tsx');
     assert.match(renderToStaticMarkup(createElement(BoardNotes, { count: 3, hidden: 1, onOpenTasks() {} })),
-      /^<button type="button" class="board-select"[^>]*><span class="board-note-count">3 cards · \+1<\/span><\/button>$/);
+      /^<button type="button" class="board-select[^"]*"[^>]*><span class="board-note-count[^"]*">3 cards · \+1<\/span><\/button>$/);
   });
 });
 
 test('RING_ONE_TONE mutant: the focus ring over the office has two tones far enough apart to show on any floor', async () => {
-  const css = await legacyStyles();
-  const rule = /\.agent-select:focus-visible,\s*\.board-select:focus-visible\s*\{([^}]*)\}/.exec(css)?.[1];
-  assert.ok(rule, 'the office focus ring has its own rule');
-  const office = /\.office\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
-  assert.match(office, /overflow:\s*hidden/, 'the office clips what is laid over it');
-  assert.match(office, /isolation:\s*isolate/, 'nothing laid over the office rises above the panels floating over it');
+  const canvas = await readFile(resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx'), 'utf8');
+  const hit = /const OFFICE_HIT = cn\(([\s\S]*?)\);\n/.exec(canvas)?.[1] ?? '';
+  assert.match(hit, /focus-visible:outline-ink/, 'the ring is the text colour');
+  assert.match(hit, /focus-visible:shadow-\[0_0_0_7px_var\(--ui-surface\)\]/, 'and a halo of the panel colour sits under it');
+  const entry = await readFile(resolve(import.meta.dirname, '../src/tailwind.css'), 'utf8');
+  const shell = await readFile(resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx'), 'utf8');
+  assert.match(shell, /office group\/office relative isolate [^"]*overflow-hidden/, 'the office clips and isolates what is laid over it');
   for (const theme of ['light', 'dark']) {
-    const tokens = themeTokens(css, theme);
-    const resolve = (value) => value.startsWith('var(--') ? tokens[value.slice(6, -1)] : value;
-    const outline = resolve(/outline-color:\s*([^;]+);/.exec(rule)?.[1].trim() ?? '');
-    const halo = resolve(/box-shadow:\s*0 0 0 \d+px\s*([^;]+);/.exec(rule)?.[1].trim() ?? '');
-    assert.match(`${outline}${halo}`, /^#[0-9a-f]{6}#[0-9a-f]{6}$/i, `${theme}: both tones resolve`);
+    const tokens = themeTokens(entry, theme);
+    const outline = tokens.text;
+    const halo = tokens['ui-surface'];
     // Contrast multiplies across a background, so tones 9:1 apart leave one of them at least 3:1 against any floor.
     assert.ok(contrast(outline, halo) >= 9, `${theme}: ${outline} on ${halo} is ${contrast(outline, halo).toFixed(2)}:1`);
     for (const floor of ['#cfb894', '#d8c3a1', '#efe8dc', '#1d2433', '#5a5048']) {

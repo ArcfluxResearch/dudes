@@ -19,10 +19,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test from 'node:test';
-import { themeColour, themeTokens } from './helpers/theme-colour.mjs';
+import { classesIn, themeTokens, utilityColour } from './helpers/theme-colour.mjs';
 import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const source = resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx');
+
+const failureColour = async (theme) => utilityColour(await classesIn('ReadError.tsx', /className=\{cn\(className, '([^']*)'\)\}/), theme);
 
 /** The office box's own background, which is what the line sits on. */
 const BOX = '#241f1a';
@@ -65,7 +67,7 @@ function divDepthAt(text, index) {
 test('the office box is identified with detail in the drawer beside it', async () => {
   const text = await readFile(source, 'utf8');
   const opens = [...text.matchAll(/<div\b[^>]*?>/g)];
-  const office = opens.filter(([tag]) => /className="office"/.test(tag));
+  const office = opens.filter(([tag]) => /className="office /.test(tag));
   assert.equal(office.length, 1, 'exactly one div is the office box');
   assert.equal(opens.filter(([tag]) => /id="selected-agent-detail"/.test(tag)).length, 0,
     'selected detail is no longer inside the office');
@@ -82,7 +84,7 @@ test('the failure line is a sibling of the office box, not a child of it', async
   const text = await readFile(source, 'utf8');
   const at = text.indexOf('className="office-failure"');
   assert.notEqual(at, -1, 'the failure paragraph is still rendered');
-  assert.ok(at > text.indexOf('<div className="office"'), 'the failure line follows the office box');
+  assert.ok(at > text.indexOf('<div className="office '), 'the failure line follows the office box');
   const depth = divDepthAt(text, at);
   assert.equal(
     depth,
@@ -94,12 +96,12 @@ test('the failure line is a sibling of the office box, not a child of it', async
 test('the failure line reads against the page at the brief threshold', async () => {
   const css = await legacyStyles();
   for (const theme of ['light', 'dark']) {
-    const colour = themeColour(css, 'office-failure', theme);
+    const colour = await failureColour(theme);
     const onPage = contrast(colour, themeTokens(css, theme).surface);
     assert.ok(onPage >= READABLE,
       `${colour} reads at ${onPage.toFixed(2)}:1 on the ${theme} page, under the ${READABLE}:1 bar`);
   }
-  const colour = themeColour(css, 'office-failure', 'light');
+  const colour = await failureColour('light');
   // And the reason it had to move: inside the box it never cleared the bar.
   assert.ok(
     contrast(colour, BOX) < READABLE,
@@ -111,8 +113,8 @@ test('the failure line is held to the same bar as the unconfirmed line', async (
   const css = await legacyStyles();
   for (const theme of ['light', 'dark']) {
     const page = themeTokens(css, theme).surface;
-    const failure = contrast(themeColour(css, 'office-failure', theme), page);
-    const stale = contrast(themeColour(css, 'office-stale', theme), page);
+    const failure = contrast(await failureColour(theme), page);
+    const stale = contrast(await utilityColour(await classesIn('StreamNotice.tsx', /const STALE = cn\('([^']*)'\)/), theme), page);
     assert.ok(Math.abs(failure - stale) < 1,
       `the ${theme} lines read at ${failure.toFixed(2)}:1 and ${stale.toFixed(2)}:1, which is not the same footing`);
   }

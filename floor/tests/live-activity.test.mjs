@@ -105,8 +105,8 @@ test('the roster renders the fixed label only while its floor is selectable and 
       onSelectAgent() {}, onOpenQuestion() {}, onOpenTicket() {},
     }));
     const shown = render(true, false);
-    assert.match(shown, /<span class="crew-live-activity" data-live-activity="Tool step">Tool step<\/span>/);
-    assert.match(shown, /<small class="crew-activity" data-activity="question"/);
+    assert.match(shown, /<span class="crew-live-activity[^"]*" data-live-activity="Tool step">Tool step<\/span>/);
+    assert.match(shown, /<small class="crew-activity[^"]*" data-activity="question"/);
     assert.doesNotMatch(shown, /private-tool-argument/);
     assert.doesNotMatch(render(false, false), /crew-live-activity/);
     assert.doesNotMatch(render(true, true), /crew-live-activity/);

@@ -113,21 +113,21 @@ test('from the store: the roster lists every agent once, in need order, with one
   subscribe(store, { agents: crew(), cards: cards() });
   const floor = store.getFloorState();
   const html = render({ agents: floor.agents, cards: floor.cards });
-  assert.match(html, /<h2 id="crew-title" class="roster-title">1 ready for you · 1 needs you<\/h2>/);
-  assert.deepEqual([...html.matchAll(/<strong class="crew-name"><bdi>([^<]+)<\/bdi>/g)].map((m) => m[1]), ['Ada', 'Grace', 'Kim', 'Oli']);
-  assert.deepEqual([...html.matchAll(/<span class="crew-chip" data-state="([^"]+)"><span class="visually-hidden">Status: <\/span>([^<]+)</g)]
+  assert.match(html, /<h2 id="crew-title" class="roster-title[^"]*">1 ready for you · 1 needs you<\/h2>/);
+  assert.deepEqual([...html.matchAll(/<strong class="crew-name[^"]*"><bdi>([^<]+)<\/bdi>/g)].map((m) => m[1]), ['Ada', 'Grace', 'Kim', 'Oli']);
+  assert.deepEqual([...html.matchAll(/<span data-ui="badge" data-state="([^"]+)" class="[^"]*crew-chip[^"]*"><span aria-hidden="true" class="[^"]*"><\/span><span class="visually-hidden">Status: <\/span>([^<]+)</g)]
     .map((m) => [m[1], m[2]]), [['ready', 'Ready for you'], ['needs-you', 'Needs you'], ['working', 'Working'], ['idle', 'Idle']]);
-  assert.deepEqual([...html.matchAll(/class="roster-act"[^>]*aria-label="([^"]+)"/g)].map((m) => m[1]),
+  assert.deepEqual([...html.matchAll(/<button[^>]*aria-label="([^"]+)"[^>]*class="[^"]*roster-act/g)].map((m) => m[1]),
     ['Review, Ada', 'Answer, Grace', 'Talk, Kim', 'Talk, Oli']);
-  assert.equal(render({ agents: [], cards: [] }).includes('<p class="crew-empty">No current agents.</p>'), true);
+  assert.equal(render({ agents: [], cards: [] }).includes('No current agents.</p>'), true);
   assert.match(render({ agents: [], cards: [] }), /No agents yet/);
 });
 
 test('the row keeps the office-list contract: id, button, agent id, one selected marker, live label inside the row', () => {
   const running = agent(GRACE, 'Grace', { status: 'running', live_activity: undefined });
   const html = render({ agents: [agent(ADA, 'Ada', { status: 'idle' }), running], selectedId: GRACE });
-  assert.match(html, /^<section class="crew-list roster" id="crew-list" aria-labelledby="crew-title" data-stale="false" data-waiting="false">/);
-  assert.match(html, new RegExp(`<button type="button" id="crew-row-${GRACE}" class="crew-row" data-agent-id="${GRACE}" aria-label="Inspect Grace"`));
+  assert.match(html, /^<section class="crew-list roster[^"]*" id="crew-list" aria-labelledby="crew-title" data-stale="false" data-waiting="false">/);
+  assert.match(html, new RegExp(`<button type="button" id="crew-row-${GRACE}" class="crew-row [^"]*" data-agent-id="${GRACE}" aria-label="Inspect Grace"`));
   assert.match(html, new RegExp(`data-agent-id="${GRACE}"[^>]*aria-pressed="true"[^>]*aria-controls="selected-agent-detail"`));
   assert.match(html, new RegExp(`data-agent-id="${ADA}"[^>]*aria-pressed="false"`));
   assert.equal((html.match(/aria-pressed="true"/g) ?? []).length, 1);
@@ -135,7 +135,7 @@ test('the row keeps the office-list contract: id, button, agent id, one selected
     { live: true, now: performance.now(), wallNow: Date.now() });
   assert.equal(labelled[0].live, 'Tool step');
   assert.match(render({ agents: [{ ...running, live_activity: { kind: 'using_tool', at: Date.now() - 30_000, expires_in_ms: 30_000 } }] }),
-    /<span class="crew-live-activity" data-live-activity="Tool step">Tool step<\/span>Working/);
+    /<span class="crew-live-activity[^"]*" data-live-activity="Tool step">Tool step<\/span>Working/);
 });
 
 test('retired, wrong-id and unconfirmed selections show no marker, and an unconfirmed floor disables every button', () => {
@@ -151,7 +151,8 @@ test('retired, wrong-id and unconfirmed selections show no marker, and an unconf
     assert.equal(selected, null);
     const html = render({ agents, selectedId: selected?.id ?? null, selectable: false });
     assert.doesNotMatch(html, /aria-pressed="true"/);
-    assert.equal((html.match(/<button[^>]*class="(?:crew-row|roster-act)"[^>]*disabled=""/g) ?? []).length, agents.length * 2);
+    const rowButtons = html.match(/<button\b[^>]*(?:crew-row|roster-act)[^>]*>/g) ?? [];
+    assert.equal(rowButtons.filter((tag) => tag.includes('disabled=""')).length, agents.length * 2);
   }
 });
 
@@ -168,7 +169,7 @@ test('from 30 agents the rows group under their state with a count, and a smalle
   const many = Array.from({ length: 30 }, (_, at) => agent(`01JBQ8XK2M3N4P5Q6R7S8T${String(at).padStart(4, '0')}`, `Agent ${at}`,
     at < 3 ? { status: 'waiting', question: QUESTION } : at < 5 ? { status: 'running' } : { status: 'idle' }));
   const html = render({ agents: many });
-  assert.deepEqual([...html.matchAll(/<h3 id="crew-group-[a-z-]+">([^<]+) <span>(\d+)<\/span><\/h3>/g)].map((m) => [m[1], m[2]]),
+  assert.deepEqual([...html.matchAll(/<h3 id="crew-group-[a-z-]+"[^>]*>([^<]+) <span[^>]*>(\d+)<\/span><\/h3>/g)].map((m) => [m[1], m[2]]),
     [['Needs you', '3'], ['Working', '2'], ['Idle', '25']]);
   assert.doesNotMatch(render({ agents: many.slice(0, 29) }), /roster-group/);
 });
@@ -206,13 +207,13 @@ test('a running agent whose ticket needs recovery needs you instead of appearing
 });
 
 test('on a phone the roster is a bottom sheet, and below 1100 pixels it narrows but keeps names and actions', async () => {
-  const css = await legacyStyles();
-  const phone = /@media \(max-width: 800px\) \{\s*\.crew-list\.roster\[data-sheet\] \{([^}]*)\}/.exec(css)?.[1] ?? '';
-  assert.match(phone, /position: fixed;/);
-  assert.match(phone, /inset: auto 0 0;/);
-  assert.match(css, /\.crew-list\.roster\[data-sheet='closed'\] > \.roster-body \{\s*display: none;/);
-  const narrow = /@media \(min-width: 801px\) and \(max-width: 1099px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
-  assert.match(narrow, /\.crew-list\.roster \{\s*width: 15rem;/);
-  assert.match(narrow, /\.crew-list\.roster \.crew-activity \{\s*display: none;/);
-  assert.doesNotMatch(narrow, /crew-name|roster-act|crew-chip/, 'the narrow roster hides a name, an action or a state');
+  const source = await readFile(resolve(root, 'src/renderer/Roster.tsx'), 'utf8');
+  const sheet = /const SHEET = cn\(([\s\S]*?)\n\);/.exec(source)?.[1] ?? '';
+  assert.match(sheet, /max-\[800px\]:fixed/);
+  assert.match(sheet, /max-\[800px\]:inset-x-0/);
+  assert.match(sheet, /max-\[800px\]:bottom-0/);
+  assert.match(source, /sheeted && 'max-\[800px\]:hidden'/, 'a closed sheet hides its rows and nothing else');
+  assert.match(source, /min-\[801px\]:max-\[1099px\]:w-60/);
+  assert.equal(source.match(/min-\[801px\]:max-\[1099px\]:hidden/g)?.length, 1, 'the narrow roster drops one line and no name, action or state');
+  assert.match(source, /docked && 'min-\[801px\]:max-\[1099px\]:hidden'\)\}\s*data-activity=/);
 });
