@@ -82,6 +82,13 @@ const runtimeNotices = new Set([
   'three@0.186.1@MIT',
 ]);
 
+// The interface libraries a screen brings into the bundle once it imports the owned components. They are reviewed, but a
+// build that imports none of them carries none of their notices.
+const optionalRuntimeNotices = new Set([
+  'lucide-react@1.55.0@ISC',
+  'tailwind-merge@3.7.0@MIT',
+]);
+
 export function validateRuntimeNotices(notices) {
   if (!Array.isArray(notices)) throw new Error('runtime notice set is not an array');
   const actual = new Set();
@@ -92,9 +99,9 @@ export function validateRuntimeNotices(notices) {
     actual.add(`${notice.name}@${notice.version}@${notice.identifier}`);
   }
   if (
-    notices.length !== runtimeNotices.size
-    || actual.size !== runtimeNotices.size
-    || [...actual].some((value) => !runtimeNotices.has(value))
+    actual.size !== notices.length
+    || [...runtimeNotices].some((value) => !actual.has(value))
+    || [...actual].some((value) => !runtimeNotices.has(value) && !optionalRuntimeNotices.has(value))
   ) {
     throw new Error(`runtime notice set differs: ${[...actual].sort().join(', ')}`);
   }

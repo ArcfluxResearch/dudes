@@ -1,0 +1,3 @@
+@layer legacy, theme, base, components, utilities;
+
+@import '@xterm/xterm/css/xterm.css' layer(legacy);

@@ -20,9 +20,10 @@ import test from 'node:test';
 
 import { ACCENT_COLOURS } from '../src/renderer/appearance.ts';
 import { themeTokens } from './helpers/theme-colour.mjs';
+import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const floor = resolve(import.meta.dirname, '..');
-const css = await readFile(resolve(floor, 'src/style.css'), 'utf8');
+const css = await legacyStyles();
 const READABLE = 4.5;
 
 function luminance(hex) {
@@ -109,8 +110,8 @@ test('the chrome is set in a sans, data in monospace, and no font comes from out
   assert.match(/--font-data:\s*([^;]+);/.exec(root)?.[1] ?? '', /monospace$/);
   const data = /\n((?:[^{}\n]+,\n)*[^{}\n]+) \{\n  font-family: var\(--font-data\);/.exec(css)?.[1].split(/,\n/) ?? [];
   for (const selector of ['code', 'pre', '.data', '.live-work-text']) assert.ok(data.includes(selector), `${selector} is not data type`);
-  for (const sheet of ['src/style.css', 'src/failure.css', 'src/renderer/cardNotes.css', 'src/renderer/terminal/controls.css']) {
-    const text = sheet === 'src/style.css' ? css : await readFile(resolve(floor, sheet), 'utf8');
+  for (const sheet of ['legacy styles', 'src/failure.css', 'src/renderer/cardNotes.css', 'src/renderer/terminal/controls.css']) {
+    const text = sheet === 'legacy styles' ? css : await readFile(resolve(floor, sheet), 'utf8');
     assert.doesNotMatch(text, /@import|@font-face|url\(|https?:/, `${sheet} reaches for a resource`);
   }
 });

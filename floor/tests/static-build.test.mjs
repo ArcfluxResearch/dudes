@@ -44,8 +44,10 @@ test('release manifest covers the static build and excludes build tools', async 
   assert.ok(notice, 'hashed bundled notice is admitted');
   const notices = JSON.parse(await readFile(resolve(dist, notice.path), 'utf8'));
   assert.doesNotThrow(() => validateRuntimeNotices(notices));
+  const carried = notices.map(({ name, version, identifier }) => `${name}@${version}@${identifier}`).sort();
+  // The interface libraries are carried once a screen imports the owned components, and not before.
   assert.deepEqual(
-    notices.map(({ name, version, identifier }) => `${name}@${version}@${identifier}`).sort(),
+    carried.filter((entry) => !entry.startsWith('lucide-react@') && !entry.startsWith('tailwind-merge@')),
     ['@xterm/xterm@6.0.0@MIT', 'react-dom@19.3.1@MIT', 'react@19.3.1@MIT', 'scheduler@0.28.0@MIT', 'three@0.186.1@MIT'],
   );
 });

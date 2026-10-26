@@ -9,9 +9,9 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { themeColour, themeTokens } from './helpers/theme-colour.mjs';
+import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const source = resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx');
-const stylesheet = resolve(import.meta.dirname, '../src/style.css');
 
 /** The office box's own background — the surface these lines are kept off. */
 const BOX = '#241f1a';
@@ -99,7 +99,7 @@ test('the reconnecting notice names the attempts actually spent rather than a st
 });
 
 test('the disconnected line reads against the page at the brief threshold', async () => {
-  const css = await readFile(stylesheet, 'utf8');
+  const css = await legacyStyles();
   for (const theme of ['light', 'dark']) {
     const colour = themeColour(css, 'office-closed', theme);
     const onPage = contrast(colour, themeTokens(css, theme).surface);
@@ -115,7 +115,7 @@ test('the disconnected line reads against the page at the brief threshold', asyn
 });
 
 test('all three lines below the floor are on the same footing', async () => {
-  const css = await readFile(stylesheet, 'utf8');
+  const css = await legacyStyles();
   for (const theme of ['light', 'dark']) {
     const read = ['office-failure', 'office-stale', 'office-closed']
       .map((name) => [name, contrast(themeColour(css, name, theme), themeTokens(css, theme).surface)]);

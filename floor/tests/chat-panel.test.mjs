@@ -7,6 +7,7 @@ import test, { after, before } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const A = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const B = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
@@ -105,7 +106,7 @@ test('the composer follows the thread while the conversation fills and scrolls t
   assert.ok(html.indexOf('class="chat-thread"') < html.indexOf('class="chat-compose"'));
   assert.ok(html.indexOf('<summary>Conversation details</summary>') < html.indexOf('class="chat-compose"'));
   assert.match(html, /class="chat-scroll"[^>]*role="log"/);
-  const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const rule = selector => css.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]+)\\}`))?.[1] ?? '';
   assert.match(rule(".agent-drawer:has(.agent-detail[data-detail-tab='chat'])"), /overflow: clip/);
   assert.match(rule('#agent-detail-panel-chat'), /flex: 1 1 auto; min-height: 0/);
@@ -156,7 +157,7 @@ test('a short Chat sheet reserves its composer and lets the header and tabs scro
   const html = renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(), row, selectedId: A,
     onClose() {}, leaveFocusTo: 'crew-toggle' }));
   assert.match(html, /class="agent-detail-context">[\s\S]*<header class="agent-detail-head">[\s\S]*class="agent-detail-tabs"/);
-  const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
+  const css = await legacyStyles();
   assert.match(css, /\.agent-detail-context \{ display: contents; \}/);
   assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] \{[^}]*grid-template-rows: minmax\(0, auto\) minmax\(0, 1fr\) auto auto/);
   assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] > \.agent-detail-context \{[^}]*overflow-y: auto/);

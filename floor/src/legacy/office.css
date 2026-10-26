@@ -1,0 +1,342 @@
+@layer legacy, theme, base, components, utilities;
+
+@layer legacy {
+/* Between the narrow layout and 1200 pixels a Control view covers Crew, so Crew leaves the tab order too. */
+@media (min-width: 801px) and (max-width: 1199px) {
+  .control-panel {
+    grid-column: 1;
+  }
+
+  .floor-stage:has(.control-panel) .crew-list {
+    visibility: hidden;
+  }
+}
+
+/* On a narrow screen the panels leave the stage and follow the office down the page. */
+@media (max-width: 800px) {
+  .shell {
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .floor-stage {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .office-slot {
+    order: -1;
+    min-height: 20rem;
+  }
+
+  .crew-list,
+  .control-panel,
+  .control-panel[data-view='board'],
+  .receipts,
+  .agent-drawer {
+    width: auto;
+    margin: 0.5rem;
+    border-width: 1px;
+    border-radius: var(--radius);
+  }
+
+  .receipts {
+    padding: 0;
+  }
+
+  .control-panel {
+    max-height: 32rem;
+  }
+
+  .stage-center,
+  .stage-side {
+    padding: 0;
+  }
+
+  .drawer-frame .panel-splitter {
+    display: none;
+  }
+
+  .agent-drawer {
+    flex: 1 1 auto;
+  }
+
+  .focus-frame {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .focus-frame .focus-roster {
+    order: -1;
+    max-height: 14rem;
+  }
+
+  .focus-frame .panel-splitter {
+    display: none;
+  }
+
+  .terminal-panel[data-terminal-expanded='true'] {
+    height: 100vh;
+  }
+}
+
+.office-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+.office[data-dragging='true'] .office-canvas {
+  cursor: grabbing;
+}
+
+.office[data-mode='paused'] .office-canvas {
+  filter: saturate(0.45) brightness(0.86);
+}
+
+.office[data-mode='halted'] .office-canvas {
+  filter: saturate(0.15) brightness(0.72);
+}
+
+/* Above the view buttons, in the part no panel covers. Clicks pass through it to the figures under it. */
+.office-mode {
+  position: absolute;
+  bottom: 3rem;
+  left: calc(var(--covered-left, 0px) + 0.75rem);
+  max-width: calc(100% - var(--covered-left, 0px) - var(--covered-right, 0px) - 1.5rem);
+  box-sizing: border-box;
+  pointer-events: none;
+  margin: 0;
+  padding: 0.35rem 0.75rem;
+  border: 2px solid var(--ink);
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.office-tag {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(42, 38, 34, 0.82);
+  color: #fbf6ea;
+  font-size: 0.68rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.office-tag bdi {
+  display: inline-block;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
+.office-tag small {
+  display: block;
+  color: #cfe3f7;
+  font-size: 0.6rem;
+}
+
+/* A tag crowded by another at its figure shows the name alone, and its engine and activity once it has room. */
+.office-tag[data-compact='true'] .office-tag-engine,
+.office-tag[data-compact='true'] small {
+  display: none;
+}
+
+.office-tag[data-selected='true'] {
+  z-index: 1;
+  background: var(--studio-selected);
+  color: #241f1a;
+  font-weight: 700;
+}
+
+.office-tag[data-selected='true'] small {
+  color: #3b3229;
+}
+
+.office-zoom {
+  position: absolute;
+  right: calc(var(--covered-right, 0px) + 0.5rem);
+  bottom: 0.5rem;
+  display: flex;
+  gap: 0.25rem;
+}
+
+.office-zoom button {
+  min-width: 2rem;
+  min-height: 2rem;
+  border: 2px solid var(--ink);
+  background: var(--button-background);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* When the panels leave too narrow a band of the office, its lines and view buttons sit in the top bar. */
+.office-bar {
+  display: flex;
+  flex: 0 0 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.75rem;
+}
+
+.office-bar:empty {
+  display: none;
+}
+
+.office-bar > .office-mode,
+.office-bar > .office-full {
+  position: static;
+  flex: 1 1 16rem;
+  max-width: none;
+}
+
+.office-bar > .office-zoom {
+  position: static;
+  margin-left: auto;
+}
+
+/* At the top of the part no panel covers, like the mode line at the bottom. Clicks pass through it. */
+.office-full {
+  position: absolute;
+  top: 0.5rem;
+  left: calc(var(--covered-left, 0px) + 0.75rem);
+  max-width: calc(100% - var(--covered-left, 0px) - var(--covered-right, 0px) - 1.5rem);
+  box-sizing: border-box;
+  pointer-events: none;
+  margin: 0;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.86rem;
+}
+
+/* Above the view buttons at the right, beside the shelf it labels and clear of the Done notices at the top. Clicks pass through it. */
+.office-shelf {
+  position: absolute;
+  bottom: 3rem;
+  right: calc(var(--covered-right, 0px) + 0.75rem);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.15rem 0.5rem;
+  max-width: min(22rem, calc(100% - var(--covered-left, 0px) - var(--covered-right, 0px) - 1.5rem));
+  box-sizing: border-box;
+  pointer-events: none;
+  margin: 0;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.86rem;
+}
+
+/* Clear of the zoom buttons, whose row is taller on a phone. */
+@media (max-width: 800px) {
+  .office-shelf {
+    bottom: 3.75rem;
+  }
+}
+
+.office-shelf-value {
+  font-size: 1.1rem;
+}
+
+.office-shelf[data-shelf='unavailable'] {
+  color: var(--muted-ink);
+}
+
+.office-shelf-day {
+  flex-basis: 100%;
+  color: var(--muted-ink);
+}
+
+.office-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(18rem, calc(100% - 2rem));
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+.office-empty p {
+  margin: 0 0 0.5rem;
+}
+
+.agent-select,
+.board-select,
+.office-question {
+  position: absolute;
+  box-sizing: border-box;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.agent-select:hover,
+.agent-select:focus-visible,
+.board-select:hover,
+.board-select:focus-visible,
+.office-question:hover,
+.office-question:focus-visible {
+  outline: 3px solid var(--studio-selected);
+  outline-offset: 2px;
+  background: rgba(255, 209, 102, 0.12);
+}
+
+/* Two tones, so the ring stands out on a light floor, a dark one or the backdrop. */
+.office-question:focus-visible,
+.agent-select:focus-visible,
+.board-select:focus-visible {
+  outline-color: var(--ink);
+  box-shadow: 0 0 0 7px var(--surface);
+}
+
+.agent-detail,
+.done-notice {
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 8px 28px var(--panel-shadow);
+}
+
+.agent-detail-kicker {
+  display: block;
+  margin: 0;
+  color: var(--muted-ink);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.agent-detail-head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.6rem; }
+.agent-detail-head .agent-detail-portrait {
+  grid-area: auto;
+  border: 3px solid var(--agent, var(--portrait-border));
+  border-radius: 50%;
+}
+.agent-detail-head .portrait-figure { background-color: var(--card-background); }
+.agent-detail-identity p { margin: 0.3rem 0; overflow-wrap: anywhere; }
+.agent-detail-actions, .agent-detail-head > .selection-bar,
+.agent-detail-head > .agent-detail-question, .agent-detail-head > .agent-look-editor, .agent-detail-head > .agent-model { grid-column: 1 / -1; }
+.selection-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.selection-bar .stream-state { margin: 0; overflow-wrap: anywhere; }
+}

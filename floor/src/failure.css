@@ -1,3 +1,6 @@
+@layer legacy, theme, base, components, utilities;
+
+@layer legacy {
 .read-error {
   color: var(--danger-ink);
 }
@@ -9,4 +12,5 @@
 .read-error button,
 .office-failure button {
   margin-left: 0.5rem;
+}
 }

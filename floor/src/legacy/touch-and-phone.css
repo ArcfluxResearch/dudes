@@ -1,0 +1,135 @@
+@layer legacy, theme, base, components, utilities;
+
+@layer legacy {
+@media (max-width: 800px) {
+  .control-panel .panel-close {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+}
+
+/* A touch or click target of at least 24 pixels tall, including the small text buttons of the bar and its panels. */
+.top-bar button,
+.control-panel button,
+.crew-list button {
+  box-sizing: border-box;
+  min-height: 24px;
+}
+
+/* On a phone the panels follow the office down the page, and the sheets cover the screen. */
+@media (max-width: 800px) {
+  .office-area > .first-task {
+    position: static;
+    width: auto;
+    max-height: none;
+    margin: 0.5rem;
+  }
+
+  .stage-side:has(.agent-drawer) {
+    z-index: calc(var(--layer-top-bar) + 1);
+  }
+
+  .agent-drawer {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    width: auto;
+    margin: 0;
+    padding: 1rem 1rem 2rem;
+    border-width: 0;
+    border-radius: 0;
+    overflow-y: auto;
+  }
+
+  .agent-drawer:has(.agent-detail[data-detail-tab='chat']) {
+    top: var(--chat-viewport-top, 0px);
+    bottom: auto;
+    height: var(--chat-viewport-height, 100dvh);
+    padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  }
+
+  .ticket-dialog:not([data-composer='true']) {
+    width: 100vw;
+    border-left: 0;
+  }
+
+  .ticket-dialog > .card-detail {
+    padding: 1rem 1rem 0;
+  }
+
+  .ticket-dialog .ticket-panel > h3 {
+    padding-right: 0;
+    font-size: 1.4rem;
+  }
+
+  .ticket-panel[data-mode='none'] .ticket-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    margin: 1rem -1rem 0;
+    padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  .ticket-panel[data-mode='none'] .ticket-action-pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+  }
+
+  .ticket-panel[data-mode='none'] .ticket-action {
+    min-height: 2.9rem;
+    font-size: 0.95rem;
+  }
+
+  .ticket-panel[data-mode='none'] .ticket-action[data-action='accept'] {
+    border-color: var(--accent-ink);
+    background: var(--accent-ink);
+    color: var(--on-accent);
+  }
+}
+
+.shell[data-page] {
+  height: 100dvh;
+}
+
+.shell[data-page] .office-bar {
+  display: none;
+}
+
+.floor-stage[data-page] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.floor-stage[data-page] > :not(.control-panel, .first-run-guide) {
+  display: none;
+}
+
+.floor-stage > .control-panel[data-page] {
+  position: static;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  width: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 1.5rem max(1rem, calc((100% - 52rem) / 2));
+  border: 0;
+  border-radius: 0;
+}
+
+.floor-stage > .control-panel[data-page] {
+  overflow-y: auto;
+}
+
+.control-panel[data-page] > .control-view {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.agent-model form { display: grid; gap: .4rem; margin-top: .4rem; }
+.agent-model form > input[type='text'] { box-sizing: border-box; width: 100%; font: inherit; }
+}

@@ -17,6 +17,7 @@ import {
   beginPauseAll, checkPauseAllStatus, getPauseAllState, pauseAllTargets, resetPauseAll,
 } from '../src/renderer/control/pauseAll.ts';
 import { loadStage } from './helpers/page.mjs';
+import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const floorRoot = resolve(import.meta.dirname, '..');
 const IDS = [
@@ -69,7 +70,7 @@ const refused = (payload) => ({ status: 409, text: async () => JSON.stringify({
 
 /** Every rule in the Floor's stylesheet, as its normalized comma-separated selectors and its declaration body. */
 async function styleRules() {
-  const css = await readFile(resolve(floorRoot, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   return [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^}]*)\}/g)].map(([, selectors, body]) => ({
     selectors: selectors.split(',').map((selector) => selector.trim().replace(/\s+/g, ' ')), body,
   }));

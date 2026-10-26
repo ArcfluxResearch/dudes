@@ -1,0 +1,183 @@
+@layer legacy, theme, base, components, utilities;
+
+@layer legacy {
+.control-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.agent-detail-control .hire-note {
+  margin: 0;
+}
+
+.control-status,
+.retire-status {
+  margin-bottom: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--output);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.control-status h3,
+.retire-status h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+}
+
+.retire-offer {
+  display: grid;
+  justify-items: start;
+  gap: 0.35rem;
+  margin: 0 0 0.8rem;
+}
+
+.retire-offer .hire-note {
+  margin: 0;
+}
+
+.terminal-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.terminal-actions .retire-offer {
+  margin: 0;
+}
+
+.retire-offer .retire-open,
+.retire-actions .retire-confirm {
+  border-color: var(--accent-ink);
+  background: var(--danger-background);
+  font-weight: 700;
+}
+
+.retire-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.retire-dialog {
+  box-sizing: border-box;
+  max-width: min(34rem, calc(100vw - 2rem));
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.retire-dialog::backdrop {
+  background: rgb(36 31 26 / 55%);
+}
+
+.retire-dialog h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+.retire-dialog p {
+  margin: 0 0 0.75rem;
+}
+
+.control-continuation {
+  margin: 0 0 0.5rem;
+}
+
+.answer-actions,
+.goal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.agent-detail-terminal {
+  display: grid;
+  justify-items: start;
+  gap: 0.35rem;
+  margin: 0 0 0.8rem;
+}
+
+.agent-detail-terminal .hire-note {
+  margin: 0;
+}
+
+/*
+ * The one terminal takes the middle of the stage while it is open, under the
+ * Hire wizard: a grid wide enough for a CLI does not fit a side panel, and
+ * Crew and the agent's details stay in view beside it.
+ */
+.terminal-panel {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  z-index: var(--layer-terminal);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.terminal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.terminal-head h2,
+.terminal-head .agent-detail-kicker {
+  margin: 0;
+}
+
+.terminal-head h2 {
+  font-size: 1rem;
+}
+
+.terminal-state {
+  margin: 0;
+}
+
+.terminal-ended {
+  padding: 0.5rem 0.6rem;
+  border: 2px solid var(--success-border);
+  background: var(--success-background);
+  font-weight: 700;
+}
+
+.terminal-failed {
+  border-color: var(--accent-ink);
+  background: var(--danger-background);
+}
+
+/* The grid measures this box to fit itself, so it takes no padding of its own. */
+.terminal-screen {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--terminal-background);
+}
+
+/* The button covers the board's corners on screen, so its middle is the middle of the board's face, whichever wall it hangs on. */
+.board-note-count {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 90%;
+  overflow: hidden;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: #fff8e7;
+  color: #241f1a;
+  font: 9px ui-monospace, monospace;
+  white-space: nowrap;
+}
+}

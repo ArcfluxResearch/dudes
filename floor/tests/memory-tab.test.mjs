@@ -23,6 +23,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { fakePage, press } from './helpers/fake-page.mjs';
+import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
@@ -286,7 +287,7 @@ function clipsOf(css, selector) {
 }
 
 test('every memory text clips what it draws, so stacked marks cannot paint over its header', async () => {
-  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const css = await legacyStyles();
   assert.deepEqual(clipsOf(css, '.memory-text'), ['overflow: hidden'], 'an entry preview');
   assert.deepEqual(clipsOf(css, '.memory-summary .memory-text'), ['overflow: auto'], 'the summary scrolls within its bound');
   assert.deepEqual(clipsOf(css, '.memory-whole-text'), ['overflow: auto'], 'a whole entry scrolls within its bound');

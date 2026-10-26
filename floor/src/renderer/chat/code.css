@@ -1,3 +1,6 @@
+@layer legacy, theme, base, components, utilities;
+
+@layer legacy {
 /* Colours for the nine token classes: VS Code Dark+ and Light+ values, with the light number green and comment green darkened until each reads at 4.5:1 on the code block background. */
 :root {
   --tok-keyword: #0000ff;
@@ -46,3 +49,4 @@
 .chat-code .tok-add { color: var(--tok-add); }
 .chat-code .tok-remove { color: var(--tok-remove); }
 .chat-code .tok-meta { color: var(--tok-meta); }
+}

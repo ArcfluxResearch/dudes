@@ -11,6 +11,7 @@ import { createElement, isValidElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { themeTokens } from './helpers/theme-colour.mjs';
+import { legacyStyles } from './helpers/legacy-css.mjs';
 
 let server, md, hl;
 before(async () => {
@@ -169,7 +170,7 @@ test('the person\'s own messages and unknown fences stay plain', async () => {
 
 test('the nine colours read at 4.5:1 on the code background in both themes, and the page policy is unchanged', async () => {
   const code = await readFile(resolve(import.meta.dirname, '../src/renderer/chat/code.css'), 'utf8');
-  const page = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
+  const page = await legacyStyles();
   const channel = (value) => { const c = value / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
   const luminance = (hex) => { const n = Number.parseInt(hex.slice(1), 16);
     return 0.2126 * channel((n >> 16) & 255) + 0.7152 * channel((n >> 8) & 255) + 0.0722 * channel(n & 255); };

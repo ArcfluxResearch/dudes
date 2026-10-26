@@ -10,7 +10,7 @@ import { KeyUnavailable, ReloadNeeded } from './signer';
 import { LinkRefused, currentFloorSession, establishFloorSession, reauthenticateFloorSession } from './session';
 import { WebFloorShell } from './shell';
 import { floorRequestsPaused } from './transport';
-import './style.css';
+import './tailwind.css';
 
 /** The browser's own socket, beside the page that authenticated, on the browser's clock. */
 const BROWSER: StreamPorts = { location: window.location, socket: browserSocket };

@@ -20,9 +20,9 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import { themeColour, themeTokens } from './helpers/theme-colour.mjs';
+import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const source = resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx');
-const stylesheet = resolve(import.meta.dirname, '../src/style.css');
 
 /** The office box's own background, which is what the line sits on. */
 const BOX = '#241f1a';
@@ -92,7 +92,7 @@ test('the failure line is a sibling of the office box, not a child of it', async
 });
 
 test('the failure line reads against the page at the brief threshold', async () => {
-  const css = await readFile(stylesheet, 'utf8');
+  const css = await legacyStyles();
   for (const theme of ['light', 'dark']) {
     const colour = themeColour(css, 'office-failure', theme);
     const onPage = contrast(colour, themeTokens(css, theme).surface);
@@ -108,7 +108,7 @@ test('the failure line reads against the page at the brief threshold', async () 
 });
 
 test('the failure line is held to the same bar as the unconfirmed line', async () => {
-  const css = await readFile(stylesheet, 'utf8');
+  const css = await legacyStyles();
   for (const theme of ['light', 'dark']) {
     const page = themeTokens(css, theme).surface;
     const failure = contrast(themeColour(css, 'office-failure', theme), page);

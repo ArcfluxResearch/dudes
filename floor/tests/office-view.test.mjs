@@ -17,6 +17,7 @@ import { OFFICE_FALLBACK, startRenderer } from '../src/renderer/office3d/support
 import { watchCover } from '../src/renderer/office3d/cover.ts';
 import { ZOOM_LIMITS, coveredInsets, fitHalfHeight, followTarget, frustum, keepsWhole, layTags, narrowBand, onCanvas, spreadTags } from '../src/renderer/office3d/view.ts';
 import { themeTokens } from './helpers/theme-colour.mjs';
+import { legacyStyles } from './helpers/legacy-css.mjs';
 
 async function withOffice(run) {
   const server = await createServer({ root: resolve(import.meta.dirname, '..'),
@@ -104,7 +105,7 @@ test('COMPACT_UNWRITTEN and COMPACT_UNSTYLED mutants: a crowded tag says data-co
   assert.deepEqual(tags.map(({ id, element }) => [id, element.dataset.compact, element.style.left, element.style.top]), [
     ['kay', 'true', '400px', '500px'], ['mo', 'true', '432px', '503px'], ['oz', 'false', '700px', '500px'],
   ], 'the two on the sofa show their names side by side, and the tag with room keeps its engine');
-  const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const rule = /\.office-tag\[data-compact='true'\] \.office-tag-engine,\s*\.office-tag\[data-compact='true'\] small\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
   assert.match(rule, /display:\s*none;/, 'a compact tag hides the engine and the activity line');
 });
@@ -193,7 +194,7 @@ test('NAME_UNCAPPED mutant: a very long name is cut by the stylesheet, while the
     assert.equal(renderToStaticMarkup(createElement(NameTag, { id, row: { id, name, provider: 'claude' } })),
       `<bdi>${name}</bdi><span class="office-tag-engine"> · Claude</span>`);
   });
-  const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const rule = /\.office-tag bdi\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
   assert.match(rule, /max-width:\s*16ch;/);
   assert.match(rule, /overflow:\s*hidden;/);
@@ -282,7 +283,7 @@ test('OFF_CANVAS_OVERLAY mutant: a button or tag is laid over the canvas only wh
 });
 
 test('FULL_LINE_CENTRED and FULL_LINE_CATCHES_CLICKS mutants: the full line sits in the part no panel covers and lets clicks through', async () => {
-  const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const rule = /^\.office-full\s*\{([^}]*)\}/m.exec(css)?.[1] ?? '';
   const declared = (property) => new RegExp(`(?:^|;|\\s)${property}:\\s*([^;]+);`).exec(rule)?.[1].trim();
   assert.deepEqual(['left', 'max-width', 'pointer-events', 'transform'].map(declared), [
@@ -294,7 +295,7 @@ test('FULL_LINE_CENTRED and FULL_LINE_CATCHES_CLICKS mutants: the full line sits
 });
 
 test('CHIP_OFF_BOARD mutant: the board card count sits in the middle of the button laid over the board, so on its face', async () => {
-  const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const chip = /\.board-note-count\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
   const declared = (property) => new RegExp(`(?:^|;|\\s)${property}:\\s*([^;]+);`).exec(chip)?.[1].trim();
   assert.deepEqual(['position', 'left', 'top', 'transform'].map(declared), ['absolute', '50%', '50%', 'translate(-50%, -50%)']);
@@ -306,7 +307,7 @@ test('CHIP_OFF_BOARD mutant: the board card count sits in the middle of the butt
 });
 
 test('RING_ONE_TONE mutant: the focus ring over the office has two tones far enough apart to show on any floor', async () => {
-  const css = await readFile(resolve(import.meta.dirname, '../src/style.css'), 'utf8');
+  const css = await legacyStyles();
   const rule = /\.agent-select:focus-visible,\s*\.board-select:focus-visible\s*\{([^}]*)\}/.exec(css)?.[1];
   assert.ok(rule, 'the office focus ring has its own rule');
   const office = /\.office\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';

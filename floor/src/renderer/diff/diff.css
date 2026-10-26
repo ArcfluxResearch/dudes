@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
 
+@layer legacy, theme, base, components, utilities;
+
+@layer legacy {
 .diff-panel { min-width: 0; color: var(--ink); font-size: 0.8rem; line-height: 1.6; }
 .diff-panel h4 { margin: 0 0 0.75rem; font-size: 0.9rem; }
 .diff-panel p { margin: 0.65rem 0; }
@@ -46,4 +49,5 @@
 @media (max-width: 600px) {
   .diff-selection li { grid-template-columns: minmax(0, 1fr); }
   .diff-selection button { justify-self: start; }
+}
 }
