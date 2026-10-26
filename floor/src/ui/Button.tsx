@@ -15,8 +15,8 @@ const VARIANT: Readonly<Record<ButtonVariant, string>> = {
 };
 
 const SIZE: Readonly<Record<ButtonSize, { readonly text: string; readonly square: string }>> = {
-  sm: { text: 'h-7 px-2', square: 'size-7' },
-  md: { text: 'h-8 px-3', square: 'size-8' },
+  sm: { text: 'h-7 px-2 max-[800px]:min-h-11', square: 'size-7 max-[800px]:min-h-11 max-[800px]:min-w-11' },
+  md: { text: 'h-8 px-3 max-[800px]:min-h-11', square: 'size-8 max-[800px]:min-h-11 max-[800px]:min-w-11' },
 };
 
 const BASE = cn(

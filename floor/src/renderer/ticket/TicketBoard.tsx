@@ -276,7 +276,7 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
       {words.note === null ? null : <span className="ticket-note text-small whitespace-pre-wrap text-muted">{words.note}</span>}
       <span className="ticket-card-footer mt-auto flex items-center justify-between gap-2">
         {words.agent === null ? <span className="ticket-unassigned text-small text-subtle">Unassigned</span> : <span className="ticket-agent inline-flex min-w-0 items-center gap-2 text-small font-medium text-ink">
-          <span className={cn('ticket-avatar inline-flex size-6 shrink-0 items-center justify-center rounded-pill border text-caption font-semibold text-(--agent)',
+          <span className={cn('ticket-avatar inline-flex size-6 shrink-0 items-center justify-center rounded-pill border text-caption font-semibold text-[color-mix(in_srgb,var(--agent)_55%,var(--text))]',
             'border-[color-mix(in_srgb,var(--agent)_38%,var(--ui-surface))] bg-[color-mix(in_srgb,var(--agent)_12%,var(--ui-surface))]')} aria-hidden="true"
             style={{ '--agent': accentOf(row ?? { id: card.claimed_by ?? '' }) } as CSSProperties}>{initialOf(words.agent)}</span>
           <span className="truncate">{words.agent}</span>

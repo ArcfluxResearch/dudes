@@ -133,7 +133,7 @@ export function Select({ options, value, onValueChange, id, name, placeholder = 
         aria-selected={at === selected} aria-disabled={option.disabled === true || undefined} data-active={at === active}
         onPointerMove={() => { if (option.disabled !== true && at !== active) setActive(at); }}
         onClick={() => choose(at)}
-        className={cn('flex h-8 cursor-pointer items-center justify-between gap-2 rounded-md px-2 text-base',
+        className={cn('flex h-8 cursor-pointer items-center justify-between gap-2 rounded-md px-2 text-base max-[800px]:min-h-11',
           at === active && 'bg-surface-2', at === selected && 'font-medium', option.disabled === true && 'cursor-not-allowed opacity-50')}>
         <span className="truncate">{option.label}</span>
         {at === selected ? <Check {...ICON} className="shrink-0 text-accent" /> : null}
