@@ -343,7 +343,7 @@ impl Socket {
     }
 
     fn projection(page: &Page) -> Self {
-        let mut socket = Self::open_retrying(page, "/floor/stream", "dudes-floor-v4");
+        let mut socket = Self::open_retrying(page, "/floor/stream", "dudes-floor-v5");
         socket.send(&json!({"type": "floor.subscribe"}));
         socket.expect("floor.snapshot");
         socket
@@ -871,7 +871,7 @@ fn grant_resync_keeps_the_terminal_and_the_slots_hold() {
     let refused = |path, protocol| {
         Socket::open(&page, path, protocol).expect_err("a slot past the session's three")
     };
-    assert!(refused("/floor/stream", "dudes-floor-v4").starts_with("HTTP/1.1 403"));
+    assert!(refused("/floor/stream", "dudes-floor-v5").starts_with("HTTP/1.1 403"));
     assert!(refused("/floor/terminal", "dudes-terminal-v1").starts_with("HTTP/1.1 403"));
 
     drop(resynced);
@@ -1438,7 +1438,7 @@ fn browser_terminal_is_absent_when_not_enabled() {
 }
 
 fn snapshot_of(page: &Page) -> Value {
-    let mut socket = Socket::open_retrying(page, "/floor/stream", "dudes-floor-v4");
+    let mut socket = Socket::open_retrying(page, "/floor/stream", "dudes-floor-v5");
     socket.send(&json!({"type": "floor.subscribe"}));
     socket.expect("floor.snapshot")
 }

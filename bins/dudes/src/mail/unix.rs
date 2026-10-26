@@ -535,8 +535,12 @@ pub(super) fn run(command: &MailCommand, path: &Path, out: &mut dyn Write) -> io
             if items.is_empty() {
                 return writeln!(out, "no unread mail");
             }
+            let mut names_hint = matches!(command, MailCommand::Read);
             for (item, body) in items {
                 let from = match item.from {
+                    MailFrom::Agent { agent } if std::mem::take(&mut names_hint) => {
+                        format!("{agent}\nUse `dudes team` to see agent names.")
+                    }
                     MailFrom::Agent { agent } => agent.to_string(),
                     MailFrom::Human => "human".to_owned(),
                 };
@@ -626,6 +630,38 @@ mod tests {
         let replacement =
             open(source, name, OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL).unwrap();
         (&replacement).write_all(b"substituted bytes").unwrap();
+    }
+
+    #[test]
+    fn read_points_to_names_once_after_the_first_agent_sender() {
+        let (root, mailbox) = owned_mailbox();
+        let path = root.path().join(mailbox.id.to_string());
+        for n in 1..=2 {
+            let id = MailId::from_parts(1, n);
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&inbox_marker(&mailbox, id)).unwrap();
+            value["from"] = serde_json::json!({"kind":"agent","agent":AgentId::from_parts(1, 2)});
+            std::fs::write(
+                path.join("inbox").join(format!("{id}.json")),
+                serde_json::to_vec(&value).unwrap(),
+            )
+            .unwrap();
+        }
+        let mut output = Vec::new();
+        run(&MailCommand::Read, &path, &mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert_eq!(text.matches("Use `dudes team`").count(), 1);
+        assert!(text.contains(&format!(
+            "from {}\nUse `dudes team`",
+            AgentId::from_parts(1, 2)
+        )));
+        let mut output = Vec::new();
+        run(&MailCommand::List, &path, &mut output).unwrap();
+        assert!(
+            !String::from_utf8(output)
+                .unwrap()
+                .contains("Use `dudes team`")
+        );
     }
 
     #[test]

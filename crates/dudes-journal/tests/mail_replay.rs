@@ -18,6 +18,7 @@ fn replay_never_replaces_the_first_mail_recipient_or_terminal_state() {
         to: MailTo::Agent { agent: original },
         act: MailAct::Message,
         subject: "original".to_owned(),
+        subject_admission: None,
         body: Some("body".to_owned()),
         body_len: 4,
         body_path: None,

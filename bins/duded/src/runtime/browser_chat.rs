@@ -516,9 +516,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 if !self.recovery_dispatch_allowed(sup, turn) {
                     return Ok(());
                 }
-                self.children
-                    .redactor()
-                    .hold_env(dudes_supervisor::Holder::Turn(turn), &spec.env);
+                let holder = dudes_supervisor::Holder::Turn(turn);
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                if let Some(mailbox) = &mut self.mailbox
+                    && let Some(row) = sup.world().turns.get(&turn)
+                {
+                    mailbox.begin_subject_context(row.agent, holder, self.children.redactor());
+                }
+                self.children.redactor().hold_env(holder, &spec.env);
                 self.host.spawn(&spec, install)
             }
             Err(reason) => super::SpawnResult::NotLaunched { reason },

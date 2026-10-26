@@ -8119,6 +8119,15 @@
           "description": "Subject line.",
           "type": "string"
         },
+        "subject_admission": {
+          "description": "Daemon-owned subject admission policy. Only policy 1 permits browser captions.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "t": {
           "const": "mail",
           "type": "string"

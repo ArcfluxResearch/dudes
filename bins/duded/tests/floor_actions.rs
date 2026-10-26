@@ -55,7 +55,7 @@ mod common;
 use common::PageHttp as _;
 use common::{Fixture, ScriptedRunner, SharedHost, TestClock, system32_program, true_program};
 
-const STREAM_PROTOCOL: &str = "dudes-floor-v4";
+const STREAM_PROTOCOL: &str = "dudes-floor-v5";
 
 #[test]
 fn predicate_path_uses_the_system_root_and_survives_fixture_escaping() {
@@ -12004,7 +12004,7 @@ fn browser_settings_view_is_an_exact_read_only_allowlist() {
             "workspaces": [{ "workspace_id": "repo_1", "label": "Service workspace",
                 "agent_usd_per_day_micros": "10000000", "agent_tokens_per_day": "123",
                 "goal_usd_micros": "5000000", "goal_tokens": "456" }],
-            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 8 }
+            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 9 }
         })
     );
     let bytes = frame["settings"].to_string();

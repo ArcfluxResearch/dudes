@@ -209,7 +209,7 @@ impl Browser {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("stream read bound");
-        let request = self.page.upgrade_head("/floor/stream", "dudes-floor-v4");
+        let request = self.page.upgrade_head("/floor/stream", "dudes-floor-v5");
         stream.write_all(request.as_bytes()).expect("upgrade write");
         assert_eq!(response(&mut stream).0, 101);
         let payload = b"{\"type\":\"floor.subscribe\"}";

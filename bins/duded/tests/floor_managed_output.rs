@@ -514,7 +514,7 @@ impl WebSocket {
             .unwrap();
         stream
             .write_all(
-                page.upgrade_head("/floor/stream", "dudes-floor-v4")
+                page.upgrade_head("/floor/stream", "dudes-floor-v5")
                     .as_bytes(),
             )
             .unwrap();
@@ -1273,7 +1273,7 @@ fn step_results_are_fetched_scrubbed_and_only_by_the_socket_that_selected_the_ag
         .unwrap();
     signed_out
         .write_all(
-            page.upgrade_head_with("/floor/stream", "dudes-floor-v4", None)
+            page.upgrade_head_with("/floor/stream", "dudes-floor-v5", None)
                 .as_bytes(),
         )
         .unwrap();

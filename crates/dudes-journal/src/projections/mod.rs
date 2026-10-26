@@ -268,7 +268,7 @@ use crate::writer::Fsync;
 /// `2` was the previous bump: the rows became at-derived and `turns.status` gained
 /// a *reachable* `Killed`, so a v1 row saying `Ended` for a killed turn was wrong. Half-right is
 /// worse than rebuilt.
-pub const PROJECTION_VERSION: u64 = 58;
+pub const PROJECTION_VERSION: u64 = 59;
 /// Entries applied per write transaction during replay.
 pub const BATCH: usize = 1000;
 
@@ -285,6 +285,7 @@ const TRACES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("traces");
 const RETIRED_AGENTS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("retired_agents");
 const MESSAGES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("messages");
 const MAIL: TableDefinition<'_, &[u8; 16], &[u8]> = TableDefinition::new("mail");
+const MAIL_RETIRED: TableDefinition<'_, &[u8; 16], &[u8]> = TableDefinition::new("mail_retired");
 const MAIL_PENDING: TableDefinition<'_, &[u8; 32], &[u8]> = TableDefinition::new("mail_pending");
 const MAIL_WAKES: TableDefinition<'_, &[u8; 16], &[u8]> = TableDefinition::new("mail_wakes");
 const MAIL_WAKE_BY_DAY: TableDefinition<'_, &[u8; 20], &[u8]> =
@@ -438,6 +439,7 @@ impl Projections {
         txn.open_table(WORKTREES)?;
         txn.open_table(MAIL)?;
         txn.open_table(MAIL_PENDING)?;
+        txn.open_table(MAIL_RETIRED)?;
         txn.open_table(MAIL_WAKES)?;
         txn.open_table(MAIL_WAKE_BY_DAY)?;
         txn.open_table(MESSAGES)?;
@@ -854,7 +856,12 @@ impl Projections {
         let txn = self.db.begin_read()?;
         let meta = txn.open_table(META)?;
         let lsn = Lsn(meta.get(LAST_APPLIED_LSN)?.map_or(0, |value| value.value()));
-        mail::view(&txn.open_table(MAIL)?, &txn.open_table(MESSAGES)?, lsn)
+        mail::view(
+            &txn.open_table(MAIL)?,
+            &txn.open_table(MESSAGES)?,
+            &txn.open_table(MAIL_RETIRED)?,
+            lsn,
+        )
     }
 
     /// One transaction behind [`Projections::spend_views`] and the single-scope readers, so
@@ -1006,6 +1013,7 @@ impl Projections {
         )?;
         export_rows::<16, mail::MailRow>(&mut lines, "mail", &txn.open_table(MAIL)?)?;
         export_rows::<32, ()>(&mut lines, "mail_pending", &txn.open_table(MAIL_PENDING)?)?;
+        export_rows::<16, ()>(&mut lines, "mail_retired", &txn.open_table(MAIL_RETIRED)?)?;
         for entry in txn.open_table(SESSION_TOTALS)?.iter()? {
             let (key, value) = entry?;
             let row: dudes_types::Usage =
@@ -1052,7 +1060,7 @@ impl Projections {
         }
         for entry in txn.open_table(MESSAGES)?.iter()? {
             let (key, value) = entry?;
-            let rows: Vec<MessageView> =
+            let rows: Vec<mail::MailRow> =
                 serde_json::from_slice(value.value()).map_err(|source| Error::Row { source })?;
             let json = serde_json::to_string(&rows).map_err(|source| Error::Row { source })?;
             lines.push(format!("messages {} {json}", hex(key.value().as_bytes())));
@@ -1114,6 +1122,7 @@ fn fold_batch<'a>(
         let mut recovery_rows = txn.open_table(RECOVERY)?;
         let mut mail = txn.open_table(MAIL)?;
         let mut pending = txn.open_table(MAIL_PENDING)?;
+        let mut mail_retired = txn.open_table(MAIL_RETIRED)?;
         let mut wakes = mail_wakes::Tables {
             states: txn.open_table(MAIL_WAKES)?,
             by_day: txn.open_table(MAIL_WAKE_BY_DAY)?,
@@ -1233,6 +1242,9 @@ fn fold_batch<'a>(
             if let Some(ended) = ended.as_ref() {
                 retired::refresh_totals(&mut retired, &by_day, &turns, ended.agent)?;
             }
+            if let dudes_proto::Record::AgentRetired { id, .. } = &entry.record {
+                mail_retired.insert(&id.to_bytes(), b"null".as_slice())?;
+            }
             mail::apply(&mut mail, &mut pending, &mut messages, lsn, entry)?;
             last = lsn;
             witness = Some(crc);
@@ -1273,6 +1285,7 @@ pub const EXPORTED_TABLES: &[&str] = &[
     "budget_by_day",
     "mail",
     "mail_pending",
+    "mail_retired",
     "session_totals",
     "activity",
     "retired_agents",
@@ -1590,6 +1603,7 @@ pub(crate) mod tests {
                 to,
                 act: MailAct::Message,
                 subject: "projection control".into(),
+                subject_admission: None,
                 body: None,
                 body_len: 0,
                 body_path: None,
@@ -1983,7 +1997,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_51_flat_native_receipt_rebuilds_its_spawn_key_from_the_journal() {
         use dudes_proto::instruction_state::InstructionBoundarySettlement;
-        assert_eq!(PROJECTION_VERSION, 58);
+        assert_eq!(PROJECTION_VERSION, 59);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let journal = dir.path().join("journal");
@@ -2090,6 +2104,9 @@ pub(crate) mod tests {
         let (creation, crc) = writer.append_witnessed(&entry).unwrap();
         store.apply(creation, crc, &entry).unwrap();
         let mut expected = dudes_proto::MessageView {
+            subject: None,
+            act: Some(dudes_proto::MessageAct::Message),
+            reply_status: dudes_proto::ReplyStatus::NotExpected,
             id,
             from: agent(),
             to: AgentId::from_parts(1, 2),
@@ -2444,7 +2461,7 @@ pub(crate) mod tests {
     /// cannot tell whether the constant was bumped when the rows changed meaning. This can.
     #[test]
     fn a_version_17_store_rebuilds_the_activity_window() {
-        assert_eq!(PROJECTION_VERSION, 58);
+        assert_eq!(PROJECTION_VERSION, 59);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let records = [
@@ -2478,7 +2495,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_24_store_rebuilds_the_current_live_kind() {
-        assert_eq!(PROJECTION_VERSION, 58);
+        assert_eq!(PROJECTION_VERSION, 59);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let entries = [
@@ -2516,7 +2533,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_25_store_rebuilds_retired_appearance() {
-        assert_eq!(PROJECTION_VERSION, 58);
+        assert_eq!(PROJECTION_VERSION, 59);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let mut hire = hired();
@@ -2628,7 +2645,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_8_store_is_rebuilt_for_per_turn_confirmation() {
         const LATCHED: u64 = 8;
-        assert_eq!(PROJECTION_VERSION, 58);
+        assert_eq!(PROJECTION_VERSION, 59);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2665,7 +2682,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_7_store_is_rebuilt_for_launch_refused_session_clear() {
         const LATCHED: u64 = 7;
-        assert_eq!(PROJECTION_VERSION, 58);
+        assert_eq!(PROJECTION_VERSION, 59);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2735,7 +2752,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 4;
         assert_eq!(
-            PROJECTION_VERSION, 58,
+            PROJECTION_VERSION, 59,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -3601,7 +3618,7 @@ pub(crate) mod tests {
     fn unread_mail_is_rebuilt_from_latest_mail_state() {
         const LATCHED: u64 = 10;
         assert_eq!(
-            PROJECTION_VERSION, 58,
+            PROJECTION_VERSION, 59,
             "this new table owns the 10 -> 11 bump; re-derive the latched store if the current \
              version moves"
         );
@@ -4068,7 +4085,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_11_budget_store_is_rebuilt_for_unknown_ends() {
-        assert_eq!(PROJECTION_VERSION, 58);
+        assert_eq!(PROJECTION_VERSION, 59);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let day = day_of(MIDNIGHT_MS);
@@ -4220,7 +4237,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 5;
         assert_eq!(
-            PROJECTION_VERSION, 58,
+            PROJECTION_VERSION, 59,
             "if this moves, re-derive LATCHED above it — a merge past another bump must move \
              both, or this test passes with this repair's own bump dropped"
         );
@@ -5311,7 +5328,7 @@ pub(crate) mod tests {
     fn a_version_13_store_is_rebuilt_for_question_identity() {
         const LATCHED: u64 = 13;
         assert_eq!(
-            PROJECTION_VERSION, 58,
+            PROJECTION_VERSION, 59,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5348,7 +5365,7 @@ pub(crate) mod tests {
     fn a_version_55_store_is_rebuilt_for_the_last_ended_turn() {
         const LATCHED: u64 = 55;
         assert_eq!(
-            PROJECTION_VERSION, 58,
+            PROJECTION_VERSION, 59,
             "if this moves, move LATCHED above it, so a merge past another bump re-derives both"
         );
         let dir = tempfile::tempdir().unwrap();
@@ -5442,7 +5459,7 @@ pub(crate) mod tests {
     fn a_version_14_store_is_rebuilt_for_control_identity() {
         const LATCHED: u64 = 14;
         assert_eq!(
-            PROJECTION_VERSION, 58,
+            PROJECTION_VERSION, 59,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5549,7 +5566,7 @@ pub(crate) mod tests {
     fn a_version_15_store_counts_the_reset_unknown_end() {
         const LATCHED: u64 = 15;
         assert_eq!(
-            PROJECTION_VERSION, 58,
+            PROJECTION_VERSION, 59,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -5822,7 +5839,7 @@ pub(crate) mod tests {
 
         #[test]
         fn a_version_38_store_rebuilds_the_first_completion_facts() {
-            assert_eq!(PROJECTION_VERSION, 58);
+            assert_eq!(PROJECTION_VERSION, 59);
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.redb");
             let history = [

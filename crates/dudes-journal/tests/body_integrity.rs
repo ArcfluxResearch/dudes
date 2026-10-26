@@ -52,6 +52,7 @@ fn mail(id: &str, body: Option<&str>, body_len: u64, reference: Option<&Path>) -
         to: MailTo::Human,
         act: MailAct::Request,
         subject: "Read this".to_owned(),
+        subject_admission: None,
         body: body.map(str::to_owned),
         body_len,
         body_path: reference.map(Path::to_path_buf),

@@ -66,6 +66,7 @@ fn mail(id: MailId, agent: AgentId) -> Entry {
             to: MailTo::Agent { agent },
             act: MailAct::Message,
             subject: "projection sentinel".into(),
+            subject_admission: None,
             body: None,
             body_len: 0,
             body_path: None,

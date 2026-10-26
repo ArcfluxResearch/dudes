@@ -488,6 +488,7 @@ mod tests {
             to: MailTo::Human,
             act: MailAct::Message,
             subject: "thread".into(),
+            subject_admission: None,
             body: Some(String::new()),
             body_len: 0,
             body_path: None,
