@@ -66,6 +66,7 @@ pub struct Redactor {
 #[derive(Default)]
 struct Inner {
     sources: BTreeMap<String, BTreeSet<String>>,
+    holders: BTreeSet<Holder>,
     matcher: Arc<Matcher>,
     generation: u64,
     cap_logged: bool,
@@ -131,40 +132,7 @@ impl Redactor {
     where
         I: IntoIterator<Item = String>,
     {
-        let mut kept = BTreeSet::new();
-        let mut dropped = 0usize;
-        for value in values {
-            if value.len() < MIN_SECRET_BYTES {
-                continue;
-            }
-            if kept.len() < MAX_SECRETS_PER_SOURCE {
-                kept.insert(value);
-            } else if !kept.contains(&value) {
-                dropped += 1;
-            }
-        }
-        let values = kept;
-        let mut inner = self.lock();
-        if dropped > 0 && !std::mem::replace(&mut inner.cap_logged, true) {
-            tracing::warn!(
-                source,
-                dropped,
-                kept = MAX_SECRETS_PER_SOURCE,
-                "a secret source is over its cap; the values beyond it are not scrubbed"
-            );
-        }
-        let changed = if values.is_empty() {
-            inner.sources.remove(source).is_some()
-        } else if inner.sources.get(source) == Some(&values) {
-            false
-        } else {
-            inner.sources.insert(source.to_owned(), values);
-            true
-        };
-        if changed {
-            inner.matcher = Arc::new(Matcher::of(inner.sources.values().flatten()));
-            inner.generation += 1;
-        }
+        self.lock().set_source(source, values);
     }
 
     /// End `source`.
@@ -177,27 +145,45 @@ impl Redactor {
     /// The set is rebuilt at each launch, so a value that changed between two launches is held
     /// for as long as a live child still has it.
     pub fn hold_env(&self, holder: Holder, vars: &[EnvVar]) {
-        self.set_source(&holder.source(), env_secrets(vars));
+        let values = env_secrets(vars);
+        let mut inner = self.lock();
+        inner.set_source(&holder.source(), values);
+        inner.holders.insert(holder);
     }
 
     /// The holder's child is gone: its environment values stop being held, unless another source
     /// still names them.
     pub fn release(&self, holder: Holder) {
-        self.clear_source(&holder.source());
+        let mut inner = self.lock();
+        inner.holders.remove(&holder);
+        inner.set_source(&holder.source(), std::iter::empty());
     }
 
     /// `text` with every known secret replaced and without terminal escape sequences.
     #[must_use]
     pub fn scrub<'a>(&self, text: &'a str) -> Cow<'a, str> {
-        let matcher = self.matcher();
-        let raw = matcher
-            .replace(text)
-            .map_or(Cow::Borrowed(text), Cow::Owned);
-        let stripped = strip_ansi(raw);
-        match matcher.replace(&stripped) {
-            Some(replaced) => Cow::Owned(replaced),
-            None => stripped,
-        }
+        scrub_with(&self.matcher(), text)
+    }
+
+    /// Scrub only while this exact child's environment is held, including an empty environment.
+    /// The same captured matcher runs before and after normalization; the caller must establish
+    /// that the input belongs to this holder before using it.
+    #[must_use]
+    pub fn scrub_held(
+        &self,
+        holder: Holder,
+        text: &str,
+        normalize: impl FnOnce(&str) -> String,
+    ) -> Option<String> {
+        let matcher = {
+            let inner = self.lock();
+            if !inner.holders.contains(&holder) {
+                return None;
+            }
+            Arc::clone(&inner.matcher)
+        };
+        let normalized = normalize(&scrub_with(&matcher, text));
+        Some(scrub_with(&matcher, &normalized).into_owned())
     }
 
     /// A scrubber for one stream of text.
@@ -212,8 +198,60 @@ impl Redactor {
     }
 }
 
+impl Inner {
+    fn set_source<I>(&mut self, source: &str, values: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let mut kept = BTreeSet::new();
+        let mut dropped = 0usize;
+        for value in values {
+            if value.len() < MIN_SECRET_BYTES {
+                continue;
+            }
+            if kept.len() < MAX_SECRETS_PER_SOURCE {
+                kept.insert(value);
+            } else if !kept.contains(&value) {
+                dropped += 1;
+            }
+        }
+        let values = kept;
+        if dropped > 0 && !std::mem::replace(&mut self.cap_logged, true) {
+            tracing::warn!(
+                source,
+                dropped,
+                kept = MAX_SECRETS_PER_SOURCE,
+                "a secret source is over its cap; the values beyond it are not scrubbed"
+            );
+        }
+        let changed = if values.is_empty() {
+            self.sources.remove(source).is_some()
+        } else if self.sources.get(source) == Some(&values) {
+            false
+        } else {
+            self.sources.insert(source.to_owned(), values);
+            true
+        };
+        if changed {
+            self.matcher = Arc::new(Matcher::of(self.sources.values().flatten()));
+            self.generation += 1;
+        }
+    }
+}
+
+fn scrub_with<'a>(matcher: &Matcher, text: &'a str) -> Cow<'a, str> {
+    let raw = matcher
+        .replace(text)
+        .map_or(Cow::Borrowed(text), Cow::Owned);
+    let stripped = strip_ansi(raw);
+    match matcher.replace(&stripped) {
+        Some(replaced) => Cow::Owned(replaced),
+        None => stripped,
+    }
+}
+
 /// Who launched a child whose environment is held.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Holder {
     /// A managed child, for the turn it runs.
     Turn(TurnId),
@@ -741,7 +779,10 @@ mod tests {
         let holder = Holder::Turn(TurnId::NIL);
         assert_eq!(redactor.scrub_held(holder, "hello", str::to_owned), None);
         redactor.hold_env(holder, &[]);
-        assert_eq!(redactor.scrub_held(holder, "hello", str::to_owned), Some("hello".into()));
+        assert_eq!(
+            redactor.scrub_held(holder, "hello", str::to_owned),
+            Some("hello".into())
+        );
         redactor.release(holder);
         assert_eq!(redactor.scrub_held(holder, "hello", str::to_owned), None);
     }
