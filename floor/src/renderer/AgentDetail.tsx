@@ -131,10 +131,10 @@ export function AgentDetail({
   }, []);
 
   return (
-    <aside ref={detail} className="agent-detail" aria-label="Selected agent details" data-selected-agent-id={row.id} data-detail-tab={selected}
+    <aside ref={detail} className="agent-detail flex min-h-0 flex-1 flex-col" aria-label="Selected agent details" data-selected-agent-id={row.id} data-detail-tab={selected}
       style={{ '--agent': accentOf(row) } as CSSProperties}>
-      <div className="agent-detail-context">
-      <header className="agent-detail-head grid grid-cols-1 gap-4 font-sans text-ink">
+      <div className="agent-detail-context max-h-[55%] flex-none overflow-y-auto [[data-chat-short=true]_&]:max-h-[30%]">
+      <header className="agent-detail-head grid grid-cols-1 gap-3 font-sans text-ink">
         <div className="flex items-start gap-3 pr-8">
           <Portrait className="agent-portrait agent-detail-portrait shrink-0" look={lookOf(row)} accessory={accessoryOf(row.role)}
             name={row.name} />
@@ -147,15 +147,17 @@ export function AgentDetail({
             <p className="agent-detail-status m-0 text-base text-muted [overflow-wrap:anywhere]">
               {value(row.role)}
               {typeof row.provider === 'string' && row.provider !== '' ? ` · ${providerLabel(row.provider)}` : ''}
-              {fields.liveActivity === null ? null : <>{' · '}<span data-live-activity={fields.liveActivity}>{fields.liveActivity}</span></>}
-              {streamState === null ? null : <>{' · '}<span className="stream-state font-normal" role="status">{streamState}</span></>}
+              {fields.liveActivity === null && streamState === null ? null : <span className="sr-only">
+                {fields.liveActivity === null ? null : <>{' · '}<span data-live-activity={fields.liveActivity}>{fields.liveActivity}</span></>}
+                {streamState === null ? null : <>{' · '}<span className="stream-state font-normal" role="status">{streamState}</span></>}
+              </span>}
             </p>
           </div>
           <MoreActions row={row} retire={retire} />
         </div>
         {selection}
-        <section className="agent-detail-state grid gap-3" aria-label="State" data-state={need.state}>
-          <p className="agent-detail-state-line m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-body"><Badge state={need.state} />
+        <section className="agent-detail-state flex flex-wrap items-center gap-x-3 gap-y-2" aria-label="State" data-state={need.state}>
+          <p className="agent-detail-state-line m-0 flex min-w-48 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-body"><Badge state={need.state} />
             {' '}<span className="agent-detail-state-text text-ink">{sentence}</span></p>
           <div className="agent-detail-primary flex flex-wrap items-center gap-2 empty:hidden">
             {act(need.action)}
@@ -164,21 +166,21 @@ export function AgentDetail({
           </div>
         </section>
         <LookEditor row={row} />
-        <div className="grid gap-2">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <ModelEditor row={row} />
           {terminal}
           {attachNote}
         </div>
         {enable}
         {fields.question === '' ? null : (
-          <section className={`agent-detail-question m-0 grid gap-2 rounded-lg border border-line bg-warn-soft p-3 shadow-none ${RING}`} aria-label="Waiting question" tabIndex={-1}>
+          <section className={`agent-detail-question m-0 grid max-h-64 gap-2 overflow-y-auto rounded-lg border border-line bg-warn-soft p-3 shadow-none ${RING}`} aria-label="Waiting question" tabIndex={-1}>
             <h3 className="m-0 font-sans text-title font-semibold text-ink">Waiting question</h3>
             <p className="m-0 text-body text-ink [overflow-wrap:anywhere]">{fields.question}</p>
             {answer}
           </section>
         )}
       </header>
-      <TabList ref={tabRow} label="Agent detail sections" className="agent-detail-tabs mt-4 mb-3 [scrollbar-width:none]"
+      <TabList ref={tabRow} label="Agent detail sections" className="agent-detail-tabs mt-3 mb-2 [scrollbar-width:none]"
         aria-describedby={tabs.length > 1 ? 'agent-detail-tab-hint' : undefined}>
         {available.map(({ id, label }) => <Tab key={id} selected={selected === id} className="agent-detail-tab mb-0"
           id={`agent-detail-tab-${id}`} data-detail-section={id} aria-controls={`agent-detail-panel-${id}`}
@@ -194,10 +196,10 @@ export function AgentDetail({
             event.currentTarget.ownerDocument.getElementById(`agent-detail-tab-${target}`)?.focus();
           }}>{label}</Tab>)}
       </TabList>
-      {tabs.length > 1 ? <p id="agent-detail-tab-hint" className="agent-detail-tab-hint m-0 mb-3 text-caption text-subtle">Scroll for more sections · Use arrow keys</p> : null}
+      {tabs.length > 1 ? <p id="agent-detail-tab-hint" className="agent-detail-tab-hint sr-only">Scroll for more sections · Use arrow keys</p> : null}
       </div>
       {available.map(({ id, content }) => <section key={id} id={`agent-detail-panel-${id}`}
-        role="tabpanel" className={`rounded-md ${RING_INSET}`} data-detail-section={id} aria-labelledby={`agent-detail-tab-${id}`} tabIndex={0} hidden={selected !== id}
+        role="tabpanel" className={`min-h-0 flex-1 overflow-y-auto rounded-md ${RING_INSET}`} data-detail-section={id} aria-labelledby={`agent-detail-tab-${id}`} tabIndex={0} hidden={selected !== id}
         ref={handFocusOnLeave} data-focus-on-leave="agent-detail-tab-overview"
         onFocus={() => setFocusedSection(id)} onBlur={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget)) setFocusedSection(null);

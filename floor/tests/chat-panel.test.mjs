@@ -5,9 +5,8 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test, { after, before } from 'node:test';
 import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { renderToStaticMarkup } from './helpers/markup.mjs';
-import { legacyStyles } from './helpers/legacy-css.mjs';
 
 const A = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const B = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
@@ -78,9 +77,9 @@ test('reserved preparation stays cancellable and uncertain cancellation names it
   assert.match(render({ ...view(), pending: [pending] }), />Cancel note<\/button>/);
   const uncertain = render({ ...view(), pending: [{ ...pending, state: 'delivery_uncertain', reason: 'delivery_uncertain' }] });
   assert.match(uncertain, /Delivery before restart is unknown/);
-  assert.match(uncertain, />Stop future reissue<\/button>/);
+  assert.match(uncertain, /Stop future reissue<\/button>/);
   assert.doesNotMatch(uncertain, /No text was dispatched/);
-  assert.doesNotMatch(render({ ...view(), pending: [{ ...pending, cancellable: false, reason: 'delivery_started' }] }), /class="chat-cancel"/);
+  assert.doesNotMatch(render({ ...view(), pending: [{ ...pending, cancellable: false, reason: 'delivery_started' }] }), /class="[^"]*\bchat-cancel\b/);
 });
 
 test('the chronological conversation joins reserved notes and turns once and puts the editable composer last', () => {
@@ -94,27 +93,29 @@ test('the chronological conversation joins reserved notes and turns once and put
   assert.ok(html.indexOf('First user message') < html.indexOf('First reply'));
   assert.ok(html.indexOf('First reply') < html.indexOf('Shared reserved message'));
   assert.ok(html.indexOf('Shared reserved message') < html.indexOf('Last queued message'));
-  assert.ok(html.indexOf('Last queued message') < html.indexOf('class="chat-compose"'));
+  assert.ok(html.indexOf('Last queued message') < html.indexOf('aria-labelledby="chat-compose-title"'));
   const busy = { ...action, attempt: { verb: 'send', payload: { agent: A, text: 'Sending' } }, sending: true };
   const sending = render(view(), {}, row, busy);
-  assert.doesNotMatch(sending, /<textarea[^>]*disabled/);
-  assert.match(sending, /class="chat-send"[^>]*disabled/);
+  assert.doesNotMatch(sending, /<textarea[^>]*\sdisabled=""/);
+  assert.match(sending, /disabled="" class="[^"]*\bchat-send"/);
 });
 
 test('the composer follows the thread while the conversation fills and scrolls the remaining sheet height', async () => {
   const html = render({ ...view(), turns: [turn()] });
-  assert.ok(html.indexOf('class="chat-thread"') < html.indexOf('class="chat-compose"'));
-  assert.ok(html.indexOf('<summary>Conversation details</summary>') < html.indexOf('class="chat-compose"'));
-  assert.match(html, /class="chat-scroll"[^>]*role="log"/);
-  const css = await legacyStyles();
-  const rule = selector => css.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]+)\\}`))?.[1] ?? '';
-  assert.match(rule(".agent-drawer:has(.agent-detail[data-detail-tab='chat'])"), /overflow: clip/);
-  assert.match(rule('#agent-detail-panel-chat'), /flex: 1 1 auto; min-height: 0/);
-  assert.match(rule('.chat-thread'), /flex: 1 1 auto/);
-  assert.match(rule('.chat-scroll'), /flex: 1 1 auto; min-height: 0; overflow-y: auto/);
-  assert.doesNotMatch(rule('.chat-scroll'), /(?:^|;)\s*height:/);
-  assert.match(rule('.chat-compose'), /flex: 0 0 auto/);
-  assert.doesNotMatch(rule('.chat-compose'), /overflow/);
+  assert.ok(html.indexOf('aria-labelledby="chat-thread-title"') < html.indexOf('aria-labelledby="chat-compose-title"'));
+  assert.ok(html.indexOf('Conversation details</summary>') < html.indexOf('aria-labelledby="chat-compose-title"'));
+  assert.match(html, /class="[^"]*\bchat-scroll\b[^"]*" role="log"/);
+  const sheet = renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(), row, selectedId: A, onClose() {}, leaveFocusTo: 'crew-toggle' }));
+  const on = (markup, hook) => markup.match(new RegExp(`class="((?:[^"]*\\s)?${hook}(?:\\s[^"]*)?)"`))?.[1].replaceAll('&amp;', '&').split(/\s+/) ?? [];
+  for (const utility of ['flex', 'flex-col', 'overflow-hidden']) assert.ok(on(sheet, 'agent-drawer').includes(utility), `the drawer lacks ${utility}`);
+  for (const utility of ['flex', 'flex-1', 'flex-col', 'min-h-0']) assert.ok(on(sheet, 'agent-detail').includes(utility), `the detail lacks ${utility}`);
+  for (const utility of ['flex-1', 'min-h-0', 'overflow-y-auto']) assert.ok(/tabpanel" class="([^"]*)"/.exec(sheet)?.[1].split(/\s+/).includes(utility), `a panel lacks ${utility}`);
+  const wears = hook => html.match(new RegExp(`class="([^"]*\\b${hook}\\b[^"]*)"`))?.[1].split(/\s+/) ?? [];
+  assert.ok(wears('chat-thread').includes('flex-1'));
+  for (const utility of ['flex-1', 'min-h-0', 'overflow-y-auto']) assert.ok(wears('chat-scroll').includes(utility), utility);
+  assert.deepEqual(wears('chat-scroll').filter(utility => /^h-/.test(utility)), []);
+  assert.ok(wears('chat-compose').includes('shrink-0'));
+  assert.deepEqual(wears('chat-compose').filter(utility => /^overflow/.test(utility)), []);
 });
 
 test('the Chat sheet follows the visible viewport while a phone keyboard opens and clears its listeners on leave', async () => {
@@ -156,13 +157,12 @@ test('the Chat sheet follows the visible viewport while a phone keyboard opens a
 test('a short Chat sheet reserves its composer and lets the header and tabs scroll under notices', async () => {
   const html = renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(), row, selectedId: A,
     onClose() {}, leaveFocusTo: 'crew-toggle' }));
-  assert.match(html, /class="agent-detail-context">[\s\S]*<header class="agent-detail-head">[\s\S]*class="agent-detail-tabs"/);
-  const css = await legacyStyles();
-  assert.match(css, /\.agent-detail-context \{ display: contents; \}/);
-  assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] \{[^}]*grid-template-rows: minmax\(0, auto\) minmax\(0, 1fr\) auto auto/);
-  assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] > \.agent-detail-context \{[^}]*overflow-y: auto/);
-  assert.match(css, /\[data-chat-short='true'\] \.agent-detail\[data-detail-tab='chat'\] \.chat-panel \{ display: contents/);
-  assert.match(css, /\[data-chat-short='true'\] \.chat-compose \{ grid-row: 4/);
+  assert.match(html, /class="[^"]*\bagent-detail-context\b[^"]*">[\s\S]*<header class="[^"]*\bagent-detail-head\b[^"]*">[\s\S]*\bagent-detail-tabs\b/);
+  const context = /class="((?:[^"]*\s)?agent-detail-context(?:\s[^"]*)?)"/.exec(html)?.[1].replaceAll('&amp;', '&').split(/\s+/) ?? [];
+  assert.ok(context.includes('overflow-y-auto'), 'the header and tabs scroll');
+  assert.ok(context.includes('[[data-chat-short=true]_&]:max-h-[30%]'), 'a short sheet gives the header less of the height');
+  assert.ok(context.includes('flex-none'), 'the header keeps its own height');
+  assert.match(html, /\bchat-compose\b/);
 });
 
 test('resizing the thread follows the newest reply unless the reader has scrolled away', async () => {
@@ -180,7 +180,7 @@ test('resizing the thread follows the newest reply unless the reader has scrolle
   try {
     const root = createRoot(page.host);
     await act(() => root.render(createElement(ChatPanelView, { floor: floor(), row, action })));
-    const node = page.host.querySelector('[class="chat-scroll"]');
+    const node = page.host.querySelector('[role="log"]');
     assert.equal(observed, node);
     Object.assign(node, { scrollHeight: 600, clientHeight: 200, scrollTop: 0 });
     resized();
@@ -227,7 +227,7 @@ test('routine replies use one concise status and keep delivery details collapsed
   const chat = { ...view(), turns: [turn({ state: 'running', reply: null })] };
   const routine = html => html.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, '').replace(/<[^>]*>/g, '');
   const open = render(chat, { output });
-  assert.match(open, /<details[^>]*><summary>Reply details<\/summary>/);
+  assert.match(open, /<details[^>]*><summary[^>]*>(?:<svg[^>]*>.*?<\/svg>)?Reply details<\/summary>/);
   const visible = routine(open);
   assert.equal((visible.match(/Replying…/g) ?? []).length, 1);
   assert.doesNotMatch(visible, /provisional|not a final|saved reply|UTF-8|limited history/i);
@@ -237,7 +237,7 @@ test('routine replies use one concise status and keep delivery details collapsed
   assert.match(ended, /Waiting for reply status/);
   assert.doesNotMatch(ended, /Replying|saved reply|saving/i);
   const final = render({ ...view(), turns: [turn()] });
-  assert.match(final, /<details[^>]*><summary>Reply details<\/summary><p>Final reply completeness is not recorded/);
+  assert.match(final, /<details[^>]*><summary[^>]*>(?:<svg[^>]*>.*?<\/svg>)?Reply details<\/summary><div[^>]*><p[^>]*>Final reply completeness is not recorded/);
   assert.doesNotMatch(routine(final), /completeness|Turn ended|verdict/);
 });
 
@@ -253,7 +253,7 @@ test('durable final text preserves natural ellipses and renders recorded complet
 test('a failed turn shows the engine\'s own words once, as plain text with hidden characters marked', () => {
   const said = render({ ...view(), turns: [turn({ state: 'failed', reply: null, failure: 'model_not_found: **no** <b>such</b> model' })] });
   assert.match(said, /The engine said/);
-  assert.match(said, /<pre class="chat-failure-text">model_not_found: \*\*no\*\* &lt;b&gt;such&lt;\/b&gt; model<\/pre>/);
+  assert.match(said, /<pre class="chat-failure-text[^"]*">model_not_found: \*\*no\*\* &lt;b&gt;such&lt;\/b&gt; model<\/pre>/);
   assert.match(said, /Turn failed\./);
   assert.doesNotMatch(said, /No final reply was reported|chat-final-reply/);
   const same = render({ ...view(), turns: [turn({ state: 'failed', reply: 'rate limited', failure: 'rate limited' })] });
@@ -271,7 +271,7 @@ test('only an explicit matching-turn reissue marker shows the interruption warni
   const replayed = render({ ...view(), turns: [turn({ reissued: true })] });
   assert.match(replayed, /Restarted after interruption/);
   assert.match(replayed, /Previous delivery may have happened and earlier context may be missing/);
-  assert.match(replayed, /<details><summary>What changed<\/summary>/);
+  assert.match(replayed, /<details[^>]*><summary[^>]*>(?:<svg[^>]*>.*?<\/svg>)?What changed<\/summary>/);
   const ordinary = render({ ...view(), turns: [turn({ reissued: false })] });
   assert.doesNotMatch(ordinary, /Restarted after interruption|never delivered|context restored/);
 });
@@ -294,7 +294,7 @@ test('Enter queues through the existing action once, while Shift+Enter and compo
   let prevented = 0;
   function findTextarea(element) {
     if (typeof element !== 'object' || element === null) return null;
-    if (element?.type === 'textarea') return element;
+    if (element?.type === 'textarea' || element?.type?.name === 'Textarea') return element;
     const children = element?.props?.children;
     for (const child of Array.isArray(children) ? children : [children]) {
       const found = findTextarea(child);
@@ -465,7 +465,7 @@ test('Chat selection persists and a fresh Managed agent can compose its first me
   chatModule.editChatDraft(A, 'Draft before a goal exists');
   const html = render(view(), {}, { ...row, goal: null }, chatModule.getChatState());
   assert.doesNotMatch(html, /A current goal is required|class="chat-send"[^>]*disabled/);
-  assert.doesNotMatch(html, /<textarea[^>]*disabled/);
+  assert.doesNotMatch(html, /<textarea[^>]*\sdisabled=""/);
   chatModule.resetChat();
 });
 
@@ -551,7 +551,7 @@ test('context loss displays the refused message separately from the newer draft 
   chatModule.resetChat();
 });
 
-const tabNames = html => [...html.matchAll(/role="tab"[^>]*class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map(match => match[1]);
+const tabNames = html => [...html.matchAll(/role="tab"[^>]*class="[^"]*\bagent-detail-tab\b[^"]*"[^>]*>([^<]+)<\/button>/g)].map(match => match[1]);
 
 test('after a chat message the drawer tabs are Overview, Chat, Git and Memory and never Output', () => {
   const output = { ...liveReply('Provisional assistant text'), chunks: ['Raw engine text'] };
@@ -566,13 +566,13 @@ test('after a chat message the drawer tabs are Overview, Chat, Git and Memory an
 test('the latest turn offers Show full output, collapsed by default, and opening it shows the live output', () => {
   const chat = { ...view(), turns: [turn({ state: 'running', reply: null })] };
   const closed = render(chat, { output: liveReply('Provisional assistant text') });
-  assert.match(closed, /<button(?=[^>]*class="full-output-toggle")(?=[^>]*aria-expanded="false")(?=[^>]*aria-controls="chat-full-output")[^>]*>Show full output<\/button><div id="chat-full-output" hidden="">/);
+  assert.match(closed, /<button[^>]*aria-expanded="false"[^>]*aria-controls="chat-full-output"[^>]*class="[^"]*full-output-toggle[^"]*"[^>]*>Show full output<\/button><div id="chat-full-output" hidden="">/);
   const output = { ...store.getFloorState().output, view: 'output', targetId: A, status: 'live', chunks: ['Raw engine text'] };
   const open = renderToStaticMarkup(createElement(ChatPanelView, { floor: floor(chat, { output }), row, action, fullOutput: true }));
-  assert.match(open, /<button(?=[^>]*class="full-output-toggle")(?=[^>]*aria-expanded="true")[^>]*>Hide full output<\/button><div id="chat-full-output"><section[^>]*aria-label="Live work"/);
-  assert.match(open, /<pre class="live-work-text">Raw engine text<\/pre>/);
+  assert.match(open, /<button[^>]*aria-expanded="true"[^>]*class="[^"]*full-output-toggle[^"]*"[^>]*>Hide full output<\/button><div id="chat-full-output"><section[^>]*aria-label="Live work"/);
+  assert.match(open, /<pre class="live-work-text[^"]*">Raw engine text<\/pre>/);
   assert.doesNotMatch(open, /Read-only|Live work<|TurnId|<h3>Live work/i, 'no jargon inside the toggle');
-  assert.equal((render({ ...view(), turns: [turn({ turn_id: B, note_lsn: '6' }), turn()] }).match(/class="full-output-toggle"/g) ?? []).length, 1,
+  assert.equal((render({ ...view(), turns: [turn({ turn_id: B, note_lsn: '6' }), turn()] }).match(/class="[^"]*full-output-toggle/g) ?? []).length, 1,
     'only the latest turn carries the toggle');
   assert.doesNotMatch(render(chat, {}, { ...row, mode: 'attached' }), /full-output/);
   assert.doesNotMatch(render(view()), /full-output/);
@@ -648,7 +648,7 @@ test('mounted Clear all asks once, keeps per-note removal and clears only this a
   }
   const page = fakePage();
   const root = createRoot(page.host);
-  const control = name => page.host.querySelector(`[class="${name}"]`);
+  const control = name => page.host.querySelector(`.${name}`);
   try {
     await act(() => root.render(createElement(Page)));
     await act(() => press(control('chat-clear-all')));

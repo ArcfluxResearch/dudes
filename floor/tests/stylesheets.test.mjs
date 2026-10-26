@@ -25,24 +25,12 @@ const THIRD_PARTY = new Map([['src/renderer/terminal/xterm.css', "@import '@xter
  * is lowered to the new count, so the set only ever gets smaller. The last lane deletes the legacy layer.
  */
 const LEGACY = new Map([
-  ['src/failure.css', { blocks: 4, declarations: 4 }],
-  ['src/legacy/activity-log.css', { blocks: 32, declarations: 80 }],
-  ['src/legacy/base.css', { blocks: 7, declarations: 114 }],
-  ['src/legacy/chat.css', { blocks: 128, declarations: 357 }],
-  ['src/legacy/crew.css', { blocks: 38, declarations: 128 }],
+  ['src/legacy/base.css', { blocks: 9, declarations: 126 }],
   ['src/legacy/engine-sign-in.css', { blocks: 4, declarations: 7 }],
-  ['src/legacy/hire-wizard.css', { blocks: 29, declarations: 87 }],
-  ['src/legacy/live-work.css', { blocks: 9, declarations: 27 }],
-  ['src/legacy/memory.css', { blocks: 16, declarations: 39 }],
-  ['src/legacy/office-controls.css', { blocks: 6, declarations: 13 }],
-  ['src/legacy/office.css', { blocks: 57, declarations: 189 }],
-  ['src/legacy/roster.css', { blocks: 49, declarations: 137 }],
-  ['src/legacy/settings.css', { blocks: 56, declarations: 161 }],
-  ['src/legacy/setup.css', { blocks: 40, declarations: 130 }],
+  ['src/legacy/handoff.css', { blocks: 45, declarations: 95 }],
+  ['src/legacy/hire-wizard.css', { blocks: 11, declarations: 42 }],
+  ['src/legacy/other-screens.css', { blocks: 22, declarations: 64 }],
   ['src/legacy/touch-and-phone.css', { blocks: 25, declarations: 68 }],
-  ['src/renderer/cardNotes.css', { blocks: 3, declarations: 16 }],
-  ['src/renderer/chat/code.css', { blocks: 14, declarations: 37 }],
-  ['src/renderer/chat/engine-said.css', { blocks: 3, declarations: 10 }],
 ]);
 
 async function stylesheets(dirs = [resolve(floor, 'src'), resolve(floor, 'lab')]) {

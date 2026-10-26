@@ -63,9 +63,9 @@ export function LookEditor({ row }: { readonly row: AgentRow }) {
 
 function LookPreview({ row, character, accent, role }: { readonly row: AgentRow;
   readonly character: string | null; readonly accent: string | null; readonly role: string }) {
-  return <output className="hire-portrait-preview shrink-0" aria-label="Portrait preview"
+  return <output className="hire-portrait-preview flex shrink-0 items-center" aria-label="Portrait preview"
     data-character={character ?? 'automatic'} data-accent={accent ?? 'automatic'}>
-    <Portrait className="hire-portrait" look={lookOf({ id: row.id, character, accent: isAccentColour(accent) ? accent : null })}
+    <Portrait className="hire-portrait inline-block border-2 border-line" look={lookOf({ id: row.id, character, accent: isAccentColour(accent) ? accent : null })}
       accessory={accessoryOf(role)} name={row.name} />
   </output>;
 }

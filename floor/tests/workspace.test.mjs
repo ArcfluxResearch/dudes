@@ -68,12 +68,12 @@ test('Floor says the project in the roster\'s description and the detail, withou
     assert.match(strip, new RegExp(`<span id="crew-about-${ADA}" hidden="">[^<]*Project: Workbench</span>`));
     assert.match(strip, /hidden="">[^<]*Project: Project not recorded<\/span>/);
     assert.match(detail, /<dt>Project<\/dt><dd>Workbench<\/dd>/);
-    assert.equal((roster.match(/<button[^>]*class="crew-row"/g) ?? []).length, 3);
+    assert.equal((roster.match(/<button[^>]*class="crew-row[ "]/g) ?? []).length, 3);
     assert.match(roster, new RegExp(`data-agent-id="${GRACE}"[^>]*aria-pressed="true"`));
     assert.doesNotMatch(strip, /crew-workspace|Project not recorded<\/small>/);
     for (const html of [strip, detail, roster]) assert.doesNotMatch(html, /private|SECRET|cwd/);
     const stale = render(AgentsRoster, { floor: { retiredAgents: [], agents, cards: [], stepLabels: {}, phase: 'live', stale: true }, selectedId: null, ...handlers });
-    assert.equal((stale.match(/<button[^>]*class="crew-row"[^>]*disabled=""/g) ?? []).length, 3);
+    assert.equal((stale.match(/<button[^>]*class="crew-row[ "][^>]*disabled=""/g) ?? []).length, 3);
   } finally {
     await server.close();
   }

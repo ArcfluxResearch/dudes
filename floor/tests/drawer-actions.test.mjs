@@ -103,7 +103,7 @@ test('the Pause explanation is the button’s description and tooltip, not a par
 
 test('the header is one status line and the old heading is gone', () => {
   const html = drawer();
-  assert.match(html, /<p class="agent-detail-status">docs writer · Claude · <span class="stream-state" role="status">[^<]*<\/span><\/p>/);
+  assert.match(html, /<p class="agent-detail-status">docs writer · Claude(?:<span>)? · <span class="stream-state" role="status">[^<]*<\/span>(?:<\/span>)?<\/p>/);
   assert.doesNotMatch(html, /<p class="stream-state"/);
 });
 

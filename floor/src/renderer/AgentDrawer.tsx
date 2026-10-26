@@ -32,7 +32,7 @@ import { switchedOffControls, UnavailableControls } from './settings/SettingsVie
 import type { AgentRow } from './scene/cast.ts';
 import { TerminalAttach } from './terminal/TerminalPanel.tsx';
 import { readDetailTab, writeDetailTab } from './view.ts';
-import { cn } from '../ui/index.ts';
+import { Notice, cn } from '../ui/index.ts';
 
 /**
  * The results of actions taken in the drawer. They stay on the page when the
@@ -58,7 +58,7 @@ export function Receipts({ floor, leaveFocusTo, focused = false }: {
   );
 }
 
-const DRAWER = cn('agent-drawer m-0 box-border min-w-0 overflow-auto border-0 border-solid border-line bg-surface text-ink',
+const DRAWER = cn('agent-drawer m-0 box-border flex min-w-0 flex-col overflow-hidden border-0 border-solid border-line bg-surface text-ink',
   'max-[800px]:not-has-[[data-detail-tab=chat]]:top-[var(--banner-height,0px)]',
   '[&_[class~=agent-detail]]:border-0 [&_[class~=agent-detail]]:bg-transparent [&_[class~=agent-detail]]:p-0 [&_[class~=agent-detail]]:shadow-none',
   '[&_[class~=agent-detail-identity]]:pr-8');
@@ -140,7 +140,7 @@ export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, 
           git={floor.git ? <GitPanel row={row} active={detailTab === 'git'} /> : null}
           memory={<MemoryPanel agent={row.id} active={detailTab === 'memory'} crew={floor} />}
           control={floor.settings && !floor.control && automaticHoldOf(row) !== null
-            ? <p className="settings-guidance m-0 text-small text-muted">Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</p>
+            ? <Notice tone="warn">Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</Notice>
             : <ControlStrip floor={floor} row={row} />}
           recovery={<RecoveryPanel floor={floor} row={row} onReadReceipt={onReadRecoveryReceipt} />}
           retire={switchedOff.includes('retire') ? null : <RetireMenuItem floor={floor} row={row} />}

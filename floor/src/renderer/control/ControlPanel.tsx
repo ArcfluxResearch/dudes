@@ -137,7 +137,7 @@ export function ControlStripView({ control, floor, row, session }: {
               ) : null}
             </div>
           )}
-          {gate.stop ? <p className={cn('control-stop-note basis-full', NOTE)} id="control-stop-note">{PARTIAL_EDITS_NOTE}</p> : null}
+          {gate.stop ? <p className={cn('control-stop-note sr-only', NOTE)} id="control-stop-note">{PARTIAL_EDITS_NOTE}</p> : null}
           {hint === undefined ? null : <span className="visually-hidden" id="control-hint">{hint}</span>}
           {gate.halted && !gate.haltedByFloor ? <p className={cn('control-halt-note basis-full', NOTE)}>{HALT_NOTE}</p> : null}
           {blocked && !control.sending ? <p className={cn('basis-full', NOTE)}>{heldBecause(control)}</p> : null}

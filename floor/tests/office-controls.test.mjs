@@ -9,6 +9,7 @@ import { resolve } from 'node:path';
 import test, { after, before, mock } from 'node:test';
 
 import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { focusAnswer } from '../src/renderer/focus.ts';
@@ -16,7 +17,6 @@ import { showOverlay, turnKey, wheelZoom } from '../src/renderer/office3d/view.t
 import { followMode, officeModeOf } from '../src/renderer/scene/officeMode.ts';
 import { asksOpenQuestion } from '../src/renderer/scene/stations.ts';
 import { forgetLater } from '../src/renderer/useHeard.ts';
-import { renderToStaticMarkup } from './helpers/markup.mjs';
 
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 const GRACE = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
@@ -56,13 +56,13 @@ test('HALT_ANY, PAUSE_ANY, HALT_CLAUSE_DROPPED, MODE_UNCONFIRMED and BANNER_UNWI
     selectedId: null, onSelectAgent() {}, onOpenQuestion() {}, onOpenTasks() {}, onAddAgent() {},
   }));
   const paused = office([agent(ADA, { paused: true }), agent(GRACE, { paused: true })]);
-  assert.match(paused, /<div class="office" data-office="loading" data-mode="paused" data-layout="studio" data-full="false">/);
-  assert.match(paused, /<p class="office-mode">The office is paused\. No agent starts a new turn until it is resumed\.<\/p><p class="office-mode-heard" role="status"><\/p>/,
+  assert.match(paused, /<div class="office [^"]*" data-office="loading" data-mode="paused" data-layout="studio" data-full="false">/);
+  assert.match(paused, /<p class="office-mode [^"]*">The office is paused\. No agent starts a new turn until it is resumed\.<\/p><p class="office-mode-heard[ "][^>]*role="status"><\/p>/,
     'one visible line, and a live region that speaks only of changes');
-  assert.match(office([agent(ADA, { halted: true })]), /data-mode="halted"[\s\S]*<p class="office-mode">The office is halted\./);
+  assert.match(office([agent(ADA, { halted: true })]), /data-mode="halted"[\s\S]*<p class="office-mode [^"]*">The office is halted\./);
   const running = office([agent(ADA, { paused: true }), agent(GRACE)]);
-  assert.doesNotMatch(running, /data-mode=|class="office-mode"/);
-  assert.match(running, /<p class="office-mode-heard" role="status"><\/p>/, 'the live region stays, empty');
+  assert.doesNotMatch(running, /data-mode=|class="office-mode /);
+  assert.match(running, /<p class="office-mode-heard[ "][^>]*role="status"><\/p>/, 'the live region stays, empty');
 });
 
 test('MODE_FLICKER, CLOSED_HOLDS_MODE, RUNNING_AGAIN and EMPTY_ANNOUNCED mutants: a resync changes nothing, a stream that gave up drops the line, and each real change is said once and truly', () => {
@@ -156,9 +156,9 @@ test('ANSWER_BOX_SKIPPED mutant: the speech mark takes the keyboard to the answe
   const open = (answering) => renderToStaticMarkup(createElement(AgentDrawer, {
     floor: { ...floor, answering }, row, selectedId: ADA, onClose() {}, leaveFocusTo: 'crew-toggle' }));
   assert.match(open({ maxTextBytes: 4096 }),
-    /<section class="agent-detail-question" aria-label="Waiting question" tabindex="-1">[\s\S]*?<div class="agent-detail-answer"[^>]*>[\s\S]*?<textarea /);
+    /<section class="[^"]*\bagent-detail-question\b[^"]*" aria-label="Waiting question" tabindex="-1">[\s\S]*?<div class="[^"]*\bagent-detail-answer\b[^"]*"[^>]*>[\s\S]*?<textarea /);
   assert.doesNotMatch(open(null), /agent-detail-answer/);
-  assert.match(open(null), /<section class="agent-detail-question" aria-label="Waiting question" tabindex="-1"><h3>Waiting question<\/h3><p>Which timeout is right\?<\/p>/);
+  assert.match(open(null), /<section class="[^"]*\bagent-detail-question\b[^"]*" aria-label="Waiting question" tabindex="-1"><h3 class="[^"]*">Waiting question<\/h3><p class="[^"]*">Which timeout is right\?<\/p>/);
 });
 
 test('TURN_KEYS_SWAPPED and TURN_WITH_MODIFIER mutants: the arrow keys turn the view, a sixteenth of a turn a press', () => {

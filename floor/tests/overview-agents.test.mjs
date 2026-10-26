@@ -74,8 +74,8 @@ test('Overview and the drawer report only published stream and selected-agent fa
       'Ship now, or wait for a review?',
     ]) assert.ok(html.includes(text), `Overview or the drawer omitted ${text}`);
     assert.match(html, /<span class="agent-detail-state-text">Paused<\/span>/);
-    assert.match(html, /<h2 id="overview-title" tabindex="-1">Overview<\/h2>/);
-    assert.match(html, /<summary>Archived \(0\)<\/summary>/);
+    assert.match(html, /<h2 id="overview-title" tabindex="-1"[^>]*>Overview<\/h2>/);
+    assert.match(html, /<summary[^>]*>(?:<svg[^>]*>.*?<\/svg>)?Archived \(0\)<\/summary>/);
     assert.doesNotMatch(html, /<input|<form|<textarea|contenteditable|Terminal|Workers/);
     const other = center(live, grace, GRACE);
     assert.ok(other.includes(GRACE) && other.includes('Grace') && other.includes('$0.11 · 111 tok'));
@@ -197,7 +197,7 @@ test('a recovery-required ticket gives the selected agent and focus roster the s
     const html = focus({ ...live, agents: [row], cards: [card] }, row, ADA);
     assert.match(html, /<section class="agent-detail-state" aria-label="State" data-state="needs-you"><p class="agent-detail-state-line"><span data-state="needs-you"><span aria-hidden="true"><\/span>Needs you<\/span>/);
     assert.match(html, /<dt>Status<\/dt><dd>Needs you<\/dd>/);
-    assert.match(html, /data-state="needs-you"><span class="visually-hidden">Status: <\/span>Needs you<\/span>/);
+    assert.match(html, /data-state="needs-you"[^>]*><span aria-hidden="true"[^>]*><\/span><span class="visually-hidden">Status: <\/span>Needs you<\/span>/);
     assert.doesNotMatch(html, /<span>running<\/span>|data-status="running"/);
   });
 });

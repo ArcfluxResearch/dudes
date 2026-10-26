@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { X } from 'lucide-react';
 import { useState } from 'react';
 
-import { Button, ICON, IconButton } from '../ui/index.ts';
+import { Button } from '../ui/index.ts';
 import type { FloorState } from './floor/store.ts';
 import { selectOutputAgent } from './floor/store.ts';
 import { handFocusOnLeave } from './focus.ts';
 import type { AgentRow } from './scene/cast.ts';
+import { X } from 'lucide-react';
+import { ICON, IconButton } from '../ui/index.ts';
 
 const UNAVAILABLE: Record<string, string> = {
   unknown: 'Agent unavailable', retired: 'Agent retired', attached: 'Output unavailable for agents Dudes did not start',
@@ -44,8 +45,8 @@ export function SelectionBar({ floor, onClear, leaveFocusTo, showStatus = true }
       title="Close (Escape)" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo} onClick={onClear} />
   );
   return showStatus ? (
-    <div className="selection-bar flex flex-wrap items-center justify-between gap-2 pr-8">
-      <p className="stream-state m-0 text-base text-muted" role="status">{streamStatus(floor)}</p>
+    <div className="selection-bar">
+      <p className="stream-state" role="status">{streamStatus(floor)}</p>
       {close}
     </div>
   ) : close;
@@ -63,14 +64,14 @@ export function LiveWork({ floor, row }: { readonly floor: FloorState; readonly 
   const retry = floor.phase === 'live' && !floor.stale && incomplete;
   const status = output.chunks.length === 0 ? emptyText : incomplete ? streamStatus(floor) : null;
   return (
-    <section className="live-work grid gap-2 rounded-lg border border-line bg-surface-2 p-3 text-base text-ink" aria-label="Live work" data-output-agent-id={output.targetId}
+    <section className="live-work flex flex-col gap-2 rounded-lg border border-line bg-surface-2 p-3 font-sans text-base text-ink" aria-label="Live work" data-output-agent-id={output.targetId}
       data-output-status={output.status}>
       {status === null ? null : <p className="m-0">{status}</p>}
       {retry ? <div className="live-work-actions flex items-center gap-2">
         <Button size="sm" ref={handFocusOnLeave} data-focus-on-leave="selection-clear"
           onClick={() => selectOutputAgent(output.targetId, true)}>Retry output</Button>
       </div> : null}
-      {output.chunks.length === 0 ? null : <pre className="live-work-text m-0 max-h-80 overflow-auto rounded-md border border-line bg-surface p-3 font-mono text-small leading-normal whitespace-pre-wrap text-ink select-text [overflow-wrap:anywhere]">{output.chunks.join('')}</pre>}
+      {output.chunks.length === 0 ? null : <pre className="live-work-text m-0 max-h-80 overflow-auto rounded-md border border-line bg-surface p-2 font-mono text-small whitespace-pre-wrap break-words select-text">{output.chunks.join('')}</pre>}
     </section>
   );
 }
@@ -84,10 +85,10 @@ export function FullOutput({ floor, row, id, open, onToggle }: {
   readonly onToggle: (open: boolean) => void;
 }) {
   return (
-    <div className="full-output grid justify-items-start gap-2">
-      <Button size="sm" className="full-output-toggle" aria-expanded={open} aria-controls={id}
+    <div className="full-output mt-2 flex flex-col gap-2">
+      <Button size="sm" className="full-output-toggle self-start" aria-expanded={open} aria-controls={id}
         onClick={() => onToggle(!open)}>{open ? 'Hide full output' : 'Show full output'}</Button>
-      <div id={id} hidden={!open} className="w-full"><LiveWork floor={floor} row={row} /></div>
+      <div id={id} hidden={!open}><LiveWork floor={floor} row={row} /></div>
     </div>
   );
 }

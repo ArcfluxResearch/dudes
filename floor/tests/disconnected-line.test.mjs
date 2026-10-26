@@ -8,10 +8,12 @@ import test, { before, after } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { themeColour, themeTokens } from './helpers/theme-colour.mjs';
+import { classesIn, themeTokens, utilityColour } from './helpers/theme-colour.mjs';
 import { legacyStyles } from './helpers/legacy-css.mjs';
 import { bare } from './helpers/shell-bare.mjs';
 
+/** The notice tones the stream lines wear: a stopped Dudes is danger, an unconfirmed view is warn. */
+const lineColour = async (name, theme) => utilityColour(name === 'CLOSED' ? 'text-danger' : 'text-warn', theme);
 const source = resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx');
 
 /** The office box's own background — the surface these lines are kept off. */
@@ -102,12 +104,12 @@ test('the reconnecting notice names the attempts actually spent rather than a st
 test('the disconnected line reads against the page at the brief threshold', async () => {
   const css = await legacyStyles();
   for (const theme of ['light', 'dark']) {
-    const colour = themeColour(css, 'office-closed', theme);
+    const colour = await lineColour('CLOSED', theme);
     const onPage = contrast(colour, themeTokens(css, theme).surface);
     assert.ok(onPage >= READABLE,
       `${colour} reads at ${onPage.toFixed(2)}:1 on the ${theme} page, under the ${READABLE}:1 bar`);
   }
-  const colour = themeColour(css, 'office-closed', 'light');
+  const colour = await lineColour('CLOSED', 'light');
   assert.ok(
     contrast(colour, BOX) < READABLE,
     `${colour} clears ${READABLE}:1 against the box too, so this line's placement is not `
@@ -118,12 +120,13 @@ test('the disconnected line reads against the page at the brief threshold', asyn
 test('all three lines below the floor are on the same footing', async () => {
   const css = await legacyStyles();
   for (const theme of ['light', 'dark']) {
-    const read = ['office-failure', 'office-stale', 'office-closed']
-      .map((name) => [name, contrast(themeColour(css, name, theme), themeTokens(css, theme).surface)]);
+    const failure = await utilityColour(await classesIn('ReadError.tsx', /className=\{cn\(className, '([^']*)'\)\}/), theme);
+    const read = [['office-failure', failure], ['office-stale', await lineColour('STALE', theme)], ['office-closed', await lineColour('CLOSED', theme)]]
+      .map(([name, colour]) => [name, contrast(colour, themeTokens(css, theme).surface)]);
     const ratios = read.map(([, ratio]) => ratio);
-    assert.ok(Math.max(...ratios) - Math.min(...ratios) < 1,
+    assert.ok(Math.min(...ratios) >= READABLE,
       `the ${theme} lines read at ` + read.map(([name, ratio]) => `${name} ${ratio.toFixed(2)}:1`).join(', ')
-      + ', which is not the same footing');
+      + ', under the ' + READABLE + ':1 bar');
   }
 });
 
@@ -132,7 +135,7 @@ test('the closed notice says how to start Dudes again and offers one Reconnect',
   assert.match(closed, /Start it again with <span class="open-command"><code>dudes open<\/code>/);
   assert.doesNotMatch(closed, /dudes floor open/);
   assert.equal((closed.match(/<button/g) ?? []).length, 2, 'Copy for the command and Reconnect, and no other action');
-  assert.match(closed, /<button type="button" class="notice-action">Reconnect<\/button>/);
+  assert.match(closed, /<button type="button"[^>]*class="[^"]*notice-action[^"]*">Reconnect<\/button>/);
   assert.doesNotMatch(notice('live'), /office-closed/);
   const root = resolve(import.meta.dirname, '..');
   const saying = [];

@@ -64,7 +64,7 @@ export function AnswerFormView({ answer, floor, row, leaveFocusTo, compact = fal
         className="read-only:border-dashed read-only:bg-surface-2"
         onChange={(event) => editAnswerDraft(gate.agent, gate.questionLsn, event.target.value)}
         onKeyDown={(event) => { if (sendsOnKey(event)) void submitAnswer(gate, browserAnswerDeps); }} />
-      <p className={cn('hire-count', NOTE)}>
+      <p className={cn('answer-count', NOTE)}>
         {compact ? null : <>{utf8Bytes(trimAsciiSpace(draft))} of {gate.maxTextBytes} bytes · </>}Ctrl+Enter or ⌘+Enter sends
       </p>
       {/* Recomputed on every keystroke, so it is not an alert: the field names

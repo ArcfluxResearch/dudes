@@ -10,15 +10,6 @@
 .theme-toggle,
 .settings-office button,
 .focus-roster-toggle,
-.answer-actions button,
-.control-actions button,
-.retire-offer button,
-.retire-actions button,
-.goal-actions button,
-.agent-overview button,
-.agent-detail-terminal button,
-.full-output-toggle,
-.terminal-actions button,
 .done-notice button {
   padding: 0.3rem 0.7rem;
   border: 1px solid var(--line);
@@ -29,29 +20,23 @@
   font-size: 0.86rem;
   cursor: pointer;
 }
-
 .hire-open[aria-expanded='true'],
 .crew-toggle[aria-pressed='true'],
 .focus-toggle[aria-pressed='true'],
-.settings-office button[aria-pressed='true'],
-.answer-actions .answer-send,
-.goal-actions .goal-send {
+.settings-office button[aria-pressed='true'] {
   border-color: var(--accent-ink);
   background: var(--accent-ink);
   color: var(--on-accent);
   font-weight: 600;
 }
-
 .top-bar-actions button {
   padding-inline: var(--action-space);
   border-radius: 8px;
   background: var(--card-background);
 }
-
 .control-nav {
   gap: 0.15rem;
 }
-
 .control-nav button {
   position: relative;
   padding: 0.32rem var(--tab-space);
@@ -60,17 +45,14 @@
   color: var(--muted-ink);
   font-weight: 500;
 }
-
 .control-nav button:hover {
   background: var(--surface-muted);
   color: var(--ink);
 }
-
 .control-nav button[aria-pressed='true'] {
   color: var(--ink);
   font-weight: 700;
 }
-
 .control-nav button[aria-pressed='true']::after {
   position: absolute;
   right: calc(var(--tab-space) - 0.15rem);
@@ -81,26 +63,14 @@
   background: var(--accent-ink);
   content: '';
 }
-
 .pause-all-control button:disabled,
-.pause-all-receipt button:disabled,
-.answer-actions button:disabled,
-.answer-actions button[aria-disabled='true'],
-.control-actions button:disabled,
-.control-actions button[aria-disabled='true'],
-.retire-offer button[aria-disabled='true'],
-.retire-actions button[aria-disabled='true'],
-.goal-actions button:disabled,
-.goal-actions button[aria-disabled='true'],
-.terminal-actions button[aria-disabled='true'],
-.agent-detail-terminal button[aria-disabled='true'] {
+.pause-all-receipt button:disabled {
   border-color: var(--line);
   border-style: dashed;
   background: transparent;
   color: var(--muted-ink);
   cursor: not-allowed;
 }
-
 .hire-open:focus-visible,
 .crew-toggle:focus-visible,
 .control-nav button:focus-visible,
@@ -110,146 +80,8 @@
 .theme-toggle:focus-visible,
 .settings-office button:focus-visible,
 .focus-roster-toggle:focus-visible,
-.answer-actions button:focus-visible,
-.control-actions button:focus-visible,
-.retire-offer button:focus-visible,
-.retire-actions button:focus-visible,
-.goal-actions button:focus-visible,
-.agent-detail-terminal button:focus-visible,
-.full-output-toggle:focus-visible,
-.terminal-actions button:focus-visible,
-.done-notice button:focus-visible,
-.agent-detail-answer textarea:focus-visible,
-.agent-detail-goal textarea:focus-visible {
+.done-notice button:focus-visible {
   outline: 2px solid var(--accent-ink);
   outline-offset: 2px;
-}
-
-.hire-choices legend {
-  font-weight: 700;
-}
-
-.hire-choices[aria-invalid='true'] {
-  border-color: var(--ink);
-  box-shadow: inset 0 0 0 2px var(--accent-ink);
-}
-
-.hire-count,
-.hire-note {
-  margin: 0;
-  font-size: 0.8rem;
-  color: var(--muted-ink);
-}
-
-.hire-note {
-  margin-top: 0.4rem;
-}
-
-.hire-choices {
-  display: grid;
-  gap: 0.35rem;
-  margin: 0;
-  padding: 0.5rem;
-  border: 1px solid var(--line);
-}
-
-.hire-choice {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.3rem 0.4rem;
-  border: 1px solid var(--shadow);
-  background: var(--surface-muted);
-  cursor: pointer;
-}
-
-.hire-choice input {
-  width: auto;
-}
-
-.hire-choice-label {
-  overflow-wrap: anywhere;
-}
-
-.hire-choice .hire-note {
-  grid-column: 2 / -1;
-}
-
-.hire-choice code {
-  overflow-wrap: anywhere;
-}
-
-.hire-facts {
-  margin: 0;
-}
-
-.hire-facts div {
-  display: grid;
-  grid-template-columns: 10rem minmax(0, 1fr);
-  gap: 0.5rem;
-  padding: 0.3rem 0;
-  border-top: 1px solid var(--shadow);
-}
-
-.hire-facts dt {
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.hire-facts dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.answer-problem,
-.answer-success,
-.answer-pending,
-.answer-error,
-.control-problem,
-.control-success,
-.control-pending,
-.control-error,
-.retire-problem,
-.retire-success,
-.retire-pending,
-.retire-error,
-.goal-problem,
-.goal-success,
-.goal-pending,
-.goal-error {
-  margin: 0 0 0.5rem;
-  padding: 0.5rem 0.6rem;
-  border: 1px solid var(--line);
-  color: var(--ink);
-  font-weight: 700;
-}
-
-.answer-problem,
-.answer-error,
-.control-problem,
-.control-error,
-.retire-problem,
-.retire-error,
-.goal-problem,
-.goal-error {
-  background: var(--danger-background);
-}
-
-.answer-success,
-.control-success,
-.retire-success,
-.goal-success {
-  border-color: var(--success-border);
-  background: var(--success-background);
-}
-
-.answer-pending,
-.control-pending,
-.retire-pending,
-.goal-pending {
-  border-color: var(--muted-ink);
-  background: var(--surface-muted);
 }
 }

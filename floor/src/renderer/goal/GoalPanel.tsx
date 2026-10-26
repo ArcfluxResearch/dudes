@@ -148,7 +148,7 @@ export function GoalFormView({ goal, floor, row, session }: {
         className="read-only:border-dashed read-only:bg-surface-2" ref={handFocusOnLeave} data-focus-on-leave={focusOnLeave}
         aria-invalid={problem !== null} aria-describedby={problem === null ? undefined : `${field}-problem`}
         onChange={(event) => editGoalDraft(gate.agent, gate.goal, event.target.value)} />
-      <p className={cn('hire-count', NOTE)}>{utf8Bytes(trimAsciiSpace(draft))} of {gate.maxTextBytes} bytes</p>
+      <p className={cn('goal-count', NOTE)}>{utf8Bytes(trimAsciiSpace(draft))} of {gate.maxTextBytes} bytes</p>
       {problem === null ? null : <p className={cn('goal-problem', MESSAGE_CLASS.error)} id={`${field}-problem`}>{problem}</p>}
       {gate.turnRunning ? <p className="goal-turn m-0 rounded-md bg-warn-soft px-3 py-2 text-base font-medium text-ink" role="status">{TURN_RUNNING}</p> : null}
       {!blocked || goal.sending ? null : <p className={NOTE} role="status">{heldBecause(goal, mine)}</p>}

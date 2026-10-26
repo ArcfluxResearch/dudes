@@ -21,7 +21,7 @@ const UTILITY = new RegExp(`^-?(?:${PREFIX.join('|')})(?:-.*)?$`);
 const isUtility = (name) => /[:[(/!]/.test(name) || KEYWORD.has(name) || UTILITY.test(name) || POSITION.test(name);
 
 /** Components draw these for styling and tests of other kinds; a markup test about words and structure ignores them. */
-const NOISE = / data-(?:ui|variant|size|loading|part)="[^"]*"/g;
+const NOISE = / data-(?:ui|variant|size|loading|part)="(?!notice")[^"]*"/g;
 
 function keep(tag, attributes) {
   let moved = '';

@@ -15,13 +15,14 @@
 //   - the tab drawn without the git sibling ............ "the tab exists only when the daemon sent the sibling"
 //   - a read made by the effect after the first ........ "showing the tab reads once…"
 
+import { hooks } from './helpers/hook-markup.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { renderToStaticMarkup } from './helpers/markup.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
@@ -250,7 +251,7 @@ test('showing the tab reads once for an agent, and a later look reads nothing', 
   assert.equal(needsRead(getGitState(), '01ARZ3NDEKTSV4RRFFQ69G5FAV', true), true, 'another agent reads');
 });
 
-const render = (props = {}) => renderToStaticMarkup(createElement(GitPanel, { row, active: false, ...props }));
+const render = (props = {}) => hooks(renderToStaticMarkup(createElement(GitPanel, { row, active: false, ...props })));
 
 test('each refusal is a sentence and shows no repository data', async () => {
   for (const [state, pattern] of [
@@ -321,7 +322,7 @@ test('a cut section and a dropped entry are said, and a cut path cannot be copie
   assert.match(html, /At least 9/);
   assert.match(html, /No remote default branch is recorded here/);
   assert.match(html, /long\/pa…/);
-  assert.match(html, /<button type="button" class="git-copy" aria-describedby="git-committed-0" disabled="" title="The path is shortened[^"]*">/);
+  assert.match(html, /<button type="button" aria-describedby="git-committed-0" disabled="" title="The path is shortened[^"]*" class="git-copy">/);
 });
 
 test('no repository string reaches an attribute, a title or an ARIA label', async () => {
@@ -368,7 +369,7 @@ test('the planted working directory is absent from the tab, and an absolute path
 });
 
 test('the tab exists only when the daemon sent the sibling', () => {
-  const tabs = (html) => [...html.matchAll(/role="tab"[^>]*class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1]);
+  const tabs = (html) => [...html.matchAll(/role="tab"[^>]*class="[^"]*\bagent-detail-tab\b[^"]*"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1]);
   const detail = (git) => renderToStaticMarkup(createElement(AgentDetail, { row, git }));
   assert.deepEqual(tabs(detail(null)), ['Overview']);
   assert.deepEqual(tabs(detail(createElement('p', null, 'Git panel'))), ['Overview', 'Git']);

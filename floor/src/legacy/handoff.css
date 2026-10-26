@@ -1,0 +1,215 @@
+@layer legacy, theme, base, components, utilities;
+
+@layer legacy {
+/* Hire: its footer stays in view, so Hire is never below the fold of a phone. */
+.hire-wizard .hire-actions {
+  position: sticky;
+  bottom: -.75rem;
+  margin: 0 -.75rem -.75rem;
+  padding: .6rem .75rem;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.hire-more { margin: .4rem 0; }
+.hire-more > summary { cursor: pointer; font-weight: 700; }
+.hire-shared { border-left: 3px solid var(--accent-ink); padding-left: .5rem; }
+.hire-install { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+@media (max-width: 800px) {
+  .hire-dialog { height: 100dvh; }
+}
+
+.shell:has(.roster[data-sheet]) {
+  padding-bottom: 4rem;
+}
+
+.crew-entry .add-project {
+  display: grid;
+  gap: .4rem;
+  max-width: 34rem;
+  margin: .6rem 0;
+}
+.add-project input[type="text"] {
+  min-width: 0;
+  padding: .45rem .55rem;
+  font: inherit;
+}
+.add-project button {
+  justify-self: start;
+}
+.add-project-preview {
+  display: grid;
+  gap: .3rem;
+  padding: .55rem .7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+}
+.add-project-preview p,
+.add-project > p {
+  margin: 0;
+  font-size: .85rem;
+  line-height: 1.5;
+}
+.remove-project {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  align-items: center;
+  max-width: 34rem;
+  margin: .4rem 0;
+}
+.remove-project > p {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: .85rem;
+  line-height: 1.5;
+}
+
+.crew-stats [data-status='working'] {
+  --status-ink: var(--status-running);
+}
+
+.crew-stats [data-status='needs-you'],
+.crew-stats [data-status='waiting'] {
+  --status-ink: var(--status-waiting);
+}
+
+.crew-stats [data-status='ready'],
+.crew-stats [data-status='done'] {
+  --status-ink: var(--status-done);
+}
+
+.agent-portrait {
+  align-self: start;
+  background-color: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--portrait-border);
+}
+
+.portrait-figure, .portrait-badge {
+  box-sizing: content-box;
+  width: 48px;
+  height: 48px;
+}
+
+.portrait-figure {
+  background-color: var(--surface-muted);
+}
+
+.portrait-badge {
+  font: 700 1.5rem/48px var(--font-ui);
+  text-align: center;
+}
+
+/* After `.agent-portrait`, whose paper background would hide the Crew colour. Darkened so white reads at 4.5:1 on amber. */
+.portrait-badge {
+  background: color-mix(in srgb, var(--agent) 85%, #000000);
+  color: #ffffff;
+}
+
+.agents-roster,
+.setup-view {
+  height: 100%;
+  overflow: auto;
+}
+
+/* Between the narrow layout and 1200 pixels a Control view covers Crew, so Crew leaves the tab order too. */
+@media (min-width: 801px) and (max-width: 1199px) {
+  .control-panel {
+    grid-column: 1;
+  }
+
+  .floor-stage:has(.control-panel) .crew-list {
+    visibility: hidden;
+  }
+}
+
+/* On a narrow screen the panels leave the stage and follow the office down the page. */
+@media (max-width: 800px) {
+  .shell {
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .floor-stage {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .office-slot {
+    order: -1;
+    min-height: 20rem;
+  }
+
+  .crew-list,
+  .control-panel,
+  .control-panel[data-view='board'],
+  .receipts,
+  .agent-drawer {
+    width: auto;
+    margin: 0.5rem;
+    border-width: 1px;
+    border-radius: var(--radius);
+  }
+
+  .receipts {
+    padding: 0;
+  }
+
+  .control-panel {
+    max-height: 32rem;
+  }
+
+  .stage-center,
+  .stage-side {
+    padding: 0;
+  }
+
+  .drawer-frame .panel-splitter {
+    display: none;
+  }
+
+  .agent-drawer {
+    flex: 1 1 auto;
+  }
+
+  .focus-frame {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .focus-frame .focus-roster {
+    order: -1;
+    max-height: 14rem;
+  }
+
+  .focus-frame .panel-splitter {
+    display: none;
+  }
+
+  .terminal-panel[data-terminal-expanded='true'] {
+    height: 100vh;
+  }
+}
+
+/* When the panels leave too narrow a band of the office, its lines and view buttons sit in the top bar. */
+.office-bar {
+  display: flex;
+  flex: 0 0 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.75rem;
+}
+
+.office-bar:empty {
+  display: none;
+}
+
+.done-notice {
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 8px 28px var(--panel-shadow);
+}
+
+}

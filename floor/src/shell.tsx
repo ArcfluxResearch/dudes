@@ -46,7 +46,6 @@ import { StreamNotice } from './renderer/StreamNotice';
 import { NoticeStack } from './renderer/notices/NoticeStack';
 import { NOTICE_AREA, NOTICE_BANNER, NoticeIcon, noticeCard } from './renderer/notices/look';
 import { Button, Card, ICON, Menu, MenuItem, MenuSeparator, RING, cn } from './ui/index.ts';
-import './failure.css';
 import {
   DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH,
   focusAgentId, isFocusShortcut, keyboardSidebarWidth, pointerSidebarWidth,
