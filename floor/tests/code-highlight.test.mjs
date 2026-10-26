@@ -10,8 +10,6 @@ import test, { after, before } from 'node:test';
 import { createElement, isValidElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { themeTokens } from './helpers/theme-colour.mjs';
-import { legacyStyles } from './helpers/legacy-css.mjs';
 
 let server, md, hl;
 before(async () => {
@@ -165,31 +163,14 @@ test('the element limit turns the rest of a block plain, and hidden characters i
 test('the person\'s own messages and unknown fences stay plain', async () => {
   const { ChatText } = await server.ssrLoadModule('/src/renderer/chat/ChatText.tsx');
   const out = renderToStaticMarkup(createElement(ChatText, { text: '```ts\nconst a = 1;\n```' }));
-  assert.doesNotMatch(out, /tok-/);
+  assert.doesNotMatch(out, /class="tok-/);
 });
 
-test('the nine colours read at 4.5:1 on the code background in both themes, and the page policy is unchanged', async () => {
-  const code = await readFile(resolve(import.meta.dirname, '../src/renderer/chat/code.css'), 'utf8');
-  const page = await legacyStyles();
-  const channel = (value) => { const c = value / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
-  const luminance = (hex) => { const n = Number.parseInt(hex.slice(1), 16);
-    return 0.2126 * channel((n >> 16) & 255) + 0.7152 * channel((n >> 8) & 255) + 0.0722 * channel(n & 255); };
-  const contrast = (a, b) => { const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
-  const blocks = {
-    light: /\n:root\s*\{([^}]+)\}/.exec(code)?.[1],
-    dark: /:root:has\(\.shell\[data-theme='dark'\]\)\s*\{([^}]+)\}/.exec(code)?.[1],
-    media: /prefers-color-scheme: dark\)\s*\{\s*:root:not\([^{]+\{([^}]+)\}/.exec(code)?.[1],
-  };
-  const parse = (block) => Object.fromEntries([...block.matchAll(/--(tok-[a-z]+):\s*(#[0-9a-f]{6})/g)].map((m) => [m[1], m[2]]));
-  assert.deepEqual(parse(blocks.media), parse(blocks.dark));
-  for (const theme of ['light', 'dark']) {
-    const colours = parse(blocks[theme]);
-    assert.deepEqual(Object.keys(colours).sort(), [...CLASSES].sort());
-    const background = themeTokens(page, theme)['surface-muted'];
-    for (const [name, colour] of Object.entries(colours)) {
-      assert.ok(contrast(colour, background) >= 4.5, `${name} ${colour} on ${background} in ${theme}: ${contrast(colour, background).toFixed(2)}`);
-      assert.match(code, new RegExp(`\\.chat-code \\.${name} \\{ color: var\\(--${name}\\); \\}`));
-    }
+test('each of the nine token classes has a colour, and the colours themselves are pinned and checked in the token test', async () => {
+  const entry = await readFile(resolve(import.meta.dirname, '../src/tailwind.css'), 'utf8');
+  for (const name of CLASSES) {
+    assert.ok(md.MARKDOWN.includes(`[&_.${name}]:text-${name}`), `${name} has no colour in the Markdown class string`);
+    assert.ok(entry.includes(`--color-${name}: var(--${name});`), `${name} is not a theme colour`);
   }
-  assert.doesNotMatch(code, /style=|url\(|@import|content:/);
+  assert.doesNotMatch(entry, /url\((?!['"]?\.\.\/node_modules\/@fontsource)/);
 });

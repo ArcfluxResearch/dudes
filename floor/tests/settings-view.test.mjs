@@ -28,6 +28,13 @@ function floor(report = REPORT) {
   return getFloorState();
 }
 
+/** The switch drawn for `label`: its description text and whether it is on. */
+function switchOf(html, label) {
+  const found = new RegExp(`<span id="[^"]*-label"[^>]*>${label}</span>(?:<p id="[^"]*-description"[^>]*>(.*?)</p>)?</div><button[^>]*role="switch" aria-checked="(true|false)"`).exec(html);
+  assert.ok(found, `no switch named ${label}`);
+  return { says: found[1]?.replace(/<[^>]+>/g, '') ?? '', on: found[2] === 'true' };
+}
+
 test('Settings shows read-only running values, local commands, Setup and About', async () => {
   const root = resolve(import.meta.dirname, '..');
   const server = await createServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
@@ -45,33 +52,33 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.deepEqual([...html.matchAll(/<h3[^>]*>([^<]+)<\/h3>/g)].map(match => match[1]), [
       'Engines', 'Projects', 'Spending limits', 'Desktop notifications', 'Signed-in browsers', 'Floor switches', 'Office layout', 'About',
     ]);
-    assert.match(html, /<details><summary>Configuration details<\/summary><dl>[\s\S]*<code>floor\.git<\/code>/);
+    assert.match(html, /Configuration details<\/summary>[\s\S]*<code[^>]*>floor\.git<\/code>/);
 
-    const anchors = [...html.matchAll(/<a ([^>]*)>/g)].map((match) => match[1]).filter((attrs) => attrs.includes('github.com'));
+    const anchors = [...html.matchAll(/<a ([^>]*)>/g)].map((match) => match[1]).filter((attrs) => attrs.includes('github.com')).map((attrs) => attrs.replace(/^class="[^"]*" /, ''));
     const link = (href) => `href="${href}" target="_blank" rel="noopener noreferrer"`;
     assert.deepEqual(anchors, [
       link('https://github.com/ArcfluxResearch/dudes/releases/tag/v0.12.3'),
       link('https://github.com/ArcfluxResearch/dudes'),
       link('https://github.com/ArcfluxResearch/dudes/issues'),
     ]);
-    assert.match(html, /<details><summary>Update and restart details<\/summary><p>To check for a newer version, run <code>dudes upgrade --check<\/code>/);
+    assert.match(html, /Update and restart details<\/summary>[\s\S]*?<p[^>]*>To check for a newer version, run <code[^>]*>dudes upgrade --check<\/code>/);
     assert.match(html, />Release notes for 0\.12\.3<\/a>/);
     for (const version of ['0.89.0-dev', '0.89.0-rc.1', '0.89.0+build.5']) {
       const dev = renderToStaticMarkup(createElement(SettingsView,
         { floor: floor({ ...REPORT, about: { ...REPORT.about, daemon_version: version } }), onSetup() {} }));
-      assert.ok(dev.includes(`<a href="https://github.com/ArcfluxResearch/dudes/releases" target="_blank" rel="noopener noreferrer">Release notes</a>`), version);
+      assert.match(dev, /<a class="[^"]*" href="https:\/\/github\.com\/ArcfluxResearch\/dudes\/releases" target="_blank" rel="noopener noreferrer">Release notes<\/a>/, version);
       assert.ok(!dev.includes('/releases/tag/'), version);
     }
-    assert.match(html, /Chat messages<\/dt><dd>Always on, with no setting<\/dd>/);
+    assert.match(html, /Chat messages<\/span><span[^>]*>Always on, with no setting<\/span>/);
     assert.doesNotMatch(html, /floor\.chat/);
     const gitRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, git } }), onSetup() {} }));
-    assert.match(gitRow(false), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> Off <button type="button">Turn on<\/button><\/dd>/);
-    assert.match(gitRow(true), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
-    assert.match(html, /<dt>Start new tasks<\/dt><dd><span class="settings-says">[^<]*<\/span> Off It needs Change tasks and Hire agents\. <button type="button">Turn on<\/button><\/dd>/);
+    assert.equal(switchOf(gitRow(false), 'Show changed files').on, false);
+    assert.equal(switchOf(gitRow(true), 'Show changed files').on, true);
+    assert.deepEqual(switchOf(html, 'Start new tasks'), { says: 'Lets this page give an agent a new task after the last one ends. It needs Change tasks and Hire agents.', on: false });
     const renewOn = renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, renew: true } }), onSetup() {} }));
-    assert.match(renewOn, /<dt>Start new tasks<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><\/dd>/);
+    assert.deepEqual(switchOf(renewOn, 'Start new tasks'), { says: 'Lets this page give an agent a new task after the last one ends.', on: true });
     const hint = (control) => renderToStaticMarkup(createElement(UnavailableControls, { floor: floor(), control }));
     assert.match(hint('retire'), /Turn on Pause, resume and rename and Retire agents under\s+Floor switches in Settings/);
     assert.match(hint('terminal'), /turn on Attach terminals under Floor switches in Settings\./);
@@ -81,8 +88,8 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.doesNotMatch(html, /Check whether each engine is installed and signed in/);
     const diffRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, diff: true, git } }), onSetup() {} }));
-    assert.match(diffRow(false), /<dt>Read ticket changes<\/dt><dd><span class="settings-says">[^<]*<\/span> On, but it needs Show changed files /);
-    assert.match(diffRow(true), /<dt>Read ticket changes<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button/);
+    assert.match(switchOf(diffRow(false), 'Read ticket changes').says, / On, but it needs Show changed files\.$/);
+    assert.equal(switchOf(diffRow(true), 'Read ticket changes').says, 'Lets a ticket show the changes the agent made.');
     noteTransport('close');
     const closed = renderToStaticMarkup(createElement(SettingsView, { floor: getFloorState(), onSetup() {} }));
     assert.match(closed, /Settings is unavailable while disconnected/);
@@ -99,9 +106,8 @@ test('Hire says it is off when its switch is off, and names every other reason w
     const { UnavailableControls } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
     const hint = (hire) => renderToStaticMarkup(createElement(UnavailableControls,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, hire } }), control: 'hire' }));
-    assert.equal(hint(false), '<p class="settings-guidance">Hire is off. Turn on Hire agents under Floor '
-      + 'switches in Settings.</p>');
-    assert.equal(hint(true), '<p class="settings-guidance">Hire is unavailable. Check Engines and Projects in Settings.</p>');
+    assert.match(hint(false), /^<div data-ui="notice" data-tone="warn"[^>]*>(?:<svg[^>]*>.*?<\/svg>)?<div[^>]*>Hire is off\. Turn on Hire agents under Floor switches in Settings\.<\/div><\/div>$/);
+    assert.match(hint(true), /^<div data-ui="notice" data-tone="warn"[^>]*>(?:<svg[^>]*>.*?<\/svg>)?<div[^>]*>Hire is unavailable\. Check Engines and Projects in Settings\.<\/div><\/div>$/);
   } finally { await server.close(); }
 });
 
@@ -132,7 +138,7 @@ test('PIN_UNSHOWN mutant: Settings offers Automatic and each office, and presses
     const { SettingsView } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
     const { setOfficePin } = await server.ssrLoadModule('/src/renderer/view.ts');
     const pressed = () => [...renderToStaticMarkup(createElement(SettingsView, { floor: floor(), onSetup() {} }))
-      .matchAll(/<button type="button" aria-pressed="(true|false)">([^<]+)<\/button>/g)].map(([, on, label]) => `${label}: ${on}`);
+      .matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map(([, on, label]) => `${label}: ${on}`);
     assert.deepEqual(pressed(), ['Automatic: true', 'Studio, 8 desks: false', 'Workshop, 12 desks: false', 'HQ, 16 desks: false']);
     setOfficePin('workshop');
     assert.deepEqual(pressed(), ['Automatic: false', 'Studio, 8 desks: false', 'Workshop, 12 desks: true', 'HQ, 16 desks: false']);
@@ -154,7 +160,7 @@ test('Settings asks on the page before the terminal goes on or retire or control
     await edit.changeSetting('floor.terminal', 'on');
     assert.equal(edit.getSettingsEditState().asking?.key, 'floor.terminal');
     assert.equal(edit.getSettingsEditState().sending, null, 'nothing was sent yet');
-    assert.match(view(), /aria-label="Turn on Attach terminals"> [^<]*It applies at once and does not end running work\. <button type="button">Turn on<\/button> <button type="button">Cancel<\/button>/);
+    assert.match(view(), /aria-label="Turn on Attach terminals"[^>]*><span[^>]*>[^<]*It applies at once and does not end running work\.<\/span><span[^>]*><button[^>]*>Turn on<\/button><button[^>]*>Cancel<\/button>/);
     edit.cancelSetting();
     assert.equal(edit.getSettingsEditState().asking, null);
     assert.doesNotMatch(view(), /aria-label="Turn (on|off) floor\./);
@@ -182,18 +188,18 @@ test('Settings has a button for each engine and a box for each spending limit, a
     const render = (providers) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, providers }), onSetup() {} }));
     const off = render(['claude']);
-    assert.match(off, /Codex is off\.<\/span><button type="button">Turn on<\/button>/);
-    assert.match(off, /Pi is off\.<\/span><button type="button">Turn on<\/button>/);
+    assert.deepEqual(switchOf(off, 'Codex'), { says: 'Codex is off.', on: false });
+    assert.deepEqual(switchOf(off, 'Pi'), { says: 'Pi is off.', on: false });
     const on = render(['claude', 'codex', 'pi']);
-    assert.match(on, /Codex is on\.<\/span><button type="button">Turn off<\/button>/);
-    assert.equal(on.match(/<form class="settings-limit">/g).length, 3);
+    assert.deepEqual(switchOf(on, 'Codex'), { says: 'Codex is on.', on: true });
+    assert.equal(on.match(/<form data-ui="limit-form"/g).length, 3);
     assert.doesNotMatch(on, /cannot remove a limit once it is set/);
     assert.equal(on.match(/>Clear limit<\/button>/g)?.length, 1);
     assert.doesNotMatch(on, /dudes config|Register optional providers/);
     const edit = await server.ssrLoadModule('/src/renderer/settings/edit.ts');
     const change = edit.limitChange('usd', '7.5', '5000000');
     await edit.changeSetting('budget.floor_usd_per_day', change.value, change.question, 'Raise limit');
-    assert.match(render(['claude']), /aria-label="Change Daily dollar limit"> This raises the limit from \$5 to \$7\.5\. <button type="button">Raise limit<\/button> <button type="button">Cancel<\/button>/);
+    assert.match(render(['claude']), /aria-label="Change Daily dollar limit"[^>]*><span[^>]*>This raises the limit from \$5 to \$7\.5\.<\/span><span[^>]*><button[^>]*>Raise limit<\/button><button[^>]*>Cancel<\/button>/);
     assert.equal(edit.getSettingsEditState().sending, null, 'nothing is written until the person confirms');
     edit.resetSettingsEdit();
   } finally { await server.close(); }
@@ -213,7 +219,7 @@ test('a saved daily ceiling clear stays beside the running value until replaced 
       text: async () => JSON.stringify({ state, applied: [], restart: ['budget'], reason: 'bad_value' }) });
     const save = (key, value, fetch = response()) => edit.saveSetting(key, value, fetch, () => true);
     await save('budget.floor_usd_per_day', 'unset');
-    assert.match(render(), /<dt>Daily dollar limit<\/dt><dd>\$5/);
+    assert.match(render(), /Daily dollar limit<\/span><span[^>]*>\$5/);
     assert.match(render(), /Saved from this page\. No daily dollar limit after restart/);
     await save('floor.answer', 'on');
     assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, true, 'another key does not replace the clear');
@@ -250,7 +256,7 @@ test('a saved daily ceiling clear stays beside the running value until replaced 
     assert.equal(edit.getSettingsEditState().pendingDailyCeilingClear, false, 'a live no-ceiling snapshot confirms the clear');
     assert.equal(edit.getSettingsEditState().last, null, 'the confirmed clear no longer asks for another restart');
     assert.doesNotMatch(render(unlimited), />Clear limit<\/button>/);
-    assert.match(render(unlimited), /<dt>Daily dollar limit<\/dt><dd>No limit/);
+    assert.match(render(unlimited), /Daily dollar limit<\/span><span[^>]*>No limit/);
     store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 2, agents: [] }, settings: report }), epoch);
     await save('budget.floor_usd_per_day', 'unset');
     signing.installSigner(signer);

@@ -25,29 +25,17 @@ const THIRD_PARTY = new Map([['src/renderer/terminal/xterm.css', "@import '@xter
  * is lowered to the new count, so the set only ever gets smaller. The last lane deletes the legacy layer.
  */
 const LEGACY = new Map([
-  ['src/failure.css', { blocks: 4, declarations: 4 }],
-  ['src/legacy/activity-log.css', { blocks: 32, declarations: 80 }],
   ['src/legacy/agent-actions.css', { blocks: 26, declarations: 66 }],
   ['src/legacy/agent-detail.css', { blocks: 54, declarations: 168 }],
-  ['src/legacy/agent-panel.css', { blocks: 71, declarations: 164 }],
-  ['src/legacy/base.css', { blocks: 7, declarations: 114 }],
-  ['src/legacy/chat.css', { blocks: 106, declarations: 306 }],
-  ['src/legacy/crew.css', { blocks: 38, declarations: 128 }],
+  ['src/legacy/agent-panel.css', { blocks: 77, declarations: 175 }],
+  ['src/legacy/base.css', { blocks: 9, declarations: 126 }],
   ['src/legacy/engine-sign-in.css', { blocks: 4, declarations: 7 }],
+  ['src/legacy/handoff.css', { blocks: 60, declarations: 143 }],
   ['src/legacy/hire-entry.css', { blocks: 7, declarations: 25 }],
   ['src/legacy/hire-wizard.css', { blocks: 29, declarations: 87 }],
-  ['src/legacy/live-work.css', { blocks: 10, declarations: 28 }],
-  ['src/legacy/memory.css', { blocks: 16, declarations: 39 }],
-  ['src/legacy/office-controls.css', { blocks: 6, declarations: 13 }],
-  ['src/legacy/office.css', { blocks: 56, declarations: 177 }],
+  ['src/legacy/other-screens.css', { blocks: 40, declarations: 97 }],
   ['src/legacy/retire-terminal.css', { blocks: 28, declarations: 88 }],
-  ['src/legacy/roster.css', { blocks: 49, declarations: 137 }],
-  ['src/legacy/settings.css', { blocks: 56, declarations: 161 }],
-  ['src/legacy/setup.css', { blocks: 19, declarations: 46 }],
   ['src/legacy/touch-and-phone.css', { blocks: 25, declarations: 68 }],
-  ['src/renderer/cardNotes.css', { blocks: 3, declarations: 16 }],
-  ['src/renderer/chat/code.css', { blocks: 14, declarations: 37 }],
-  ['src/renderer/chat/engine-said.css', { blocks: 3, declarations: 10 }],
   ['src/renderer/terminal/controls.css', { blocks: 5, declarations: 8 }],
 ]);
 

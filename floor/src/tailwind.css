@@ -2,22 +2,14 @@
 
 /* The older screens' rules, kept as they were and in their original order until each screen moves. */
 @import './legacy/base.css';
-@import './legacy/office.css';
 @import './legacy/agent-panel.css';
-@import './legacy/memory.css';
-@import './legacy/crew.css';
 @import './legacy/hire-entry.css';
-@import './legacy/live-work.css';
-@import './legacy/setup.css';
-@import './legacy/office-controls.css';
 @import './legacy/hire-wizard.css';
 @import './legacy/agent-actions.css';
 @import './legacy/retire-terminal.css';
-@import './legacy/activity-log.css';
-@import './legacy/settings.css';
-@import './legacy/chat.css';
+@import './legacy/other-screens.css';
 @import './legacy/agent-detail.css';
-@import './legacy/roster.css';
+@import './legacy/handoff.css';
 @import './legacy/engine-sign-in.css';
 @import './legacy/touch-and-phone.css';
 
@@ -60,6 +52,15 @@
     --shadow-1: 0 1px 2px rgb(22 32 29 / 6%);
     --shadow-2: 0 4px 14px rgb(22 32 29 / 10%), 0 1px 3px rgb(22 32 29 / 8%);
     --shadow-3: 0 16px 40px rgb(22 32 29 / 16%), 0 2px 8px rgb(22 32 29 / 8%);
+    --tok-keyword: #0000ff;
+    --tok-string: #a31515;
+    --tok-number: #076c49;
+    --tok-comment: #007000;
+    --tok-literal: #0000ff;
+    --tok-key: #0451a5;
+    --tok-add: #076c49;
+    --tok-remove: #a31515;
+    --tok-meta: #795e26;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -89,6 +90,15 @@
       --shadow-1: 0 1px 2px rgb(0 0 0 / 30%);
       --shadow-2: 0 4px 14px rgb(0 0 0 / 40%), 0 0 0 1px rgb(255 255 255 / 4%);
       --shadow-3: 0 16px 40px rgb(0 0 0 / 55%), 0 0 0 1px rgb(255 255 255 / 5%);
+      --tok-keyword: #569cd6;
+      --tok-string: #ce9178;
+      --tok-number: #b5cea8;
+      --tok-comment: #6a9955;
+      --tok-literal: #569cd6;
+      --tok-key: #9cdcfe;
+      --tok-add: #b5cea8;
+      --tok-remove: #f48771;
+      --tok-meta: #c586c0;
     }
   }
 
@@ -118,6 +128,15 @@
     --shadow-1: 0 1px 2px rgb(0 0 0 / 30%);
     --shadow-2: 0 4px 14px rgb(0 0 0 / 40%), 0 0 0 1px rgb(255 255 255 / 4%);
     --shadow-3: 0 16px 40px rgb(0 0 0 / 55%), 0 0 0 1px rgb(255 255 255 / 5%);
+    --tok-keyword: #569cd6;
+    --tok-string: #ce9178;
+    --tok-number: #b5cea8;
+    --tok-comment: #6a9955;
+    --tok-literal: #569cd6;
+    --tok-key: #9cdcfe;
+    --tok-add: #b5cea8;
+    --tok-remove: #f48771;
+    --tok-meta: #c586c0;
   }
 }
 
@@ -221,6 +240,15 @@
   --color-danger-soft: var(--danger-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
+  --color-tok-keyword: var(--tok-keyword);
+  --color-tok-string: var(--tok-string);
+  --color-tok-number: var(--tok-number);
+  --color-tok-comment: var(--tok-comment);
+  --color-tok-literal: var(--tok-literal);
+  --color-tok-key: var(--tok-key);
+  --color-tok-add: var(--tok-add);
+  --color-tok-remove: var(--tok-remove);
+  --color-tok-meta: var(--tok-meta);
   --shadow-card: var(--shadow-1);
   --shadow-pop: var(--shadow-2);
   --shadow-sheet: var(--shadow-3);

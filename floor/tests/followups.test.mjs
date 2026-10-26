@@ -25,11 +25,11 @@ test('ARCHIVE_HIRE_SWITCH mutant disables Hire again when the switch is off', as
       const html = renderToStaticMarkup(createElement(ArchivedAgents, { floor: state, onHireAgain() {} }));
       return html.match(/<button[^>]*>Hire again<\/button>/)?.[0];
     }
-    assert.match(button({ ...floor, settings: { switches: { hire: false } } }), /disabled=""/);
-    assert.doesNotMatch(button({ ...floor, settings: { switches: { hire: true } } }), /disabled/);
-    assert.doesNotMatch(button({ ...floor, settings: null }), /disabled/);
-    assert.match(button({ ...floor, settings: null, onboarding: null }), /disabled=""/);
-    assert.match(button({ ...floor, stale: true, settings: { switches: { hire: true } } }), /disabled=""/);
+    assert.match(button({ ...floor, settings: { switches: { hire: false } } }), / disabled=""/);
+    assert.doesNotMatch(button({ ...floor, settings: { switches: { hire: true } } }), / disabled=""/);
+    assert.doesNotMatch(button({ ...floor, settings: null }), / disabled=""/);
+    assert.match(button({ ...floor, settings: null, onboarding: null }), / disabled=""/);
+    assert.match(button({ ...floor, stale: true, settings: { switches: { hire: true } } }), / disabled=""/);
   } finally { await server.close(); }
 });
 
