@@ -84,7 +84,7 @@ test('banner shows fixed CLI guidance without actions or raw errors, separately 
 
 test('stopped status preserves the exact Messages cut and window at a covered durable position', () => {
   const row = { id: '01ARZ3NDEKTSV4RRFFQ69G5FAX', from: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
-    to: '01ARZ3NDEKTSV4RRFFQ69G5FAW', at: 500, lsn: '1', state: 'durable' };
+    to: '01ARZ3NDEKTSV4RRFFQ69G5FAW', at: 500, lsn: '1', state: 'durable', subject: null, act: null, reply_status: 'not_expected' };
   apply(snapshot({ messages: [row], threads: [], threads_lsn: '7', messages_lsn: '7', control: {} }));
   const before = getFloorState();
   assert.deepEqual(before.messages, [row]);

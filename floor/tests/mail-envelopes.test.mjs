@@ -11,7 +11,7 @@ const A = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const B = '01ARZ3NDEKTSV4RRFFQ69G5FAW';
 const M = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
 const desks = new Map([[A, { x: 10, y: 80 }], [B, { x: 110, y: 80 }]]);
-const row = (lsn, patch = {}) => ({ id: M, from: A, to: B, at: 100, lsn, state: 'durable', ...patch });
+const row = (lsn, patch = {}) => ({ id: M, from: A, to: B, at: 100, lsn, state: 'durable', subject: null, act: null, reply_status: 'not_expected', ...patch });
 function event(rows, cut, previous = '1', kind = 'delta') {
   resetFloorStore(); beginFloorEpoch();
   applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: Number(cut), agents: [] },

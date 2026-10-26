@@ -23,7 +23,7 @@ const A = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const B = '01ARZ3NDEKTSV4RRFFQ69G5FAW';
 const C = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
 const row = { id: A, name: 'Ada', role: 'Builder', provider: 'pi', status: 'idle', mode: 'managed' };
-const message = (id, from, to, lsn, at, state) => ({ id, from, to, lsn, at, state });
+const message = (id, from, to, lsn, at, state) => ({ id, from, to, lsn, at, state, subject: null, act: null, reply_status: 'not_expected' });
 
 test('Messages joins the detail registry with ARIA, hidden drafts and persistent keyboard selection', async () => {
   const html = renderToStaticMarkup(createElement(AgentDetail, { row, tab: 'messages',

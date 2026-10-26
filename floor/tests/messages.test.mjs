@@ -12,7 +12,7 @@ const B = '01ARZ3NDEKTSV4RRFFQ69G5FAW';
 const M = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
 const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const mailId = i => `000000000000000000000000${alphabet[Math.floor(i / 32)]}${alphabet[i % 32]}`;
-const row = (lsn = '1', patch = {}) => ({ id: M, from: A, to: B, at: 500, lsn, state: 'durable', ...patch });
+const row = (lsn = '1', patch = {}) => ({ id: M, from: A, to: B, at: 500, lsn, state: 'durable', subject: null, act: null, reply_status: 'not_expected', ...patch });
 const apply = frame => applyServerFrame(JSON.stringify(frame), getFloorState().epoch);
 const snapshot = (messages = [row()], cut = '1') => ({ type: 'floor.snapshot',
   projection: { lsn: Number(cut), agents: [{ id: A }, { id: B }] }, messages, messages_lsn: cut, threads: [], threads_lsn: cut });
@@ -37,7 +37,10 @@ test('messages arrive only through their bounded extension and replace the whole
 test('messages reject extra disclosure, invalid identities, states, times and orders', () => {
   apply(snapshot());
   assert.deepEqual(getFloorState().messages, [row()]);
-  for (const patch of [{ subject: 'private' }, { body: 'private' }, { why: 'private' },
+  for (const patch of [{ subject: 'private\n' }, { subject: undefined }, { act: undefined },
+    { reply_status: undefined }, { act: 'card' }, { reply_status: 'unknown' },
+    { act: 'request', reply_status: 'not_expected' }, { reply_status: 'awaiting' },
+    { body: 'private' }, { why: 'private' },
     { from: 'human' }, { to: `8${B.slice(1)}` }, { id: M.toLowerCase() },
     { state: 'sent' }, { at: '500' }, { at: Infinity }, { lsn: '01' },
     { lsn: '18446744073709551616' }, { lsn: '2' }]) {
