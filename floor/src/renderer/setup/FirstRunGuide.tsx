@@ -17,8 +17,8 @@ import { X } from 'lucide-react';
  */
 const EXPANDED = "[.floor-stage:has(.terminal-panel[data-terminal-expanded='true']):not(:has(.control-panel[data-view='board']))>&]";
 const DOCK = cn(
-  'absolute inset-y-0 right-0 z-3 box-border flex w-[min(608px,100%)] flex-col border-l border-line bg-surface font-sans text-ink shadow-sheet',
-  `${EXPANDED}:relative ${EXPANDED}:inset-auto ${EXPANDED}:row-start-2 ${EXPANDED}:col-[1/-1] ${EXPANDED}:w-auto`,
+  'absolute inset-y-0 right-0 z-3 row-[1/-1] box-border flex w-[min(608px,100%)] flex-col border-l border-line bg-surface font-sans text-ink shadow-sheet',
+  `${EXPANDED}:relative ${EXPANDED}:inset-auto ${EXPANDED}:row-[2] ${EXPANDED}:col-[1/-1] ${EXPANDED}:w-auto`,
 );
 
 function FloorActions({ floor }: { readonly floor: FloorState }) {
