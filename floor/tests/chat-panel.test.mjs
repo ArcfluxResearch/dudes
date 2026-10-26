@@ -567,13 +567,13 @@ test('after a chat message the drawer tabs are Overview, Chat, Git and Memory an
 test('the latest turn offers Show full output, collapsed by default, and opening it shows the live output', () => {
   const chat = { ...view(), turns: [turn({ state: 'running', reply: null })] };
   const closed = render(chat, { output: liveReply('Provisional assistant text') });
-  assert.match(closed, /<button[^>]*class="full-output-toggle"[^>]*aria-expanded="false"[^>]*aria-controls="chat-full-output"[^>]*>Show full output<\/button><div id="chat-full-output" hidden="">/);
+  assert.match(closed, /<button[^>]*aria-expanded="false"[^>]*aria-controls="chat-full-output"[^>]*class="[^"]*full-output-toggle[^"]*"[^>]*>Show full output<\/button><div id="chat-full-output" hidden="">/);
   const output = { ...store.getFloorState().output, view: 'output', targetId: A, status: 'live', chunks: ['Raw engine text'] };
   const open = renderToStaticMarkup(createElement(ChatPanelView, { floor: floor(chat, { output }), row, action, fullOutput: true }));
-  assert.match(open, /<button[^>]*class="full-output-toggle"[^>]*aria-expanded="true"[^>]*>Hide full output<\/button><div id="chat-full-output"><section[^>]*aria-label="Live work"/);
-  assert.match(open, /<pre class="live-work-text">Raw engine text<\/pre>/);
+  assert.match(open, /<button[^>]*aria-expanded="true"[^>]*class="[^"]*full-output-toggle[^"]*"[^>]*>Hide full output<\/button><div id="chat-full-output"><section[^>]*aria-label="Live work"/);
+  assert.match(open, /<pre class="live-work-text[^"]*">Raw engine text<\/pre>/);
   assert.doesNotMatch(open, /Read-only|Live work<|TurnId|<h3>Live work/i, 'no jargon inside the toggle');
-  assert.equal((render({ ...view(), turns: [turn({ turn_id: B, note_lsn: '6' }), turn()] }).match(/class="full-output-toggle"/g) ?? []).length, 1,
+  assert.equal((render({ ...view(), turns: [turn({ turn_id: B, note_lsn: '6' }), turn()] }).match(/class="[^"]*full-output-toggle/g) ?? []).length, 1,
     'only the latest turn carries the toggle');
   assert.doesNotMatch(render(chat, {}, { ...row, mode: 'attached' }), /full-output/);
   assert.doesNotMatch(render(view()), /full-output/);

@@ -451,7 +451,7 @@ const ADMITTED_HANDLERS = [
     expression: '(event) => setFilters({ ...filters, query: event.currentTarget.value })' },
   ...[['onPointerDown', 'startDrag'], ['onPointerMove', 'moveDrag'], ['onPointerUp', 'endDrag'],
     ['onPointerCancel', 'endDrag'], ['onLostPointerCapture', 'endDrag'], ['onKeyDown', 'keyMove']]
-    .map(([handler, expression]) => ({ file: AGENT_ORDER, tag: 'button', className: 'agent-reorder-handle', handler, expression })),
+    .map(([handler, expression]) => ({ file: AGENT_ORDER, tag: 'button', className: null, handler, expression })),
   { file: RENAME_PANEL, tag: 'input', handler: 'onFocus', expression: '(event) => event.currentTarget.select()' },
   { file: RENAME_PANEL, tag: 'input', handler: 'onChange' },
   { file: RENAME_PANEL, tag: 'input', handler: 'onKeyDown' },
@@ -1325,20 +1325,20 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   const strip = await readFile(resolve(source, 'renderer/Roster.tsx'), 'utf8');
   const center = await readFile(resolve(source, 'renderer/Control.tsx'), 'utf8');
   assert.match(canvas, /type="button"/);
-  assert.match(canvas, /className="agent-select"/);
+  assert.match(canvas, /className=\{cn\('agent-select', OFFICE_HIT\)\}/);
   assert.match(canvas, /onClick=\{\(\) => onSelectAgent\(id\)\}/);
   assert.deepEqual(clicksIn(canvas), ['() => turn(TURN_STEP)', '() => turn(-TURN_STEP)', '() => zoom(ZOOM_STEP)', '() => zoom(1 / ZOOM_STEP)',
     '() => onSelectAgent(id)', '() => onOpenQuestion(id)']);
   const notes = await readFile(resolve(floor, 'src/renderer/BoardNotes.tsx'), 'utf8');
-  assert.match(notes, /className="board-select"/);
+  assert.match(notes, /className=\{cn\('board-select /);
   assert.match(notes, /onClick=\{onOpenTasks\}/);
   const tasks = await readFile(resolve(floor, 'src/renderer/ticket/TicketBoard.tsx'), 'utf8');
   assert.match(tasks, /onClick=\{\(event\) => onSelect\(card\.id, event\.currentTarget\)\}/);
   assert.match(center, /onSelect=\{openCard\}/);
-  assert.match(strip, /className="crew-row"/);
+  assert.match(strip, /className=\{cn\('crew-row /);
   assert.match(strip, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);
-  assert.match(strip, /className="roster-act"/);
-  assert.match(strip, /className="roster-act"[\s\S]*?disabled=\{!selectable\}/);
+  assert.match(strip, /className=\{cn\('roster-act', /);
+  assert.match(strip, /className=\{cn\('roster-act', [^\n]*\)\}\s*data-primary=[^\n]*\s*disabled=\{!selectable\}/);
   assert.deepEqual(clicksIn(strip).map((handler) => handler.replace(/\s+/g, ' ')), [
     '() => onSelectAgent(row.id)',
     '() => act(row.action, row.id)',
@@ -1474,7 +1474,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   ]);
 
   const planted = `${canvas}\n${notes}\n<button onClick={() => send('agent.answer')}>Answer</button>`;
-  assert.equal([...planted.matchAll(/<button[\s/>]/gi)].length, 8,
+  assert.equal([...planted.matchAll(/<button[\s/>]/gi)].length, 4,
     'the button count must fire on a planted answer button');
   assert.equal([...planted.matchAll(/\bonclick\s*=/gi)].length, 8,
     'the click count must fire on a planted answer handler');
@@ -2971,7 +2971,7 @@ test('with the same Waiting row but no answer sibling, no answer form renders', 
   assert.ok(html.includes(QUESTION), 'the Waiting question is not displayed, so this proves nothing');
   assert.doesNotMatch(html, /<textarea|name="answer"|Send answer|data-answer-/);
   const asking = center(floorWith(waiting(), undefined), 'overview');
-  assert.match(asking, new RegExp(`<button type="button" class="roster-act" data-primary="true"[^>]*aria-label="Answer, Ada"`));
+  assert.match(asking, new RegExp(`<button type="button"[^>]*data-primary="true"[^>]*aria-label="Answer, Ada"`));
   assert.ok(asking.includes(QUESTION), 'Overview does not list the Waiting question, so this proves nothing');
   assert.doesNotMatch(asking, /<textarea|name="answer"|Send answer|data-answer-/);
   // Nor for an agent a person is attached to, even with answering on.

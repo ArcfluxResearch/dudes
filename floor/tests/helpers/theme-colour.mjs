@@ -17,3 +17,27 @@ export function themeColour(css, className, theme) {
   assert.match(colour, /^#[0-9a-f]{6}$/i, `.${className} resolves its ${theme} colour`);
   return colour;
 }
+
+const TEXT_TOKEN = { danger: 'danger', muted: 'text-muted', ink: 'text', subtle: 'text-subtle', accent: 'accent', warn: 'warn', ok: 'ok' };
+
+/** The class string a component source names with `pattern`'s one capture group. */
+export async function classesIn(file, pattern) {
+  const { readFile } = await import('node:fs/promises');
+  const { resolve } = await import('node:path');
+  const text = await readFile(resolve(import.meta.dirname, '../../src/renderer', file), 'utf8');
+  const found = pattern.exec(text)?.[1];
+  assert.ok(found, `${file} has the class string ${pattern}`);
+  return found;
+}
+
+/** The colour a class string's text colour utility resolves to in `theme`, from the Tailwind entry file's tokens. */
+export async function utilityColour(classes, theme) {
+  const { readFile } = await import('node:fs/promises');
+  const { resolve } = await import('node:path');
+  const name = /(?:^|\s)text-(danger|muted|ink|subtle|accent|warn|ok)(?:\s|$)/.exec(classes)?.[1];
+  assert.ok(name, `${classes} sets a text colour from a token`);
+  const entry = await readFile(resolve(import.meta.dirname, '../../src/tailwind.css'), 'utf8');
+  const colour = themeTokens(entry, theme)[TEXT_TOKEN[name]];
+  assert.match(colour, /^#[0-9a-f]{6}$/i, `text-${name} resolves its ${theme} colour`);
+  return colour;
+}

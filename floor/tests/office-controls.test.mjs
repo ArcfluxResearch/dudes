@@ -56,13 +56,13 @@ test('HALT_ANY, PAUSE_ANY, HALT_CLAUSE_DROPPED, MODE_UNCONFIRMED and BANNER_UNWI
     selectedId: null, onSelectAgent() {}, onOpenQuestion() {}, onOpenTasks() {}, onAddAgent() {},
   }));
   const paused = office([agent(ADA, { paused: true }), agent(GRACE, { paused: true })]);
-  assert.match(paused, /<div class="office" data-office="loading" data-mode="paused" data-layout="studio" data-full="false">/);
-  assert.match(paused, /<p class="office-mode">The office is paused\. No agent starts a new turn until it is resumed\.<\/p><p class="office-mode-heard" role="status"><\/p>/,
+  assert.match(paused, /<div class="office [^"]*" data-office="loading" data-mode="paused" data-layout="studio" data-full="false">/);
+  assert.match(paused, /<p class="office-mode [^"]*">The office is paused\. No agent starts a new turn until it is resumed\.<\/p><p class="office-mode-heard[ "][^>]*role="status"><\/p>/,
     'one visible line, and a live region that speaks only of changes');
-  assert.match(office([agent(ADA, { halted: true })]), /data-mode="halted"[\s\S]*<p class="office-mode">The office is halted\./);
+  assert.match(office([agent(ADA, { halted: true })]), /data-mode="halted"[\s\S]*<p class="office-mode [^"]*">The office is halted\./);
   const running = office([agent(ADA, { paused: true }), agent(GRACE)]);
-  assert.doesNotMatch(running, /data-mode=|class="office-mode"/);
-  assert.match(running, /<p class="office-mode-heard" role="status"><\/p>/, 'the live region stays, empty');
+  assert.doesNotMatch(running, /data-mode=|class="office-mode /);
+  assert.match(running, /<p class="office-mode-heard[ "][^>]*role="status"><\/p>/, 'the live region stays, empty');
 });
 
 test('MODE_FLICKER, CLOSED_HOLDS_MODE, RUNNING_AGAIN and EMPTY_ANNOUNCED mutants: a resync changes nothing, a stream that gave up drops the line, and each real change is said once and truly', () => {
