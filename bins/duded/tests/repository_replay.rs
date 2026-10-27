@@ -778,6 +778,83 @@ fn crash_before_the_atomic_hire_discards_every_pending_copy() {
     assert!(host.spawned().is_empty());
 }
 
+// Compare one Git search path with the unchanged default-path case above.
+#[cfg(target_os = "macos")]
+#[test]
+fn diagnostic_crash_cleanup_using_the_setup_git_path() {
+    let fixture = Fixture::new();
+    let root = std::fs::canonicalize(fixture.runtime.path()).unwrap();
+    let state = std::fs::canonicalize(fixture.state.path()).unwrap();
+    let entries = ["api", "docs", "web"]
+        .into_iter()
+        .map(|name| create_origin(&root, name))
+        .collect();
+    let catalog = RepositorySet::new(RepoId::parse("api").unwrap(), entries).unwrap();
+    let (mut writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
+    let catalog_lsn = append(
+        &mut writer,
+        Record::ProjectRepositoriesRecorded {
+            project: "service".into(),
+            repositories: catalog.clone(),
+        },
+    );
+    let Record::WorkspaceTrustSet { pin, .. } = samples::record(RecordKind::WorkspaceTrustSet)
+    else {
+        unreachable!()
+    };
+    let mut grants = std::collections::BTreeMap::new();
+    for entry in catalog.entries() {
+        let trust_lsn = append(
+            &mut writer,
+            Record::RepositoryTrustSet {
+                project: "service".into(),
+                repo_id: entry.repo_id.clone(),
+                catalog_lsn,
+                origin: entry.value.origin.clone(),
+                pin: pin.clone(),
+            },
+        );
+        grants.insert(entry.repo_id.clone(), trust_lsn);
+    }
+    let mut copies = Vec::new();
+    for (index, entry) in catalog.entries().iter().take(1).enumerate() {
+        copies.push(create_copy(
+            &mut writer,
+            entry,
+            &state,
+            index,
+            grants[&entry.repo_id],
+        ));
+    }
+    drop(writer);
+    assert_eq!(
+        copies.len(),
+        1,
+        "the crash prefix stops before the second lease"
+    );
+    let host = SharedHost::new();
+    let runner = Arc::new(CleanupRunner::new());
+    let mut settings = fixture.settings();
+    settings.predicate_path = std::env::var_os("PATH");
+    let daemon = boot(
+        &settings,
+        common::seams(
+            &settings,
+            host.clone(),
+            Arc::clone(&runner),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        ),
+    )
+    .unwrap();
+    let mut running = common::start(daemon);
+    await_pending_cleanup(&fixture, &runner, &copies);
+    running.stop(ExitCause::Ended);
+    assert!(copies.iter().all(|repo| !repo.execution.directory.exists()));
+    assert!(host.spawned().is_empty());
+}
+
 #[test]
 fn losing_a_nonprimary_copy_holds_the_whole_hire_and_retains_the_other_copies() {
     let fixture = Fixture::new();
