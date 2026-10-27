@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::instruction::{InstructionComparison, InstructionSettlement, InstructionSnapshot};
-use crate::repository::{RepoId, RepositoryEntry};
+use crate::repository::RepoId;
 use crate::repository_instruction::{
-    RepositoryInstructionBinding, RepositoryInstructionFinish, RepositoryInstructionStart,
+    RepositoryInstructionBinding, RepositoryInstructionComparison, RepositoryInstructionFinish,
+    RepositoryInstructionStart,
 };
 
 /// Starting evidence kept in the attempt's existing immutable snapshot cell.
@@ -56,7 +57,7 @@ pub enum InstructionComparisonEvidence {
     /// Historical singleton comparison.
     Legacy(InstructionComparison),
     /// Ordered comparison evidence from every hired repository.
-    Repositories(Vec<RepositoryEntry<InstructionComparison>>),
+    Repositories(Vec<RepositoryInstructionComparison>),
 }
 
 impl InstructionComparisonEvidence {
@@ -73,7 +74,7 @@ impl InstructionComparisonEvidence {
         legacy.map(|value| (None, value)).into_iter().chain(
             members
                 .iter()
-                .map(|member| (Some(&member.repo_id), &member.value)),
+                .map(|member| (Some(&member.repo_id), &member.comparison)),
         )
     }
 }
@@ -94,9 +95,10 @@ pub(super) fn batch_settlement(
         .iter()
         .filter_map(|member| {
             crate::repository_instruction::comparison(&member.settlement).map(|comparison| {
-                RepositoryEntry {
+                RepositoryInstructionComparison {
                     repo_id: member.repo_id.clone(),
-                    value: comparison.clone(),
+                    ending_root: member.ending_root,
+                    comparison: comparison.clone(),
                 }
             })
         })
@@ -108,6 +110,27 @@ pub(super) fn batch_settlement(
 }
 
 impl super::InstructionAttempt {
+    /// Starting uncertainty retains both repository scope and provider declaration provenance.
+    pub fn starting_gaps(
+        &self,
+    ) -> impl Iterator<Item = (Option<&RepoId>, &crate::instruction::InstructionCoverageGap)> {
+        self.snapshot
+            .as_ref()
+            .into_iter()
+            .flat_map(InstructionSnapshotEvidence::samples)
+            .flat_map(|(repo, sample)| {
+                sample
+                    .gaps
+                    .iter()
+                    .chain(
+                        sample
+                            .participants
+                            .iter()
+                            .flat_map(|participant| &participant.discovery.gaps),
+                    )
+                    .map(move |gap| (repo, gap))
+            })
+    }
     /// Comparable boot identity only when every retained starting sample agrees.
     #[must_use]
     pub fn common_boot(&self) -> Option<&crate::instruction::InstructionBootIdentity> {
@@ -164,18 +187,28 @@ impl super::InstructionAttempt {
             Some(InstructionSettlement::NoIssuedTurn | InstructionSettlement::NoProcess { .. }) => {
                 false
             }
-            Some(InstructionSettlement::Compared { .. }) => {
-                self.snapshot.as_ref().is_none_or(|evidence| {
-                    evidence.samples().any(|(_, sample)| {
-                        !sample.gaps.is_empty()
-                            || sample
-                                .participants
-                                .iter()
-                                .any(|participant| !participant.discovery.gaps.is_empty())
+            Some(InstructionSettlement::Compared { comparison, .. }) => {
+                let Some(start) = self
+                    .snapshot
+                    .as_ref()
+                    .and_then(InstructionSnapshotEvidence::repositories)
+                else {
+                    return true;
+                };
+                let InstructionComparisonEvidence::Repositories(members) = comparison else {
+                    return true;
+                };
+                self.starting_gaps().next().is_some()
+                    || !members
+                        .iter()
+                        .map(|member| &member.repo_id)
+                        .eq(start.members.iter().map(|member| &member.repo_id))
+                    || members.iter().zip(&start.members).any(|(ending, before)| {
+                        ending.ending_root.is_none() || ending.ending_root != before.root
                     })
-                }) || self
-                    .comparisons()
-                    .any(|(_, comparison)| !comparison.gaps.is_empty())
+                    || self
+                        .comparisons()
+                        .any(|(_, comparison)| !comparison.gaps.is_empty())
             }
             Some(InstructionSettlement::Unknown { .. }) | None => true,
         }

@@ -118,6 +118,22 @@ fn new_carriers_keep_exact_required_tags_and_closed_entry_schemas() {
             .find(|variant| variant["properties"]["t"]["const"] == encoded["t"])
             .unwrap();
         assert_eq!(variant["additionalProperties"], false);
+        if let Record::InstructionObservationBatchFinished(mut finish) = entry.record.clone() {
+            let mut absent_root = encoded.clone();
+            absent_root["members"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("ending_root");
+            assert!(serde_json::from_value::<Entry>(absent_root).is_err());
+            finish.members[0].ending_root = Some(FileIdentity {
+                device: 1,
+                inode: 2,
+            });
+            assert_eq!(
+                finish.validate(),
+                Err(InstructionValidationError::InvalidBoundary)
+            );
+        }
         let mut unknown = encoded.clone();
         unknown["future_authority"] = true.into();
         assert!(serde_json::from_value::<Entry>(unknown).is_err());

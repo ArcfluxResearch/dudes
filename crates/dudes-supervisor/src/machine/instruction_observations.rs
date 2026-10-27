@@ -339,7 +339,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             });
         if let Some(attempt) = attached {
             self.instructions.recovery = Recovery::Awaiting;
-            self.recover_attached_process(attempt);
+            self.recover_attached_process(&attempt);
             return true;
         }
         let attached_end = self
@@ -464,7 +464,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     fn recover_attached_process(
         &mut self,
-        attempt: dudes_proto::instruction_state::InstructionAttempt,
+        attempt: &dudes_proto::instruction_state::InstructionAttempt,
     ) {
         let InstructionObservationOwner::AttachedProcess { attachment_lsn, .. } = attempt.owner
         else {
@@ -915,6 +915,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         .map(|member| {
                             dudes_proto::repository_instruction::RepositoryInstructionSettlement {
                                 repo_id: member.repo_id.clone(),
+                                ending_root: None,
                                 settlement: settlement.clone(),
                             }
                         })
@@ -1214,12 +1215,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 if !allowed {
                     self.instructions.pending_agents.remove(&agent);
                     self.persist(
-                        Record::InstructionObservationFinished {
-                            owner: starting.owner,
-                            ticket: starting.ticket,
-                            baseline: InstructionBaselineRef::Started { lsn },
-                            settlement: InstructionSettlement::NoIssuedTurn,
-                        },
+                        self.instruction_control_record(
+                            starting.owner,
+                            starting.ticket,
+                            InstructionBaselineRef::Started { lsn },
+                            InstructionSettlement::NoIssuedTurn,
+                        ),
                         Then::Decide { agent },
                     );
                     return;

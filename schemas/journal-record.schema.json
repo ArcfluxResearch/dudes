@@ -1628,6 +1628,16 @@
       },
       "type": "object"
     },
+    "ExplicitNullable_FileIdentity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FileIdentity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "ExplicitNullable_InstructionGoalClear": {
       "anyOf": [
         {
@@ -7176,6 +7186,10 @@
       "additionalProperties": false,
       "description": "One hired member's known changes and uncertainty under the common physical boundary.",
       "properties": {
+        "ending_root": {
+          "$ref": "#/$defs/ExplicitNullable_FileIdentity",
+          "description": "Execution root actually observed at the ending sample, or explicit null when unsampled."
+        },
         "repo_id": {
           "$ref": "#/$defs/RepoId",
           "description": "Stable repository identity in hire order."
@@ -7187,6 +7201,7 @@
       },
       "required": [
         "repo_id",
+        "ending_root",
         "settlement"
       ],
       "type": "object"

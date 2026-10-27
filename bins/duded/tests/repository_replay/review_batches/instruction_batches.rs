@@ -22,21 +22,21 @@ fn starting(
     issue: InstructionIssueAssociation,
 ) -> RepositoryInstructionStart {
     let agent = log.story.hire.id;
-    let round = log.world.ticket_repository_round(log.goal).unwrap();
-    let card = log.projection.card(round.card).unwrap().unwrap();
-    let ticket = log
-        .world
-        .instructions
-        .association_for_goal(log.goal, card.seq)
-        .unwrap();
+    let round = log.world.ticket_repository_round(log.goal);
+    let ticket = round.and_then(|round| {
+        let card = log.projection.card(round.card).unwrap().unwrap();
+        log.world
+            .instructions
+            .association_for_goal(log.goal, card.seq)
+    });
     RepositoryInstructionStart {
         v: INSTRUCTION_BATCH_VERSION,
         binding: RepositoryInstructionBinding {
             hired_lsn: log.story.hired_lsn,
-            ticket_start_lsn: Some(round.start_lsn),
+            ticket_start_lsn: round.map(|round| round.start_lsn),
         },
         owner: InstructionObservationOwner::Managed { agent, turn, issue },
-        ticket: Some(ticket),
+        ticket,
         members: log
             .story
             .hire
@@ -159,6 +159,9 @@ fn finishing(
                 let mut comparison = InstructionComparison::default();
                 for input in &member.snapshot.inputs {
                     let after = fingerprint(&input.path.to_path().unwrap());
+                    if let InstructionFingerprint::File { bytes, .. } = after {
+                        comparison.usage.source_bytes += bytes;
+                    }
                     if after != input.fingerprint {
                         comparison.changes.push(InstructionPathChange {
                             path: input.path.clone(),
@@ -171,6 +174,7 @@ fn finishing(
                 }
                 RepositoryInstructionSettlement {
                     repo_id: member.repo_id.clone(),
+                    ending_root: member.root,
                     settlement: InstructionSettlement::Compared {
                         end: InstructionEndBoundary::ManagedTurn { turn, end_lsn: end },
                         sampled_at: Timestamp::UNIX_EPOCH,
@@ -273,8 +277,8 @@ fn an_owned_undeclared_instruction_change_keeps_its_repo_and_survives_warm_and_c
         log.world.instructions,
         log.projection.instruction_state().unwrap()
     );
-    let stale = accept(&log, old_watermark);
-    refuses(&mut log, stale);
+    let stale_request = accept(&log, old_watermark);
+    refuses(&mut log, stale_request);
     let expected = log.projection.export().unwrap();
     let state = log.world.instructions.clone();
     drop(log);
@@ -290,6 +294,10 @@ fn an_owned_undeclared_instruction_change_keeps_its_repo_and_survives_warm_and_c
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one real repository fixture covers malformed evidence and the socket refusal without repeating setup"
+)]
 fn malformed_members_and_explicit_unknown_cannot_qualify_accept_or_an_ordinary_done_move() {
     let fixture = Fixture::new();
     let mut log = ReviewLog::new(&fixture);
@@ -441,6 +449,7 @@ fn an_issued_unspawned_turn_can_still_record_its_first_physical_attempt() {
                 .iter()
                 .map(|member| RepositoryInstructionSettlement {
                     repo_id: member.repo_id.clone(),
+                    ending_root: None,
                     settlement: InstructionSettlement::NoIssuedTurn,
                 })
                 .collect(),
@@ -471,6 +480,7 @@ fn an_issued_unspawned_turn_can_still_record_its_first_physical_attempt() {
             .iter()
             .map(|member| RepositoryInstructionSettlement {
                 repo_id: member.repo_id.clone(),
+                ending_root: None,
                 settlement: InstructionSettlement::Unknown {
                     reason: InstructionUnknownReason::UnrecordedLaunchBoundary,
                     end: None,
@@ -509,6 +519,341 @@ fn an_issued_unspawned_turn_can_still_record_its_first_physical_attempt() {
     assert!(log.world.instructions.repository_turn_covered(turn));
     assert_eq!(log.world.instructions.attempts().count(), 3);
     assert!(log.world.instructions.pending_for_goal(log.goal));
+    assert_eq!(
+        log.world.instructions,
+        log.projection.instruction_state().unwrap()
+    );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one prefix proves pre-mutation refusal and rejects malformed history behind a warm cursor"
+)]
+fn a_prospective_unticketed_observation_cannot_be_reused_by_a_new_ticket_issue() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let ticket = ticket_start(&story);
+    let (writer, world, projection) = replay_pair(&fixture);
+    let mut log = ReviewLog {
+        writer,
+        world,
+        projection,
+        story,
+        goal: ticket.goal.id,
+    };
+    let turn = TurnId::from_parts(60, 1);
+    let unticketed = starting(&log, turn, InstructionIssueAssociation::Prospective);
+    assert!(unticketed.ticket.is_none());
+    let recorded = write_record(
+        &mut log.writer,
+        Record::InstructionObservationBatchStarted(unticketed),
+    );
+    apply_pair(&mut log.world, &mut log.projection, &recorded);
+    let started = recorded.0;
+    seed_ticket(&mut log.writer, &ticket);
+    write_record(
+        &mut log.writer,
+        Record::TicketStartedWithRepositories(Box::new(ticket)),
+    );
+    for item in Reader::new(&fixture.journal_dir())
+        .iter_from(Lsn::ZERO)
+        .unwrap()
+    {
+        let (lsn, entry) = item.unwrap();
+        if log.world.last_applied_lsn.is_none_or(|last| lsn > last) {
+            log.world.apply_checked(lsn, &entry).unwrap();
+        }
+    }
+    replay(&Reader::new(&fixture.journal_dir()), &mut log.projection).unwrap();
+    log.assert_pair();
+    let decision = log.append(Record::LoopDecided {
+        agent: log.story.hire.id,
+        input_digest: "new-ticket".into(),
+        gate_trace: Gate::ORDER
+            .into_iter()
+            .map(|gate| GateStep {
+                gate,
+                fired: gate == Gate::Work,
+                note: None,
+            })
+            .collect(),
+        decision: LoopDecision::Continue {
+            task: "Repair both repositories".into(),
+        },
+    });
+    let payload = Record::TurnIssued {
+        agent: log.story.hire.id,
+        turn,
+        goal: log.goal,
+        task: "Repair both repositories".into(),
+        session: None,
+        mode: Mode::Managed,
+        model_selection: None,
+        lsn_of_decision: decision,
+        answers: Vec::new(),
+    };
+    let issue = Record::TurnIssuedWithRepositories(Box::new(RepositoryTurnIssued {
+        grant: RepositoryTurnGrant::select(
+            log.story.hired_lsn,
+            &log.story.hire.repositories,
+            log.world.ticket_repository_round(log.goal),
+        )
+        .unwrap(),
+        payload: payload.issue_payload().unwrap().to_owned(),
+    }));
+    let before = log.projection.export().unwrap();
+    let prior = log.world.instructions.clone();
+    let recorded = write_record(&mut log.writer, issue);
+    assert!(log.world.apply_checked(recorded.0, &recorded.2).is_err());
+    assert!(
+        log.projection
+            .preflight_instruction(recorded.0, &recorded.2)
+            .is_err()
+    );
+    assert!(
+        log.projection
+            .apply(recorded.0, recorded.1, &recorded.2)
+            .is_err()
+    );
+    assert_eq!(log.world.instructions, prior);
+    assert_eq!(log.projection.export().unwrap(), before);
+    assert!(
+        log.world
+            .instructions
+            .attempt(started)
+            .unwrap()
+            .ticket
+            .is_none()
+    );
+    let tail = write_record(
+        &mut log.writer,
+        Record::Pause {
+            agent: log.story.hire.id,
+            browser: None,
+        },
+    );
+    log.projection.apply(tail.0, tail.1, &tail.2).unwrap();
+    let warm = log.projection.export().unwrap();
+    assert!(Reader::open(&fixture.journal_dir()).is_err());
+    assert!(replay(&Reader::new(&fixture.journal_dir()), &mut log.projection).is_err());
+    assert_eq!(log.projection.export().unwrap(), warm);
+}
+
+#[test]
+fn foreign_source_and_ending_roots_cannot_qualify_a_complete_comparison() {
+    let fixture = Fixture::new();
+    let mut log = ReviewLog::new(&fixture);
+    let turn = TurnId::from_parts(60, 1);
+    let observation = starting(&log, turn, InstructionIssueAssociation::Prospective);
+    let started = log.append(Record::InstructionObservationBatchStarted(
+        observation.clone(),
+    ));
+    log.issue();
+    std::fs::write(
+        observation.members[2].snapshot.inputs[0]
+            .path
+            .to_path()
+            .unwrap(),
+        "known revised instruction\n",
+    )
+    .unwrap();
+    let end = ended(&mut log, turn);
+    let finish = finishing(&observation, started, end);
+    let mut foreign_source = finish.clone();
+    if let InstructionSettlement::Compared { comparison, .. } =
+        &mut foreign_source.members[2].settlement
+    {
+        comparison.changes[0].source.root = observation.members[0]
+            .snapshot
+            .execution_folder
+            .clone()
+            .unwrap();
+    }
+    let mut foreign_root = finish.clone();
+    foreign_root.members[2].ending_root.as_mut().unwrap().inode += 1;
+    let mut missing_root = finish;
+    missing_root.members[2].ending_root = None;
+    let candidates = [
+        ("source", foreign_source),
+        ("ending_root", foreign_root.clone()),
+        ("missing_root", missing_root),
+    ];
+    let next = Lsn(log.projection.last_applied_lsn().0 + 1);
+    let accepted: Vec<_> = candidates
+        .iter()
+        .filter_map(|(name, batch)| {
+            let entry = Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: Record::InstructionObservationBatchFinished(batch.clone()),
+            };
+            log.projection
+                .preflight_instruction(next, &entry)
+                .is_ok()
+                .then_some(*name)
+        })
+        .collect();
+    assert!(
+        accepted.is_empty(),
+        "complete comparisons accepted invalid provenance: {accepted:?}"
+    );
+    for (_, batch) in candidates {
+        refuses(&mut log, Record::InstructionObservationBatchFinished(batch));
+    }
+    if let InstructionSettlement::Compared { comparison, .. } =
+        &mut foreign_root.members[2].settlement
+    {
+        comparison.gaps.push(InstructionCoverageGap {
+            reason: InstructionGapKind::PathUnresolved,
+            context: InstructionPathContext::Unresolved,
+            agent: Some(log.story.hire.id),
+            path: observation.members[2].snapshot.execution_folder.clone(),
+            origin: InstructionGapOrigin::Observed,
+        });
+    }
+    log.append(Record::InstructionObservationBatchFinished(foreign_root));
+    let card = observation.ticket.unwrap().card;
+    let review = log.world.instructions.review(card, hash).unwrap().unwrap();
+    assert!(review.coverage_unknown);
+    assert_eq!(
+        review.changed_paths[0].repo_id.as_ref().unwrap().as_str(),
+        "docs"
+    );
+    assert_eq!(
+        log.world.instructions,
+        log.projection.instruction_state().unwrap()
+    );
+}
+
+fn add_external_input(
+    snapshot: &mut InstructionSnapshot,
+    rule: u16,
+    path: &Path,
+    kind: InstructionSourceKind,
+    context: InstructionPathContext,
+) {
+    let participant = &snapshot.participants[0];
+    let root = participant.discovery.roots
+        [usize::from(participant.discovery.rules[usize::from(rule)].root)]
+    .path
+    .clone();
+    let observed = fingerprint(path);
+    if let InstructionFingerprint::File { bytes, .. } = observed {
+        snapshot.usage.source_bytes += bytes;
+    }
+    snapshot.inputs.push(InstructionInput {
+        path: NativeInstructionPath::from_path(path).unwrap(),
+        resolved_path: Some(NativeInstructionPath::from_path(path).unwrap()),
+        context,
+        source: InstructionInputSource {
+            agent: participant.agent,
+            rule,
+            root,
+            kind,
+        },
+        activation: InstructionActivation::Active,
+        shadowed: false,
+        fingerprint: observed,
+    });
+}
+
+#[test]
+fn frozen_ancestor_profile_and_import_sources_remain_reviewable_outside_the_checkout() {
+    let fixture = Fixture::new();
+    let mut log = ReviewLog::new(&fixture);
+    let turn = TurnId::from_parts(60, 1);
+    let mut observation = starting(&log, turn, InstructionIssueAssociation::Prospective);
+    let copy = log.story.hire.repositories.repositories.primary();
+    let ancestor = copy
+        .execution
+        .directory
+        .parent()
+        .unwrap()
+        .join("ANCESTOR.md");
+    let profile = fixture.runtime.path().join("profile");
+    std::fs::create_dir(&profile).unwrap();
+    let profile_file = profile.join("AGENTS.md");
+    let imported = profile.join("imported.md");
+    for path in [&ancestor, &profile_file, &imported] {
+        std::fs::write(path, "initial external\n").unwrap();
+    }
+    for member in &mut observation.members {
+        let sample = &mut member.snapshot;
+        let participant = &mut sample.participants[0];
+        let mut ancestor_rule = participant.discovery.rules[0].clone();
+        ancestor_rule.candidate = InstructionCandidate::Ancestor {
+            paths: vec![NativeInstructionPath::from_path(Path::new("ANCESTOR.md")).unwrap()],
+            stop: InstructionAncestorStop::FileSystemRoot,
+        };
+        participant.discovery.rules.push(ancestor_rule);
+        let profile_context = InstructionPathContext::SharedInput {
+            source: InstructionSharedInput::Profile,
+        };
+        participant.discovery.roots.push(InstructionRoot {
+            path: NativeInstructionPath::from_path(&profile).unwrap(),
+            kind: InstructionRootKind::Profile,
+            context: profile_context,
+        });
+        let mut profile_rule = participant.discovery.rules[0].clone();
+        profile_rule.root = 1;
+        profile_rule.imports = InstructionImportPolicy::ClaudeFourHops;
+        participant.discovery.rules.push(profile_rule);
+        add_external_input(
+            sample,
+            1,
+            &ancestor,
+            InstructionSourceKind::Ancestor,
+            InstructionPathContext::SharedInput {
+                source: InstructionSharedInput::Ancestor,
+            },
+        );
+        add_external_input(
+            sample,
+            2,
+            &profile_file,
+            InstructionSourceKind::Fixed,
+            profile_context,
+        );
+        add_external_input(
+            sample,
+            2,
+            &imported,
+            InstructionSourceKind::Import {
+                from: NativeInstructionPath::from_path(&profile_file).unwrap(),
+                depth: 1,
+            },
+            InstructionPathContext::SharedInput {
+                source: InstructionSharedInput::Import,
+            },
+        );
+    }
+    let started = log.append(Record::InstructionObservationBatchStarted(
+        observation.clone(),
+    ));
+    log.issue();
+    for path in [&ancestor, &profile_file, &imported] {
+        std::fs::write(path, "updated external\n").unwrap();
+    }
+    let end = ended(&mut log, turn);
+    log.append(Record::InstructionObservationBatchFinished(finishing(
+        &observation,
+        started,
+        end,
+    )));
+    let card = observation.ticket.unwrap().card;
+    let review = log.world.instructions.review(card, hash).unwrap().unwrap();
+    assert!(!review.coverage_unknown);
+    assert_eq!(review.changed_paths.len(), 9);
+    let profile_path = NativeInstructionPath::from_path(&profile_file).unwrap();
+    assert_eq!(
+        review
+            .changed_paths
+            .iter()
+            .filter(|path| path.path == profile_path)
+            .map(|path| path.repo_id.as_ref().unwrap().as_str())
+            .collect::<Vec<_>>(),
+        ["web", "api", "docs"]
+    );
     assert_eq!(
         log.world.instructions,
         log.projection.instruction_state().unwrap()

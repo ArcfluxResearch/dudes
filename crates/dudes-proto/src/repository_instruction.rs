@@ -68,8 +68,24 @@ pub struct RepositoryInstructionStart {
 pub struct RepositoryInstructionSettlement {
     /// Stable repository identity in hire order.
     pub repo_id: RepoId,
+    /// Execution root actually observed at the ending sample, or explicit null when unsampled.
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    #[schemars(with = "crate::chat::ExplicitNullable<FileIdentity>")]
+    pub ending_root: Option<FileIdentity>,
     /// The same physical settlement as every other member, with this member's evidence.
     pub settlement: InstructionSettlement,
+}
+
+/// Repository comparison and ending identity retained in the existing immutable finish cell.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepositoryInstructionComparison {
+    /// Hired discovery scope.
+    pub repo_id: RepoId,
+    /// Actual ending root, absent for explicitly unresolved sampling.
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    pub ending_root: Option<FileIdentity>,
+    /// Known changes and independent uncertainty.
+    pub comparison: InstructionComparison,
 }
 
 /// One terminal record for a complete hired set and one exact physical attempt.
@@ -206,6 +222,7 @@ impl RepositoryInstructionFinish {
         let mut gaps = 0;
         for member in &self.members {
             crate::instruction::settlement_valid(self.owner, self.baseline, &member.settlement)?;
+            validate_ending_root(member, None)?;
             if member.settlement.clone().map_comparison(|_| ()) != boundary {
                 return Err(InstructionValidationError::InvalidBoundary);
             }
@@ -219,6 +236,43 @@ impl RepositoryInstructionFinish {
             return Err(InstructionValidationError::WorkLimit);
         }
         metadata(Record::InstructionObservationBatchFinished(self.clone()))
+    }
+}
+
+pub(crate) fn validate_ending_root(
+    member: &RepositoryInstructionSettlement,
+    expected: Option<FileIdentity>,
+) -> Result<(), InstructionValidationError> {
+    match &member.settlement {
+        InstructionSettlement::NoIssuedTurn | InstructionSettlement::NoProcess { .. }
+            if member.ending_root.is_some() =>
+        {
+            Err(InstructionValidationError::InvalidBoundary)
+        }
+        InstructionSettlement::Compared { comparison, .. }
+            if member.ending_root.is_none()
+                || expected.is_some_and(|expected| member.ending_root != Some(expected)) =>
+        {
+            if comparison.gaps.iter().any(|gap| {
+                gap.origin == crate::InstructionGapOrigin::Observed
+                    && matches!(
+                        gap.reason,
+                        crate::InstructionGapKind::PathUnresolved
+                            | crate::InstructionGapKind::ReadFailed
+                            | crate::InstructionGapKind::ChangedDuringRead
+                            | crate::InstructionGapKind::Deadline
+                            | crate::InstructionGapKind::MetadataLimit
+                    )
+            }) {
+                Ok(())
+            } else {
+                Err(InstructionValidationError::InvalidBoundary)
+            }
+        }
+        InstructionSettlement::Unknown {
+            sampled_at: None, ..
+        } if member.ending_root.is_some() => Err(InstructionValidationError::InvalidBoundary),
+        _ => Ok(()),
     }
 }
 
@@ -361,6 +415,18 @@ pub fn validate_observation(
     match record {
         Record::InstructionObservationBatchStarted(batch) => validate_start(lsn, batch, facts),
         Record::InstructionObservationBatchFinished(batch) => {
+            if let Some((hired_lsn, HireRepositories::Scoped(hire))) = facts.hire {
+                if hired_lsn != batch.binding.hired_lsn {
+                    return Err(InstructionValidationError::InvalidBoundary);
+                }
+                for member in &batch.members {
+                    let expected = hire
+                        .repositories
+                        .get(&member.repo_id)
+                        .ok_or(InstructionValidationError::InvalidBoundary)?;
+                    validate_ending_root(member, Some(expected.execution.directory_identity))?;
+                }
+            }
             if matches!(batch.baseline, InstructionBaselineRef::Started { .. }) {
                 return Ok(());
             }

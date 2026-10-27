@@ -254,6 +254,7 @@ impl InstructionState {
         hash: impl Fn(&[u8]) -> Hex32,
     ) -> Result<(), InstructionStateError> {
         validate_instruction_record(&entry.record)?;
+        self.issue_start_valid(&entry.record)?;
         let after = Lsn(self
             .last_applied
             .0
@@ -348,6 +349,10 @@ impl InstructionState {
         self.apply_inner(lsn, entry, None, hash, true)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one dispatcher folds both observation carriers and atomic review actions"
+    )]
     fn apply_inner(
         &mut self,
         lsn: Lsn,
@@ -360,6 +365,7 @@ impl InstructionState {
             return Ok(InstructionFold::default());
         }
         validate_instruction_record(&entry.record)?;
+        self.issue_start_valid(&entry.record)?;
         let mut folded = InstructionFold::default();
         match &entry.record {
             Record::InstructionObservationBatchStarted(batch) => {
@@ -1006,19 +1012,21 @@ impl InstructionState {
                     .snapshot
                     .as_ref()
                     .and_then(InstructionSnapshotEvidence::repositories)
-                    .map(|batch| {
-                        batch
-                            .members
-                            .iter()
-                            .map(|member| member.repo_id.clone())
-                            .collect()
-                    })
-                    .unwrap_or_else(|| {
-                        attempt
-                            .comparisons()
-                            .filter_map(|(repo, _)| repo.cloned())
-                            .collect()
-                    }),
+                    .map_or_else(
+                        || {
+                            attempt
+                                .comparisons()
+                                .filter_map(|(repo, _)| repo.cloned())
+                                .collect()
+                        },
+                        |batch| {
+                            batch
+                                .members
+                                .iter()
+                                .map(|member| member.repo_id.clone())
+                                .collect()
+                        },
+                    ),
                 owner: attempt.owner,
                 baseline: attempt.baseline,
                 ticket,
@@ -1034,16 +1042,7 @@ impl InstructionState {
             for (repo_id, comparison) in attempt.comparisons() {
                 for gap in &comparison.gaps {
                     if let Some(repo_id) = repo_id {
-                        review
-                            .repository_gaps
-                            .push(crate::instruction::RepositoryInstructionGap {
-                                repo_id: repo_id.clone(),
-                                gap: gap.clone(),
-                            });
-                        if !review_fits(&review) {
-                            review.repository_gaps.pop();
-                            overflow(&mut review);
-                        }
+                        show_repository_gap(&mut review, repo_id, gap);
                         continue;
                     }
                     review.gaps.push(gap.clone());
@@ -1053,31 +1052,9 @@ impl InstructionState {
                     }
                 }
             }
-            if let Some(snapshot) = &attempt.snapshot
-                && attempt.repository_binding().is_some()
-            {
-                for (repo_id, sample) in snapshot.samples() {
-                    if let Some(repo_id) = repo_id {
-                        for gap in sample.gaps.iter().chain(
-                            sample
-                                .participants
-                                .iter()
-                                .flat_map(|participant| &participant.discovery.gaps),
-                        ) {
-                            let shown = crate::instruction::RepositoryInstructionGap {
-                                repo_id: repo_id.clone(),
-                                gap: gap.clone(),
-                            };
-                            if review.repository_gaps.contains(&shown) {
-                                continue;
-                            }
-                            review.repository_gaps.push(shown);
-                            if !review_fits(&review) {
-                                review.repository_gaps.pop();
-                                overflow(&mut review);
-                            }
-                        }
-                    }
+            for (repo_id, gap) in attempt.starting_gaps() {
+                if let Some(repo_id) = repo_id {
+                    show_repository_gap(&mut review, repo_id, gap);
                 }
             }
         }
@@ -1351,6 +1328,14 @@ impl InstructionState {
             {
                 return Err(InstructionStateError::Boundary);
             }
+            for (member, before) in batch.members.iter().zip(&start.members) {
+                crate::repository_instruction::validate_ending_root(member, before.root)?;
+                if let Some(comparison) =
+                    crate::repository_instruction::comparison(&member.settlement)
+                {
+                    before.snapshot.validate_comparison_sources(comparison)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1486,7 +1471,34 @@ impl InstructionState {
         }
     }
 
-    fn fold_boundaries(&mut self, lsn: Lsn, record: &Record, folded: &mut InstructionFold) {
+    fn issue_start_valid(&self, record: &Record) -> Result<(), InstructionStateError> {
+        let Some(issue) = record.turn_issue() else {
+            return Ok(());
+        };
+        let Some((_, attempt)) = self.current_for_turn(issue.turn) else {
+            return Ok(());
+        };
+        let batch = attempt
+            .snapshot
+            .as_ref()
+            .and_then(InstructionSnapshotEvidence::repositories);
+        match (issue.repositories, batch) {
+            (Some(grant), Some(start))
+                if owner_agent(attempt.owner) == issue.agent
+                    && start.binding.hired_lsn == grant.hired_lsn
+                    && start.binding.ticket_start_lsn
+                        == grant.ticket.as_ref().map(|round| round.start_lsn)
+                    && attempt.ticket.map(|ticket| (ticket.card, ticket.goal))
+                        == grant.ticket.as_ref().map(|round| (round.card, round.goal)) =>
+            {
+                Ok(())
+            }
+            (None, None) => Ok(()),
+            _ => Err(InstructionStateError::Boundary),
+        }
+    }
+
+    fn observe_issue(&mut self, lsn: Lsn, record: &Record) {
         if let Some((agent, turn)) = issue_identity(record) {
             self.issues.entry(turn).or_insert(Issue {
                 agent,
@@ -1502,6 +1514,10 @@ impl InstructionState {
                 self.note_unresolved(attempt.owner, key);
             }
         }
+    }
+
+    fn fold_boundaries(&mut self, lsn: Lsn, record: &Record, folded: &mut InstructionFold) {
+        self.observe_issue(lsn, record);
         if let Some(proof) = no_host_agent(record) {
             self.no_host_holds.insert(lsn, proof);
         }
@@ -1796,6 +1812,25 @@ fn review_fits(review: &InstructionPendingReview) -> bool {
         && review.repository_gaps.len() + review.gaps.len() < MAX_INSTRUCTION_INPUTS
         && serde_json::to_vec(review)
             .is_ok_and(|bytes| bytes.len() <= MAX_INSTRUCTION_METADATA_BYTES - 1_280)
+}
+
+fn show_repository_gap(
+    review: &mut InstructionPendingReview,
+    repo_id: &crate::repository::RepoId,
+    gap: &InstructionCoverageGap,
+) {
+    let shown = crate::instruction::RepositoryInstructionGap {
+        repo_id: repo_id.clone(),
+        gap: gap.clone(),
+    };
+    if review.repository_gaps.contains(&shown) {
+        return;
+    }
+    review.repository_gaps.push(shown);
+    if !review_fits(review) {
+        review.repository_gaps.pop();
+        overflow(review);
+    }
 }
 
 fn overflow(review: &mut InstructionPendingReview) {

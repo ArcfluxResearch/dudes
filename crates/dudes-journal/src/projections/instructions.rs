@@ -62,6 +62,14 @@ fn owner_agent(owner: dudes_proto::InstructionObservationOwner) -> dudes_types::
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "admission borrows the existing owning tables at one committed cut"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one adapter loads exact issue coverage and prospective round authority before the shared fold"
+)]
 pub(super) fn load_for_record(
     table: &impl ReadableTable<&'static [u8], &'static [u8]>,
     agents: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
@@ -241,6 +249,10 @@ pub(super) fn facts(
     }))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the shared instruction fold borrows its existing owning tables"
+)]
 pub(super) fn apply(
     table: &mut InstructionTable<'_>,
     agents: &RowTable<'_>,

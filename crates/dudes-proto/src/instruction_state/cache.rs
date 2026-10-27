@@ -786,6 +786,27 @@ impl<'a, R: InstructionCacheReader> Loader<'a, R> {
         Ok(())
     }
 
+    fn finish_observation(
+        &mut self,
+        owner: InstructionObservationOwner,
+        ticket: Option<InstructionTicketAssociation>,
+        baseline: InstructionBaselineRef,
+        settlement: Option<&InstructionSettlement>,
+    ) -> Result<(), R::Error> {
+        self.attempt(baseline_key(baseline), false)?;
+        self.owner(owner)?;
+        self.ticket(ticket)?;
+        if let Some(ticket) = ticket {
+            self.card(ticket.card)?;
+        }
+        if let Some(InstructionSettlement::NoProcess { proof_lsn, .. }) = settlement {
+            self.get(Key::NoHostHold(*proof_lsn))?;
+            self.get(Key::NoHostClaim(*proof_lsn))?;
+            self.get(Key::NativeReceipt(*proof_lsn))?;
+        }
+        Ok(())
+    }
+
     fn record(&mut self, record: &Record) -> Result<(), R::Error> {
         if let Some((_, turn)) = issue_identity(record) {
             self.get(Key::Issue(turn))?;
@@ -807,35 +828,14 @@ impl<'a, R: InstructionCacheReader> Loader<'a, R> {
                 ticket,
                 baseline,
                 settlement,
-            } => {
-                self.attempt(baseline_key(*baseline), false)?;
-                self.owner(*owner)?;
-                self.ticket(*ticket)?;
-                if let Some(ticket) = ticket {
-                    self.card(ticket.card)?;
-                }
-                if let InstructionSettlement::NoProcess { proof_lsn, .. } = settlement {
-                    self.get(Key::NoHostHold(*proof_lsn))?;
-                    self.get(Key::NoHostClaim(*proof_lsn))?;
-                    self.get(Key::NativeReceipt(*proof_lsn))?;
-                }
-            }
+            } => self.finish_observation(*owner, *ticket, *baseline, Some(settlement))?,
             Record::InstructionObservationBatchFinished(batch) => {
-                self.attempt(baseline_key(batch.baseline), false)?;
-                self.owner(batch.owner)?;
-                self.ticket(batch.ticket)?;
-                if let Some(ticket) = batch.ticket {
-                    self.card(ticket.card)?;
-                }
-                if let Some(crate::repository_instruction::RepositoryInstructionSettlement {
-                    settlement: InstructionSettlement::NoProcess { proof_lsn, .. },
-                    ..
-                }) = batch.members.first()
-                {
-                    self.get(Key::NoHostHold(*proof_lsn))?;
-                    self.get(Key::NoHostClaim(*proof_lsn))?;
-                    self.get(Key::NativeReceipt(*proof_lsn))?;
-                }
+                self.finish_observation(
+                    batch.owner,
+                    batch.ticket,
+                    batch.baseline,
+                    batch.members.first().map(|member| &member.settlement),
+                )?;
             }
             Record::TicketInstructionReviewed { card, .. }
             | Record::TicketAssigned { card, .. }

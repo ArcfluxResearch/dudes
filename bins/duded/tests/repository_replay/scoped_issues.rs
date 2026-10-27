@@ -760,6 +760,10 @@ fn a_scoped_issue_replays_its_frozen_task_before_a_refused_provider_launch() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one joined instruction interval proves the held round survives goal clearing"
+)]
 fn pending_instruction_review_retains_scope_after_the_charge_goal_is_cleared() {
     use dudes_proto::repository_instruction::{
         INSTRUCTION_BATCH_VERSION, RepositoryInstructionBinding, RepositoryInstructionFinish,
@@ -854,6 +858,7 @@ fn pending_instruction_review_retains_scope_after_the_charge_goal_is_cleared() {
                 .iter()
                 .map(|member| RepositoryInstructionSettlement {
                     repo_id: member.repo_id.clone(),
+                    ending_root: None,
                     settlement: settlement.clone(),
                 })
                 .collect(),
