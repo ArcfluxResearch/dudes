@@ -424,7 +424,10 @@ pub fn validate_observation(
                         .repositories
                         .get(&member.repo_id)
                         .ok_or(InstructionValidationError::InvalidBoundary)?;
-                    validate_ending_root(member, Some(expected.execution.directory_identity))?;
+                    validate_ending_root(
+                        member,
+                        Some(expected.recorded.execution.directory_identity),
+                    )?;
                 }
             }
             if matches!(batch.baseline, InstructionBaselineRef::Started { .. }) {
