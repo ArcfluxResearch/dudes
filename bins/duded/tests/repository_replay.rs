@@ -3,8 +3,8 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use duded::predicate::{PredicateOutcome, PredicateRunner};
 use duded::startup::Witness;
@@ -48,6 +48,118 @@ impl PredicateRunner for RealRunner {
 
     fn sweep(&self) {
         self.0.sweep();
+    }
+}
+
+struct CleanupRun {
+    operation: &'static str,
+    started: Duration,
+    returned: Option<Duration>,
+    outcome: Option<String>,
+    owned_after_return: Option<usize>,
+}
+
+struct CleanupRunner {
+    real: RealRunner,
+    started: Instant,
+    runs: Mutex<Vec<CleanupRun>>,
+}
+
+impl CleanupRunner {
+    fn new() -> Self {
+        Self {
+            real: RealRunner(OneShot::new()),
+            started: Instant::now(),
+            runs: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn phase(&self) -> usize {
+        let runs = self.runs.lock().unwrap();
+        runs.len() + runs.iter().filter(|run| run.returned.is_some()).count()
+    }
+
+    fn snapshot(&self) -> Vec<String> {
+        self.runs
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|run| {
+                format!(
+                    "{} started={:?}, returned={:?}, outcome={:?}, owned_after_return={:?}",
+                    run.operation, run.started, run.returned, run.outcome, run.owned_after_return
+                )
+            })
+            .collect()
+    }
+}
+
+impl PredicateRunner for CleanupRunner {
+    fn run(
+        &self,
+        spec: &dudes_providers::launch::LaunchSpec,
+        timeout: Duration,
+    ) -> io::Result<PredicateOutcome> {
+        let operation = if spec
+            .argv
+            .windows(2)
+            .any(|args| args[0] == "worktree" && args[1] == "remove")
+        {
+            "worktree remove"
+        } else if spec
+            .argv
+            .windows(2)
+            .any(|args| args[0] == "branch" && args[1] == "-D")
+        {
+            "branch delete"
+        } else {
+            return self.real.run(spec, timeout);
+        };
+        let slot = {
+            let mut runs = self.runs.lock().unwrap();
+            let slot = runs.len();
+            if slot < 8 {
+                runs.push(CleanupRun {
+                    operation,
+                    started: self.started.elapsed(),
+                    returned: None,
+                    outcome: None,
+                    owned_after_return: None,
+                });
+                Some(slot)
+            } else {
+                None
+            }
+        };
+        let result = self.real.run(spec, timeout);
+        if let Some(slot) = slot {
+            let outcome = match &result {
+                Ok(PredicateOutcome::Finished {
+                    exit,
+                    output_tail,
+                    timed_out,
+                }) => format!(
+                    "exit={exit:?}, timed_out={timed_out}, tail={:?}",
+                    output_tail.chars().take(512).collect::<String>()
+                ),
+                Ok(PredicateOutcome::Swept) => "swept".to_owned(),
+                Err(error) => format!(
+                    "io_kind={:?}, errno={:?}, message={:?}",
+                    error.kind(),
+                    error.raw_os_error(),
+                    error.to_string().chars().take(512).collect::<String>()
+                ),
+            };
+            let mut runs = self.runs.lock().unwrap();
+            runs[slot].returned = Some(self.started.elapsed());
+            runs[slot].outcome = Some(outcome);
+            runs[slot].owned_after_return = Some(self.real.0.in_flight());
+        }
+        result
+    }
+
+    fn sweep(&self) {
+        self.real.sweep();
     }
 }
 
@@ -270,19 +382,133 @@ impl Story {
 }
 
 fn start(fixture: &Fixture, host: &SharedHost) -> (common::Running, duded::Settings) {
+    start_with_runner(fixture, host, Arc::new(RealRunner(OneShot::new())))
+}
+
+fn start_with_runner<P: PredicateRunner>(
+    fixture: &Fixture,
+    host: &SharedHost,
+    runner: Arc<P>,
+) -> (common::Running, duded::Settings) {
     let settings = fixture.settings();
     let daemon = boot(
         &settings,
         common::seams(
             &settings,
             host.clone(),
-            Arc::new(RealRunner(OneShot::new())),
+            runner,
             Arc::new(TestClock::new()),
             Witness::default(),
         ),
     )
     .unwrap();
     (common::start(daemon), settings)
+}
+
+fn await_pending_cleanup(
+    fixture: &Fixture,
+    handle: &duded::Handle,
+    runner: &CleanupRunner,
+    copies: &[OwnedRepository],
+) {
+    use duded::ports::{Answered, Ask};
+    use std::sync::mpsc::{Receiver, TryRecvError};
+
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(3);
+    let mut previous_poll = started;
+    let (mut polls, mut max_read, mut max_gap) = (0, Duration::ZERO, Duration::ZERO);
+    let mut last_phase = None;
+    let mut probe: Option<(
+        Duration,
+        Receiver<Result<Answered, dudes_proto::rpc::RpcError>>,
+    )> = None;
+    let mut loop_replies = Vec::new();
+    loop {
+        let poll = Instant::now();
+        max_gap = max_gap.max(poll.duration_since(previous_poll));
+        let entries = fixture.entries();
+        previous_poll = Instant::now();
+        max_read = max_read.max(previous_poll.duration_since(poll));
+        polls += 1;
+        let removed = entries
+            .iter()
+            .filter(|(_, entry)| {
+                matches!(
+                    entry.record,
+                    Record::WorktreeRemoved {
+                        how: WorktreeRemoval::NeverAssigned,
+                        ..
+                    }
+                )
+            })
+            .count();
+        if removed == copies.len() {
+            break;
+        }
+        if let Some((queued, reply)) = &probe {
+            let answer = match reply.try_recv() {
+                Ok(Ok(Answered::WorktreeInfo(lease))) => {
+                    Some(format!("pending={}", lease.is_some()))
+                }
+                Ok(Ok(_)) => Some("unexpected loop answer".to_owned()),
+                Ok(Err(error)) => Some(format!(
+                    "loop error {}: {}",
+                    error.code,
+                    error.message.chars().take(256).collect::<String>()
+                )),
+                Err(TryRecvError::Disconnected) => Some("loop disconnected".to_owned()),
+                Err(TryRecvError::Empty) => None,
+            };
+            if let Some(answer) = answer {
+                loop_replies.push((*queued, runner.started.elapsed(), answer));
+                probe = None;
+            }
+        }
+        let phase = runner.phase();
+        if probe.is_none() && last_phase != Some(phase) {
+            last_phase = Some(phase);
+            let queued = runner.started.elapsed();
+            match handle.ask_queued(Ask::WorktreeInfo(copies[0].worktree)) {
+                Ok(reply) => probe = Some((queued, reply)),
+                Err(error) => loop_replies.push((
+                    queued,
+                    runner.started.elapsed(),
+                    format!(
+                        "queue error {}: {}",
+                        error.code,
+                        error.message.chars().take(256).collect::<String>()
+                    ),
+                )),
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "every pending lease must settle; [DEBUG-cleanup] observer_started={:?}, elapsed={:?}, polls={polls}, max_read={max_read:?}, max_gap={max_gap:?}, \
+             last_lsn={:?}, records={:?}, copies_present={:?}, git_admin_present={:?}, git_runs={:?}, \
+             loop_probes(queued,answered,status)={loop_replies:?}, outstanding_probe={:?}",
+            started.duration_since(runner.started),
+            started.elapsed(),
+            entries.last().map(|(lsn, _)| lsn),
+            entries
+                .iter()
+                .rev()
+                .take(16)
+                .map(|(_, entry)| entry.record.kind())
+                .collect::<Vec<_>>(),
+            copies
+                .iter()
+                .map(|copy| copy.execution.directory.exists())
+                .collect::<Vec<_>>(),
+            copies
+                .iter()
+                .map(|copy| copy.execution.git_dir.exists())
+                .collect::<Vec<_>>(),
+            runner.snapshot(),
+            probe.as_ref().map(|(queued, _)| queued),
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 fn credential(settings: &duded::Settings) -> dudes_proto::rpc::cred::OperatorCredential {
@@ -481,31 +707,9 @@ fn crash_before_the_atomic_hire_discards_every_pending_copy() {
         "the crash prefix stops before the second lease"
     );
     let host = SharedHost::new();
-    let (mut running, _) = start(&fixture, &host);
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    loop {
-        let removed = fixture
-            .records()
-            .iter()
-            .filter(|record| {
-                matches!(
-                    record,
-                    Record::WorktreeRemoved {
-                        how: WorktreeRemoval::NeverAssigned,
-                        ..
-                    }
-                )
-            })
-            .count();
-        if removed == 1 {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "every pending lease must settle"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let runner = Arc::new(CleanupRunner::new());
+    let (mut running, _) = start_with_runner(&fixture, &host, Arc::clone(&runner));
+    await_pending_cleanup(&fixture, &running.handle, &runner, &copies);
     running.stop(ExitCause::Ended);
     assert!(copies.iter().all(|repo| !repo.execution.directory.exists()));
     assert!(host.spawned().is_empty());
