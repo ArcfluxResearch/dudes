@@ -24,8 +24,7 @@ impl World {
             .or_else(|| entry.record.ticket_start().map(|start| start.card));
         let ticket = ticket_id
             .and_then(|card| self.repository_tickets.get(&card))
-            .and_then(Ticket::created)
-            .filter(|ticket| !ticket.removed);
+            .and_then(Ticket::created);
         let agent = entry
             .record
             .hire()
@@ -93,7 +92,7 @@ impl World {
             self.repository_tickets
                 .values()
                 .filter_map(Ticket::created)
-                .filter(|ticket| !ticket.removed && ticket.status != CardStatus::Done)
+                .filter(|ticket| ticket.status != CardStatus::Done)
                 .filter_map(|ticket| {
                     ticket
                         .repositories
@@ -181,15 +180,15 @@ pub(super) enum Ticket {
 impl Ticket {
     pub(super) fn created(&self) -> Option<&CreatedTicket> {
         match self {
-            Self::Created(ticket) => Some(ticket),
-            Self::MissingCreation { .. } => None,
+            Self::Created(ticket) if !ticket.removed => Some(ticket),
+            Self::Created(_) | Self::MissingCreation { .. } => None,
         }
     }
 
     fn created_mut(&mut self) -> Option<&mut CreatedTicket> {
         match self {
-            Self::Created(ticket) => Some(ticket),
-            Self::MissingCreation { .. } => None,
+            Self::Created(ticket) if !ticket.removed => Some(ticket),
+            Self::Created(_) | Self::MissingCreation { .. } => None,
         }
     }
 

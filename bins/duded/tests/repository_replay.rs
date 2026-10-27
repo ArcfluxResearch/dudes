@@ -1502,3 +1502,65 @@ fn retirement_preserves_review_and_releases_queued_ticket_facts_in_both_folds() 
         }
     }
 }
+
+#[test]
+fn historical_orphan_starts_keep_the_same_rounds_without_a_declaration() {
+    let fixture = Fixture::new();
+    let (mut writer, mut world, mut projection) = replay_pair(&fixture);
+    let hired = write_record(&mut writer, samples::record(RecordKind::AgentHired));
+    apply_pair(&mut world, &mut projection, &hired);
+    let mut serial = 0_u128;
+    for replacement in [
+        None,
+        Some(RecordKind::CardCreated),
+        Some(RecordKind::TicketCreated),
+    ] {
+        if let Some(kind) = replacement {
+            for record in [
+                samples::record(kind),
+                samples::record(RecordKind::TicketRemoved),
+            ] {
+                let recorded = write_record(&mut writer, record);
+                apply_pair(&mut world, &mut projection, &recorded);
+            }
+        }
+        for index in 1_u32..=2 {
+            serial += 1;
+            let mut record = samples::record(RecordKind::TicketStarted);
+            let Record::TicketStarted { goal, .. } = &mut record else {
+                unreachable!()
+            };
+            goal.id = dudes_types::GoalId::from_parts(8, serial);
+            let goal = goal.id;
+            let recorded = write_record(&mut writer, record);
+            apply_pair(&mut world, &mut projection, &recorded);
+            let expected = world.ticket_repository_round(goal).unwrap();
+            assert_eq!(expected.round, index);
+            assert!(expected.repositories.is_none());
+            assert!(expected.authority.is_none());
+            assert_eq!(
+                projection
+                    .goal(goal)
+                    .unwrap()
+                    .unwrap()
+                    .repository_round
+                    .as_ref(),
+                Some(expected)
+            );
+        }
+    }
+    let expected = projection.export().unwrap();
+    let card = world
+        .ticket_repository_round(dudes_types::GoalId::from_parts(8, serial))
+        .unwrap()
+        .card;
+    assert!(expected.contains(&format!("repository_ticket_rounds {card} 2\n")));
+    drop(projection);
+    let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
+    let mut warm = Projections::open(&fixture.state.path().join("paired.redb")).unwrap();
+    assert_eq!(replay(&reader, &mut warm).unwrap().applied, 0);
+    assert_eq!(warm.export().unwrap(), expected);
+    let mut rebuilt = Projections::in_memory().unwrap();
+    replay(&reader, &mut rebuilt).unwrap();
+    assert_eq!(rebuilt.export().unwrap(), expected);
+}
