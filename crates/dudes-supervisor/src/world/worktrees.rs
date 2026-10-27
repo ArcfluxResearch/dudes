@@ -17,6 +17,8 @@ use super::World;
 pub struct WorktreeRow {
     /// The repository the tree was added from.
     pub origin: PathBuf,
+    /// Actual durable position of the pre-copy lease.
+    pub leased_lsn: Lsn,
     /// The tree.
     pub path: PathBuf,
     /// The branch the tree was created on.
@@ -56,7 +58,7 @@ pub enum WorktreeState {
 }
 
 impl World {
-    pub(super) fn fold_worktree(&mut self, record: &Record) {
+    pub(super) fn fold_worktree(&mut self, record: &Record, lsn: Lsn) {
         match record {
             Record::WorktreeLeased {
                 worktree,
@@ -70,6 +72,7 @@ impl World {
                     .entry(*worktree)
                     .or_insert_with(|| WorktreeRow {
                         origin: origin.clone(),
+                        leased_lsn: lsn,
                         path: path.clone(),
                         branch: branch.clone(),
                         base: *base,

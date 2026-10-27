@@ -13,6 +13,28 @@ use crate::frame::FrameError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// A recorded repository binding failed its canonical prefix relationship.
+    #[error("journal repository record at {lsn}: {reason}")]
+    Repository {
+        /// Actual offending frame position, or zero before append.
+        lsn: Lsn,
+        /// Fixed relationship failure, without paths or task content.
+        reason: dudes_proto::repository_state::history::RepositoryStateError,
+    },
+    /// Restricted repository authority must use its exact required frame.
+    #[error(
+        "journal repository header at {lsn} has kind {kind} version {version}, expected kind {expected_kind} version 2"
+    )]
+    RepositoryFrame {
+        /// Actual offending frame position.
+        lsn: Lsn,
+        /// Actual header kind.
+        kind: u16,
+        /// Actual header version.
+        version: u16,
+        /// Decoded payload kind.
+        expected_kind: u16,
+    },
     /// A recovery projection cell is malformed or misses a required dependency.
     #[error("projection recovery: {0}")]
     RecoveryCache(#[from] dudes_proto::recovery_state::cache::RecoveryCacheError),

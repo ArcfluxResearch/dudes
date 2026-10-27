@@ -529,7 +529,7 @@ pub enum Input {
     /// and only remembers the set: `Started`'s first step holds each of these agents, so the first
     /// decide cannot issue or re-issue a turn into a missing tree. The daemon never falls back to
     /// the repository.
-    MissingWorktrees(Vec<AgentId>),
+    MissingWorktrees(Vec<(AgentId, dudes_types::WorktreeId)>),
     /// Replay is finished; run the three crash rules and decide. Sent exactly once per daemon
     /// run, after the last [`Input::Replayed`] and **before the first append** — `Reader::locate`
     /// catches a re-created current segment only while no append has happened since.

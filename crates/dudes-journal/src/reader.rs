@@ -216,7 +216,24 @@ pub(crate) struct DetailedScan {
     pub(crate) stop: Option<ScanStop>,
     pub(crate) has_completed_contract: bool,
     has_recovery_contract: bool,
+    has_repository_contract: bool,
     fingerprint: [u8; 32],
+}
+
+fn repository_payload(header: Header, payload: &[u8]) -> bool {
+    #[derive(Deserialize)]
+    struct Tag {
+        t: String,
+    }
+    RecordKind::from_tag(header.kind).is_some_and(dudes_proto::repository_state::history::is_kind)
+        || serde_json::from_slice::<Tag>(payload).is_ok_and(|tag| {
+            matches!(
+                tag.t.as_str(),
+                "project_repositories_recorded"
+                    | "repository_trust_set"
+                    | "agent_hired_with_repositories"
+            )
+        })
 }
 
 fn completed_contract_payload(header: Header, payload: &[u8]) -> bool {
@@ -224,7 +241,8 @@ fn completed_contract_payload(header: Header, payload: &[u8]) -> bool {
     struct Tag {
         t: String,
     }
-    if recovery::payload(header, payload)
+    if repository_payload(header, payload)
+        || recovery::payload(header, payload)
         || matches!(
             RecordKind::from_tag(header.kind),
             Some(
@@ -276,6 +294,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
     let mut frames = 0u64;
     let mut has_completed_contract = false;
     let mut has_recovery_contract = false;
+    let mut has_repository_contract = false;
     let mut fingerprint = blake3::Hasher::new();
     loop {
         match read_next_frame(r, offset, buf)? {
@@ -286,6 +305,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
                     stop: None,
                     has_completed_contract,
                     has_recovery_contract,
+                    has_repository_contract,
                     fingerprint: *fingerprint.finalize().as_bytes(),
                 });
             }
@@ -294,6 +314,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
                 fingerprint.update(buf);
                 has_completed_contract |= completed_contract_payload(header, buf);
                 has_recovery_contract |= recovery::payload(header, buf);
+                has_repository_contract |= repository_payload(header, buf);
                 offset += header.frame_len() as u64;
                 frames += 1;
             }
@@ -307,6 +328,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
                     }),
                     has_completed_contract,
                     has_recovery_contract,
+                    has_repository_contract,
                     fingerprint: *fingerprint.finalize().as_bytes(),
                 });
             }
@@ -321,6 +343,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
                     })),
                     has_completed_contract,
                     has_recovery_contract,
+                    has_repository_contract,
                     fingerprint: *fingerprint.finalize().as_bytes(),
                 });
             }
@@ -611,6 +634,7 @@ fn survey_with_projection(
     let mut buf = Vec::new();
     let mut has_completed_contract = false;
     let mut has_recovery_contract = false;
+    let mut has_repository_contract = false;
     let mut fingerprint = blake3::Hasher::new();
     for (i, &no) in segments.iter().enumerate() {
         let path = segment_path(dir, no);
@@ -626,6 +650,7 @@ fn survey_with_projection(
         };
         has_completed_contract |= scan.has_completed_contract;
         has_recovery_contract |= scan.has_recovery_contract;
+        has_repository_contract |= scan.has_repository_contract;
         if scan.frames != 0 {
             fingerprint.update(&no.to_le_bytes());
             fingerprint.update(&scan.good_end.to_le_bytes());
@@ -664,15 +689,12 @@ fn survey_with_projection(
         first_segment: segments.first().copied(),
         fingerprint: *fingerprint.finalize().as_bytes(),
     };
-    if (canonical.is_some() || has_recovery_contract)
-        && segments
-            .first()
-            .is_some_and(|first| *first != FIRST_SEGMENT)
-    {
-        return Err(Error::RecoveryStore(
-            crate::error::RecoveryStoreError::IncompletePrefix,
-        ));
-    }
+    validate_contract_prefix(
+        segments.first(),
+        report.end,
+        has_repository_contract,
+        canonical.is_some() || has_recovery_contract,
+    )?;
     if canonical.is_some()
         || (has_completed_contract
             && segments.first() == Some(&FIRST_SEGMENT)
@@ -696,6 +718,29 @@ fn survey_with_projection(
             validated: prefix,
         },
     ))
+}
+
+fn validate_contract_prefix(
+    first: Option<&u32>,
+    end: Lsn,
+    repository: bool,
+    recovery: bool,
+) -> Result<()> {
+    if first.is_none_or(|first| *first == FIRST_SEGMENT) {
+        return Ok(());
+    }
+    if repository {
+        return Err(Error::Repository {
+            lsn: end,
+            reason: dudes_proto::repository_state::history::RepositoryStateError::Catalog,
+        });
+    }
+    if recovery {
+        return Err(Error::RecoveryStore(
+            crate::error::RecoveryStoreError::IncompletePrefix,
+        ));
+    }
+    Ok(())
 }
 
 fn fold_validation_prefix(
@@ -1208,6 +1253,8 @@ impl Witnessed {
                                 reason: reason.into(),
                             },
                         )?;
+                        dudes_proto::repository_state::history::validate_shape(&entry.record)
+                            .map_err(|reason| Error::Repository { lsn, reason })?;
                         let contract = completed_contract_payload(header, &self.buf);
                         dudes_proto::recovery::validate_record_shape(&entry.record)
                             .map_err(|reason| Error::RecoveryRecord { lsn, reason })?;
@@ -1215,55 +1262,7 @@ impl Witnessed {
                             && (header.ver != frame::REQUIRED_VERSION
                                 || header.kind != entry.record.kind().tag())
                         {
-                            if recovery::is_kind(entry.record.kind())
-                                || RecordKind::from_tag(header.kind).is_some_and(recovery::is_kind)
-                            {
-                                return Err(Error::RecoveryFrame {
-                                    lsn,
-                                    kind: header.kind,
-                                    version: header.ver,
-                                    expected_kind: entry.record.kind().tag(),
-                                });
-                            }
-                            if is_instruction_kind(entry.record.kind())
-                                || RecordKind::from_tag(header.kind)
-                                    .is_some_and(is_instruction_kind)
-                            {
-                                return Err(Error::InstructionFrame {
-                                    lsn,
-                                    kind: header.kind,
-                                    version: header.ver,
-                                    expected_kind: entry.record.kind().tag(),
-                                });
-                            }
-                            if matches!(
-                                entry.record,
-                                dudes_proto::Record::TaughtNoteTurnDecided { .. }
-                                    | dudes_proto::Record::TaughtNoteOnlyTurnIssued { .. }
-                                    | dudes_proto::Record::IdentifiedTaughtNoteTurnDecided { .. }
-                                    | dudes_proto::Record::IdentifiedTaughtNoteOnlyTurnIssued { .. }
-                            ) || matches!(
-                                RecordKind::from_tag(header.kind),
-                                Some(
-                                    RecordKind::TaughtNoteTurnDecided
-                                        | RecordKind::TaughtNoteOnlyTurnIssued
-                                        | RecordKind::IdentifiedTaughtNoteTurnDecided
-                                        | RecordKind::IdentifiedTaughtNoteOnlyTurnIssued
-                                )
-                            ) {
-                                return Err(Error::TaughtNoteFrame {
-                                    lsn,
-                                    kind: header.kind,
-                                    version: header.ver,
-                                    expected_kind: entry.record.kind().tag(),
-                                });
-                            }
-                            return Err(Error::MailWakeFrame {
-                                lsn,
-                                kind: header.kind,
-                                version: header.ver,
-                                expected_kind: entry.record.kind().tag(),
-                            });
+                            return Err(contract_frame_error(lsn, header, entry.record.kind()));
                         }
                         Ok((lsn, header.crc, entry))
                     }),
@@ -1284,6 +1283,66 @@ impl Iterator for Witnessed {
             self.done = true;
         }
         item
+    }
+}
+
+fn contract_frame_error(lsn: Lsn, header: Header, kind: RecordKind) -> Error {
+    if dudes_proto::repository_state::history::is_kind(kind)
+        || RecordKind::from_tag(header.kind)
+            .is_some_and(dudes_proto::repository_state::history::is_kind)
+    {
+        return Error::RepositoryFrame {
+            lsn,
+            kind: header.kind,
+            version: header.ver,
+            expected_kind: kind.tag(),
+        };
+    }
+    if recovery::is_kind(kind) || RecordKind::from_tag(header.kind).is_some_and(recovery::is_kind) {
+        return Error::RecoveryFrame {
+            lsn,
+            kind: header.kind,
+            version: header.ver,
+            expected_kind: kind.tag(),
+        };
+    }
+    if is_instruction_kind(kind)
+        || RecordKind::from_tag(header.kind).is_some_and(is_instruction_kind)
+    {
+        return Error::InstructionFrame {
+            lsn,
+            kind: header.kind,
+            version: header.ver,
+            expected_kind: kind.tag(),
+        };
+    }
+    if matches!(
+        kind,
+        RecordKind::TaughtNoteTurnDecided
+            | RecordKind::TaughtNoteOnlyTurnIssued
+            | RecordKind::IdentifiedTaughtNoteTurnDecided
+            | RecordKind::IdentifiedTaughtNoteOnlyTurnIssued
+    ) || matches!(
+        RecordKind::from_tag(header.kind),
+        Some(
+            RecordKind::TaughtNoteTurnDecided
+                | RecordKind::TaughtNoteOnlyTurnIssued
+                | RecordKind::IdentifiedTaughtNoteTurnDecided
+                | RecordKind::IdentifiedTaughtNoteOnlyTurnIssued
+        )
+    ) {
+        return Error::TaughtNoteFrame {
+            lsn,
+            kind: header.kind,
+            version: header.ver,
+            expected_kind: kind.tag(),
+        };
+    }
+    Error::MailWakeFrame {
+        lsn,
+        kind: header.kind,
+        version: header.ver,
+        expected_kind: kind.tag(),
     }
 }
 

@@ -436,6 +436,12 @@ impl Writer {
                 reason: reason.into(),
             }
         })?;
+        dudes_proto::repository_state::history::validate_shape(&entry.record).map_err(
+            |reason| Error::Repository {
+                lsn: Lsn::ZERO,
+                reason,
+            },
+        )?;
         let payload = serde_json::to_vec(entry).map_err(|source| Error::Encode { source })?;
         if payload.len() > MAX_PAYLOAD {
             return Err(Error::PayloadTooLarge {

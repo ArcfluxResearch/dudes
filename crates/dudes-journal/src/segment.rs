@@ -156,6 +156,18 @@ mod tests {
     )]
     fn lsns_of(record: &Record) -> Vec<Lsn> {
         match record {
+            Record::RepositoryTrustSet { catalog_lsn, .. } => vec![*catalog_lsn],
+            Record::AgentHiredWithRepositories(hire) => {
+                let mut refs = vec![hire.repositories.catalog_lsn];
+                refs.extend(
+                    hire.repositories
+                        .repositories
+                        .entries()
+                        .iter()
+                        .map(|entry| entry.value.trust_lsn),
+                );
+                refs
+            }
             Record::InstructionObservationStarted { owner, ticket, .. } => {
                 instruction_refs(*owner, *ticket)
             }
@@ -607,7 +619,8 @@ mod tests {
             | Record::TicketEdited { .. }
             | Record::TicketAssigned { .. }
             | Record::TicketStarted { .. }
-            | Record::TicketRemoved { .. } => Vec::new(),
+            | Record::TicketRemoved { .. }
+            | Record::ProjectRepositoriesRecorded { .. } => Vec::new(),
         }
     }
 
@@ -641,7 +654,7 @@ mod tests {
 
     #[test]
     fn no_sample_lsn_is_below_the_first_segment() {
-        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 79;
+        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 82;
 
         let mut swept = 0_usize;
         let mut lsns = 0_usize;

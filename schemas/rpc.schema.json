@@ -1932,6 +1932,24 @@
         }
       ]
     },
+    "CatalogRepository": {
+      "description": "One origin observed in a valid project configuration.",
+      "properties": {
+        "label": {
+          "description": "Presentation label, never an execution selector.",
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/$defs/TrustedRepository",
+          "description": "Immutable origin and common-directory identities."
+        }
+      },
+      "required": [
+        "label",
+        "origin"
+      ],
+      "type": "object"
+    },
     "Ceiling": {
       "description": "The binding ceiling of a budget decision.",
       "properties": {
@@ -4459,6 +4477,87 @@
     "Entry": {
       "description": "The journal frame payload: a [`Record`] stamped with the time it entered the machine.\n\n`at` is flattened alongside the record's own fields, so a line reads\n`{\"at\":1787394600000,\"t\":\"turn_ended\",…}` and both `jq .t` and `jq .at` work. No `Record`\nvariant may carry a field named `at` or `t`.\n\n`at` is **required** — the one pre-release exception to the rule that a payload field is only\never added within frame `ver = 1`. A `ver = 1` frame whose payload\nlacks it fails deserialisation, which is the right, visible failure for a file no released\nbuild can have produced.",
       "oneOf": [
+        {
+          "description": "A valid project repository configuration was observed. Revisions never rebind an id.",
+          "properties": {
+            "project": {
+              "description": "Stable project identity.",
+              "type": "string"
+            },
+            "repositories": {
+              "$ref": "#/$defs/RepositorySet_CatalogRepository",
+              "description": "Ordered origin bindings and their primary."
+            },
+            "t": {
+              "const": "project_repositories_recorded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "project",
+            "repositories"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Per-repository operator trust. Revocation retains its immutable origin binding.",
+          "properties": {
+            "catalog_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual catalog position observed for this action."
+            },
+            "origin": {
+              "$ref": "#/$defs/TrustedRepository",
+              "description": "Exact origin vouched for, retained on revocation."
+            },
+            "pin": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TrustPin"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Settings grant, or absence for revocation."
+            },
+            "project": {
+              "description": "Stable project identity.",
+              "type": "string"
+            },
+            "repo_id": {
+              "$ref": "#/$defs/RepoId",
+              "description": "Member of the named observed revision."
+            },
+            "t": {
+              "const": "repository_trust_set",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "project",
+            "repo_id",
+            "catalog_lsn",
+            "origin"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/RepositoryHire",
+          "description": "Atomically assigns every recorded owned copy to one restricted hire.",
+          "properties": {
+            "t": {
+              "const": "agent_hired_with_repositories",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t"
+          ],
+          "type": "object"
+        },
         {
           "description": "`agent.hire`. Creates a managed agent; there is no attached-by-default option.",
           "properties": {
@@ -8915,6 +9014,34 @@
           "type": "object"
         }
       ]
+    },
+    "ExecutionRepository": {
+      "description": "The immutable identities of one owned execution copy.",
+      "properties": {
+        "directory": {
+          "description": "Canonical working tree root.",
+          "type": "string"
+        },
+        "directory_identity": {
+          "$ref": "#/$defs/FileIdentity",
+          "description": "Working tree identity at hire."
+        },
+        "git_dir": {
+          "description": "Resolved Git administrative directory.",
+          "type": "string"
+        },
+        "git_identity": {
+          "$ref": "#/$defs/FileIdentity",
+          "description": "Administrative directory identity at hire."
+        }
+      },
+      "required": [
+        "directory",
+        "directory_identity",
+        "git_dir",
+        "git_identity"
+      ],
+      "type": "object"
     },
     "ExhaustedReason": {
       "description": "Why a goal is `Exhausted`.",
@@ -16142,6 +16269,39 @@
       "pattern": "^[A-Za-z0-9_-]{43}$",
       "type": "string"
     },
+    "OwnedRepository": {
+      "description": "One owned copy committed by an atomic hire.",
+      "properties": {
+        "base": {
+          "$ref": "#/$defs/GitCommit",
+          "description": "Recorded copy base."
+        },
+        "execution": {
+          "$ref": "#/$defs/ExecutionRepository",
+          "description": "Immutable execution binding."
+        },
+        "origin": {
+          "$ref": "#/$defs/TrustedRepository",
+          "description": "Immutable origin binding."
+        },
+        "trust_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Exact per-repository trust grant checked for this hire."
+        },
+        "worktree": {
+          "$ref": "#/$defs/WorktreeId",
+          "description": "Lease that was durable before this copy was created."
+        }
+      },
+      "required": [
+        "origin",
+        "execution",
+        "worktree",
+        "base",
+        "trust_lsn"
+      ],
+      "type": "object"
+    },
     "PayloadDigest": {
       "description": "Exact digest of decoded request bytes.",
       "properties": {
@@ -18499,6 +18659,195 @@
         }
       ]
     },
+    "RepoId": {
+      "description": "A stable repository identity within one project.",
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+      "type": "string"
+    },
+    "RepositoryEntry_CatalogRepository": {
+      "description": "One identified member of an ordered repository collection.",
+      "properties": {
+        "repo_id": {
+          "$ref": "#/$defs/RepoId",
+          "description": "Stable identity within the project."
+        },
+        "value": {
+          "$ref": "#/$defs/CatalogRepository",
+          "description": "The member's recorded facts."
+        }
+      },
+      "required": [
+        "repo_id",
+        "value"
+      ],
+      "type": "object"
+    },
+    "RepositoryEntry_OwnedRepository": {
+      "description": "One identified member of an ordered repository collection.",
+      "properties": {
+        "repo_id": {
+          "$ref": "#/$defs/RepoId",
+          "description": "Stable identity within the project."
+        },
+        "value": {
+          "$ref": "#/$defs/OwnedRepository",
+          "description": "The member's recorded facts."
+        }
+      },
+      "required": [
+        "repo_id",
+        "value"
+      ],
+      "type": "object"
+    },
+    "RepositoryHire": {
+      "description": "Ordinary hire fields beside the complete restricted repository authority.",
+      "properties": {
+        "accent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccentColour"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Named accent, when selected."
+        },
+        "budget": {
+          "$ref": "#/$defs/AgentBudget",
+          "description": "Daily admission ceilings."
+        },
+        "character": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CastCharacter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Authored appearance, when selected."
+        },
+        "department": {
+          "description": "Floor department.",
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/AgentId",
+          "description": "New agent identity."
+        },
+        "max_budget": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usd"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Recorded provider budget backstop."
+        },
+        "max_turns": {
+          "description": "Recorded provider turn limit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Recorded model selection."
+        },
+        "name": {
+          "description": "Display name.",
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider",
+          "description": "Selected engine."
+        },
+        "repositories": {
+          "$ref": "#/$defs/ScopedRepositories",
+          "description": "Complete atomic copy assignment."
+        },
+        "role": {
+          "description": "Display role.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "role",
+        "department",
+        "provider",
+        "budget",
+        "repositories"
+      ],
+      "type": "object"
+    },
+    "RepositoryPolicy": {
+      "description": "The restricted execution contract recorded by a scoped hire.",
+      "oneOf": [
+        {
+          "const": "working_tree_v1",
+          "description": "Working tree edits only; Git metadata remains protected.",
+          "type": "string"
+        }
+      ]
+    },
+    "RepositorySet_CatalogRepository": {
+      "description": "One through eight distinct repositories with a present primary member.",
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/RepositoryEntry_CatalogRepository"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
+        },
+        "primary": {
+          "$ref": "#/$defs/RepoId"
+        }
+      },
+      "required": [
+        "primary",
+        "entries"
+      ],
+      "type": "object"
+    },
+    "RepositorySet_OwnedRepository": {
+      "description": "One through eight distinct repositories with a present primary member.",
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/RepositoryEntry_OwnedRepository"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
+        },
+        "primary": {
+          "$ref": "#/$defs/RepoId"
+        }
+      },
+      "required": [
+        "primary",
+        "entries"
+      ],
+      "type": "object"
+    },
     "Request": {
       "description": "A call from a client to the daemon.",
       "properties": {
@@ -18848,6 +19197,34 @@
       "required": [
         "sampler",
         "policy"
+      ],
+      "type": "object"
+    },
+    "ScopedRepositories": {
+      "description": "The complete repository authority owned by one scoped hire.",
+      "properties": {
+        "catalog_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Immutable observed catalog revision, identified by its actual journal position."
+        },
+        "policy": {
+          "$ref": "#/$defs/RepositoryPolicy",
+          "description": "Required provider confinement policy."
+        },
+        "project": {
+          "$ref": "#/$defs/RecordedWorkspace",
+          "description": "Recorded enrollment identity and label."
+        },
+        "repositories": {
+          "$ref": "#/$defs/RepositorySet_OwnedRepository",
+          "description": "Every owned copy, with the recorded primary and order."
+        }
+      },
+      "required": [
+        "project",
+        "catalog_lsn",
+        "policy",
+        "repositories"
       ],
       "type": "object"
     },

@@ -1,0 +1,670 @@
+//! Restricted repository history is readable while provider execution remains unavailable.
+#![cfg(unix)]
+
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use duded::predicate::{PredicateOutcome, PredicateRunner};
+use duded::startup::Witness;
+use duded::{ExitCause, boot};
+use dudes_host::{OneShot, OneShotOutcome};
+use dudes_journal::{Projections, Reader, Writer, replay};
+use dudes_proto::record::{FileIdentity, RecordedWorkspace, samples};
+use dudes_proto::repository::{
+    CatalogRepository, ExecutionRepository, HireRepositories, OwnedRepository, RepoId,
+    RepositoryEntry, RepositoryHire, RepositoryPolicy, RepositorySet, ScopedRepositories,
+};
+use dudes_proto::{Entry, Record, RecordKind, WorktreeRemoval};
+use dudes_rpc::Client;
+use dudes_types::{AgentId, GitCommit, Lsn, Timestamp, WorktreeId};
+use serde_json::json;
+
+mod common;
+use common::{Fixture, SharedHost, TestClock};
+
+struct RealRunner(OneShot);
+
+impl PredicateRunner for RealRunner {
+    fn run(
+        &self,
+        spec: &dudes_providers::launch::LaunchSpec,
+        timeout: Duration,
+    ) -> io::Result<PredicateOutcome> {
+        self.0.run(spec, timeout).map(|outcome| match outcome {
+            OneShotOutcome::Finished {
+                exit,
+                output_tail,
+                timed_out,
+            } => PredicateOutcome::Finished {
+                exit,
+                output_tail,
+                timed_out,
+            },
+            OneShotOutcome::Swept => PredicateOutcome::Swept,
+        })
+    }
+
+    fn sweep(&self) {
+        self.0.sweep();
+    }
+}
+
+fn git(cwd: &Path, args: &[&str]) -> String {
+    let git = duded::worktree::git::Git::new(
+        Arc::new(RealRunner(OneShot::new())),
+        std::env::var_os("PATH"),
+        Duration::from_secs(3),
+    );
+    let args: Vec<_> = args.iter().map(std::ffi::OsStr::new).collect();
+    git.exec(cwd, &args, Duration::from_secs(3)).unwrap()
+}
+
+fn identity(path: &Path) -> FileIdentity {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).unwrap();
+    FileIdentity {
+        device: meta.dev(),
+        inode: meta.ino(),
+    }
+}
+
+fn append(writer: &mut Writer, record: Record) -> Lsn {
+    writer
+        .append(&Entry {
+            at: Timestamp::from_unix_millis(1_000),
+            record,
+        })
+        .unwrap()
+}
+
+fn create_origin(root: &Path, name: &str) -> RepositoryEntry<CatalogRepository> {
+    let origin = root.join(name);
+    std::fs::create_dir(&origin).unwrap();
+    git(&origin, &["init", "--quiet", "-b", "main"]);
+    std::fs::write(origin.join("tracked.txt"), "initial\n").unwrap();
+    git(&origin, &["add", "tracked.txt"]);
+    git(
+        &origin,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "initial",
+        ],
+    );
+    let common = origin.join(".git");
+    RepositoryEntry {
+        repo_id: RepoId::parse(name).unwrap(),
+        value: CatalogRepository {
+            label: name.into(),
+            origin: dudes_proto::record::TrustedRepository {
+                directory_identity: identity(&origin),
+                common_identity: identity(&common),
+                directory: origin,
+                common_dir: common,
+            },
+        },
+    }
+}
+
+fn create_copy(
+    writer: &mut Writer,
+    entry: &RepositoryEntry<CatalogRepository>,
+    state: &Path,
+    index: usize,
+    trust_lsn: Lsn,
+) -> OwnedRepository {
+    let worktree = WorktreeId::from_bytes([u8::try_from(index + 1).unwrap(); 16]);
+    let path = state.join("worktrees").join(worktree.to_string());
+    let origin = &entry.value.origin;
+    let branch = format!("dudes/{}", entry.repo_id.as_str());
+    let base = GitCommit::parse(&git(&origin.directory, &["rev-parse", "HEAD"])).unwrap();
+    append(
+        writer,
+        Record::WorktreeLeased {
+            worktree,
+            origin: origin.directory.clone(),
+            path: path.clone(),
+            branch: branch.clone(),
+            base,
+            from: None,
+        },
+    );
+    git(
+        &origin.directory,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            &branch,
+            path.to_str().unwrap(),
+            &base.to_string(),
+        ],
+    );
+    let git_dir = PathBuf::from(git(&path, &["rev-parse", "--absolute-git-dir"]));
+    OwnedRepository {
+        origin: origin.clone(),
+        execution: ExecutionRepository {
+            directory_identity: identity(&path),
+            git_identity: identity(&git_dir),
+            directory: path,
+            git_dir,
+        },
+        worktree,
+        base,
+        trust_lsn,
+    }
+}
+
+struct Story {
+    hire: RepositoryHire,
+    hired_lsn: Lsn,
+}
+
+impl Story {
+    fn seed(fixture: &Fixture) -> Self {
+        let root = std::fs::canonicalize(fixture.runtime.path()).unwrap();
+        let state = std::fs::canonicalize(fixture.state.path()).unwrap();
+        let catalog = ["web", "api", "docs"]
+            .into_iter()
+            .map(|name| create_origin(&root, name))
+            .collect();
+        let catalog = RepositorySet::new(RepoId::parse("api").unwrap(), catalog).unwrap();
+        let (mut writer, _) =
+            dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
+        let catalog_lsn = append(
+            &mut writer,
+            Record::ProjectRepositoriesRecorded {
+                project: "service".into(),
+                repositories: catalog.clone(),
+            },
+        );
+        let Record::WorkspaceTrustSet { pin, .. } = samples::record(RecordKind::WorkspaceTrustSet)
+        else {
+            unreachable!()
+        };
+        let mut grants = std::collections::BTreeMap::new();
+        for entry in catalog.entries() {
+            let lsn = append(
+                &mut writer,
+                Record::RepositoryTrustSet {
+                    project: "service".into(),
+                    repo_id: entry.repo_id.clone(),
+                    catalog_lsn,
+                    origin: entry.value.origin.clone(),
+                    pin: pin.clone(),
+                },
+            );
+            grants.insert(entry.repo_id.clone(), lsn);
+        }
+        let mut lease_order: Vec<_> = catalog.entries().iter().collect();
+        lease_order.sort_by_key(|entry| &entry.repo_id);
+        let mut copies = std::collections::BTreeMap::new();
+        for (index, entry) in lease_order.into_iter().enumerate() {
+            copies.insert(
+                entry.repo_id.clone(),
+                create_copy(&mut writer, entry, &state, index, grants[&entry.repo_id]),
+            );
+        }
+        let repositories = RepositorySet::new(
+            catalog.primary_id().clone(),
+            catalog
+                .entries()
+                .iter()
+                .map(|entry| RepositoryEntry {
+                    repo_id: entry.repo_id.clone(),
+                    value: copies[&entry.repo_id].clone(),
+                })
+                .collect(),
+        )
+        .unwrap();
+        let hire = RepositoryHire {
+            id: AgentId::from_parts(3, 1),
+            name: "Kim".into(),
+            role: "engineer".into(),
+            department: "eng".into(),
+            character: None,
+            accent: None,
+            provider: dudes_types::Provider::Claude,
+            budget: dudes_proto::AgentBudget {
+                usd_per_day: None,
+                tokens_per_day: None,
+            },
+            max_turns: None,
+            max_budget: None,
+            model: None,
+            repositories: ScopedRepositories {
+                project: RecordedWorkspace {
+                    id: "service".into(),
+                    label: "Service".into(),
+                },
+                catalog_lsn,
+                policy: RepositoryPolicy::WorkingTreeV1,
+                repositories,
+            },
+        };
+        let hired_lsn = append(
+            &mut writer,
+            Record::AgentHiredWithRepositories(Box::new(hire.clone())),
+        );
+        Self { hire, hired_lsn }
+    }
+
+    fn copies(&self) -> impl Iterator<Item = &OwnedRepository> {
+        self.hire
+            .repositories
+            .repositories
+            .entries()
+            .iter()
+            .map(|entry| &entry.value)
+    }
+}
+
+fn start(fixture: &Fixture, host: &SharedHost) -> (common::Running, duded::Settings) {
+    let settings = fixture.settings();
+    let daemon = boot(
+        &settings,
+        common::seams(
+            &settings,
+            host.clone(),
+            Arc::new(RealRunner(OneShot::new())),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        ),
+    )
+    .unwrap();
+    (common::start(daemon), settings)
+}
+
+fn credential(settings: &duded::Settings) -> dudes_proto::rpc::cred::OperatorCredential {
+    dudes_proto::rpc::cred::OperatorCredential::new(
+        std::fs::read_to_string(
+            settings
+                .runtime_dir
+                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn all_committed_copies_survive_boot_and_have_identical_live_warm_and_rebuilt_authority() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let settings = fixture.settings();
+    let host = SharedHost::new();
+    let daemon = boot(
+        &settings,
+        common::seams(
+            &settings,
+            host.clone(),
+            Arc::new(RealRunner(OneShot::new())),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        ),
+    )
+    .unwrap();
+    let agent = &daemon.world().agents[&story.hire.id];
+    assert_eq!(
+        agent.repositories,
+        HireRepositories::Scoped(story.hire.repositories.clone())
+    );
+    assert_eq!(agent.repositories.worktrees().count(), 3);
+    assert!(
+        story
+            .copies()
+            .all(|repo| daemon.world().worktrees[&repo.worktree].agent == Some(story.hire.id))
+    );
+    assert!(
+        story
+            .copies()
+            .all(|repo| daemon.world().worktree_state(repo.worktree)
+                == Some(dudes_supervisor::WorktreeState::Active))
+    );
+    let mut running = common::start(daemon);
+    let response = Client::connect(settings.socket())
+        .unwrap()
+        .call_as_operator(
+            dudes_proto::rpc::Method::AgentList,
+            Some(json!({})),
+            credential(&settings),
+        )
+        .unwrap();
+    assert!(response.error.is_none());
+    let attached = Client::connect(settings.socket())
+        .unwrap()
+        .call_as_operator(
+            dudes_proto::rpc::Method::AgentAttach,
+            Some(json!({"agent": story.hire.id, "cols": 80, "rows": 24})),
+            credential(&settings),
+        )
+        .unwrap();
+    assert!(
+        attached.error.is_some(),
+        "restricted attached execution is unavailable"
+    );
+    running.stop(ExitCause::Ended);
+    assert!(host.spawned().is_empty());
+    assert!(story.copies().all(|repo| repo.execution.directory.is_dir()));
+    assert!(
+        !fixture
+            .records()
+            .iter()
+            .any(|record| matches!(record, Record::WorktreeRemoved { .. })
+                || record.turn_issue().is_some())
+    );
+
+    let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
+    let cache = settings.state_dir.join(duded::boot::PROJECTION_FILE);
+    let mut warm = Projections::open(&cache).unwrap();
+    assert_eq!(replay(&reader, &mut warm).unwrap().applied, 0);
+    let expected = warm.export().unwrap();
+    let row = warm.agent(story.hire.id).unwrap().unwrap();
+    assert_eq!(row.hired_lsn, story.hired_lsn);
+    assert_eq!(
+        row.repositories,
+        HireRepositories::Scoped(story.hire.repositories.clone())
+    );
+    assert_eq!(warm.repository_projects().unwrap()[0].revisions.len(), 1);
+    assert_eq!(warm.repository_trust().unwrap().len(), 3);
+    assert!(
+        warm.worktrees()
+            .unwrap()
+            .iter()
+            .all(|row| row.agent == Some(story.hire.id))
+    );
+    drop(warm);
+    let mut rebuilt = Projections::open(&fixture.runtime.path().join("rebuilt.redb")).unwrap();
+    assert!(replay(&reader, &mut rebuilt).unwrap().applied > 0);
+    assert_eq!(rebuilt.export().unwrap(), expected);
+    drop(rebuilt);
+    std::fs::remove_file(cache).unwrap();
+    let (mut running, _) = start(&fixture, &host);
+    running.stop(ExitCause::Ended);
+    assert!(host.spawned().is_empty());
+    assert!(story.copies().all(|repo| repo.execution.directory.is_dir()));
+}
+
+#[test]
+fn retiring_a_plural_hire_releases_every_copy_without_removing_it() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let host = SharedHost::new();
+    let (mut running, settings) = start(&fixture, &host);
+    let mut client = Client::connect(settings.socket()).unwrap();
+    let retired = client
+        .call_as_operator(
+            dudes_proto::rpc::Method::AgentRetire,
+            Some(json!({ "agent": story.hire.id, "reason": "completed" })),
+            credential(&settings),
+        )
+        .unwrap();
+    assert!(retired.error.is_none());
+    let listed = client
+        .call_as_operator(
+            dudes_proto::rpc::Method::WorktreeList,
+            Some(json!({})),
+            credential(&settings),
+        )
+        .unwrap();
+    let copies: Vec<dudes_proto::rpc::worktree::WorktreeEntry> =
+        serde_json::from_value(listed.result.unwrap()).unwrap();
+    assert_eq!(copies.len(), 3);
+    assert!(copies.iter().all(|copy| copy.agent == Some(story.hire.id)
+        && copy.state == dudes_proto::WorktreeViewState::Released));
+    running.stop(ExitCause::Ended);
+    assert!(story.copies().all(|repo| repo.execution.directory.is_dir()));
+    assert!(host.spawned().is_empty());
+}
+
+#[test]
+fn crash_before_the_atomic_hire_discards_every_pending_copy() {
+    let fixture = Fixture::new();
+    let root = std::fs::canonicalize(fixture.runtime.path()).unwrap();
+    let state = std::fs::canonicalize(fixture.state.path()).unwrap();
+    let entries = ["api", "docs", "web"]
+        .into_iter()
+        .map(|name| create_origin(&root, name))
+        .collect();
+    let catalog = RepositorySet::new(RepoId::parse("api").unwrap(), entries).unwrap();
+    let (mut writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
+    let catalog_lsn = append(
+        &mut writer,
+        Record::ProjectRepositoriesRecorded {
+            project: "service".into(),
+            repositories: catalog.clone(),
+        },
+    );
+    let Record::WorkspaceTrustSet { pin, .. } = samples::record(RecordKind::WorkspaceTrustSet)
+    else {
+        unreachable!()
+    };
+    let mut copies = Vec::new();
+    for (index, entry) in catalog.entries().iter().take(2).enumerate() {
+        let trust_lsn = append(
+            &mut writer,
+            Record::RepositoryTrustSet {
+                project: "service".into(),
+                repo_id: entry.repo_id.clone(),
+                catalog_lsn,
+                origin: entry.value.origin.clone(),
+                pin: pin.clone(),
+            },
+        );
+        copies.push(create_copy(&mut writer, entry, &state, index, trust_lsn));
+    }
+    drop(writer);
+    assert_eq!(
+        copies.len(),
+        2,
+        "the crash prefix stops before the third lease"
+    );
+    let host = SharedHost::new();
+    let (mut running, _) = start(&fixture, &host);
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let removed = fixture
+            .records()
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record,
+                    Record::WorktreeRemoved {
+                        how: WorktreeRemoval::NeverAssigned,
+                        ..
+                    }
+                )
+            })
+            .count();
+        if removed == 2 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "every pending lease must settle"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    running.stop(ExitCause::Ended);
+    assert!(copies.iter().all(|repo| !repo.execution.directory.exists()));
+    assert!(host.spawned().is_empty());
+}
+
+#[test]
+fn losing_a_nonprimary_copy_holds_the_whole_hire_and_retains_the_other_copies() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let missing = &story.hire.repositories.repositories.entries()[2].value;
+    std::fs::rename(
+        &missing.execution.directory,
+        missing
+            .execution
+            .directory
+            .with_extension("removed-outside-daemon"),
+    )
+    .unwrap();
+    let host = SharedHost::new();
+    let (mut running, _) = start(&fixture, &host);
+    running.stop(ExitCause::Ended);
+    assert!(fixture.records().iter().any(|record| matches!(record, Record::AgentHeld { agent, cause: dudes_proto::AutomaticHold::WorktreeMissing { .. }, .. } if *agent == story.hire.id)));
+    assert!(
+        !fixture
+            .records()
+            .iter()
+            .any(|record| matches!(record, Record::WorktreeRemoved { .. })
+                || record.turn_issue().is_some())
+    );
+    assert!(
+        story
+            .copies()
+            .filter(|repo| repo.worktree != missing.worktree)
+            .all(|repo| repo.execution.directory.exists())
+    );
+    assert!(host.spawned().is_empty());
+}
+
+#[test]
+fn a_replayed_scoped_goal_is_held_before_any_legacy_issue_or_provider_spawn() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let mut goal = samples::record(RecordKind::GoalSet);
+    let Record::GoalSet { agent, .. } = &mut goal else {
+        unreachable!()
+    };
+    *agent = story.hire.id;
+    let (mut writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
+    append(&mut writer, goal);
+    drop(writer);
+    let host = SharedHost::new();
+    let (mut running, _) = start(&fixture, &host);
+    running.stop(ExitCause::Ended);
+    assert!(
+        fixture
+            .records()
+            .iter()
+            .any(|record| matches!(record, Record::AgentHeld {
+        agent, cause: dudes_proto::AutomaticHold::LaunchRefused { .. }, ..
+    } if *agent == story.hire.id))
+    );
+    assert!(
+        !fixture
+            .records()
+            .iter()
+            .any(|record| record.turn_issue().is_some())
+    );
+    assert!(host.spawned().is_empty());
+}
+
+#[test]
+fn a_replaced_nonprimary_copy_is_held_even_when_its_gitfile_still_names_the_origin() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let replaced = &story.hire.repositories.repositories.entries()[2].value;
+    let gitfile = std::fs::read(replaced.execution.directory.join(".git")).unwrap();
+    std::fs::rename(
+        &replaced.execution.directory,
+        replaced
+            .execution
+            .directory
+            .with_extension("replaced-outside-daemon"),
+    )
+    .unwrap();
+    std::fs::create_dir(&replaced.execution.directory).unwrap();
+    std::fs::write(replaced.execution.directory.join(".git"), gitfile).unwrap();
+    assert_ne!(
+        identity(&replaced.execution.directory),
+        replaced.execution.directory_identity
+    );
+    let host = SharedHost::new();
+    let (mut running, _) = start(&fixture, &host);
+    running.stop(ExitCause::Ended);
+    assert!(
+        fixture
+            .records()
+            .iter()
+            .any(|record| matches!(record, Record::AgentHeld {
+        agent, cause: dudes_proto::AutomaticHold::WorktreeMissing { worktree }, ..
+    } if *agent == story.hire.id && *worktree == replaced.worktree))
+    );
+    assert!(
+        !fixture
+            .records()
+            .iter()
+            .any(|record| matches!(record, Record::WorktreeRemoved { .. })
+                || record.turn_issue().is_some())
+    );
+    assert!(story.copies().all(|repo| repo.execution.directory.exists()));
+    assert!(host.spawned().is_empty());
+}
+
+#[test]
+fn malformed_repository_history_refuses_boot_even_when_the_cache_has_advanced_past_it() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let settings = fixture.settings();
+    let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
+    let mut cache =
+        Projections::open(&settings.state_dir.join(duded::boot::PROJECTION_FILE)).unwrap();
+    replay(&reader, &mut cache).unwrap();
+    let host = SharedHost::new();
+    let seams = common::seams(
+        &settings,
+        host.clone(),
+        Arc::new(RealRunner(OneShot::new())),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    let mut origin = story.copies().next().unwrap().origin.clone();
+    origin.directory_identity.inode += 1_000_000;
+    let (mut writer, _) = dudes_journal::open(&fixture.journal_dir(), settings.journal).unwrap();
+    let bad_lsn = append(
+        &mut writer,
+        Record::RepositoryTrustSet {
+            project: story.hire.repositories.project.id.clone(),
+            repo_id: story.hire.repositories.repositories.entries()[0]
+                .repo_id
+                .clone(),
+            catalog_lsn: story.hire.repositories.catalog_lsn,
+            origin,
+            pin: None,
+        },
+    );
+    let tail = Entry {
+        at: Timestamp::from_unix_millis(1_001),
+        record: Record::Pause {
+            agent: story.hire.id,
+            browser: None,
+        },
+    };
+    let (lsn, crc) = writer.append_witnessed(&tail).unwrap();
+    drop(writer);
+    cache.apply(lsn, crc, &tail).unwrap();
+    assert!(cache.last_applied_lsn() > bad_lsn);
+    drop(cache);
+    let path = dudes_journal::segment::segment_path(&fixture.journal_dir(), bad_lsn.segment());
+    let before = std::fs::read(&path).unwrap();
+    let result = boot(&settings, seams);
+    let error = match result {
+        Ok(_) => panic!("malformed repository history was admitted"),
+        Err(error) => format!("{error:#}"),
+    };
+    assert!(
+        error.contains("repository trust grant does not match"),
+        "{error}"
+    );
+    assert!(!settings.socket().exists());
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    assert!(host.spawned().is_empty());
+}

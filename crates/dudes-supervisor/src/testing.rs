@@ -830,6 +830,18 @@ impl Harness {
     fn rebuild(&mut self, missing: Option<Vec<AgentId>>) {
         self.replay_journal(FakeClock::ticking(1_787_394_700_000, 1));
         if let Some(missing) = missing {
+            let missing = missing
+                .into_iter()
+                .filter_map(|agent| {
+                    self.supervisor
+                        .world()
+                        .agents
+                        .get(&agent)?
+                        .repositories
+                        .primary_worktree()
+                        .map(|worktree| (agent, worktree))
+                })
+                .collect();
             self.drive(Input::MissingWorktrees(missing));
         }
         self.drive(Input::Started);

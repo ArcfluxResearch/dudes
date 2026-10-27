@@ -1278,17 +1278,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// Hold every live agent whose recorded worktree is gone. A restart reads the
     /// recorded directory and never falls back to the repository, which would be the clobbering
     /// the worktree exists to stop.
-    fn missing_worktrees(&self) -> Vec<AgentId> {
+    fn missing_worktrees(&self) -> Vec<(AgentId, dudes_types::WorktreeId)> {
         let world = self.sup.world();
         world
             .agents
             .iter()
             .filter(|(_, row)| !row.retired)
             .filter_map(|(agent, row)| {
-                let tree = world
-                    .worktrees
-                    .get(&row.repositories.singleton()?.worktree()?)?;
-                (!crate::worktree::is_worktree(&tree.path, &tree.origin)).then_some(*agent)
+                let missing = match &row.repositories {
+                    dudes_proto::repository::HireRepositories::Legacy(repository) => {
+                        let worktree = repository.worktree()?;
+                        let tree = world.worktrees.get(&worktree)?;
+                        (!crate::worktree::is_worktree(&tree.path, &tree.origin))
+                            .then_some(worktree)
+                    }
+                    dudes_proto::repository::HireRepositories::Scoped(scope) => scope
+                        .repositories
+                        .entries()
+                        .iter()
+                        .find(|entry| !crate::worktree::is_owned_repository(&entry.value))
+                        .map(|entry| entry.value.worktree),
+                };
+                missing.map(|worktree| (*agent, worktree))
             })
             .collect()
     }
