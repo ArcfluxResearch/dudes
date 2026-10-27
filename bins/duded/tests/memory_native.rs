@@ -831,8 +831,8 @@ fn a_failed_memory_search_fixture_releases_its_paused_writer() {
     assert_paused_failure_unwinds(memory_search_retirement_with_failure);
 }
 
-struct ReleaseMemoryPause(duded::runtime::MemoryCondensePause);
-impl Drop for ReleaseMemoryPause {
+struct ReleaseWriterPause(PausedWriter);
+impl Drop for ReleaseWriterPause {
     fn drop(&mut self) {
         self.0.release();
     }
@@ -867,8 +867,8 @@ fn summary_invalidation_with_failure(failure_while_paused: PausedFailure) {
     )
     .unwrap();
     let pause = daemon.memory_condense_pause();
-    let release = ReleaseMemoryPause(pause.clone());
     let mut running = common::start(daemon);
+    let release = ReleaseWriterPause(PausedWriter::Condense(pause.clone()));
     let work = fixture.state.path().join("fenced");
     std::fs::create_dir(&work).unwrap();
     let agent = common::hire(&running.handle, &work);
@@ -1086,6 +1086,7 @@ fn memory_read_retirement_with_failure(failure_while_paused: PausedFailure) {
         .into_iter()
         .find_map(|(lsn, entry)| matches!(entry.record, Record::MemoryAppend { .. }).then_some(lsn))
         .unwrap();
+    let release = ReleaseWriterPause(PausedWriter::Retirement(pause.clone()));
     pause.arm(duded::runtime::OnboardingPausePoint::BeforeRetirePermit);
     let retirement = running
         .handle
@@ -1119,7 +1120,7 @@ fn memory_read_retirement_with_failure(failure_while_paused: PausedFailure) {
         read.try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty)
     ));
-    pause.release();
+    drop(release);
     retirement.recv_timeout(WAIT).unwrap().unwrap();
     let refused = read.recv_timeout(WAIT).unwrap().unwrap_err();
     assert_eq!(refused.code, -32004);
@@ -1177,6 +1178,7 @@ fn memory_search_retirement_with_failure(failure_while_paused: PausedFailure) {
     let work = fixture.state.path().join("alpha");
     let agent = hire_at(&running, &work);
     await_file(&work.join("first"));
+    let release = ReleaseWriterPause(PausedWriter::Retirement(pause.clone()));
     pause.arm(duded::runtime::OnboardingPausePoint::BeforeRetirePermit);
     let retirement = running
         .handle
@@ -1205,7 +1207,7 @@ fn memory_search_retirement_with_failure(failure_while_paused: PausedFailure) {
         queued.try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty)
     ));
-    pause.release();
+    drop(release);
     retirement.recv_timeout(WAIT).unwrap().unwrap();
     let refused = queued.recv_timeout(WAIT).unwrap().unwrap_err();
     assert_eq!(refused.code, -32004);
