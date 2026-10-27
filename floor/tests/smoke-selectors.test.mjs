@@ -7,7 +7,7 @@ import { driverSelectors, missingSelectors, renderedElements } from './helpers/s
 const root = new URL('../src/', import.meta.url);
 const files = new Map(readdirSync(root, { recursive: true }).filter((path) => /\.tsx?$/.test(path))
   .map((path) => [fileURLToPath(new URL(path, root)), readFileSync(new URL(path, root), 'utf8')]));
-const drivers = ['smoke', 'journey'].map((name) => readFileSync(new URL(`../../xtask/src/${name}.mjs`, root), 'utf8'));
+const drivers = ['../../xtask/src/smoke.mjs', '../../xtask/src/journey.mjs'].map((path) => readFileSync(new URL(path, root), 'utf8'));
 
 let elements;
 
