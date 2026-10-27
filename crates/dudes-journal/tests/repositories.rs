@@ -397,6 +397,81 @@ fn required_repository_headers_are_exact_and_malformed_history_cannot_hide_behin
 }
 
 #[test]
+fn unknown_repository_hire_fields_refuse_before_open_or_warm_replay_changes_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut writer, _) = open(
+        dir.path(),
+        JournalOptions {
+            fsync: Fsync::None,
+            checkpoint_every: 0,
+            ..JournalOptions::default()
+        },
+    )
+    .unwrap();
+    let (mut prefix, mut hire) = authority();
+    hire.repositories.catalog_lsn = writer.append(&prefix[0]).unwrap();
+    let Record::RepositoryTrustSet { catalog_lsn, .. } = &mut prefix[1].record else {
+        unreachable!()
+    };
+    *catalog_lsn = hire.repositories.catalog_lsn;
+    let mut copy = hire.repositories.repositories.entries()[0].clone();
+    copy.value.trust_lsn = writer.append(&prefix[1]).unwrap();
+    hire.repositories.repositories = RepositorySet::new(copy.repo_id.clone(), vec![copy]).unwrap();
+    writer.append(&prefix[2]).unwrap();
+    let agent = hire.id;
+    let hire = entry(Record::AgentHiredWithRepositories(Box::new(hire)));
+    let hire_lsn = writer.append(&hire).unwrap();
+    drop(writer);
+
+    let reader = Reader::open(dir.path()).unwrap().0;
+    let mut warm = Projections::in_memory().unwrap();
+    assert_eq!(replay(&reader, &mut warm).unwrap().applied, 4);
+    let path = dudes_journal::segment::segment_path(dir.path(), hire_lsn.segment());
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes.truncate(usize::try_from(hire_lsn.offset()).unwrap());
+    let mut extended = serde_json::to_value(&hire).unwrap();
+    extended["browser_onboarding"] = serde_json::json!({"attempt": "future"});
+    dudes_journal::frame::encode_required(
+        RecordKind::AgentHiredWithRepositories,
+        &serde_json::to_vec(&extended).unwrap(),
+        &mut bytes,
+    )
+    .unwrap();
+    let tail = entry(Record::Pause {
+        agent,
+        browser: None,
+    });
+    let tail_lsn =
+        Lsn::from_parts(hire_lsn.segment(), u64::try_from(bytes.len()).unwrap()).unwrap();
+    let payload = serde_json::to_vec(&tail).unwrap();
+    dudes_journal::frame::encode(tail.record.kind().tag(), &payload, &mut bytes).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    warm.apply(
+        tail_lsn,
+        dudes_journal::frame::crc32c(1, tail.record.kind().tag(), &payload),
+        &tail,
+    )
+    .unwrap();
+    assert!(warm.last_applied_lsn() > hire_lsn);
+    let before = warm.export().unwrap();
+
+    for result in [
+        Reader::open(dir.path()).map(|_| ()),
+        open(dir.path(), JournalOptions::default()).map(|_| ()),
+        replay(&reader, &mut warm).map(|_| ()),
+    ] {
+        assert!(
+            matches!(result, Err(Error::Decode { lsn, ref source })
+                if lsn == hire_lsn
+                    && source.to_string().contains("unknown field `browser_onboarding`")),
+            "{result:?}"
+        );
+    }
+    assert_eq!(warm.export().unwrap(), before);
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
+#[test]
 fn a_legacy_issue_cannot_reinterpret_a_scoped_hire_as_singleton_authority() {
     let (entries, hire) = authority();
     let mut store = Projections::in_memory().unwrap();
