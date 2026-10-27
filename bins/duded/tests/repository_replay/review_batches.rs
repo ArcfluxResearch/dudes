@@ -140,16 +140,16 @@ impl ReviewLog {
         turn
     }
 
-    fn check(&mut self, turn: TurnId) -> Lsn {
+    fn check(&mut self, turn: Option<TurnId>, pass: bool) -> Lsn {
         self.append(Record::PredicateResult {
             goal: self.goal,
-            turn: Some(turn),
+            turn,
             provenance: Provenance::Observed,
-            pass: true,
+            pass,
             evidence: Evidence::Command {
                 argv: vec!["/usr/bin/true".into()],
                 program: Some("/usr/bin/true".into()),
-                exit: Some(0),
+                exit: Some(i32::from(!pass)),
                 output_tail: String::new(),
             },
         })
@@ -233,7 +233,7 @@ fn complete_two_of_three_batches_survive_reopen_and_rebuild_with_unknown_freshne
     );
     let baseline_lsn = log.append(Record::TicketBaselineBatchRecorded(complete));
     let turn = log.issue();
-    let check_lsn = log.check(turn);
+    let check_lsn = log.check(Some(turn), true);
     let stamp = log.stamp(baseline_lsn, check_lsn);
     let mut unknown = stamp.clone();
     unknown.members[1].outcome = RepositoryStampOutcome::Unavailable {
@@ -346,7 +346,7 @@ fn declared_batches_refuse_missing_reordered_foreign_root_and_round_members() {
     log.refuses(Record::TicketBaselineBatchRecorded(wrong_start));
     let baseline_lsn = log.append(Record::TicketBaselineBatchRecorded(baseline));
     let turn = log.issue();
-    let check_lsn = log.check(turn);
+    let check_lsn = log.check(Some(turn), true);
     let stamp = log.stamp(baseline_lsn, check_lsn);
     let mut missing = stamp.clone();
     missing.members.pop();
@@ -356,6 +356,11 @@ fn declared_batches_refuse_missing_reordered_foreign_root_and_round_members() {
         root.inode += 1;
     }
     log.refuses(Record::TicketReviewBatchStamped(foreign));
+    let unbound_check = log.check(None, true);
+    log.refuses(Record::TicketReviewBatchStamped(RepositoryStampBatch {
+        check_lsn: unbound_check,
+        ..stamp.clone()
+    }));
     let wrong_check = log.append(Record::PredicateResult {
         goal: log.goal,
         turn: Some(turn),
@@ -409,4 +414,57 @@ fn a_bad_batch_behind_a_warm_cursor_is_refused_before_replay_or_repair() {
     ));
     assert_eq!(log.projection.export().unwrap(), expected);
     assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn an_already_satisfied_ticket_records_its_review_without_issuing_a_turn() {
+    let fixture = Fixture::new();
+    let mut log = ReviewLog::new(&fixture);
+    let early_check = log.check(None, true);
+    assert!(
+        log.world
+            .repository_review(log.goal)
+            .unwrap()
+            .check
+            .is_none()
+    );
+    let baseline = log.baseline();
+    let baseline_lsn = log.append(Record::TicketBaselineBatchRecorded(baseline));
+    log.refuses(Record::TicketReviewBatchStamped(
+        log.stamp(baseline_lsn, early_check),
+    ));
+    let failed_check = log.check(None, false);
+    let failed_stamp = log.stamp(baseline_lsn, failed_check);
+    log.append(Record::TicketReviewBatchStamped(failed_stamp));
+    assert_eq!(log.readiness(), RepositoryReviewReadiness::CheckFailed);
+    let check_lsn = log.check(None, true);
+    let stamp = log.stamp(baseline_lsn, check_lsn);
+    log.append(Record::TicketReviewBatchStamped(stamp));
+    assert_eq!(log.readiness(), RepositoryReviewReadiness::Complete);
+    assert!(log.world.turns.is_empty());
+    assert!(log.projection.turns().unwrap().is_empty());
+    log.append(Record::Pause {
+        agent: log.story.hire.id,
+        browser: None,
+    });
+    drop(log);
+    let host = SharedHost::new();
+    let (mut running, settings) = start(&fixture, &host);
+    let response = Client::connect(settings.socket())
+        .unwrap()
+        .call_as_operator(
+            dudes_proto::rpc::Method::AgentList,
+            Some(json!({})),
+            credential(&settings),
+        )
+        .unwrap();
+    assert!(response.error.is_none());
+    running.stop(ExitCause::Ended);
+    assert!(host.spawned().is_empty());
+    assert!(
+        !fixture
+            .records()
+            .iter()
+            .any(|record| record.turn_issue().is_some())
+    );
 }
