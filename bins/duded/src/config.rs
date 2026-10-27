@@ -7,6 +7,7 @@ use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 
 use dudes_journal::MemoryCondenseConfig;
+use dudes_proto::repository::{RepoId, RepositoryEntry, RepositorySet};
 use dudes_proto::rpc::goal::ENROLLED_CHECK_ID;
 use dudes_proto::{AgentBudget, GoalBudget, Predicate, Spend};
 use dudes_providers::codex::config::CodexConfig;
@@ -15,7 +16,9 @@ use dudes_types::{IsolationMode, Provider, Tokens, Usd};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::floor_actions::{CatalogError, EnrolledCheck, Enrollment, Profile, valid_workspace_id};
+use crate::floor_actions::{
+    CatalogError, ConfiguredRepository, EnrolledCheck, Enrollment, Profile, valid_workspace_id,
+};
 use crate::settings::{FloorControl, RunOptions};
 
 const RELOAD_FILE_LIMIT: u64 = 1024 * 1024;
@@ -450,7 +453,12 @@ struct WorkspaceTable {
     completion_check_label: String,
     #[serde(default)]
     completion_check_id: Option<String>,
-    cwd: PathBuf,
+    #[serde(default)]
+    cwd: Option<PathBuf>,
+    #[serde(default)]
+    primary_repo: Option<RepoId>,
+    #[serde(default)]
+    repositories: Option<Vec<RepositoryTable>>,
     department: String,
     isolation: IsolationMode,
     agent_usd_per_day: Option<toml::Spanned<toml::Value>>,
@@ -464,6 +472,14 @@ struct WorkspaceTable {
     goal_tokens: Option<u64>,
     #[serde(default)]
     checks: Vec<CheckTable>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RepositoryTable {
+    repo_id: RepoId,
+    label: String,
+    path: PathBuf,
 }
 
 /// One more enrolled check: a row of `[[floor.onboarding.workspaces.checks]]`.
@@ -928,13 +944,48 @@ fn parse_workspace(
             .filter(|usd| *usd > Usd::ZERO)
             .ok_or_else(invalid)
     };
-    if !item.cwd.is_absolute() || !item.cwd.is_dir() {
-        return Err(invalid());
-    }
-    let cwd = item.cwd.canonicalize().map_err(|_| invalid())?;
-    if !cwd.join(".git").exists() {
-        return Err(invalid());
-    }
+    let canonical = |written: &Path| {
+        if !written.is_absolute() || !written.is_dir() {
+            return Err(invalid());
+        }
+        let directory = written.canonicalize().map_err(|_| invalid())?;
+        directory
+            .join(".git")
+            .exists()
+            .then_some(directory)
+            .ok_or_else(invalid)
+    };
+    let (written_cwd, cwd, repositories) = match (&item.cwd, &item.primary_repo, &item.repositories)
+    {
+        (Some(written), None, None) => (written.clone(), canonical(written)?, None),
+        (None, Some(primary), Some(entries)) => {
+            let entries = entries
+                .iter()
+                .map(|entry| {
+                    if !crate::floor_actions::valid_display(&entry.label) {
+                        return Err(invalid());
+                    }
+                    Ok(RepositoryEntry {
+                        repo_id: entry.repo_id.clone(),
+                        value: ConfiguredRepository {
+                            label: entry.label.clone(),
+                            path: canonical(&entry.path)?,
+                            written_path: entry.path.clone(),
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>, ConfigError>>()?;
+            let repositories =
+                RepositorySet::new(primary.clone(), entries).map_err(|_| invalid())?;
+            let first = repositories.primary();
+            (
+                first.written_path.clone(),
+                first.path.clone(),
+                Some(repositories),
+            )
+        }
+        _ => return Err(invalid()),
+    };
     let agent_usd = item.agent_usd_per_day.map(&money).transpose()?;
     let goal_usd = item.goal_usd.map(&money).transpose()?;
     let own = EnrolledCheck {
@@ -964,7 +1015,8 @@ fn parse_workspace(
         label: item.label,
         checks,
         cwd,
-        written_cwd: item.cwd,
+        written_cwd,
+        repositories,
         department: item.department,
         isolation: item.isolation,
         agent_budget: AgentBudget {

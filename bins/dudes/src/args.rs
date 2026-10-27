@@ -31,6 +31,7 @@ use std::path::PathBuf;
 use dudes_proto::budget::{AgentBudget, GoalBudget};
 use dudes_proto::goal::Predicate;
 use dudes_proto::record::{DeviceId, Hex32};
+use dudes_proto::repository::{RepoId, RepositoryEntry, RepositorySet};
 use dudes_proto::rpc::agent::{HireParams, LookParams, McpParams, ModelParams, RenameParams};
 use dudes_proto::rpc::board::{CardCreateParams, CardListParams};
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, GoalSetParams};
@@ -476,11 +477,22 @@ pub enum WorkspaceCommand {
     Trust {
         /// The workspace id.
         id: String,
+        /// One member of an explicit repository list.
+        repo_id: Option<RepoId>,
     },
     /// Stop trusting one enrolled project.
     Untrust {
         /// The workspace id.
         id: String,
+        /// A current or retained member binding.
+        repo_id: Option<RepoId>,
+    },
+    /// Replace the project's complete repository list with existing checkouts.
+    Repositories {
+        /// Existing project identity.
+        id: String,
+        /// Complete ordered repository definition.
+        repositories: RepositorySet<crate::workspace::RepositoryDefinition>,
     },
     /// Add one row to a workspace's checks table, then have the daemon adopt that change.
     CheckAdd(Box<crate::workspace::NewCheck>),
@@ -1146,9 +1158,18 @@ USAGE
     dudes project list
         The configuration's projects beside the ones the daemon runs.
 
-    dudes project trust <id>
+    dudes project repositories <id> --primary <repo> --repo <repo>=<absolute-path> ...
+        Replace an existing project's complete ordered repository list with 1 to 8 existing
+        checkouts. Repository ids are stable and cannot be rebound to another origin.
+        This configuration can be enrolled and trusted, but scoped execution is unavailable.
+        Expanding a project pauses its existing agents; their recorded authority stays unchanged.
 
-    dudes project untrust <id>
+    dudes project trust <id> [--repo <repo>]
+
+    dudes project untrust <id> [--repo <repo>]
+        An explicit repository list requires --repo for each member. The grant pins that
+        member's settings and location. It does not enable scoped execution.
+        Without --repo, the following behavior applies to a legacy single-folder project.
         Trust an enrolled project, or stop trusting it. While a project is trusted the Floor
         may hire a Claude agent into its own copy of it (a git worktree on a new branch). The
         daemon records what you vouch for: the project's folder, the repository's .claude
@@ -2251,25 +2272,82 @@ fn workspace(
             reject_leftovers(rest)?;
             Ok(WorkspaceCommand::List)
         }
-        word @ ("trust" | "untrust") => match rest {
-            [] => Err(ArgError::Missing("<id>")),
-            [first, ..] if asks_for_help(first) => Err(ArgError::HelpRequested),
-            [id] => {
-                let id = id
-                    .clone()
-                    .into_string()
-                    .map_err(|_| ArgError::NotUtf8("<id>"))?;
-                Ok(if word == "trust" {
-                    WorkspaceCommand::Trust { id }
-                } else {
-                    WorkspaceCommand::Untrust { id }
-                })
+        word @ ("trust" | "untrust") => {
+            let (first, tail) = rest.split_first().ok_or(ArgError::Missing("<id>"))?;
+            if asks_for_help(first) {
+                return Err(ArgError::HelpRequested);
             }
-            [_, extra, ..] => Err(ArgError::UnknownFlag(extra.to_string_lossy().into_owned())),
-        },
+            let id = first.to_str().ok_or(ArgError::NotUtf8("<id>"))?.to_owned();
+            let mut flags = Flags::new(tail);
+            let mut repo_id = None;
+            while let Some(arg) = flags.next() {
+                match arg.to_string_lossy().as_ref() {
+                    "--repo" => repo_id = Some(repository_id(&flags.value("--repo")?, "--repo")?),
+                    "--help" | "-h" => return Err(ArgError::HelpRequested),
+                    other => return Err(ArgError::UnknownFlag(other.to_owned())),
+                }
+            }
+            Ok(if word == "trust" {
+                WorkspaceCommand::Trust { id, repo_id }
+            } else {
+                WorkspaceCommand::Untrust { id, repo_id }
+            })
+        }
+        "repositories" => workspace_repositories(rest),
         "check" => workspace_check(rest, payload),
         other => Err(ArgError::UnknownCommand(format!("project {other}"))),
     }
+}
+
+fn repository_id(value: &str, flag: &'static str) -> Result<RepoId, ArgError> {
+    RepoId::parse(value).map_err(|_| ArgError::BadValue {
+        flag,
+        value: value.to_owned(),
+        what: "a repository id starting with a-z and using up to 32 of a-z, 0-9, _ or -",
+    })
+}
+
+fn workspace_repositories(tail: &[OsString]) -> Result<WorkspaceCommand, ArgError> {
+    let (first, tail) = tail.split_first().ok_or(ArgError::Missing("<id>"))?;
+    if asks_for_help(first) {
+        return Err(ArgError::HelpRequested);
+    }
+    let id = first.to_str().ok_or(ArgError::NotUtf8("<id>"))?.to_owned();
+    let mut flags = Flags::new(tail);
+    let mut primary = None;
+    let mut entries = Vec::new();
+    while let Some(arg) = flags.next() {
+        match arg.to_string_lossy().as_ref() {
+            "--primary" => primary = Some(repository_id(&flags.value("--primary")?, "--primary")?),
+            "--repo" => {
+                let value = flags.value("--repo")?;
+                let (repo, path) = value.split_once('=').ok_or_else(|| ArgError::BadValue {
+                    flag: "--repo",
+                    value: value.clone(),
+                    what: "<repo-id>=<absolute-existing-path>",
+                })?;
+                let repo_id = repository_id(repo, "--repo")?;
+                entries.push(RepositoryEntry {
+                    repo_id,
+                    value: crate::workspace::RepositoryDefinition {
+                        label: repo.to_owned(),
+                        path: PathBuf::from(path),
+                    },
+                });
+            }
+            "--help" | "-h" => return Err(ArgError::HelpRequested),
+            other => return Err(ArgError::UnknownFlag(other.to_owned())),
+        }
+    }
+    let repositories =
+        RepositorySet::new(required(primary, "--primary")?, entries).map_err(|_| {
+            ArgError::BadValue {
+                flag: "--repo",
+                value: String::new(),
+                what: "1 to 8 distinct repositories including --primary",
+            }
+        })?;
+    Ok(WorkspaceCommand::Repositories { id, repositories })
 }
 
 /// `workspace check add <workspace> --id <id> --label <label> [--timeout-s <n>]
@@ -4714,13 +4792,15 @@ mod worktree_tests {
         assert_eq!(
             command(&["project", "trust", "repo_1"]).unwrap(),
             Command::Workspace(WorkspaceCommand::Trust {
-                id: "repo_1".into()
+                id: "repo_1".into(),
+                repo_id: None,
             })
         );
         assert_eq!(
             command(&["project", "untrust", "repo_1"]).unwrap(),
             Command::Workspace(WorkspaceCommand::Untrust {
-                id: "repo_1".into()
+                id: "repo_1".into(),
+                repo_id: None,
             })
         );
         assert!(matches!(

@@ -137,7 +137,14 @@ fn next_input(daemon: &TestDaemon, queue: &mut VecDeque<Input>) -> Input {
 }
 
 fn prepared(daemon: &mut TestDaemon, fixture: &common::Fixture, provider: Provider) -> Prepared {
-    let mut hire = common::hire_params(fixture.state.path());
+    let mut hire = common::hire_params(
+        daemon
+            .ctx
+            .enrollment
+            .profiles
+            .first()
+            .map_or(fixture.state.path(), |profile| profile.cwd.as_path()),
+    );
     hire.provider = provider;
     let Answered::Hired(hired) = daemon
         .ask(Ask::Hire(Box::new(hire)))
@@ -146,6 +153,9 @@ fn prepared(daemon: &mut TestDaemon, fixture: &common::Fixture, provider: Provid
         panic!("expected a hired managed agent")
     };
     let agent = hired.agent;
+    daemon
+        .sup
+        .observe_repository_admission(daemon.ctx.repository_observation(daemon.sup.world()));
     let params = common::goal_params(agent, &[common::true_program()]);
     let mut queue = VecDeque::from([Input::Command(Command::GoalSet {
         agent,
@@ -216,6 +226,239 @@ fn prepared(daemon: &mut TestDaemon, fixture: &common::Fixture, provider: Provid
         }
     }
     panic!("bounded real preparation did not produce an owned Spawn effect")
+}
+
+fn legacy_enrollment(root: PathBuf) -> crate::floor_actions::Enrollment {
+    use crate::floor_actions::EnrolledCheck;
+    crate::floor_actions::Enrollment {
+        profiles: vec![Profile {
+            id: "service".into(),
+            label: "Service".into(),
+            checks: vec![EnrolledCheck::enrolled(
+                "Check",
+                Predicate::Command {
+                    argv: vec![common::true_program().into()],
+                    timeout_s: 1,
+                },
+            )],
+            cwd: root.clone(),
+            written_cwd: root,
+            repositories: None,
+            department: "infra".into(),
+            isolation: dudes_types::IsolationMode::Default,
+            agent_budget: dudes_proto::AgentBudget {
+                usd_per_day: None,
+                tokens_per_day: None,
+            },
+            goal_budget: dudes_proto::GoalBudget {
+                usd: None,
+                tokens: None,
+            },
+            hop_cap: 3,
+            mark: None,
+        }],
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture proves expansion refusal and restoration of the original immutable authority"
+)]
+fn current_expansion_holds_an_owed_legacy_launch_before_host_and_resume_cannot_override_it() {
+    use crate::floor_actions::ConfiguredRepository;
+    use dudes_proto::repository::{RepoId, RepositoryEntry, RepositorySet};
+
+    let fixture = common::Fixture::new();
+    let host = CountingHost::new();
+    let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+    let root = fixture.state.path().canonicalize().unwrap();
+    let other = fixture.runtime.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join(".git")).unwrap();
+    std::fs::create_dir(other.join(".git")).unwrap();
+    daemon.ctx.enrollment = legacy_enrollment(root.clone());
+    daemon.observe_repository_enrollment().unwrap();
+    let singleton_enrollment = daemon.ctx.enrollment.clone();
+    let original_catalog = daemon.ctx.current_repositories.observed["service"].lsn;
+    let attempt = prepared(&mut daemon, &fixture, Provider::Claude);
+    assert!(
+        daemon.sup.world().agents[&attempt.agent]
+            .repositories
+            .workspace()
+            .is_some()
+    );
+    assert_eq!(host.spawn_calls(), 0);
+    let original = daemon.sup.world().agents[&attempt.agent]
+        .repositories
+        .clone();
+    let mut candidate = daemon.ctx.enrollment.clone();
+    candidate.profiles[0].repositories = Some(
+        RepositorySet::new(
+            RepoId::parse("primary").unwrap(),
+            vec![
+                RepositoryEntry {
+                    repo_id: RepoId::parse("primary").unwrap(),
+                    value: ConfiguredRepository {
+                        label: "Primary".into(),
+                        path: root.clone(),
+                        written_path: root,
+                    },
+                },
+                RepositoryEntry {
+                    repo_id: RepoId::parse("other").unwrap(),
+                    value: ConfiguredRepository {
+                        label: "Other".into(),
+                        path: other.clone(),
+                        written_path: other,
+                    },
+                },
+            ],
+        )
+        .unwrap(),
+    );
+    let sha256 = "a".repeat(64);
+    let read = crate::enrollment_reload::ReloadRead {
+        seq: 1,
+        sha256: sha256.clone(),
+        path: fixture.runtime.path().join("operator.toml"),
+        config: crate::config::OperatorConfig {
+            enrollment: candidate,
+            ..crate::config::OperatorConfig::default()
+        },
+        memory_config: daemon.ctx.memory_config,
+        apply: Some(dudes_proto::rpc::floor::EnrollmentApply {
+            sha256,
+            added: vec![],
+            removed: vec![],
+            changed: vec!["service".into()],
+        }),
+        pid: None,
+    };
+    assert!(daemon.enrollment_reload(&read).unwrap().applied);
+    let before = fixture.entries();
+    let mut queue = VecDeque::new();
+    execute(&mut daemon, &attempt.spawn, &mut queue);
+    assert_eq!(host.spawn_calls(), 0);
+    assert_eq!(fixture.entries(), before);
+    assert!(daemon.sup.world().agents[&attempt.agent].paused);
+    assert_eq!(
+        daemon.sup.world().agents[&attempt.agent].repositories,
+        original
+    );
+    assert!(daemon.ask(Ask::Resume(attempt.agent)).is_err());
+    assert_eq!(fixture.entries(), before);
+    assert!(!fixture.entries().iter().any(|(_, entry)| matches!(entry.record, Record::TurnSpawned { turn, .. } if turn == attempt.turn)));
+    let sha256 = "b".repeat(64);
+    let read = crate::enrollment_reload::ReloadRead {
+        seq: 2,
+        sha256: sha256.clone(),
+        config: crate::config::OperatorConfig {
+            enrollment: singleton_enrollment,
+            ..crate::config::OperatorConfig::default()
+        },
+        apply: Some(dudes_proto::rpc::floor::EnrollmentApply {
+            sha256,
+            added: vec![],
+            removed: vec![],
+            changed: vec!["service".into()],
+        }),
+        ..read
+    };
+    assert!(daemon.enrollment_reload(&read).unwrap().applied);
+    assert_eq!(
+        daemon.ctx.current_repositories.observed["service"].lsn,
+        original_catalog
+    );
+    assert!(daemon.ask(Ask::Resume(attempt.agent)).is_ok());
+    assert_eq!(
+        daemon.sup.world().agents[&attempt.agent].repositories,
+        original
+    );
+    assert_eq!(daemon.sup.world().turns[&attempt.turn].task, attempt.task);
+    assert_eq!(host.spawn_calls(), 0);
+}
+
+#[test]
+fn unresolved_current_admission_refuses_a_parked_finite_issue_with_no_charged_goal() {
+    let fixture = common::Fixture::new();
+    let host = CountingHost::new();
+    let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+    let root = fixture.state.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join(".git")).unwrap();
+    daemon.ctx.enrollment = legacy_enrollment(root.clone());
+    daemon.observe_repository_enrollment().unwrap();
+    let Answered::Hired(hired) = daemon
+        .ask(Ask::Hire(Box::new(common::hire_params(&root))))
+        .unwrap()
+    else {
+        panic!("the singleton hire is admitted");
+    };
+    let agent = hired.agent;
+    daemon.pump(Input::Tick).unwrap();
+    daemon
+        .sup
+        .observe_repository_admission(daemon.ctx.repository_observation(daemon.sup.world()));
+    let context_lsn = daemon.sup.world().agents[&agent].context_lsn;
+    let sessions = crate::floor_session::FloorSessions::new(
+        "127.0.0.1:31337".parse().unwrap(),
+        Arc::clone(&daemon.ctx.clock),
+    );
+    let session = sessions
+        .admitted_for_test("127.0.0.1:31337", "http://127.0.0.1:31337")
+        .0;
+    daemon.ctx.browser_session = Some(session.clone());
+    let mut queue = VecDeque::from([Input::Command(Command::ConversationMessageQueued {
+        agent,
+        text: "Check the finite conversation".into(),
+        context_lsn,
+        context_reset_turn: None,
+        browser: dudes_proto::BrowserNoteAttribution {
+            request_id_digest: dudes_proto::record::Hex32::new([1; 32]),
+            request_digest: dudes_proto::record::Hex32::new([2; 32]),
+            session_digest: session.digest(),
+        },
+    })]);
+    for _ in 0..64 {
+        let input = next_input(&daemon, &mut queue);
+        daemon
+            .sup
+            .handle(input, &dudes_supervisor::RecoveryOperation::empty())
+            .unwrap();
+        for effect in daemon.sup.take_effects() {
+            if let Effect::Persist { entry, .. } = &effect
+                && let Some(issue) = entry.record.turn_issue()
+            {
+                assert_eq!(issue.goal, None);
+                assert_eq!(daemon.sup.world().agents[&agent].goal, None);
+                daemon.invalidate_repository_enrollment(1).unwrap();
+                let before = fixture.entries();
+                assert!(
+                    daemon
+                        .ctx
+                        .execute(
+                            &effect,
+                            &mut queue,
+                            &mut PumpReport::Discard,
+                            &mut daemon.sup,
+                            &mut daemon.closing
+                        )
+                        .is_err()
+                );
+                assert_eq!(fixture.entries(), before);
+                assert_eq!(host.spawn_calls(), 0);
+                assert!(
+                    fixture
+                        .entries()
+                        .iter()
+                        .all(|(_, entry)| entry.record.turn_issue().is_none())
+                );
+                assert!(daemon.sup.world().agents[&agent].paused);
+                return;
+            }
+            execute(&mut daemon, &effect, &mut queue);
+        }
+    }
+    panic!("finite work did not reach its parked issue boundary");
 }
 
 fn ordinary_failure_folded(daemon: &TestDaemon, attempt: &Prepared) -> bool {

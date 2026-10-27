@@ -1442,6 +1442,8 @@ fn every_ask_variant_preserves_publication_before_reply() {
             duded::ports::Ask::WorktreeEntries => "WorktreeEntries",
             duded::ports::Ask::WorktreeRemoved(_) => "WorktreeRemoved",
             duded::ports::Ask::TrustTarget(_) => "TrustTarget",
+            duded::ports::Ask::RepositoryTrustTarget { .. } => "RepositoryTrustTarget",
+            duded::ports::Ask::RepositoryTrustSet { .. } => "RepositoryTrustSet",
             duded::ports::Ask::TrustSet { .. } => "TrustSet",
             duded::ports::Ask::FloorDevice(_) => "FloorDevice",
         };

@@ -287,6 +287,7 @@ fn enrolled_settings(fixture: &Fixture) -> duded::Settings {
             checks: vec![passing_check()],
             cwd: repo.canonicalize().expect("canonical repository"),
             written_cwd: repo.canonicalize().expect("canonical repository"),
+            repositories: None,
             department: "engineering".into(),
             isolation: IsolationMode::Default,
             agent_budget: AgentBudget {
@@ -778,6 +779,7 @@ fn browser_enrollment_view_is_finite_and_safe() {
             checks: vec![passing_check()],
             cwd: repo.canonicalize().expect("canonical repository"),
             written_cwd: repo.canonicalize().expect("canonical repository"),
+            repositories: None,
             department: "engineering".into(),
             isolation: IsolationMode::Default,
             agent_budget: AgentBudget {
@@ -1436,6 +1438,7 @@ fn a_browser_hire_is_complete_with_the_hire_alone() {
             checks: vec![passing_check()],
             cwd: repo.canonicalize().expect("canonical repository"),
             written_cwd: repo.canonicalize().expect("canonical repository"),
+            repositories: None,
             department: "engineering".into(),
             isolation: IsolationMode::Default,
             agent_budget: AgentBudget {
@@ -1548,6 +1551,7 @@ fn browser_admission_and_four_hire_limit_are_journal_derived() {
             checks: vec![passing_check()],
             cwd: repo.canonicalize().expect("canonical repository"),
             written_cwd: repo.canonicalize().expect("canonical repository"),
+            repositories: None,
             department: "engineering".into(),
             isolation: IsolationMode::Default,
             agent_budget: AgentBudget {

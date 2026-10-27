@@ -729,6 +729,38 @@ pub fn trust_set(
     }
 }
 
+/// The result of trusting or revoking one explicit repository member.
+///
+/// # Errors
+/// Whatever writing returns.
+pub fn repository_trust_set(
+    out: &mut dyn Write,
+    machine: bool,
+    project: &str,
+    repo: &str,
+    result: &dudes_proto::rpc::workspace::TrustResult,
+) -> io::Result<()> {
+    if machine {
+        return json(
+            out,
+            &serde_json::json!({
+                "workspace_id": project, "repo_id": repo, "trusted": result.trusted, "changed": result.changed,
+            }),
+        );
+    }
+    let action = if result.trusted {
+        "Trusted"
+    } else {
+        "Stopped trusting"
+    };
+    writeln!(
+        out,
+        "{action} repository {} in project {}. Scoped repository execution is not available yet.",
+        Escaped(repo),
+        Escaped(project)
+    )
+}
+
 /// The note a removal prints.
 ///
 /// # Errors

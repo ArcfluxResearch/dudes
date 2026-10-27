@@ -2348,6 +2348,7 @@ fn replay_keeps_recorded_check_and_allowance_after_reserve_and_enrollment_change
             )],
             cwd: fixture.state.path().to_path_buf(),
             written_cwd: fixture.state.path().to_path_buf(),
+            repositories: None,
             department: "infra".into(),
             isolation: IsolationMode::Default,
             agent_budget: dudes_proto::AgentBudget {

@@ -947,6 +947,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         task: &str,
         operation: &crate::RecoveryOperation<'_>,
     ) -> Option<(TurnId, Box<PreparedLaunch>)> {
+        if !self.repository_admitted(agent) {
+            return None;
+        }
         let recovery = self.recovery_new_context(agent, operation).ok()?;
         if recovery
             .as_ref()

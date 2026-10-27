@@ -28,6 +28,7 @@ fn profile(id: &str, label: &str, cwd: PathBuf) -> Profile {
             },
         )],
         written_cwd: cwd.clone(),
+        repositories: None,
         cwd,
         department: "engineering".into(),
         isolation: IsolationMode::Default,

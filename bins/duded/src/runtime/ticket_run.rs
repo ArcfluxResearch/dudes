@@ -232,6 +232,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .enrollment
             .profile(ticket.repositories.project())
             .ok_or(TicketReason::ProjectUnavailable)?;
+        if profile.repositories.is_some() || !self.ctx.repository_allowed(self.sup.world(), agent) {
+            return Err(TicketReason::ProjectUnavailable);
+        }
         let allowance = Allowance::of(profile);
         if self.goal_wants_a_ceiling(agent, &allowance.budget) {
             return Err(TicketReason::CeilingRequired);

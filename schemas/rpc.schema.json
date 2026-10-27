@@ -22687,6 +22687,17 @@
       "additionalProperties": false,
       "description": "`workspace.trust` params: trust or stop trusting one enrolled project.",
       "properties": {
+        "repo_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RepoId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit repository member. Required for an explicitly scoped project."
+        },
         "trusted": {
           "description": "Whether the project is trusted from now on.",
           "type": "boolean"

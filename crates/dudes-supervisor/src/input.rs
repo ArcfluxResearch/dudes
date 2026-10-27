@@ -896,6 +896,27 @@ pub enum Command {
         /// The settings vouched for. Absent when `trusted` is false.
         pin: Option<dudes_proto::record::TrustPin>,
     },
+    /// Append a complete current configuration after daemon-side identity and reference checks.
+    RecordProjectRepositories {
+        /// Stable project identity.
+        project: String,
+        /// Validated ordered origins.
+        repositories:
+            dudes_proto::repository::RepositorySet<dudes_proto::repository::CatalogRepository>,
+    },
+    /// Append one inspected operator grant or revoke its retained binding.
+    SetRepositoryTrust {
+        /// Stable project identity.
+        project: String,
+        /// Stable repository member.
+        repo_id: dudes_proto::repository::RepoId,
+        /// Validated observed revision.
+        catalog_lsn: Lsn,
+        /// Original binding retained on revocation.
+        origin: dudes_proto::record::TrustedRepository,
+        /// Complete settings pin, absent on revocation.
+        pin: Option<dudes_proto::record::TrustPin>,
+    },
     /// Record a change to the Floor's device table.
     RecordFloorDevice(FloorDeviceChange),
     /// End a lease whose tree is gone. Ignored unless the lease's state allows it:

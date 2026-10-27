@@ -11,6 +11,9 @@ pub struct TrustParams {
     pub workspace_id: String,
     /// Whether the project is trusted from now on.
     pub trusted: bool,
+    /// Explicit repository member. Required for an explicitly scoped project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<crate::repository::RepoId>,
 }
 
 /// `workspace.trust` result.

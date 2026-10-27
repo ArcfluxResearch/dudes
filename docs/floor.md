@@ -141,6 +141,10 @@ desk. With tickets on and none open, the Floor then offers **Give a task** for i
 
 ## Hire an agent into its own copy of the project
 
+This flow uses a legacy single-folder project. Projects with an
+[explicit repository list](configuration.md#projects-with-explicit-repositories) can be enrolled
+and trusted through the CLI, but scoped execution and Floor hiring for them are unavailable.
+
 Two agents in one folder can overwrite each other. The Hire dialog's **App** step offers **Work in
 its own copy of the project** for a Claude Code agent. A copy is a separate checkout of the project
 on a new branch named `dudes/<id>`, kept in Dudes' own data folder and not inside your project. When

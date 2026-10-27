@@ -11,6 +11,18 @@ use dudes_types::{AgentId, CardStatus, GoalId, Lsn, Seq};
 use super::World;
 
 impl World {
+    /// Check a prospective repository observation against this exact recorded prefix.
+    /// This validates relationships only and grants no current execution permission.
+    pub fn validate_repository_record(&self, entry: &Entry) -> Result<(), RepositoryStateError> {
+        let next = self
+            .last_applied_lsn
+            .unwrap_or(Lsn::ZERO)
+            .0
+            .checked_add(1)
+            .ok_or(RepositoryStateError::Catalog)?;
+        self.prepare_repository_record(Lsn(next), entry).map(|_| ())
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one adapter borrows preceding owning rows for the shared relationship validator"
