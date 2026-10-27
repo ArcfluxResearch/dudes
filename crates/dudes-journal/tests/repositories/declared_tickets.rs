@@ -397,6 +397,7 @@ fn each_declared_ticket_carrier_requires_its_exact_required_header() {
         RecordKind::TicketCreatedWithRepositories,
         RecordKind::TicketEditedWithRepositories,
         RecordKind::TicketStartedWithRepositories,
+        RecordKind::TurnIssuedWithRepositories,
     ] {
         let dir = tempfile::tempdir().unwrap();
         let payload = serde_json::to_vec(&entry(samples::record(kind))).unwrap();

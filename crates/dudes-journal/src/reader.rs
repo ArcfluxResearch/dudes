@@ -235,6 +235,7 @@ fn repository_payload(header: Header, payload: &[u8]) -> bool {
                     | "ticket_created_with_repositories"
                     | "ticket_edited_with_repositories"
                     | "ticket_started_with_repositories"
+                    | "turn_issued_with_repositories"
             )
         })
 }

@@ -143,6 +143,10 @@ pub struct TicketEdited<'a> {
 pub struct TurnIssue<'a> {
     /// Original carrier, preserving browser reservations and mail accounting.
     pub source: &'a Record,
+    /// Complete semantic payload, independent of the physical carrier.
+    pub payload: crate::issue::ManagedIssueRef<'a>,
+    /// Explicit frozen authority on a scoped issue.
+    pub repositories: Option<&'a crate::repository::RepositoryTurnGrant>,
     /// Owner.
     pub agent: AgentId,
     /// Immutable turn identity.
@@ -159,6 +163,28 @@ pub struct TurnIssue<'a> {
     pub model_selection: Option<&'a ModelSelection>,
     /// Recorded delivered answers.
     pub answers: &'a [Lsn],
+}
+
+impl TurnIssue<'_> {
+    /// The instruction round's goal, independent of finite-turn budget charging.
+    #[must_use]
+    pub fn instruction_goal(&self) -> Option<GoalId> {
+        match self.repositories {
+            Some(grant) => grant.ticket.as_ref().map(|round| round.goal),
+            None => self.goal,
+        }
+    }
+
+    /// Whether an explicit recovery-new claim can bind this managed issue family.
+    #[must_use]
+    pub fn recovery_new(&self) -> bool {
+        self.mode == Mode::Managed
+            && matches!(
+                self.payload,
+                crate::issue::ManagedIssueRef::Ordinary { .. }
+                    | crate::issue::ManagedIssueRef::GoalNote { .. }
+            )
+    }
 }
 
 impl Record {
@@ -348,8 +374,9 @@ impl Record {
         reason = "one borrowed view keeps every issue carrier and its original payload together"
     )]
     pub fn turn_issue(&self) -> Option<TurnIssue<'_>> {
-        let (agent, turn, goal, mode, task, session, model_selection, answers) = match self {
-            Self::TurnIssued {
+        let payload = self.issue_payload()?;
+        let (agent, turn, goal, mode, task, session, model_selection, answers) = match payload {
+            crate::issue::ManagedIssueRef::Ordinary {
                 agent,
                 turn,
                 goal,
@@ -369,7 +396,7 @@ impl Record {
                 model_selection.as_ref(),
                 answers.as_slice(),
             ),
-            Self::NoteOnlyTurnIssued {
+            crate::issue::ManagedIssueRef::RawNote {
                 agent,
                 turn,
                 goal,
@@ -380,7 +407,7 @@ impl Record {
                 answers,
                 ..
             }
-            | Self::TaughtNoteOnlyTurnIssued {
+            | crate::issue::ManagedIssueRef::TaughtNote {
                 agent,
                 turn,
                 goal,
@@ -391,7 +418,7 @@ impl Record {
                 answers,
                 ..
             }
-            | Self::IdentifiedTaughtNoteOnlyTurnIssued {
+            | crate::issue::ManagedIssueRef::IdentifiedTaughtNote {
                 agent,
                 turn,
                 goal,
@@ -402,7 +429,7 @@ impl Record {
                 answers,
                 ..
             }
-            | Self::TurnIssuedWithBrowserNote {
+            | crate::issue::ManagedIssueRef::GoalNote {
                 agent,
                 turn,
                 goal,
@@ -422,7 +449,7 @@ impl Record {
                 Some(model_selection),
                 answers.as_slice(),
             ),
-            Self::ConversationTurnIssued {
+            crate::issue::ManagedIssueRef::Conversation {
                 agent,
                 turn,
                 task,
@@ -430,7 +457,7 @@ impl Record {
                 model_selection,
                 ..
             }
-            | Self::IdentifiedConversationTurnIssued {
+            | crate::issue::ManagedIssueRef::IdentifiedConversation {
                 agent,
                 turn,
                 task,
@@ -447,22 +474,25 @@ impl Record {
                 Some(model_selection),
                 &[][..],
             ),
-            Self::MailWakeOnlyTurnIssued(issue) | Self::IdentifiedMailWakeOnlyTurnIssued(issue) => {
-                (
-                    issue.agent,
-                    issue.turn,
-                    Some(issue.goal),
-                    issue.mode,
-                    issue.task.as_str(),
-                    issue.session.as_ref(),
-                    Some(&issue.model_selection),
-                    &[][..],
-                )
-            }
-            _ => return None,
+            crate::issue::ManagedIssueRef::MailWake(issue)
+            | crate::issue::ManagedIssueRef::IdentifiedMailWake(issue) => (
+                issue.agent,
+                issue.turn,
+                Some(issue.goal),
+                issue.mode,
+                issue.task.as_str(),
+                issue.session.as_ref(),
+                Some(&issue.model_selection),
+                &[][..],
+            ),
         };
         Some(TurnIssue {
             source: self,
+            payload,
+            repositories: match self {
+                Record::TurnIssuedWithRepositories(issue) => Some(&issue.grant),
+                _ => None,
+            },
             agent,
             turn,
             goal,
@@ -473,6 +503,43 @@ impl Record {
             answers,
         })
     }
+}
+
+/// Ticket lifecycle facts needed to select the authority for any turn source.
+#[derive(Clone, Copy, Debug)]
+pub struct ActiveRepositoryRound<'a> {
+    /// Current holder, cleared by reassignment or release.
+    pub holder: Option<AgentId>,
+    /// Current card status.
+    pub status: dudes_types::CardStatus,
+    /// Exact last start retained on the ticket's goal.
+    pub round: &'a TicketRepositoryRound,
+    /// The holder still owns this unfinished goal.
+    pub unfinished: bool,
+    /// The round still owes instruction review or comparison.
+    pub instructions_pending: bool,
+}
+
+/// Select one currently held round without deriving scope from the charged goal.
+pub fn active_round<'a>(
+    agent: AgentId,
+    candidates: impl IntoIterator<Item = ActiveRepositoryRound<'a>>,
+) -> Result<Option<&'a TicketRepositoryRound>, history::RepositoryStateError> {
+    use dudes_types::CardStatus;
+    let mut selected = None;
+    for candidate in candidates {
+        if candidate.holder == Some(agent)
+            && match candidate.status {
+                CardStatus::Doing | CardStatus::Review => true,
+                CardStatus::Blocked => candidate.unfinished || candidate.instructions_pending,
+                _ => false,
+            }
+            && selected.replace(candidate.round).is_some()
+        {
+            return Err(history::RepositoryStateError::Issue);
+        }
+    }
+    Ok(selected)
 }
 
 /// Affected row components at the preceding journal position.
@@ -544,12 +611,13 @@ pub fn fold(lsn: Lsn, record: &Record, before: RepositoryFacts<'_>) -> Repositor
                 .map(|(_, repositories)| repositories.clone()),
         });
     }
-    if record.turn_issue().is_some() {
-        return RepositoryFold::Issue(
-            before
-                .hire
-                .map(|(lsn, hire)| TurnRepositories::recorded(lsn, hire, before.round)),
-        );
+    if let Some(issue) = record.turn_issue() {
+        return RepositoryFold::Issue(before.hire.map(|(lsn, hire)| {
+            issue.repositories.map_or_else(
+                || TurnRepositories::recorded(lsn, hire, before.round),
+                |grant| TurnRepositories::scoped(hire, grant),
+            )
+        }));
     }
     RepositoryFold::Unchanged
 }
@@ -635,5 +703,85 @@ mod tests {
         );
         let schema = serde_json::to_value(schemars::schema_for!(TicketRepositories)).unwrap();
         assert_eq!(schema["properties"]["project"]["type"], "string");
+    }
+    #[test]
+    fn active_scope_follows_ticket_lifecycle_instead_of_a_historical_goal_join() {
+        use dudes_types::CardStatus;
+        let Record::TicketStartedWithRepositories(start) =
+            samples::record(RecordKind::TicketStartedWithRepositories)
+        else {
+            unreachable!()
+        };
+        let round = TicketRepositoryRound {
+            card: start.card,
+            goal: start.goal.id,
+            start_lsn: Lsn(10),
+            round: 1,
+            repositories: None,
+            authority: Some(start.repositories.clone()),
+        };
+        let candidate = ActiveRepositoryRound {
+            holder: Some(start.agent),
+            status: CardStatus::Doing,
+            round: &round,
+            unfinished: false,
+            instructions_pending: false,
+        };
+        for status in [CardStatus::Doing, CardStatus::Review] {
+            assert_eq!(
+                active_round(
+                    start.agent,
+                    [ActiveRepositoryRound {
+                        status,
+                        ..candidate
+                    }]
+                )
+                .unwrap(),
+                Some(&round)
+            );
+        }
+        for status in [CardStatus::Claimed, CardStatus::Done, CardStatus::Blocked] {
+            assert_eq!(
+                active_round(
+                    start.agent,
+                    [ActiveRepositoryRound {
+                        status,
+                        ..candidate
+                    }]
+                )
+                .unwrap(),
+                None
+            );
+        }
+        let pending = ActiveRepositoryRound {
+            status: CardStatus::Blocked,
+            instructions_pending: true,
+            ..candidate
+        };
+        assert_eq!(active_round(start.agent, [pending]).unwrap(), Some(&round));
+        assert_eq!(
+            active_round(
+                start.agent,
+                [ActiveRepositoryRound {
+                    unfinished: true,
+                    instructions_pending: false,
+                    ..pending
+                }]
+            )
+            .unwrap(),
+            Some(&round)
+        );
+        assert!(active_round(start.agent, [candidate, candidate]).is_err());
+        assert_eq!(
+            active_round(
+                start.agent,
+                [ActiveRepositoryRound {
+                    holder: None,
+                    ..candidate
+                }]
+            )
+            .unwrap(),
+            None
+        );
     }
 }

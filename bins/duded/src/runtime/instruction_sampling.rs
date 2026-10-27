@@ -955,6 +955,12 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
                 sup.world()
                     .goal_of(agent)
                     .is_some_and(|current| current.goal.id == *goal)
+                    || sup
+                        .world()
+                        .active_repository_round(agent)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|round| round.goal == *goal)
             })
             .and_then(|goal| {
                 sup.world()

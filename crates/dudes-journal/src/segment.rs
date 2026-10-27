@@ -156,6 +156,83 @@ mod tests {
     )]
     fn lsns_of(record: &Record) -> Vec<Lsn> {
         match record {
+            Record::TurnIssuedWithRepositories(issue) => {
+                use dudes_proto::issue::ManagedIssueRef as I;
+                let grant = &issue.grant;
+                let mut refs = vec![grant.hired_lsn, grant.catalog_lsn];
+                refs.extend(
+                    grant
+                        .repositories
+                        .entries()
+                        .iter()
+                        .map(|entry| entry.value.trust_lsn),
+                );
+                if let Some(round) = &grant.ticket {
+                    refs.push(round.start_lsn);
+                    if let Some(authority) = &round.authority {
+                        refs.push(authority.declaration.catalog_lsn);
+                    }
+                }
+                match issue.payload.as_ref() {
+                    I::Ordinary {
+                        lsn_of_decision,
+                        answers,
+                        ..
+                    } => refs
+                        .extend(std::iter::once(*lsn_of_decision).chain(answers.iter().copied())),
+                    I::GoalNote {
+                        lsn_of_decision,
+                        answers,
+                        note_lsn,
+                        ..
+                    } => refs.extend(
+                        std::iter::once(*lsn_of_decision)
+                            .chain(answers.iter().copied())
+                            .chain([*note_lsn]),
+                    ),
+                    I::RawNote {
+                        lsn_of_decision,
+                        answers,
+                        note_lsn,
+                        completion_lsn,
+                        ..
+                    }
+                    | I::TaughtNote {
+                        lsn_of_decision,
+                        answers,
+                        note_lsn,
+                        completion_lsn,
+                        ..
+                    }
+                    | I::IdentifiedTaughtNote {
+                        lsn_of_decision,
+                        answers,
+                        note_lsn,
+                        completion_lsn,
+                        ..
+                    } => refs.extend(
+                        std::iter::once(*lsn_of_decision)
+                            .chain(answers.iter().copied())
+                            .chain([*note_lsn, *completion_lsn]),
+                    ),
+                    I::Conversation {
+                        note_lsn,
+                        context_lsn,
+                        lsn_of_decision,
+                        ..
+                    }
+                    | I::IdentifiedConversation {
+                        note_lsn,
+                        context_lsn,
+                        lsn_of_decision,
+                        ..
+                    } => refs.extend([*note_lsn, *context_lsn, *lsn_of_decision]),
+                    I::MailWake(issue) | I::IdentifiedMailWake(issue) => {
+                        refs.extend([issue.completion_lsn, issue.root_lsn, issue.lsn_of_decision]);
+                    }
+                }
+                refs
+            }
             Record::RepositoryTrustSet { catalog_lsn, .. } => vec![*catalog_lsn],
             Record::TicketCreatedWithRepositories(created) => vec![created.declaration.catalog_lsn],
             Record::TicketStartedWithRepositories(start) => vec![
@@ -660,7 +737,7 @@ mod tests {
 
     #[test]
     fn no_sample_lsn_is_below_the_first_segment() {
-        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 85;
+        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 90;
 
         let mut swept = 0_usize;
         let mut lsns = 0_usize;

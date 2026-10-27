@@ -1564,3 +1564,5 @@ fn historical_orphan_starts_keep_the_same_rounds_without_a_declaration() {
     replay(&reader, &mut rebuilt).unwrap();
     assert_eq!(rebuilt.export().unwrap(), expected);
 }
+#[path = "repository_replay/scoped_issues.rs"]
+mod scoped_issues;

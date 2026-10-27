@@ -373,6 +373,8 @@ pub struct RecoveryWitness {
     pub(super) reference: RecoveryWitnessRef,
     pub(super) evidence: RecoveryEvidence,
     context: RecoveryWitnessContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    semantic_issue: Option<crate::issue::ManagedIssueKind>,
 }
 
 impl RecoveryWitness {
@@ -406,12 +408,19 @@ impl RecoveryWitness {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive boundary checks the witness kind, owner and semantic payload together"
+    )]
     pub(super) fn validate(&self) -> Result<(), RecoveryHistoryError> {
         use RecordKind as K;
         use RecoveryEvidence as E;
         use RecoveryWitnessOwner as O;
         if self.reference.lsn == Lsn::ZERO {
             return Err(RecoveryHistoryError::Position);
+        }
+        if (self.reference.kind == K::TurnIssuedWithRepositories) != self.semantic_issue.is_some() {
+            return Err(RecoveryHistoryError::Identity);
         }
         if let Some(attempt) = self.context.attempt
             && (!matches!(
@@ -470,11 +479,22 @@ impl RecoveryWitness {
                     issued, carrier, ..
                 },
                 O::Work(work),
-            ) => issued.work == work && issue_kind(self.reference.kind, carrier),
-            (E::FiniteIssue { .. }, O::Turn { .. }) => matches!(
-                self.reference.kind,
-                K::ConversationTurnIssued | K::IdentifiedConversationTurnIssued
-            ),
+            ) => {
+                issued.work == work && issue_kind(self.reference.kind, self.semantic_issue, carrier)
+            }
+            (E::FiniteIssue { .. }, O::Turn { .. }) => match self.reference.kind {
+                K::ConversationTurnIssued | K::IdentifiedConversationTurnIssued => {
+                    self.semantic_issue.is_none()
+                }
+                K::TurnIssuedWithRepositories => matches!(
+                    self.semantic_issue,
+                    Some(
+                        crate::issue::ManagedIssueKind::Conversation
+                            | crate::issue::ManagedIssueKind::IdentifiedConversation
+                    )
+                ),
+                _ => false,
+            },
             (E::Spawn { .. }, O::Turn { .. }) => self.reference.kind == K::TurnSpawned,
             (E::Confirmation { .. }, O::Turn { .. }) => self.reference.kind == K::SessionLearned,
             (E::End { .. }, O::Turn { .. }) => self.reference.kind == K::TurnEnded,
@@ -590,25 +610,47 @@ impl RecoveryHistory {
     }
 }
 
-fn issue_kind(kind: RecordKind, carrier: &RecoveryIssueCarrier) -> bool {
-    matches!(
-        (kind, carrier),
-        (RecordKind::TurnIssued, RecoveryIssueCarrier::Ordinary)
-            | (
-                RecordKind::TurnIssuedWithBrowserNote,
-                RecoveryIssueCarrier::BrowserNote { .. }
-            )
-            | (
-                RecordKind::NoteOnlyTurnIssued
-                    | RecordKind::TaughtNoteOnlyTurnIssued
-                    | RecordKind::IdentifiedTaughtNoteOnlyTurnIssued,
-                RecoveryIssueCarrier::CompletedNote { .. }
-            )
-            | (
-                RecordKind::MailWakeOnlyTurnIssued | RecordKind::IdentifiedMailWakeOnlyTurnIssued,
-                RecoveryIssueCarrier::MailWake { .. }
-            )
-    )
+fn issue_kind(
+    kind: RecordKind,
+    semantic: Option<crate::issue::ManagedIssueKind>,
+    carrier: &RecoveryIssueCarrier,
+) -> bool {
+    use crate::issue::ManagedIssueKind as I;
+    if kind == RecordKind::TurnIssuedWithRepositories {
+        return matches!(
+            (semantic, carrier),
+            (Some(I::Ordinary), RecoveryIssueCarrier::Ordinary)
+                | (Some(I::GoalNote), RecoveryIssueCarrier::BrowserNote { .. })
+                | (
+                    Some(I::RawNote | I::TaughtNote | I::IdentifiedTaughtNote),
+                    RecoveryIssueCarrier::CompletedNote { .. }
+                )
+                | (
+                    Some(I::MailWake | I::IdentifiedMailWake),
+                    RecoveryIssueCarrier::MailWake { .. }
+                )
+        );
+    }
+    semantic.is_none()
+        && matches!(
+            (kind, carrier),
+            (RecordKind::TurnIssued, RecoveryIssueCarrier::Ordinary)
+                | (
+                    RecordKind::TurnIssuedWithBrowserNote,
+                    RecoveryIssueCarrier::BrowserNote { .. }
+                )
+                | (
+                    RecordKind::NoteOnlyTurnIssued
+                        | RecordKind::TaughtNoteOnlyTurnIssued
+                        | RecordKind::IdentifiedTaughtNoteOnlyTurnIssued,
+                    RecoveryIssueCarrier::CompletedNote { .. }
+                )
+                | (
+                    RecordKind::MailWakeOnlyTurnIssued
+                        | RecordKind::IdentifiedMailWakeOnlyTurnIssued,
+                    RecoveryIssueCarrier::MailWake { .. }
+                )
+        )
 }
 
 fn text_owner(kind: RecordKind, owner: RecoveryWitnessOwner) -> bool {
@@ -708,6 +750,8 @@ pub(super) fn witness(
         },
         evidence,
         context: RecoveryWitnessContext::default(),
+        semantic_issue: matches!(record, Record::TurnIssuedWithRepositories(_))
+            .then(|| record.issue_payload().expect("scoped issue").kind()),
     }))
 }
 
@@ -728,8 +772,8 @@ fn ordinary_issue_evidence(
 ) -> Option<(RecoveryWitnessOwner, RecoveryEvidence)> {
     use RecoveryEvidence as E;
     use RecoveryWitnessOwner as O;
-    match record {
-        Record::TurnIssued {
+    match record.issue_payload()? {
+        crate::issue::ManagedIssueRef::Ordinary {
             agent,
             goal,
             turn,
@@ -761,7 +805,8 @@ fn ordinary_issue_evidence(
                 },
             ))
         }
-        Record::MailWakeOnlyTurnIssued(value) | Record::IdentifiedMailWakeOnlyTurnIssued(value) => {
+        crate::issue::ManagedIssueRef::MailWake(value)
+        | crate::issue::ManagedIssueRef::IdentifiedMailWake(value) => {
             let issued = issued(
                 RecoveryWork {
                     agent: value.agent,
@@ -786,7 +831,7 @@ fn ordinary_issue_evidence(
                 },
             ))
         }
-        Record::ConversationTurnIssued {
+        crate::issue::ManagedIssueRef::Conversation {
             agent,
             turn,
             task,
@@ -794,7 +839,7 @@ fn ordinary_issue_evidence(
             context_lsn,
             ..
         }
-        | Record::IdentifiedConversationTurnIssued {
+        | crate::issue::ManagedIssueRef::IdentifiedConversation {
             agent,
             turn,
             task,
@@ -826,8 +871,8 @@ fn note_issue_evidence(
 ) -> Option<(RecoveryWitnessOwner, RecoveryEvidence)> {
     use RecoveryEvidence as E;
     use RecoveryWitnessOwner as O;
-    match record {
-        Record::TurnIssuedWithBrowserNote {
+    match record.issue_payload()? {
+        crate::issue::ManagedIssueRef::GoalNote {
             agent,
             goal,
             turn,
@@ -862,7 +907,7 @@ fn note_issue_evidence(
                 },
             ))
         }
-        Record::NoteOnlyTurnIssued {
+        crate::issue::ManagedIssueRef::RawNote {
             agent,
             goal,
             turn,
@@ -875,7 +920,7 @@ fn note_issue_evidence(
             completion_lsn,
             ..
         }
-        | Record::TaughtNoteOnlyTurnIssued {
+        | crate::issue::ManagedIssueRef::TaughtNote {
             agent,
             goal,
             turn,
@@ -888,7 +933,7 @@ fn note_issue_evidence(
             completion_lsn,
             ..
         }
-        | Record::IdentifiedTaughtNoteOnlyTurnIssued {
+        | crate::issue::ManagedIssueRef::IdentifiedTaughtNote {
             agent,
             goal,
             turn,

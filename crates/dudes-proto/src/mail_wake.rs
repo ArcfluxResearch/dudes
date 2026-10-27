@@ -1068,29 +1068,15 @@ impl MailWakeState {
                     TaskContract::Identified,
                 )?;
             }
-            Record::MailWakeOnlyTurnIssued(issue) if issue.agent == agent => {
-                row.issue(
-                    context,
-                    wakes_today,
-                    lsn,
-                    entry.at,
-                    issue,
-                    TaskContract::Legacy,
-                )?;
-                issued = true;
-            }
-            Record::IdentifiedMailWakeOnlyTurnIssued(issue) if issue.agent == agent => {
-                row.issue(
-                    context,
-                    wakes_today,
-                    lsn,
-                    entry.at,
-                    issue,
-                    TaskContract::Identified,
-                )?;
-                issued = true;
-            }
             _ => {}
+        }
+        if let Some((issue, contract)) = entry
+            .record
+            .mail_issue()
+            .filter(|(issue, _)| issue.agent == agent)
+        {
+            row.issue(context, wakes_today, lsn, entry.at, issue, contract)?;
+            issued = true;
         }
         row.last_lsn = lsn;
         Ok(MailWakeApplied { state: row, issued })

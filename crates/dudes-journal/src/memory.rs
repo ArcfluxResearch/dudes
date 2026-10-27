@@ -254,8 +254,8 @@ impl MemoryProjection {
         // Neither changes active history; both exist only to feed the model-condense rate limit
         // below, fed from this same fold so a restart or a goal change rebuilds the
         // identical answer a live run already had.
-        if let Record::TurnIssued { agent, .. } = record {
-            self.last_turn_issued.insert(*agent, lsn);
+        if let Some(issue) = record.ordinary_issue() {
+            self.last_turn_issued.insert(issue.agent, lsn);
             return MemoryApply::Ignored;
         }
         if let Record::MemoryCondenseModelAdmitted { agent, .. } = record {

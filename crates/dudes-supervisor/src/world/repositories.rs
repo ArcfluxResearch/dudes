@@ -55,7 +55,10 @@ impl World {
         };
         let needs_hire = matches!(entry.record, Record::AgentHiredWithRepositories(_));
         let catalog_change = matches!(entry.record, Record::ProjectRepositoriesRecorded { .. });
-        let trust: Vec<_> = if needs_hire || entry.record.ticket_start().is_some() {
+        let trust: Vec<_> = if needs_hire
+            || entry.record.ticket_start().is_some()
+            || matches!(entry.record, Record::TurnIssuedWithRepositories(_))
+        {
             self.repository_trust
                 .values()
                 .filter(|row| Some(row.project.as_str()) == project)
@@ -64,7 +67,10 @@ impl World {
         } else {
             Vec::new()
         };
-        let leases: Vec<_> = if needs_hire || entry.record.ticket_start().is_some() {
+        let leases: Vec<_> = if needs_hire
+            || entry.record.ticket_start().is_some()
+            || matches!(entry.record, Record::TurnIssuedWithRepositories(_))
+        {
             self.worktrees
                 .iter()
                 .map(|(id, row)| RepositoryLease {
@@ -126,7 +132,45 @@ impl World {
                     .ticket_start()
                     .is_some_and(|start| self.goals.contains_key(&start.goal.id)),
                 hire_class: agent.and_then(|id| self.repository_hires.get(&id)).copied(),
+                active_round: if matches!(entry.record, Record::TurnIssuedWithRepositories(_)) {
+                    agent
+                        .map(|agent| self.active_repository_round(agent))
+                        .transpose()?
+                        .flatten()
+                } else {
+                    None
+                },
             },
+        )
+    }
+
+    /// The held ticket round for any source of work, independently of goal charging.
+    pub fn active_repository_round(
+        &self,
+        agent: AgentId,
+    ) -> Result<Option<&dudes_proto::repository::TicketRepositoryRound>, RepositoryStateError> {
+        dudes_proto::repository_state::active_round(
+            agent,
+            self.repository_tickets
+                .values()
+                .filter_map(Ticket::created)
+                .filter(|ticket| !ticket.removed)
+                .filter_map(|ticket| {
+                    let goal = ticket.goal?;
+                    let round = self.ticket_goals.get(&goal)?;
+                    Some(dudes_proto::repository_state::ActiveRepositoryRound {
+                        holder: ticket.holder,
+                        status: ticket.status,
+                        round,
+                        unfinished: self
+                            .agents
+                            .get(&agent)
+                            .is_some_and(|row| row.goal == Some(goal))
+                            && self.goals.get(&goal).is_some_and(|row| !row.cleared)
+                            && !self.completed_goals.contains_key(&goal),
+                        instructions_pending: self.instructions.pending_for_goal(goal),
+                    })
+                }),
         )
     }
 

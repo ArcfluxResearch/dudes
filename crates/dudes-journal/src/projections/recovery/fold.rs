@@ -37,27 +37,12 @@ where
             lsn,
             RecoveryTransition::Invalidated(record),
         ),
-        Record::TurnIssued { turn, .. }
-        | Record::TurnIssuedWithBrowserNote { turn, .. }
-        | Record::ConversationTurnIssued { turn, .. }
-        | Record::IdentifiedConversationTurnIssued { turn, .. }
-        | Record::NoteOnlyTurnIssued { turn, .. }
-        | Record::TaughtNoteOnlyTurnIssued { turn, .. }
-        | Record::IdentifiedTaughtNoteOnlyTurnIssued { turn, .. }
-        | Record::MailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. })
-        | Record::IdentifiedMailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. }) => {
+        record if record.turn_issue().is_some() => {
+            let issue = record.turn_issue().expect("matched issue");
+            let turn = &issue.turn;
             let cache = RecoveryCache::load_planned(&CacheReader(tables.recovery), through, *turn)?;
             if let Some(claim) = cache.state().planned_claim(*turn) {
-                if !matches!(
-                    &entry.record,
-                    Record::TurnIssued {
-                        mode: Mode::Managed,
-                        ..
-                    } | Record::TurnIssuedWithBrowserNote {
-                        mode: Mode::Managed,
-                        ..
-                    }
-                ) {
+                if !issue.recovery_new() {
                     return Err(RecoveryStateError::Binding.into());
                 }
                 let history = source(lsn, entry, context)?;

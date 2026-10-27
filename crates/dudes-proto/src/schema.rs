@@ -182,6 +182,7 @@ pub(crate) fn close_repository_entries(schema: &mut Schema) {
         "ticket_created_with_repositories",
         "ticket_edited_with_repositories",
         "ticket_started_with_repositories",
+        "turn_issued_with_repositories",
     ] {
         let variant = variants
             .iter_mut()
@@ -575,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn repository_ticket_entry_schemas_match_closed_payloads_and_open_legacy_records() {
+    fn repository_work_entry_schemas_match_closed_payloads_and_open_legacy_records() {
         use crate::RecordKind;
         for file in ["journal-record.schema.json", "rpc.schema.json"] {
             let doc = exported_file(file);
@@ -597,6 +598,10 @@ mod tests {
                 (
                     RecordKind::TicketStartedWithRepositories,
                     RecordKind::TicketStarted,
+                ),
+                (
+                    RecordKind::TurnIssuedWithRepositories,
+                    RecordKind::TurnIssued,
                 ),
             ] {
                 let known = serde_json::to_value(Entry {
