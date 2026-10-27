@@ -65,8 +65,7 @@ pub struct TicketRow {
     /// The note; empty when there is none.
     pub description: String,
     /// The enrolled project the ticket runs in.
-    #[serde(rename = "project")]
-    #[schemars(with = "String")]
+    #[serde(flatten)]
     pub repositories: crate::repository::TicketRepositories,
     /// The check that finishes it.
     pub done_when: TicketCheck,
@@ -432,6 +431,62 @@ pub fn trim(text: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ticket_row_keeps_its_project_string_and_round_trips_declared_authority() {
+        let record =
+            crate::record::samples::record(crate::RecordKind::TicketCreatedWithRepositories);
+        let crate::repository_state::RepositoryFold::Ticket(repositories) =
+            crate::repository_state::fold(
+                Lsn(10),
+                &record,
+                crate::repository_state::RepositoryFacts::default(),
+            )
+        else {
+            panic!("ticket authority")
+        };
+        let row = TicketRow {
+            description: String::new(),
+            repositories,
+            done_when: record.ticket_created().unwrap().done_when.clone(),
+            goal: None,
+            queue: None,
+            message: None,
+            round: 0,
+            reason: None,
+            summary: None,
+            last_turn_end: None,
+            check: None,
+            instruction_review: None,
+            coverage: None,
+        };
+        let mut value = serde_json::to_value(&row).unwrap();
+        assert_eq!(value["project"], row.repositories.project());
+        assert!(value["project"].is_string());
+        assert!(value["repository_scope"].is_object());
+        assert_eq!(
+            serde_json::from_value::<TicketRow>(value.clone()).unwrap(),
+            row
+        );
+        value["project"] = serde_json::json!("other");
+        assert!(serde_json::from_value::<TicketRow>(value).is_err());
+        let legacy = TicketRow {
+            repositories: "service".into(),
+            ..row
+        };
+        let value = serde_json::to_value(&legacy).unwrap();
+        assert_eq!(value["project"], "service");
+        assert!(value.get("repository_scope").is_none());
+        assert_eq!(serde_json::from_value::<TicketRow>(value).unwrap(), legacy);
+    }
+
+    #[test]
+    fn a_scoped_edit_cannot_carry_a_replacement_declaration() {
+        let edit = crate::record::samples::record(crate::RecordKind::TicketEditedWithRepositories);
+        let mut value = serde_json::to_value(edit).unwrap();
+        value["declaration"] = serde_json::json!({"project": "other"});
+        assert!(serde_json::from_value::<crate::Record>(value).is_err());
+    }
 
     #[test]
     fn refusal_sentences_are_the_fixed_plain_sentences() {

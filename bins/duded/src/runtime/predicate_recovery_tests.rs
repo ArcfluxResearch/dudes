@@ -928,6 +928,7 @@ fn same_goal_check_completions_retire_only_their_immutable_execution_folder() {
             argv: vec!["/usr/bin/false".into()],
             timeout_s: 10,
         },
+        &[],
         &mut queue,
     );
     assert!(queue.is_empty());
@@ -1044,6 +1045,7 @@ fn an_unresolved_predicate_folder_keeps_the_observed_preparation_refusal_without
             argv,
             timeout_s: 10,
         },
+        &[],
         &mut queue,
     );
     let Some(Input::PredicateDone {

@@ -39,7 +39,7 @@ use crate::ticket::{TicketCheck, TicketReason};
 /// lacks it fails deserialisation, which is the right, visible failure for a file no released
 /// build can have produced.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[schemars(transform = crate::schema::close_repository_hire_entry)]
+#[schemars(transform = crate::schema::close_repository_entries)]
 pub struct Entry {
     /// The daemon's wall clock as `Clock::now()` reported it when the supervisor emitted the
     /// `Persist` that carried this record, UTC milliseconds. `lsn` orders; `at` labels —
@@ -2038,6 +2038,12 @@ pub enum Record {
         /// The card's `seq` the starter decided against.
         expected_seq: Seq,
     },
+    /// A ticket whose immutable repository declaration was resolved at creation.
+    TicketCreatedWithRepositories(Box<crate::repository::RepositoryTicketCreated>),
+    /// A check edit within an existing immutable repository declaration.
+    TicketEditedWithRepositories(Box<crate::repository::RepositoryTicketEdited>),
+    /// An atomic goal and card start with exact hire, declaration and check authority.
+    TicketStartedWithRepositories(Box<crate::repository::RepositoryTicketStarted>),
     /// `ticket.remove`: the card leaves the board view and its queue. The record stays in the
     /// journal. Conditional on `expected_seq`.
     TicketRemoved {
@@ -2595,6 +2601,9 @@ impl Record {
             Self::ProjectRepositoriesRecorded { .. } => RecordKind::ProjectRepositoriesRecorded,
             Self::RepositoryTrustSet { .. } => RecordKind::RepositoryTrustSet,
             Self::AgentHiredWithRepositories(_) => RecordKind::AgentHiredWithRepositories,
+            Self::TicketCreatedWithRepositories(_) => RecordKind::TicketCreatedWithRepositories,
+            Self::TicketEditedWithRepositories(_) => RecordKind::TicketEditedWithRepositories,
+            Self::TicketStartedWithRepositories(_) => RecordKind::TicketStartedWithRepositories,
             Self::FloorDeviceEnrolled { .. } => RecordKind::FloorDeviceEnrolled,
             Self::FloorDeviceKeyEnrolled { .. } => RecordKind::FloorDeviceKeyEnrolled,
             Self::FloorDeviceFirstUsed { .. } => RecordKind::FloorDeviceFirstUsed,
@@ -2610,10 +2619,11 @@ impl Record {
     #[must_use]
     pub const fn goal_install(&self) -> Option<(AgentId, &Goal)> {
         match self {
-            Self::GoalSet { agent, goal, .. } | Self::TicketStarted { agent, goal, .. } => {
-                Some((*agent, goal))
-            }
-            _ => None,
+            Self::GoalSet { agent, goal, .. } => Some((*agent, goal)),
+            _ => match self.ticket_start() {
+                Some(start) => Some((start.agent, start.goal)),
+                None => None,
+            },
         }
     }
 }
@@ -2834,6 +2844,12 @@ pub enum RecordKind {
     RepositoryTrustSet = 102,
     /// [`Record::AgentHiredWithRepositories`].
     AgentHiredWithRepositories = 103,
+    /// [`Record::TicketCreatedWithRepositories`].
+    TicketCreatedWithRepositories = 104,
+    /// [`Record::TicketEditedWithRepositories`].
+    TicketEditedWithRepositories = 105,
+    /// [`Record::TicketStartedWithRepositories`].
+    TicketStartedWithRepositories = 106,
 }
 
 impl RecordKind {
@@ -2890,8 +2906,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 103] {
-        let mut kinds = [Self::AgentHired; 103];
+    const fn known_kinds() -> [Self; 106] {
+        let mut kinds = [Self::AgentHired; 106];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2954,6 +2970,9 @@ impl RecordKind {
         kinds[100] = Self::ProjectRepositoriesRecorded;
         kinds[101] = Self::RepositoryTrustSet;
         kinds[102] = Self::AgentHiredWithRepositories;
+        kinds[103] = Self::TicketCreatedWithRepositories;
+        kinds[104] = Self::TicketEditedWithRepositories;
+        kinds[105] = Self::TicketStartedWithRepositories;
         kinds
     }
 
@@ -3010,6 +3029,9 @@ impl RecordKind {
                 | Self::ProjectRepositoriesRecorded
                 | Self::RepositoryTrustSet
                 | Self::AgentHiredWithRepositories
+                | Self::TicketCreatedWithRepositories
+                | Self::TicketEditedWithRepositories
+                | Self::TicketStartedWithRepositories
         )
     }
 
@@ -3399,6 +3421,36 @@ pub mod samples {
     )]
     pub fn record(kind: RecordKind) -> Record {
         match kind {
+            RecordKind::TicketCreatedWithRepositories => {
+                let Record::TicketCreated { card, title, description, department, project, done_when, by, request } = record(RecordKind::TicketCreated) else { unreachable!() };
+                let catalog = repository_catalog();
+                Record::TicketCreatedWithRepositories(Box::new(crate::repository::RepositoryTicketCreated {
+                    card, title, description, department, done_when, by, request,
+                    check_repo: catalog.primary_id().clone(),
+                    declaration: crate::repository::TicketDeclaration {
+                        project, catalog_lsn: Lsn::from_parts(1, 0).unwrap(),
+                        repositories: crate::repository::RepositorySet::new(catalog.primary_id().clone(), catalog.entries().iter().map(|entry| crate::repository::RepositoryEntry {repo_id: entry.repo_id.clone(), value: entry.value.origin.clone()}).collect()).unwrap(),
+                    },
+                }))
+            }
+            RecordKind::TicketEditedWithRepositories => {
+                let Record::TicketEdited { card, title, description, done_when, by, expected_seq } = record(RecordKind::TicketEdited) else { unreachable!() };
+                Record::TicketEditedWithRepositories(Box::new(crate::repository::RepositoryTicketEdited { card, title, description, done_when, by, expected_seq, check_repo: repository_catalog().primary_id().clone() }))
+            }
+            RecordKind::TicketStartedWithRepositories => {
+                let Record::TicketStarted {card, agent, mut goal, expected_seq} = record(RecordKind::TicketStarted) else { unreachable!() };
+                let Record::TicketCreatedWithRepositories(created) = record(RecordKind::TicketCreatedWithRepositories) else { unreachable!() };
+                let Record::AgentHiredWithRepositories(hire) = record(RecordKind::AgentHiredWithRepositories) else { unreachable!() };
+                goal.completion_check = Some(crate::CompletionCheckRef {id: created.done_when.id.clone(), label: created.done_when.label.clone(), revision: Hex32::new([0; 32])});
+                Record::TicketStartedWithRepositories(Box::new(crate::repository::RepositoryTicketStarted {
+                    card, agent, goal, expected_seq, round: 1,
+                    repositories: crate::repository::TicketStartRepositories {
+                        hired_lsn: Lsn::from_parts(1, 256).unwrap(), declaration: created.declaration,
+                        check: created.done_when, check_repo: created.check_repo,
+                        check_root: hire.repositories.repositories.primary().execution.clone(),
+                    },
+                }))
+            }
             RecordKind::ProjectRepositoriesRecorded => Record::ProjectRepositoriesRecorded { project: "service".into(), repositories: repository_catalog() },
             RecordKind::RepositoryTrustSet => {
                 let Record::WorkspaceTrustSet { pin, .. } = record(RecordKind::WorkspaceTrustSet) else { unreachable!() };
@@ -4522,7 +4574,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 103);
+        assert_eq!(RecordKind::KNOWN.len(), 106);
         for &kind in RecordKind::KNOWN[46..66]
             .iter()
             .chain(&RecordKind::KNOWN[94..100])
@@ -5031,7 +5083,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            103,
+            106,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -6112,8 +6164,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 103);
-        assert_eq!(RecordKind::from_tag(104), None);
+        assert_eq!(RecordKind::KNOWN.len(), 106);
+        assert_eq!(RecordKind::from_tag(107), None);
     }
 
     #[test]
@@ -6311,7 +6363,12 @@ mod tests {
     fn goal_install_names_the_goal_set_and_the_ticket_start_only() {
         for &kind in RecordKind::KNOWN {
             let record = samples::record(kind);
-            let installs = matches!(kind, RecordKind::GoalSet | RecordKind::TicketStarted);
+            let installs = matches!(
+                kind,
+                RecordKind::GoalSet
+                    | RecordKind::TicketStarted
+                    | RecordKind::TicketStartedWithRepositories
+            );
             assert_eq!(record.goal_install().is_some(), installs, "{kind:?}");
         }
         let started = samples::record(RecordKind::TicketStarted);
@@ -6535,6 +6592,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(104), None);
+        assert_eq!(RecordKind::from_tag(107), None);
     }
 }

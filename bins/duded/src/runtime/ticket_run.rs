@@ -202,6 +202,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// instead, so it leaves the queue and does not hold the project.
     fn start_ticket(&mut self, card: CardId) -> Result<(), RpcError> {
         let (view, ticket) = self.ticket_row(card)?;
+        super::tickets::require_legacy_producer(&ticket)?;
         let Some(agent) = view.claimed_by else {
             return Ok(());
         };

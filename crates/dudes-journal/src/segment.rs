@@ -157,6 +157,11 @@ mod tests {
     fn lsns_of(record: &Record) -> Vec<Lsn> {
         match record {
             Record::RepositoryTrustSet { catalog_lsn, .. } => vec![*catalog_lsn],
+            Record::TicketCreatedWithRepositories(created) => vec![created.declaration.catalog_lsn],
+            Record::TicketStartedWithRepositories(start) => vec![
+                start.repositories.hired_lsn,
+                start.repositories.declaration.catalog_lsn,
+            ],
             Record::AgentHiredWithRepositories(hire) => {
                 let mut refs = vec![hire.repositories.catalog_lsn];
                 refs.extend(
@@ -617,6 +622,7 @@ mod tests {
             | Record::WorktreeRemoved { .. }
             | Record::TicketCreated { .. }
             | Record::TicketEdited { .. }
+            | Record::TicketEditedWithRepositories(_)
             | Record::TicketAssigned { .. }
             | Record::TicketStarted { .. }
             | Record::TicketRemoved { .. }
@@ -654,7 +660,7 @@ mod tests {
 
     #[test]
     fn no_sample_lsn_is_below_the_first_segment() {
-        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 82;
+        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 85;
 
         let mut swept = 0_usize;
         let mut lsns = 0_usize;

@@ -297,20 +297,36 @@ impl World {
     }
 
     pub(super) fn capture_recovery_positions(&mut self, lsn: Lsn, entry: &Entry) {
+        if let Some(created) = entry.record.ticket_created() {
+            self.recovery_card_changes.insert(created.card, lsn);
+            return;
+        }
+        if let Some(start) = entry.record.ticket_start() {
+            if let Some(last) = self.recovery_card_changes.get_mut(&start.card) {
+                *last = lsn;
+            }
+            return;
+        }
         match &entry.record {
-            Record::CardCreated { card, .. } | Record::TicketCreated { card, .. } => {
+            Record::CardCreated { card, .. } => {
                 self.recovery_card_changes.insert(*card, lsn);
             }
             Record::CardTransition { card, .. }
             | Record::Claim { card, .. }
-            | Record::TicketAssigned { card, .. }
-            | Record::TicketStarted { card, .. } => {
+            | Record::TicketAssigned { card, .. } => {
                 if let Some(last) = self.recovery_card_changes.get_mut(card) {
                     *last = lsn;
                 }
             }
             Record::TicketRemoved { card, .. } => {
-                self.recovery_card_changes.remove(card);
+                if self
+                    .repository_tickets
+                    .get(card)
+                    .and_then(super::repositories::Ticket::created)
+                    .is_some()
+                {
+                    self.recovery_card_changes.remove(card);
+                }
             }
             Record::AgentRetired { .. } => self.recovery_last_retirement = Some(lsn),
             _ => {}

@@ -61,6 +61,8 @@ use crate::writer::Fsync;
 /// is added**, or **when what a fold computes changes**; the store is then rebuilt from the
 /// journal.
 ///
+/// `63`: declared ticket and frozen start authority round-trip through board and goal rows.
+///
 /// `62`: lifetime hire-class markers survive retirement and prevent scoped identity reuse.
 ///
 /// `61`: observed repository revisions, per-repository trust, plural hires and lease positions.
@@ -276,7 +278,7 @@ use crate::writer::Fsync;
 /// `2` was the previous bump: the rows became at-derived and `turns.status` gained
 /// a *reachable* `Killed`, so a v1 row saying `Ended` for a killed turn was wrong. Half-right is
 /// worse than rebuilt.
-pub const PROJECTION_VERSION: u64 = 62;
+pub const PROJECTION_VERSION: u64 = 63;
 /// Entries applied per write transaction during replay.
 pub const BATCH: usize = 1000;
 
@@ -313,6 +315,7 @@ const GOAL_FIRST_DONE: TableDefinition<'_, &[u8; 25], &[u8]> =
     TableDefinition::new("goal_first_done");
 const SESSION_TOTALS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("session_totals");
 const SCHEMA_VERSION: &str = "schema_version";
+const TICKET_ROUND_PREFIX: &str = "repository_ticket_round:";
 const LAST_APPLIED_LSN: &str = "last_applied_lsn";
 /// The `crc32c` of the frame at `last_applied_lsn`. A `u32` value in
 /// a `u64` cell, so `META` needs no second table definition.
@@ -1047,6 +1050,12 @@ impl Projections {
             &txn.open_table(repositories::PROJECTS)?,
             &txn.open_table(repositories::TRUST)?,
         )?;
+        for entry in txn.open_table(META)?.iter()? {
+            let (key, value) = entry?;
+            if let Some(card) = key.value().strip_prefix(TICKET_ROUND_PREFIX) {
+                lines.push(format!("repository_ticket_rounds {card} {}", value.value()));
+            }
+        }
         export_rows::<16, budget::BudgetRow>(
             &mut lines,
             "budget_by_goal",
@@ -1203,8 +1212,12 @@ fn fold_batch<'a>(
                 &mut repository_projects,
                 &mut repository_trust,
                 &mut repository_hires,
-                &agents,
-                &leases,
+                repositories::Facts {
+                    agents: &agents,
+                    leases: &leases,
+                    board: &board,
+                    goals: &goals,
+                },
                 lsn,
                 entry,
             )?;
@@ -1244,17 +1257,40 @@ fn fold_batch<'a>(
                 lsn,
                 entry,
             )?;
+            if let Some(card) = entry
+                .record
+                .ticket_created()
+                .map(|created| created.card)
+                .or(match &entry.record {
+                    dudes_proto::Record::CardCreated { card, .. } => Some(*card),
+                    _ => None,
+                })
+            {
+                meta.insert(format!("{TICKET_ROUND_PREFIX}{card}").as_str(), &0)?;
+            }
             let repository_round = if let Some(start) = entry.record.ticket_start() {
+                let key = format!("{TICKET_ROUND_PREFIX}{}", start.card);
+                let prior_round = u32::try_from(
+                    meta.get(key.as_str())?.map_or(0, |row| row.value()),
+                )
+                .map_err(|_| Error::Repository {
+                    lsn,
+                    reason: dudes_proto::repository_state::history::RepositoryStateError::Start,
+                })?;
                 let ticket = get_row::<board::BoardRow>(&board, &start.card.to_bytes())?
                     .and_then(|row| row.ticket);
                 let facts = dudes_proto::repository_state::RepositoryFacts {
                     ticket: ticket
                         .as_ref()
                         .map(|ticket| (&ticket.repositories, ticket.round)),
+                    prior_round,
                     ..dudes_proto::repository_state::RepositoryFacts::default()
                 };
                 match dudes_proto::repository_state::fold(lsn, &entry.record, facts) {
-                    dudes_proto::repository_state::RepositoryFold::Start(round) => Some(round),
+                    dudes_proto::repository_state::RepositoryFold::Start(round) => {
+                        meta.insert(key.as_str(), &u64::from(round.round))?;
+                        Some(round)
+                    }
                     _ => None,
                 }
             } else {
@@ -2100,7 +2136,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_51_flat_native_receipt_rebuilds_its_spawn_key_from_the_journal() {
         use dudes_proto::instruction_state::InstructionBoundarySettlement;
-        assert_eq!(PROJECTION_VERSION, 62);
+        assert_eq!(PROJECTION_VERSION, 63);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let journal = dir.path().join("journal");
@@ -2564,7 +2600,7 @@ pub(crate) mod tests {
     /// cannot tell whether the constant was bumped when the rows changed meaning. This can.
     #[test]
     fn a_version_17_store_rebuilds_the_activity_window() {
-        assert_eq!(PROJECTION_VERSION, 62);
+        assert_eq!(PROJECTION_VERSION, 63);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let records = [
@@ -2598,7 +2634,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_24_store_rebuilds_the_current_live_kind() {
-        assert_eq!(PROJECTION_VERSION, 62);
+        assert_eq!(PROJECTION_VERSION, 63);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let entries = [
@@ -2636,7 +2672,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_25_store_rebuilds_retired_appearance() {
-        assert_eq!(PROJECTION_VERSION, 62);
+        assert_eq!(PROJECTION_VERSION, 63);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let mut hire = hired();
@@ -2748,7 +2784,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_8_store_is_rebuilt_for_per_turn_confirmation() {
         const LATCHED: u64 = 8;
-        assert_eq!(PROJECTION_VERSION, 62);
+        assert_eq!(PROJECTION_VERSION, 63);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2785,7 +2821,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_7_store_is_rebuilt_for_launch_refused_session_clear() {
         const LATCHED: u64 = 7;
-        assert_eq!(PROJECTION_VERSION, 62);
+        assert_eq!(PROJECTION_VERSION, 63);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2855,7 +2891,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 4;
         assert_eq!(
-            PROJECTION_VERSION, 62,
+            PROJECTION_VERSION, 63,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -3721,7 +3757,7 @@ pub(crate) mod tests {
     fn unread_mail_is_rebuilt_from_latest_mail_state() {
         const LATCHED: u64 = 10;
         assert_eq!(
-            PROJECTION_VERSION, 62,
+            PROJECTION_VERSION, 63,
             "this new table owns the 10 -> 11 bump; re-derive the latched store if the current \
              version moves"
         );
@@ -4188,7 +4224,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_11_budget_store_is_rebuilt_for_unknown_ends() {
-        assert_eq!(PROJECTION_VERSION, 62);
+        assert_eq!(PROJECTION_VERSION, 63);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let day = day_of(MIDNIGHT_MS);
@@ -4340,7 +4376,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 5;
         assert_eq!(
-            PROJECTION_VERSION, 62,
+            PROJECTION_VERSION, 63,
             "if this moves, re-derive LATCHED above it — a merge past another bump must move \
              both, or this test passes with this repair's own bump dropped"
         );
@@ -5500,7 +5536,7 @@ pub(crate) mod tests {
     fn a_version_13_store_is_rebuilt_for_question_identity() {
         const LATCHED: u64 = 13;
         assert_eq!(
-            PROJECTION_VERSION, 62,
+            PROJECTION_VERSION, 63,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5537,7 +5573,7 @@ pub(crate) mod tests {
     fn a_version_55_store_is_rebuilt_for_the_last_ended_turn() {
         const LATCHED: u64 = 55;
         assert_eq!(
-            PROJECTION_VERSION, 62,
+            PROJECTION_VERSION, 63,
             "if this moves, move LATCHED above it, so a merge past another bump re-derives both"
         );
         let dir = tempfile::tempdir().unwrap();
@@ -5631,7 +5667,7 @@ pub(crate) mod tests {
     fn a_version_14_store_is_rebuilt_for_control_identity() {
         const LATCHED: u64 = 14;
         assert_eq!(
-            PROJECTION_VERSION, 62,
+            PROJECTION_VERSION, 63,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5738,7 +5774,7 @@ pub(crate) mod tests {
     fn a_version_15_store_counts_the_reset_unknown_end() {
         const LATCHED: u64 = 15;
         assert_eq!(
-            PROJECTION_VERSION, 62,
+            PROJECTION_VERSION, 63,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -6011,7 +6047,7 @@ pub(crate) mod tests {
 
         #[test]
         fn a_version_38_store_rebuilds_the_first_completion_facts() {
-            assert_eq!(PROJECTION_VERSION, 62);
+            assert_eq!(PROJECTION_VERSION, 63);
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.redb");
             let history = [

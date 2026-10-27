@@ -1418,7 +1418,9 @@ impl Discovery {
             }
             (K::TicketAssigned, O::Card(card)) => InvalidationSubject::TicketAssigned(card),
             (K::TicketRemoved, O::Card(card)) => InvalidationSubject::TicketRemoved(card),
-            (K::TicketStarted, O::Ticket { card, .. }) => InvalidationSubject::TicketStarted(card),
+            (K::TicketStarted | K::TicketStartedWithRepositories, O::Ticket { card, .. }) => {
+                InvalidationSubject::TicketStarted(card)
+            }
             (K::WorktreeRemoved, O::Worktree(lease)) => InvalidationSubject::Lease(lease),
             _ => return,
         };
