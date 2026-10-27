@@ -2124,6 +2124,10 @@ pub enum Record {
         /// The bounded sample.
         stamp: crate::diff_stamp::StampPayload,
     },
+    /// The complete declared repository set observed before a ticket round's first issue.
+    TicketBaselineBatchRecorded(crate::repository_review::RepositoryBaselineBatch),
+    /// The complete declared repository set sampled after one frozen check result.
+    TicketReviewBatchStamped(crate::repository_review::RepositoryStampBatch),
     /// An exact interrupted-work boundary requiring explicit recovery consent.
     RecoveryRequired(crate::recovery::RecoveryRequired),
     /// Immutable operator consent for one canonical recovery episode.
@@ -2595,6 +2599,8 @@ impl Record {
             }
             Self::TicketBaselineRecorded { .. } => RecordKind::TicketBaselineRecorded,
             Self::TicketReviewStamped { .. } => RecordKind::TicketReviewStamped,
+            Self::TicketBaselineBatchRecorded(_) => RecordKind::TicketBaselineBatchRecorded,
+            Self::TicketReviewBatchStamped(_) => RecordKind::TicketReviewBatchStamped,
             Self::RecoveryRequired(_) => RecordKind::RecoveryRequired,
             Self::RecoveryAuthorized(_) => RecordKind::RecoveryAuthorized,
             Self::RecoveryInvalidated(_) => RecordKind::RecoveryInvalidated,
@@ -2855,6 +2861,10 @@ pub enum RecordKind {
     TicketStartedWithRepositories = 106,
     /// [`Record::TurnIssuedWithRepositories`].
     TurnIssuedWithRepositories = 107,
+    /// [`Record::TicketBaselineBatchRecorded`].
+    TicketBaselineBatchRecorded = 108,
+    /// [`Record::TicketReviewBatchStamped`].
+    TicketReviewBatchStamped = 109,
 }
 
 impl RecordKind {
@@ -2911,8 +2921,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 107] {
-        let mut kinds = [Self::AgentHired; 107];
+    const fn known_kinds() -> [Self; 109] {
+        let mut kinds = [Self::AgentHired; 109];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2979,6 +2989,8 @@ impl RecordKind {
         kinds[104] = Self::TicketEditedWithRepositories;
         kinds[105] = Self::TicketStartedWithRepositories;
         kinds[106] = Self::TurnIssuedWithRepositories;
+        kinds[107] = Self::TicketBaselineBatchRecorded;
+        kinds[108] = Self::TicketReviewBatchStamped;
         kinds
     }
 
@@ -3039,6 +3051,8 @@ impl RecordKind {
                 | Self::TicketEditedWithRepositories
                 | Self::TicketStartedWithRepositories
                 | Self::TurnIssuedWithRepositories
+                | Self::TicketBaselineBatchRecorded
+                | Self::TicketReviewBatchStamped
         )
     }
 
@@ -3428,6 +3442,39 @@ pub mod samples {
     )]
     pub fn record(kind: RecordKind) -> Record {
         match kind {
+            RecordKind::TicketBaselineBatchRecorded => {
+                let Record::TicketBaselineRecorded { baseline, .. } = record(RecordKind::TicketBaselineRecorded) else { unreachable!() };
+                Record::TicketBaselineBatchRecorded(crate::repository_review::RepositoryBaselineBatch {
+                    v: crate::repository_review::REVIEW_BATCH_VERSION,
+                    binding: crate::repository_review::RepositoryReviewBinding {
+                        ticket: baseline.binding,
+                        start_lsn: Lsn::from_parts(1, 512).unwrap(),
+                        hired_lsn: Lsn::from_parts(1, 256).unwrap(),
+                    },
+                    members: vec![crate::repository_review::RepositoryBaselineMember {
+                        repo_id: repository_catalog().primary_id().clone(),
+                        interval: baseline.interval,
+                        versions: baseline.versions,
+                        outcome: baseline.outcome,
+                    }],
+                })
+            }
+            RecordKind::TicketReviewBatchStamped => {
+                let Record::TicketBaselineBatchRecorded(baseline) = record(RecordKind::TicketBaselineBatchRecorded) else { unreachable!() };
+                let member = &baseline.members[0];
+                Record::TicketReviewBatchStamped(crate::repository_review::RepositoryStampBatch {
+                    v: crate::repository_review::REVIEW_BATCH_VERSION,
+                    binding: baseline.binding,
+                    baseline_lsn: Lsn::from_parts(1, 768).unwrap(),
+                    check_lsn: Lsn::from_parts(1, 1024).unwrap(),
+                    members: vec![crate::repository_review::RepositoryStampMember {
+                        repo_id: member.repo_id.clone(),
+                        interval: member.interval,
+                        versions: member.versions,
+                        outcome: crate::repository_review::RepositoryStampOutcome::Unavailable { reason: crate::DiffRefusal::Unreadable },
+                    }],
+                })
+            }
             RecordKind::TurnIssuedWithRepositories => {
                 let Record::AgentHiredWithRepositories(hire) = record(RecordKind::AgentHiredWithRepositories) else { unreachable!() };
                 let grant = crate::repository::RepositoryTurnGrant::select(Lsn::from_parts(1, 512).unwrap(), &hire.repositories, None).unwrap();
@@ -4587,7 +4634,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 107);
+        assert_eq!(RecordKind::KNOWN.len(), 109);
         for &kind in RecordKind::KNOWN[46..66]
             .iter()
             .chain(&RecordKind::KNOWN[94..100])
@@ -5096,7 +5143,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            107,
+            109,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -6177,7 +6224,7 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 107);
+        assert_eq!(RecordKind::KNOWN.len(), 109);
         assert_eq!(RecordKind::from_tag(108), None);
     }
 

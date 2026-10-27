@@ -140,6 +140,18 @@ impl PairedIssues {
                 "web"
             );
             assert_eq!(self.world.turns[&issue.turn].repositories, new.repositories);
+            if let Some(round) = frozen.grant().unwrap().ticket.as_ref() {
+                let review = self.world.repository_review(round.goal).unwrap();
+                assert_eq!(review.last_issue, Some((recorded.0, issue.turn)));
+                assert_eq!(
+                    review.readiness(),
+                    dudes_proto::repository_review::RepositoryReviewReadiness::MissingAfterIssue
+                );
+                assert_eq!(
+                    self.projection.goal(round.goal).unwrap().unwrap().review,
+                    self.world.goals[&round.goal].review
+                );
+            }
             assert_eq!(
                 self.world.instructions.issue_lsn(issue.turn),
                 Some(recorded.0)
