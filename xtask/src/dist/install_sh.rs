@@ -645,55 +645,101 @@ fn a_missing_archive_notice_refuses_fresh_installs_and_upgrades() {
     }
 }
 
-#[test]
-fn notice_staging_backup_and_swap_failures_keep_the_previous_installation() {
-    for notice in NOTICES {
-        for phase in ["stage", "backup", "swap"] {
-            let started = std::time::Instant::now();
-            eprintln!("[installer-probe] start {notice} {phase}");
-            let served = tempfile::tempdir().expect("a release directory");
-            release(served.path(), &["aarch64-apple-darwin"]);
-            let host = Host::new("Darwin", "arm64");
-            host.fake(
-                "uname",
-                "case $1 in -s) /bin/sleep 1.2; echo Darwin ;; -m) echo arm64 ;; esac",
-            );
-            previous_installation(&host);
-            match phase {
-                "stage" => host.fake(
-                    "cp",
-                    &format!(
-                        "if [ \"${{1##*/}}\" = {notice} ]; then exit 74; fi; exec /bin/cp \"$@\""
-                    ),
-                ),
-                "backup" => host.fake(
-                    "cp",
-                    &format!(
-                        "case \"$*\" in *\".install-rollback.\"*\"/{notice}\") exit 74 ;; esac; exec /bin/cp \"$@\""
-                    ),
-                ),
-                "swap" => host.fake(
-                    "mv",
-                    &format!(
-                        "case \"$*\" in *\".{notice}.new\"*) exit 74 ;; esac; exec /bin/mv \"$@\""
-                    ),
-                ),
-                _ => unreachable!(),
-            }
-            let failed = host.install(&serve(served.path()).url, &[]);
-            assert_eq!(
-                failed.status.code(),
-                Some(74),
-                "{notice} {phase}: {failed:?}"
-            );
-            eprintln!(
-                "[installer-probe] completed {notice} {phase} in {:?}",
-                started.elapsed()
-            );
-            assert_previous_installation(&host);
-            assert!(rollback_dirs(&host.prefix().join("share/dudes")).is_empty());
-        }
+#[derive(Debug)]
+enum NoticeFailure {
+    Stage,
+    Backup,
+    Swap,
+}
+
+fn notice_failure_keeps_previous_installation(notice: &str, phase: NoticeFailure) {
+    let started = std::time::Instant::now();
+    eprintln!("[installer-probe] start {notice} {phase:?}");
+    let served = tempfile::tempdir().expect("a release directory");
+    release(served.path(), &["aarch64-apple-darwin"]);
+    let host = Host::new("Darwin", "arm64");
+    host.fake(
+        "uname",
+        "case $1 in -s) /bin/sleep 1.2; echo Darwin ;; -m) echo arm64 ;; esac",
+    );
+    previous_installation(&host);
+    match phase {
+        NoticeFailure::Stage => host.fake(
+            "cp",
+            &format!(
+                "if [ \"${{1##*/}}\" = {notice} ]; then exit 74; fi; exec /bin/cp \"$@\""
+            ),
+        ),
+        NoticeFailure::Backup => host.fake(
+            "cp",
+            &format!(
+                "case \"$*\" in *\".install-rollback.\"*\"/{notice}\") exit 74 ;; esac; exec /bin/cp \"$@\""
+            ),
+        ),
+        NoticeFailure::Swap => host.fake(
+            "mv",
+            &format!(
+                "case \"$*\" in *\".{notice}.new\"*) exit 74 ;; esac; exec /bin/mv \"$@\""
+            ),
+        ),
     }
+    let failed = host.install(&serve(served.path()).url, &[]);
+    assert_eq!(
+        failed.status.code(),
+        Some(74),
+        "{notice} {phase:?}: {failed:?}"
+    );
+    eprintln!(
+        "[installer-probe] completed {notice} {phase:?} in {:?}",
+        started.elapsed()
+    );
+    assert_previous_installation(&host);
+    assert!(rollback_dirs(&host.prefix().join("share/dudes")).is_empty());
+}
+
+#[test]
+fn apache_notice_stage_failure_keeps_previous_installation() {
+    notice_failure_keeps_previous_installation("LICENSE-APACHE", NoticeFailure::Stage);
+}
+
+#[test]
+fn apache_notice_backup_failure_keeps_previous_installation() {
+    notice_failure_keeps_previous_installation("LICENSE-APACHE", NoticeFailure::Backup);
+}
+
+#[test]
+fn apache_notice_swap_failure_keeps_previous_installation() {
+    notice_failure_keeps_previous_installation("LICENSE-APACHE", NoticeFailure::Swap);
+}
+
+#[test]
+fn mit_notice_stage_failure_keeps_previous_installation() {
+    notice_failure_keeps_previous_installation("LICENSE-MIT", NoticeFailure::Stage);
+}
+
+#[test]
+fn mit_notice_backup_failure_keeps_previous_installation() {
+    notice_failure_keeps_previous_installation("LICENSE-MIT", NoticeFailure::Backup);
+}
+
+#[test]
+fn mit_notice_swap_failure_keeps_previous_installation() {
+    notice_failure_keeps_previous_installation("LICENSE-MIT", NoticeFailure::Swap);
+}
+
+#[test]
+fn third_party_notice_stage_failure_keeps_previous_installation() {
+    notice_failure_keeps_previous_installation("THIRD-PARTY.md", NoticeFailure::Stage);
+}
+
+#[test]
+fn third_party_notice_backup_failure_keeps_previous_installation() {
+    notice_failure_keeps_previous_installation("THIRD-PARTY.md", NoticeFailure::Backup);
+}
+
+#[test]
+fn third_party_notice_swap_failure_keeps_previous_installation() {
+    notice_failure_keeps_previous_installation("THIRD-PARTY.md", NoticeFailure::Swap);
 }
 
 #[test]
