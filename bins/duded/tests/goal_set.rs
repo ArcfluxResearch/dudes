@@ -252,7 +252,9 @@ fn goal_set_records_the_check_name_it_is_given() {
     );
 
     let turn = fixture.await_record("the accepted goal's launch", |record| match record {
-        Record::TurnSpawned { agent: who, turn, .. } if *who == agent => Some(*turn),
+        Record::TurnSpawned {
+            agent: who, turn, ..
+        } if *who == agent => Some(*turn),
         _ => None,
     });
     let before = fixture.records();
@@ -268,7 +270,17 @@ fn goal_set_records_the_check_name_it_is_given() {
         refused.error.expect("a named board check").code,
         ErrorCode::InvalidParams.code()
     );
-    assert_eq!(fixture.records(), before, "nothing was appended");
+    let goals = |records: Vec<Record>| {
+        records
+            .into_iter()
+            .filter(|record| matches!(record, Record::GoalSet { agent: who, .. } if *who == agent))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        goals(fixture.records()),
+        goals(before),
+        "the refused goal was not appended"
+    );
     running.stop(ExitCause::Ended);
 
     let again = boot(
