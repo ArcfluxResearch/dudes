@@ -253,6 +253,52 @@ mod tests {
             Record::InstructionObservationStarted { owner, ticket, .. } => {
                 instruction_refs(*owner, *ticket)
             }
+            Record::InstructionObservationBatchStarted(batch) => {
+                let mut refs = instruction_refs(batch.owner, batch.ticket);
+                refs.push(batch.binding.hired_lsn);
+                refs.extend(batch.binding.ticket_start_lsn);
+                refs
+            }
+            Record::InstructionObservationBatchFinished(batch) => {
+                let mut refs = instruction_refs(batch.owner, batch.ticket);
+                refs.push(batch.binding.hired_lsn);
+                refs.extend(batch.binding.ticket_start_lsn);
+                refs.push(match batch.baseline {
+                    dudes_proto::InstructionBaselineRef::Started { lsn } => lsn,
+                    dudes_proto::InstructionBaselineRef::MissingIssueBoundary {
+                        issue_lsn, ..
+                    } => issue_lsn,
+                    dudes_proto::InstructionBaselineRef::MissingTurnBoundary {
+                        end_lsn, ..
+                    } => end_lsn,
+                });
+                if let Some(member) = batch.members.first() {
+                    let end = match &member.settlement {
+                        dudes_proto::InstructionSettlement::Compared { end, .. } => Some(end),
+                        dudes_proto::InstructionSettlement::Unknown { end, .. } => end.as_ref(),
+                        dudes_proto::InstructionSettlement::NoProcess { proof_lsn, .. } => {
+                            refs.push(*proof_lsn);
+                            None
+                        }
+                        dudes_proto::InstructionSettlement::NoIssuedTurn => None,
+                    };
+                    if let Some(end) = end {
+                        match end {
+                            dudes_proto::InstructionEndBoundary::ManagedTurn {
+                                end_lsn, ..
+                            }
+                            | dudes_proto::InstructionEndBoundary::AttachedTurn {
+                                end_lsn, ..
+                            } => refs.push(*end_lsn),
+                            dudes_proto::InstructionEndBoundary::AttachedProcess {
+                                attachment_lsn,
+                                end_lsn,
+                            } => refs.extend([*attachment_lsn, *end_lsn]),
+                        }
+                    }
+                }
+                refs
+            }
             Record::InstructionObservationFinished {
                 owner,
                 ticket,

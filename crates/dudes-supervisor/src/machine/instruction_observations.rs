@@ -234,10 +234,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         self.instructions.awaiting.values().any(|awaiting| {
             matches!(awaiting, Awaiting::End(ending) if judges(ending.owner, &ending.then))
         }) || self.ledger.values().any(|parked| {
-            matches!((&parked.entry.record, &parked.then),
-                (Record::InstructionObservationFinished { owner, .. },
-                 Then::InstructionCompared { baseline, then })
-                    if self.instructions.ending.contains(baseline) && judges(*owner, then))
+            matches!(&parked.then, Then::InstructionCompared { baseline, then }
+                if self.instructions.ending.contains(baseline)
+                    && dudes_proto::repository_instruction::observation_owner(&parked.entry.record)
+                        .is_some_and(|owner| judges(owner, then)))
         }) || self.instructions.recovery_checks.iter().any(|check| {
             check.agent == agent && self.recovery_check_due(*check)
         }) || matches!(self.instructions.recovery, Recovery::Checking(goal)
@@ -256,6 +256,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 entry.record,
                 Record::InstructionObservationStarted { .. }
                     | Record::InstructionObservationFinished { .. }
+                    | Record::InstructionObservationBatchStarted(_)
+                    | Record::InstructionObservationBatchFinished(_)
                     | Record::TicketInstructionReviewed { .. }
                     | Record::InstructionAttemptBoundarySettled { .. }
                     | Record::PtyCloseRequested { .. }
@@ -383,18 +385,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         } = recovered;
         if unissued {
             self.persist(
-                Record::InstructionObservationFinished {
-                    owner: attempt.owner,
-                    ticket: attempt.ticket,
-                    baseline: attempt.baseline,
-                    settlement: InstructionSettlement::NoIssuedTurn,
-                },
+                self.instruction_control_record(
+                    attempt.owner,
+                    attempt.ticket,
+                    attempt.baseline,
+                    InstructionSettlement::NoIssuedTurn,
+                ),
                 Then::InstructionRecoveryContinue,
             );
         } else if let Some(end_lsn) = end_lsn {
             self.queue_recovery_check(agent, turn);
             let end = InstructionEndBoundary::ManagedTurn { turn, end_lsn };
-            if let Some(snapshot) = attempt.snapshot {
+            if let Some(snapshot) = attempt.legacy_snapshot().cloned() {
                 self.instructions.ending.insert(attempt.baseline);
                 let row = self.world.turns.get(&turn);
                 let goal = row.and_then(|row| row.goal);
@@ -422,13 +424,22 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     }),
                 );
             } else {
+                let scoped = attempt.repository_binding().is_some();
                 self.persist_instruction_unknown(
                     UnknownFinish {
                         owner: attempt.owner,
                         ticket: attempt.ticket,
                         baseline: attempt.baseline,
-                        reason: InstructionUnknownReason::MissingBaseline,
-                        coverage: vec![InstructionGapKind::MissingBaseline],
+                        reason: if scoped {
+                            InstructionUnknownReason::IncompleteCoverage
+                        } else {
+                            InstructionUnknownReason::MissingBaseline
+                        },
+                        coverage: vec![if scoped {
+                            InstructionGapKind::EndingBoundaryMissing
+                        } else {
+                            InstructionGapKind::MissingBaseline
+                        }],
                         end: Some(end),
                         recovery: true,
                     },
@@ -462,7 +473,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let end = self.world.instructions.attachment_end_lsn(attachment_lsn)
             .filter(|end| matches!(attempt.baseline, InstructionBaselineRef::Started { lsn } if *end > lsn))
             .map(|end_lsn| InstructionEndBoundary::AttachedProcess { attachment_lsn, end_lsn });
-        if let (Some(end), Some(snapshot)) = (end, attempt.snapshot) {
+        if let (Some(end), Some(snapshot)) = (end, attempt.legacy_snapshot().cloned()) {
             self.instructions.ending.insert(attempt.baseline);
             self.request_instruction_sample(
                 attempt.owner,
@@ -580,6 +591,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             .collect();
         candidates.into_iter().find_map(|agent| {
             let row = self.world.agents.get(&agent)?;
+            if matches!(
+                row.repositories,
+                dudes_proto::repository::HireRepositories::Scoped(_)
+            ) {
+                return None;
+            }
             if let Some(turn) = row.open_turn {
                 let issue_lsn = self.world.instructions.issue_lsn(turn)?;
                 if self.world.instructions.has_attempt_for_turn(turn)
@@ -846,28 +863,72 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             end,
             recovery,
         } = finish;
+        let settlement = InstructionSettlement::Unknown {
+            reason,
+            end,
+            sampled_at: None,
+            recovery,
+            comparison: InstructionComparison {
+                changes: Vec::new(),
+                gaps: coverage
+                    .into_iter()
+                    .map(|reason| gap(reason, owner_agent(owner)))
+                    .collect(),
+                usage: InstructionSampleUsage::default(),
+            },
+        };
         self.persist(
+            self.instruction_control_record(owner, ticket, baseline, settlement),
+            then,
+        );
+    }
+
+    pub(super) fn instruction_control_record(
+        &self,
+        owner: InstructionObservationOwner,
+        ticket: Option<InstructionTicketAssociation>,
+        baseline: InstructionBaselineRef,
+        settlement: InstructionSettlement,
+    ) -> Record {
+        let start = match baseline {
+            InstructionBaselineRef::Started { lsn } => self
+                .world
+                .instructions
+                .attempt(lsn)
+                .and_then(|attempt| attempt.snapshot.as_ref())
+                .and_then(
+                    dudes_proto::instruction_state::InstructionSnapshotEvidence::repositories,
+                ),
+            _ => None,
+        };
+        if let Some(start) = start {
+            Record::InstructionObservationBatchFinished(
+                dudes_proto::repository_instruction::RepositoryInstructionFinish {
+                    v: dudes_proto::repository_instruction::INSTRUCTION_BATCH_VERSION,
+                    binding: start.binding,
+                    owner,
+                    ticket,
+                    baseline,
+                    members: start
+                        .members
+                        .iter()
+                        .map(|member| {
+                            dudes_proto::repository_instruction::RepositoryInstructionSettlement {
+                                repo_id: member.repo_id.clone(),
+                                settlement: settlement.clone(),
+                            }
+                        })
+                        .collect(),
+                },
+            )
+        } else {
             Record::InstructionObservationFinished {
                 owner,
                 ticket,
                 baseline,
-                settlement: InstructionSettlement::Unknown {
-                    reason,
-                    end,
-                    sampled_at: None,
-                    recovery,
-                    comparison: InstructionComparison {
-                        changes: Vec::new(),
-                        gaps: coverage
-                            .into_iter()
-                            .map(|reason| gap(reason, owner_agent(owner)))
-                            .collect(),
-                        usage: InstructionSampleUsage::default(),
-                    },
-                },
-            },
-            then,
-        );
+                settlement,
+            }
+        }
     }
 
     /// Capture only recorded launch metadata and named path selectors, without task or credentials.
@@ -1350,7 +1411,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some((started_lsn, attempt)) = self.world.instructions.current_for_turn(turn) else {
             return self.resume_after(then, end_lsn, operation);
         };
-        let Some(snapshot) = attempt.snapshot.clone() else {
+        let Some(snapshot) = attempt.legacy_snapshot().cloned() else {
             return self.resume_after(then, end_lsn, operation);
         };
         let owner = attempt.owner;
@@ -3522,7 +3583,7 @@ mod tests {
             .current_for_turn(turn)
             .unwrap();
         let baseline = attempt.baseline;
-        let snapshot = attempt.snapshot.clone().unwrap();
+        let snapshot = attempt.legacy_snapshot().cloned().unwrap();
         harness
             .unfsynced
             .insert(dudes_proto::RecordKind::InstructionObservationFinished);

@@ -243,8 +243,7 @@ impl<H: ProcessHost> Census<'_, H> {
                 });
                 if !current_before_host && !owed {
                     let folder = attempt
-                        .snapshot
-                        .as_ref()
+                        .legacy_snapshot()
                         .and_then(|snapshot| snapshot.execution_folder.as_ref())
                         .and_then(|path| path.to_path().ok());
                     self.attempt_uncertain(owner, folder.as_deref());

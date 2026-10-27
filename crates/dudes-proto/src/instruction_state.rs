@@ -1,6 +1,9 @@
 //! Pure journal-derived instruction obligations shared by lifecycle and projections.
 
 pub mod cache;
+mod evidence;
+
+pub use evidence::{InstructionComparisonEvidence, InstructionSnapshotEvidence};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -14,9 +17,9 @@ use crate::instruction::{
     InstructionGoalClear, InstructionIssueAssociation, InstructionNativeBoundaryReceipt,
     InstructionObservationOwner, InstructionPendingReview, InstructionReviewAction,
     InstructionReviewInterval, InstructionReviewWatermark, InstructionSettlement,
-    InstructionSnapshot, InstructionTicketAssociation, InstructionUnknownReason,
-    InstructionValidationError, MAX_INSTRUCTION_INPUTS, MAX_INSTRUCTION_METADATA_BYTES,
-    TicketCoverageNote, validate_instruction_record,
+    InstructionTicketAssociation, InstructionUnknownReason, InstructionValidationError,
+    MAX_INSTRUCTION_INPUTS, MAX_INSTRUCTION_METADATA_BYTES, TicketCoverageNote,
+    validate_instruction_record,
 };
 use crate::record::{Entry, Hex32, Record};
 use crate::ticket::TicketReason;
@@ -27,7 +30,9 @@ pub struct InstructionFinished {
     /// First terminal record position.
     pub lsn: Lsn,
     /// Immutable settlement.
-    pub settlement: InstructionSettlement,
+    pub settlement: InstructionSettlement<InstructionComparisonEvidence>,
+    /// Scoped authority retained even for a missing starting boundary or a no-process proof.
+    pub repository_binding: Option<crate::repository_instruction::RepositoryInstructionBinding>,
 }
 
 /// One recorded attempt or a turn interval missing its starting observation.
@@ -40,7 +45,7 @@ pub struct InstructionAttempt {
     /// Captured ticket association.
     pub ticket: Option<InstructionTicketAssociation>,
     /// Original baseline; absent only for explicit missing-boundary evidence.
-    pub snapshot: Option<InstructionSnapshot>,
+    pub snapshot: Option<InstructionSnapshotEvidence>,
     /// First terminal comparison or uncertainty.
     pub finished: Option<InstructionFinished>,
     /// Review receipt that consumed this interval, without proving child absence.
@@ -124,6 +129,8 @@ impl InstructionFold {
 struct Issue {
     agent: AgentId,
     lsn: Lsn,
+    scoped: bool,
+    instruction_complete: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,6 +260,21 @@ impl InstructionState {
             .checked_add(1)
             .ok_or(InstructionStateError::Boundary)?);
         match &entry.record {
+            Record::InstructionObservationBatchStarted(batch) => {
+                self.start_valid(batch.owner)?;
+                self.ticket_valid(batch.ticket)
+            }
+            Record::InstructionObservationBatchFinished(batch) => {
+                self.batch_finish_valid(batch)?;
+                self.finish_valid(
+                    after,
+                    batch.owner,
+                    batch.ticket,
+                    batch.baseline,
+                    &evidence::batch_settlement(batch),
+                    Some(batch.binding),
+                )
+            }
             Record::InstructionObservationStarted { owner, ticket, .. } => {
                 self.start_valid(*owner)?;
                 self.ticket_valid(*ticket)
@@ -262,7 +284,14 @@ impl InstructionState {
                 ticket,
                 baseline,
                 settlement,
-            } => self.finish_valid(after, *owner, *ticket, *baseline, settlement),
+            } => self.finish_valid(
+                after,
+                *owner,
+                *ticket,
+                *baseline,
+                &evidence::legacy_settlement(settlement),
+                None,
+            ),
             Record::TicketInstructionReviewed {
                 card,
                 expected_seq,
@@ -282,6 +311,16 @@ impl InstructionState {
                 started_lsn,
                 proof,
             } => self.boundary_valid(after, *owner, *started_lsn, proof),
+            Record::CardTransition {
+                card,
+                to: dudes_types::CardStatus::Done,
+                ..
+            } if self
+                .review_attempts(*card)
+                .any(|(_, attempt)| attempt.repository_binding().is_some()) =>
+            {
+                Err(InstructionStateError::PendingComparison)
+            }
             _ => Ok(()),
         }
     }
@@ -323,12 +362,40 @@ impl InstructionState {
         validate_instruction_record(&entry.record)?;
         let mut folded = InstructionFold::default();
         match &entry.record {
+            Record::InstructionObservationBatchStarted(batch) => {
+                self.start_attempt(
+                    lsn,
+                    batch.owner,
+                    batch.ticket,
+                    InstructionSnapshotEvidence::Repositories(batch.clone()),
+                )?;
+                note_card(&mut folded.evidence_cards, batch.ticket);
+            }
+            Record::InstructionObservationBatchFinished(batch) => {
+                self.batch_finish_valid(batch)?;
+                if self.finish_attempt(
+                    lsn,
+                    batch.owner,
+                    batch.ticket,
+                    batch.baseline,
+                    &evidence::batch_settlement(batch),
+                    Some(batch.binding),
+                )? {
+                    note_card(&mut folded.evidence_cards, batch.ticket);
+                    folded.coverage_note = self.coverage_note(baseline_key(batch.baseline));
+                }
+            }
             Record::InstructionObservationStarted {
                 owner,
                 ticket,
                 snapshot,
             } => {
-                self.start_attempt(lsn, *owner, *ticket, snapshot)?;
+                self.start_attempt(
+                    lsn,
+                    *owner,
+                    *ticket,
+                    InstructionSnapshotEvidence::Legacy(snapshot.clone()),
+                )?;
                 note_card(&mut folded.evidence_cards, *ticket);
             }
             Record::InstructionObservationFinished {
@@ -337,7 +404,14 @@ impl InstructionState {
                 baseline,
                 settlement,
             } => {
-                if self.finish_attempt(lsn, *owner, *ticket, *baseline, settlement)? {
+                if self.finish_attempt(
+                    lsn,
+                    *owner,
+                    *ticket,
+                    *baseline,
+                    &evidence::legacy_settlement(settlement),
+                    None,
+                )? {
                     note_card(&mut folded.evidence_cards, *ticket);
                     folded.coverage_note = self.coverage_note(baseline_key(*baseline));
                 }
@@ -393,6 +467,16 @@ impl InstructionState {
                     self.clear_unresolved(*owner, *started_lsn);
                 }
             }
+            Record::CardTransition {
+                card,
+                to: dudes_types::CardStatus::Done,
+                ..
+            } if self
+                .review_attempts(*card)
+                .any(|(_, attempt)| attempt.repository_binding().is_some()) =>
+            {
+                return Err(InstructionStateError::PendingComparison);
+            }
             _ => self.fold_boundaries(lsn, &entry.record, &mut folded),
         }
         self.last_applied = lsn;
@@ -404,17 +488,22 @@ impl InstructionState {
         lsn: Lsn,
         owner: InstructionObservationOwner,
         ticket: Option<InstructionTicketAssociation>,
-        snapshot: &InstructionSnapshot,
+        snapshot: InstructionSnapshotEvidence,
     ) -> Result<(), InstructionStateError> {
         self.start_valid(owner)?;
         self.ticket_valid(ticket)?;
+        if let InstructionObservationOwner::Managed { turn, .. } = owner
+            && let Some(issue) = self.issues.get_mut(&turn)
+        {
+            issue.instruction_complete = false;
+        }
         self.attempts.insert(
             lsn,
             InstructionAttempt {
                 baseline: InstructionBaselineRef::Started { lsn },
                 owner,
                 ticket,
-                snapshot: Some(snapshot.clone()),
+                snapshot: Some(snapshot),
                 finished: None,
                 reviewed_lsn: None,
                 spawn_lsn: None,
@@ -447,10 +536,11 @@ impl InstructionState {
         owner: InstructionObservationOwner,
         ticket: Option<InstructionTicketAssociation>,
         baseline: InstructionBaselineRef,
-        settlement: &InstructionSettlement,
+        settlement: &InstructionSettlement<InstructionComparisonEvidence>,
+        repository_binding: Option<crate::repository_instruction::RepositoryInstructionBinding>,
     ) -> Result<bool, InstructionStateError> {
         let key = baseline_key(baseline);
-        self.finish_valid(lsn, owner, ticket, baseline, settlement)?;
+        self.finish_valid(lsn, owner, ticket, baseline, settlement, repository_binding)?;
         if self
             .attempts
             .get(&key)
@@ -469,6 +559,7 @@ impl InstructionState {
             attempt.finished = Some(InstructionFinished {
                 lsn,
                 settlement: settlement.clone(),
+                repository_binding,
             });
             self.unfinished.remove(&key);
             match owner {
@@ -498,6 +589,14 @@ impl InstructionState {
             }
             self.refresh_pending(key);
             self.note_turn(owner);
+            if let InstructionObservationOwner::Managed { turn, .. } = owner {
+                let complete = self.attempts.get(&key).is_some_and(|attempt| {
+                    attempt.repository_binding().is_some() && !attempt.coverage_unknown()
+                });
+                if let Some(issue) = self.issues.get_mut(&turn) {
+                    issue.instruction_complete = complete;
+                }
+            }
             return Ok(true);
         }
         Ok(false)
@@ -506,20 +605,23 @@ impl InstructionState {
     fn coverage_note(&self, key: Lsn) -> Option<(CardId, TicketCoverageNote)> {
         let attempt = self.attempts.get(&key)?;
         let ticket = attempt.ticket?;
-        let InstructionSettlement::Compared { comparison, .. } =
-            &attempt.finished.as_ref()?.settlement
-        else {
+        let InstructionSettlement::Compared { .. } = &attempt.finished.as_ref()?.settlement else {
             return None;
         };
         let agent = owner_agent(attempt.owner);
-        let provider = attempt.snapshot.as_ref().and_then(|snapshot| {
+        let provider = attempt.legacy_snapshot().and_then(|snapshot| {
             snapshot
                 .participants
                 .iter()
                 .find(|participant| participant.agent == agent)
                 .map(|participant| participant.provider)
         });
-        let note = TicketCoverageNote::from_comparison(comparison, provider);
+        let mut note = None;
+        for (_, comparison) in attempt.comparisons() {
+            if let Some(next) = TicketCoverageNote::from_comparison(comparison, provider) {
+                TicketCoverageNote::absorb(&mut note, next);
+            }
+        }
         if requires_review(attempt) {
             // A held interval keeps the limits already noted but withdraws any claim of no change.
             return Some((ticket.card, TicketCoverageNote::withdrawn(note, provider)));
@@ -547,6 +649,15 @@ impl InstructionState {
     #[must_use]
     pub fn has_attempt_for_turn(&self, turn: TurnId) -> bool {
         self.observed_turns.contains(&turn)
+    }
+
+    /// A scoped issue qualifies only after its latest physical instruction attempt finishes
+    /// with complete coverage or a corroborated no-process settlement.
+    #[must_use]
+    pub fn repository_turn_covered(&self, turn: TurnId) -> bool {
+        self.issues
+            .get(&turn)
+            .is_some_and(|issue| issue.scoped && issue.instruction_complete)
     }
 
     /// The latest actual attachment record for this agent, without claiming it remains open.
@@ -692,11 +803,14 @@ impl InstructionState {
     ) -> impl Iterator<Item = (&'a Lsn, &'a InstructionAttempt)> {
         self.unresolved_launch_attempts(agent)
             .filter(move |(_, attempt)| {
-                attempt
-                    .snapshot
-                    .as_ref()
-                    .and_then(|snapshot| snapshot.execution_folder.as_ref())
-                    .is_none_or(|recorded| recorded == folder)
+                attempt.snapshot.as_ref().is_none_or(|evidence| {
+                    evidence.samples().any(|(_, snapshot)| {
+                        snapshot
+                            .execution_folder
+                            .as_ref()
+                            .is_none_or(|recorded| recorded == folder)
+                    })
+                })
             })
     }
 
@@ -779,9 +893,13 @@ impl InstructionState {
     pub fn ticket_reason(&self, card: CardId) -> Option<TicketReason> {
         let mut unknown = false;
         for (_, attempt) in self.review_attempts(card) {
-            if let Some(comparison) = comparison(attempt)
-                && comparison.has_shared_changes()
-            {
+            if attempt.comparisons().any(|(_, comparison)| {
+                if attempt.repository_binding().is_some() {
+                    !comparison.changes.is_empty()
+                } else {
+                    comparison.has_shared_changes()
+                }
+            }) {
                 return Some(TicketReason::SharedInstructionsChanged);
             }
             unknown |= requires_review(attempt);
@@ -815,6 +933,16 @@ impl InstructionState {
                 ))
                 .map_err(|_| InstructionStateError::Encoding)?,
             );
+            if attempt.repository_binding().is_some() {
+                bytes.extend(
+                    serde_json::to_vec(&(
+                        attempt.repository_binding(),
+                        &attempt.snapshot,
+                        &attempt.finished,
+                    ))
+                    .map_err(|_| InstructionStateError::Encoding)?,
+                );
+            }
             digest = hash(&bytes);
             through = through
                 .max(*key)
@@ -844,11 +972,16 @@ impl InstructionState {
             intervals: Vec::new(),
             changed_paths: Vec::new(),
             gaps: Vec::new(),
+            coverage_unknown: self
+                .review_attempts(card)
+                .any(|(_, attempt)| attempt.coverage_unknown()),
+            repository_gaps: Vec::new(),
         };
         for (_, attempt) in self.review_attempts(card) {
-            if let Some(comparison) = comparison(attempt) {
+            for (repo_id, comparison) in attempt.comparisons() {
                 for change in &comparison.changes {
                     let shown = InstructionChangedPath {
+                        repo_id: repo_id.cloned(),
                         path: change.path.clone(),
                         context: change.context,
                     };
@@ -869,6 +1002,23 @@ impl InstructionState {
             };
             let (sampled_at, recovery) = sample_time(attempt);
             review.intervals.push(InstructionReviewInterval {
+                repositories: attempt
+                    .snapshot
+                    .as_ref()
+                    .and_then(InstructionSnapshotEvidence::repositories)
+                    .map(|batch| {
+                        batch
+                            .members
+                            .iter()
+                            .map(|member| member.repo_id.clone())
+                            .collect()
+                    })
+                    .unwrap_or_else(|| {
+                        attempt
+                            .comparisons()
+                            .filter_map(|(repo, _)| repo.cloned())
+                            .collect()
+                    }),
                 owner: attempt.owner,
                 baseline: attempt.baseline,
                 ticket,
@@ -881,12 +1031,52 @@ impl InstructionState {
                 review.intervals.pop();
                 overflow(&mut review);
             }
-            if let Some(comparison) = comparison(attempt) {
+            for (repo_id, comparison) in attempt.comparisons() {
                 for gap in &comparison.gaps {
+                    if let Some(repo_id) = repo_id {
+                        review
+                            .repository_gaps
+                            .push(crate::instruction::RepositoryInstructionGap {
+                                repo_id: repo_id.clone(),
+                                gap: gap.clone(),
+                            });
+                        if !review_fits(&review) {
+                            review.repository_gaps.pop();
+                            overflow(&mut review);
+                        }
+                        continue;
+                    }
                     review.gaps.push(gap.clone());
                     if !review_fits(&review) {
                         review.gaps.pop();
                         overflow(&mut review);
+                    }
+                }
+            }
+            if let Some(snapshot) = &attempt.snapshot
+                && attempt.repository_binding().is_some()
+            {
+                for (repo_id, sample) in snapshot.samples() {
+                    if let Some(repo_id) = repo_id {
+                        for gap in sample.gaps.iter().chain(
+                            sample
+                                .participants
+                                .iter()
+                                .flat_map(|participant| &participant.discovery.gaps),
+                        ) {
+                            let shown = crate::instruction::RepositoryInstructionGap {
+                                repo_id: repo_id.clone(),
+                                gap: gap.clone(),
+                            };
+                            if review.repository_gaps.contains(&shown) {
+                                continue;
+                            }
+                            review.repository_gaps.push(shown);
+                            if !review_fits(&review) {
+                                review.repository_gaps.pop();
+                                overflow(&mut review);
+                            }
+                        }
                     }
                 }
             }
@@ -941,6 +1131,13 @@ impl InstructionState {
         }
         if self.watermark(card, hash)? != Some(watermark) {
             return Err(InstructionStateError::StaleReview);
+        }
+        if matches!(action, InstructionReviewAction::Accept { .. })
+            && self
+                .review_attempts(card)
+                .any(|(_, attempt)| attempt.coverage_unknown())
+        {
+            return Err(InstructionStateError::PendingComparison);
         }
         Ok(())
     }
@@ -1021,12 +1218,11 @@ impl InstructionState {
                 return Err(InstructionStateError::Boundary);
             }
             InstructionBoundaryAbsenceProof::PriorBootAbsent { previous, current } => {
-                if attempt
-                    .snapshot
-                    .as_ref()
-                    .and_then(|snapshot| snapshot.boot.as_ref())
-                    != Some(previous)
-                    || previous == current
+                if attempt.snapshot.as_ref().is_none_or(|evidence| {
+                    evidence
+                        .samples()
+                        .any(|(_, sample)| sample.boot.as_ref() != Some(previous))
+                }) || previous == current
                 {
                     return Err(InstructionStateError::Boundary);
                 }
@@ -1046,11 +1242,10 @@ impl InstructionState {
                 agent,
                 turn,
                 issue: InstructionIssueAssociation::Issued { issue_lsn },
-            } if self.issues.get(&turn)
-                != Some(&Issue {
-                    agent,
-                    lsn: issue_lsn,
-                }) =>
+            } if self
+                .issues
+                .get(&turn)
+                .is_none_or(|issue| issue.agent != agent || issue.lsn != issue_lsn) =>
             {
                 Err(InstructionStateError::Boundary)
             }
@@ -1078,10 +1273,15 @@ impl InstructionState {
         owner: InstructionObservationOwner,
         ticket: Option<InstructionTicketAssociation>,
         baseline: InstructionBaselineRef,
-        settlement: &InstructionSettlement,
+        settlement: &InstructionSettlement<InstructionComparisonEvidence>,
+        repository_binding: Option<crate::repository_instruction::RepositoryInstructionBinding>,
     ) -> Result<(), InstructionStateError> {
         if let Some(attempt) = self.attempts.get(&baseline_key(baseline)) {
-            if attempt.baseline != baseline || attempt.owner != owner || attempt.ticket != ticket {
+            if attempt.baseline != baseline
+                || attempt.owner != owner
+                || attempt.ticket != ticket
+                || attempt.repository_binding() != repository_binding
+            {
                 return Err(InstructionStateError::Boundary);
             }
             if let Some(finished) = &attempt.finished {
@@ -1131,17 +1331,40 @@ impl InstructionState {
         Ok(())
     }
 
+    fn batch_finish_valid(
+        &self,
+        batch: &crate::repository_instruction::RepositoryInstructionFinish,
+    ) -> Result<(), InstructionStateError> {
+        if let InstructionBaselineRef::Started { lsn } = batch.baseline {
+            let start = self
+                .attempts
+                .get(&lsn)
+                .and_then(|attempt| attempt.snapshot.as_ref())
+                .and_then(InstructionSnapshotEvidence::repositories)
+                .ok_or(InstructionStateError::Boundary)?;
+            if batch.binding != start.binding
+                || !batch
+                    .members
+                    .iter()
+                    .map(|member| &member.repo_id)
+                    .eq(start.members.iter().map(|member| &member.repo_id))
+            {
+                return Err(InstructionStateError::Boundary);
+            }
+        }
+        Ok(())
+    }
+
     fn missing_issue_valid(
         &self,
         owner: InstructionObservationOwner,
         turn: TurnId,
         issue_lsn: Lsn,
     ) -> Result<(), InstructionStateError> {
-        if self.issues.get(&turn)
-            != Some(&Issue {
-                agent: owner_agent(owner),
-                lsn: issue_lsn,
-            })
+        if self
+            .issues
+            .get(&turn)
+            .is_none_or(|issue| issue.agent != owner_agent(owner) || issue.lsn != issue_lsn)
             || self.ends.contains_key(&turn)
             || self.current_turns.contains_key(&turn)
             || self.has_attempt_for_turn(turn)
@@ -1265,7 +1488,14 @@ impl InstructionState {
 
     fn fold_boundaries(&mut self, lsn: Lsn, record: &Record, folded: &mut InstructionFold) {
         if let Some((agent, turn)) = issue_identity(record) {
-            self.issues.entry(turn).or_insert(Issue { agent, lsn });
+            self.issues.entry(turn).or_insert(Issue {
+                agent,
+                lsn,
+                scoped: record
+                    .turn_issue()
+                    .is_some_and(|issue| issue.repositories.is_some()),
+                instruction_complete: false,
+            });
             if let Some(&key) = self.current_turns.get(&turn)
                 && let Some(attempt) = self.attempts.get(&key)
             {
@@ -1489,17 +1719,15 @@ fn owner_agent(owner: InstructionObservationOwner) -> AgentId {
     }
 }
 
-fn comparison(attempt: &InstructionAttempt) -> Option<&crate::instruction::InstructionComparison> {
-    match &attempt.finished.as_ref()?.settlement {
-        InstructionSettlement::Compared { comparison, .. }
-        | InstructionSettlement::Unknown { comparison, .. } => Some(comparison),
-        _ => None,
-    }
-}
-
 fn requires_review(attempt: &InstructionAttempt) -> bool {
-    if comparison(attempt)
-        .is_some_and(|comparison| comparison.has_shared_changes() || comparison.has_shared_gaps())
+    if attempt.coverage_unknown() && attempt.finished.is_some()
+        || attempt.comparisons().any(|(_, comparison)| {
+            if attempt.repository_binding().is_some() {
+                !comparison.changes.is_empty() || !comparison.gaps.is_empty()
+            } else {
+                comparison.has_shared_changes() || comparison.has_shared_gaps()
+            }
+        })
     {
         return true;
     }
@@ -1535,10 +1763,12 @@ fn sample_time(attempt: &InstructionAttempt) -> (Option<Timestamp>, bool) {
             ..
         }) => (*sampled_at, *recovery),
         _ => (
-            attempt
-                .snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.sampled_at),
+            attempt.snapshot.as_ref().and_then(|evidence| {
+                evidence
+                    .samples()
+                    .map(|(_, snapshot)| snapshot.sampled_at)
+                    .max()
+            }),
             false,
         ),
     }
@@ -1563,6 +1793,7 @@ fn review_fits(review: &InstructionPendingReview) -> bool {
     review.intervals.len() <= MAX_INSTRUCTION_INPUTS
         && review.changed_paths.len() <= MAX_INSTRUCTION_INPUTS
         && review.gaps.len() < MAX_INSTRUCTION_INPUTS
+        && review.repository_gaps.len() + review.gaps.len() < MAX_INSTRUCTION_INPUTS
         && serde_json::to_vec(review)
             .is_ok_and(|bytes| bytes.len() <= MAX_INSTRUCTION_METADATA_BYTES - 1_280)
 }
@@ -2610,6 +2841,7 @@ mod tests {
         context: InstructionPathContext,
     ) -> crate::instruction::InstructionChangedPath {
         crate::instruction::InstructionChangedPath {
+            repo_id: None,
             path: crate::instruction::NativeInstructionPath::Utf8 { value: path.into() },
             context,
         }

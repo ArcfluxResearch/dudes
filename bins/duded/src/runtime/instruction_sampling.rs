@@ -270,7 +270,7 @@ fn current_recorded_census(
             if census.room().is_err() {
                 break;
             }
-            let _ = census.snapshot(attempt.owner, attempt.snapshot.as_ref(), true);
+            let _ = census.snapshot(attempt.owner, attempt.legacy_snapshot(), true);
         }
     }
     add_native_receipts(&mut census, world, absent);
@@ -279,7 +279,7 @@ fn current_recorded_census(
         if census.room().is_err() {
             break;
         }
-        let _ = census.snapshot(attempt.owner, attempt.snapshot.as_ref(), false);
+        let _ = census.snapshot(attempt.owner, attempt.legacy_snapshot(), false);
     }
     for (agent, key) in world.attached_children() {
         if census.room().is_err() {
@@ -330,7 +330,7 @@ fn add_native_receipts(
                 });
         census.native_snapshot(
             receipt.owner,
-            attempt.snapshot.as_ref(),
+            attempt.legacy_snapshot(),
             &receipt.key,
             retained,
         );
@@ -365,7 +365,7 @@ fn add_native_receipts(
             };
         census.native_snapshot(
             receipt.owner,
-            attempt.snapshot.as_ref(),
+            attempt.legacy_snapshot(),
             &receipt.key,
             retained,
         );
@@ -383,7 +383,7 @@ fn add_open_turn_owners(census: &mut CurrentCensus, world: &dudes_supervisor::Wo
             .and_then(|row| row.open_turn)
             .and_then(|turn| world.instructions.current_for_turn(turn));
         if let Some((_, attempt)) = attempt {
-            let _ = census.snapshot(attempt.owner, attempt.snapshot.as_ref(), false);
+            let _ = census.snapshot(attempt.owner, attempt.legacy_snapshot(), false);
         } else {
             if world
                 .agents

@@ -238,6 +238,8 @@ fn repository_payload(header: Header, payload: &[u8]) -> bool {
                     | "turn_issued_with_repositories"
                     | "ticket_baseline_batch_recorded"
                     | "ticket_review_batch_stamped"
+                    | "instruction_observation_batch_started"
+                    | "instruction_observation_batch_finished"
             )
         })
 }
@@ -1356,6 +1358,8 @@ fn is_instruction_kind(kind: RecordKind) -> bool {
     matches!(
         kind,
         RecordKind::InstructionObservationStarted
+            | RecordKind::InstructionObservationBatchStarted
+            | RecordKind::InstructionObservationBatchFinished
             | RecordKind::InstructionObservationFinished
             | RecordKind::TicketInstructionReviewed
             | RecordKind::InstructionAttemptBoundarySettled
