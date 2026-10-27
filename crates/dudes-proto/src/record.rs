@@ -3479,7 +3479,7 @@ pub mod samples {
                     binding: crate::repository_instruction::RepositoryInstructionBinding { hired_lsn: Lsn(1), ticket_start_lsn: None },
                     owner, ticket: None, baseline,
                     members: vec![crate::repository_instruction::RepositoryInstructionSettlement {
-                        repo_id: crate::repository::RepoId::parse("primary").unwrap(), settlement,
+                        repo_id: crate::repository::RepoId::parse("primary").unwrap(), ending_root: None, settlement,
                     }],
                 })
             }

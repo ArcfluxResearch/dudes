@@ -25,6 +25,7 @@ impl World {
             let hire = self
                 .agents
                 .get(&agent)
+                .filter(|owner| !owner.retired)
                 .map(|row| (row.mcp.hire_lsn, &row.repositories))
                 .or_else(|| issued_scope.map(|scope| (scope.hired_lsn(), scope.hire())));
             repository_instruction::validate_observation(

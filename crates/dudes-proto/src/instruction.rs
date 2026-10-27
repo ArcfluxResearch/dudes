@@ -1662,20 +1662,65 @@ impl InstructionSnapshot {
             }
             source_valid(&input.source)?;
             fingerprint_valid(input.fingerprint)?;
-            let participant = self
-                .participants
-                .iter()
-                .find(|participant| participant.agent == input.source.agent)
-                .ok_or(InstructionValidationError::InvalidDiscovery)?;
-            let rule = participant
-                .discovery
-                .rules
-                .get(usize::from(input.source.rule))
-                .ok_or(InstructionValidationError::InvalidDiscovery)?;
-            if participant.discovery.roots[usize::from(rule.root)].path != input.source.root
-                || (matches!(input.source.kind, InstructionSourceKind::Import { .. })
-                    && rule.imports != InstructionImportPolicy::ClaudeFourHops)
-            {
+            self.frozen_source_rule(&input.source)?;
+        }
+        Ok(())
+    }
+
+    fn frozen_source_rule(
+        &self,
+        source: &InstructionInputSource,
+    ) -> Result<&InstructionDiscoveryRule, InstructionValidationError> {
+        source_valid(source)?;
+        let participant = self
+            .participants
+            .iter()
+            .find(|participant| participant.agent == source.agent)
+            .ok_or(InstructionValidationError::InvalidDiscovery)?;
+        let rule = participant
+            .discovery
+            .rules
+            .get(usize::from(source.rule))
+            .ok_or(InstructionValidationError::InvalidDiscovery)?;
+        if participant
+            .discovery
+            .roots
+            .get(usize::from(rule.root))
+            .is_none_or(|root| root.path != source.root)
+            || (matches!(source.kind, InstructionSourceKind::Import { .. })
+                && rule.imports != InstructionImportPolicy::ClaudeFourHops)
+        {
+            return Err(InstructionValidationError::InvalidDiscovery);
+        }
+        Ok(rule)
+    }
+
+    /// Scoped known changes retain the starting declaration without restricting external paths.
+    pub(crate) fn validate_comparison_sources(
+        &self,
+        comparison: &InstructionComparison,
+    ) -> Result<(), InstructionValidationError> {
+        for change in &comparison.changes {
+            let rule = self.frozen_source_rule(&change.source)?;
+            if !matches!(
+                (&change.source.kind, &rule.candidate),
+                (
+                    InstructionSourceKind::Fixed,
+                    InstructionCandidate::Fixed { .. }
+                ) | (
+                    InstructionSourceKind::Ancestor,
+                    InstructionCandidate::Ancestor { .. }
+                ) | (
+                    InstructionSourceKind::Descendant,
+                    InstructionCandidate::Descendant { .. }
+                ) | (
+                    InstructionSourceKind::MarkdownRules,
+                    InstructionCandidate::MarkdownRules { .. }
+                ) | (
+                    InstructionSourceKind::ExplicitFile,
+                    InstructionCandidate::ExplicitFile { .. }
+                ) | (InstructionSourceKind::Import { .. }, _)
+            ) {
                 return Err(InstructionValidationError::InvalidDiscovery);
             }
         }
