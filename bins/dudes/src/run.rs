@@ -2322,8 +2322,23 @@ fn workspace_command(
             };
             finish_reload(env, config, machine, out, &result)
         }
-        WorkspaceCommand::Trust { id } => trust_command(env, id, true, machine, out),
-        WorkspaceCommand::Untrust { id } => trust_command(env, id, false, machine, out),
+        WorkspaceCommand::Trust { id, repo_id } => {
+            trust_command(env, id, repo_id.as_ref(), true, machine, out)
+        }
+        WorkspaceCommand::Untrust { id, repo_id } => {
+            trust_command(env, id, repo_id.as_ref(), false, machine, out)
+        }
+        WorkspaceCommand::Repositories { id, repositories } => {
+            let edit = workspace::set_repositories(config, id, repositories).map_err(local)?;
+            adopt(
+                env,
+                config,
+                &edit,
+                EnrollmentChange::changed(id),
+                machine,
+                (out, err),
+            )
+        }
         WorkspaceCommand::CheckAdd(new) => {
             let edit = workspace::add_check(config, new).map_err(local)?;
             adopt(
@@ -2363,6 +2378,7 @@ fn workspace_command(
 fn trust_command(
     env: &Environment,
     id: &str,
+    repo_id: Option<&dudes_proto::repository::RepoId>,
     trusted: bool,
     machine: bool,
     out: &mut dyn Write,
@@ -2370,10 +2386,13 @@ fn trust_command(
     let result = typed::<dudes_proto::rpc::workspace::TrustResult>(operator_call(
         env,
         Method::WorkspaceTrust,
-        Some(serde_json::json!({ "workspace_id": id, "trusted": trusted })),
+        Some(serde_json::json!({ "workspace_id": id, "trusted": trusted, "repo_id": repo_id })),
     )?)?;
-    render::trust_set(out, machine, id, &result)
-        .map_err(|error| Failure::Other(Message::Local(error.to_string())))?;
+    let rendered = match repo_id {
+        Some(repo) => render::repository_trust_set(out, machine, id, repo.as_str(), &result),
+        None => render::trust_set(out, machine, id, &result),
+    };
+    rendered.map_err(|error| Failure::Other(Message::Local(error.to_string())))?;
     Ok(exit::SUCCESS)
 }
 

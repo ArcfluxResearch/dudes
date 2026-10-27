@@ -1194,7 +1194,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 then,
                 closing,
             } => {
-                let allowed = self.recovery_admission_allowed(agent, operation)
+                let allowed = self.repository_admitted(agent)
+                    && self.recovery_admission_allowed(agent, operation)
                     && self.world.agents.get(&agent).is_some_and(|row| {
                         !row.retired
                             && !row.halted

@@ -24,6 +24,8 @@ use dudes_types::{AgentId, GitCommit, Lsn, Timestamp, WorktreeId};
 use serde_json::json;
 
 mod common;
+#[path = "repository_replay/current_enrollment.rs"]
+mod current_enrollment;
 use common::{Fixture, SharedHost, TestClock};
 
 struct RealRunner(OneShot);
@@ -50,6 +52,30 @@ impl PredicateRunner for RealRunner {
 
     fn sweep(&self) {
         self.0.sweep();
+    }
+
+    fn run_captured(
+        &self,
+        spec: &dudes_providers::launch::LaunchSpec,
+        timeout: Duration,
+        stdout_cap: usize,
+    ) -> io::Result<duded::predicate::PredicateCaptured> {
+        self.0
+            .run_captured(spec, timeout, stdout_cap)
+            .map(|outcome| match outcome {
+                dudes_host::CapturedOutcome::Finished {
+                    exit,
+                    stdout,
+                    truncated,
+                    timed_out,
+                } => duded::predicate::PredicateCaptured::Finished {
+                    exit,
+                    stdout,
+                    truncated,
+                    timed_out,
+                },
+                dudes_host::CapturedOutcome::Swept => duded::predicate::PredicateCaptured::Swept,
+            })
     }
 }
 

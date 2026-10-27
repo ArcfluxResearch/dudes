@@ -129,6 +129,7 @@ mod prehost_boundary_tests;
 mod recovery;
 #[cfg(all(test, unix))]
 mod recovery_fold_tests;
+pub(crate) mod repository_admission;
 mod shared_folder;
 #[cfg(all(test, unix))]
 mod shared_folder_tests;
@@ -907,6 +908,7 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// Operator enrollment is run-local configuration, separate from journal projections. Loaded
     /// at start, and replaced only by an applied `floor.enrollment.reload`.
     pub(crate) enrollment: crate::floor_actions::Enrollment,
+    pub(crate) current_repositories: repository_admission::CurrentRepositories,
     /// The reload sequence, marks counter and resync window beside that enrollment.
     pub(crate) reloads: crate::enrollment_reload::ReloadState,
     /// Only attributed durable records populate this replayable attempt index.
@@ -1330,12 +1332,19 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     ///
     /// A journal append that did not become durable.
     pub(crate) fn started(&mut self) -> Result<()> {
+        let current_valid = self
+            .validate_repository_enrollment(&self.ctx.enrollment)
+            .is_ok();
+        self.ctx.current_repositories.invalid = !current_valid;
         self.ctx
             .inherited_native_boundaries
             .capture(self.sup.world());
         let missing = self.missing_worktrees();
         self.pump(Input::MissingWorktrees(missing))?;
         self.pump(Input::Started)?;
+        if current_valid {
+            self.observe_repository_enrollment()?;
+        }
         self.detach_gone_attachments()?;
         if self.sup.recovering_closing() {
             let attached: Vec<_> = self.sup.closing_recovery_attachments().collect();
@@ -1656,6 +1665,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 }
                 Job::EnrollmentReload { read, reply } => {
                     let answer = self.enrollment_reload(&read);
+                    let _ = reply.send(answer);
+                }
+                Job::EnrollmentInvalid { seq, reply } => {
+                    let answer = self
+                        .invalidate_repository_enrollment(seq)
+                        .map_err(|_| refused("current project configuration could not be held"));
                     let _ = reply.send(answer);
                 }
                 Job::EnrollmentResync { window_id } => {
@@ -2244,6 +2259,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         read: &crate::enrollment_reload::ReloadRead,
     ) -> Result<dudes_proto::rpc::floor::EnrollmentReloadResult, dudes_proto::rpc::RpcError> {
         use crate::enrollment_reload::{AddResync, Resync};
+        if read.seq < self.ctx.current_repositories.invalid_seq {
+            return Err(refused(
+                "a newer project configuration read must be resolved first",
+            ));
+        }
+        if let Err(failure) = self.validate_repository_enrollment(&read.config.enrollment) {
+            self.invalidate_repository_enrollment(read.seq)
+                .map_err(|_| refused("current project configuration could not be held"))?;
+            return Err(refused(&format!(
+                "project configuration refused: {failure}"
+            )));
+        }
         if read.apply.is_some() {
             self.require_journal_writes()?;
         }
@@ -2269,7 +2296,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             condense_model: self.ctx.condense_model.clone(),
             ..crate::config::OperatorConfig::default()
         };
-        let decision = crate::enrollment_reload::decide(
+        let previous_reload = self.ctx.reloads.clone();
+        let decision = match crate::enrollment_reload::decide(
             &self.ctx.enrollment,
             &mut self.ctx.reloads,
             read,
@@ -2277,13 +2305,41 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             self.ctx.memory_config,
             running,
             self.ctx.clock.now(),
-        )
-        .map_err(|error| crate::enrollment_reload::invalid(&error))?;
+        ) {
+            Ok(decision) => decision,
+            Err(error) => {
+                self.invalidate_repository_enrollment(read.seq)
+                    .map_err(|_| refused("current project configuration could not be held"))?;
+                return Err(crate::enrollment_reload::invalid(&error));
+            }
+        };
         if read.apply.is_some() {
             decision.log(read.pid);
         }
+        if !decision.result.applied
+            && (decision.result.refused.is_some()
+                || !decision.result.removed.is_empty()
+                || decision.result.changed.iter().any(|changed| {
+                    changed.fields.iter().any(|field| {
+                        matches!(field.as_str(), "cwd" | "repositories" | "primary_repo")
+                    })
+                }))
+        {
+            self.invalidate_repository_enrollment(read.seq)
+                .map_err(|_| refused("current project configuration could not be held"))?;
+        }
         if decision.result.applied {
-            self.ctx.enrollment = decision.candidate;
+            let previous = std::mem::replace(&mut self.ctx.enrollment, decision.candidate);
+            if let Err(failure) = self.observe_repository_enrollment() {
+                self.ctx.enrollment = previous;
+                self.ctx.reloads = previous_reload;
+                self.invalidate_repository_enrollment(read.seq)
+                    .map_err(|_| refused("current project configuration could not be held"))?;
+                return Err(refused(&format!(
+                    "project configuration could not be observed: {failure}"
+                )));
+            }
+            self.pump_or_refuse(Input::Tick)?;
             self.revoke_stale_grants();
             self.install_switches(decision.switches);
             match decision.resync {
@@ -2413,6 +2469,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 
     fn onboarding_profile_eligible(&self, profile: &crate::floor_actions::Profile) -> bool {
+        if profile.repositories.is_some() || self.ctx.current_repositories.invalid {
+            return false;
+        }
         let path_valid = profile
             .cwd
             .canonicalize()
@@ -2938,6 +2997,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             session_digest: session.digest(),
         };
         let agent = request.agent;
+        if request.verb == ControlVerb::Resume
+            && !self.ctx.repository_allowed(self.sup.world(), agent)
+        {
+            return Err(ControlRefusal::UnavailableNoEffect);
+        }
         let pumped = self.pump_browser(
             session,
             match request.verb {
@@ -4239,6 +4303,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "current observations, checked folding and effect execution retain one first-error boundary"
+    )]
     fn pump_inputs_with_work_refresh(
         &mut self,
         report: &mut PumpReport,
@@ -4297,6 +4365,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 {
                     break 'work Err(error);
                 }
+                self.sup.observe_repository_admission(
+                    self.ctx.repository_observation(self.sup.world()),
+                );
                 let Self {
                     sup, ctx, closing, ..
                 } = self;
@@ -4833,12 +4904,35 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Ok(Answered::Done)
             }
             Ask::TrustTarget(workspace_id) => match self.ctx.enrollment.profile(&workspace_id) {
-                Some(profile) => Ok(Answered::TrustTarget(profile.cwd.clone())),
+                Some(profile)
+                    if profile.repositories.is_none() && !self.ctx.current_repositories.invalid =>
+                {
+                    Ok(Answered::TrustTarget(profile.cwd.clone()))
+                }
+                Some(profile) if profile.repositories.is_some() => {
+                    Err(refused("choose the repository to trust with --repo <id>"))
+                }
+                Some(_) => Err(refused(
+                    "current project configuration must be resolved before trusting it",
+                )),
                 None => Err(error(
                     ErrorCode::InvalidParams,
                     format!("project trust: no project is named `{workspace_id}`"),
                 )),
             },
+            Ask::RepositoryTrustTarget { project, repo_id } => self
+                .repository_trust_target(&project, &repo_id)
+                .map(|target| Answered::RepositoryTrustTarget(Box::new(target)))
+                .map_err(|failure| refused(&format!("project trust: {failure}"))),
+            Ask::RepositoryTrustSet {
+                project,
+                repo_id,
+                target,
+                vouch,
+            } => self
+                .set_repository_trust(project, repo_id, target.as_deref(), vouch.as_deref())
+                .map(Answered::TrustSet)
+                .map_err(|failure| refused(&format!("project trust: {failure}"))),
             Ask::FloorDevice(change) => {
                 self.pump_or_refuse(Input::Command(Command::RecordFloorDevice(change)))?;
                 Ok(Answered::Done)
@@ -4861,7 +4955,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     .ctx
                     .enrollment
                     .profile(&workspace_id)
-                    .is_some_and(|profile| profile.cwd == directory);
+                    .is_some_and(|profile| {
+                        !self.ctx.current_repositories.invalid
+                            && profile.repositories.is_none()
+                            && profile.cwd == directory
+                    });
                 if !enrolled {
                     return Err(error(
                         ErrorCode::Refused,
@@ -4945,6 +5043,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
             Ask::Resume(agent) => {
                 self.require_live_agent(agent)?;
+                if !self.ctx.repository_allowed(self.sup.world(), agent) {
+                    return Err(refused(
+                        "current project repositories must be resolved before resuming",
+                    ));
+                }
                 self.command(Command::Resume {
                     agent,
                     browser: None,
@@ -6610,6 +6713,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         params: &HireParams,
         own: Option<dudes_types::WorktreeId>,
     ) -> Result<(), RpcError> {
+        if self.ctx.current_repositories.invalid {
+            return Err(crate::worktree::unavailable(
+                "current project configuration must be resolved before hiring",
+            ));
+        }
+        if self.ctx.explicit_project_at(self.sup.world(), &params.cwd) {
+            return Err(crate::worktree::unavailable(
+                "this folder belongs to an explicitly scoped project; repository execution is not available yet",
+            ));
+        }
         if self.sup.adapters().get(params.provider).is_none() {
             return Err(no_adapter_refusal(params.provider));
         }
@@ -6749,6 +6862,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         for id in stale {
             if let Err(error) = self.revoke_grant(id.clone()) {
                 tracing::warn!(project = %id, %error.message, "could not revoke a trust grant");
+            }
+        }
+        let stale: Vec<_> = self
+            .sup
+            .world()
+            .repository_trust
+            .values()
+            .filter(|grant| {
+                grant.pin.is_some()
+                    && self
+                        .ctx
+                        .current_repositories
+                        .observed
+                        .get(&grant.project)
+                        .and_then(|project| project.repositories.get(&grant.repo_id))
+                        .is_none_or(|member| member.origin != grant.origin)
+            })
+            .map(|grant| (grant.project.clone(), grant.repo_id.clone()))
+            .collect();
+        for (project, repo_id) in stale {
+            if let Err(error) = self.set_repository_trust(project.clone(), repo_id, None, None) {
+                tracing::warn!(%project, %error, "could not revoke a repository trust grant");
             }
         }
     }
@@ -6901,6 +7036,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let _ = reply.send(Err("Floor is shutting down".to_owned()));
                 }
                 Job::EnrollmentReload { reply, .. } => {
+                    let _ = reply.send(Err(refused("the daemon is shutting down")));
+                }
+                Job::EnrollmentInvalid { reply, .. } => {
                     let _ = reply.send(Err(refused("the daemon is shutting down")));
                 }
                 Job::ProtocolFailed(key) => {
@@ -8471,6 +8609,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         publication: FloorPublication,
         recovery: Option<recovery::AppendSubject<'_>>,
     ) -> Result<CheckedAppend> {
+        if let Some(issue) = entry.record.turn_issue() {
+            anyhow::ensure!(
+                self.repository_allowed(world, issue.agent),
+                "current repository admission refused this turn"
+            );
+        }
+        if let Some(start) = entry.record.ticket_start() {
+            anyhow::ensure!(
+                self.repository_allowed(world, start.agent),
+                "current repository admission refused this ticket"
+            );
+        }
         if matches!(
             entry.record,
             Record::Mail { .. }

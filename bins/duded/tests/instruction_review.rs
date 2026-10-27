@@ -210,6 +210,7 @@ fn owned_settings(
             label: "Owned project".into(),
             cwd: project.to_path_buf(),
             written_cwd: project.to_path_buf(),
+            repositories: None,
             checks: vec![EnrolledCheck {
                 id: "done".into(),
                 label: "Owned check".into(),

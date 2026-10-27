@@ -677,6 +677,8 @@ where
             mailbox: Some(mailbox),
             floor_streams: None,
             enrollment: settings.enrollment.clone(),
+            current_repositories:
+                crate::runtime::repository_admission::CurrentRepositories::default(),
             reloads: crate::enrollment_reload::ReloadState::new(&settings.enrollment),
             onboarding_index,
             answer_index,

@@ -58,6 +58,7 @@ fn profile(id: &str, cwd: &Path) -> Profile {
         ],
         cwd: cwd.to_path_buf(),
         written_cwd: cwd.to_path_buf(),
+        repositories: None,
         department: "engineering".to_owned(),
         isolation: IsolationMode::Default,
         agent_budget: AgentBudget {

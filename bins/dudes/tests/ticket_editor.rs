@@ -48,6 +48,7 @@ fn review() -> Review {
             }],
             cwd: directory.clone(),
             written_cwd: directory.clone(),
+            repositories: None,
             department: "engineering".to_owned(),
             isolation: IsolationMode::Default,
             agent_budget: AgentBudget {

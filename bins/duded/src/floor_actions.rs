@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use dudes_journal::Reader;
 use dudes_proto::record::{BrowserOnboardingHire, Hex32, RecordedWorkspace};
+use dudes_proto::repository::RepositorySet;
 use dudes_proto::rpc::floor::{CheckView, ChecksView, WorkspaceChecks};
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, ENROLLED_CHECK_ID};
 use dudes_proto::{AgentBudget, CompletionCheckRef, GoalBudget, Predicate, Record};
@@ -29,6 +30,8 @@ pub struct Profile {
     /// `cwd` as the operator file wrote it. A reload compares written values, never canonical
     /// ones, so a directory that became a symlink after start does not read as a change.
     pub written_cwd: PathBuf,
+    /// Explicit ordered repository enrollment. Absence keeps the historical `cwd` contract.
+    pub repositories: Option<RepositorySet<ConfiguredRepository>>,
     /// Fixed department for the hired agent.
     pub department: String,
     /// Fixed managed-turn isolation selection.
@@ -41,6 +44,17 @@ pub struct Profile {
     pub hop_cap: u32,
     /// Set by the latest applied reload that added or changed this entry; run-local.
     pub mark: Option<ReloadMark>,
+}
+
+/// One existing repository named by the operator file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfiguredRepository {
+    /// Safe display label, never an execution selector.
+    pub label: String,
+    /// Canonical existing directory.
+    pub path: PathBuf,
+    /// Exact operator spelling retained across reloads.
+    pub written_path: PathBuf,
 }
 
 /// One operator-enrolled completion check. Its command never reaches the browser.
@@ -129,6 +143,37 @@ impl Profile {
             ("completion_check_label", own.label != other_own.label),
             ("completion_check_id", own.id != other_own.id),
             ("cwd", self.written_cwd != other.written_cwd),
+            (
+                "repositories",
+                self.repositories.as_ref().map(|set| {
+                    set.entries()
+                        .iter()
+                        .map(|entry| {
+                            (
+                                &entry.repo_id,
+                                &entry.value.label,
+                                &entry.value.written_path,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                }) != other.repositories.as_ref().map(|set| {
+                    set.entries()
+                        .iter()
+                        .map(|entry| {
+                            (
+                                &entry.repo_id,
+                                &entry.value.label,
+                                &entry.value.written_path,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            ),
+            (
+                "primary_repo",
+                self.repositories.as_ref().map(RepositorySet::primary_id)
+                    != other.repositories.as_ref().map(RepositorySet::primary_id),
+            ),
             ("department", self.department != other.department),
             ("isolation", self.isolation != other.isolation),
             (
@@ -806,7 +851,7 @@ pub(crate) fn decode_attempt(value: &str) -> Result<Hex32> {
     Ok(Hex32::new(bytes))
 }
 
-fn valid_display(value: &str) -> bool {
+pub(crate) fn valid_display(value: &str) -> bool {
     (1..=128).contains(&value.len()) && !value.chars().any(char::is_control)
 }
 
