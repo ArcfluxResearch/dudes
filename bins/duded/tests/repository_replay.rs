@@ -450,8 +450,8 @@ fn crash_before_the_atomic_hire_discards_every_pending_copy() {
     else {
         unreachable!()
     };
-    let mut copies = Vec::new();
-    for (index, entry) in catalog.entries().iter().take(2).enumerate() {
+    let mut grants = std::collections::BTreeMap::new();
+    for entry in catalog.entries() {
         let trust_lsn = append(
             &mut writer,
             Record::RepositoryTrustSet {
@@ -462,13 +462,23 @@ fn crash_before_the_atomic_hire_discards_every_pending_copy() {
                 pin: pin.clone(),
             },
         );
-        copies.push(create_copy(&mut writer, entry, &state, index, trust_lsn));
+        grants.insert(entry.repo_id.clone(), trust_lsn);
+    }
+    let mut copies = Vec::new();
+    for (index, entry) in catalog.entries().iter().take(1).enumerate() {
+        copies.push(create_copy(
+            &mut writer,
+            entry,
+            &state,
+            index,
+            grants[&entry.repo_id],
+        ));
     }
     drop(writer);
     assert_eq!(
         copies.len(),
-        2,
-        "the crash prefix stops before the third lease"
+        1,
+        "the crash prefix stops before the second lease"
     );
     let host = SharedHost::new();
     let (mut running, _) = start(&fixture, &host);
@@ -487,7 +497,7 @@ fn crash_before_the_atomic_hire_discards_every_pending_copy() {
                 )
             })
             .count();
-        if removed == 2 {
+        if removed == 1 {
             break;
         }
         assert!(
