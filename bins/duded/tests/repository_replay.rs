@@ -707,29 +707,29 @@ fn equivalent_retrust_during_pending_leases_still_refuses_the_atomic_hire() {
     let pending = fixture.runtime.path().join("pending-journal");
     let (mut writer, _) = dudes_journal::open(&pending, fixture.settings().journal).unwrap();
     let mut world = dudes_supervisor::World::default();
-    let mut store = Projections::in_memory().unwrap();
+    let mut projection = Projections::in_memory().unwrap();
     let mut first_lease = true;
     for item in source.iter_from(Lsn::ZERO).unwrap() {
         let (_, entry) = item.unwrap();
         if entry.record.hire().is_some() {
             let (lsn, crc) = writer.append_witnessed(&entry).unwrap();
-            let before = store.export().unwrap();
+            let before = projection.export().unwrap();
             assert!(matches!(
-                store.apply(lsn, crc, &entry),
+                projection.apply(lsn, crc, &entry),
                 Err(dudes_journal::Error::Repository {
                     reason: dudes_proto::repository_state::history::RepositoryStateError::Trust,
                     ..
                 })
             ));
             assert!(world.apply_checked(lsn, &entry).is_err());
-            assert_eq!(store.export().unwrap(), before);
+            assert_eq!(projection.export().unwrap(), before);
             break;
         }
         let (lsn, crc) = writer.append_witnessed(&entry).unwrap();
-        apply_pair(&mut world, &mut store, &(lsn, crc, entry.clone()));
+        apply_pair(&mut world, &mut projection, &(lsn, crc, entry.clone()));
         if first_lease && matches!(entry.record, Record::WorktreeLeased { .. }) {
             first_lease = false;
-            let grant = store.repository_trust().unwrap().remove(0);
+            let grant = projection.repository_trust().unwrap().remove(0);
             for pin in [None, grant.pin.clone()] {
                 let recorded = write_record(
                     &mut writer,
@@ -741,14 +741,14 @@ fn equivalent_retrust_during_pending_leases_still_refuses_the_atomic_hire() {
                         pin,
                     },
                 );
-                apply_pair(&mut world, &mut store, &recorded);
+                apply_pair(&mut world, &mut projection, &recorded);
             }
         }
     }
     assert!(world.agents.is_empty());
-    assert!(store.agent(story.hire.id).unwrap().is_none());
+    assert!(projection.agent(story.hire.id).unwrap().is_none());
     assert!(
-        store
+        projection
             .worktrees()
             .unwrap()
             .iter()
