@@ -645,7 +645,7 @@ fn a_missing_archive_notice_refuses_fresh_installs_and_upgrades() {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 enum NoticeFailure {
     Stage,
     Backup,
@@ -653,15 +653,9 @@ enum NoticeFailure {
 }
 
 fn notice_failure_keeps_previous_installation(notice: &str, phase: NoticeFailure) {
-    let started = std::time::Instant::now();
-    eprintln!("[installer-probe] start {notice} {phase:?}");
     let served = tempfile::tempdir().expect("a release directory");
     release(served.path(), &["aarch64-apple-darwin"]);
     let host = Host::new("Darwin", "arm64");
-    host.fake(
-        "uname",
-        "case $1 in -s) /bin/sleep 1.2; echo Darwin ;; -m) echo arm64 ;; esac",
-    );
     previous_installation(&host);
     match phase {
         NoticeFailure::Stage => host.fake(
@@ -688,10 +682,6 @@ fn notice_failure_keeps_previous_installation(notice: &str, phase: NoticeFailure
         failed.status.code(),
         Some(74),
         "{notice} {phase:?}: {failed:?}"
-    );
-    eprintln!(
-        "[installer-probe] completed {notice} {phase:?} in {:?}",
-        started.elapsed()
     );
     assert_previous_installation(&host);
     assert!(rollback_dirs(&host.prefix().join("share/dudes")).is_empty());
