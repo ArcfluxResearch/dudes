@@ -359,13 +359,14 @@ fn masked_text(payload: &[u8]) -> Vec<u8> {
 
 /// The next server text frame's payload.
 fn server_text(stream: &mut TcpStream) -> Vec<u8> {
+    let (opcode, payload) = server_frame(stream);
+    assert_eq!(opcode, 1, "the read-only stream emits text");
+    payload
+}
+
+fn server_frame(stream: &mut TcpStream) -> (u8, Vec<u8>) {
     let mut head = [0_u8; 2];
     stream.read_exact(&mut head).expect("server frame head");
-    assert_eq!(
-        head[0] & 0x0f,
-        1,
-        "the read-only stream emits text, got {head:02x?}"
-    );
     assert_eq!(head[1] & 0x80, 0, "server frames are not masked");
     let len = match head[1] & 0x7f {
         value @ 0..=125 => usize::from(value),
@@ -382,7 +383,7 @@ fn server_text(stream: &mut TcpStream) -> Vec<u8> {
     };
     let mut payload = vec![0_u8; len];
     stream.read_exact(&mut payload).expect("server frame body");
-    payload
+    (head[0] & 0x0f, payload)
 }
 
 /// Block until the gateway itself owns `expected` connections, or fail.
@@ -1259,8 +1260,28 @@ fn a_new_sign_in_reaches_an_open_stream_and_leaves_it_open() {
         Some("floor.device.enrolled"),
         "{seen:?}"
     );
-    let _finishing_http = probe.hold_connection_slot_for_test().expect("HTTP worker slot");
-    assert_eq!(probe.live_connections(), 1, "the stream is still open");
+    let finishing_http = probe
+        .hold_connection_slot_for_test()
+        .expect("HTTP worker slot");
+    let mut ping = masked_text(b"still open");
+    ping[0] = 0x89;
+    stream.write_all(&ping).expect("ping the subscribed stream");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        stream
+            .set_read_timeout(Some(
+                deadline.saturating_duration_since(std::time::Instant::now()),
+            ))
+            .expect("pong deadline");
+        let (opcode, payload) = server_frame(&mut stream);
+        if opcode == 0x0a {
+            assert_eq!(payload, b"still open");
+            break;
+        }
+        assert_eq!(opcode, 1, "only queued text may precede the pong");
+    }
+    drop(finishing_http);
+    wait_for_live(&probe, 1);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
