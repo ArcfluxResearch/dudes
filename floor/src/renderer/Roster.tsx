@@ -62,7 +62,7 @@ function describe(row: NeedRow): string {
   return `${NEED_LABEL[row.state]}. ${facts === '' ? '' : `${facts}. `}${row.doing}${live}. Project: ${crew.workspace}`;
 }
 
-const STAGE_FRAME = cn('z-(--layer-panels) m-0 box-border min-w-0 overflow-auto border-0 border-solid border-line bg-surface text-ink',
+const STAGE_FRAME = cn('z-(--layer-panels) m-0 box-border min-w-0 overflow-auto min-[801px]:relative border-0 border-solid border-line bg-surface text-ink',
   'min-[801px]:col-1 min-[801px]:row-[2/-1] min-[801px]:flex min-[801px]:min-h-0 min-[801px]:w-[min(264px,40vw)] min-[801px]:flex-col min-[801px]:gap-2 min-[801px]:border-r min-[801px]:px-2 min-[801px]:py-4');
 
 /**
