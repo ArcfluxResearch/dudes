@@ -350,7 +350,7 @@ pub(super) fn apply(
     entry: &Entry,
 ) -> Result<()> {
     let mut window = windows(&tables.windows)?;
-    if let Some(payload) = entry.record.issue_payload() {
+    let issued_note = if let Some(payload) = entry.record.issue_payload() {
         match payload {
             dudes_proto::issue::ManagedIssueRef::Conversation {
                 agent,
@@ -543,9 +543,12 @@ pub(super) fn apply(
                     None,
                 )?;
             }
-            _ => {}
+            _ => return Ok(()),
         }
-    }
+        true
+    } else {
+        false
+    };
     match &entry.record {
         Record::ConversationDispatchUncertain {
             agent,
@@ -1128,6 +1131,7 @@ pub(super) fn apply(
             window.turns.retain(|row| row.view.agent_id != *id);
             window.context.retain(|row| row.view.agent_id != *id);
         }
+        _ if issued_note => {}
         _ => return Ok(()),
     }
     for row in &mut window.turns {

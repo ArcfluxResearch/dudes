@@ -1189,7 +1189,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         closing: Option<Lsn>,
         operation: &crate::RecoveryOperation<'_>,
     ) -> bool {
-        // Scoped execution remains closed until repository observations and provider confinement exist.
         if matches!(entry.record, Record::TurnIssuedWithRepositories(_)) {
             return false;
         }

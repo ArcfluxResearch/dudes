@@ -156,16 +156,10 @@ impl PairedIssues {
                 self.world.instructions.issue_lsn(issue.turn),
                 Some(recorded.0)
             );
-            if old_entry.record.mail_issue().is_some() {
-                let before = self.projection.export().unwrap();
-                assert!(matches!(
-                    self.projection.apply(Lsn(recorded.0.0 + 1), 1, &recorded.2),
-                    Err(dudes_journal::Error::MailWake { .. })
-                ));
-                assert_eq!(self.projection.export().unwrap(), before);
-                let mut invalid_world = self.world.clone();
-                let _ = invalid_world.apply_checked(Lsn(recorded.0.0 + 1), &recorded.2);
-                assert_eq!(invalid_world.turns[&issue.turn].issue_lsn, recorded.0);
+            if old_entry.record.mail_issue().is_some()
+                || old_entry.record.ordinary_issue().is_some()
+            {
+                self.assert_duplicate_refused(recorded.0, &recorded.2);
             }
             assert_eq!(
                 self.world.browser_issue(issue.turn).map(|issue| (
@@ -183,7 +177,53 @@ impl PairedIssues {
         recorded.0
     }
 
+    fn assert_duplicate_refused(&mut self, issue_lsn: Lsn, entry: &Entry) {
+        let issue = entry.record.turn_issue().unwrap();
+        let before = self.projection.export().unwrap();
+        let mut duplicate = entry.clone();
+        if let Record::TurnIssuedWithRepositories(issue) = &mut duplicate.record
+            && let dudes_proto::issue::ManagedIssuePayload::Ordinary { task, .. } =
+                &mut issue.payload
+        {
+            task.push_str(" changed after issue");
+        }
+        assert!(matches!(
+            self.projection.apply(Lsn(issue_lsn.0 + 1), 1, &duplicate),
+            Err(dudes_journal::Error::Repository {
+                reason: dudes_proto::repository_state::history::RepositoryStateError::Issue,
+                ..
+            })
+        ));
+        assert_eq!(self.projection.export().unwrap(), before);
+        let mut invalid_world = self.world.clone();
+        assert!(
+            invalid_world
+                .apply_checked(Lsn(issue_lsn.0 + 1), &duplicate)
+                .is_err()
+        );
+        assert_eq!(
+            invalid_world.turns[&issue.turn].task,
+            self.world.turns[&issue.turn].task
+        );
+        assert_eq!(invalid_world.turns[&issue.turn].issue_lsn, issue_lsn);
+        assert_eq!(
+            invalid_world.turns[&issue.turn].repositories,
+            self.world.turns[&issue.turn].repositories
+        );
+        assert_eq!(
+            invalid_world.agents[&issue.agent].open_turn,
+            self.world.agents[&issue.agent].open_turn
+        );
+        if let Some(goal) = issue.goal {
+            assert_eq!(
+                invalid_world.goals[&goal].turns_on_goal,
+                self.world.goals[&goal].turns_on_goal
+            );
+        }
+    }
+
     fn finish(&mut self, turn: TurnId) {
+        let frozen = self.world.turns[&turn].clone();
         let mut ended = samples::record(RecordKind::TurnEnded);
         let Record::TurnEnded {
             agent,
@@ -210,6 +250,11 @@ impl PairedIssues {
         *session_usage = None;
         *outcome = Some(dudes_proto::TurnOutcome::Completed);
         self.append(ended);
+        let retained = self.projection.turn(turn).unwrap().unwrap();
+        assert_eq!(retained.lsn_issued, frozen.issue_lsn);
+        assert_eq!(retained.repositories, frozen.repositories);
+        assert_eq!(self.world.turns[&turn].issue_lsn, frozen.issue_lsn);
+        assert_eq!(self.world.turns[&turn].task, frozen.task);
     }
 
     fn issue(
@@ -521,6 +566,24 @@ fn nine_issue_families_replay_the_same_tasks_reservations_and_billing() {
             .iter()
             .any(|line| line.starts_with("mail_wake_by_day ") && line.ends_with(" 2"))
     );
+    let ordinary = TurnId::from_parts(30, 1);
+    let retained = log.projection.turn(ordinary).unwrap().unwrap();
+    let saved_task = log.world.turns[&ordinary].task.clone();
+    log.append(Record::AgentRetired {
+        id: agent,
+        reason: "finished".into(),
+        browser_retire: None,
+    });
+    assert_eq!(
+        log.projection.turn(ordinary).unwrap(),
+        Some(retained.clone())
+    );
+    assert_eq!(log.world.turns[&ordinary].issue_lsn, retained.lsn_issued);
+    assert_eq!(log.world.turns[&ordinary].task, saved_task);
+    assert_eq!(
+        log.world.turns[&ordinary].repositories,
+        retained.repositories
+    );
     let expected = log.projection.export().unwrap();
     drop(log);
     let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
@@ -694,4 +757,99 @@ fn a_scoped_issue_replays_its_frozen_task_before_a_refused_provider_launch() {
             .iter()
             .any(|(_, entry)| matches!(entry.record, Record::TurnSpawned { .. }))
     );
+}
+
+#[test]
+fn pending_instruction_review_retains_scope_after_the_charge_goal_is_cleared() {
+    use dudes_proto::{
+        InstructionBaselineRef, InstructionComparison, InstructionCoverageGap, InstructionGapKind,
+        InstructionGapOrigin, InstructionIssueAssociation, InstructionObservationOwner,
+        InstructionPathContext, InstructionSettlement, InstructionUnknownReason,
+    };
+    let fixture = Fixture::new();
+    let (mut log, start) = PairedIssues::new(&fixture);
+    let seq = log.projection.ticket(start.card).unwrap().unwrap().0.seq;
+    let ticket = log
+        .world
+        .instructions
+        .association_for_goal(start.goal.id, seq);
+    let owner = InstructionObservationOwner::Managed {
+        agent: start.agent,
+        turn: TurnId::from_parts(30, 44),
+        issue: InstructionIssueAssociation::Prospective,
+    };
+    let Record::InstructionObservationStarted { mut snapshot, .. } =
+        samples::record(RecordKind::InstructionObservationStarted)
+    else {
+        unreachable!()
+    };
+    snapshot.gaps[0].agent = Some(start.agent);
+    let began = log.append(Record::InstructionObservationStarted {
+        owner,
+        ticket,
+        snapshot,
+    });
+    log.append(Record::InstructionObservationFinished {
+        owner,
+        ticket,
+        baseline: InstructionBaselineRef::Started { lsn: began },
+        settlement: InstructionSettlement::Unknown {
+            reason: InstructionUnknownReason::UnrecordedLaunchBoundary,
+            end: None,
+            sampled_at: None,
+            recovery: true,
+            comparison: InstructionComparison {
+                changes: Vec::new(),
+                gaps: vec![InstructionCoverageGap {
+                    origin: InstructionGapOrigin::Observed,
+                    reason: InstructionGapKind::UnrecordedLaunchBoundary,
+                    context: InstructionPathContext::SharedProject,
+                    agent: Some(start.agent),
+                    path: None,
+                }],
+                usage: dudes_proto::InstructionSampleUsage::default(),
+            },
+        },
+    });
+    log.append(Record::GoalCleared {
+        agent: start.agent,
+        goal: start.goal.id,
+    });
+    assert!(log.world.instructions.pending_for_goal(start.goal.id));
+    assert_eq!(
+        log.projection.ticket(start.card).unwrap().unwrap().0.status,
+        CardStatus::Blocked
+    );
+    assert_eq!(log.world.agents[&start.agent].goal, None);
+    assert_eq!(
+        log.world
+            .active_repository_round(start.agent)
+            .unwrap()
+            .unwrap()
+            .goal,
+        start.goal.id
+    );
+    let grant =
+        RepositoryTurnGrant::select(log.story.hired_lsn, &log.story.hire.repositories, None)
+            .unwrap();
+    let record = Record::TurnIssuedWithRepositories(Box::new(RepositoryTurnIssued {
+        grant,
+        payload: legacy_issue(start.agent)
+            .issue_payload()
+            .unwrap()
+            .to_owned(),
+    }));
+    let next = Lsn(log.projection.last_applied_lsn().0 + 1);
+    let entry = Entry {
+        at: Timestamp::UNIX_EPOCH,
+        record,
+    };
+    assert!(matches!(
+        log.projection.apply(next, 1, &entry),
+        Err(dudes_journal::Error::Repository {
+            reason: dudes_proto::repository_state::history::RepositoryStateError::Issue,
+            ..
+        })
+    ));
+    assert!(log.world.apply_checked(next, &entry).is_err());
 }
