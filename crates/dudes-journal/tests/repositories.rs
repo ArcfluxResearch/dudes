@@ -494,3 +494,58 @@ fn a_hire_keeps_its_revision_across_label_edits_but_cannot_omit_a_new_member() {
     ));
     assert_eq!(expanded.export().unwrap(), before);
 }
+
+#[test]
+fn a_cache_without_lifetime_markers_rebuilds_retired_legacy_hire_identity() {
+    use dudes_proto::repository_state::history::RepositoryHireClass;
+    assert_eq!(dudes_journal::PROJECTION_VERSION, 62);
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir.path().join("journal");
+    let cache = dir.path().join("state.redb");
+    let (mut writer, _) = open(
+        &journal,
+        JournalOptions {
+            fsync: Fsync::None,
+            checkpoint_every: 0,
+            ..JournalOptions::default()
+        },
+    )
+    .unwrap();
+    let hire = samples::record(RecordKind::AgentHired);
+    let agent = hire.hire().unwrap().agent;
+    writer.append(&entry(hire)).unwrap();
+    writer
+        .append(&entry(Record::AgentRetired {
+            id: agent,
+            reason: "completed".into(),
+            browser_retire: None,
+        }))
+        .unwrap();
+    drop(writer);
+    let reader = Reader::open(&journal).unwrap().0;
+    let mut store = Projections::open_with(&cache, Fsync::None).unwrap();
+    replay(&reader, &mut store).unwrap();
+    let expected = store.export().unwrap();
+    drop(store);
+    let db = redb::Database::create(&cache).unwrap();
+    let txn = db.begin_write().unwrap();
+    txn.delete_table(redb::TableDefinition::<&[u8; 16], &[u8]>::new(
+        "repository_hires",
+    ))
+    .unwrap();
+    txn.open_table(redb::TableDefinition::<&str, u64>::new("meta"))
+        .unwrap()
+        .insert("schema_version", &61)
+        .unwrap();
+    txn.commit().unwrap();
+    drop(db);
+    let mut rebuilt = Projections::open_with(&cache, Fsync::None).unwrap();
+    assert_eq!(rebuilt.last_applied_lsn(), Lsn::ZERO);
+    replay(&reader, &mut rebuilt).unwrap();
+    assert!(rebuilt.agent(agent).unwrap().is_none());
+    assert_eq!(
+        rebuilt.repository_hire_class(agent).unwrap(),
+        Some(RepositoryHireClass::Legacy)
+    );
+    assert_eq!(rebuilt.export().unwrap(), expected);
+}

@@ -2,8 +2,8 @@
 
 use dudes_proto::repository::HireRepositories;
 use dudes_proto::repository_state::history::{
-    self, ProjectRepositoryHistory, RepositoryHistoryChange, RepositoryHistoryFacts,
-    RepositoryLease, RepositoryTrust,
+    self, ProjectRepositoryHistory, RepositoryHireClass, RepositoryHistoryChange,
+    RepositoryHistoryFacts, RepositoryLease, RepositoryTrust,
 };
 use dudes_proto::{Entry, Record};
 use dudes_types::Lsn;
@@ -12,6 +12,8 @@ use redb::{ReadableTable, Table, TableDefinition};
 use super::{AgentRow, RowTable, WorktreeRow, all_rows, get_row};
 use crate::error::{Error, Result};
 
+pub(super) const HIRES: TableDefinition<'_, &[u8; 16], &[u8]> =
+    TableDefinition::new("repository_hires");
 pub(super) const PROJECTS: TableDefinition<'_, &str, &[u8]> =
     TableDefinition::new("repository_projects");
 pub(super) const TRUST: TableDefinition<'_, &[u8], &[u8]> =
@@ -32,6 +34,7 @@ pub(super) fn rows<K: redb::Key + 'static, T: serde::de::DeserializeOwned>(
 pub(super) fn apply(
     projects: &mut Table<'_, &str, &[u8]>,
     trust: &mut Table<'_, &[u8], &[u8]>,
+    hires: &mut RowTable<'_>,
     agents: &RowTable<'_>,
     leases: &RowTable<'_>,
     lsn: Lsn,
@@ -48,7 +51,7 @@ pub(super) fn apply(
         .hire()
         .map(|hire| hire.agent)
         .or_else(|| entry.record.turn_issue().map(|issue| issue.agent));
-    if project.is_none() && entry.record.turn_issue().is_none() {
+    if project.is_none() && entry.record.turn_issue().is_none() && entry.record.hire().is_none() {
         return Ok(());
     }
     let history: Option<ProjectRepositoryHistory> = project
@@ -67,11 +70,12 @@ pub(super) fn apply(
     } else {
         Vec::new()
     };
-    let lease_rows: Vec<WorktreeRow> = if entry.record.hire().is_some() {
-        all_rows(leases)?
-    } else {
-        Vec::new()
-    };
+    let lease_rows: Vec<WorktreeRow> =
+        if matches!(entry.record, Record::AgentHiredWithRepositories(_)) {
+            all_rows(leases)?
+        } else {
+            Vec::new()
+        };
     let leases: Vec<_> = lease_rows
         .iter()
         .map(|row| RepositoryLease {
@@ -110,10 +114,17 @@ pub(super) fn apply(
             leases: &leases,
             active_hires: &active_hires,
             hire: owner.as_ref().map(|row| &row.repositories),
+            hire_class: agent
+                .map(|id| get_row::<RepositoryHireClass>(hires, &id.to_bytes()))
+                .transpose()?
+                .flatten(),
         },
     )
     .map_err(|reason| Error::Repository { lsn, reason })?;
     match change {
+        RepositoryHistoryChange::Hired { agent, class } => {
+            super::put_row(hires, &agent.to_bytes(), &class)?;
+        }
         RepositoryHistoryChange::Project(row) => {
             let bytes = serde_json::to_vec(&row).map_err(|source| Error::Row { source })?;
             projects.insert(row.project.as_str(), bytes.as_slice())?;

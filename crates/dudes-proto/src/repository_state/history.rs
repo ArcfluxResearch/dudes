@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use dudes_types::{Lsn, WorktreeId};
+use dudes_types::{AgentId, Lsn, WorktreeId};
 use serde::{Deserialize, Serialize};
 
 use crate::Record;
@@ -59,6 +59,16 @@ pub struct RepositoryLease<'a> {
     pub removed: bool,
 }
 
+/// The repository class an agent identity has held, retained after retirement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepositoryHireClass {
+    /// Only historical singleton hires were recorded for this identity.
+    Legacy,
+    /// Restricted repository authority was recorded for this identity.
+    Scoped,
+}
+
 /// Only the preceding row components an observed repository event may depend on.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RepositoryHistoryFacts<'a> {
@@ -72,13 +82,22 @@ pub struct RepositoryHistoryFacts<'a> {
     pub active_hires: &'a [&'a ScopedRepositories],
     /// Existing authority for the affected agent, when present.
     pub hire: Option<&'a HireRepositories>,
+    /// Whether this identity has ever been hired, and under which repository class.
+    pub hire_class: Option<RepositoryHireClass>,
 }
 
 /// Validated replacements owned by the project and trust rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RepositoryHistoryChange {
-    /// No catalog or trust replacement. A hire's authority remains on its agent row.
+    /// No repository history replacement.
     Unchanged,
+    /// Retain only the identity's hire class; execution authority stays on its agent row.
+    Hired {
+        /// Hired identity.
+        agent: AgentId,
+        /// Lifetime repository class.
+        class: RepositoryHireClass,
+    },
     /// A new immutable observed revision and its retained first bindings.
     Project(ProjectRepositoryHistory),
     /// The latest grant or revocation.
@@ -226,6 +245,24 @@ pub fn prepare(
     before: RepositoryHistoryFacts<'_>,
 ) -> Result<RepositoryHistoryChange, RepositoryStateError> {
     validate_shape(record)?;
+    if let Some(hire) = record.hire() {
+        let class = match hire.repositories {
+            crate::repository_state::HireRepositoryRecord::Legacy { .. } => {
+                if was_scoped(before) {
+                    return Err(RepositoryStateError::Hire);
+                }
+                RepositoryHireClass::Legacy
+            }
+            crate::repository_state::HireRepositoryRecord::Scoped(scope) => {
+                validate_hire(lsn, scope, before)?;
+                RepositoryHireClass::Scoped
+            }
+        };
+        return Ok(RepositoryHistoryChange::Hired {
+            agent: hire.agent,
+            class,
+        });
+    }
     match record {
         Record::ProjectRepositoriesRecorded {
             project,
@@ -293,17 +330,16 @@ pub fn prepare(
                 pin: pin.clone(),
             }))
         }
-        Record::AgentHiredWithRepositories(hire) => {
-            validate_hire(lsn, &hire.repositories, before)?;
-            Ok(RepositoryHistoryChange::Unchanged)
-        }
-        _ if record.turn_issue().is_some()
-            && matches!(before.hire, Some(HireRepositories::Scoped(_))) =>
-        {
+        _ if record.turn_issue().is_some() && was_scoped(before) => {
             Err(RepositoryStateError::LegacyIssue)
         }
         _ => Ok(RepositoryHistoryChange::Unchanged),
     }
+}
+
+fn was_scoped(before: RepositoryHistoryFacts<'_>) -> bool {
+    before.hire_class == Some(RepositoryHireClass::Scoped)
+        || matches!(before.hire, Some(HireRepositories::Scoped(_)))
 }
 
 fn validate_hire(
@@ -311,7 +347,7 @@ fn validate_hire(
     scope: &ScopedRepositories,
     before: RepositoryHistoryFacts<'_>,
 ) -> Result<(), RepositoryStateError> {
-    if before.hire.is_some() {
+    if before.hire.is_some() || before.hire_class.is_some() {
         return Err(RepositoryStateError::Hire);
     }
     let catalog = revision(before.project, &scope.project.id, scope.catalog_lsn, lsn)?;

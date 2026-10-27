@@ -34,6 +34,7 @@ impl World {
                     hire: agent
                         .and_then(|id| self.agents.get(&id))
                         .map(|row| &row.repositories),
+                    hire_class: agent.and_then(|id| self.repository_hires.get(&id)).copied(),
                     ..RepositoryHistoryFacts::default()
                 },
             );
@@ -77,12 +78,16 @@ impl World {
                 hire: agent
                     .and_then(|id| self.agents.get(&id))
                     .map(|row| &row.repositories),
+                hire_class: agent.and_then(|id| self.repository_hires.get(&id)).copied(),
             },
         )
     }
 
     pub(super) fn apply_repository_change(&mut self, change: RepositoryHistoryChange) {
         match change {
+            RepositoryHistoryChange::Hired { agent, class } => {
+                self.repository_hires.insert(agent, class);
+            }
             RepositoryHistoryChange::Project(row) => {
                 self.repository_projects.insert(row.project.clone(), row);
             }

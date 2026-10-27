@@ -562,6 +562,9 @@ pub struct World {
         (String, dudes_proto::repository::RepoId),
         dudes_proto::repository_state::history::RepositoryTrust,
     >,
+    /// Lifetime repository class, retained when the agent retires.
+    pub repository_hires:
+        BTreeMap<AgentId, dudes_proto::repository_state::history::RepositoryHireClass>,
     /// Every browser that signed in to the Floor, by device id, removed ones included.
     pub floor_devices: BTreeMap<Hex32, DeviceRow>,
 }

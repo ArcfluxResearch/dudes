@@ -125,7 +125,7 @@ fn create_copy(
     let worktree = WorktreeId::from_bytes([u8::try_from(index + 1).unwrap(); 16]);
     let path = state.join("worktrees").join(worktree.to_string());
     let origin = &entry.value.origin;
-    let branch = format!("dudes/{}", entry.repo_id.as_str());
+    let branch = format!("dudes/{}-{worktree}", entry.repo_id.as_str());
     let base = GitCommit::parse(&git(&origin.directory, &["rev-parse", "HEAD"])).unwrap();
     append(
         writer,
@@ -667,4 +667,281 @@ fn malformed_repository_history_refuses_boot_even_when_the_cache_has_advanced_pa
     assert!(!settings.socket().exists());
     assert_eq!(std::fs::read(path).unwrap(), before);
     assert!(host.spawned().is_empty());
+}
+
+fn replay_pair(fixture: &Fixture) -> (Writer, dudes_supervisor::World, Projections) {
+    let (writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
+    let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
+    let mut projection = Projections::open(&fixture.state.path().join("paired.redb")).unwrap();
+    replay(&reader, &mut projection).unwrap();
+    let mut world = dudes_supervisor::World::default();
+    for item in reader.iter_from(Lsn::ZERO).unwrap() {
+        let (lsn, entry) = item.unwrap();
+        world.apply_checked(lsn, &entry).unwrap();
+    }
+    (writer, world, projection)
+}
+
+fn write_record(writer: &mut Writer, record: Record) -> (Lsn, u32, Entry) {
+    let entry = Entry {
+        at: Timestamp::UNIX_EPOCH,
+        record,
+    };
+    let (lsn, crc) = writer.append_witnessed(&entry).unwrap();
+    (lsn, crc, entry)
+}
+
+fn apply_pair(
+    world: &mut dudes_supervisor::World,
+    projection: &mut Projections,
+    recorded: &(Lsn, u32, Entry),
+) {
+    projection
+        .apply(recorded.0, recorded.1, &recorded.2)
+        .unwrap();
+    world.apply_checked(recorded.0, &recorded.2).unwrap();
+}
+
+fn legacy_hire(agent: AgentId, cwd: &Path) -> Record {
+    let mut record = samples::record(RecordKind::AgentHired);
+    let Record::AgentHired {
+        id,
+        cwd: recorded,
+        workspace,
+        worktree,
+        browser_onboarding,
+        mcp_servers,
+        ..
+    } = &mut record
+    else {
+        unreachable!()
+    };
+    *id = agent;
+    *recorded = cwd.to_path_buf();
+    *workspace = None;
+    *worktree = None;
+    *browser_onboarding = None;
+    mcp_servers.clear();
+    record
+}
+
+fn legacy_issue(agent: AgentId) -> Record {
+    let mut record = samples::record(RecordKind::TurnIssued);
+    let Record::TurnIssued {
+        agent: owner,
+        answers,
+        ..
+    } = &mut record
+    else {
+        unreachable!()
+    };
+    *owner = agent;
+    answers.clear();
+    record
+}
+
+fn reject_pair(
+    fixture: &Fixture,
+    world: &mut dudes_supervisor::World,
+    projection: &mut Projections,
+    recorded: &(Lsn, u32, Entry),
+    expected: dudes_proto::repository_state::history::RepositoryStateError,
+) {
+    let before = projection.export().unwrap();
+    let world_cursor = world.last_applied_lsn;
+    let projected = projection.apply(recorded.0, recorded.1, &recorded.2);
+    let folded = world.apply_checked(recorded.0, &recorded.2);
+    let read = Reader::open(&fixture.journal_dir()).map(|(_, report)| report.frames);
+    assert!(
+        matches!(&projected, Err(dudes_journal::Error::Repository { reason, .. }) if *reason == expected),
+        "projection={projected:?}; world={folded:?}; reader={read:?}"
+    );
+    assert!(folded.is_err(), "{folded:?}");
+    assert!(
+        matches!(read, Err(dudes_journal::Error::Repository { reason, .. }) if reason == expected)
+    );
+    assert_eq!(projection.export().unwrap(), before);
+    assert_eq!(world.last_applied_lsn, world_cursor);
+}
+
+#[test]
+fn retirement_cannot_forget_a_scoped_hires_legacy_issue_refusal() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let (mut writer, mut world, mut projection) = replay_pair(&fixture);
+    let retired = write_record(
+        &mut writer,
+        Record::AgentRetired {
+            id: story.hire.id,
+            reason: "completed".into(),
+            browser_retire: None,
+        },
+    );
+    apply_pair(&mut world, &mut projection, &retired);
+    let issue = write_record(&mut writer, legacy_issue(story.hire.id));
+    reject_pair(
+        &fixture,
+        &mut world,
+        &mut projection,
+        &issue,
+        dudes_proto::repository_state::history::RepositoryStateError::LegacyIssue,
+    );
+}
+
+fn fresh_hire(fixture: &Fixture, writer: &mut Writer, story: &Story) -> RepositoryHire {
+    let mut hire = story.hire.clone();
+    let state = std::fs::canonicalize(fixture.state.path()).unwrap();
+    let mut ordered: Vec<_> = hire.repositories.repositories.entries().iter().collect();
+    ordered.sort_by_key(|entry| &entry.repo_id);
+    let mut copies = std::collections::BTreeMap::new();
+    for (index, entry) in ordered.into_iter().enumerate() {
+        let catalog = RepositoryEntry {
+            repo_id: entry.repo_id.clone(),
+            value: CatalogRepository {
+                label: "Copy".into(),
+                origin: entry.value.origin.clone(),
+            },
+        };
+        copies.insert(
+            entry.repo_id.clone(),
+            create_copy(writer, &catalog, &state, index + 10, entry.value.trust_lsn),
+        );
+    }
+    hire.repositories.repositories = RepositorySet::new(
+        hire.repositories.repositories.primary_id().clone(),
+        hire.repositories
+            .repositories
+            .entries()
+            .iter()
+            .map(|entry| RepositoryEntry {
+                repo_id: entry.repo_id.clone(),
+                value: copies[&entry.repo_id].clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    hire
+}
+
+#[test]
+fn retirement_cannot_allow_a_second_scoped_hire_with_the_same_agent_id() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let (mut writer, mut world, mut projection) = replay_pair(&fixture);
+    let retired = write_record(
+        &mut writer,
+        Record::AgentRetired {
+            id: story.hire.id,
+            reason: "completed".into(),
+            browser_retire: None,
+        },
+    );
+    apply_pair(&mut world, &mut projection, &retired);
+    let hire = fresh_hire(&fixture, &mut writer, &story);
+    let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
+    replay(&reader, &mut projection).unwrap();
+    for item in reader.iter_from(retired.0).unwrap().skip(1) {
+        let (lsn, entry) = item.unwrap();
+        world.apply_checked(lsn, &entry).unwrap();
+    }
+    let hired = write_record(
+        &mut writer,
+        Record::AgentHiredWithRepositories(Box::new(hire)),
+    );
+    reject_pair(
+        &fixture,
+        &mut world,
+        &mut projection,
+        &hired,
+        dudes_proto::repository_state::history::RepositoryStateError::Hire,
+    );
+}
+
+#[test]
+fn a_legacy_rehire_cannot_downgrade_scoped_authority_before_an_issue() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let (mut writer, mut world, mut projection) = replay_pair(&fixture);
+    let hired = write_record(
+        &mut writer,
+        legacy_hire(
+            story.hire.id,
+            &story
+                .hire
+                .repositories
+                .repositories
+                .primary()
+                .origin
+                .directory,
+        ),
+    );
+    write_record(&mut writer, legacy_issue(story.hire.id));
+    reject_pair(
+        &fixture,
+        &mut world,
+        &mut projection,
+        &hired,
+        dudes_proto::repository_state::history::RepositoryStateError::Hire,
+    );
+}
+
+#[test]
+fn legacy_only_retirement_rehire_and_issue_history_remains_readable() {
+    let fixture = Fixture::new();
+    let (mut writer, mut world, mut projection) = replay_pair(&fixture);
+    let agent = AgentId::from_parts(3, 1);
+    for record in [
+        legacy_hire(agent, fixture.runtime.path()),
+        Record::AgentRetired {
+            id: agent,
+            reason: "completed".into(),
+            browser_retire: None,
+        },
+        legacy_issue(agent),
+        legacy_hire(agent, fixture.runtime.path()),
+    ] {
+        let recorded = write_record(&mut writer, record);
+        apply_pair(&mut world, &mut projection, &recorded);
+    }
+    let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
+    let mut rebuilt = Projections::in_memory().unwrap();
+    replay(&reader, &mut rebuilt).unwrap();
+    assert_eq!(rebuilt.export().unwrap(), projection.export().unwrap());
+    assert!(world.agents[&agent].repositories.singleton().is_some());
+}
+
+#[test]
+fn retired_repository_class_survives_warm_reopen_and_empty_rebuild() {
+    use dudes_proto::repository_state::history::RepositoryHireClass;
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let (mut writer, mut world, mut projection) = replay_pair(&fixture);
+    let retired = write_record(
+        &mut writer,
+        Record::AgentRetired {
+            id: story.hire.id,
+            reason: "completed".into(),
+            browser_retire: None,
+        },
+    );
+    apply_pair(&mut world, &mut projection, &retired);
+    let expected = projection.export().unwrap();
+    drop(projection);
+    let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
+    let mut warm = Projections::open(&fixture.state.path().join("paired.redb")).unwrap();
+    assert!(warm.agent(story.hire.id).unwrap().is_none());
+    assert_eq!(
+        warm.repository_hire_class(story.hire.id).unwrap(),
+        Some(RepositoryHireClass::Scoped)
+    );
+    assert_eq!(
+        world.repository_hires[&story.hire.id],
+        RepositoryHireClass::Scoped
+    );
+    assert_eq!(replay(&reader, &mut warm).unwrap().applied, 0);
+    assert_eq!(warm.export().unwrap(), expected);
+    let mut rebuilt = Projections::in_memory().unwrap();
+    replay(&reader, &mut rebuilt).unwrap();
+    assert_eq!(rebuilt.export().unwrap(), expected);
 }
