@@ -965,7 +965,11 @@ fn stream_idle_and_absolute_expiry_release_slots() {
     let port = free_port();
     let settings = settings(&fixture, port);
     let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
-    let daemon = duded::boot(
+    // Advance session expiry without queuing calendar resyncs or heartbeats before the close.
+    let day = duded::local_day::window_in(&chrono::Utc, clock.now());
+    let fault = FloorStreamFault::default().without_heartbeat();
+    fault.use_local_days(duded::local_day::LocalDays::from_fn(move || day.clone()));
+    let daemon = duded::boot::boot_with_floor_faults(
         &settings,
         seams(
             &settings,
@@ -974,6 +978,8 @@ fn stream_idle_and_absolute_expiry_release_slots() {
             Arc::clone(&clock),
             Witness::default(),
         ),
+        None,
+        fault,
     )
     .expect("daemon boot");
     let addr = daemon.floor_addr().expect("Floor address");
