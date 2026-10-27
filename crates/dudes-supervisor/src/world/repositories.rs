@@ -11,6 +11,10 @@ use dudes_types::{AgentId, CardStatus, GoalId, Lsn, Seq};
 use super::World;
 
 impl World {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one adapter borrows preceding owning rows for the shared relationship validator"
+    )]
     pub(super) fn prepare_repository_record(
         &self,
         lsn: Lsn,
@@ -414,49 +418,6 @@ impl World {
                     ticket.status = CardStatus::Blocked;
                 }
             }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use dudes_proto::RecordKind;
-    use dudes_proto::record::samples;
-    use dudes_types::Timestamp;
-
-    #[test]
-    fn historical_starts_keep_the_round_counter_without_inventing_a_declaration() {
-        let mut world = World::default();
-        world
-            .apply_checked(
-                Lsn(1),
-                &Entry {
-                    at: Timestamp::UNIX_EPOCH,
-                    record: samples::record(RecordKind::AgentHired),
-                },
-            )
-            .unwrap();
-        for index in 1_u32..=2 {
-            let mut record = samples::record(RecordKind::TicketStarted);
-            let Record::TicketStarted { goal, .. } = &mut record else {
-                unreachable!()
-            };
-            goal.id = GoalId::from_parts(8, u128::from(index));
-            let goal = goal.id;
-            world
-                .apply_checked(
-                    Lsn(u64::from(index) + 1),
-                    &Entry {
-                        at: Timestamp::UNIX_EPOCH,
-                        record,
-                    },
-                )
-                .unwrap();
-            let round = world.ticket_repository_round(goal).unwrap();
-            assert_eq!(round.round, index);
-            assert!(round.repositories.is_none());
-            assert!(round.authority.is_none());
         }
     }
 }

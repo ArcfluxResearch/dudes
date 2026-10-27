@@ -203,6 +203,10 @@ fn declared_tickets_and_frozen_check_roots_survive_warm_and_empty_cache_replay()
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one malformed-authority table shares warm-cursor and unchanged-journal checks"
+)]
 fn malformed_declared_authority_is_refused_even_behind_a_warm_cursor() {
     for case in 0..9 {
         let dir = tempfile::tempdir().unwrap();
