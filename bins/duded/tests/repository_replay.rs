@@ -66,6 +66,93 @@ struct CleanupRunner {
     runs: Mutex<Vec<CleanupRun>>,
 }
 
+#[cfg(target_os = "macos")]
+fn cleanup_children() -> Vec<String> {
+    use libproc::bsd_info::BSDInfo;
+    use libproc::proc_pid::{pidinfo, pidpath};
+    use libproc::processes::{ProcFilter, pids_by_type};
+
+    fn children(parent: u32) -> io::Result<Vec<u32>> {
+        // libproc distinguishes an empty list from failure using errno.
+        nix::errno::Errno::clear();
+        pids_by_type(ProcFilter::ByParentProcess { ppid: parent })
+    }
+
+    fn read(pid: u32, parent: u32) -> Option<BSDInfo> {
+        let info = pidinfo::<BSDInfo>(i32::try_from(pid).ok()?, 1).ok()?;
+        (info.pbi_pid == pid && info.pbi_ppid == parent).then_some(info)
+    }
+
+    fn same_process(before: &BSDInfo, after: &BSDInfo) -> bool {
+        before.pbi_pid == after.pbi_pid
+            && before.pbi_ppid == after.pbi_ppid
+            && before.pbi_start_tvsec == after.pbi_start_tvsec
+            && before.pbi_start_tvusec == after.pbi_start_tvusec
+    }
+
+    fn sample(pid: u32, parent: u32) -> Option<(BSDInfo, String)> {
+        let before = read(pid, parent)?;
+        let image = pidpath(i32::try_from(pid).ok()?).map_or_else(
+            |_| "unavailable".into(),
+            |path| path.chars().take(256).collect::<String>(),
+        );
+        let after = read(pid, parent)?;
+        same_process(&before, &after).then(|| {
+            let row = format!(
+                "pid={}, ppid={}, pgid={}, status={}, image={image:?}",
+                after.pbi_pid, after.pbi_ppid, after.pbi_pgid, after.pbi_status
+            );
+            (after, row)
+        })
+    }
+
+    let parent = std::process::id();
+    let direct = match children(parent) {
+        Ok(children) => children,
+        Err(error) => {
+            return vec![format!(
+                "child list failed: kind={:?}, errno={:?}",
+                error.kind(),
+                error.raw_os_error()
+            )];
+        }
+    };
+    let mut rows = vec![format!("direct_count={}", direct.len())];
+    let mut descendants_sampled = 0;
+    for pid in direct.into_iter().take(8) {
+        let Some((child, row)) = sample(pid, parent) else {
+            rows.push(format!("pid={pid}: no stable child sample"));
+            continue;
+        };
+        rows.push(row);
+        let descendants = match children(pid) {
+            Ok(descendants) => descendants,
+            Err(error) => {
+                rows.push(format!(
+                    "pid={pid}: descendant list failed: kind={:?}, errno={:?}",
+                    error.kind(),
+                    error.raw_os_error()
+                ));
+                continue;
+            }
+        };
+        let mut descendant_rows = Vec::new();
+        for descendant in descendants.into_iter().take(8 - descendants_sampled) {
+            descendants_sampled += 1;
+            descendant_rows.push(sample(descendant, pid).map_or_else(
+                || format!("pid={descendant}: no stable child sample"),
+                |(_, row)| row,
+            ));
+        }
+        if read(pid, parent).is_some_and(|after| same_process(&child, &after)) {
+            rows.extend(descendant_rows);
+        } else {
+            rows.push(format!("pid={pid}: descendant sample raced"));
+        }
+    }
+    rows
+}
+
 impl CleanupRunner {
     fn new() -> Self {
         Self {
@@ -104,7 +191,13 @@ impl CleanupRunner {
         };
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let child_exit = "unavailable";
-        let mut snapshot = format!("runner={runner}; unreaped_child_exit={child_exit}");
+        #[cfg(target_os = "macos")]
+        let children = cleanup_children();
+        #[cfg(not(target_os = "macos"))]
+        let children = "unavailable";
+        let mut snapshot = format!(
+            "sequential runner={runner}; unreaped_child_exit={child_exit}; children={children:?}"
+        );
         let mut end = snapshot.len().min(2048);
         while !snapshot.is_char_boundary(end) {
             end -= 1;

@@ -128,5 +128,8 @@ chrono-tz.workspace = true
 # The reload test creates a FIFO without invoking an external command.
 nix = { workspace = true, features = ["fs"] }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libproc.workspace = true
+
 [lints]
 workspace = true

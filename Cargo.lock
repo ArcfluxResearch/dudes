@@ -383,6 +383,7 @@ dependencies = [
  "dudes-win",
  "getrandom 0.4.3",
  "httparse",
+ "libproc",
  "nix",
  "p256",
  "rustix",
