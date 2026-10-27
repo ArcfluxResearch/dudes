@@ -1,10 +1,11 @@
 //! Restricted repository history is readable while provider execution remains unavailable.
 #![cfg(unix)]
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use duded::predicate::{PredicateOutcome, PredicateRunner};
 use duded::startup::Witness;
@@ -51,236 +52,15 @@ impl PredicateRunner for RealRunner {
     }
 }
 
-struct CleanupRun {
-    operation: &'static str,
-    program: String,
-    started: Duration,
-    returned: Option<Duration>,
-    outcome: Option<String>,
-    owned_after_return: Option<usize>,
-}
-
-struct CleanupRunner {
-    real: RealRunner,
-    started: Instant,
-    runs: Mutex<Vec<CleanupRun>>,
-}
-
-#[cfg(target_os = "macos")]
-fn cleanup_children() -> Vec<String> {
-    use libproc::bsd_info::BSDInfo;
-    use libproc::proc_pid::{pidinfo, pidpath};
-    use libproc::processes::{ProcFilter, pids_by_type};
-
-    fn children(parent: u32) -> io::Result<Vec<u32>> {
-        // libproc distinguishes an empty list from failure using errno.
-        nix::errno::Errno::clear();
-        pids_by_type(ProcFilter::ByParentProcess { ppid: parent })
-    }
-
-    fn read(pid: u32, parent: u32) -> Option<BSDInfo> {
-        let info = pidinfo::<BSDInfo>(i32::try_from(pid).ok()?, 1).ok()?;
-        (info.pbi_pid == pid && info.pbi_ppid == parent).then_some(info)
-    }
-
-    fn same_process(before: &BSDInfo, after: &BSDInfo) -> bool {
-        before.pbi_pid == after.pbi_pid
-            && before.pbi_ppid == after.pbi_ppid
-            && before.pbi_start_tvsec == after.pbi_start_tvsec
-            && before.pbi_start_tvusec == after.pbi_start_tvusec
-    }
-
-    fn sample(pid: u32, parent: u32) -> Option<(BSDInfo, String)> {
-        let before = read(pid, parent)?;
-        let image = pidpath(i32::try_from(pid).ok()?).map_or_else(
-            |_| "unavailable".into(),
-            |path| path.chars().take(256).collect::<String>(),
-        );
-        let after = read(pid, parent)?;
-        same_process(&before, &after).then(|| {
-            let row = format!(
-                "pid={}, ppid={}, pgid={}, status={}, image={image:?}",
-                after.pbi_pid, after.pbi_ppid, after.pbi_pgid, after.pbi_status
-            );
-            (after, row)
-        })
-    }
-
-    let parent = std::process::id();
-    let direct = match children(parent) {
-        Ok(children) => children,
-        Err(error) => {
-            return vec![format!(
-                "child list failed: kind={:?}, errno={:?}",
-                error.kind(),
-                error.raw_os_error()
-            )];
-        }
-    };
-    let mut rows = vec![format!("direct_count={}", direct.len())];
-    let mut descendants_sampled = 0;
-    for pid in direct.into_iter().take(8) {
-        let Some((child, row)) = sample(pid, parent) else {
-            rows.push(format!("pid={pid}: no stable child sample"));
-            continue;
-        };
-        rows.push(row);
-        let descendants = match children(pid) {
-            Ok(descendants) => descendants,
-            Err(error) => {
-                rows.push(format!(
-                    "pid={pid}: descendant list failed: kind={:?}, errno={:?}",
-                    error.kind(),
-                    error.raw_os_error()
-                ));
-                continue;
-            }
-        };
-        let mut descendant_rows = Vec::new();
-        for descendant in descendants.into_iter().take(8 - descendants_sampled) {
-            descendants_sampled += 1;
-            descendant_rows.push(sample(descendant, pid).map_or_else(
-                || format!("pid={descendant}: no stable child sample"),
-                |(_, row)| row,
-            ));
-        }
-        if read(pid, parent).is_some_and(|after| same_process(&child, &after)) {
-            rows.extend(descendant_rows);
-        } else {
-            rows.push(format!("pid={pid}: descendant sample raced"));
-        }
-    }
-    rows
-}
-
-impl CleanupRunner {
-    fn new() -> Self {
-        Self {
-            real: RealRunner(OneShot::new()),
-            started: Instant::now(),
-            runs: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn snapshot(&self) -> Vec<String> {
-        self.runs
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|run| {
-                format!(
-                    "{} program={:?}, started={:?}, returned={:?}, outcome={:?}, owned_after_return={:?}",
-                    run.operation, run.program, run.started, run.returned, run.outcome, run.owned_after_return
-                )
-            })
-            .collect()
-    }
-
-    fn state_snapshot(&self) -> String {
-        let runner = format!("{:?}", self.real.0);
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        let child_exit = {
-            use rustix::process::{WaitId, WaitIdOptions, waitid};
-            format!(
-                "{:?}",
-                waitid(
-                    WaitId::All,
-                    WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT
-                )
-            )
-        };
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        let child_exit = "unavailable";
-        #[cfg(target_os = "macos")]
-        let children = cleanup_children();
-        #[cfg(not(target_os = "macos"))]
-        let children = "unavailable";
-        let mut snapshot = format!(
-            "sequential runner={runner}; unreaped_child_exit={child_exit}; children={children:?}"
-        );
-        let mut end = snapshot.len().min(2048);
-        while !snapshot.is_char_boundary(end) {
-            end -= 1;
-        }
-        snapshot.truncate(end);
-        snapshot
-    }
-}
-
-impl PredicateRunner for CleanupRunner {
-    fn run(
-        &self,
-        spec: &dudes_providers::launch::LaunchSpec,
-        timeout: Duration,
-    ) -> io::Result<PredicateOutcome> {
-        let operation = if spec
-            .argv
-            .windows(2)
-            .any(|args| args[0] == "worktree" && args[1] == "remove")
-        {
-            "worktree remove"
-        } else if spec
-            .argv
-            .windows(2)
-            .any(|args| args[0] == "branch" && args[1] == "-D")
-        {
-            "branch delete"
-        } else {
-            return self.real.run(spec, timeout);
-        };
-        let slot = {
-            let mut runs = self.runs.lock().unwrap();
-            let slot = runs.len();
-            if slot < 8 {
-                runs.push(CleanupRun {
-                    operation,
-                    program: spec.argv[0].to_string_lossy().chars().take(256).collect(),
-                    started: self.started.elapsed(),
-                    returned: None,
-                    outcome: None,
-                    owned_after_return: None,
-                });
-                Some(slot)
-            } else {
-                None
-            }
-        };
-        let result = self.real.run(spec, timeout);
-        if let Some(slot) = slot {
-            let outcome = match &result {
-                Ok(PredicateOutcome::Finished {
-                    exit,
-                    output_tail,
-                    timed_out,
-                }) => format!(
-                    "exit={exit:?}, timed_out={timed_out}, tail={:?}",
-                    output_tail.chars().take(512).collect::<String>()
-                ),
-                Ok(PredicateOutcome::Swept) => "swept".to_owned(),
-                Err(error) => format!(
-                    "io_kind={:?}, errno={:?}, message={:?}",
-                    error.kind(),
-                    error.raw_os_error(),
-                    error.to_string().chars().take(512).collect::<String>()
-                ),
-            };
-            let mut runs = self.runs.lock().unwrap();
-            runs[slot].returned = Some(self.started.elapsed());
-            runs[slot].outcome = Some(outcome);
-            runs[slot].owned_after_return = Some(self.real.0.in_flight());
-        }
-        result
-    }
-
-    fn sweep(&self) {
-        self.real.sweep();
-    }
+fn git_path() -> Option<OsString> {
+    static GIT_PATH: OnceLock<Option<OsString>> = OnceLock::new();
+    GIT_PATH.get_or_init(|| std::env::var_os("PATH")).clone()
 }
 
 fn git(cwd: &Path, args: &[&str]) -> String {
     let git = duded::worktree::git::Git::new(
         Arc::new(RealRunner(OneShot::new())),
-        std::env::var_os("PATH"),
+        git_path(),
         Duration::from_secs(3),
     );
     let args: Vec<_> = args.iter().map(std::ffi::OsStr::new).collect();
@@ -495,83 +275,26 @@ impl Story {
     }
 }
 
-fn start(fixture: &Fixture, host: &SharedHost) -> (common::Running, duded::Settings) {
-    start_with_runner(fixture, host, Arc::new(RealRunner(OneShot::new())))
+fn settings(fixture: &Fixture) -> duded::Settings {
+    let mut settings = fixture.settings();
+    settings.predicate_path = git_path();
+    settings
 }
 
-fn start_with_runner<P: PredicateRunner>(
-    fixture: &Fixture,
-    host: &SharedHost,
-    runner: Arc<P>,
-) -> (common::Running, duded::Settings) {
-    let settings = fixture.settings();
+fn start(fixture: &Fixture, host: &SharedHost) -> (common::Running, duded::Settings) {
+    let settings = settings(fixture);
     let daemon = boot(
         &settings,
         common::seams(
             &settings,
             host.clone(),
-            runner,
+            Arc::new(RealRunner(OneShot::new())),
             Arc::new(TestClock::new()),
             Witness::default(),
         ),
     )
     .unwrap();
     (common::start(daemon), settings)
-}
-
-fn await_pending_cleanup(fixture: &Fixture, runner: &CleanupRunner, copies: &[OwnedRepository]) {
-    let started = Instant::now();
-    let deadline = started + Duration::from_secs(3);
-    let mut previous_poll = started;
-    let (mut polls, mut max_read, mut max_gap) = (0, Duration::ZERO, Duration::ZERO);
-    loop {
-        let poll = Instant::now();
-        max_gap = max_gap.max(poll.duration_since(previous_poll));
-        let entries = fixture.entries();
-        previous_poll = Instant::now();
-        max_read = max_read.max(previous_poll.duration_since(poll));
-        polls += 1;
-        let removed = entries
-            .iter()
-            .filter(|(_, entry)| {
-                matches!(
-                    entry.record,
-                    Record::WorktreeRemoved {
-                        how: WorktreeRemoval::NeverAssigned,
-                        ..
-                    }
-                )
-            })
-            .count();
-        if removed == copies.len() {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "every pending lease must settle; [DEBUG-cleanup] observer_started={:?}, elapsed={:?}, polls={polls}, max_read={max_read:?}, max_gap={max_gap:?}, \
-             last_lsn={:?}, records={:?}, copies_present={:?}, git_admin_present={:?}, git_runs={:?}, runner_state={}",
-            started.duration_since(runner.started),
-            started.elapsed(),
-            entries.last().map(|(lsn, _)| lsn),
-            entries
-                .iter()
-                .rev()
-                .take(16)
-                .map(|(_, entry)| entry.record.kind())
-                .collect::<Vec<_>>(),
-            copies
-                .iter()
-                .map(|copy| copy.execution.directory.exists())
-                .collect::<Vec<_>>(),
-            copies
-                .iter()
-                .map(|copy| copy.execution.git_dir.exists())
-                .collect::<Vec<_>>(),
-            runner.snapshot(),
-            runner.state_snapshot(),
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
 }
 
 fn credential(settings: &duded::Settings) -> dudes_proto::rpc::cred::OperatorCredential {
@@ -590,7 +313,7 @@ fn credential(settings: &duded::Settings) -> dudes_proto::rpc::cred::OperatorCre
 fn all_committed_copies_survive_boot_and_have_identical_live_warm_and_rebuilt_authority() {
     let fixture = Fixture::new();
     let story = Story::seed(&fixture);
-    let settings = fixture.settings();
+    let settings = settings(&fixture);
     let host = SharedHost::new();
     let daemon = boot(
         &settings,
@@ -754,7 +477,7 @@ fn crash_before_the_atomic_hire_discards_every_pending_copy() {
         grants.insert(entry.repo_id.clone(), trust_lsn);
     }
     let mut copies = Vec::new();
-    for (index, entry) in catalog.entries().iter().take(1).enumerate() {
+    for (index, entry) in catalog.entries().iter().take(2).enumerate() {
         copies.push(create_copy(
             &mut writer,
             entry,
@@ -766,90 +489,35 @@ fn crash_before_the_atomic_hire_discards_every_pending_copy() {
     drop(writer);
     assert_eq!(
         copies.len(),
-        1,
-        "the crash prefix stops before the second lease"
+        2,
+        "the crash prefix stops before the third lease"
     );
     let host = SharedHost::new();
-    let runner = Arc::new(CleanupRunner::new());
-    let (mut running, _) = start_with_runner(&fixture, &host, Arc::clone(&runner));
-    await_pending_cleanup(&fixture, &runner, &copies);
-    running.stop(ExitCause::Ended);
-    assert!(copies.iter().all(|repo| !repo.execution.directory.exists()));
-    assert!(host.spawned().is_empty());
-}
-
-// Compare one Git search path with the unchanged default-path case above.
-#[cfg(target_os = "macos")]
-#[test]
-fn diagnostic_crash_cleanup_using_the_setup_git_path() {
-    let fixture = Fixture::new();
-    let root = std::fs::canonicalize(fixture.runtime.path()).unwrap();
-    let state = std::fs::canonicalize(fixture.state.path()).unwrap();
-    let entries = ["api", "docs", "web"]
-        .into_iter()
-        .map(|name| create_origin(&root, name))
-        .collect();
-    let catalog = RepositorySet::new(RepoId::parse("api").unwrap(), entries).unwrap();
-    let (mut writer, _) =
-        dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
-    let catalog_lsn = append(
-        &mut writer,
-        Record::ProjectRepositoriesRecorded {
-            project: "service".into(),
-            repositories: catalog.clone(),
-        },
-    );
-    let Record::WorkspaceTrustSet { pin, .. } = samples::record(RecordKind::WorkspaceTrustSet)
-    else {
-        unreachable!()
-    };
-    let mut grants = std::collections::BTreeMap::new();
-    for entry in catalog.entries() {
-        let trust_lsn = append(
-            &mut writer,
-            Record::RepositoryTrustSet {
-                project: "service".into(),
-                repo_id: entry.repo_id.clone(),
-                catalog_lsn,
-                origin: entry.value.origin.clone(),
-                pin: pin.clone(),
-            },
+    let (mut running, _) = start(&fixture, &host);
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let removed = fixture
+            .records()
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record,
+                    Record::WorktreeRemoved {
+                        how: WorktreeRemoval::NeverAssigned,
+                        ..
+                    }
+                )
+            })
+            .count();
+        if removed == copies.len() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "every pending lease must settle"
         );
-        grants.insert(entry.repo_id.clone(), trust_lsn);
+        std::thread::sleep(Duration::from_millis(5));
     }
-    let mut copies = Vec::new();
-    for (index, entry) in catalog.entries().iter().take(1).enumerate() {
-        copies.push(create_copy(
-            &mut writer,
-            entry,
-            &state,
-            index,
-            grants[&entry.repo_id],
-        ));
-    }
-    drop(writer);
-    assert_eq!(
-        copies.len(),
-        1,
-        "the crash prefix stops before the second lease"
-    );
-    let host = SharedHost::new();
-    let runner = Arc::new(CleanupRunner::new());
-    let mut settings = fixture.settings();
-    settings.predicate_path = std::env::var_os("PATH");
-    let daemon = boot(
-        &settings,
-        common::seams(
-            &settings,
-            host.clone(),
-            Arc::clone(&runner),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .unwrap();
-    let mut running = common::start(daemon);
-    await_pending_cleanup(&fixture, &runner, &copies);
     running.stop(ExitCause::Ended);
     assert!(copies.iter().all(|repo| !repo.execution.directory.exists()));
     assert!(host.spawned().is_empty());
@@ -967,7 +635,7 @@ fn a_replaced_nonprimary_copy_is_held_even_when_its_gitfile_still_names_the_orig
 fn malformed_repository_history_refuses_boot_even_when_the_cache_has_advanced_past_it() {
     let fixture = Fixture::new();
     let story = Story::seed(&fixture);
-    let settings = fixture.settings();
+    let settings = settings(&fixture);
     let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
     let mut cache =
         Projections::open(&settings.state_dir.join(duded::boot::PROJECTION_FILE)).unwrap();
