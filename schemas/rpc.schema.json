@@ -4545,16 +4545,103 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/RepositoryHire",
           "description": "Atomically assigns every recorded owned copy to one restricted hire.",
           "properties": {
+            "accent": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AccentColour"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Named accent, when selected."
+            },
+            "budget": {
+              "$ref": "#/$defs/AgentBudget",
+              "description": "Daily admission ceilings."
+            },
+            "character": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CastCharacter"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Authored appearance, when selected."
+            },
+            "department": {
+              "description": "Floor department.",
+              "type": "string"
+            },
+            "id": {
+              "$ref": "#/$defs/AgentId",
+              "description": "New agent identity."
+            },
+            "max_budget": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Usd"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Recorded provider budget backstop."
+            },
+            "max_turns": {
+              "description": "Recorded provider turn limit.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ModelName"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Recorded model selection."
+            },
+            "name": {
+              "description": "Display name.",
+              "type": "string"
+            },
+            "provider": {
+              "$ref": "#/$defs/Provider",
+              "description": "Selected engine."
+            },
+            "repositories": {
+              "$ref": "#/$defs/ScopedRepositories",
+              "description": "Complete atomic copy assignment."
+            },
+            "role": {
+              "description": "Display role.",
+              "type": "string"
+            },
             "t": {
               "const": "agent_hired_with_repositories",
               "type": "string"
             }
           },
           "required": [
-            "t"
+            "t",
+            "id",
+            "name",
+            "role",
+            "department",
+            "provider",
+            "budget",
+            "repositories"
           ],
           "type": "object"
         },
@@ -18697,102 +18784,6 @@
       "required": [
         "repo_id",
         "value"
-      ],
-      "type": "object"
-    },
-    "RepositoryHire": {
-      "description": "Ordinary hire fields beside the complete restricted repository authority.",
-      "properties": {
-        "accent": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AccentColour"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Named accent, when selected."
-        },
-        "budget": {
-          "$ref": "#/$defs/AgentBudget",
-          "description": "Daily admission ceilings."
-        },
-        "character": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CastCharacter"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Authored appearance, when selected."
-        },
-        "department": {
-          "description": "Floor department.",
-          "type": "string"
-        },
-        "id": {
-          "$ref": "#/$defs/AgentId",
-          "description": "New agent identity."
-        },
-        "max_budget": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Usd"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Recorded provider budget backstop."
-        },
-        "max_turns": {
-          "description": "Recorded provider turn limit.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "model": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ModelName"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Recorded model selection."
-        },
-        "name": {
-          "description": "Display name.",
-          "type": "string"
-        },
-        "provider": {
-          "$ref": "#/$defs/Provider",
-          "description": "Selected engine."
-        },
-        "repositories": {
-          "$ref": "#/$defs/ScopedRepositories",
-          "description": "Complete atomic copy assignment."
-        },
-        "role": {
-          "description": "Display role.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "role",
-        "department",
-        "provider",
-        "budget",
-        "repositories"
       ],
       "type": "object"
     },
