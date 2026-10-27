@@ -772,6 +772,65 @@ fn restored_backlog_condenses_once_on_tick_without_an_extra_turn() {
     restarted.stop(ExitCause::ShutdownRpc);
 }
 
+#[derive(Debug)]
+enum PausedWriter {
+    Condense(duded::runtime::MemoryCondensePause),
+    Retirement(duded::runtime::OnboardingPause),
+}
+
+impl PausedWriter {
+    fn release(&self) {
+        match self {
+            Self::Condense(pause) => pause.release(),
+            Self::Retirement(pause) => pause.release(),
+        }
+    }
+}
+
+type PausedFailure = Option<std::sync::mpsc::Sender<PausedWriter>>;
+
+fn fail_while_paused(failure: PausedFailure, pause: PausedWriter) {
+    if let Some(failure) = failure {
+        failure.send(pause).unwrap();
+        panic!("injected failure while the writer is paused");
+    }
+}
+
+fn assert_paused_failure_unwinds(exercise: fn(PausedFailure)) {
+    let (paused, reached) = std::sync::mpsc::channel();
+    let (completed, finished) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let outcome = std::panic::catch_unwind(|| exercise(Some(paused)));
+        completed.send(outcome.is_err()).unwrap();
+    });
+    let pause = reached
+        .recv_timeout(WAIT)
+        .expect("the writer reached its pause");
+    let outcome = finished.recv_timeout(Duration::from_secs(2));
+    pause.release();
+    worker.join().expect("the fixture worker joined");
+    assert_eq!(
+        outcome,
+        Ok(true),
+        "a failed fixture must unwind before emergency release"
+    );
+}
+
+#[test]
+fn a_failed_condense_fixture_releases_its_paused_writer() {
+    assert_paused_failure_unwinds(summary_invalidation_with_failure);
+}
+
+#[test]
+fn a_failed_memory_read_fixture_releases_its_paused_writer() {
+    assert_paused_failure_unwinds(memory_read_retirement_with_failure);
+}
+
+#[test]
+fn a_failed_memory_search_fixture_releases_its_paused_writer() {
+    assert_paused_failure_unwinds(memory_search_retirement_with_failure);
+}
+
 struct ReleaseMemoryPause(duded::runtime::MemoryCondensePause);
 impl Drop for ReleaseMemoryPause {
     fn drop(&mut self) {
@@ -781,6 +840,10 @@ impl Drop for ReleaseMemoryPause {
 
 #[test]
 fn a_detected_durable_summary_invalidation_fences_later_local_work() {
+    summary_invalidation_with_failure(None);
+}
+
+fn summary_invalidation_with_failure(failure_while_paused: PausedFailure) {
     let fixture = common::Fixture::new();
     let settings = fixture.settings();
     let children = ChildEnds::new();
@@ -827,6 +890,7 @@ fn a_detected_durable_summary_invalidation_fences_later_local_work() {
         })
     });
     assert!(pause.wait_reached(WAIT));
+    fail_while_paused(failure_while_paused, PausedWriter::Condense(pause.clone()));
     let path = fixture
         .records()
         .iter()
@@ -1004,6 +1068,10 @@ fn native_memory_reaches_the_next_launch_and_replays() {
 
 #[test]
 fn memory_reads_queued_before_retirement_use_the_fold_and_survive_writer_poison() {
+    memory_read_retirement_with_failure(None);
+}
+
+fn memory_read_retirement_with_failure(failure_while_paused: PausedFailure) {
     let fixture = common::Fixture::new();
     let Native {
         mut running,
@@ -1029,6 +1097,10 @@ fn memory_reads_queued_before_retirement_use_the_fold_and_survive_writer_poison(
         )))
         .unwrap();
     assert!(pause.wait_reached(WAIT));
+    fail_while_paused(
+        failure_while_paused,
+        PausedWriter::Retirement(pause.clone()),
+    );
     assert!(
         fixture
             .records()
@@ -1091,6 +1163,10 @@ fn memory_reads_queued_before_retirement_use_the_fold_and_survive_writer_poison(
 
 #[test]
 fn memory_searches_queued_before_retirement_refuse_current_and_parked_callers() {
+    memory_search_retirement_with_failure(None);
+}
+
+fn memory_search_retirement_with_failure(failure_while_paused: PausedFailure) {
     use dudes_proto::rpc::memory::{MemorySearchHit, MemorySearchOptions};
     let fixture = common::Fixture::new();
     let Native {
@@ -1112,6 +1188,10 @@ fn memory_searches_queued_before_retirement_refuse_current_and_parked_callers() 
         )))
         .unwrap();
     assert!(pause.wait_reached(WAIT));
+    fail_while_paused(
+        failure_while_paused,
+        PausedWriter::Retirement(pause.clone()),
+    );
     let options = || MemorySearchOptions::new("remembers".into(), None, None).unwrap();
     let queued = running
         .handle
