@@ -3,7 +3,7 @@
 use dudes_proto::repository::HireRepositories;
 use dudes_proto::repository_state::history::{
     self, ProjectRepositoryHistory, RepositoryHireClass, RepositoryHistoryChange,
-    RepositoryHistoryFacts, RepositoryLease, RepositoryTrust,
+    RepositoryHistoryFacts, RepositoryLease, RepositoryTicketFacts, RepositoryTrust,
 };
 use dudes_proto::{Entry, Record};
 use dudes_types::Lsn;
@@ -31,27 +31,79 @@ pub(super) fn rows<K: redb::Key + 'static, T: serde::de::DeserializeOwned>(
         .collect()
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct Facts<'a, 'txn> {
+    pub agents: &'a RowTable<'txn>,
+    pub leases: &'a RowTable<'txn>,
+    pub board: &'a RowTable<'txn>,
+    pub goals: &'a RowTable<'txn>,
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one adapter borrows the preceding owning rows and commits only validated history replacements"
+)]
 pub(super) fn apply(
     projects: &mut Table<'_, &str, &[u8]>,
     trust: &mut Table<'_, &[u8], &[u8]>,
     hires: &mut RowTable<'_>,
-    agents: &RowTable<'_>,
-    leases: &RowTable<'_>,
+    facts: Facts<'_, '_>,
     lsn: Lsn,
     entry: &Entry,
 ) -> Result<()> {
-    let project = match &entry.record {
-        Record::ProjectRepositoriesRecorded { project, .. }
-        | Record::RepositoryTrustSet { project, .. } => Some(project.as_str()),
-        Record::AgentHiredWithRepositories(hire) => Some(hire.repositories.project.id.as_str()),
-        _ => None,
-    };
+    let Facts {
+        agents,
+        leases,
+        board,
+        goals,
+    } = facts;
+    let ticket_id = entry
+        .record
+        .ticket_created()
+        .map(|created| created.card)
+        .or_else(|| entry.record.ticket_edited().map(|edited| edited.card))
+        .or_else(|| entry.record.ticket_start().map(|start| start.card));
+    let ticket = ticket_id
+        .map(|card| get_row::<super::board::BoardRow>(board, &card.to_bytes()))
+        .transpose()?
+        .flatten();
     let agent = entry
         .record
         .hire()
         .map(|hire| hire.agent)
-        .or_else(|| entry.record.turn_issue().map(|issue| issue.agent));
-    if project.is_none() && entry.record.turn_issue().is_none() && entry.record.hire().is_none() {
+        .or_else(|| entry.record.turn_issue().map(|issue| issue.agent))
+        .or_else(|| entry.record.ticket_start().map(|start| start.agent));
+    let owner = agent
+        .map(|id| get_row::<AgentRow>(agents, &id.to_bytes()))
+        .transpose()?
+        .flatten();
+    let project = match &entry.record {
+        Record::ProjectRepositoriesRecorded { project, .. }
+        | Record::RepositoryTrustSet { project, .. } => Some(project.as_str()),
+        Record::AgentHiredWithRepositories(hire) => Some(hire.repositories.project.id.as_str()),
+        _ => entry
+            .record
+            .ticket_created()
+            .map(|created| created.project)
+            .or_else(|| {
+                ticket
+                    .as_ref()
+                    .and_then(|row| row.ticket.as_ref())
+                    .map(|ticket| ticket.repositories.project())
+            })
+            .or_else(|| {
+                owner
+                    .as_ref()
+                    .and_then(|owner| owner.repositories.workspace())
+                    .map(|project| project.id.as_str())
+            }),
+    };
+    if project.is_none()
+        && entry.record.turn_issue().is_none()
+        && entry.record.hire().is_none()
+        && entry.record.ticket_start().is_none()
+        && entry.record.ticket_edited().is_none()
+    {
         return Ok(());
     }
     let history: Option<ProjectRepositoryHistory> = project
@@ -65,13 +117,18 @@ pub(super) fn apply(
         })
         .transpose()?
         .flatten();
-    let trust_rows: Vec<RepositoryTrust> = if project.is_some() {
-        rows(trust)?
-    } else {
-        Vec::new()
-    };
+    let trust_rows: Vec<RepositoryTrust> =
+        if matches!(entry.record, Record::AgentHiredWithRepositories(_))
+            || entry.record.ticket_start().is_some()
+        {
+            rows(trust)?
+        } else {
+            Vec::new()
+        };
     let lease_rows: Vec<WorktreeRow> =
-        if matches!(entry.record, Record::AgentHiredWithRepositories(_)) {
+        if matches!(entry.record, Record::AgentHiredWithRepositories(_))
+            || entry.record.ticket_start().is_some()
+        {
             all_rows(leases)?
         } else {
             Vec::new()
@@ -84,7 +141,7 @@ pub(super) fn apply(
             origin: &row.origin,
             path: &row.path,
             base: row.base,
-            assigned: row.agent.is_some(),
+            agent: row.agent,
             removed: row.removed.is_some(),
         })
         .collect();
@@ -101,10 +158,23 @@ pub(super) fn apply(
             HireRepositories::Legacy(_) => None,
         })
         .collect();
-    let owner = agent
-        .map(|id| get_row::<AgentRow>(agents, &id.to_bytes()))
-        .transpose()?
-        .flatten();
+    let current_tickets: Vec<super::board::BoardRow> =
+        if matches!(entry.record, Record::ProjectRepositoriesRecorded { .. }) {
+            all_rows(board)?
+        } else {
+            Vec::new()
+        };
+    let active_tickets: Vec<_> = current_tickets
+        .iter()
+        .filter(|row| row.view.status != dudes_types::CardStatus::Done)
+        .filter_map(|row| {
+            row.ticket
+                .as_ref()?
+                .repositories
+                .declared()
+                .map(|scope| &scope.declaration)
+        })
+        .collect();
     let change = history::prepare(
         lsn,
         &entry.record,
@@ -114,6 +184,27 @@ pub(super) fn apply(
             leases: &leases,
             active_hires: &active_hires,
             hire: owner.as_ref().map(|row| &row.repositories),
+            hired_lsn: owner.as_ref().map(|row| row.hired_lsn),
+            ticket: ticket.as_ref().and_then(|row| {
+                row.ticket.as_ref().map(|ticket| RepositoryTicketFacts {
+                    repositories: &ticket.repositories,
+                    check: &ticket.done_when,
+                    status: row.view.status,
+                    holder: row.view.claimed_by,
+                    seq: row.view.seq,
+                    round: ticket.round,
+                    queued: ticket.queue.is_some(),
+                })
+            }),
+            active_tickets: &active_tickets,
+            card_exists: ticket.is_some(),
+            goal_exists: entry
+                .record
+                .ticket_start()
+                .map(|start| get_row::<super::GoalRow>(goals, &start.goal.id.to_bytes()))
+                .transpose()?
+                .flatten()
+                .is_some(),
             hire_class: agent
                 .map(|id| get_row::<RepositoryHireClass>(hires, &id.to_bytes()))
                 .transpose()?

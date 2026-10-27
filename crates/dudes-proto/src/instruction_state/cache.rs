@@ -854,13 +854,17 @@ impl<'a, R: InstructionCacheReader> Loader<'a, R> {
                     self.current_attachment(attachment, true)?;
                 }
             }
-            Record::TicketStarted { card, goal, .. } => {
-                self.assignment(*card)?;
-                self.get(Key::Association(goal.id))?;
-                self.get(Key::TicketHistory(goal.id))?;
-                self.card(*card)?;
+            record if record.ticket_start().is_some() => {
+                let start = record.ticket_start().expect("matched start");
+                self.assignment(start.card)?;
+                self.get(Key::Association(start.goal.id))?;
+                self.get(Key::TicketHistory(start.goal.id))?;
+                self.card(start.card)?;
             }
-            Record::CardTransition { card, .. } | Record::TicketEdited { card, .. } => {
+            record if record.ticket_edited().is_some() => {
+                self.card(record.ticket_edited().expect("matched edit").card)?;
+            }
+            Record::CardTransition { card, .. } => {
                 self.card(*card)?;
             }
             _ => {}

@@ -371,9 +371,11 @@ fn validate_change(
         R::TicketChanged => binding.ticket.is_some_and(|ticket| {
             match (reference.kind, reference.owner, source.evidence()) {
                 (K::TicketRemoved | K::TicketAssigned, O::Card(card), _) => card == ticket.card,
-                (K::TicketStarted, O::Ticket { agent, goal, card }, _) => {
-                    card == ticket.card && (agent != work.agent || goal != work.goal)
-                }
+                (
+                    K::TicketStarted | K::TicketStartedWithRepositories,
+                    O::Ticket { agent, goal, card },
+                    _,
+                ) => card == ticket.card && (agent != work.agent || goal != work.goal),
                 _ => false,
             }
         }),
@@ -755,7 +757,10 @@ fn validate_recap(
                 RecordKind::GoalSet | RecordKind::BrowserNoteQueued,
                 RecoveryWitnessOwner::Goal { agent, goal },
             ) => agent == work.agent && goal == work.goal,
-            (RecordKind::TicketStarted, RecoveryWitnessOwner::Ticket { agent, goal, card }) => {
+            (
+                RecordKind::TicketStarted | RecordKind::TicketStartedWithRepositories,
+                RecoveryWitnessOwner::Ticket { agent, goal, card },
+            ) => {
                 agent == work.agent
                     && goal == work.goal
                     && record
@@ -763,7 +768,10 @@ fn validate_recap(
                         .ticket
                         .is_some_and(|ticket| ticket.card == card)
             }
-            (RecordKind::TicketCreated, RecoveryWitnessOwner::Card(card)) => record
+            (
+                RecordKind::TicketCreated | RecordKind::TicketCreatedWithRepositories,
+                RecoveryWitnessOwner::Card(card),
+            ) => record
                 .binding
                 .ticket
                 .is_some_and(|ticket| ticket.card == card),

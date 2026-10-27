@@ -15,9 +15,7 @@
 //! there is nothing to duplicate — one rule, one implementation.
 
 use dudes_proto::record::Hex32;
-use dudes_proto::repository::{
-    HireRepositories, TicketRepositories, TicketRepositoryRound, TurnRepositories,
-};
+use dudes_proto::repository::{HireRepositories, TicketRepositoryRound, TurnRepositories};
 use dudes_proto::repository_state::{RepositoryFacts, RepositoryFold};
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -483,8 +481,7 @@ pub struct World {
     observed_predicates: BTreeMap<GoalId, ObservedPredicateResult>,
     ticket_reviews: BTreeMap<GoalId, TicketReview>,
     ticket_goals: BTreeMap<GoalId, TicketRepositoryRound>,
-    ticket_repositories: BTreeMap<CardId, TicketRepositories>,
-    ticket_rounds: BTreeMap<CardId, u32>,
+    repository_tickets: BTreeMap<CardId, repositories::Ticket>,
     /// Turns by id.
     pub turns: BTreeMap<TurnId, TurnRow>,
     mcp_grants: BTreeMap<Lsn, McpGrant>,
@@ -905,31 +902,48 @@ impl World {
                 row.exhausted = None;
             }
         }
-        if let RepositoryFold::Ticket(repositories) =
-            dudes_proto::repository_state::fold(lsn, &entry.record, RepositoryFacts::default())
-            && let Record::TicketCreated { card, .. } = &entry.record
-        {
-            self.ticket_repositories.insert(*card, repositories);
-        }
         if let Some(start) = entry.record.ticket_start() {
             let prior_round = self
-                .ticket_rounds
+                .repository_tickets
                 .get(&start.card)
-                .copied()
-                .unwrap_or_default();
+                .map_or(0, repositories::Ticket::round);
             let facts = RepositoryFacts {
                 ticket: self
-                    .ticket_repositories
+                    .repository_tickets
                     .get(&start.card)
-                    .map(|repositories| (repositories, prior_round)),
+                    .and_then(repositories::Ticket::created)
+                    .map(|ticket| (&ticket.repositories, prior_round)),
                 prior_round,
                 ..RepositoryFacts::default()
             };
             if let RepositoryFold::Start(round) =
                 dudes_proto::repository_state::fold(lsn, &entry.record, facts)
             {
-                self.ticket_rounds.insert(start.card, round.round);
                 self.ticket_goals.insert(start.goal.id, round);
+            }
+        }
+        self.fold_repository_ticket(lsn, &entry.record, &instruction_fold);
+        let changed_card = entry
+            .record
+            .ticket_created()
+            .map(|created| created.card)
+            .or_else(|| entry.record.ticket_start().map(|start| start.card))
+            .or(match &entry.record {
+                Record::CardCreated { card, .. }
+                | Record::CardTransition { card, .. }
+                | Record::Claim { card, .. }
+                | Record::TicketAssigned { card, .. }
+                | Record::TicketRemoved { card, .. } => Some(*card),
+                _ => None,
+            });
+        if let Some(card) = changed_card {
+            for (goal, row) in &mut self.goals {
+                if !row.cleared
+                    && !self.completed_goals.contains_key(goal)
+                    && matches!(row.goal.predicate, Predicate::BoardState {card: requested, ..} if requested == card)
+                {
+                    row.predicate = None;
+                }
             }
         }
         match &entry.record {
@@ -2084,7 +2098,7 @@ impl World {
             // The goal was installed above, through the one accessor every goal carrier shares.
             Record::GoalSet { .. } => {}
             // An edit changes words, not a card's status, so no board result it could hold moves.
-            Record::TicketEdited { .. } => {}
+            Record::TicketEdited { .. } | Record::TicketEditedWithRepositories(_) => {}
             Record::InstructionObservationStarted { .. }
             | Record::InstructionObservationFinished { .. }
             | Record::InstructionAttemptBoundarySettled { .. }
@@ -2097,24 +2111,15 @@ impl World {
             Record::TicketReviewStamped { card, goal, stamp } => {
                 self.fold_ticket_stamp(lsn, *card, *goal, stamp);
             }
-            Record::CardCreated { card, .. }
-            | Record::CardTransition { card, .. }
-            | Record::Claim { card, .. }
-            | Record::TicketCreated { card, .. }
-            | Record::TicketAssigned { card, .. }
-            | Record::TicketStarted { card, .. }
-            | Record::TicketRemoved { card, .. } => {
-                for (goal, row) in &mut self.goals {
-                    if !row.cleared
-                        && !self.completed_goals.contains_key(goal)
-                        && matches!(row.goal.predicate, Predicate::BoardState {
-                            card: requested, ..
-                        } if requested == *card)
-                    {
-                        row.predicate = None;
-                    }
-                }
-            }
+            Record::CardCreated { .. }
+            | Record::CardTransition { .. }
+            | Record::Claim { .. }
+            | Record::TicketCreated { .. }
+            | Record::TicketAssigned { .. }
+            | Record::TicketStarted { .. }
+            | Record::TicketRemoved { .. }
+            | Record::TicketCreatedWithRepositories(_)
+            | Record::TicketStartedWithRepositories(_) => {}
             Record::Mail { .. } | Record::MailState { .. } => {} // the mailbox's
             Record::MemoryAppend { .. } | Record::MemoryCondense { .. } => {} // the memory projection's
             Record::ConditionedEffectSuppressed { .. } | Record::MemoryAppendQuarantined { .. } => {
@@ -2830,9 +2835,14 @@ impl World {
     /// The card and round a ticket start installed `goal` for; `None` for any other goal.
     #[must_use]
     pub fn ticket_goal(&self, goal: GoalId) -> Option<(CardId, u32)> {
-        self.ticket_goals
-            .get(&goal)
+        self.ticket_repository_round(goal)
             .map(|round| (round.card, round.round))
+    }
+
+    /// Immutable declaration, check binding and start identity retained for a ticket goal.
+    #[must_use]
+    pub fn ticket_repository_round(&self, goal: GoalId) -> Option<&TicketRepositoryRound> {
+        self.ticket_goals.get(&goal)
     }
 
     /// Whether any turn was ever issued for `goal`.

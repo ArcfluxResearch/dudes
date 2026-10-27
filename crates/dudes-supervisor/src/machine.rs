@@ -1349,19 +1349,33 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 Then::Fold,
             ),
             Input::BoardChanged { append } => {
-                let card = match &append.entry().record {
-                    Record::CardCreated { card, .. }
-                    | Record::CardTransition { card, .. }
-                    | Record::Claim { card, .. }
-                    | Record::TicketCreated { card, .. }
-                    | Record::TicketAssigned { card, .. }
-                    | Record::TicketInstructionReviewed { card, .. }
-                    | Record::TicketStarted { card, .. }
-                    | Record::TicketRemoved { card, .. } => *card,
-                    _ => return Ok(Handled::default()),
+                let record = &append.entry().record;
+                let edited = record.ticket_edited().is_some();
+                let card = if let Some(card) = record
+                    .ticket_created()
+                    .map(|created| created.card)
+                    .or_else(|| record.ticket_start().map(|start| start.card))
+                    .or_else(|| record.ticket_edited().map(|edited| edited.card))
+                {
+                    card
+                } else {
+                    match record {
+                        Record::CardCreated { card, .. }
+                        | Record::CardTransition { card, .. }
+                        | Record::Claim { card, .. }
+                        | Record::TicketCreated { card, .. }
+                        | Record::TicketAssigned { card, .. }
+                        | Record::TicketInstructionReviewed { card, .. }
+                        | Record::TicketStarted { card, .. }
+                        | Record::TicketRemoved { card, .. } => *card,
+                        _ => return Ok(Handled::default()),
+                    }
                 };
                 let through = append.through();
                 self.apply_recorded(append)?;
+                if edited {
+                    return Ok(Handled::folded(through));
+                }
                 let goals: Vec<_> = self.world.held_board_goals(Some(card)).collect();
                 for (agent, goal) in goals {
                     self.judge(agent, goal, operation);

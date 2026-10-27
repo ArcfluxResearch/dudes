@@ -619,7 +619,7 @@ fn text_owner(kind: RecordKind, owner: RecoveryWitnessOwner) -> bool {
             RecoveryWitnessOwner::Agent(_)
         ) | (RecordKind::GoalSet, RecoveryWitnessOwner::Goal { .. })
             | (
-                RecordKind::TicketStarted,
+                RecordKind::TicketStarted | RecordKind::TicketStartedWithRepositories,
                 RecoveryWitnessOwner::Ticket { .. }
             )
             | (
@@ -638,6 +638,7 @@ fn marker_owner(kind: RecordKind, owner: RecoveryWitnessOwner) -> bool {
                     | RecordKind::CardTransition
                     | RecordKind::Claim
                     | RecordKind::TicketCreated
+                    | RecordKind::TicketCreatedWithRepositories
                     | RecordKind::TicketRemoved
                     | RecordKind::TicketInstructionReviewed,
                 RecoveryWitnessOwner::Card(_)
@@ -1014,6 +1015,21 @@ fn target_evidence(
 ) -> Option<(RecoveryWitnessOwner, RecoveryEvidence)> {
     use RecoveryEvidence as E;
     use RecoveryWitnessOwner as O;
+    if let Some(start) = record.ticket_start() {
+        return Some((
+            O::Ticket {
+                agent: start.agent,
+                goal: start.goal.id,
+                card: start.card,
+            },
+            E::Text {
+                digest: text_digest(&start.goal.text, hash),
+            },
+        ));
+    }
+    if let Some(created) = record.ticket_created() {
+        return Some((O::Card(created.card), E::Marker));
+    }
     match record {
         Record::AgentHired {
             id,
@@ -1041,18 +1057,6 @@ fn target_evidence(
                 digest: text_digest(&goal.text, hash),
             },
         )),
-        Record::TicketStarted {
-            agent, card, goal, ..
-        } => Some((
-            O::Ticket {
-                agent: *agent,
-                goal: goal.id,
-                card: *card,
-            },
-            E::Text {
-                digest: text_digest(&goal.text, hash),
-            },
-        )),
         Record::GoalCleared { agent, goal } => Some((
             O::Goal {
                 agent: *agent,
@@ -1074,8 +1078,7 @@ fn target_evidence(
         Record::WorktreeRemoved { worktree, .. } => Some((O::Worktree(*worktree), E::Marker)),
         Record::CardCreated { card, .. }
         | Record::CardTransition { card, .. }
-        | Record::Claim { card, .. }
-        | Record::TicketCreated { card, .. } => Some((O::Card(*card), E::Marker)),
+        | Record::Claim { card, .. } => Some((O::Card(*card), E::Marker)),
         _ => None,
     }
 }
