@@ -74,11 +74,6 @@ impl CleanupRunner {
         }
     }
 
-    fn phase(&self) -> usize {
-        let runs = self.runs.lock().unwrap();
-        runs.len() + runs.iter().filter(|run| run.returned.is_some()).count()
-    }
-
     fn snapshot(&self) -> Vec<String> {
         self.runs
             .lock()
@@ -405,25 +400,11 @@ fn start_with_runner<P: PredicateRunner>(
     (common::start(daemon), settings)
 }
 
-fn await_pending_cleanup(
-    fixture: &Fixture,
-    handle: &duded::Handle,
-    runner: &CleanupRunner,
-    copies: &[OwnedRepository],
-) {
-    use duded::ports::{Answered, Ask};
-    use std::sync::mpsc::{Receiver, TryRecvError};
-
+fn await_pending_cleanup(fixture: &Fixture, runner: &CleanupRunner, copies: &[OwnedRepository]) {
     let started = Instant::now();
     let deadline = started + Duration::from_secs(3);
     let mut previous_poll = started;
     let (mut polls, mut max_read, mut max_gap) = (0, Duration::ZERO, Duration::ZERO);
-    let mut last_phase = None;
-    let mut probe: Option<(
-        Duration,
-        Receiver<Result<Answered, dudes_proto::rpc::RpcError>>,
-    )> = None;
-    let mut loop_replies = Vec::new();
     loop {
         let poll = Instant::now();
         max_gap = max_gap.max(poll.duration_since(previous_poll));
@@ -446,47 +427,10 @@ fn await_pending_cleanup(
         if removed == copies.len() {
             break;
         }
-        if let Some((queued, reply)) = &probe {
-            let answer = match reply.try_recv() {
-                Ok(Ok(Answered::WorktreeInfo(lease))) => {
-                    Some(format!("pending={}", lease.is_some()))
-                }
-                Ok(Ok(_)) => Some("unexpected loop answer".to_owned()),
-                Ok(Err(error)) => Some(format!(
-                    "loop error {}: {}",
-                    error.code,
-                    error.message.chars().take(256).collect::<String>()
-                )),
-                Err(TryRecvError::Disconnected) => Some("loop disconnected".to_owned()),
-                Err(TryRecvError::Empty) => None,
-            };
-            if let Some(answer) = answer {
-                loop_replies.push((*queued, runner.started.elapsed(), answer));
-                probe = None;
-            }
-        }
-        let phase = runner.phase();
-        if probe.is_none() && last_phase != Some(phase) {
-            last_phase = Some(phase);
-            let queued = runner.started.elapsed();
-            match handle.ask_queued(Ask::WorktreeInfo(copies[0].worktree)) {
-                Ok(reply) => probe = Some((queued, reply)),
-                Err(error) => loop_replies.push((
-                    queued,
-                    runner.started.elapsed(),
-                    format!(
-                        "queue error {}: {}",
-                        error.code,
-                        error.message.chars().take(256).collect::<String>()
-                    ),
-                )),
-            }
-        }
         assert!(
             Instant::now() < deadline,
             "every pending lease must settle; [DEBUG-cleanup] observer_started={:?}, elapsed={:?}, polls={polls}, max_read={max_read:?}, max_gap={max_gap:?}, \
-             last_lsn={:?}, records={:?}, copies_present={:?}, git_admin_present={:?}, git_runs={:?}, \
-             loop_probes(queued,answered,status)={loop_replies:?}, outstanding_probe={:?}",
+             last_lsn={:?}, records={:?}, copies_present={:?}, git_admin_present={:?}, git_runs={:?}",
             started.duration_since(runner.started),
             started.elapsed(),
             entries.last().map(|(lsn, _)| lsn),
@@ -505,7 +449,6 @@ fn await_pending_cleanup(
                 .map(|copy| copy.execution.git_dir.exists())
                 .collect::<Vec<_>>(),
             runner.snapshot(),
-            probe.as_ref().map(|(queued, _)| queued),
         );
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -709,7 +652,7 @@ fn crash_before_the_atomic_hire_discards_every_pending_copy() {
     let host = SharedHost::new();
     let runner = Arc::new(CleanupRunner::new());
     let (mut running, _) = start_with_runner(&fixture, &host, Arc::clone(&runner));
-    await_pending_cleanup(&fixture, &running.handle, &runner, &copies);
+    await_pending_cleanup(&fixture, &runner, &copies);
     running.stop(ExitCause::Ended);
     assert!(copies.iter().all(|repo| !repo.execution.directory.exists()));
     assert!(host.spawned().is_empty());
