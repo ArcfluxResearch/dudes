@@ -8146,10 +8146,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             }),
             Effect::RunPredicate {
                 goal,
-                agent: _,
+                agent,
                 cwd,
                 predicate,
-            } => self.run_predicate(*goal, cwd, predicate, queue),
+            } => {
+                let repositories = sup.world().agents.get(agent).map_or_else(
+                    || vec![cwd.clone()],
+                    |row| row.repositories.check_program_roots(),
+                );
+                self.run_predicate(*goal, cwd, predicate, &repositories, queue);
+            }
             Effect::CaptureBaseline { .. } | Effect::CaptureStamp { .. } => {
                 self.execute_ticket_capture(effect, sup, queue);
             }
@@ -8875,11 +8881,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one predicate attempt owns resolution, the child thread and its terminal accounting"
+    )]
     fn run_predicate(
         &mut self,
         goal: GoalId,
         cwd: &std::path::Path,
         predicate: &Predicate,
+        repositories: &[std::path::PathBuf],
         queue: &mut VecDeque<Input>,
     ) {
         if let Predicate::BoardState { card, .. } = predicate {
@@ -8944,6 +8955,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         // written at `goal.set` and is never rewritten. The resolved program goes
         // beside it in the evidence, never in place of `argv[0]`.
         let operator_argv = argv.clone();
+        let repositories = repositories.to_vec();
 
         *self.predicate_runs.entry(goal).or_default() += 1;
         *self
@@ -8964,14 +8976,19 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                         folder: cwd.clone(),
                         verdict: None,
                     };
-                    let (program, spec) =
-                        match predicate::spec_for(&argv, &cwd, &env, path.as_deref()) {
-                            Ok(built) => built,
-                            Err(error) => {
-                                end.verdict = Some(predicate::refused(&operator_argv, &error));
-                                return;
-                            }
-                        };
+                    let (program, spec) = match predicate::spec_for_repositories(
+                        &argv,
+                        &cwd,
+                        &env,
+                        path.as_deref(),
+                        &repositories,
+                    ) {
+                        Ok(built) => built,
+                        Err(error) => {
+                            end.verdict = Some(predicate::refused(&operator_argv, &error));
+                            return;
+                        }
+                    };
                     match runner.run(&spec, timeout) {
                         Ok(outcome) => {
                             end.verdict = predicate::judge(&outcome, &operator_argv, Some(program));
@@ -9132,6 +9149,9 @@ fn turn_reader<C: Clock, R: Rng>(
 /// that takes over from another with the allowance the old one left, or a ticket's start. A plain
 /// goal set starts from nothing, so there is nothing to read.
 fn goal_to_price(record: &Record) -> Option<(AgentId, GoalId)> {
+    if let Some(start) = record.ticket_start() {
+        return Some((start.agent, start.goal.id));
+    }
     match record {
         Record::GoalSet {
             agent,
@@ -9144,8 +9164,7 @@ fn goal_to_price(record: &Record) -> Option<(AgentId, GoalId)> {
             goal,
             goal_replacement: Some(_),
             ..
-        }
-        | Record::TicketStarted { agent, goal, .. } => Some((*agent, goal.id)),
+        } => Some((*agent, goal.id)),
         _ => None,
     }
 }

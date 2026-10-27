@@ -734,17 +734,19 @@ pub(super) fn attribution_session(
 /// every move the daemon makes, name no session.
 pub(super) fn ticket_session(record: &dudes_proto::Record) -> Option<dudes_proto::record::Hex32> {
     use dudes_proto::{Actor, Record};
-    let (Record::TicketCreated { by, .. }
-    | Record::TicketEdited { by, .. }
-    | Record::TicketAssigned { by, .. }
-    | Record::TicketInstructionReviewed { by, .. }
-    | Record::TicketRemoved { by, .. }
-    | Record::CardTransition { by, .. }) = record
-    else {
-        return None;
-    };
+    let by = record
+        .ticket_created()
+        .map(|created| created.by)
+        .or_else(|| record.ticket_edited().map(|edited| edited.by))
+        .or(match record {
+            Record::TicketAssigned { by, .. }
+            | Record::TicketInstructionReviewed { by, .. }
+            | Record::TicketRemoved { by, .. }
+            | Record::CardTransition { by, .. } => Some(*by),
+            _ => None,
+        })?;
     match by {
-        Actor::BrowserSession { session_digest } => Some(*session_digest),
+        Actor::BrowserSession { session_digest } => Some(session_digest),
         _ => None,
     }
 }

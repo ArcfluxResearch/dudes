@@ -253,6 +253,21 @@ pub fn spec_for(
     env: &[EnvVar],
     path: Option<&OsStr>,
 ) -> io::Result<(String, LaunchSpec)> {
+    spec_for_repositories(argv, cwd, env, path, &[])
+}
+
+/// Build a command check whose program must be outside every recorded hired repository.
+/// The working directory selects the check target independently of this denial set.
+///
+/// # Errors
+/// As [`spec_for`], including a missing or unresolvable repository root.
+pub fn spec_for_repositories(
+    argv: &[String],
+    cwd: &Path,
+    env: &[EnvVar],
+    path: Option<&OsStr>,
+    repositories: &[std::path::PathBuf],
+) -> io::Result<(String, LaunchSpec)> {
     let (first, rest) = argv.split_first().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -260,21 +275,23 @@ pub fn spec_for(
         )
     })?;
     let program = resolve(first, cwd, path)?;
-    let canonical_tree = cwd.canonicalize().map_err(|cause| {
-        io::Error::new(
-            cause.kind(),
-            format!("the agent directory `{}`: {cause}", cwd.display()),
-        )
-    })?;
-    if Path::new(&program).starts_with(&canonical_tree) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "the canonical predicate program `{program}` is inside the agent tree `{}` and \
+    for root in std::iter::once(cwd).chain(repositories.iter().map(std::path::PathBuf::as_path)) {
+        let canonical_tree = root.canonicalize().map_err(|cause| {
+            io::Error::new(
+                cause.kind(),
+                format!("the agent directory `{}`: {cause}", root.display()),
+            )
+        })?;
+        if Path::new(&program).starts_with(&canonical_tree) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "the canonical predicate program `{program}` is inside the agent tree `{}` and \
                  is refused before spawn",
-                canonical_tree.display()
-            ),
-        ));
+                    canonical_tree.display()
+                ),
+            ));
+        }
     }
     let mut launch_argv = Vec::with_capacity(argv.len());
     launch_argv.push(OsString::from(&program));
@@ -549,6 +566,43 @@ mod tests {
         )
         .expect_err("a canonical target inside the agent tree is refused before spawn");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_check_runs_in_its_target_but_refuses_programs_in_every_hired_repository() {
+        let declared_first = tempfile::tempdir().unwrap();
+        let check_target = tempfile::tempdir().unwrap();
+        let undeclared = tempfile::tempdir().unwrap();
+        let roots = [
+            declared_first.path().to_path_buf(),
+            check_target.path().to_path_buf(),
+            undeclared.path().to_path_buf(),
+        ];
+        for root in &roots {
+            let program = root.join("check");
+            write_runnable(&program);
+            let error = spec_for_repositories(
+                &[program.to_str().unwrap().to_owned()],
+                check_target.path(),
+                &[],
+                None,
+                &roots,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        }
+        let script = undeclared.path().join("check").to_str().unwrap().to_owned();
+        let (_, launch) = spec_for_repositories(
+            &["/bin/sh".into(), script.clone()],
+            check_target.path(),
+            &[],
+            None,
+            &roots,
+        )
+        .unwrap();
+        assert_eq!(launch.cwd, check_target.path());
+        assert_eq!(launch.argv[1], OsString::from(script));
     }
 
     /// A program that does not resolve makes the run fail and never pass, and the evidence says so

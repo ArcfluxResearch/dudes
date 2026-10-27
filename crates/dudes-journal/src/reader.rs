@@ -232,6 +232,9 @@ fn repository_payload(header: Header, payload: &[u8]) -> bool {
                 "project_repositories_recorded"
                     | "repository_trust_set"
                     | "agent_hired_with_repositories"
+                    | "ticket_created_with_repositories"
+                    | "ticket_edited_with_repositories"
+                    | "ticket_started_with_repositories"
             )
         })
 }

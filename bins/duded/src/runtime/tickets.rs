@@ -65,6 +65,16 @@ fn operator(by: Actor) -> Result<(), RpcError> {
     }
 }
 
+pub(super) fn require_legacy_producer(ticket: &TicketRow) -> Result<(), RpcError> {
+    if ticket.repositories.declared().is_some() {
+        return Err(error(
+            ErrorCode::Refused,
+            "Declared repository work is not available in this build.",
+        ));
+    }
+    Ok(())
+}
+
 fn title_of(text: &str) -> Result<String, RpcError> {
     let title = trim(text);
     if title.is_empty() || !clean_title(title, MAX_TITLE_BYTES) {
@@ -213,6 +223,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     fn ticket_edit(&mut self, request: &TicketEditParams, by: Actor) -> Result<Answered, RpcError> {
         operator(by)?;
         let (view, ticket) = self.ticket_row(request.card)?;
+        require_legacy_producer(&ticket)?;
         if view.seq != request.expected_seq {
             return Err(stale(&view));
         }
@@ -265,6 +276,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     ) -> Result<Answered, RpcError> {
         operator(by)?;
         let (view, ticket) = self.ticket_row(request.card)?;
+        require_legacy_producer(&ticket)?;
         if view.seq != request.expected_seq {
             return Err(stale(&view));
         }
@@ -575,7 +587,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 "checkout requires a local operator",
             ));
         }
-        let (card, _) = self.ticket_row(request.card)?;
+        let (card, ticket) = self.ticket_row(request.card)?;
+        require_legacy_producer(&ticket)?;
         if card.seq != request.expected_seq {
             return Err(stale(&card));
         }

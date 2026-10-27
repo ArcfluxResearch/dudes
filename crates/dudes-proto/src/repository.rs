@@ -327,6 +327,28 @@ impl HireRepositories {
         }
     }
 
+    /// Recorded working trees and metadata that cannot provide a completion-check executable.
+    #[must_use]
+    pub fn check_program_roots(&self) -> Vec<std::path::PathBuf> {
+        match self {
+            Self::Legacy(repository) => vec![repository.cwd().to_path_buf()],
+            Self::Scoped(hire) => hire
+                .repositories
+                .entries()
+                .iter()
+                .flat_map(|entry| {
+                    let repo = &entry.value;
+                    [
+                        repo.origin.directory.clone(),
+                        repo.origin.common_dir.clone(),
+                        repo.execution.directory.clone(),
+                        repo.execution.git_dir.clone(),
+                    ]
+                })
+                .collect(),
+        }
+    }
+
     /// Every committed lease. Lifecycle operations must retain and release the entire hire.
     pub fn worktrees(&self) -> impl Iterator<Item = WorktreeId> + '_ {
         let legacy = self.singleton().and_then(SingletonRepository::worktree);
@@ -346,15 +368,81 @@ impl HireRepositories {
     }
 }
 
-/// A legacy ticket's singleton project declaration. Its wire representation stays a string.
+/// The immutable origin-bound subset selected from one observed project revision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(transparent)]
-#[schemars(transparent)]
-pub struct TicketRepositories(String);
+#[serde(deny_unknown_fields)]
+pub struct TicketDeclaration {
+    /// Stable project identity.
+    pub project: String,
+    /// Exact observed catalog position.
+    pub catalog_lsn: Lsn,
+    /// Declared members in catalog order, with the first member as execution primary.
+    pub repositories: RepositorySet<TrustedRepository>,
+}
+
+/// Current check selection alongside a ticket's immutable declaration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TicketRepositoryScope {
+    /// Creation-time authority, unchanged by check edits.
+    pub declaration: TicketDeclaration,
+    /// Repository in which the command check runs.
+    pub check_repo: RepoId,
+}
+
+/// The sole repository authority owned by a ticket row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "TicketRepositoriesWire", into = "TicketRepositoriesWire")]
+pub enum TicketRepositories {
+    /// Historical project-only singleton semantics.
+    Legacy(String),
+    /// Explicit origin-bound declaration and current check selection.
+    Declared(TicketRepositoryScope),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+struct TicketRepositoriesWire {
+    project: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    repository_scope: Option<TicketRepositoryScope>,
+}
+
+impl From<TicketRepositories> for TicketRepositoriesWire {
+    fn from(repositories: TicketRepositories) -> Self {
+        Self {
+            project: repositories.project().to_owned(),
+            repository_scope: match repositories {
+                TicketRepositories::Legacy(_) => None,
+                TicketRepositories::Declared(scope) => Some(scope),
+            },
+        }
+    }
+}
+
+impl TryFrom<TicketRepositoriesWire> for TicketRepositories {
+    type Error = &'static str;
+
+    fn try_from(wire: TicketRepositoriesWire) -> Result<Self, Self::Error> {
+        match wire.repository_scope {
+            Some(scope)
+                if scope.declaration.project == wire.project
+                    && scope
+                        .declaration
+                        .repositories
+                        .get(&scope.check_repo)
+                        .is_some() =>
+            {
+                Ok(Self::Declared(scope))
+            }
+            Some(_) => Err("ticket project or check repository does not match its declaration"),
+            None => Ok(Self::Legacy(wire.project)),
+        }
+    }
+}
 
 impl From<String> for TicketRepositories {
     fn from(project: String) -> Self {
-        Self(project)
+        Self::Legacy(project)
     }
 }
 
@@ -366,14 +454,112 @@ impl From<&str> for TicketRepositories {
 
 impl TicketRepositories {
     pub(crate) fn recorded(project: &str) -> Self {
-        Self(project.to_owned())
+        Self::Legacy(project.to_owned())
     }
 
     /// The project identity the ticket recorded.
     #[must_use]
     pub fn project(&self) -> &str {
-        &self.0
+        match self {
+            Self::Legacy(project) => project,
+            Self::Declared(scope) => &scope.declaration.project,
+        }
     }
+
+    /// Explicit declaration and current check selection, absent for historical tickets.
+    #[must_use]
+    pub const fn declared(&self) -> Option<&TicketRepositoryScope> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Declared(scope) => Some(scope),
+        }
+    }
+
+    /// Apply a validated check edit without replacing the creation-time declaration.
+    pub fn set_check_repo(&mut self, repo: &RepoId) {
+        if let Self::Declared(scope) = self {
+            scope.check_repo = repo.clone();
+        }
+    }
+}
+
+/// A required ticket creation with explicit repository authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryTicketCreated {
+    /// New card identity.
+    pub card: CardId,
+    /// Trimmed title.
+    pub title: String,
+    /// Operator-authored note.
+    pub description: String,
+    /// Project department.
+    pub department: String,
+    /// Immutable declared subset.
+    pub declaration: TicketDeclaration,
+    /// Resolved command check.
+    pub done_when: crate::TicketCheck,
+    /// Explicit check target inside the declaration.
+    pub check_repo: RepoId,
+    /// Author.
+    pub by: crate::Actor,
+    /// Browser retry attribution, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<crate::record::TicketRequestAttribution>,
+}
+
+/// A complete check edit that preserves the existing declaration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryTicketEdited {
+    /// Existing card identity.
+    pub card: CardId,
+    /// Trimmed title.
+    pub title: String,
+    /// Operator-authored note.
+    pub description: String,
+    /// Replacement command check.
+    pub done_when: crate::TicketCheck,
+    /// Replacement check target inside the original declaration.
+    pub check_repo: RepoId,
+    /// Author.
+    pub by: crate::Actor,
+    /// Exact preceding card revision.
+    pub expected_seq: dudes_types::Seq,
+}
+
+/// Repository and check authority frozen by a ticket start.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TicketStartRepositories {
+    /// Exact hire selected by this round.
+    pub hired_lsn: Lsn,
+    /// Exact creation-time declaration.
+    pub declaration: TicketDeclaration,
+    /// Resolved check definition for this round.
+    pub check: crate::TicketCheck,
+    /// Explicit check target.
+    pub check_repo: RepoId,
+    /// Exact owned execution binding of the check target.
+    pub check_root: ExecutionRepository,
+}
+
+/// Atomic goal installation and card movement with frozen repository authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryTicketStarted {
+    /// Existing ticket identity.
+    pub card: CardId,
+    /// Holder of the ticket.
+    pub agent: dudes_types::AgentId,
+    /// Atomically installed goal.
+    pub goal: crate::Goal,
+    /// Exact preceding card revision.
+    pub expected_seq: dudes_types::Seq,
+    /// Next ticket round.
+    pub round: u32,
+    /// Frozen selection and check binding.
+    pub repositories: TicketStartRepositories,
 }
 
 /// The immutable ticket round selected at a start, retained by every issue in that round.
@@ -389,6 +575,9 @@ pub struct TicketRepositoryRound {
     pub round: u32,
     /// The declaration, absent only when the historical prefix has no ticket creation.
     pub repositories: Option<TicketRepositories>,
+    /// Frozen restricted start authority, absent for historical singleton starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<TicketStartRepositories>,
 }
 
 /// The frozen repository selection owned by an issued turn.

@@ -52,18 +52,17 @@ pub(crate) struct TicketIndex {
 impl TicketIndex {
     /// Refuse a `TicketStarted` that does not match the ticket it starts.
     pub(crate) fn validate(&self, world: &World, record: &Record) -> Result<()> {
-        if let Some(card) = ticket_target(record) {
+        let edited_card = record.ticket_edited().map(|edited| edited.card);
+        if let Some(card) = ticket_target(record).or(edited_card.as_ref()) {
             ensure!(
                 self.tickets.get(card).is_some_and(|ticket| !ticket.removed),
                 "a ticket record names a card that is not a live ticket"
             );
         }
-        let Record::TicketStarted {
-            card, agent, goal, ..
-        } = record
-        else {
+        let Some(start) = record.ticket_start() else {
             return Ok(());
         };
+        let (card, agent, goal) = (&start.card, &start.agent, start.goal);
         let Some(ticket) = self.tickets.get(card).filter(|ticket| !ticket.removed) else {
             bail!("a ticket start names a ticket that is absent or removed");
         };
@@ -97,33 +96,44 @@ impl TicketIndex {
 
     /// Fold a record the writer or replay accepted.
     pub(crate) fn apply(&mut self, record: &Record) {
+        if let Some(hire) = record.hire() {
+            let project = match hire.repositories {
+                dudes_proto::repository_state::HireRepositoryRecord::Legacy {
+                    workspace, ..
+                } => workspace.map(|workspace| workspace.id.clone()),
+                dudes_proto::repository_state::HireRepositoryRecord::Scoped(repositories) => {
+                    Some(repositories.project.id.clone())
+                }
+            };
+            self.hires.insert(hire.agent, project);
+        }
+        if let Some(created) = record.ticket_created() {
+            self.tickets.insert(
+                created.card,
+                Ticket {
+                    project: created.project.to_owned(),
+                    check: created.done_when.clone(),
+                    status: CardStatus::Todo,
+                    holder: None,
+                    removed: false,
+                },
+            );
+        }
+        if let Some(edited) = record.ticket_edited() {
+            self.with(edited.card, |ticket| {
+                ticket.check = edited.done_when.clone();
+            });
+        }
+        if let Some(start) = record.ticket_start() {
+            self.with(start.card, |ticket| {
+                ticket.status = CardStatus::Doing;
+                ticket.holder = Some(start.agent);
+            });
+        }
         match record {
-            Record::AgentHired { id, workspace, .. } => {
-                self.hires.insert(
-                    *id,
-                    workspace.as_ref().map(|workspace| workspace.id.clone()),
-                );
+            Record::CardCreated { card, .. } => {
+                self.tickets.remove(card);
             }
-            Record::TicketCreated {
-                card,
-                project,
-                done_when,
-                ..
-            } => {
-                self.tickets.insert(
-                    *card,
-                    Ticket {
-                        project: project.clone(),
-                        check: done_when.clone(),
-                        status: CardStatus::Todo,
-                        holder: None,
-                        removed: false,
-                    },
-                );
-            }
-            Record::TicketEdited {
-                card, done_when, ..
-            } => self.with(*card, |ticket| ticket.check = done_when.clone()),
             Record::TicketAssigned { card, agent, .. } | Record::Claim { card, agent, .. } => {
                 self.with(*card, |ticket| {
                     ticket.status = CardStatus::Claimed;
@@ -146,10 +156,6 @@ impl TicketIndex {
                     }
                 });
             }
-            Record::TicketStarted { card, agent, .. } => self.with(*card, |ticket| {
-                ticket.status = CardStatus::Doing;
-                ticket.holder = Some(*agent);
-            }),
             Record::CardTransition { card, to, .. } => self.with(*card, |ticket| {
                 ticket.status = *to;
                 if *to == CardStatus::Todo {
@@ -488,6 +494,20 @@ mod tests {
         for record in records(card()) {
             assert!(refusal(&index, &world, &record).contains("live ticket"));
         }
+    }
+
+    #[test]
+    fn a_plain_card_replacement_drops_the_previous_tickets_start_authority() {
+        let world = World::default();
+        let mut index = queued(Some("service"));
+        index.apply(&Record::CardCreated {
+            card: card(),
+            title: "Plain".into(),
+            department: "engineering".into(),
+            by: Actor::System,
+            deps: Vec::new(),
+        });
+        assert!(refusal(&index, &world, &start(honest_goal())).contains("absent"));
     }
 
     /// The pass that validates every goal change runs the ticket check on a start, and a start
