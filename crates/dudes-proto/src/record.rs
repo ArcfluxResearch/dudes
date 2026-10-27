@@ -39,6 +39,7 @@ use crate::ticket::{TicketCheck, TicketReason};
 /// lacks it fails deserialisation, which is the right, visible failure for a file no released
 /// build can have produced.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(transform = crate::schema::close_repository_entries)]
 pub struct Entry {
     /// The daemon's wall clock as `Clock::now()` reported it when the supervisor emitted the
     /// `Persist` that carried this record, UTC milliseconds. `lsn` orders; `at` labels —

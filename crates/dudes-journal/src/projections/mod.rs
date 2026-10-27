@@ -315,6 +315,7 @@ const GOAL_FIRST_DONE: TableDefinition<'_, &[u8; 25], &[u8]> =
     TableDefinition::new("goal_first_done");
 const SESSION_TOTALS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("session_totals");
 const SCHEMA_VERSION: &str = "schema_version";
+const TICKET_ROUND_PREFIX: &str = "repository_ticket_round:";
 const LAST_APPLIED_LSN: &str = "last_applied_lsn";
 /// The `crc32c` of the frame at `last_applied_lsn`. A `u32` value in
 /// a `u64` cell, so `META` needs no second table definition.
@@ -1049,6 +1050,12 @@ impl Projections {
             &txn.open_table(repositories::PROJECTS)?,
             &txn.open_table(repositories::TRUST)?,
         )?;
+        for entry in txn.open_table(META)?.iter()? {
+            let (key, value) = entry?;
+            if let Some(card) = key.value().strip_prefix(TICKET_ROUND_PREFIX) {
+                lines.push(format!("repository_ticket_rounds {card} {}", value.value()));
+            }
+        }
         export_rows::<16, budget::BudgetRow>(
             &mut lines,
             "budget_by_goal",
@@ -1250,17 +1257,40 @@ fn fold_batch<'a>(
                 lsn,
                 entry,
             )?;
+            if let Some(card) = entry
+                .record
+                .ticket_created()
+                .map(|created| created.card)
+                .or(match &entry.record {
+                    dudes_proto::Record::CardCreated { card, .. } => Some(*card),
+                    _ => None,
+                })
+            {
+                meta.insert(format!("{TICKET_ROUND_PREFIX}{card}").as_str(), &0)?;
+            }
             let repository_round = if let Some(start) = entry.record.ticket_start() {
+                let key = format!("{TICKET_ROUND_PREFIX}{}", start.card);
+                let prior_round = u32::try_from(
+                    meta.get(key.as_str())?.map_or(0, |row| row.value()),
+                )
+                .map_err(|_| Error::Repository {
+                    lsn,
+                    reason: dudes_proto::repository_state::history::RepositoryStateError::Start,
+                })?;
                 let ticket = get_row::<board::BoardRow>(&board, &start.card.to_bytes())?
                     .and_then(|row| row.ticket);
                 let facts = dudes_proto::repository_state::RepositoryFacts {
                     ticket: ticket
                         .as_ref()
                         .map(|ticket| (&ticket.repositories, ticket.round)),
+                    prior_round,
                     ..dudes_proto::repository_state::RepositoryFacts::default()
                 };
                 match dudes_proto::repository_state::fold(lsn, &entry.record, facts) {
-                    dudes_proto::repository_state::RepositoryFold::Start(round) => Some(round),
+                    dudes_proto::repository_state::RepositoryFold::Start(round) => {
+                        meta.insert(key.as_str(), &u64::from(round.round))?;
+                        Some(round)
+                    }
                     _ => None,
                 }
             } else {

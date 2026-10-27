@@ -206,6 +206,7 @@ pub struct ScopedRepositories {
 
 /// Ordinary hire fields beside the complete restricted repository authority.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RepositoryHire {
     /// New agent identity.
     pub id: dudes_types::AgentId,
@@ -629,6 +630,40 @@ impl TurnRepositories {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_repository_hire_refuses_unknown_fields_in_records_and_entries() {
+        let record = crate::record::samples::record(crate::RecordKind::AgentHiredWithRepositories);
+        let mut value = serde_json::to_value(&record).unwrap();
+        assert_eq!(
+            serde_json::from_value::<crate::Record>(value.clone()).unwrap(),
+            record
+        );
+        value["browser_onboarding"] = serde_json::json!({"attempt": "future"});
+        let error = serde_json::from_value::<crate::Record>(value.clone()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `browser_onboarding`")
+        );
+
+        let entry = crate::Entry {
+            at: dudes_types::Timestamp::UNIX_EPOCH,
+            record,
+        };
+        let mut value = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            serde_json::from_value::<crate::Entry>(value.clone()).unwrap(),
+            entry
+        );
+        value["browser_onboarding"] = serde_json::json!({"attempt": "future"});
+        let error = serde_json::from_value::<crate::Entry>(value).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `browser_onboarding`")
+        );
+    }
 
     #[test]
     fn repository_collections_reject_duplicate_missing_primary_and_oversized_data() {

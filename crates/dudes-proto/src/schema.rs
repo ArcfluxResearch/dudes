@@ -167,6 +167,34 @@ fn floor_finished_today() -> Value {
     finished
 }
 
+pub(crate) fn close_repository_entries(schema: &mut Schema) {
+    let envelope = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .expect("Entry schema has envelope properties")
+        .clone();
+    let variants = schema
+        .get_mut("oneOf")
+        .and_then(Value::as_array_mut)
+        .expect("Entry schema has record variants");
+    for tag in [
+        "agent_hired_with_repositories",
+        "ticket_created_with_repositories",
+        "ticket_edited_with_repositories",
+        "ticket_started_with_repositories",
+    ] {
+        let variant = variants
+            .iter_mut()
+            .find(|variant| variant["properties"]["t"]["const"] == tag)
+            .expect("Entry schema has the repository variant");
+        variant["properties"]
+            .as_object_mut()
+            .expect("repository variant schema has properties")
+            .extend(envelope.clone());
+        variant["additionalProperties"] = Value::Bool(false);
+    }
+}
+
 /// A root schema for `T` with the contract's settings.
 #[must_use]
 pub fn schema_for<T: JsonSchema>() -> Schema {
@@ -511,6 +539,93 @@ mod tests {
             !validator.is_valid(&serde_json::json!({"at": 0, "t": "pause", "agent": "not-a-ulid"}))
         );
         assert!(!validator.is_valid(&serde_json::json!({"at": 0, "t": "no_such_record"})));
+    }
+
+    #[test]
+    fn repository_hire_entry_schemas_refuse_unknown_fields_without_closing_legacy_hires() {
+        let known = serde_json::to_value(Entry {
+            at: dudes_types::Timestamp::UNIX_EPOCH,
+            record: crate::record::samples::record(crate::RecordKind::AgentHiredWithRepositories),
+        })
+        .unwrap();
+        let mut extended = known.clone();
+        extended["browser_onboarding"] = serde_json::json!({"attempt": "future"});
+        let mut legacy = serde_json::to_value(Entry {
+            at: dudes_types::Timestamp::UNIX_EPOCH,
+            record: crate::record::samples::record(crate::RecordKind::AgentHired),
+        })
+        .unwrap();
+        legacy["future_hire_field"] = serde_json::json!(true);
+
+        for file in ["journal-record.schema.json", "rpc.schema.json"] {
+            let doc = exported_file(file);
+            let schema = if file == "rpc.schema.json" {
+                def_of(&doc, "Entry")
+            } else {
+                doc
+            };
+            let validator = jsonschema::validator_for(&schema).unwrap();
+            assert!(validator.is_valid(&known), "{file}: valid stamped hire");
+            assert!(!validator.is_valid(&extended), "{file}: unknown hire field");
+            assert!(
+                validator.is_valid(&legacy),
+                "{file}: legacy hire stays open"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_ticket_entry_schemas_match_closed_payloads_and_open_legacy_records() {
+        use crate::RecordKind;
+        for file in ["journal-record.schema.json", "rpc.schema.json"] {
+            let doc = exported_file(file);
+            let schema = if file == "rpc.schema.json" {
+                def_of(&doc, "Entry")
+            } else {
+                doc
+            };
+            let validator = jsonschema::validator_for(&schema).unwrap();
+            for (scoped, legacy) in [
+                (
+                    RecordKind::TicketCreatedWithRepositories,
+                    RecordKind::TicketCreated,
+                ),
+                (
+                    RecordKind::TicketEditedWithRepositories,
+                    RecordKind::TicketEdited,
+                ),
+                (
+                    RecordKind::TicketStartedWithRepositories,
+                    RecordKind::TicketStarted,
+                ),
+            ] {
+                let known = serde_json::to_value(Entry {
+                    at: dudes_types::Timestamp::UNIX_EPOCH,
+                    record: crate::record::samples::record(scoped),
+                })
+                .unwrap();
+                let mut extended = known.clone();
+                extended["future_ticket_authority"] = serde_json::json!({"repo": "extra"});
+                let mut legacy = serde_json::to_value(Entry {
+                    at: dudes_types::Timestamp::UNIX_EPOCH,
+                    record: crate::record::samples::record(legacy),
+                })
+                .unwrap();
+                legacy["future_ticket_authority"] = serde_json::json!({"repo": "extra"});
+                assert!(serde_json::from_value::<Entry>(known.clone()).is_ok());
+                assert!(serde_json::from_value::<Entry>(extended.clone()).is_err());
+                assert!(serde_json::from_value::<Entry>(legacy.clone()).is_ok());
+                assert!(validator.is_valid(&known), "{file}: valid {scoped:?}");
+                assert!(
+                    !validator.is_valid(&extended),
+                    "{file}: unknown {scoped:?} field"
+                );
+                assert!(
+                    validator.is_valid(&legacy),
+                    "{file}: legacy ticket stays open"
+                );
+            }
+        }
     }
 
     /// the two provider-run limits are optional, but a supplied value is strictly
