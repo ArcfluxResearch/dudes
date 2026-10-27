@@ -191,6 +191,7 @@ pub fn validate_shape(record: &Record) -> Result<(), RepositoryStateError> {
                     || repo.execution.git_dir == repo.origin.common_dir.join("worktrees")
                     || origins.iter().any(|origin| {
                         overlaps(&origin.directory, &repo.execution.directory)
+                            || overlaps(&origin.common_dir, &repo.execution.directory)
                             || origin.directory_identity == repo.execution.directory_identity
                             || origin.common_identity == repo.execution.directory_identity
                             || origin.common_identity == repo.execution.git_identity

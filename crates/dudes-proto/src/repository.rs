@@ -490,4 +490,57 @@ mod tests {
             Err(crate::repository_state::history::RepositoryStateError::Binding)
         );
     }
+    #[test]
+    fn execution_roots_cannot_overlap_any_repository_common_directory() {
+        let mut record =
+            crate::record::samples::record(crate::RecordKind::AgentHiredWithRepositories);
+        let crate::Record::AgentHiredWithRepositories(hire) = &mut record else {
+            unreachable!()
+        };
+        let first = hire.repositories.repositories.entries()[0].clone();
+        let mut second = first.clone();
+        second.repo_id = RepoId::parse("secondary").unwrap();
+        let repo = &mut second.value;
+        repo.origin.directory = repo.origin.directory.with_file_name("secondary");
+        repo.origin.common_dir = repo.origin.directory.join(".git");
+        repo.origin.directory_identity.inode += 100;
+        repo.origin.common_identity.inode += 100;
+        repo.execution.directory = repo.execution.directory.with_file_name("secondary");
+        repo.execution.git_dir = repo.origin.common_dir.join("worktrees/secondary");
+        repo.execution.directory_identity.inode += 100;
+        repo.execution.git_identity.inode += 100;
+        repo.worktree = WorktreeId::from_bytes([4; 16]);
+        hire.repositories.repositories =
+            RepositorySet::new(first.repo_id.clone(), vec![first.clone(), second.clone()]).unwrap();
+        assert!(crate::repository_state::history::validate_shape(&record).is_ok());
+        for common in [
+            first.value.execution.directory.join("metadata"),
+            first
+                .value
+                .execution
+                .directory
+                .parent()
+                .unwrap()
+                .to_path_buf(),
+        ] {
+            let mut copies = vec![first.clone(), second.clone()];
+            copies[1].value.origin.common_dir = common;
+            copies[1].value.execution.git_dir = copies[1]
+                .value
+                .origin
+                .common_dir
+                .join("worktrees/secondary");
+            let crate::Record::AgentHiredWithRepositories(hire) = &mut record else {
+                unreachable!()
+            };
+            hire.repositories.repositories =
+                RepositorySet::new(first.repo_id.clone(), copies).unwrap();
+            let result = crate::repository_state::history::validate_shape(&record);
+            assert_eq!(
+                result,
+                Err(crate::repository_state::history::RepositoryStateError::Binding),
+                "{result:?}"
+            );
+        }
+    }
 }
