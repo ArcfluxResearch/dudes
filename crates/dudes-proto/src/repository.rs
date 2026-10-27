@@ -6,7 +6,7 @@ use dudes_types::{CardId, GoalId, Lsn, WorktreeId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::record::{FileIdentity, RecordedWorkspace, TrustedRepository};
+use crate::record::{FileIdentity, RecordedWorkspace, TrustPin, TrustedRepository};
 
 /// A stable repository identity within one project.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
@@ -204,6 +204,66 @@ pub struct ScopedRepositories {
     pub repositories: RepositorySet<OwnedRepository>,
 }
 
+/// One hired copy and the original settings grant validated before its first lease.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HiredRepository {
+    /// Immutable facts carried by the hire and every selected turn grant.
+    pub recorded: OwnedRepository,
+    original_pin: TrustPin,
+}
+
+impl HiredRepository {
+    pub(crate) const fn new(recorded: OwnedRepository, original_pin: TrustPin) -> Self {
+        Self {
+            recorded,
+            original_pin,
+        }
+    }
+
+    /// Complete settings grant retained from the hire's exact preceding trust record.
+    #[must_use]
+    pub const fn original_pin(&self) -> &TrustPin {
+        &self.original_pin
+    }
+}
+
+/// Normalized hire authority whose members retain their original trust pins.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopedHireRepositories {
+    /// Recorded enrollment identity and label.
+    pub project: RecordedWorkspace,
+    /// Immutable observed catalog revision.
+    pub catalog_lsn: Lsn,
+    /// Required provider confinement policy.
+    pub policy: RepositoryPolicy,
+    /// Every validated owned copy and original pin, in recorded order.
+    pub repositories: RepositorySet<HiredRepository>,
+}
+
+impl ScopedHireRepositories {
+    /// The immutable recorded facts, without replacing historical grant positions.
+    #[must_use]
+    pub fn recorded(&self) -> ScopedRepositories {
+        ScopedRepositories {
+            project: self.project.clone(),
+            catalog_lsn: self.catalog_lsn,
+            policy: self.policy,
+            repositories: RepositorySet::new(
+                self.repositories.primary_id().clone(),
+                self.repositories
+                    .entries()
+                    .iter()
+                    .map(|entry| RepositoryEntry {
+                        repo_id: entry.repo_id.clone(),
+                        value: entry.value.recorded.clone(),
+                    })
+                    .collect(),
+            )
+            .expect("validated hired repositories"),
+        }
+    }
+}
+
 /// Ordinary hire fields beside the complete restricted repository authority.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -281,7 +341,7 @@ pub enum HireRepositories {
     /// A historical singleton, interpreted solely from its hire record.
     Legacy(SingletonRepository),
     /// An immutable restricted set. Provider capability is required before execution.
-    Scoped(ScopedRepositories),
+    Scoped(ScopedHireRepositories),
 }
 
 impl Default for HireRepositories {
@@ -306,7 +366,14 @@ impl HireRepositories {
     pub fn primary_cwd(&self) -> &Path {
         match self {
             Self::Legacy(repository) => repository.cwd(),
-            Self::Scoped(repository) => &repository.repositories.primary().execution.directory,
+            Self::Scoped(repository) => {
+                &repository
+                    .repositories
+                    .primary()
+                    .recorded
+                    .execution
+                    .directory
+            }
         }
     }
 
@@ -315,7 +382,7 @@ impl HireRepositories {
     pub fn primary_worktree(&self) -> Option<WorktreeId> {
         match self {
             Self::Legacy(repository) => repository.worktree(),
-            Self::Scoped(repository) => Some(repository.repositories.primary().worktree),
+            Self::Scoped(repository) => Some(repository.repositories.primary().recorded.worktree),
         }
     }
 
@@ -338,7 +405,7 @@ impl HireRepositories {
                 .entries()
                 .iter()
                 .flat_map(|entry| {
-                    let repo = &entry.value;
+                    let repo = &entry.value.recorded;
                     [
                         repo.origin.directory.clone(),
                         repo.origin.common_dir.clone(),
@@ -364,7 +431,7 @@ impl HireRepositories {
                     .repositories
                     .entries()
                     .iter()
-                    .map(|entry| entry.value.worktree)
+                    .map(|entry| entry.value.recorded.worktree)
             }))
     }
 }
@@ -606,7 +673,7 @@ impl RepositoryTurnGrant {
     /// Freeze the selected hired copies without reading configuration or the filesystem.
     pub fn select(
         hired_lsn: Lsn,
-        hire: &ScopedRepositories,
+        hire: &ScopedHireRepositories,
         ticket: Option<&TicketRepositoryRound>,
     ) -> Result<Self, crate::repository_state::history::RepositoryStateError> {
         use crate::repository_state::history::RepositoryStateError as Error;
@@ -614,7 +681,7 @@ impl RepositoryTurnGrant {
             return Err(Error::Issue);
         }
         let repositories = match ticket {
-            None => hire.repositories.clone(),
+            None => hire.recorded().repositories,
             Some(round) => {
                 let authority = round.authority.as_ref().ok_or(Error::Issue)?;
                 if authority.hired_lsn != hired_lsn
@@ -638,12 +705,12 @@ impl RepositoryTurnGrant {
                     .iter()
                     .map(|entry| {
                         let copy = hire.repositories.get(&entry.repo_id).ok_or(Error::Issue)?;
-                        if copy.origin != entry.value {
+                        if copy.recorded.origin != entry.value {
                             return Err(Error::Issue);
                         }
                         Ok(RepositoryEntry {
                             repo_id: entry.repo_id.clone(),
-                            value: copy.clone(),
+                            value: copy.recorded.clone(),
                         })
                     })
                     .collect::<Result<Vec<_>, Error>>()?;

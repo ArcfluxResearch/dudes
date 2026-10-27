@@ -156,6 +156,152 @@ fn seed(journal: &std::path::Path) -> (RepositoryTicketStarted, RepositoryTicket
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one old-cache migration proves original hire and frozen-turn pins come from full history"
+)]
+fn a_version_66_cache_rebuilds_original_pins_instead_of_using_the_latest_grant() {
+    use dudes_proto::repository::{HireRepositories, RepositoryTurnGrant, RepositoryTurnIssued};
+    assert_eq!(dudes_journal::PROJECTION_VERSION, 67);
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir.path().join("journal");
+    let cache = dir.path().join("state.redb");
+    let (start, _) = seed(&journal);
+    let (mut writer, _) = open(&journal, options()).unwrap();
+    append(
+        &mut writer,
+        Record::TicketStartedWithRepositories(Box::new(start.clone())),
+    );
+    let mut store = Projections::open_with(&cache, Fsync::None).unwrap();
+    replay(&Reader::open(&journal).unwrap().0, &mut store).unwrap();
+    let agent = store.agent(start.agent).unwrap().unwrap();
+    let HireRepositories::Scoped(hire) = &agent.repositories else {
+        panic!("scoped hire")
+    };
+    let round = store
+        .goal(start.goal.id)
+        .unwrap()
+        .unwrap()
+        .repository_round
+        .unwrap();
+    let grant =
+        RepositoryTurnGrant::select(start.repositories.hired_lsn, hire, Some(&round)).unwrap();
+    let mut payload = samples::record(RecordKind::TurnIssued)
+        .issue_payload()
+        .unwrap()
+        .to_owned();
+    let dudes_proto::issue::ManagedIssuePayload::Ordinary {
+        agent: owner,
+        goal,
+        turn,
+        ..
+    } = &mut payload
+    else {
+        unreachable!()
+    };
+    *owner = start.agent;
+    *goal = start.goal.id;
+    let turn = *turn;
+    append(
+        &mut writer,
+        Record::TurnIssuedWithRepositories(Box::new(RepositoryTurnIssued { grant, payload })),
+    );
+    let original = store.repository_trust().unwrap().remove(0);
+    let mut changed_pin = original.pin.clone().unwrap();
+    changed_pin.config = dudes_proto::record::Hex32::new([99; 32]);
+    let latest_lsn = append(
+        &mut writer,
+        Record::RepositoryTrustSet {
+            project: original.project.clone(),
+            repo_id: original.repo_id.clone(),
+            catalog_lsn: original.catalog_lsn,
+            origin: original.origin.clone(),
+            pin: Some(changed_pin.clone()),
+        },
+    );
+    drop(writer);
+    let reader = Reader::open(&journal).unwrap().0;
+    replay(&reader, &mut store).unwrap();
+    let frozen = store.turn(turn).unwrap().unwrap();
+    let expected = store.export().unwrap();
+    assert!(
+        expected
+            .lines()
+            .any(|line| line.starts_with("agents ") && line.contains("original_pin"))
+    );
+    assert!(
+        expected
+            .lines()
+            .any(|line| line.starts_with("turns ") && line.contains("original_pin"))
+    );
+    assert_eq!(
+        serde_json::from_value::<dudes_journal::AgentRow>(serde_json::to_value(&agent).unwrap())
+            .unwrap(),
+        agent
+    );
+    assert_eq!(
+        serde_json::from_value::<dudes_journal::TurnRow>(serde_json::to_value(&frozen).unwrap())
+            .unwrap(),
+        frozen
+    );
+    let mut old_agent = serde_json::to_value(&agent).unwrap();
+    let mut old_turn = serde_json::to_value(&frozen).unwrap();
+    for authority in [
+        &mut old_agent["repositories"],
+        &mut old_turn["repositories"]["hire"],
+    ] {
+        let mut missing_pin = authority.clone();
+        missing_pin["repository"]["repositories"]["entries"][0]["value"]
+            .as_object_mut()
+            .unwrap()
+            .remove("original_pin");
+        assert!(serde_json::from_value::<HireRepositories>(missing_pin).is_err());
+        for entry in authority["repository"]["repositories"]["entries"]
+            .as_array_mut()
+            .unwrap()
+        {
+            assert!(entry["value"]["original_pin"].is_object());
+            entry["value"] = entry["value"]["recorded"].take();
+        }
+        assert!(serde_json::from_value::<HireRepositories>(authority.clone()).is_err());
+    }
+    drop(store);
+    let db = redb::Database::create(&cache).unwrap();
+    let txn = db.begin_write().unwrap();
+    for (table, key, row) in [
+        ("agents", start.agent.to_bytes(), old_agent),
+        ("turns", turn.to_bytes(), old_turn),
+    ] {
+        txn.open_table(redb::TableDefinition::<&[u8; 16], &[u8]>::new(table))
+            .unwrap()
+            .insert(&key, serde_json::to_vec(&row).unwrap().as_slice())
+            .unwrap();
+    }
+    txn.open_table(redb::TableDefinition::<&str, u64>::new("meta"))
+        .unwrap()
+        .insert("schema_version", &66)
+        .unwrap();
+    txn.commit().unwrap();
+    drop(db);
+    let mut rebuilt = Projections::open_with(&cache, Fsync::None).unwrap();
+    assert_eq!(rebuilt.last_applied_lsn(), Lsn::ZERO);
+    assert!(rebuilt.agent(start.agent).unwrap().is_none());
+    assert!(rebuilt.turn(turn).unwrap().is_none());
+    replay(&reader, &mut rebuilt).unwrap();
+    let rebuilt_agent = rebuilt.agent(start.agent).unwrap().unwrap();
+    let HireRepositories::Scoped(hire) = &rebuilt_agent.repositories else {
+        panic!("scoped hire")
+    };
+    let member = hire.repositories.get(&original.repo_id).unwrap();
+    assert_eq!(Some(member.original_pin()), original.pin.as_ref());
+    assert_eq!(member.recorded.trust_lsn, original.lsn);
+    assert_ne!(member.recorded.trust_lsn, latest_lsn);
+    assert_ne!(member.original_pin(), &changed_pin);
+    assert_eq!(rebuilt.turn(turn).unwrap().unwrap(), frozen);
+    assert_eq!(rebuilt.export().unwrap(), expected);
+}
+
+#[test]
 fn declared_tickets_and_frozen_check_roots_survive_warm_and_empty_cache_replay() {
     let dir = tempfile::tempdir().unwrap();
     let journal = dir.path().join("journal");
@@ -225,6 +371,7 @@ fn malformed_declared_authority_is_refused_even_behind_a_warm_cursor() {
                     .repositories
                     .get(&start.repositories.check_repo)
                     .unwrap()
+                    .recorded
                     .worktree,
                 how: dudes_proto::WorktreeRemoval::Operator,
             })

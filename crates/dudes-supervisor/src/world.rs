@@ -825,7 +825,7 @@ impl World {
         let mut wakes = std::mem::take(&mut self.mail_wakes);
         wakes.apply(self, lsn, entry);
         self.mail_wakes = wakes;
-        self.apply_repository_change(repository_change);
+        let prepared_hire = self.apply_repository_change(repository_change);
         self.last_applied_lsn = Some(lsn);
         if matches!(
             entry.record,
@@ -1357,13 +1357,7 @@ impl World {
             Record::AgentHired { .. } | Record::AgentHiredWithRepositories(_) => {
                 let hire = entry.record.hire().expect("hire carrier");
                 let fields = hire.fields;
-                let RepositoryFold::Hire(repositories) = dudes_proto::repository_state::fold(
-                    lsn,
-                    &entry.record,
-                    RepositoryFacts::default(),
-                ) else {
-                    return Ok(());
-                };
+                let repositories = prepared_hire.expect("validated hire authority");
                 self.agents.insert(
                     hire.agent,
                     AgentRow {

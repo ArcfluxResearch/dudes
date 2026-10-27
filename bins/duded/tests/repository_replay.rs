@@ -15,7 +15,8 @@ use dudes_journal::{Projections, Reader, Writer, replay};
 use dudes_proto::record::{FileIdentity, RecordedWorkspace, samples};
 use dudes_proto::repository::{
     CatalogRepository, ExecutionRepository, HireRepositories, OwnedRepository, RepoId,
-    RepositoryEntry, RepositoryHire, RepositoryPolicy, RepositorySet, ScopedRepositories,
+    RepositoryEntry, RepositoryHire, RepositoryPolicy, RepositorySet, ScopedHireRepositories,
+    ScopedRepositories,
 };
 use dudes_proto::{Entry, Record, RecordKind, WorktreeRemoval};
 use dudes_rpc::Client;
@@ -281,6 +282,13 @@ fn settings(fixture: &Fixture) -> duded::Settings {
     settings
 }
 
+fn scoped_hire(world: &dudes_supervisor::World, agent: AgentId) -> &ScopedHireRepositories {
+    let HireRepositories::Scoped(hire) = &world.agents[&agent].repositories else {
+        panic!("scoped hire")
+    };
+    hire
+}
+
 fn start(fixture: &Fixture, host: &SharedHost) -> (common::Running, duded::Settings) {
     let settings = settings(fixture);
     let daemon = boot(
@@ -327,9 +335,10 @@ fn all_committed_copies_survive_boot_and_have_identical_live_warm_and_rebuilt_au
     )
     .unwrap();
     let agent = &daemon.world().agents[&story.hire.id];
+    let expected_hire = agent.repositories.clone();
     assert_eq!(
-        agent.repositories,
-        HireRepositories::Scoped(story.hire.repositories.clone())
+        scoped_hire(daemon.world(), story.hire.id).recorded(),
+        story.hire.repositories
     );
     assert_eq!(agent.repositories.worktrees().count(), 3);
     assert!(
@@ -383,10 +392,7 @@ fn all_committed_copies_survive_boot_and_have_identical_live_warm_and_rebuilt_au
     let expected = warm.export().unwrap();
     let row = warm.agent(story.hire.id).unwrap().unwrap();
     assert_eq!(row.hired_lsn, story.hired_lsn);
-    assert_eq!(
-        row.repositories,
-        HireRepositories::Scoped(story.hire.repositories.clone())
-    );
+    assert_eq!(row.repositories, expected_hire);
     assert_eq!(warm.repository_projects().unwrap()[0].revisions.len(), 1);
     assert_eq!(warm.repository_trust().unwrap().len(), 3);
     assert!(
@@ -703,6 +709,70 @@ fn replay_pair(fixture: &Fixture) -> (Writer, dudes_supervisor::World, Projectio
         world.apply_checked(lsn, &entry).unwrap();
     }
     (writer, world, projection)
+}
+
+#[test]
+fn equivalent_retrust_during_pending_leases_still_refuses_the_atomic_hire() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let source = Reader::open(&fixture.journal_dir()).unwrap().0;
+    let pending = fixture.runtime.path().join("pending-journal");
+    let (mut writer, _) = dudes_journal::open(&pending, fixture.settings().journal).unwrap();
+    let mut world = dudes_supervisor::World::default();
+    let mut store = Projections::in_memory().unwrap();
+    let mut first_lease = true;
+    for item in source.iter_from(Lsn::ZERO).unwrap() {
+        let (_, entry) = item.unwrap();
+        if entry.record.hire().is_some() {
+            let (lsn, crc) = writer.append_witnessed(&entry).unwrap();
+            let before = store.export().unwrap();
+            assert!(matches!(
+                store.apply(lsn, crc, &entry),
+                Err(dudes_journal::Error::Repository {
+                    reason: dudes_proto::repository_state::history::RepositoryStateError::Trust,
+                    ..
+                })
+            ));
+            assert!(world.apply_checked(lsn, &entry).is_err());
+            assert_eq!(store.export().unwrap(), before);
+            break;
+        }
+        let (lsn, crc) = writer.append_witnessed(&entry).unwrap();
+        apply_pair(&mut world, &mut store, &(lsn, crc, entry.clone()));
+        if first_lease && matches!(entry.record, Record::WorktreeLeased { .. }) {
+            first_lease = false;
+            let grant = store.repository_trust().unwrap().remove(0);
+            for pin in [None, grant.pin.clone()] {
+                let recorded = write_record(
+                    &mut writer,
+                    Record::RepositoryTrustSet {
+                        project: grant.project.clone(),
+                        repo_id: grant.repo_id.clone(),
+                        catalog_lsn: grant.catalog_lsn,
+                        origin: grant.origin.clone(),
+                        pin,
+                    },
+                );
+                apply_pair(&mut world, &mut store, &recorded);
+            }
+        }
+    }
+    assert!(world.agents.is_empty());
+    assert!(store.agent(story.hire.id).unwrap().is_none());
+    assert!(
+        store
+            .worktrees()
+            .unwrap()
+            .iter()
+            .all(|row| row.agent.is_none())
+    );
+    assert!(matches!(
+        Reader::open(&pending),
+        Err(dudes_journal::Error::Repository {
+            reason: dudes_proto::repository_state::history::RepositoryStateError::Trust,
+            ..
+        })
+    ));
 }
 
 fn write_record(writer: &mut Writer, record: Record) -> (Lsn, u32, Entry) {

@@ -62,6 +62,9 @@ use crate::writer::Fsync;
 /// is added**, or **when what a fold computes changes**; the store is then rebuilt from the
 /// journal.
 ///
+/// `69`: hired copies and frozen turns retain the original trust pin. Earlier caches must
+/// replay the full journal to capture it from each hire's exact preceding grant.
+///
 /// `68`: a ticket's history gains `asked` and `answered` events. A v67 store carried forward would
 /// hold the history it already applied without them, so the bump forces the refold.
 ///
@@ -1244,7 +1247,7 @@ fn fold_batch<'a>(
             if lsn <= last {
                 return Err(Error::NonMonotone { last, got: lsn });
             }
-            repositories::apply(
+            let prepared_hire = repositories::apply(
                 &mut repository_projects,
                 &mut repository_trust,
                 &mut repository_hires,
@@ -1362,7 +1365,7 @@ fn fold_batch<'a>(
             activity::capture_before_source_update(&mut activity, &agents, &board, lsn, entry)?;
             retired::capture(&mut retired, &agents, &by_day, &turns, &leases, entry)?;
             question_history::capture(&mut history, &agents, lsn, entry)?;
-            agents::apply(&mut agents, &turns, &goals, lsn, entry)?;
+            agents::apply(&mut agents, &turns, &goals, lsn, entry, prepared_hire)?;
             goals::apply(
                 &mut goals,
                 &mut first_done,
@@ -1393,7 +1396,7 @@ fn fold_batch<'a>(
                         goal: clear.goal,
                     },
                 };
-                agents::apply(&mut agents, &turns, &goals, lsn, &cleared)?;
+                agents::apply(&mut agents, &turns, &goals, lsn, &cleared, None)?;
                 goals::apply(&mut goals, &mut first_done, &agents, lsn, &cleared, None)?;
             }
             let moved_cards =
