@@ -1259,6 +1259,7 @@ fn a_new_sign_in_reaches_an_open_stream_and_leaves_it_open() {
         Some("floor.device.enrolled"),
         "{seen:?}"
     );
+    let _finishing_http = probe.hold_connection_slot_for_test().expect("HTTP worker slot");
     assert_eq!(probe.live_connections(), 1, "the stream is still open");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
