@@ -15,3 +15,4 @@ Cargo.lock
 crates/dudes-providers/src/pi/*
 # The browser tests and the journey share the smoke harness.
 xtask/src/smoke.mjs
+xtask/src/journey.mjs
