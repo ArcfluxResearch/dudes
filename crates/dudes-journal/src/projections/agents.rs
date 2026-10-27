@@ -1,7 +1,6 @@
 //! The `agents` table: one row per hired agent, deleted on retire.
 
 use dudes_proto::repository::HireRepositories;
-use dudes_proto::repository_state::{RepositoryFacts, RepositoryFold};
 use dudes_proto::{Entry, LiveActivityKind, LoopDecision, Record, TurnOutcome};
 use dudes_types::{
     AgentId, AgentStatus, BreakerRung, GoalId, GoalStatus, Lsn, Mode, Provenance, Provider,
@@ -215,6 +214,7 @@ pub(crate) fn apply(
     goals: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
     lsn: Lsn,
     entry: &Entry,
+    prepared_hire: Option<HireRepositories>,
 ) -> Result<()> {
     let record = &entry.record;
     if let Some((agent, goal)) = record.goal_install() {
@@ -226,11 +226,7 @@ pub(crate) fn apply(
         });
     }
     if let Some(hire) = record.hire() {
-        let RepositoryFold::Hire(repositories) =
-            dudes_proto::repository_state::fold(lsn, record, RepositoryFacts::default())
-        else {
-            return Ok(());
-        };
+        let repositories = prepared_hire.expect("validated hire authority");
         let fields = hire.fields;
         let row = AgentRow {
             id: hire.agent,
