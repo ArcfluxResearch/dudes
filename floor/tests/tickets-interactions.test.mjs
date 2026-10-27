@@ -956,7 +956,7 @@ test('Accept keeps Changes reachable and reads the Done ticket with its new sequ
     await app.render({ ...app.floor, diff: true });
     await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
     await act(async () => press(diffButton('Show changes')));
-    assert.deepEqual(reads, [{ mode: 'manifest', card: cardId(1), expected_seq: 3 }]);
+    assert.deepEqual(reads, [{ mode: 'manifest', card: cardId(1), expected_seq: 3, repositories: { scope: 'declared' } }]);
     const ordinary = reply;
     reply = (url, body) => url.endsWith('/accept') ? { status: 200, text: async () => JSON.stringify({
       state: 'accepted', card: cardId(1), seq: 4, lsn: '4097',
@@ -968,9 +968,46 @@ test('Accept keeps Changes reachable and reads the Done ticket with its new sequ
     assert.ok(diffButton('Show changes'), 'the same Changes control remains after Accept');
     assert.equal(reads.length, 1, 'the sequence change reads nothing by itself');
     await act(async () => press(diffButton('Show changes')));
-    assert.deepEqual(reads[1], { mode: 'manifest', card: cardId(1), expected_seq: 4 });
+    assert.deepEqual(reads[1], { mode: 'manifest', card: cardId(1), expected_seq: 4, repositories: { scope: 'declared' } });
     await act(async () => press(diffButton('Open side by side')));
     assert.match(textOf(app.page.host.querySelector('.diff-panel')), /Done ticket file content/);
     assert.match(textOf(app.page.host.querySelector('.diff-panel')), /Unchanged since the check/);
   } finally { await app.close(); Object.assign(browserDiffTransport, previous); }
+});
+
+test('unknown instruction coverage in an undeclared hired repository blocks Accept and permits reviewed rework', async () => {
+  const scoped = instructionReview({ coverage_unknown: true,
+    changed_paths: [{ repo_id: 'docs', path: { encoding: 'utf8', value: '/docs/AGENTS.md' },
+      display: 'AGENTS.md', display_truncated: false, context: { kind: 'owned_worktree', lease: cardId(50) } }],
+    gaps: [], repository_gaps: [{ repo_id: 'docs', reason: 'read_failed', context: { kind: 'unresolved' },
+      agent: null, path: null, display: null, display_truncated: false, origin: 'observed', holds: true }],
+  });
+  scoped.intervals = scoped.intervals.map((interval) => ({ ...interval, repositories: ['web', 'api', 'docs'] }));
+  reply = (url, body) => ({ status: 200, text: async () => JSON.stringify(url.endsWith('/read') ? {
+    state: 'ok', card: { id: body.card, seq: 3 }, ticket: {
+      note: 'Review both work repositories.', project: 'service', check: { id: 'default', label: 'passes' }, round: 1,
+      reason: 'shared_instructions_unknown', instruction_review: scoped,
+    },
+  } : { state: 'assigned', card: body.card, seq: 4, lsn: '14', start: { state: 'started' } }) });
+  const app = await mount([ticketCard(1, 'blocked', { claimed_by: ADA }, {
+    reason: 'shared_instructions_unknown', instruction_review: instructionSummary(),
+  })]);
+  try {
+    await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
+    assert.equal(app.page.host.querySelector('[data-action="accept"]').disabled, true);
+    assert.equal(app.page.host.querySelector('[data-action="changes"]').disabled, false);
+    assert.ok(textOf(app.page.host).includes('docs'));
+    assert.ok(textOf(app.page.host).includes('AGENTS.md'));
+    seen.length = 0;
+    let accepted;
+    await act(async () => { accepted = await ticket.changeTicket(store.getFloorState().cards[0], { verb: 'accept' }); });
+    assert.equal(accepted, false);
+    assert.equal(seen.length, 0);
+    await act(async () => press(app.page.host.querySelector('[data-action="changes"]')));
+    const form = app.page.host.querySelector('.ticket-mode').querySelector('form');
+    await act(async () => propsOf(form.querySelector('textarea')).onChange({ target: { value: 'Complete the docs instruction comparison.' } }));
+    await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));
+    assert.deepEqual(seen, [['/floor/ticket/assign', { card: cardId(1), expected_seq: 3,
+      review_watermark: INSTRUCTION_WATERMARK, agent: ADA, message: 'Complete the docs instruction comparison.' }]]);
+  } finally { await app.close(); }
 });

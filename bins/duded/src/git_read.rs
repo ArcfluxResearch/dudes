@@ -82,17 +82,31 @@ const LOG_FORMAT: &str = "--format=%H%x09%P%x09%ct%x09%s";
 
 /// The tree one read opens, as the journal records it. The loop builds it from recorded values and
 /// opens nothing; every file system step is the read's.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum Tree {
     /// An agent hired without a worktree: its working directory, whose `.git` must be a directory.
     Checkout(PathBuf),
     /// An agent hired into a worktree the daemon created.
     Leased(Lease),
+    /// An owned copy with the immutable identities recorded by its hire.
+    Recorded(Box<dudes_proto::repository::OwnedRepository>),
+}
+
+impl Tree {
+    /// The recorded execution path, never a primary or origin fallback.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Checkout(path) => path,
+            Self::Leased(lease) => &lease.path,
+            Self::Recorded(copy) => &copy.execution.directory,
+        }
+    }
 }
 
 /// What a lease records about its worktree. The daemon wrote these values, so they are trusted as
 /// names of where the files should be; nothing found on disk under them is trusted.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Lease {
     /// The lease, which also names the worktree's administrative directory.
     pub worktree: WorktreeId,
@@ -102,6 +116,17 @@ pub struct Lease {
     pub path: PathBuf,
     /// The commit the worktree was created at.
     pub base: GitCommit,
+}
+
+impl From<&dudes_proto::repository::OwnedRepository> for Lease {
+    fn from(copy: &dudes_proto::repository::OwnedRepository) -> Self {
+        Self {
+            worktree: copy.worktree,
+            origin: copy.origin.directory.clone(),
+            path: copy.execution.directory.clone(),
+            base: copy.base,
+        }
+    }
 }
 
 /// The reader. One per daemon, shared by every read.
@@ -155,6 +180,47 @@ impl GitReader {
         }
     }
 
+    /// Read a complete recorded selection under one deadline and one response/section allowance.
+    #[must_use]
+    pub fn read_repositories(
+        &self,
+        repositories: &[(dudes_proto::repository::RepoId, Result<Tree, GitState>)],
+        binding_id: &str,
+        now: Timestamp,
+    ) -> GitView {
+        let mut view = GitView::refused(GitState::Ok, now);
+        view.binding_id = Some(binding_id.to_owned());
+        #[cfg(unix)]
+        let deadline = Instant::now() + READ_DEADLINE;
+        #[cfg(unix)]
+        let mut budget = view::ViewBudget::new(dudes_proto::MAX_GIT_VIEW_BYTES - 4096);
+        for (repo_id, target) in repositories {
+            #[cfg(unix)]
+            let read = match target {
+                Ok(tree) if !budget.exhausted() => self
+                    .read_tree_bounded(tree, now, deadline, Some(&mut budget))
+                    .unwrap_or_else(|state| GitView::refused(state, now)),
+                Ok(_) => GitView::refused(GitState::ResponseLimit, now),
+                Err(state) => GitView::refused(*state, now),
+            };
+            #[cfg(not(unix))]
+            let read = {
+                let _ = target;
+                GitView::refused(GitState::UnsupportedPlatform, now)
+            };
+            view.repositories.push(dudes_proto::GitRepositoryView {
+                repo_id: repo_id.clone(),
+                view: Box::new(read),
+            });
+        }
+        if !serde_json::to_vec(&view)
+            .is_ok_and(|bytes| bytes.len() <= dudes_proto::MAX_GIT_VIEW_BYTES)
+        {
+            return GitView::refused(GitState::Unreadable, now);
+        }
+        view
+    }
+
     #[cfg(not(unix))]
     fn read_tree(&self, _tree: &Tree, _now: Timestamp) -> Result<GitView, GitState> {
         let _ = (
@@ -170,12 +236,30 @@ impl GitReader {
     #[cfg(unix)]
     fn read_tree(&self, tree: &Tree, now: Timestamp) -> Result<GitView, GitState> {
         let deadline = Instant::now() + READ_DEADLINE;
+        self.read_tree_bounded(tree, now, deadline, None)
+    }
+
+    #[cfg(unix)]
+    fn read_tree_bounded(
+        &self,
+        tree: &Tree,
+        now: Timestamp,
+        deadline: Instant,
+        budget: Option<&mut view::ViewBudget>,
+    ) -> Result<GitView, GitState> {
+        if deadline <= Instant::now() {
+            return Err(GitState::TimedOut);
+        }
         let (cwd, missing) = match tree {
             Tree::Checkout(cwd) => (cwd, GitState::NotACheckoutRoot),
             Tree::Leased(lease) => (&lease.path, GitState::WorktreeMismatch),
+            Tree::Recorded(copy) => (&copy.execution.directory, GitState::WorktreeMismatch),
         };
         let work_tree = std::fs::canonicalize(cwd).map_err(|_| missing)?;
-        let program = self.program(&work_tree)?;
+        let program = self.program_with_timeout(
+            &work_tree,
+            deadline.saturating_duration_since(Instant::now()),
+        )?;
         let shadow = self.shadow(tree)?;
         let git = Git {
             reader: self,
@@ -183,7 +267,11 @@ impl GitReader {
             shadow: &shadow,
             deadline,
         };
-        git.read(now)
+        let view = git.read(now, budget)?;
+        if let Tree::Recorded(copy) = tree {
+            shadow::verify_recorded(copy).map_err(GitState::from)?;
+        }
+        Ok(view)
     }
 
     /// Build a shadow for `tree`.
@@ -366,7 +454,11 @@ impl Git<'_> {
         }
     }
 
-    fn read(&self, now: Timestamp) -> Result<GitView, GitState> {
+    fn read(
+        &self,
+        now: Timestamp,
+        budget: Option<&mut view::ViewBudget>,
+    ) -> Result<GitView, GitState> {
         // Step 1: the branches, and the comparison commit.
         let refs = self.run(&[
             "for-each-ref",
@@ -441,7 +533,7 @@ impl Git<'_> {
         let status = self.run(&["status", "--porcelain=v1", "-z", "--ignore-submodules=all"])?;
         let entries = parse::status(status.ok().ok_or(GitState::Unreadable)?, status.cut);
 
-        Ok(assemble(&Facts {
+        let facts = Facts {
             head: self.shadow.head(),
             now,
             tips: &tips,
@@ -452,6 +544,10 @@ impl Git<'_> {
             committed,
             entries: &entries,
             status_cut: status.cut,
-        }))
+        };
+        Ok(match budget {
+            Some(budget) => view::assemble_bounded(&facts, budget),
+            None => assemble(&facts),
+        })
     }
 }

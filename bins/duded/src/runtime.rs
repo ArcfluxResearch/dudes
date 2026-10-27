@@ -1660,8 +1660,40 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let answer = self.browser_model(&session, &request);
                     let _ = reply.send(answer);
                 }
-                Job::GitTarget { agent, reply } => {
-                    let _ = reply.send(crate::floor_git::GitTarget::of(self.sup.world(), agent));
+                Job::GitTarget { request, reply } => {
+                    let target = if let Some((card, seq)) = request.ticket {
+                        match self.ctx.projections.ticket(card) {
+                            Ok(Some((view, ticket)))
+                                if view.seq == seq && view.claimed_by == Some(request.agent) =>
+                            {
+                                if ticket.repositories.declared().is_none() {
+                                    crate::floor_git::GitTarget::of(self.sup.world(), request.agent)
+                                } else {
+                                    Some(
+                                        crate::floor_diff::recorded(
+                                            self.sup.world(),
+                                            &view,
+                                            &ticket,
+                                        )
+                                        .map_or(
+                                            crate::floor_git::GitTarget::Refused(
+                                                dudes_proto::GitState::WorktreeMismatch,
+                                            ),
+                                            |recorded| {
+                                                crate::floor_git::GitTarget::declared(&recorded)
+                                            },
+                                        ),
+                                    )
+                                }
+                            }
+                            _ => Some(crate::floor_git::GitTarget::Refused(
+                                dudes_proto::GitState::InvalidSelection,
+                            )),
+                        }
+                    } else {
+                        crate::floor_git::GitTarget::selected(self.sup.world(), &request)
+                    };
+                    let _ = reply.send(target);
                 }
                 Job::DiffRecorded { card, reply } => {
                     let recorded = match self.ctx.projections.ticket(card) {
@@ -9574,7 +9606,7 @@ mod floor_shutdown_tests {
         let (jobs, queue) = std::sync::mpsc::channel();
         let (reply, answer) = std::sync::mpsc::channel();
         jobs.send(Job::GitTarget {
-            agent: AgentId::from_parts(1, 2),
+            request: crate::floor_git::GitRequest::singleton(AgentId::from_parts(1, 2)),
             reply,
         })
         .expect("queued Git read");

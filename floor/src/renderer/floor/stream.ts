@@ -61,7 +61,7 @@ function noteRetry(attempt: number, delayMs: number | null): void {
 }
 
 /** The one protocol the gateway completes a handshake for. */
-export const FLOOR_PROTOCOL = 'dudes-floor-v5';
+export const FLOOR_PROTOCOL = 'dudes-floor-v6';
 
 /**
  * How long a view may go unspoken to before it stops claiming to be current.

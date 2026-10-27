@@ -120,7 +120,48 @@ struct Sources {
     comparison: Comparison,
 }
 
+pub(super) fn verify_recorded(
+    copy: &dudes_proto::repository::OwnedRepository,
+) -> Result<(), Refusal> {
+    Sources::recorded(copy).map(|_| ())
+}
+
 impl Sources {
+    #[allow(
+        clippy::useless_conversion,
+        reason = "device and inode field widths differ across Unix targets"
+    )]
+    fn recorded(copy: &dudes_proto::repository::OwnedRepository) -> Result<Self, Refusal> {
+        let sources = Self::lease(&Lease::from(copy))?;
+        let root = open_dir(rustix::fs::CWD, &copy.execution.directory)
+            .map_err(|_| Refusal::WorktreeMismatch)?;
+        let origin = open_dir(rustix::fs::CWD, &copy.origin.directory)
+            .map_err(|_| Refusal::WorktreeMismatch)?;
+        for (fd, expected) in [
+            (&root, copy.execution.directory_identity),
+            (&origin, copy.origin.directory_identity),
+            (&sources.own, copy.execution.git_identity),
+            (&sources.common, copy.origin.common_identity),
+        ] {
+            let stat = fstat(fd).map_err(|_| Refusal::WorktreeMismatch)?;
+            if stat.st_dev.try_into().ok() != Some(expected.device)
+                || stat.st_ino.try_into().ok() != Some(expected.inode)
+            {
+                return Err(Refusal::WorktreeMismatch);
+            }
+        }
+        if copy.origin.common_dir != copy.origin.directory.join(".git")
+            || copy.execution.git_dir
+                != copy
+                    .origin
+                    .common_dir
+                    .join("worktrees")
+                    .join(copy.worktree.to_string())
+        {
+            return Err(Refusal::WorktreeMismatch);
+        }
+        Ok(sources)
+    }
     /// A checkout whose own `.git` holds everything. It must be a real directory: a gitfile, a
     /// link or a missing entry is refused, and no parent directory is searched for a repository.
     fn checkout(cwd: &Path) -> Result<Self, Refusal> {
@@ -200,6 +241,7 @@ impl Shadow {
         let sources = match tree {
             Tree::Checkout(cwd) => Sources::checkout(cwd)?,
             Tree::Leased(lease) => Sources::lease(lease)?,
+            Tree::Recorded(copy) => Sources::recorded(copy)?,
         };
         let head_bytes = read_small(&sources.own, "HEAD", HEAD_MAX, Refusal::Unreadable)?
             .ok_or(Refusal::Unreadable)?;

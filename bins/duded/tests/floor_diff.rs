@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use duded::diff_capture::DiffCapture;
-use duded::floor_diff::{DiffReads, DiffRequest, Recorded, Reply, SESSION_ALLOWANCE};
+use duded::floor_diff::{
+    DiffReads, DiffRequest, Recorded, RecordedRepository, Reply, SESSION_ALLOWANCE,
+};
 use duded::git_read::Tree;
 use duded::git_read::diff::DiffReader;
 use duded::predicate::{PredicateCaptured, PredicateOutcome, PredicateRunner};
@@ -235,10 +237,17 @@ impl Lab {
             round: 1,
             goal: GOAL,
             claimant: AGENT,
-            tree: self.tree(),
-            baseline_lsn: BASELINE_LSN,
-            baseline,
-            stamp: None,
+            start: None,
+            hired_lsn: None,
+            check_repo: None,
+            baseline_lsn: Some(BASELINE_LSN),
+            evidence: Vec::new(),
+            repositories: vec![RecordedRepository {
+                repo_id: None,
+                tree: self.tree(),
+                baseline: Some(baseline),
+                stamp: None,
+            }],
         });
     }
 
@@ -249,7 +258,7 @@ impl Lab {
             self.capture
                 .stamp(
                     &self.tree(),
-                    &recorded.baseline,
+                    recorded.repositories[0].baseline.as_ref().unwrap(),
                     BASELINE_LSN,
                     binding(),
                     CHECK_LSN,
@@ -257,7 +266,7 @@ impl Lab {
                 )
                 .unwrap()
         };
-        self.edit(|recorded| recorded.stamp = Some(stamp));
+        self.edit(|recorded| recorded.repositories[0].stamp = Some(stamp));
         stamp
     }
 
@@ -358,6 +367,10 @@ fn a_manifest_names_the_changed_files_and_content_returns_them_whole() {
 
     let page = lab.manifest(1);
     let expected = DiffBinding {
+        hired_lsn: None,
+        start_lsn: None,
+        check_repo: None,
+        repositories: page.binding.repositories.clone(),
         card: CARD,
         seq: Seq(3),
         round: 1,
@@ -534,7 +547,7 @@ fn a_missing_incomplete_or_foreign_stamp_is_unknown_never_fresh() {
     lab.write("a.txt", "agent edit\n");
     let sampled = lab.check_passes();
 
-    lab.edit(|recorded| recorded.stamp = None);
+    lab.edit(|recorded| recorded.repositories[0].stamp = None);
     let page = lab.manifest(1);
     assert_eq!(
         (page.freshness, page.binding.check_lsn),
@@ -546,7 +559,7 @@ fn a_missing_incomplete_or_foreign_stamp_is_unknown_never_fresh() {
     unavailable.outcome = StampOutcome::Unavailable {
         reason: DiffRefusal::TimedOut,
     };
-    lab.edit(|recorded| recorded.stamp = Some(unavailable));
+    lab.edit(|recorded| recorded.repositories[0].stamp = Some(unavailable));
     let page = lab.manifest(2);
     assert_eq!(
         (page.freshness, page.binding.check_lsn),
@@ -558,7 +571,7 @@ fn a_missing_incomplete_or_foreign_stamp_is_unknown_never_fresh() {
     if let StampOutcome::Sampled { complete, .. } = &mut incomplete.outcome {
         *complete = false;
     }
-    lab.edit(|recorded| recorded.stamp = Some(incomplete));
+    lab.edit(|recorded| recorded.repositories[0].stamp = Some(incomplete));
     assert_eq!(
         lab.manifest(3).freshness,
         DiffFreshness::Unknown,
@@ -567,7 +580,7 @@ fn a_missing_incomplete_or_foreign_stamp_is_unknown_never_fresh() {
 
     let mut foreign = sampled;
     foreign.versions.sampler += 1;
-    lab.edit(|recorded| recorded.stamp = Some(foreign));
+    lab.edit(|recorded| recorded.repositories[0].stamp = Some(foreign));
     assert_eq!(
         lab.manifest(4).freshness,
         DiffFreshness::Unknown,
@@ -579,14 +592,14 @@ fn a_missing_incomplete_or_foreign_stamp_is_unknown_never_fresh() {
         sampler: 1,
         policy: 1,
     };
-    lab.edit(|recorded| recorded.stamp = Some(previous_release));
+    lab.edit(|recorded| recorded.repositories[0].stamp = Some(previous_release));
     assert_eq!(
         lab.manifest(4).freshness,
         DiffFreshness::Unknown,
         "a ticket sampled before new files were listed"
     );
 
-    lab.edit(|recorded| recorded.stamp = Some(sampled));
+    lab.edit(|recorded| recorded.repositories[0].stamp = Some(sampled));
     assert_eq!(
         lab.manifest(1).freshness,
         DiffFreshness::MatchesReviewSample,
@@ -1091,9 +1104,10 @@ fn a_ticket_without_a_recorded_baseline_has_no_diff() {
     );
     lab.start_round();
     lab.edit(|recorded| {
-        recorded.baseline = lab
-            .capture
-            .baseline_unavailable(binding(), DiffRefusal::BaselineUnavailable);
+        recorded.repositories[0].baseline = Some(
+            lab.capture
+                .baseline_unavailable(binding(), DiffRefusal::BaselineUnavailable),
+        );
     });
     assert_eq!(
         lab.refusal(1, &manifest_request()),
@@ -1132,7 +1146,8 @@ fn a_failed_baseline_capture_names_its_reason_only_while_it_stays_true() {
         .chain(replaced.map(|reason| (reason, DiffRefusal::BaselineUnavailable)))
     {
         lab.edit(|recorded| {
-            recorded.baseline = lab.capture.baseline_unavailable(binding(), reason);
+            recorded.repositories[0].baseline =
+                Some(lab.capture.baseline_unavailable(binding(), reason));
         });
         assert_eq!(lab.refusal(1, &manifest_request()), shown, "{reason:?}");
     }
@@ -1263,4 +1278,207 @@ fn the_debug_form_of_a_request_names_no_id() {
     )
     .unwrap();
     assert_eq!(format!("{request:?}"), "DiffRequest(<redacted>)");
+}
+
+fn declared_request() -> Value {
+    json!({"mode":"manifest", "card":CARD, "expected_seq":3,
+        "repositories":{"scope":"declared"}})
+}
+
+fn declare_pair(first: &Lab, second: &Lab) {
+    use dudes_proto::repository::{RepoId, TicketRepositoryRound};
+    first.start_round();
+    second.start_round();
+    let mut member = second.recorded().repositories.remove(0);
+    member.repo_id = Some(RepoId::parse("api").unwrap());
+    first.edit(|recorded| {
+        recorded.hired_lsn = Some(Lsn(1));
+        recorded.start = Some(TicketRepositoryRound {
+            card: CARD,
+            goal: GOAL,
+            start_lsn: Lsn(2),
+            round: 1,
+            repositories: None,
+            authority: None,
+        });
+        recorded.check_repo = Some(RepoId::parse("web").unwrap());
+        recorded.repositories[0].repo_id = Some(RepoId::parse("web").unwrap());
+        recorded.repositories.push(member);
+    });
+}
+
+fn record_pair_sample(first: &Lab) {
+    use duded::git_read::diff::{REPOSITORY_SAMPLER_VERSION, ReviewSubject, TEXT_POLICY_VERSION};
+    use dudes_proto::diff_stamp::DigestHex;
+    let recorded = first.recorded();
+    let subjects = recorded
+        .repositories
+        .iter()
+        .map(|member| {
+            let dudes_proto::diff_stamp::BaselineOutcome::Captured {
+                device,
+                inode,
+                head,
+                preexisting_tracked,
+                preexisting_untracked,
+            } = member.baseline.unwrap().outcome
+            else {
+                unreachable!()
+            };
+            ReviewSubject {
+                repo_id: member.repo_id.clone(),
+                tree: member.tree.clone(),
+                baseline: duded::git_read::diff::BaselineCapture {
+                    root: duded::git_read::diff::RootIdentity { device, inode },
+                    head,
+                    preexisting_tracked,
+                    preexisting_untracked,
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let reader = DiffReader::new(
+        first.runner.clone(),
+        std::env::var_os("PATH"),
+        &first.root.path().join("batch-scratch"),
+    );
+    let sample = reader.capture_review_batch(&subjects, 4096, cancel());
+    first.edit(|recorded| {
+        for member in &mut recorded.repositories {
+            let capture = sample
+                .members
+                .iter()
+                .find(|(repo, _)| *repo == member.repo_id)
+                .unwrap()
+                .1
+                .as_ref()
+                .unwrap();
+            member.stamp = Some(StampPayload {
+                v: 1,
+                binding: binding(),
+                baseline_lsn: BASELINE_LSN,
+                check_lsn: CHECK_LSN,
+                interval: member.baseline.unwrap().interval,
+                versions: SamplerVersions {
+                    sampler: REPOSITORY_SAMPLER_VERSION,
+                    policy: TEXT_POLICY_VERSION,
+                },
+                outcome: StampOutcome::Sampled {
+                    complete: capture.complete,
+                    digest: DigestHex::parse(&capture.digest).unwrap(),
+                    omitted: capture.omitted,
+                    omitted_lower_bound: capture.omitted_lower_bound,
+                    untracked: capture.untracked,
+                    untracked_lower_bound: capture.untracked_lower_bound,
+                },
+            });
+        }
+    });
+}
+
+#[test]
+fn declared_repositories_keep_equal_paths_and_refuse_a_replaced_member_at_content_time() {
+    let first = Lab::new();
+    let second = Lab::new();
+    declare_pair(&first, &second);
+    first.write("a.txt", "web change\n");
+    second.write("a.txt", "api change\n");
+    record_pair_sample(&first);
+    assert_eq!(
+        first.refusal(1, &manifest_request()),
+        DiffRefusal::InvalidRequest
+    );
+    assert_eq!(
+        first.refusal(
+            2,
+            &json!({"mode":"manifest", "card":CARD, "expected_seq":3,
+        "repositories":{"scope":"repository", "repo_id":"docs"}})
+        ),
+        DiffRefusal::InvalidRequest
+    );
+    let DiffResponse::Manifest(page) = first.respond(3, &declared_request()) else {
+        panic!("manifest")
+    };
+    assert_eq!(page.binding.repositories.len(), 2);
+    assert_eq!(page.freshness, DiffFreshness::MatchesReviewSample);
+    assert_eq!(page.entries.len(), 2);
+    assert_eq!(page.entries[0].path, "a.txt");
+    assert_eq!(page.entries[1].path, "a.txt");
+    assert_ne!(page.entries[0].repo_id, page.entries[1].repo_id);
+    assert_ne!(page.entries[0].entry_id, page.entries[1].entry_id);
+    let selected = ids(&page);
+    let content = first.content(3, &page, &id_refs(&selected));
+    assert_eq!(content.files.len(), 2);
+    for file in content.files {
+        assert_eq!(
+            file.current,
+            if file.repo_id.unwrap().as_str() == "web" {
+                "web change\n"
+            } else {
+                "api change\n"
+            }
+        );
+    }
+    std::fs::rename(second.repo(), second.root.path().join("saved-repo")).unwrap();
+    std::fs::create_dir(second.repo()).unwrap();
+    assert_eq!(
+        first.refusal(
+            3,
+            &json!({"mode":"content", "manifest_id":page.manifest_id,
+        "entries":[page.entries.iter().find(|entry| entry.repo_id.as_ref().unwrap().as_str() == "web").unwrap().entry_id]})
+        ),
+        DiffRefusal::RootMismatch
+    );
+    let DiffResponse::Manifest(incomplete) = first.respond(4, &declared_request()) else {
+        panic!("manifest")
+    };
+    assert_eq!(incomplete.freshness, DiffFreshness::Unknown);
+    assert_eq!(incomplete.entries.len(), 1);
+    assert!(
+        incomplete.binding.repositories.iter().any(|member| member
+            .repo_id
+            .as_ref()
+            .unwrap()
+            .as_str()
+            == "api"
+            && member.unavailable == Some(DiffRefusal::RootMismatch))
+    );
+}
+
+#[test]
+fn a_declared_set_shares_one_candidate_budget_across_repositories() {
+    let first = Lab::new();
+    let second = Lab::new();
+    declare_pair(&first, &second);
+    for index in 0..150 {
+        let name = format!("new-{index:03}.txt");
+        first.write(&name, "web\n");
+        second.write(&name, "api\n");
+    }
+    let DiffResponse::Manifest(mut page) = first.respond(1, &declared_request()) else {
+        panic!("manifest")
+    };
+    let mut all = page.entries.clone();
+    while let Some(cursor) = page.next_cursor {
+        let DiffResponse::Page(next) = first.respond(
+            1,
+            &json!({"mode":"page", "manifest_id":page.manifest_id, "cursor":cursor}),
+        ) else {
+            panic!("page")
+        };
+        assert!(next.entries.len() <= 64);
+        all.extend(next.entries.clone());
+        page = next;
+    }
+    assert!(all.len() <= 256);
+    assert!(page.truncated || page.untracked > 0);
+    assert_eq!(page.freshness, DiffFreshness::Unknown);
+    assert!(
+        all.iter()
+            .any(|entry| entry.repo_id.as_ref().unwrap().as_str() == "web")
+    );
+    assert!(
+        all.iter()
+            .any(|entry| entry.repo_id.as_ref().unwrap().as_str() == "api")
+    );
 }

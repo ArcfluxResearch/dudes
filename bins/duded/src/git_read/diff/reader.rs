@@ -9,6 +9,7 @@ use super::{CandidateManifest, SampledPair};
 use super::{files::Budget, shadow::ContentShadow};
 #[cfg(unix)]
 use crate::predicate::PredicateCaptured;
+use dudes_proto::repository::RepoId;
 use dudes_proto::{
     DiffAvailability, DiffBinding, DiffEntry, DiffFile, DiffFreshness, DiffKind,
     DiffOmissionReason, DiffRefusal, MAX_DIFF_CANDIDATES, MAX_DIFF_SIDE_BYTES,
@@ -233,6 +234,139 @@ pub struct ReviewCapture {
     metadata_digest: String,
 }
 
+/// One immutable recorded member of an aggregate display or evidence read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ReviewSubject {
+    /// Stable recorded identity, absent only for a historical singleton.
+    pub repo_id: Option<RepoId>,
+    /// Exact hired execution copy.
+    pub tree: super::super::Tree,
+    /// Exact recorded baseline member.
+    pub baseline: BaselineCapture,
+}
+
+/// A single-budget observation, retaining an explicit outcome for every requested member.
+pub struct ReviewBatchCapture {
+    /// Members in the caller's recorded order, including finite failures.
+    pub members: Vec<(Option<RepoId>, Result<ReviewCapture, DiffRefusal>)>,
+    subject_bytes: usize,
+}
+
+struct Capacity {
+    slots: usize,
+    bytes: usize,
+}
+
+impl Capacity {
+    fn new(subject_bytes: usize) -> Self {
+        Self {
+            slots: MAX_DIFF_CANDIDATES,
+            bytes: dudes_proto::MAX_DIFF_MANIFEST_BYTES
+                .saturating_sub(subject_bytes.saturating_add(4096)),
+        }
+    }
+
+    fn take(&mut self, candidate: &Candidate) -> bool {
+        // Reserve the minted token, cursor, and the longest finite omission envelope as well.
+        let bytes = serde_json::to_vec(candidate)
+            .map_or(usize::MAX, |value| value.len().saturating_add(192));
+        if self.slots == 0 || bytes > self.bytes {
+            return false;
+        }
+        self.slots -= 1;
+        self.bytes -= bytes;
+        true
+    }
+}
+
+impl ReviewBatchCapture {
+    /// Mint one manifest for the entire recorded selection under the aggregate metadata cap.
+    pub fn into_manifest(
+        self,
+        binding: DiffBinding,
+        now: dudes_types::Timestamp,
+        freshness: DiffFreshness,
+    ) -> Result<CandidateManifest, DiffRefusal> {
+        let sampler = if binding
+            .repositories
+            .iter()
+            .any(|repo| repo.repo_id.is_some())
+        {
+            super::REPOSITORY_SAMPLER_VERSION
+        } else {
+            super::SAMPLER_VERSION
+        };
+        if binding.sampler_version != sampler
+            || binding.policy_version != super::TEXT_POLICY_VERSION
+        {
+            return Err(DiffRefusal::StaleManifest);
+        }
+        let mut candidates = Vec::new();
+        let mut metadata = Vec::new();
+        let mut omitted = 0_u32;
+        let mut untracked = 0_u32;
+        let mut cut = false;
+        let mut untracked_cut = false;
+        let identities = self
+            .members
+            .iter()
+            .map(|(repo, _)| repo)
+            .collect::<Vec<_>>();
+        if identities.iter().collect::<BTreeSet<_>>().len() != identities.len()
+            || identities
+                .iter()
+                .any(|id| !binding.repositories.iter().any(|repo| &repo.repo_id == *id))
+        {
+            return Err(DiffRefusal::InvalidRequest);
+        }
+        let mut complete = identities
+            .iter()
+            .copied()
+            .eq(binding.repositories.iter().map(|repo| &repo.repo_id))
+            && binding
+                .repositories
+                .iter()
+                .all(|member| member.unavailable.is_none());
+        for (repo, outcome) in self.members {
+            if let Ok(capture) = outcome {
+                candidates.extend(capture.candidates);
+                metadata.push((repo, capture.metadata_digest));
+                omitted = omitted.saturating_add(capture.omitted);
+                untracked = untracked.saturating_add(capture.untracked);
+                cut |= capture.omitted_lower_bound;
+                untracked_cut |= capture.untracked_lower_bound;
+                complete &= capture.complete;
+            } else {
+                complete = false;
+                cut = true;
+            }
+        }
+        let mut seed = [0_u8; 32];
+        getrandom::fill(&mut seed).map_err(|_| DiffRefusal::Unreadable)?;
+        let mut manifest = CandidateManifest::build_bounded(
+            binding,
+            now,
+            candidates,
+            untracked,
+            cut,
+            seed,
+            self.subject_bytes,
+        )?;
+        manifest.bind_repositories(
+            metadata,
+            omitted,
+            cut,
+            untracked_cut,
+            if complete {
+                freshness
+            } else {
+                DiffFreshness::Unknown
+            },
+        )?;
+        Ok(manifest)
+    }
+}
+
 impl ReviewCapture {
     /// Mint a new immutable manifest after the caller rechecks the exact live binding.
     ///
@@ -396,12 +530,61 @@ impl DiffReader {
         {
             let budget = self.budget(cancelled);
             let shadow = self.shadow(tree, Some(baseline.root), &budget)?;
-            self.observe(tree, &shadow, baseline, &budget)
+            self.observe(
+                tree,
+                &shadow,
+                baseline,
+                None,
+                &budget,
+                &mut Capacity::new(0),
+            )
         }
         #[cfg(not(unix))]
         {
             let _ = (tree, baseline, cancelled);
             Err(DiffRefusal::UnsupportedPlatform)
+        }
+    }
+
+    /// Sample every recorded member with one deadline and one remaining count/metadata budget.
+    /// `subject_bytes` includes the retained authority and response binding envelopes.
+    pub fn capture_review_batch(
+        &self,
+        subjects: &[ReviewSubject],
+        subject_bytes: usize,
+        cancelled: Arc<AtomicBool>,
+    ) -> ReviewBatchCapture {
+        #[cfg(unix)]
+        let budget = self.budget(cancelled);
+        #[cfg(not(unix))]
+        let _ = cancelled;
+        #[cfg(unix)]
+        let mut capacity = Capacity::new(subject_bytes);
+        let members = subjects
+            .iter()
+            .map(|subject| {
+                #[cfg(unix)]
+                let outcome = (|| {
+                    budget.check()?;
+                    let shadow =
+                        self.shadow(&subject.tree, Some(subject.baseline.root), &budget)?;
+                    self.observe(
+                        &subject.tree,
+                        &shadow,
+                        &subject.baseline,
+                        subject.repo_id.as_ref(),
+                        &budget,
+                        &mut capacity,
+                    )
+                })();
+                #[cfg(not(unix))]
+                let outcome = Err(DiffRefusal::UnsupportedPlatform);
+                (subject.repo_id.clone(), outcome)
+            })
+            .collect();
+        ReviewBatchCapture {
+            members,
+            subject_bytes,
         }
     }
 
@@ -422,53 +605,10 @@ impl DiffReader {
         {
             let budget = self.budget(cancelled);
             let shadow = self.shadow(tree, Some(baseline.root), &budget)?;
-            if manifest.metadata_digest() != Some(metadata_digest(&shadow).as_str()) {
+            if manifest.metadata_digest(None) != Some(metadata_digest(&shadow).as_str()) {
                 return Err(DiffRefusal::StaleManifest);
             }
-            let mut pairs = Vec::new();
-            for candidate in selected {
-                let sample = self.sample(&shadow, candidate.clone(), &budget)?;
-                if sample.candidate.entry.kind != candidate.entry.kind
-                    || sample.candidate.observed_current_mode != candidate.observed_current_mode
-                    || matches!(
-                        sample.reason,
-                        Some(DiffOmissionReason::UnsupportedKind | DiffOmissionReason::Raced)
-                    )
-                {
-                    return Err(DiffRefusal::StaleManifest);
-                }
-                let id = candidate
-                    .entry
-                    .entry_id
-                    .clone()
-                    .ok_or(DiffRefusal::InvalidRequest)?;
-                pairs.push(match sample.reason {
-                    Some(reason) => SampledPair::Omitted {
-                        entry_id: id,
-                        reason,
-                    },
-                    None => SampledPair::Text(DiffFile {
-                        entry_id: id,
-                        old_path: candidate.entry.old_path.clone(),
-                        path: candidate.entry.path.clone(),
-                        kind: candidate.entry.kind,
-                        old: self
-                            .redactor
-                            .scrub(
-                                &String::from_utf8(sample.old)
-                                    .map_err(|_| DiffRefusal::Unreadable)?,
-                            )
-                            .into_owned(),
-                        current: self
-                            .redactor
-                            .scrub(
-                                &String::from_utf8(sample.current)
-                                    .map_err(|_| DiffRefusal::Unreadable)?,
-                            )
-                            .into_owned(),
-                    }),
-                });
-            }
+            let pairs = self.content_pairs(&shadow, &selected, &budget)?;
             shadow.verify(&budget)?;
             manifest.content(ids, pairs)
         }
@@ -477,6 +617,95 @@ impl DiffReader {
             let _ = (tree, baseline, cancelled, selected);
             Err(DiffRefusal::UnsupportedPlatform)
         }
+    }
+
+    /// Read selections from one aggregate manifest, rechecking every recorded member under one deadline.
+    pub fn read_content_batch(
+        &self,
+        subjects: &[ReviewSubject],
+        manifest: &CandidateManifest,
+        ids: &[String],
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<super::EncodedResponse, DiffRefusal> {
+        let selected = manifest.select(ids)?;
+        #[cfg(unix)]
+        {
+            let budget = self.budget(cancelled);
+            let mut pairs = Vec::new();
+            for subject in subjects {
+                let shadow = self.shadow(&subject.tree, Some(subject.baseline.root), &budget)?;
+                if manifest.metadata_digest(subject.repo_id.as_ref())
+                    != Some(metadata_digest(&shadow).as_str())
+                {
+                    return Err(DiffRefusal::StaleManifest);
+                }
+                let entries = selected
+                    .iter()
+                    .copied()
+                    .filter(|candidate| candidate.entry.repo_id == subject.repo_id)
+                    .collect::<Vec<_>>();
+                pairs.extend(self.content_pairs(&shadow, &entries, &budget)?);
+                shadow.verify(&budget)?;
+            }
+            manifest.content(ids, pairs)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (subjects, manifest, selected, cancelled);
+            Err(DiffRefusal::UnsupportedPlatform)
+        }
+    }
+
+    #[cfg(unix)]
+    fn content_pairs(
+        &self,
+        shadow: &ContentShadow,
+        selected: &[&Candidate],
+        budget: &Budget,
+    ) -> Result<Vec<SampledPair>, DiffRefusal> {
+        let mut pairs = Vec::new();
+        for &candidate in selected {
+            let sample = self.sample(shadow, candidate.clone(), budget)?;
+            if sample.candidate.entry.kind != candidate.entry.kind
+                || sample.candidate.observed_current_mode != candidate.observed_current_mode
+                || matches!(
+                    sample.reason,
+                    Some(DiffOmissionReason::UnsupportedKind | DiffOmissionReason::Raced)
+                )
+            {
+                return Err(DiffRefusal::StaleManifest);
+            }
+            let id = candidate
+                .entry
+                .entry_id
+                .clone()
+                .ok_or(DiffRefusal::InvalidRequest)?;
+            pairs.push(match sample.reason {
+                Some(reason) => SampledPair::Omitted {
+                    entry_id: id,
+                    reason,
+                },
+                None => SampledPair::Text(DiffFile {
+                    repo_id: candidate.entry.repo_id.clone(),
+                    entry_id: id,
+                    old_path: candidate.entry.old_path.clone(),
+                    path: candidate.entry.path.clone(),
+                    kind: candidate.entry.kind,
+                    old: self
+                        .redactor
+                        .scrub(&String::from_utf8(sample.old).map_err(|_| DiffRefusal::Unreadable)?)
+                        .into_owned(),
+                    current: self
+                        .redactor
+                        .scrub(
+                            &String::from_utf8(sample.current)
+                                .map_err(|_| DiffRefusal::Unreadable)?,
+                        )
+                        .into_owned(),
+                }),
+            });
+        }
+        Ok(pairs)
     }
 
     #[cfg(unix)]
@@ -758,8 +987,9 @@ impl DiffReader {
         shadow: &ContentShadow,
         listing: &NewFiles,
         tracked: &BTreeSet<RepoPath>,
-        taken: usize,
+        repo_id: Option<&RepoId>,
         budget: &Budget,
+        capacity: &mut Capacity,
     ) -> Result<(Vec<Sample>, u32), DiffRefusal> {
         let mut fresh = listing
             .files
@@ -769,7 +999,7 @@ impl DiffReader {
             .filter(|(path, _)| !tracked.contains(*path))
             .collect::<Vec<_>>();
         fresh.sort();
-        let room = MAX_DIFF_CANDIDATES.saturating_sub(taken);
+        let room = capacity.slots.min(fresh.len());
         let unlisted = u32::try_from(
             listing
                 .unnamed
@@ -780,6 +1010,7 @@ impl DiffReader {
         for (path, nested) in fresh.into_iter().take(room) {
             let candidate = Candidate {
                 entry: DiffEntry {
+                    repo_id: repo_id.cloned(),
                     entry_id: None,
                     old_path: None,
                     path: path.as_str().to_owned(),
@@ -796,6 +1027,10 @@ impl DiffReader {
                 current: None,
                 observed_current_mode: None,
             };
+            if !capacity.take(&candidate) {
+                let left = u32::try_from(room.saturating_sub(samples.len())).unwrap_or(u32::MAX);
+                return Ok((samples, unlisted.saturating_add(left)));
+            }
             samples.push(if nested {
                 Sample::unopened(candidate)
             } else {
@@ -811,7 +1046,9 @@ impl DiffReader {
         tree: &super::super::Tree,
         shadow: &ContentShadow,
         baseline: &BaselineCapture,
+        repo_id: Option<&RepoId>,
         budget: &Budget,
+        capacity: &mut Capacity,
     ) -> Result<ReviewCapture, DiffRefusal> {
         let base = baseline.head.to_string();
         let staged = self.run(
@@ -855,13 +1092,11 @@ impl DiffReader {
         let mut paths = unstaged.files;
         paths.extend(staged.files);
         let invalid = staged.invalid.union(&unstaged.invalid).count();
-        let omitted =
-            u32::try_from(invalid.saturating_add(paths.len().saturating_sub(MAX_DIFF_CANDIDATES)))
-                .unwrap_or(u32::MAX);
+        let mut omitted = u32::try_from(invalid).unwrap_or(u32::MAX);
         let listing = self.new_file_listing(tree, shadow, budget)?;
         let tracked = paths.keys().cloned().collect::<BTreeSet<_>>();
         let mut samples = Vec::new();
-        for (path, (old, current)) in paths.into_iter().take(MAX_DIFF_CANDIDATES) {
+        for (path, (old, current)) in paths {
             let kind = if old.as_ref().is_some_and(|file| !regular(file.mode))
                 || current.as_ref().is_some_and(|file| !regular(file.mode))
             {
@@ -871,6 +1106,7 @@ impl DiffReader {
             };
             let candidate = Candidate {
                 entry: DiffEntry {
+                    repo_id: repo_id.cloned(),
                     entry_id: None,
                     old_path: None,
                     path: path.as_str().to_owned(),
@@ -883,11 +1119,15 @@ impl DiffReader {
                 current,
                 observed_current_mode: None,
             };
+            if !capacity.take(&candidate) {
+                omitted = omitted.saturating_add(1);
+                continue;
+            }
             let sample = self.sample(shadow, candidate, budget)?;
             samples.push(sample);
         }
         let (fresh, untracked) =
-            self.new_file_samples(shadow, &listing, &tracked, samples.len(), budget)?;
+            self.new_file_samples(shadow, &listing, &tracked, repo_id, budget, capacity)?;
         samples.extend(fresh);
         let untracked_lower_bound = listing.cut;
         let mut review = ReviewCapture {
@@ -904,18 +1144,27 @@ impl DiffReader {
             untracked_lower_bound,
             metadata_digest: metadata_digest(shadow),
         };
-        review.apply_samples(samples)?;
+        review.apply_samples(samples, repo_id)?;
         shadow.verify(budget)?;
         Ok(review)
     }
 }
 
 impl ReviewCapture {
-    fn apply_samples(&mut self, mut samples: Vec<Sample>) -> Result<(), DiffRefusal> {
+    fn apply_samples(
+        &mut self,
+        mut samples: Vec<Sample>,
+        repo_id: Option<&RepoId>,
+    ) -> Result<(), DiffRefusal> {
         pair_renames(&mut samples);
         samples.sort_by(|left, right| left.candidate.path.cmp(&right.candidate.path));
         let mut hash = Sha256::new();
-        hash.update(b"bounded-review-sample-v2");
+        if let Some(repo_id) = repo_id {
+            hash.update(b"bounded-repository-review-sample-v1");
+            hash.update(serde_json::to_vec(repo_id).map_err(|_| DiffRefusal::Unreadable)?);
+        } else {
+            hash.update(b"bounded-review-sample-v2");
+        }
         for mut sample in samples {
             hash.update(
                 serde_json::to_vec(&(

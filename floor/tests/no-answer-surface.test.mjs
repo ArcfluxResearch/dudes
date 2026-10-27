@@ -1517,7 +1517,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     "() => { latest.current += 1; inflight.current = null; setState({ owner, phase: 'closed' }); }",
   ]);
   assert.match(diff, /onPage=\{\(\) => \{ if \(review\.page\.next_cursor !== null\) void read\(\{ mode: 'page', manifest_id: review\.page\.manifest_id, cursor: review\.page\.next_cursor \}, review\); \}\}/);
-  assert.match(diff, /const refresh = \(\) => \{ void read\(\{ mode: 'manifest', card, expected_seq: expectedSeq \}, null\); \};/);
+  assert.match(diff, /const refresh = \(\) => \{ void read\(\{ mode: 'manifest', card, expected_seq: expectedSeq, repositories: \{ scope: 'declared' \} \}, null\); \};/);
   assert.match(diff, /void read\(\{ mode: 'content', manifest_id: state\.review\.page\.manifest_id, entries: \[entry\.entry_id\] \},/);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TERMINAL_PANEL), 'utf8')).sort(), [
     '() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }',

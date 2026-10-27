@@ -161,7 +161,7 @@ beforeEach(() => {
 test('the handshake offers exactly the four subprotocols the gateway admits', () => {
   const offers = streamProtocols(SIGNED);
   assert.deepEqual(offers, [FLOOR_PROTOCOL, ...SIGNED]);
-  assert.equal(FLOOR_PROTOCOL, 'dudes-floor-v5');
+  assert.equal(FLOOR_PROTOCOL, 'dudes-floor-v6');
 });
 
 test('the stream is opened beside the page that authenticated', () => {

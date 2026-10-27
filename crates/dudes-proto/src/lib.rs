@@ -63,18 +63,18 @@ pub use decision::{
 };
 pub use diff::{
     DIFF_MANIFEST_LIFETIME_MS, DiffAvailability, DiffBinding, DiffContent, DiffEntry, DiffFile,
-    DiffFreshness, DiffKind, DiffOmission, DiffOmissionReason, DiffPage, DiffRefusal, DiffResponse,
-    MAX_DIFF_CANDIDATES, MAX_DIFF_CONTENT_BYTES, MAX_DIFF_FILES, MAX_DIFF_LINE_BYTES,
-    MAX_DIFF_MANIFEST_BYTES, MAX_DIFF_PAGE_BYTES, MAX_DIFF_PAGE_ENTRIES, MAX_DIFF_PATH_BYTES,
-    MAX_DIFF_SIDE_BYTES,
+    DiffFreshness, DiffKind, DiffOmission, DiffOmissionReason, DiffPage, DiffRefusal,
+    DiffRepositoryBinding, DiffResponse, MAX_DIFF_CANDIDATES, MAX_DIFF_CONTENT_BYTES,
+    MAX_DIFF_FILES, MAX_DIFF_LINE_BYTES, MAX_DIFF_MANIFEST_BYTES, MAX_DIFF_PAGE_BYTES,
+    MAX_DIFF_PAGE_ENTRIES, MAX_DIFF_PATH_BYTES, MAX_DIFF_SIDE_BYTES, RepositoryReadSelection,
 };
 pub use event::{Event, EventKind};
 pub use git::{
     GIT_ID_DIGITS, GitAgainst, GitBranch, GitChangeKind, GitCommit, GitCommittedFile, GitHead,
-    GitSection, GitState, GitView, GitWorkingChange, MAX_GIT_BRANCH_BYTES, MAX_GIT_BRANCHES,
-    MAX_GIT_CHANGE_BYTES, MAX_GIT_COMMIT_BYTES, MAX_GIT_COMMITS, MAX_GIT_COMMITTED_BYTES,
-    MAX_GIT_HEAD_BYTES, MAX_GIT_NAME_BYTES, MAX_GIT_PARENTS, MAX_GIT_PATH_BYTES,
-    MAX_GIT_SUBJECT_BYTES, MAX_GIT_VIEW_BYTES,
+    GitRepositoryView, GitSection, GitState, GitView, GitWorkingChange, MAX_GIT_BRANCH_BYTES,
+    MAX_GIT_BRANCHES, MAX_GIT_CHANGE_BYTES, MAX_GIT_COMMIT_BYTES, MAX_GIT_COMMITS,
+    MAX_GIT_COMMITTED_BYTES, MAX_GIT_HEAD_BYTES, MAX_GIT_NAME_BYTES, MAX_GIT_PARENTS,
+    MAX_GIT_PATH_BYTES, MAX_GIT_SUBJECT_BYTES, MAX_GIT_VIEW_BYTES,
 };
 pub use goal::{
     CheckBaseline, CheckBaselineKind, CompletionCheckRef, Evidence, Goal, Predicate,

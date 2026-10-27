@@ -55,7 +55,7 @@ mod common;
 use common::PageHttp as _;
 use common::{Fixture, ScriptedRunner, SharedHost, TestClock, system32_program, true_program};
 
-const STREAM_PROTOCOL: &str = "dudes-floor-v5";
+const STREAM_PROTOCOL: &str = "dudes-floor-v6";
 
 #[test]
 fn predicate_path_uses_the_system_root_and_survives_fixture_escaping() {

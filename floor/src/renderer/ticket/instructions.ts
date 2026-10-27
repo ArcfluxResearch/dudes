@@ -22,6 +22,7 @@ export type InstructionPath = { readonly encoding: 'utf8'; readonly value: strin
   | { readonly encoding: 'windows_wide'; readonly units: readonly number[] };
 
 export interface InstructionShownPath {
+  readonly repo_id?: string | null;
   readonly path: InstructionPath;
   readonly display: string;
   readonly display_truncated: boolean;
@@ -29,6 +30,7 @@ export interface InstructionShownPath {
 }
 
 export interface InstructionInterval {
+  readonly repositories?: readonly string[];
   readonly kind: 'managed' | 'attached_process' | 'attached_turn';
   readonly agent: string;
   readonly turn: string | null;
@@ -57,6 +59,7 @@ const INSTRUCTION_GAPS = Object.freeze([
 export type InstructionGapReason = (typeof INSTRUCTION_GAPS)[number];
 
 export interface InstructionGap {
+  readonly repo_id?: string;
   readonly reason: InstructionGapReason;
   readonly context: InstructionContext;
   readonly agent: string | null;
@@ -69,6 +72,8 @@ export interface InstructionGap {
 }
 
 export interface InstructionReview {
+  readonly coverage_unknown?: boolean;
+  readonly repository_gaps?: readonly InstructionGap[];
   readonly watermark: InstructionWatermark;
   readonly pending_comparison: boolean;
   readonly intervals: readonly InstructionInterval[];
@@ -76,6 +81,7 @@ export interface InstructionReview {
   readonly gaps: readonly InstructionGap[];
 }
 
+const REPO_ID = /^[a-z][a-z0-9_-]{0,31}$/;
 const ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const UTF8 = new TextEncoder();
 function object(value: unknown): value is Record<string, unknown> {
@@ -155,7 +161,11 @@ function interval(value: unknown): InstructionInterval | null {
   if (value.kind === 'managed' && value.missing_start
     && (value.turn === null || value.issue_lsn === null || value.baseline_lsn !== null
       || value.end_lsn !== null || value.sampled_at !== null || !value.recovery)) return null;
-  return Object.freeze({ kind: value.kind as InstructionInterval['kind'], agent: value.agent, turn: value.turn,
+  const repositories = value.repositories ?? [];
+  if (!Array.isArray(repositories) || repositories.length > 8
+    || !repositories.every((repo) => typeof repo === 'string' && REPO_ID.test(repo))
+    || new Set(repositories).size !== repositories.length) return null;
+  return Object.freeze({ repositories: Object.freeze(repositories as string[]), kind: value.kind as InstructionInterval['kind'], agent: value.agent, turn: value.turn,
     attachment_lsn: value.attachment_lsn, issue_lsn: value.issue_lsn, baseline_lsn: value.baseline_lsn,
     missing_start: value.missing_start, card: value.card, goal: value.goal, assignment_lsn: value.assignment_lsn, seq_at_start: value.seq_at_start,
     finished_lsn: value.finished_lsn, end_lsn: value.end_lsn, sampled_at: value.sampled_at, recovery: value.recovery });
@@ -175,21 +185,34 @@ export function decodeInstructionReview(value: unknown): InstructionReview | nul
     const native = path(row.path);
     const scope = context(row.context);
     if (native === null || scope === null) return null;
-    paths.push(Object.freeze({ path: native, display: row.display, display_truncated: row.display_truncated, context: scope }));
+    const repo = row.repo_id ?? null;
+    if (repo !== null && (typeof repo !== 'string' || !REPO_ID.test(repo))) return null;
+    paths.push(Object.freeze({ repo_id: repo, path: native, display: row.display, display_truncated: row.display_truncated, context: scope }));
   }
   const gaps: InstructionGap[] = [];
-  for (const row of value.gaps) {
+  const repositoryGaps = value.repository_gaps ?? [];
+  if (!Array.isArray(repositoryGaps)) return null;
+  for (const row of [...value.gaps, ...repositoryGaps]) {
     if (!object(row) || !(INSTRUCTION_GAPS as readonly unknown[]).includes(row.reason) || !nullableId(row.agent) || typeof row.display_truncated !== 'boolean'
       || typeof row.holds !== 'boolean' || (row.origin !== 'observed' && row.origin !== 'declared')) return null;
     const scope = context(row.context);
     const native = row.path === null ? null : path(row.path);
     if (scope === null || (row.path !== null && (native === null || !display(row.display)))
       || (row.path === null && row.display !== null)) return null;
-    gaps.push(Object.freeze({ reason: row.reason as InstructionGapReason, context: scope, agent: row.agent,
+    const repository = repositoryGaps.includes(row);
+    if (repository && (typeof row.repo_id !== 'string' || !REPO_ID.test(row.repo_id))) return null;
+    gaps.push(Object.freeze({ ...(repository ? { repo_id: row.repo_id as string } : {}), reason: row.reason as InstructionGapReason, context: scope, agent: row.agent,
       path: native, display: row.display as string | null, display_truncated: row.display_truncated, holds: row.holds, origin: row.origin }));
   }
+  const scoped = intervals.some((row) => row !== null && (row.repositories?.length ?? 0) > 0)
+    || paths.some((row) => row.repo_id != null) || repositoryGaps.length > 0 || value.coverage_unknown === true;
+  if ((value.coverage_unknown !== undefined && typeof value.coverage_unknown !== 'boolean')
+    || (scoped && (typeof value.coverage_unknown !== 'boolean' || !Array.isArray(value.repository_gaps)))) return null;
   return Object.freeze({ watermark, pending_comparison: value.pending_comparison,
-    intervals: Object.freeze(intervals as InstructionInterval[]), changed_paths: Object.freeze(paths), gaps: Object.freeze(gaps) });
+    coverage_unknown: value.coverage_unknown === true,
+    intervals: Object.freeze(intervals as InstructionInterval[]), changed_paths: Object.freeze(paths),
+    gaps: Object.freeze(gaps.filter((row) => row.repo_id === undefined)),
+    repository_gaps: Object.freeze(gaps.filter((row) => row.repo_id !== undefined)) });
 }
 
 export function instructionContextText(scope: InstructionContext): string {
@@ -249,9 +272,10 @@ const GAP_WITH_PATH: Partial<Record<InstructionGapReason, (path: string) => stri
 
 /** One plain sentence for a gap that holds a ticket, which is always one this run found. It names its path when the gap carries one. */
 export function gapSentence(gap: InstructionGap): string {
-  const shown = gap.display === null ? null : `${gap.display}${gap.display_truncated ? ' [display truncated]' : ''}`;
+  const shown = gap.display === null ? null : `${gap.repo_id === undefined ? '' : `${gap.repo_id}: `}${gap.display}${gap.display_truncated ? ' [display truncated]' : ''}`;
   const withPath = GAP_WITH_PATH[gap.reason];
-  return shown !== null && withPath !== undefined ? withPath(shown) : GAP_SENTENCES[gap.reason];
+  return shown !== null && withPath !== undefined ? withPath(shown)
+    : `${gap.repo_id === undefined ? '' : `${gap.repo_id}: `}${GAP_SENTENCES[gap.reason]}`;
 }
 
 export interface GapGroup {
@@ -264,7 +288,7 @@ export interface GapGroup {
 export function groupGaps(review: InstructionReview): readonly GapGroup[] {
   const working = new Set(review.intervals.map((row) => row.agent));
   const groups = new Map<string, string[]>();
-  for (const gap of review.gaps.filter((row) => row.holds)) {
+  for (const gap of [...review.gaps, ...(review.repository_gaps ?? [])].filter((row) => row.holds)) {
     const others = groups.get(gapSentence(gap)) ?? [];
     if (gap.agent !== null && !working.has(gap.agent) && !others.includes(gap.agent)) others.push(gap.agent);
     groups.set(gapSentence(gap), others);
