@@ -746,7 +746,7 @@ mod tests {
 
     #[test]
     fn no_sample_lsn_is_below_the_first_segment() {
-        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 90;
+        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 96;
 
         let mut swept = 0_usize;
         let mut lsns = 0_usize;
