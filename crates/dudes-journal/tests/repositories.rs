@@ -58,6 +58,156 @@ fn authority() -> (Vec<Entry>, dudes_proto::repository::RepositoryHire) {
     )
 }
 
+fn plural_authority() -> (Vec<Entry>, dudes_proto::repository::RepositoryHire) {
+    let (mut prefix, mut hire) = authority();
+    let lease = prefix.pop().unwrap();
+    let mut copies = hire.repositories.repositories.entries().to_vec();
+    let mut second = copies[0].clone();
+    second.repo_id = dudes_proto::repository::RepoId::parse("secondary").unwrap();
+    let repo = &mut second.value;
+    repo.origin.directory = repo.origin.directory.with_file_name("secondary");
+    repo.origin.common_dir = repo.origin.directory.join(".git");
+    repo.origin.directory_identity.inode += 100;
+    repo.origin.common_identity.inode += 100;
+    repo.execution.directory = repo.execution.directory.with_file_name("secondary");
+    repo.execution.git_dir = repo.origin.common_dir.join("worktrees/secondary");
+    repo.execution.directory_identity.inode += 100;
+    repo.execution.git_identity.inode += 100;
+    repo.worktree = dudes_types::WorktreeId::from_bytes([4; 16]);
+    repo.trust_lsn = Lsn(3);
+    let first = samples::repository_catalog().entries()[0].clone();
+    let catalog = RepositorySet::new(
+        first.repo_id.clone(),
+        vec![
+            first,
+            dudes_proto::repository::RepositoryEntry {
+                repo_id: second.repo_id.clone(),
+                value: dudes_proto::repository::CatalogRepository {
+                    label: "Second".into(),
+                    origin: repo.origin.clone(),
+                },
+            },
+        ],
+    )
+    .unwrap();
+    prefix[0] = entry(Record::ProjectRepositoriesRecorded {
+        project: "service".into(),
+        repositories: catalog,
+    });
+    let Record::RepositoryTrustSet { pin, .. } = &prefix[1].record else {
+        unreachable!()
+    };
+    prefix.push(entry(Record::RepositoryTrustSet {
+        project: "service".into(),
+        repo_id: second.repo_id.clone(),
+        catalog_lsn: Lsn(1),
+        origin: repo.origin.clone(),
+        pin: pin.clone(),
+    }));
+    prefix.push(lease);
+    prefix.push(entry(Record::WorktreeLeased {
+        worktree: repo.worktree,
+        origin: repo.origin.directory.clone(),
+        path: repo.execution.directory.clone(),
+        branch: "dudes/secondary".into(),
+        base: repo.base,
+        from: None,
+    }));
+    copies.push(second);
+    hire.repositories.repositories =
+        RepositorySet::new(hire.repositories.repositories.primary_id().clone(), copies).unwrap();
+    (prefix, hire)
+}
+
+fn second_grant(
+    mut hire: dudes_proto::repository::RepositoryHire,
+    lsn: Lsn,
+) -> dudes_proto::repository::RepositoryHire {
+    let mut copies = hire.repositories.repositories.entries().to_vec();
+    copies[1].value.trust_lsn = lsn;
+    hire.repositories.repositories =
+        RepositorySet::new(hire.repositories.repositories.primary_id().clone(), copies).unwrap();
+    hire
+}
+
+#[test]
+fn all_repository_grants_before_the_first_lease_allow_the_atomic_hire() {
+    let (prefix, hire) = plural_authority();
+    let mut store = Projections::in_memory().unwrap();
+    apply_prefix(&mut store, &prefix);
+    store
+        .apply(
+            Lsn(6),
+            2,
+            &entry(Record::AgentHiredWithRepositories(Box::new(hire.clone()))),
+        )
+        .unwrap();
+    let leases = store.worktrees().unwrap();
+    assert_eq!(leases.len(), 2);
+    assert!(leases.iter().all(|lease| lease.agent == Some(hire.id)));
+}
+
+#[test]
+fn an_interleaved_second_grant_cannot_authorize_an_atomic_hire() {
+    let (mut prefix, hire) = plural_authority();
+    prefix.swap(2, 3);
+    let hire = second_grant(hire, Lsn(4));
+    let mut store = Projections::in_memory().unwrap();
+    apply_prefix(&mut store, &prefix);
+    let before = store.export().unwrap();
+    let result = store.apply(
+        Lsn(6),
+        2,
+        &entry(Record::AgentHiredWithRepositories(Box::new(hire))),
+    );
+    assert!(
+        matches!(
+            result,
+            Err(Error::Repository {
+                reason: RepositoryStateError::Trust,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    assert_eq!(store.export().unwrap(), before);
+    assert_eq!(store.last_applied_lsn(), Lsn(5));
+}
+
+#[test]
+fn a_grant_refreshed_after_the_first_lease_cannot_authorize_an_atomic_hire() {
+    let (mut prefix, hire) = plural_authority();
+    let regrant = prefix[2].clone();
+    let mut revoke = regrant.clone();
+    let Record::RepositoryTrustSet { pin, .. } = &mut revoke.record else {
+        unreachable!()
+    };
+    *pin = None;
+    prefix.insert(4, revoke);
+    prefix.insert(5, regrant);
+    let hire = second_grant(hire, Lsn(6));
+    let mut store = Projections::in_memory().unwrap();
+    apply_prefix(&mut store, &prefix);
+    let before = store.export().unwrap();
+    let result = store.apply(
+        Lsn(8),
+        2,
+        &entry(Record::AgentHiredWithRepositories(Box::new(hire))),
+    );
+    assert!(
+        matches!(
+            result,
+            Err(Error::Repository {
+                reason: RepositoryStateError::Trust,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    assert_eq!(store.export().unwrap(), before);
+    assert_eq!(store.last_applied_lsn(), Lsn(7));
+}
+
 fn apply_prefix(store: &mut Projections, entries: &[Entry]) {
     for (index, entry) in entries.iter().enumerate() {
         store.apply(Lsn(index as u64 + 1), 1, entry).unwrap();

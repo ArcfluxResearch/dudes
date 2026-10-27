@@ -322,6 +322,18 @@ fn validate_hire(
     if !matches_catalog(catalog, scope) || !matches_catalog(latest, scope) {
         return Err(RepositoryStateError::Catalog);
     }
+    let first_lease = scope
+        .repositories
+        .entries()
+        .iter()
+        .try_fold(lsn, |first, entry| {
+            before
+                .leases
+                .iter()
+                .find(|lease| lease.worktree == entry.value.worktree)
+                .map(|lease| first.min(lease.leased_lsn))
+                .ok_or(RepositoryStateError::Lease)
+        })?;
     for entry in scope.repositories.entries() {
         let repo = &entry.value;
         let trust = before
@@ -330,6 +342,7 @@ fn validate_hire(
             .find(|trust| trust.project == scope.project.id && trust.repo_id == entry.repo_id)
             .ok_or(RepositoryStateError::Trust)?;
         if trust.lsn != repo.trust_lsn
+            || trust.lsn >= first_lease
             || trust.lsn >= lsn
             || trust.pin.is_none()
             || trust.origin != repo.origin
