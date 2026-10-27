@@ -170,6 +170,7 @@ pub(super) fn prepare_review(
             goal: row.id,
             agent: row.agent,
             predicate: &row.predicate,
+            check_baseline: row.baseline.as_ref(),
             round: row.repository_round.as_ref(),
             hire: owner
                 .as_ref()

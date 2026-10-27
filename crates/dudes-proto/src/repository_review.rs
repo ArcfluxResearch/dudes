@@ -274,7 +274,7 @@ pub struct TicketReview {
     pub stamp: Option<(Lsn, StampPayload)>,
 }
 
-/// A real observed command result for the frozen check after the latest scoped issue.
+/// A real observed command result for the frozen check and its work boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepositoryReviewCheck {
     /// Predicate-result record position.
@@ -312,7 +312,7 @@ pub enum RepositoryReviewReadiness {
     IncompleteBaseline,
     /// Work was already issued without complete baseline evidence. Later capture cannot repair it.
     MissingAfterIssue,
-    /// No qualifying observed result follows the latest scoped issue.
+    /// No qualifying observed result follows the required baseline or latest scoped issue.
     MissingCheck,
     /// The latest qualifying result did not pass.
     CheckFailed,
@@ -395,6 +395,8 @@ pub struct ReviewFacts<'a> {
     pub agent: AgentId,
     /// Frozen predicate.
     pub predicate: &'a Predicate,
+    /// The goal's recorded pre-work check policy.
+    pub check_baseline: Option<&'a crate::CheckBaseline>,
     /// Frozen ticket start, when present.
     pub round: Option<&'a TicketRepositoryRound>,
     /// Exact current hire.
@@ -578,11 +580,25 @@ fn fold_scoped(
         } => {
             review.check = None;
             review.stamp = None;
+            let follows_work = match review.last_issue {
+                Some((issue_lsn, issued)) => issue_lsn < lsn && *turn == Some(issued),
+                None => {
+                    turn.is_none()
+                        && matches!(
+                            facts.check_baseline,
+                            Some(crate::CheckBaseline::MayAlreadyPass)
+                        )
+                        && review
+                            .baseline
+                            .as_ref()
+                            .is_some_and(|(baseline_lsn, baseline)| {
+                                *baseline_lsn < lsn && baseline.complete()
+                            })
+                }
+            };
             if *goal == facts.goal
                 && provenance.is_observed()
-                && review
-                    .last_issue
-                    .is_some_and(|(issue_lsn, issued)| issue_lsn < lsn && *turn == Some(issued))
+                && follows_work
                 && let (
                     Predicate::Command { argv, .. },
                     Evidence::Command {

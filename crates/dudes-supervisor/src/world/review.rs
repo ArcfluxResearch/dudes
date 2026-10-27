@@ -27,6 +27,7 @@ impl World {
                 goal: row.goal.id,
                 agent: row.agent,
                 predicate: &row.goal.predicate,
+                check_baseline: row.goal.baseline.as_ref(),
                 round: self.ticket_goals.get(&goal),
                 hire: owner.map(|owner| (owner.mcp.hire_lsn, &owner.repositories)),
                 review: row.review.as_ref(),
