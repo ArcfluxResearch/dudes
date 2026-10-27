@@ -6225,7 +6225,7 @@ mod tests {
         }
         assert_eq!(RecordKind::ALL.len(), 46);
         assert_eq!(RecordKind::KNOWN.len(), 109);
-        assert_eq!(RecordKind::from_tag(108), None);
+        assert_eq!(RecordKind::from_tag(110), None);
     }
 
     #[test]
@@ -6386,6 +6386,16 @@ mod tests {
                 "ticket_baseline_recorded",
             ),
             (RecordKind::TicketReviewStamped, 81, "ticket_review_stamped"),
+            (
+                RecordKind::TicketBaselineBatchRecorded,
+                108,
+                "ticket_baseline_batch_recorded",
+            ),
+            (
+                RecordKind::TicketReviewBatchStamped,
+                109,
+                "ticket_review_batch_stamped",
+            ),
         ] {
             assert_eq!(kind.tag(), tag);
             assert_eq!(RecordKind::from_tag(tag), Some(kind));
@@ -6652,6 +6662,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(108), None);
+        assert_eq!(RecordKind::from_tag(110), None);
     }
 }

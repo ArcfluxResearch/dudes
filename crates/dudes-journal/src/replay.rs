@@ -723,7 +723,7 @@ mod tests {
         const LATCHED: u64 = 9;
         assert_eq!(
             crate::PROJECTION_VERSION,
-            64,
+            65,
             "this fold change owns the 9 -> 10 bump; moving the version requires re-deriving the \
              latched store and current build together"
         );
