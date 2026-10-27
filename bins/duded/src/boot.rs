@@ -679,6 +679,7 @@ where
             enrollment: settings.enrollment.clone(),
             current_repositories:
                 crate::runtime::repository_admission::CurrentRepositories::default(),
+            repository_lease_append: None,
             reloads: crate::enrollment_reload::ReloadState::new(&settings.enrollment),
             onboarding_index,
             answer_index,

@@ -22,6 +22,8 @@ pub(crate) struct CurrentRepositories {
     pub(crate) invalid_seq: u64,
     pub(crate) observed: BTreeMap<String, ObservedProject>,
     bindings: BTreeMap<String, BTreeMap<RepoId, TrustedRepository>>,
+    #[cfg(test)]
+    pub(crate) test_hire_capability: bool,
 }
 
 pub(crate) struct ObservedProject {

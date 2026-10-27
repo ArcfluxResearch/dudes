@@ -291,6 +291,7 @@ fn the_wire_type_names_no_path_and_the_control_does() {
 /// `agent.hire` params for the tests above.
 fn hire_params(cwd: &Path) -> dudes_proto::rpc::agent::HireParams {
     dudes_proto::rpc::agent::HireParams {
+        project: None,
         character: None,
         accent: None,
         name: "Hector".to_owned(),

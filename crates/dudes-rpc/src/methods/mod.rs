@@ -81,6 +81,20 @@ pub trait Control: Send + Sync + 'static {
     /// The contract code the refusal maps to — [`ErrorCode::Refused`] for a gate, and so on.
     fn hire(&self, params: HireParams) -> Result<HireResult, RpcError>;
 
+    /// Read an exact current project target without granting execution capability.
+    ///
+    /// # Errors
+    /// Refuses when the project or its current observation is unavailable.
+    fn workspace_repository_target(
+        &self,
+        _params: dudes_proto::rpc::workspace::RepositoryTargetParams,
+    ) -> Result<dudes_proto::rpc::agent::ProjectHireTarget, RpcError> {
+        Err(error(
+            ErrorCode::Refused,
+            "project repository targets are unavailable",
+        ))
+    }
+
     /// Retire an agent and withdraw its identity.
     ///
     /// The default keeps existing out-of-tree adapters source-compatible while refusing safely;
@@ -433,6 +447,16 @@ pub fn register_all<C: Control, J: JournalRead>(
     journal: &Arc<J>,
     subscribers: &Arc<Subscribers>,
 ) {
+    let target_control = Arc::clone(control);
+    dispatcher.register_current_operator(
+        CurrentMethod::WorkspaceRepositoryTarget,
+        move |call, _admission| {
+            encode_current(
+                CurrentMethod::WorkspaceRepositoryTarget,
+                &target_control.workspace_repository_target(params(&call)?)?,
+            )
+        },
+    );
     dispatcher.register(
         Method::AgentHire,
         Requirement::Operator,

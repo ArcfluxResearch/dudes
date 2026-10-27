@@ -1376,6 +1376,7 @@ mod tests {
         params_type_fails_closed(
             "HireParams",
             &agent::HireParams {
+                project: None,
                 character: None,
                 accent: None,
                 name: "Hector".to_owned(),

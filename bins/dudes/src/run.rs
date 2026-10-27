@@ -153,6 +153,9 @@ pub fn run(
         Command::SelectHire(params) => {
             select_hire(params, invocation.json, terminal, env, out, err)
         }
+        Command::ProjectHire { project, params } => {
+            project_hire(project, params, invocation.json, env, out, err)
+        }
         Command::Login(provider) => login(*provider, terminal.is_some(), env, out),
         Command::Uninstall(options) => uninstall_command(*options, terminal, env, out, err),
         Command::Upgrade(options) => upgrade_command(*options, env, out, err),
@@ -484,7 +487,7 @@ fn dispatch(
     err: &mut dyn Write,
 ) -> Result<u8, Failure> {
     let hire = match &invocation.command {
-        Command::Hire(params) => Some(Invocation {
+        Command::Hire(params) if params.project.is_none() => Some(Invocation {
             json: invocation.json,
             command: Command::Hire(Box::new(HireParams {
                 cwd: canonical_cwd(&params.cwd, env)?,
@@ -694,7 +697,20 @@ fn select_hire(
                 "Project settings have changed. Run `dudes project reload` before hiring, or pass --cwd <project folder>.",
             ));
         }
-        workspace::directory(config, &id).map_err(local)?
+        match workspace::directory(config, &id) {
+            Ok(directory) => directory,
+            Err(workspace::WorkspaceError::ScopedExecutionUnavailable)
+                if params.checkout.is_some() =>
+            {
+                return project_hire(&id, params, machine, env, out, err);
+            }
+            Err(workspace::WorkspaceError::ScopedExecutionUnavailable) => {
+                return Err(local(
+                    "this project requires an own copy of every repository; add --worktree --trusted",
+                ));
+            }
+            Err(error) => return Err(local(error)),
+        }
     } else {
         PathBuf::from(".")
     };
@@ -703,6 +719,38 @@ fn select_hire(
             json: machine,
             command: Command::Hire(Box::new(HireParams {
                 cwd,
+                ..params.clone()
+            })),
+        },
+        env,
+        out,
+        err,
+    )
+}
+
+fn project_hire(
+    project: &str,
+    params: &HireParams,
+    machine: bool,
+    env: &Environment,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<u8, Failure> {
+    let target = typed::<dudes_proto::rpc::agent::ProjectHireTarget>(operator_current_call(
+        env,
+        CurrentMethod::WorkspaceRepositoryTarget,
+        Some(encode(
+            &dudes_proto::rpc::workspace::RepositoryTargetParams {
+                project_id: project.to_owned(),
+            },
+        )?),
+    )?)?;
+    dispatch(
+        &Invocation {
+            json: machine,
+            command: Command::Hire(Box::new(HireParams {
+                cwd: PathBuf::new(),
+                project: Some(target),
                 ..params.clone()
             })),
         },
@@ -2017,6 +2065,7 @@ fn hire_first(
         (enrolled.check, Some((enrolled.id, enrolled.config)))
     });
     let params = HireParams {
+        project: None,
         name: hire.name.clone(),
         character: None,
         accent: None,
@@ -2201,6 +2250,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         // diagnosis than a message and this binary has no state worth aborting to protect.
         Command::Quickstart(_)
         | Command::SelectHire(_)
+        | Command::ProjectHire { .. }
         | Command::Start
         | Command::Open
         | Command::Login(_)

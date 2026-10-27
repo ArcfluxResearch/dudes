@@ -693,6 +693,7 @@ mod tests {
 
         let rpc = exported_file("rpc.schema.json");
         let hire = crate::rpc::agent::HireParams {
+            project: None,
             character: None,
             accent: None,
             name: "Kim".into(),

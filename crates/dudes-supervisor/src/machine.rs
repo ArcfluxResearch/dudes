@@ -4632,6 +4632,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     Then::Fold,
                 );
             }
+            Command::HireWithRepositories(mut hire) => {
+                hire.id = AgentId::from_ulid(self.rng.ulid());
+                self.persist(Record::AgentHiredWithRepositories(hire), Then::Fold);
+            }
             Command::SetWorkspaceTrust {
                 workspace_id,
                 trusted,

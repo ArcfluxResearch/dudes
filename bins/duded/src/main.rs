@@ -1070,6 +1070,7 @@ mod native_tests {
             client,
             Method::AgentHire,
             serde_json::to_value(HireParams {
+                project: None,
                 character: None,
                 accent: None,
                 name: format!("Native {marker}"),

@@ -871,6 +871,8 @@ pub enum Command {
         /// The declared MCP servers the daemon admitted for this hire, sorted and without repeats.
         mcp_servers: Vec<dudes_types::McpServerName>,
     },
+    /// Assign every already durable lease to one agent atomically.
+    HireWithRepositories(Box<dudes_proto::repository::RepositoryHire>),
     /// Lease a worktree for an agent that is not hired yet. Appended and fsynced
     /// before `git worktree add` runs.
     ///

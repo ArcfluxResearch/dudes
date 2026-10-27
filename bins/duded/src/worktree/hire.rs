@@ -24,6 +24,9 @@ use super::git::{Git, GitError};
 use super::trust::{TrustRefusal, Vouch};
 use crate::ports::{Answered, Ask, Handle};
 
+mod group;
+pub use group::{PreparedRepositoryGroup, RepositoryHireOrigin, RepositoryHirePlan};
+
 /// What the loop says when a project's trust grant is no longer the one a hire was admitted under.
 pub(crate) const TRUST_CHANGED: &str = "the project's trust changed while the copy was being made";
 
@@ -134,6 +137,9 @@ impl WorktreeHires {
     /// The refusal of whichever step said no. Proved pending copies are cleaned up.
     /// Uncertain directories and their leases are retained for the operator.
     pub fn hire(&self, params: HireParams) -> Result<HireResult, RpcError> {
+        if params.project.is_some() {
+            return self.hire_project(params);
+        }
         let lease = self
             .prepare(&params, None)
             .map_err(|failure| failure.error)?;
