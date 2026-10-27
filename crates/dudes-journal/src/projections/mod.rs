@@ -1221,6 +1221,7 @@ fn fold_batch<'a>(
                     goals: &goals,
                     instructions: &instruction_rows,
                     completions: &chat.completions,
+                    turns: &turns,
                     through: last,
                 },
                 lsn,

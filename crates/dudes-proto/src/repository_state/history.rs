@@ -95,6 +95,8 @@ pub struct RepositoryHistoryFacts<'a> {
     pub goal_exists: bool,
     /// Any existing card at the proposed creation identity.
     pub card_exists: bool,
+    /// A preceding turn already owns the proposed issue identity.
+    pub turn_exists: bool,
     /// Active round selected from the preceding ticket lifecycle, independently of billing.
     pub active_round: Option<&'a crate::repository::TicketRepositoryRound>,
 }
@@ -742,7 +744,8 @@ fn validate_issue(
         return Err(RepositoryStateError::Issue);
     };
     let issue = record.turn_issue().ok_or(RepositoryStateError::Issue)?;
-    if before.hired_lsn != Some(grant.hired_lsn)
+    if before.turn_exists
+        || before.hired_lsn != Some(grant.hired_lsn)
         || grant.hired_lsn >= lsn
         || grant
             .ticket
