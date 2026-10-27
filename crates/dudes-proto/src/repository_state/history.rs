@@ -159,6 +159,8 @@ pub enum RepositoryStateError {
     Ticket,
     /// Start does not match the exact queued ticket, hire, round, goal or check binding.
     Start,
+    /// Review evidence does not match its frozen round, member set, roots or check.
+    Review,
     /// Issue does not match the exact hire, active ticket round and selected copies.
     Issue,
 }
@@ -177,6 +179,7 @@ impl std::fmt::Display for RepositoryStateError {
             Self::Ticket => "ticket repository declaration does not match",
             Self::Start => "ticket start repository authority does not match",
             Self::Issue => "turn repository grant does not match",
+            Self::Review => "repository review evidence does not match",
         })
     }
 }
@@ -194,12 +197,17 @@ pub const fn is_kind(kind: crate::RecordKind) -> bool {
             | crate::RecordKind::TicketEditedWithRepositories
             | crate::RecordKind::TicketStartedWithRepositories
             | crate::RecordKind::TurnIssuedWithRepositories
+            | crate::RecordKind::TicketBaselineBatchRecorded
+            | crate::RecordKind::TicketReviewBatchStamped
     )
 }
 
 /// Validate the position-independent portion before serializing or accepting a carrier.
 pub fn validate_shape(record: &Record) -> Result<(), RepositoryStateError> {
     match record {
+        Record::TicketBaselineBatchRecorded(_) | Record::TicketReviewBatchStamped(_) => {
+            crate::repository_review::validate_record(record)
+        }
         Record::ProjectRepositoriesRecorded {
             project,
             repositories,

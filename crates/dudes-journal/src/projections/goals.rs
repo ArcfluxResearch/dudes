@@ -64,6 +64,8 @@ pub(super) fn has_fault(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GoalRow {
+    /// Bounded baseline and check evidence, interpreted by the same fold as World.
+    pub review: Option<dudes_proto::repository_review::TicketReviewState>,
     /// Immutable repository declaration and round installed by a ticket start.
     pub repository_round: Option<dudes_proto::repository::TicketRepositoryRound>,
     /// The goal.
@@ -111,6 +113,7 @@ impl GoalRow {
 impl Default for GoalRow {
     fn default() -> Self {
         Self {
+            review: None,
             repository_round: None,
             id: GoalId::NIL,
             installed_lsn: Lsn::ZERO,
@@ -142,6 +145,53 @@ impl Default for GoalRow {
             first_done: None,
         }
     }
+}
+
+pub(super) fn prepare_review(
+    goals: &RowTable<'_>,
+    agents: &RowTable<'_>,
+    lsn: Lsn,
+    entry: &Entry,
+) -> Result<Option<(GoalId, dudes_proto::repository_review::TicketReviewState)>> {
+    use dudes_proto::repository_review::{self, ReviewFacts};
+    let Some(goal) = repository_review::affected_goal(&entry.record) else {
+        return Ok(None);
+    };
+    let row = get_row::<GoalRow>(goals, &goal.to_bytes())?;
+    let owner = row
+        .as_ref()
+        .map(|row| get_row::<AgentRow>(agents, &row.agent.to_bytes()))
+        .transpose()?
+        .flatten();
+    let review = repository_review::prepare(
+        lsn,
+        &entry.record,
+        row.as_ref().map(|row| ReviewFacts {
+            goal: row.id,
+            agent: row.agent,
+            predicate: &row.predicate,
+            round: row.repository_round.as_ref(),
+            hire: owner
+                .as_ref()
+                .map(|owner| (owner.hired_lsn, &owner.repositories)),
+            review: row.review.as_ref(),
+        }),
+    )
+    .map_err(|reason| crate::Error::Repository { lsn, reason })?;
+    Ok(review.map(|review| (goal, review)))
+}
+
+pub(super) fn apply_review(
+    goals: &mut RowTable<'_>,
+    update: Option<(GoalId, dudes_proto::repository_review::TicketReviewState)>,
+) -> Result<()> {
+    if let Some((goal, review)) = update
+        && let Some(mut row) = get_row::<GoalRow>(goals, &goal.to_bytes())?
+    {
+        row.review = Some(review);
+        put_row(goals, &goal.to_bytes(), &row)?;
+    }
+    Ok(())
 }
 
 /// Mutate one row in place; a record naming a goal the table does not know is logged and

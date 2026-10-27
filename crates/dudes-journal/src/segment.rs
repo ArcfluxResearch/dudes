@@ -377,6 +377,15 @@ mod tests {
                 refs
             }
             Record::TicketReviewStamped { stamp, .. } => vec![stamp.baseline_lsn, stamp.check_lsn],
+            Record::TicketBaselineBatchRecorded(batch) => {
+                vec![batch.binding.start_lsn, batch.binding.hired_lsn]
+            }
+            Record::TicketReviewBatchStamped(batch) => vec![
+                batch.binding.start_lsn,
+                batch.binding.hired_lsn,
+                batch.baseline_lsn,
+                batch.check_lsn,
+            ],
             Record::InstructionAttemptBoundarySettled {
                 owner,
                 started_lsn,

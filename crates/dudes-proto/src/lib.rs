@@ -42,6 +42,7 @@ pub mod recovery;
 pub mod recovery_state;
 pub mod reply;
 pub mod repository;
+pub mod repository_review;
 pub mod repository_state;
 pub mod rpc;
 pub mod schema;
