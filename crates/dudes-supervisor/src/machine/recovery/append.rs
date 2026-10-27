@@ -3,7 +3,7 @@ use super::{
     RecoveryRefusal, RecoverySubjectKey, RecoverySubjectUse, RecoveryWork, Rng, Supervisor, Then,
 };
 use crate::input::RecoveryIssueAppend;
-use dudes_types::{Mode, TurnId};
+use dudes_types::TurnId;
 
 impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// Classify the exact parked issue without supplying permission to append it.
@@ -45,27 +45,16 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         else {
             return Err(RecoveryRefusal::Unavailable);
         };
-        let (Record::TurnIssued {
-            agent: owner,
-            goal,
-            task,
-            session,
-            model_selection: Some(model_selection),
-            mode: Mode::Managed,
-            ..
-        }
-        | Record::TurnIssuedWithBrowserNote {
-            agent: owner,
-            goal,
-            task,
-            session,
-            model_selection,
-            mode: Mode::Managed,
-            ..
-        }) = &entry.record
-        else {
-            return Err(RecoveryRefusal::Unavailable);
-        };
+        let issue = entry
+            .record
+            .turn_issue()
+            .filter(dudes_proto::repository_state::TurnIssue::recovery_new)
+            .ok_or(RecoveryRefusal::Unavailable)?;
+        let owner = &issue.agent;
+        let goal = issue.goal.as_ref().ok_or(RecoveryRefusal::Unavailable)?;
+        let task = issue.task;
+        let session = issue.session;
+        let model_selection = issue.model_selection.ok_or(RecoveryRefusal::Unavailable)?;
         let RecoveryPlan::New {
             turn: reserved,
             context,
@@ -88,9 +77,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             || owner != agent
             || receipt.authorization.binding.work.agent != *agent
             || receipt.authorization.binding.work.goal != *goal
-            || launch.task != *task
+            || launch.task != task
             || launch.session != context_session(context)
-            || launch.session.id() != session.as_ref()
+            || launch.session.id() != session
             || *model_selection != launch.selection
             || receipt.authorization.binding.model_selection.as_ref() != Some(&launch.selection)
         {
@@ -157,20 +146,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 }
 
 fn issued_turn(record: &Record) -> Option<TurnId> {
-    match record {
-        Record::TurnIssued { turn, .. }
-        | Record::TurnIssuedWithBrowserNote { turn, .. }
-        | Record::ConversationTurnIssued { turn, .. }
-        | Record::IdentifiedConversationTurnIssued { turn, .. }
-        | Record::NoteOnlyTurnIssued { turn, .. }
-        | Record::TaughtNoteOnlyTurnIssued { turn, .. }
-        | Record::IdentifiedTaughtNoteOnlyTurnIssued { turn, .. }
-        | Record::MailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. })
-        | Record::IdentifiedMailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. }) => {
-            Some(*turn)
-        }
-        _ => None,
-    }
+    record.turn_issue().map(|issue| issue.turn)
 }
 
 fn context_session(context: &RecoveryContext) -> dudes_providers::adapter::TurnSession {

@@ -295,12 +295,13 @@ impl ClosingSession {
                 self.complete = Some(lsn);
                 self.phase = ClosingPhase::Complete;
             }
-            Record::TurnIssued { agent, turn, .. } if self.complete.is_none() => {
-                if let Some(participant) = self.participants.get_mut(agent)
+            record if self.complete.is_none() && record.ordinary_issue().is_some() => {
+                let issue = record.ordinary_issue().expect("matched ordinary issue");
+                if let Some(participant) = self.participants.get_mut(&issue.agent)
                     && participant.saving_turn.is_none()
                 {
-                    participant.saving_turn = Some(*turn);
-                    participant.unfinished.insert(*turn);
+                    participant.saving_turn = Some(issue.turn);
+                    participant.unfinished.insert(issue.turn);
                 }
             }
             Record::TurnEnded {

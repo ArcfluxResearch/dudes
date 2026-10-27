@@ -310,6 +310,21 @@ fn completed_goal_for_settlement(
     goals: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
     record: &Record,
 ) -> Result<bool> {
+    if let Some(issue) = record.turn_issue()
+        && matches!(
+            issue.payload,
+            dudes_proto::issue::ManagedIssueRef::RawNote { .. }
+                | dudes_proto::issue::ManagedIssueRef::TaughtNote { .. }
+                | dudes_proto::issue::ManagedIssueRef::IdentifiedTaughtNote { .. }
+                | dudes_proto::issue::ManagedIssueRef::GoalNote { .. }
+        )
+    {
+        return match get_row::<AgentRow>(table, &issue.agent.to_bytes())?.and_then(|row| row.goal) {
+            Some(goal) => Ok(get_row::<GoalRow>(goals, &goal.to_bytes())?
+                .is_some_and(|row| row.status == GoalStatus::Achieved)),
+            None => Ok(false),
+        };
+    }
     Ok(match record {
         Record::TurnEnded { agent, .. }
         | Record::ConversationQuestion { agent, .. }
@@ -318,11 +333,7 @@ fn completed_goal_for_settlement(
         | Record::HumanAnswer { agent, .. }
         | Record::Detached { agent, .. }
         | Record::BrowserNoteIssuedCancelled { agent, .. }
-        | Record::BrowserHalt { agent, .. }
-        | Record::NoteOnlyTurnIssued { agent, .. }
-        | Record::TaughtNoteOnlyTurnIssued { agent, .. }
-        | Record::IdentifiedTaughtNoteOnlyTurnIssued { agent, .. }
-        | Record::TurnIssuedWithBrowserNote { agent, .. } => {
+        | Record::BrowserHalt { agent, .. } => {
             let agent = get_row::<AgentRow>(table, &agent.to_bytes())?;
             match agent.and_then(|row| row.goal) {
                 Some(goal) => get_row::<GoalRow>(goals, &goal.to_bytes())?

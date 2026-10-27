@@ -58,13 +58,7 @@ impl Facts<'_, '_> {
         {
             mails.push(mail);
         }
-        let proposed_turn = if let Record::MailWakeOnlyTurnIssued(issue)
-        | Record::IdentifiedMailWakeOnlyTurnIssued(issue) = record
-        {
-            Some(issue.turn)
-        } else {
-            None
-        };
+        let proposed_turn = record.mail_issue().map(|(issue, _)| issue.turn);
         let receipt_exists = if let Record::Mail { id, .. } = record {
             get_row::<MailRow>(self.mail, &id.to_bytes())?.is_some()
         } else {
@@ -92,6 +86,9 @@ impl Facts<'_, '_> {
         if let Some((agent, _)) = record.goal_install() {
             return Ok(vec![agent]);
         }
+        if let Some((issue, _)) = record.mail_issue() {
+            return Ok(vec![issue.agent]);
+        }
         Ok(match record {
             Record::Mail {
                 to: MailTo::Agent { agent },
@@ -109,8 +106,6 @@ impl Facts<'_, '_> {
             }
             Record::MailWakeTurnDecided(decision)
             | Record::IdentifiedMailWakeTurnDecided(decision) => vec![decision.agent],
-            Record::MailWakeOnlyTurnIssued(issue)
-            | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => vec![issue.agent],
             Record::MailState { id, .. } => get_row::<MailRow>(self.mail, &id.to_bytes())?
                 .and_then(|row| row.wake_fact().map(|value| value.0))
                 .into_iter()

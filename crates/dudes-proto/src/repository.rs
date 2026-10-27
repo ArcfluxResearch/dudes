@@ -564,7 +564,8 @@ pub struct RepositoryTicketStarted {
 }
 
 /// The immutable ticket round selected at a start, retained by every issue in that round.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TicketRepositoryRound {
     /// The ticket.
     pub card: CardId,
@@ -581,12 +582,107 @@ pub struct TicketRepositoryRound {
     pub authority: Option<TicketStartRepositories>,
 }
 
+/// Complete authority selected before a managed issue is persisted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryTurnGrant {
+    /// Exact hire whose copies are selected.
+    pub hired_lsn: Lsn,
+    /// Recorded project identity.
+    pub project: String,
+    /// Hire's immutable observed catalog revision.
+    pub catalog_lsn: Lsn,
+    /// Required provider confinement policy.
+    pub policy: RepositoryPolicy,
+    /// Exact selected copies in recorded order, with the execution primary.
+    pub repositories: RepositorySet<OwnedRepository>,
+    /// Active ticket authority, independent of the issue's charged goal.
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    #[schemars(with = "crate::chat::ExplicitNullable<TicketRepositoryRound>")]
+    pub ticket: Option<TicketRepositoryRound>,
+}
+
+impl RepositoryTurnGrant {
+    /// Freeze the selected hired copies without reading configuration or the filesystem.
+    pub fn select(
+        hired_lsn: Lsn,
+        hire: &ScopedRepositories,
+        ticket: Option<&TicketRepositoryRound>,
+    ) -> Result<Self, crate::repository_state::history::RepositoryStateError> {
+        use crate::repository_state::history::RepositoryStateError as Error;
+        if hired_lsn == Lsn::ZERO {
+            return Err(Error::Issue);
+        }
+        let repositories = match ticket {
+            None => hire.repositories.clone(),
+            Some(round) => {
+                let authority = round.authority.as_ref().ok_or(Error::Issue)?;
+                if authority.hired_lsn != hired_lsn
+                    || authority.declaration.project != hire.project.id
+                    || round.round == 0
+                    || round
+                        .repositories
+                        .as_ref()
+                        .and_then(TicketRepositories::declared)
+                        .is_none_or(|scope| {
+                            scope.declaration != authority.declaration
+                                || scope.check_repo != authority.check_repo
+                        })
+                {
+                    return Err(Error::Issue);
+                }
+                let entries = authority
+                    .declaration
+                    .repositories
+                    .entries()
+                    .iter()
+                    .map(|entry| {
+                        let copy = hire.repositories.get(&entry.repo_id).ok_or(Error::Issue)?;
+                        if copy.origin != entry.value {
+                            return Err(Error::Issue);
+                        }
+                        Ok(RepositoryEntry {
+                            repo_id: entry.repo_id.clone(),
+                            value: copy.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?;
+                RepositorySet::new(
+                    authority.declaration.repositories.primary_id().clone(),
+                    entries,
+                )
+                .map_err(|_| Error::Issue)?
+            }
+        };
+        Ok(Self {
+            hired_lsn,
+            project: hire.project.id.clone(),
+            catalog_lsn: hire.catalog_lsn,
+            policy: hire.policy,
+            repositories,
+            ticket: ticket.cloned(),
+        })
+    }
+}
+
+/// One closed managed payload and the authority fixed before its launch.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryTurnIssued {
+    /// Immutable selected repositories and ticket round.
+    pub grant: RepositoryTurnGrant,
+    /// Source-specific task, decision, model, session and reservation facts.
+    pub payload: crate::issue::ManagedIssuePayload,
+}
+
 /// The frozen repository selection owned by an issued turn.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnRepositories {
     hired_lsn: Lsn,
     hire: HireRepositories,
     ticket: Option<TicketRepositoryRound>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grant: Option<Box<RepositoryTurnGrant>>,
 }
 
 impl TurnRepositories {
@@ -599,7 +695,23 @@ impl TurnRepositories {
             hired_lsn,
             hire: hire.clone(),
             ticket: ticket.cloned(),
+            grant: None,
         }
+    }
+
+    pub(crate) fn scoped(hire: &HireRepositories, grant: &RepositoryTurnGrant) -> Self {
+        Self {
+            hired_lsn: grant.hired_lsn,
+            hire: hire.clone(),
+            ticket: grant.ticket.clone(),
+            grant: Some(Box::new(grant.clone())),
+        }
+    }
+
+    /// Explicit scoped grant, when recorded by the issue.
+    #[must_use]
+    pub fn grant(&self) -> Option<&RepositoryTurnGrant> {
+        self.grant.as_deref()
     }
 
     /// Immutable hire position selected by the issue.
@@ -617,7 +729,20 @@ impl TurnRepositories {
     /// Select execution authority only when the frozen hire is a singleton.
     #[must_use]
     pub const fn singleton(&self) -> Option<&SingletonRepository> {
-        self.hire.singleton()
+        if self.grant.is_some() {
+            None
+        } else {
+            self.hire.singleton()
+        }
+    }
+
+    /// Instruction scope is explicit for scoped work; historical turns use their charged goal.
+    #[must_use]
+    pub fn instruction_goal(&self, charged_goal: Option<GoalId>) -> Option<GoalId> {
+        match &self.grant {
+            Some(grant) => grant.ticket.as_ref().map(|round| round.goal),
+            None => charged_goal,
+        }
     }
 
     /// The frozen ticket round, when this issue belongs to one.

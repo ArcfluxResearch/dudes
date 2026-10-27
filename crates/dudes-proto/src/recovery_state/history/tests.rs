@@ -313,3 +313,47 @@ fn an_ignored_record_cannot_replace_a_retained_source_at_the_same_position() {
     history.observe(Lsn(11), &irrelevant, hash).unwrap();
     assert_eq!(history, before);
 }
+
+#[test]
+fn scoped_witnesses_keep_physical_kind_and_refuse_a_different_semantic_family() {
+    for kind in [
+        RecordKind::TurnIssued,
+        RecordKind::TurnIssuedWithBrowserNote,
+        RecordKind::NoteOnlyTurnIssued,
+        RecordKind::TaughtNoteOnlyTurnIssued,
+        RecordKind::IdentifiedTaughtNoteOnlyTurnIssued,
+        RecordKind::ConversationTurnIssued,
+        RecordKind::IdentifiedConversationTurnIssued,
+        RecordKind::MailWakeOnlyTurnIssued,
+        RecordKind::IdentifiedMailWakeOnlyTurnIssued,
+    ] {
+        let legacy = samples::record(kind);
+        let Record::TurnIssuedWithRepositories(mut scoped) =
+            samples::record(RecordKind::TurnIssuedWithRepositories)
+        else {
+            unreachable!()
+        };
+        scoped.payload = legacy.issue_payload().unwrap().to_owned();
+        let old = witness(Lsn(40), &legacy, hash).unwrap().unwrap();
+        let current = witness(Lsn(40), &Record::TurnIssuedWithRepositories(scoped), hash)
+            .unwrap()
+            .unwrap();
+        current.validate().unwrap();
+        assert_eq!(
+            current.reference.kind,
+            RecordKind::TurnIssuedWithRepositories
+        );
+        assert_eq!(current.evidence, old.evidence);
+        assert_eq!(current.reference.owner, old.reference.owner);
+        let mut mismatched = current.clone();
+        mismatched.semantic_issue = Some(if kind == RecordKind::TurnIssued {
+            crate::issue::ManagedIssueKind::Conversation
+        } else {
+            crate::issue::ManagedIssueKind::Ordinary
+        });
+        assert_eq!(mismatched.validate(), Err(RecoveryHistoryError::Identity));
+        mismatched = current;
+        mismatched.reference.kind = kind;
+        assert_eq!(mismatched.validate(), Err(RecoveryHistoryError::Identity));
+    }
+}

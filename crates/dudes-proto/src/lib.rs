@@ -31,6 +31,7 @@ pub mod git;
 pub mod goal;
 pub mod instruction;
 pub mod instruction_state;
+pub mod issue;
 pub mod mail_wake;
 pub mod messages;
 pub mod projection;
