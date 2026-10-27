@@ -251,7 +251,15 @@ fn goal_set_records_the_check_name_it_is_given() {
         )
     );
 
+    let turn = fixture.await_record("the accepted goal's launch", |record| match record {
+        Record::TurnSpawned { agent: who, turn, .. } if *who == agent => Some(*turn),
+        _ => None,
+    });
     let before = fixture.records();
+    common::end_turn(&running.handle, turn);
+    fixture.await_record("the accepted turn's completion", |record| {
+        matches!(record, Record::TurnEnded { turn: ended, .. } if *ended == turn).then_some(())
+    });
     let mut board = params(Some(json!({"id": "card", "label": "Card done"})));
     board["predicate"] =
         json!({"board_state": {"card": "01ARZ3NDEKTSV4RRFFQ69G5FAZ", "status": "done"}});
