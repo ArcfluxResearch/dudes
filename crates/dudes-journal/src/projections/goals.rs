@@ -175,10 +175,6 @@ fn update(
     clippy::match_same_arms,
     reason = "the `Checkpoint` arm is deliberately identical to the wildcard: it exists so the change that teaches something to read a checkpoint has to visit this fold. `expect` rather than `allow` so that giving the arm a body of its own reports the stale attribute instead of leaving it behind"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per record kind this table folds"
-)]
 pub(crate) fn apply(
     table: &mut RowTable<'_>,
     first_done: &mut FirstDoneTable<'_>,
@@ -209,7 +205,7 @@ pub(crate) fn apply(
         && let Some(goal) = issue.goal
     {
         return update(table, lsn, goal, record, |g| {
-            g.note_managed_issue(issue.turn)
+            g.note_managed_issue(issue.turn);
         });
     }
     match record {

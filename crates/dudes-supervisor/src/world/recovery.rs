@@ -60,7 +60,7 @@ impl World {
             .as_ref()
             .ok_or(RecoveryStateError::Binding)?;
         if !repositories.matches_hire(agent.mcp.hire_lsn, &agent.repositories) {
-            return Err(RecoveryStateError::Binding.into());
+            return Err(RecoveryStateError::Binding);
         }
         let mut issue = self
             .recovery_history

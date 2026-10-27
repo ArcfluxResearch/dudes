@@ -8165,6 +8165,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one attachment executor keeps repository admission and owned process startup together"
+    )]
     fn open_pty<R: Rng>(
         &mut self,
         effect: &Effect,
