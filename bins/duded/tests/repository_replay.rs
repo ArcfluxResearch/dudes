@@ -53,6 +53,7 @@ impl PredicateRunner for RealRunner {
 
 struct CleanupRun {
     operation: &'static str,
+    program: String,
     started: Duration,
     returned: Option<Duration>,
     outcome: Option<String>,
@@ -81,11 +82,35 @@ impl CleanupRunner {
             .iter()
             .map(|run| {
                 format!(
-                    "{} started={:?}, returned={:?}, outcome={:?}, owned_after_return={:?}",
-                    run.operation, run.started, run.returned, run.outcome, run.owned_after_return
+                    "{} program={:?}, started={:?}, returned={:?}, outcome={:?}, owned_after_return={:?}",
+                    run.operation, run.program, run.started, run.returned, run.outcome, run.owned_after_return
                 )
             })
             .collect()
+    }
+
+    fn state_snapshot(&self) -> String {
+        let runner = format!("{:?}", self.real.0);
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let child_exit = {
+            use rustix::process::{WaitId, WaitIdOptions, waitid};
+            format!(
+                "{:?}",
+                waitid(
+                    WaitId::All,
+                    WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT
+                )
+            )
+        };
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let child_exit = "unavailable";
+        let mut snapshot = format!("runner={runner}; unreaped_child_exit={child_exit}");
+        let mut end = snapshot.len().min(2048);
+        while !snapshot.is_char_boundary(end) {
+            end -= 1;
+        }
+        snapshot.truncate(end);
+        snapshot
     }
 }
 
@@ -116,6 +141,7 @@ impl PredicateRunner for CleanupRunner {
             if slot < 8 {
                 runs.push(CleanupRun {
                     operation,
+                    program: spec.argv[0].to_string_lossy().chars().take(256).collect(),
                     started: self.started.elapsed(),
                     returned: None,
                     outcome: None,
@@ -430,7 +456,7 @@ fn await_pending_cleanup(fixture: &Fixture, runner: &CleanupRunner, copies: &[Ow
         assert!(
             Instant::now() < deadline,
             "every pending lease must settle; [DEBUG-cleanup] observer_started={:?}, elapsed={:?}, polls={polls}, max_read={max_read:?}, max_gap={max_gap:?}, \
-             last_lsn={:?}, records={:?}, copies_present={:?}, git_admin_present={:?}, git_runs={:?}",
+             last_lsn={:?}, records={:?}, copies_present={:?}, git_admin_present={:?}, git_runs={:?}, runner_state={}",
             started.duration_since(runner.started),
             started.elapsed(),
             entries.last().map(|(lsn, _)| lsn),
@@ -449,6 +475,7 @@ fn await_pending_cleanup(fixture: &Fixture, runner: &CleanupRunner, copies: &[Ow
                 .map(|copy| copy.execution.git_dir.exists())
                 .collect::<Vec<_>>(),
             runner.snapshot(),
+            runner.state_snapshot(),
         );
         std::thread::sleep(Duration::from_millis(5));
     }
