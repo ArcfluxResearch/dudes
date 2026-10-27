@@ -393,6 +393,7 @@ pub fn refusal_code(code: &str) -> Option<&'static str> {
         TicketRefusal::LimitReached,
         TicketRefusal::Busy,
         TicketRefusal::InstructionComparisonPending,
+        TicketRefusal::InstructionCoverageUnknown,
         TicketRefusal::InstructionReviewRequired,
     ]
     .into_iter()
@@ -647,7 +648,7 @@ fn trim_instruction_evidence(review: &mut Value) -> bool {
     if review["gaps"].as_array().is_none() {
         return false;
     }
-    for name in ["changed_paths", "intervals"] {
+    for name in ["changed_paths", "intervals", "repository_gaps"] {
         if let Some(rows) = review[name].as_array_mut()
             && rows.len() > 1
         {
@@ -849,6 +850,7 @@ fn instruction_interval_value(interval: &InstructionReviewInterval) -> Value {
             | InstructionBaselineRef::MissingIssueBoundary { .. } => None,
         });
     json!({
+        "repositories": interval.repositories,
         "kind": kind, "agent": agent, "turn": turn,
         "attachment_lsn": attachment_lsn, "issue_lsn": issue_lsn,
         "baseline_lsn": baseline_lsn, "missing_start": missing_start,
@@ -867,10 +869,18 @@ fn instruction_review_value(review: &InstructionPendingReview) -> Value {
             "set_digest": review.watermark.set_digest,
         },
         "pending_comparison": review.pending_comparison,
+        "coverage_unknown": review.coverage_unknown,
         "intervals": review.intervals.iter().map(instruction_interval_value).collect::<Vec<_>>(),
         "changed_paths": review.changed_paths.iter().map(|change| json!({
+            "repo_id": change.repo_id,
             "path": change.path, "display": change.path.display(),
             "display_truncated": change.path.display_truncated(), "context": change.context,
+        })).collect::<Vec<_>>(),
+        "repository_gaps": review.repository_gaps.iter().map(|member| json!({
+            "repo_id": member.repo_id, "reason": member.gap.reason, "context": member.gap.context,
+            "agent": member.gap.agent, "origin": member.gap.origin, "holds": true,
+            "path": member.gap.path, "display": member.gap.path.as_ref().map(dudes_proto::instruction::NativeInstructionPath::display),
+            "display_truncated": member.gap.path.as_ref().is_some_and(dudes_proto::instruction::NativeInstructionPath::display_truncated),
         })).collect::<Vec<_>>(),
         "gaps": review.gaps.iter().map(|gap| json!({
             "reason": gap.reason, "context": gap.context, "agent": gap.agent,
@@ -1067,6 +1077,7 @@ mod tests {
         let agent = AgentId::from_parts(1, 2);
         let turn = TurnId::from_parts(1, 3);
         let interval = InstructionReviewInterval {
+            repositories: Vec::new(),
             owner: InstructionObservationOwner::Managed {
                 agent,
                 turn,
@@ -1091,6 +1102,8 @@ mod tests {
             value: format!("/project/{}", "a".repeat(3_900)),
         };
         let review = InstructionPendingReview {
+            coverage_unknown: false,
+            repository_gaps: Vec::new(),
             watermark: InstructionReviewWatermark {
                 through_lsn: Lsn(9_007_199_254_740_993),
                 set_digest: Hex32::new([0xdd; 32]),
@@ -1099,6 +1112,7 @@ mod tests {
             intervals: vec![interval; 8],
             changed_paths: vec![
                 InstructionChangedPath {
+                    repo_id: None,
                     path: path.clone(),
                     context: InstructionPathContext::SharedProject
                 };

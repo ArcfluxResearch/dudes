@@ -232,6 +232,8 @@ fn placement(kind: RecordKind) -> Placement {
         ),
         RecordKind::InstructionObservationStarted
         | RecordKind::InstructionObservationFinished
+        | RecordKind::InstructionObservationBatchStarted
+        | RecordKind::InstructionObservationBatchFinished
         | RecordKind::TicketInstructionReviewed
         | RecordKind::InstructionAttemptBoundarySettled => Placement::Out(
             "instruction authority needs exact joined issue, spawn, end and review positions; standalone samples do not supply those joins",

@@ -686,6 +686,11 @@ pub struct TurnRepositories {
 }
 
 impl TurnRepositories {
+    /// The exact hire retained by this issue, including undeclared hired repositories.
+    #[must_use]
+    pub const fn hire(&self) -> &HireRepositories {
+        &self.hire
+    }
     pub(crate) fn recorded(
         hired_lsn: Lsn,
         hire: &HireRepositories,

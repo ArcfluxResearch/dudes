@@ -349,8 +349,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         );
         if attempt.finished.is_none() {
             let snapshot = attempt
-                .snapshot
-                .clone()
+                .legacy_snapshot()
+                .cloned()
                 .context("attached baseline has no sample")?;
             let ticket = attempt.ticket;
             let end_lsn = sup.world().instructions.attachment_end_lsn(attachment_lsn);

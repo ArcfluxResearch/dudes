@@ -412,6 +412,31 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if view.seq != request.expected_seq {
             return Err(stale(&view));
         }
+        if ticket
+            .instruction_review
+            .as_ref()
+            .is_some_and(|review| review.coverage_unknown)
+            || self.sup.world().turns.iter().any(|(turn_id, turn)| {
+                turn.repositories
+                    .as_ref()
+                    .and_then(|scope| scope.grant())
+                    .and_then(|grant| grant.ticket.as_ref())
+                    .is_some_and(|round| {
+                        round.card == view.id
+                            && ticket.goal == Some(round.goal)
+                            && !self
+                                .sup
+                                .world()
+                                .instructions
+                                .repository_turn_covered(*turn_id)
+                    })
+            })
+        {
+            return Err(refusal(
+                TicketRefusal::InstructionCoverageUnknown,
+                view.status,
+            ));
+        }
         if let Some(watermark) = self.review_action(&view, &ticket, request.review_watermark)? {
             let goal = ticket
                 .goal

@@ -185,6 +185,8 @@ pub(crate) fn close_repository_entries(schema: &mut Schema) {
         "turn_issued_with_repositories",
         "ticket_baseline_batch_recorded",
         "ticket_review_batch_stamped",
+        "instruction_observation_batch_started",
+        "instruction_observation_batch_finished",
     ] {
         let variant = variants
             .iter_mut()
@@ -612,6 +614,14 @@ mod tests {
                 (
                     RecordKind::TicketReviewBatchStamped,
                     RecordKind::TicketReviewStamped,
+                ),
+                (
+                    RecordKind::InstructionObservationBatchStarted,
+                    RecordKind::InstructionObservationStarted,
+                ),
+                (
+                    RecordKind::InstructionObservationBatchFinished,
+                    RecordKind::InstructionObservationFinished,
                 ),
             ] {
                 let known = serde_json::to_value(Entry {

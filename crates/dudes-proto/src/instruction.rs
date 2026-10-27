@@ -1030,7 +1030,7 @@ pub enum InstructionUnknownReason {
 /// One terminal settlement. Later attempts cannot replace this attempt's uncertainty.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum InstructionSettlement {
+pub enum InstructionSettlement<C = InstructionComparison> {
     /// Compared sampled endpoints of a recorded interval.
     Compared {
         /// Independently durable end.
@@ -1040,7 +1040,7 @@ pub enum InstructionSettlement {
         /// Ending sample was delayed until recovery.
         recovery: bool,
         /// Known changes together with independent uncertainty.
-        comparison: InstructionComparison,
+        comparison: C,
     },
     /// A prospective baseline was durable but its turn was never issued.
     NoIssuedTurn,
@@ -1062,8 +1062,45 @@ pub enum InstructionSettlement {
         /// Evidence was settled during recovery.
         recovery: bool,
         /// Known changes and independent gaps are preserved together.
-        comparison: InstructionComparison,
+        comparison: C,
     },
+}
+
+impl<C> InstructionSettlement<C> {
+    /// Transform comparison evidence while preserving the exact physical boundary and proof.
+    #[must_use]
+    pub fn map_comparison<D>(self, map: impl FnOnce(C) -> D) -> InstructionSettlement<D> {
+        match self {
+            Self::Compared {
+                end,
+                sampled_at,
+                recovery,
+                comparison,
+            } => InstructionSettlement::Compared {
+                end,
+                sampled_at,
+                recovery,
+                comparison: map(comparison),
+            },
+            Self::Unknown {
+                reason,
+                end,
+                sampled_at,
+                recovery,
+                comparison,
+            } => InstructionSettlement::Unknown {
+                reason,
+                end,
+                sampled_at,
+                recovery,
+                comparison: map(comparison),
+            },
+            Self::NoIssuedTurn => InstructionSettlement::NoIssuedTurn,
+            Self::NoProcess { proof_lsn, proof } => {
+                InstructionSettlement::NoProcess { proof_lsn, proof }
+            }
+        }
+    }
 }
 
 /// Exact review set. The digest covers the canonical ordered outstanding interval identities
@@ -1126,6 +1163,10 @@ pub struct InstructionGoalClear {
 /// One observation interval in the operator's bounded evidence view.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct InstructionReviewInterval {
+    /// Every hired repository covered by the physical attempt; empty for historical singleton work.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 8))]
+    pub repositories: Vec<crate::repository::RepoId>,
     /// Observed owner, without an exclusive-writer claim.
     pub owner: InstructionObservationOwner,
     /// Exact physical attempt or real missing turn boundary.
@@ -1145,6 +1186,9 @@ pub struct InstructionReviewInterval {
 /// Path evidence shown by `ticket.read`, without instruction contents.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct InstructionChangedPath {
+    /// Hired repository whose discovery scope supplied this path; absent for legacy evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<crate::repository::RepoId>,
     /// Exact known changed path.
     pub path: NativeInstructionPath,
     /// Daemon-established context.
@@ -1164,6 +1208,21 @@ pub struct InstructionPendingReview {
     pub changed_paths: Vec<InstructionChangedPath>,
     /// Bounded independent coverage gaps.
     pub gaps: Vec<InstructionCoverageGap>,
+    /// Unknown coverage in a scoped attempt cannot qualify acceptance.
+    #[serde(default)]
+    pub coverage_unknown: bool,
+    /// Repository-scoped uncertainty, preserving equal paths in separate hired members.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repository_gaps: Vec<RepositoryInstructionGap>,
+}
+
+/// One review gap retains the hired repository that supplied its discovery scope.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RepositoryInstructionGap {
+    /// Hired repository identity.
+    pub repo_id: crate::repository::RepoId,
+    /// Named uncertainty and original path context.
+    pub gap: InstructionCoverageGap,
 }
 
 /// What Dudes could not see during a ticket that passed without a seen change. It lists the
@@ -1786,6 +1845,10 @@ impl InstructionPendingReview {
         collection(self.intervals.len())?;
         collection(self.changed_paths.len())?;
         gaps_valid(&self.gaps)?;
+        collection(self.repository_gaps.len())?;
+        for gap in &self.repository_gaps {
+            gaps_valid(std::slice::from_ref(&gap.gap))?;
+        }
         for changed in &self.changed_paths {
             changed.path.validate()?;
         }
@@ -1804,7 +1867,7 @@ impl InstructionPendingReview {
             pending_comparison: self.pending_comparison,
             intervals: count(self.intervals.len()),
             changed_paths: count(self.changed_paths.len()),
-            gaps: count(self.gaps.len()),
+            gaps: count(self.gaps.len() + self.repository_gaps.len()),
         }
     }
 }
@@ -1881,7 +1944,7 @@ fn unknown_coverage_valid(
     }
 }
 
-fn settlement_valid(
+pub(crate) fn settlement_valid(
     owner: InstructionObservationOwner,
     baseline: InstructionBaselineRef,
     settlement: &InstructionSettlement,
@@ -2006,6 +2069,14 @@ fn missing_issue_settlement(
 /// Refuses malformed boundaries, unauthorized review actors, unbounded metadata or invalid rework.
 pub fn validate_instruction_record(record: &Record) -> Result<(), InstructionValidationError> {
     match record {
+        Record::InstructionObservationBatchStarted(batch) => {
+            batch.validate()?;
+            owner_valid(batch.owner)?;
+            if !matches!(batch.owner, InstructionObservationOwner::Managed { .. }) {
+                return Err(InstructionValidationError::InvalidBoundary);
+            }
+        }
+        Record::InstructionObservationBatchFinished(batch) => batch.validate()?,
         Record::InstructionObservationStarted {
             owner, snapshot, ..
         } => {
@@ -2273,7 +2344,7 @@ mod tests {
             assert_eq!(json["t"], name);
             assert_eq!(serde_json::from_value::<Record>(json).unwrap(), record);
         }
-        assert_eq!(crate::RecordKind::from_tag(110), None);
+        assert_eq!(crate::RecordKind::from_tag(112), None);
     }
 
     #[test]

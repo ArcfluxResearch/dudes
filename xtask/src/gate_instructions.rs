@@ -7,7 +7,9 @@ use anyhow::{Context as _, Result, ensure};
 use dudes_proto::instruction_state::cache::{
     InstructionCache, InstructionCacheReader, InstructionCacheRow,
 };
-use dudes_proto::instruction_state::{InstructionAttempt, InstructionState};
+use dudes_proto::instruction_state::{
+    InstructionAttempt, InstructionComparisonEvidence, InstructionState,
+};
 use dudes_proto::{
     Entry, InstructionBaselineRef, InstructionBoundaryAbsenceProof, InstructionEndBoundary,
     InstructionGapKind, InstructionIssueAssociation, InstructionNativeBoundaryReceipt,
@@ -431,8 +433,7 @@ fn snapshot(
         "attempt identity or review changed"
     );
     let snapshot = attempt
-        .snapshot
-        .as_ref()
+        .legacy_snapshot()
         .context("starting snapshot missing")?;
     snapshot.validate()?;
     ensure!(
@@ -470,7 +471,7 @@ fn finished_record(journal: &Journal, attempt: &InstructionAttempt) -> Result<()
     ensure!(
         matches!(journal.0.get(&finished.lsn), Some(Record::InstructionObservationFinished {
         owner, ticket: None, baseline, settlement }) if *owner == attempt.owner
-        && *baseline == attempt.baseline && *settlement == finished.settlement),
+        && *baseline == attempt.baseline && settlement.clone().map_comparison(InstructionComparisonEvidence::Legacy) == finished.settlement),
         "terminal record linkage changed"
     );
     Ok(())
@@ -512,7 +513,7 @@ fn completed_attempt(
                 end_lsn,
             },
         recovery: false,
-        comparison,
+        comparison: InstructionComparisonEvidence::Legacy(comparison),
         ..
     } = &attempt.finished.as_ref().unwrap().settlement
     else {
@@ -574,7 +575,7 @@ fn old_unknown(
         end: None,
         sampled_at: None,
         recovery: true,
-        comparison,
+        comparison: InstructionComparisonEvidence::Legacy(comparison),
     } = &attempt.finished.as_ref().unwrap().settlement
     else {
         anyhow::bail!("old attempt lost its unsampled recovery uncertainty");

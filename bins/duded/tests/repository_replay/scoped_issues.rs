@@ -761,6 +761,10 @@ fn a_scoped_issue_replays_its_frozen_task_before_a_refused_provider_launch() {
 
 #[test]
 fn pending_instruction_review_retains_scope_after_the_charge_goal_is_cleared() {
+    use dudes_proto::repository_instruction::{
+        INSTRUCTION_BATCH_VERSION, RepositoryInstructionBinding, RepositoryInstructionFinish,
+        RepositoryInstructionSettlement, RepositoryInstructionSnapshot, RepositoryInstructionStart,
+    };
     use dudes_proto::{
         InstructionBaselineRef, InstructionComparison, InstructionCoverageGap, InstructionGapKind,
         InstructionGapOrigin, InstructionIssueAssociation, InstructionObservationOwner,
@@ -784,33 +788,78 @@ fn pending_instruction_review_retains_scope_after_the_charge_goal_is_cleared() {
         unreachable!()
     };
     snapshot.gaps[0].agent = Some(start.agent);
-    let began = log.append(Record::InstructionObservationStarted {
+    snapshot.execution_folder = None;
+    snapshot.gaps[0].reason = InstructionGapKind::PathUnresolved;
+    let binding = RepositoryInstructionBinding {
+        hired_lsn: log.story.hired_lsn,
+        ticket_start_lsn: Some(
+            log.world
+                .ticket_repository_round(start.goal.id)
+                .unwrap()
+                .start_lsn,
+        ),
+    };
+    let observed = RepositoryInstructionStart {
+        v: INSTRUCTION_BATCH_VERSION,
+        binding,
         owner,
         ticket,
-        snapshot,
-    });
-    log.append(Record::InstructionObservationFinished {
-        owner,
-        ticket,
-        baseline: InstructionBaselineRef::Started { lsn: began },
-        settlement: InstructionSettlement::Unknown {
-            reason: InstructionUnknownReason::UnrecordedLaunchBoundary,
-            end: None,
-            sampled_at: None,
-            recovery: true,
-            comparison: InstructionComparison {
-                changes: Vec::new(),
-                gaps: vec![InstructionCoverageGap {
-                    origin: InstructionGapOrigin::Observed,
-                    reason: InstructionGapKind::UnrecordedLaunchBoundary,
-                    context: InstructionPathContext::SharedProject,
-                    agent: Some(start.agent),
-                    path: None,
-                }],
-                usage: dudes_proto::InstructionSampleUsage::default(),
-            },
+        members: log
+            .story
+            .hire
+            .repositories
+            .repositories
+            .entries()
+            .iter()
+            .map(|member| RepositoryInstructionSnapshot {
+                repo_id: member.repo_id.clone(),
+                root: None,
+                snapshot: snapshot.clone(),
+            })
+            .collect(),
+    };
+    let recorded = write_record(
+        &mut log.writer,
+        Record::InstructionObservationBatchStarted(observed.clone()),
+    );
+    apply_pair(&mut log.world, &mut log.projection, &recorded);
+    let began = recorded.0;
+    let settlement = InstructionSettlement::Unknown {
+        reason: InstructionUnknownReason::UnrecordedLaunchBoundary,
+        end: None,
+        sampled_at: None,
+        recovery: true,
+        comparison: InstructionComparison {
+            changes: Vec::new(),
+            gaps: vec![InstructionCoverageGap {
+                origin: InstructionGapOrigin::Observed,
+                reason: InstructionGapKind::UnrecordedLaunchBoundary,
+                context: InstructionPathContext::SharedProject,
+                agent: Some(start.agent),
+                path: None,
+            }],
+            usage: dudes_proto::InstructionSampleUsage::default(),
         },
-    });
+    };
+    let recorded = write_record(
+        &mut log.writer,
+        Record::InstructionObservationBatchFinished(RepositoryInstructionFinish {
+            v: INSTRUCTION_BATCH_VERSION,
+            binding,
+            owner,
+            ticket,
+            baseline: InstructionBaselineRef::Started { lsn: began },
+            members: observed
+                .members
+                .iter()
+                .map(|member| RepositoryInstructionSettlement {
+                    repo_id: member.repo_id.clone(),
+                    settlement: settlement.clone(),
+                })
+                .collect(),
+        }),
+    );
+    apply_pair(&mut log.world, &mut log.projection, &recorded);
     log.append(Record::GoalCleared {
         agent: start.agent,
         goal: start.goal.id,
