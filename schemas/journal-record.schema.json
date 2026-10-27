@@ -793,6 +793,24 @@
         }
       ]
     },
+    "CaptureInterval": {
+      "description": "When a capture began and ended, in Unix milliseconds.",
+      "properties": {
+        "ended_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Capture end."
+        },
+        "started_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Capture start."
+        }
+      },
+      "required": [
+        "started_at",
+        "ended_at"
+      ],
+      "type": "object"
+    },
     "CardId": {
       "description": "CardId: a ULID (26 characters of Crockford base32).",
       "maxLength": 26,
@@ -7042,6 +7060,35 @@
       "pattern": "^[a-z][a-z0-9_-]{0,31}$",
       "type": "string"
     },
+    "RepositoryBaselineMember": {
+      "additionalProperties": false,
+      "description": "One declared repository's baseline, including its identity in the member byte cap.",
+      "properties": {
+        "interval": {
+          "$ref": "#/$defs/CaptureInterval",
+          "description": "Capture interval."
+        },
+        "outcome": {
+          "$ref": "#/$defs/BaselineOutcome",
+          "description": "Observed root and initial state, or an explicit failure."
+        },
+        "repo_id": {
+          "$ref": "#/$defs/RepoId",
+          "description": "Identity resolved through the recorded declaration and hire."
+        },
+        "versions": {
+          "$ref": "#/$defs/SamplerVersions",
+          "description": "Sampler and policy revisions."
+        }
+      },
+      "required": [
+        "repo_id",
+        "interval",
+        "versions",
+        "outcome"
+      ],
+      "type": "object"
+    },
     "RepositoryEntry_CatalogRepository": {
       "description": "One identified member of an ordered repository collection.",
       "properties": {
@@ -7106,6 +7153,30 @@
         }
       ]
     },
+    "RepositoryReviewBinding": {
+      "additionalProperties": false,
+      "description": "References to the immutable start and hire which own paths and the check definition.",
+      "properties": {
+        "hired_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Actual hire position selected by the start."
+        },
+        "start_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Actual ticket start position."
+        },
+        "ticket": {
+          "$ref": "#/$defs/TicketBinding",
+          "description": "Frozen ticket round and claimant."
+        }
+      },
+      "required": [
+        "ticket",
+        "start_lsn",
+        "hired_lsn"
+      ],
+      "type": "object"
+    },
     "RepositorySet_CatalogRepository": {
       "description": "One through eight distinct repositories with a present primary member.",
       "properties": {
@@ -7168,6 +7239,112 @@
         "entries"
       ],
       "type": "object"
+    },
+    "RepositoryStampMember": {
+      "additionalProperties": false,
+      "description": "One declared repository's post-check sample, including its identity in the byte cap.",
+      "properties": {
+        "interval": {
+          "$ref": "#/$defs/CaptureInterval",
+          "description": "Capture interval."
+        },
+        "outcome": {
+          "$ref": "#/$defs/RepositoryStampOutcome",
+          "description": "Sample or explicit failure."
+        },
+        "repo_id": {
+          "$ref": "#/$defs/RepoId",
+          "description": "Identity resolved through the recorded declaration and hire."
+        },
+        "versions": {
+          "$ref": "#/$defs/SamplerVersions",
+          "description": "Sampler and policy revisions."
+        }
+      },
+      "required": [
+        "repo_id",
+        "interval",
+        "versions",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "RepositoryStampOutcome": {
+      "description": "A post-check observation carries the actual sampled root identity.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A bounded scope was sampled from this root.",
+          "properties": {
+            "complete": {
+              "description": "The eligible scope was sampled without a cap or refusal.",
+              "type": "boolean"
+            },
+            "digest": {
+              "$ref": "#/$defs/DigestHex",
+              "description": "Scope digest."
+            },
+            "omitted": {
+              "description": "Omitted eligible pairs.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "omitted_lower_bound": {
+              "description": "The omission count is a lower bound.",
+              "type": "boolean"
+            },
+            "root": {
+              "$ref": "#/$defs/FileIdentity",
+              "description": "Filesystem identity of the opened execution root."
+            },
+            "state": {
+              "const": "sampled",
+              "type": "string"
+            },
+            "untracked": {
+              "description": "New files the listing could not name.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "untracked_lower_bound": {
+              "description": "The new-file count is a lower bound.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "state",
+            "root",
+            "complete",
+            "digest",
+            "omitted",
+            "omitted_lower_bound",
+            "untracked",
+            "untracked_lower_bound"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The repository could not be sampled.",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/DiffRefusal",
+              "description": "Finite reason."
+            },
+            "state": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "RepositoryTurnGrant": {
       "additionalProperties": false,
@@ -7567,6 +7744,36 @@
       "minLength": 26,
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
+    },
+    "TicketBinding": {
+      "description": "The ticket round a payload belongs to.",
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "Ticket identity."
+        },
+        "claimant": {
+          "$ref": "#/$defs/AgentId",
+          "description": "Claimant when the capture began."
+        },
+        "goal": {
+          "$ref": "#/$defs/GoalId",
+          "description": "Installed goal."
+        },
+        "round": {
+          "description": "Installed round.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "card",
+        "round",
+        "goal",
+        "claimant"
+      ],
+      "type": "object"
     },
     "TicketCheck": {
       "description": "The check a ticket is finished by, as it was when the ticket was made or last edited. Storing\nthe resolved predicate means a later enrollment edit cannot change what an existing ticket is\nchecked by.",
@@ -12385,6 +12592,96 @@
         "card",
         "goal",
         "stamp"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "The complete declared repository set observed before a ticket round's first issue.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "The daemon's wall clock as `Clock::now()` reported it when the supervisor emitted the\n`Persist` that carried this record, UTC milliseconds. `lsn` orders; `at` labels —\nprojections tolerate a non-monotone `at` (clock steps, NTP) and never sort by it, and it\nis never an input to `decide()` (invariant 5)."
+        },
+        "binding": {
+          "$ref": "#/$defs/RepositoryReviewBinding",
+          "description": "Immutable authority references."
+        },
+        "members": {
+          "description": "Every declared member, including unavailable observations.",
+          "items": {
+            "$ref": "#/$defs/RepositoryBaselineMember"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
+        },
+        "t": {
+          "const": "ticket_baseline_batch_recorded",
+          "type": "string"
+        },
+        "v": {
+          "description": "Encoding revision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "t",
+        "v",
+        "binding",
+        "members"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "The complete declared repository set sampled after one frozen check result.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "The daemon's wall clock as `Clock::now()` reported it when the supervisor emitted the\n`Persist` that carried this record, UTC milliseconds. `lsn` orders; `at` labels —\nprojections tolerate a non-monotone `at` (clock steps, NTP) and never sort by it, and it\nis never an input to `decide()` (invariant 5)."
+        },
+        "baseline_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Exact baseline batch position."
+        },
+        "binding": {
+          "$ref": "#/$defs/RepositoryReviewBinding",
+          "description": "Immutable authority references."
+        },
+        "check_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Exact observed predicate-result position."
+        },
+        "members": {
+          "description": "Every declared member, including unavailable observations.",
+          "items": {
+            "$ref": "#/$defs/RepositoryStampMember"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
+        },
+        "t": {
+          "const": "ticket_review_batch_stamped",
+          "type": "string"
+        },
+        "v": {
+          "description": "Encoding revision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "t",
+        "v",
+        "binding",
+        "baseline_lsn",
+        "check_lsn",
+        "members"
       ],
       "type": "object"
     },

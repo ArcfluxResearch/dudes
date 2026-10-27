@@ -377,6 +377,15 @@ mod tests {
                 refs
             }
             Record::TicketReviewStamped { stamp, .. } => vec![stamp.baseline_lsn, stamp.check_lsn],
+            Record::TicketBaselineBatchRecorded(batch) => {
+                vec![batch.binding.start_lsn, batch.binding.hired_lsn]
+            }
+            Record::TicketReviewBatchStamped(batch) => vec![
+                batch.binding.start_lsn,
+                batch.binding.hired_lsn,
+                batch.baseline_lsn,
+                batch.check_lsn,
+            ],
             Record::InstructionAttemptBoundarySettled {
                 owner,
                 started_lsn,
@@ -737,7 +746,7 @@ mod tests {
 
     #[test]
     fn no_sample_lsn_is_below_the_first_segment() {
-        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 90;
+        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 96;
 
         let mut swept = 0_usize;
         let mut lsns = 0_usize;

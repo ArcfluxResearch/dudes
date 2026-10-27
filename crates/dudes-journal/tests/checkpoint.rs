@@ -196,7 +196,9 @@ fn placement(kind: RecordKind) -> Placement {
         | RecordKind::TicketCreatedWithRepositories
         | RecordKind::TicketEditedWithRepositories
         | RecordKind::TicketStartedWithRepositories
-        | RecordKind::TurnIssuedWithRepositories => Placement::Out(
+        | RecordKind::TurnIssuedWithRepositories
+        | RecordKind::TicketBaselineBatchRecorded
+        | RecordKind::TicketReviewBatchStamped => Placement::Out(
             "repository authority needs exact catalog, trust and pre-copy lease positions; repository replay tests cover the complete lifecycle",
         ),
         RecordKind::WorkspaceTrustSet => Placement::Out(
