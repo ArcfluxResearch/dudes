@@ -2,6 +2,9 @@ use super::*;
 use dudes_config::workspace::{NewWorkspace, RepositoryDefinition};
 use dudes_proto::rpc::Method;
 
+#[path = "current_enrollment/authority_regressions.rs"]
+mod authority_regressions;
+
 fn configured(
     fixture: &Fixture,
     origins: &[RepositoryEntry<CatalogRepository>],
