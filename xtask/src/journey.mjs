@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { oldProjectWords } from '../../floor/tests/helpers/project-word.mjs';
-import { terminalCommandsOnScreen } from '../../floor/tests/helpers/terminal-commands.mjs';
+import { findTerminalCommands } from '../../floor/tests/helpers/terminal-commands.mjs';
 
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
@@ -87,17 +87,14 @@ export class Journey {
 
   /** Look at the screen now: save a picture and record any terminal command it shows. */
   async screen(name) {
-    const { text, codeBlocks } = await this.evaluate(`({
-      text: document.body.innerText + '\\n' + [...document.querySelectorAll('code')].map((el) => el.textContent).join('\\n'),
-      codeBlocks: [...document.querySelectorAll('.guide-command')].map((el) => el.textContent),
-    })`);
+    const text = await this.evaluate(`document.body.innerText + '\\n' + [...document.querySelectorAll('code')].map((el) => el.textContent).join('\\n')`);
     const shot = await this.run.cdp.send('Page.captureScreenshot', { format: 'png' }, this.run.cdp.session);
     const file = join(this.pictures, `${String(this.screens.length + 1).padStart(2, '0')}-${name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.png`);
     await writeFile(file, Buffer.from(shot.data, 'base64'));
     this.screens.push(name);
     for (const context of oldProjectWords(text)) this.oldWords.push(`${name}: ${context}`);
     const seen = new Set();
-    for (const found of terminalCommandsOnScreen({ text, codeBlocks })) {
+    for (const found of findTerminalCommands(text)) {
       if (seen.has(found.text)) continue;
       seen.add(found.text);
       const exit = this.allowed.find((entry) => entry.screen === name && entry.text.test(found.text));
@@ -228,6 +225,61 @@ export class Journey {
     check((await stat(join(this.run.repo, 'journey-note.txt')).catch(() => null))?.isFile(), 'the agent left no change in the project');
   }
 
+  async layoutOffice() {
+    const view = await this.evaluate(`document.querySelector('.control-panel')?.dataset.view`);
+    if (view === 'board') await this.click('#view-board');
+    else if (view) await this.click('#office-open');
+    await this.until(`location.hash === '' && !!document.querySelector('.office-canvas') && !document.querySelector('.control-panel')`,
+      'Office did not open for the viewport check');
+  }
+
+  async viewportHeights(crewSize) {
+    const saved = await this.evaluate(`({ width: innerWidth, height: innerHeight,
+      view: document.querySelector('.control-panel')?.dataset.view ?? 'office' })`);
+    const views = [
+      { name: 'office', selector: '#office-open', ready: `location.hash === '' && !!document.querySelector('.office-canvas') && !document.querySelector('.control-panel')` },
+      { name: 'board', selector: '#view-board', ready: `document.querySelector('.control-panel')?.dataset.view === 'board'` },
+      { name: 'log', selector: '#view-log', ready: `location.hash === '#/log' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'log'` },
+      { name: 'setup', selector: '#view-setup', ready: `location.hash === '#/setup' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'setup'` },
+      { name: 'settings', selector: '#view-settings', ready: `location.hash === '#/settings' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'settings'` },
+    ];
+    try {
+      for (const [width, height] of [[1440, 900], [390, 844]]) {
+        await this.run.cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, this.run.cdp.session);
+        for (const view of views) {
+          await this.layoutOffice();
+          if (view.name !== 'office') await this.click(view.selector);
+          await this.until(view.ready, `${view.name} did not open for the viewport check`);
+          const actual = await this.evaluate(`(async () => {
+            await document.fonts.ready;
+            await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+            return { scrollHeight: document.documentElement.scrollHeight, windowWidth: innerWidth, windowHeight: innerHeight };
+          })()`);
+          check(actual.scrollHeight === actual.windowHeight && actual.windowWidth === width && actual.windowHeight === height,
+            `viewport ${width}x${height} ${view.name} crew=${crewSize}: scrollHeight=${actual.scrollHeight}, innerWidth=${actual.windowWidth}, innerHeight=${actual.windowHeight}`);
+        }
+      }
+      console.log(`PASS viewport heights: 10 views, crew=${crewSize}`);
+    } finally {
+      await this.run.cdp.send('Emulation.setDeviceMetricsOverride', { width: saved.width, height: saved.height, deviceScaleFactor: 1, mobile: false }, this.run.cdp.session);
+      await this.layoutOffice();
+      const restore = views.find((view) => view.name === saved.view);
+      check(restore, 'the viewport check cannot restore this view');
+      if (restore.name !== 'office') await this.click(restore.selector);
+      await this.until(restore.ready, 'the view did not restore after the viewport check');
+    }
+  }
+
+  async crowdedViewportHeights() {
+    for (let index = 2; index <= 16; index += 1) {
+      await this.run.cli(['hire', '--name', `Layout agent ${index}`, '--role', 'Layout check',
+        '--department', 'Checks', '--provider', 'codex', '--cwd', this.run.repo]);
+    }
+    await this.layoutOffice();
+    await this.until(`document.querySelectorAll('.crew-row[data-agent-id]').length === 16`, 'the layout crew did not reach the Floor');
+    await this.viewportHeights(16);
+  }
+
   async otherScreens() {
     for (const name of ['log', 'setup', 'settings']) {
       await this.click(`#view-${name}`);
@@ -279,6 +331,8 @@ export class Journey {
     await this.addProject();
     await this.hire();
     await this.ticket();
+    await this.viewportHeights(1);
+    await this.crowdedViewportHeights();
     await this.otherScreens();
     await this.signOut();
     await this.finish();
