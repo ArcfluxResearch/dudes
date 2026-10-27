@@ -1377,8 +1377,14 @@ fn threaded_generation_refuses_old_and_mixed_asset_manifests_before_serving() {
     ));
     let error = prepare(&floor(previous)).expect_err("generation six assets are refused");
     assert!(format!("{error:#}").contains("browser wire version mismatch"));
+    let previous = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/floor-release-v9"
+    ));
+    let error = prepare(&floor(previous)).expect_err("the previous browser generation is refused");
+    assert!(format!("{error:#}").contains("browser wire version mismatch"));
     let matched = copy_fixture();
-    prepare(&floor(matched.path())).expect("matching generation seven fixture");
+    prepare(&floor(matched.path())).expect("matching browser generation fixture");
     let mixed = copy_fixture();
     let path = mixed.path().join("release-manifest.json");
     let mut manifest: serde_json::Value =

@@ -29,7 +29,7 @@ import { PRIORITY_WORDS } from './priority.ts';
 import type { Priority } from './priority.ts';
 import { COULD_NOT_CONFIRM, REFUSAL_CODES, WAITS, placeInLine, reasonSentence, refusalSentence, waitSentence } from './words.ts';
 import type { RefusalCode, Wait } from './words.ts';
-import { editableDetail, getDetailState, reviewedWatermark } from './detail.ts';
+import { currentDetail, editableDetail, getDetailState, reviewedWatermark } from './detail.ts';
 import type { InstructionWatermark } from './instructions.ts';
 
 export const ROUTES = Object.freeze({
@@ -403,6 +403,11 @@ export async function changeTicket(card: CardRow, change: Change, deps: ControlD
   const watermark = reviewAction && current?.seq === card.seq ? reviewedWatermark(getDetailState(), current) : null;
   if (reviewAction && watermark === null) {
     finishRequest(request, { card: card.id, tone: 'problem', text: 'Read the current instruction evidence before reviewing this ticket.' });
+    return false;
+  }
+  if (change.verb === 'accept' && current !== undefined
+    && currentDetail(getDetailState(), current)?.instruction_review?.coverage_unknown === true) {
+    finishRequest(request, { card: card.id, tone: 'problem', text: 'Instruction coverage is unknown in a hired repository. You can ask for changes.' });
     return false;
   }
   commit({ sending: true, notice: null });

@@ -17,16 +17,18 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use dudes_proto::{GitState, GitView};
+use dudes_proto::repository::{HireRepositories, RepoId};
+use dudes_proto::{GitState, GitView, RepositoryReadSelection};
 use dudes_supervisor::World;
 use dudes_types::{AgentId, Timestamp};
+use dudes_types::{CardId, Seq};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 use crate::git_read::{Lease, Tree};
 
-/// Most bytes one request body may carry, checked before a byte of it is read. The canonical body
-/// is under 60.
-pub const MAX_GIT_BODY_BYTES: usize = 128;
+/// Most bytes one closed repository-selection request may carry, checked before reading it.
+pub const MAX_GIT_BODY_BYTES: usize = 256;
 /// How soon the same session may read again.
 pub const SESSION_INTERVAL: Duration = Duration::from_secs(2);
 /// How many abandoned workers the route tolerates before it answers `busy`.
@@ -46,13 +48,20 @@ pub const GIT_SWITCH: GitSwitch = GitSwitch {};
 #[serde(deny_unknown_fields)]
 struct GitJson {
     agent_id: String,
+    #[serde(default)]
+    repositories: Option<RepositoryReadSelection>,
+    #[serde(default)]
+    card: Option<CardId>,
+    #[serde(default)]
+    expected_seq: Option<Seq>,
 }
 
-/// One bounded request: the agent to read, and nothing else. No revision, path or pattern comes
-/// from the browser.
+/// One bounded recorded repository selector. Display paths and Git revisions are never selectors.
 #[derive(Clone)]
 pub struct GitRequest {
     pub(crate) agent: AgentId,
+    pub(crate) repositories: Option<RepositoryReadSelection>,
+    pub(crate) ticket: Option<(CardId, Seq)>,
 }
 
 impl fmt::Debug for GitRequest {
@@ -62,7 +71,17 @@ impl fmt::Debug for GitRequest {
 }
 
 impl GitRequest {
-    /// Decode one body: one flat object with exactly one string member.
+    /// The historical omission, admitted only when the recorded authority is a singleton.
+    #[must_use]
+    pub fn singleton(agent: AgentId) -> Self {
+        Self {
+            agent,
+            repositories: None,
+            ticket: None,
+        }
+    }
+
+    /// Decode one closed agent, repository and optional ticket selection.
     ///
     /// # Errors
     ///
@@ -81,7 +100,24 @@ impl GitRequest {
             serde_json::from_slice(bytes).context("invalid Floor git request JSON")?;
         let agent =
             AgentId::parse(&raw.agent_id).map_err(|_| anyhow!("invalid Floor git agent"))?;
-        Ok(Self { agent })
+        let ticket = match (raw.card, raw.expected_seq) {
+            (Some(card), Some(seq))
+                if matches!(raw.repositories, Some(RepositoryReadSelection::Declared)) =>
+            {
+                Some((card, seq))
+            }
+            (None, None)
+                if !matches!(raw.repositories, Some(RepositoryReadSelection::Declared)) =>
+            {
+                None
+            }
+            _ => bail!("declared repository reads require one exact ticket revision"),
+        };
+        Ok(Self {
+            agent,
+            repositories: raw.repositories,
+            ticket,
+        })
     }
 }
 
@@ -94,9 +130,112 @@ pub enum GitTarget {
     Released,
     /// A retired agent whose worktree's removal is recorded.
     Removed,
+    /// A selector that cannot resolve through the recorded authority.
+    Refused(GitState),
+    /// One recorded selection, read under one worker, deadline and aggregate response allowance.
+    Repositories {
+        /// Opaque identity of the exact hire or frozen ticket read.
+        binding_id: String,
+        /// All expected members, retaining lifecycle failures.
+        entries: Vec<(RepoId, Result<Tree, GitState>)>,
+    },
 }
 
 impl GitTarget {
+    /// Resolve one recorded hire selection without consulting current project configuration.
+    #[must_use]
+    pub fn selected(world: &World, request: &GitRequest) -> Option<Self> {
+        let row = world.agents.get(&request.agent)?;
+        match &row.repositories {
+            HireRepositories::Legacy(_) => match request.repositories {
+                None | Some(RepositoryReadSelection::Hired) => Self::of(world, request.agent),
+                _ => Some(Self::Refused(GitState::InvalidSelection)),
+            },
+            HireRepositories::Scoped(hire) => {
+                let ids = match &request.repositories {
+                    None if hire.repositories.entries().len() == 1 => hire
+                        .repositories
+                        .entries()
+                        .iter()
+                        .map(|entry| entry.repo_id.clone())
+                        .collect::<Vec<_>>(),
+                    Some(RepositoryReadSelection::Hired) => hire
+                        .repositories
+                        .entries()
+                        .iter()
+                        .map(|entry| entry.repo_id.clone())
+                        .collect(),
+                    Some(RepositoryReadSelection::Repository { repo_id })
+                        if hire.repositories.get(repo_id).is_some() =>
+                    {
+                        vec![repo_id.clone()]
+                    }
+                    _ => return Some(Self::Refused(GitState::InvalidSelection)),
+                };
+                let entries = ids
+                    .into_iter()
+                    .map(|repo_id| {
+                        let copy = &hire
+                            .repositories
+                            .get(&repo_id)
+                            .expect("selected recorded member")
+                            .recorded;
+                        let target = match world.worktrees.get(&copy.worktree) {
+                            Some(lease)
+                                if lease.removed.is_none()
+                                    && !row.retired
+                                    && lease.path == copy.execution.directory
+                                    && lease.origin == copy.origin.directory
+                                    && lease.base == copy.base =>
+                            {
+                                Ok(Tree::Recorded(Box::new(copy.clone())))
+                            }
+                            Some(lease) if lease.removed.is_none() && row.retired => {
+                                Err(GitState::WorktreeReleased)
+                            }
+                            _ if row.retired => Err(GitState::WorktreeRemoved),
+                            _ => Err(GitState::WorktreeMismatch),
+                        };
+                        (repo_id, target)
+                    })
+                    .collect();
+                let authority =
+                    serde_json::to_vec(&(row.mcp.hire_lsn, hire.recorded(), &request.repositories))
+                        .expect("recorded selection serializes");
+                Some(Self::Repositories {
+                    binding_id: crate::git_read::diff::hex(&Sha256::digest(authority)),
+                    entries,
+                })
+            }
+        }
+    }
+
+    /// Resolve an exact frozen declaration already validated against its ticket and hire.
+    #[must_use]
+    pub fn declared(recorded: &crate::floor_diff::Recorded) -> Self {
+        if recorded.repositories.len() == 1 && recorded.repositories[0].repo_id.is_none() {
+            return Self::Read(recorded.repositories[0].tree.clone());
+        }
+        let entries = recorded
+            .repositories
+            .iter()
+            .filter_map(|member| {
+                member
+                    .repo_id
+                    .clone()
+                    .map(|id| (id, Ok(member.tree.clone())))
+            })
+            .collect::<Vec<_>>();
+        if entries.len() != recorded.repositories.len() {
+            return Self::Refused(GitState::InvalidSelection);
+        }
+        let authority = serde_json::to_vec(recorded).expect("recorded declaration serializes");
+        Self::Repositories {
+            binding_id: crate::git_read::diff::hex(&Sha256::digest(authority)),
+            entries,
+        }
+    }
+
     /// The target for `agent` in `world`, or `None` when no live agent and no retired worktree
     /// agent has this id. A retired agent's worktree is answered by its recorded removal alone:
     /// one that a recorded child still holds active is released here, as the Floor shows it.
@@ -128,9 +267,26 @@ impl GitTarget {
 pub trait CheckoutRead: Send + Sync + 'static {
     /// Read `tree`, stamped `now`.
     fn read(&self, tree: &Tree, now: Timestamp) -> GitView;
+    /// Read the complete expected membership with shared budgets. Unsupported by stand-in readers.
+    fn read_repositories(
+        &self,
+        _entries: &[(RepoId, Result<Tree, GitState>)],
+        _binding: &str,
+        now: Timestamp,
+    ) -> GitView {
+        GitView::refused(GitState::UnsupportedPlatform, now)
+    }
 }
 
 impl CheckoutRead for crate::git_read::GitReader {
+    fn read_repositories(
+        &self,
+        entries: &[(RepoId, Result<Tree, GitState>)],
+        binding: &str,
+        now: Timestamp,
+    ) -> GitView {
+        Self::read_repositories(self, entries, binding, now)
+    }
     fn read(&self, tree: &Tree, now: Timestamp) -> GitView {
         Self::read(self, tree, now)
     }
@@ -283,15 +439,16 @@ impl GitReads {
     pub(crate) fn serve(
         &self,
         session: [u8; 32],
-        lookup: impl FnOnce() -> Result<Option<GitTarget>, crate::ports::Unavailable>,
+        lookup: impl Fn() -> Result<Option<GitTarget>, crate::ports::Unavailable>,
         stopped: impl Fn() -> bool,
     ) -> Result<Option<GitView>, crate::ports::Unavailable> {
         let now = (self.clock)();
         let Some(_slot) = self.begin(session) else {
             return Ok(Some(GitView::refused(GitState::Busy, now)));
         };
-        let tree = match lookup()? {
-            Some(GitTarget::Read(tree)) => tree,
+        let target = match lookup()? {
+            Some(target @ (GitTarget::Read(_) | GitTarget::Repositories { .. })) => target,
+            Some(GitTarget::Refused(state)) => return Ok(Some(GitView::refused(state, now))),
             Some(GitTarget::Released) => {
                 return Ok(Some(GitView::refused(GitState::WorktreeReleased, now)));
             }
@@ -307,11 +464,20 @@ impl GitReads {
             abandoned: Arc::clone(&self.shared.abandoned),
         };
         let reader = Arc::clone(&self.reader);
+        let selected = target.clone();
         let spawned = thread::Builder::new()
             .name("dudes-git-read".to_owned())
             .spawn(move || {
                 let _finish = finish;
-                let _ = tx.send(reader.read(&tree, now));
+                let view = match selected {
+                    GitTarget::Read(tree) => reader.read(&tree, now),
+                    GitTarget::Repositories {
+                        binding_id,
+                        entries,
+                    } => reader.read_repositories(&entries, &binding_id, now),
+                    _ => GitView::refused(GitState::InvalidSelection, now),
+                };
+                let _ = tx.send(view);
             });
         if spawned.is_err() {
             return Ok(Some(GitView::refused(GitState::Unreadable, now)));
@@ -328,7 +494,13 @@ impl GitReads {
                 return Ok(Some(GitView::refused(GitState::TimedOut, now)));
             }
             match rx.recv_timeout(left.min(POLL)) {
-                Ok(view) => return Ok(Some(view)),
+                Ok(view) => {
+                    return Ok(Some(if lookup()?.as_ref() == Some(&target) {
+                        view
+                    } else {
+                        GitView::refused(GitState::WorktreeMismatch, now)
+                    }));
+                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     return Ok(Some(GitView::refused(GitState::Unreadable, now)));
@@ -350,7 +522,7 @@ mod tests {
     const AGENT: &str = "01J00000000000000000000000";
 
     #[test]
-    fn a_request_is_one_object_with_one_agent_id() {
+    fn a_singleton_request_is_one_object_with_one_agent_id() {
         let body = format!("{{\"agent_id\":\"{AGENT}\"}}");
         assert!(GitRequest::parse(body.as_bytes()).is_ok());
         for bad in [
@@ -368,6 +540,31 @@ mod tests {
         ] {
             assert!(GitRequest::parse(bad.as_bytes()).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_repository_selector_requires_its_closed_recorded_authority() {
+        let request =
+            |selection: &str| format!(r#"{{"agent_id":"{AGENT}","repositories":{selection}}}"#);
+        for selector in [
+            r#"{"scope":"hired"}"#,
+            r#"{"scope":"repository","repo_id":"web"}"#,
+        ] {
+            assert!(GitRequest::parse(request(selector).as_bytes()).is_ok());
+        }
+        for selector in [
+            r#"{"scope":"declared"}"#,
+            r#"{"scope":"repository","repo_id":"../web"}"#,
+            r#"{"scope":"repository","repo_id":"web","path":"/other"}"#,
+            r#"{"scope":"all"}"#,
+        ] {
+            assert!(GitRequest::parse(request(selector).as_bytes()).is_err());
+        }
+        let declared = format!(
+            r#"{{"agent_id":"{AGENT}","repositories":{{"scope":"declared"}},"card":"{AGENT}","expected_seq":3}}"#
+        );
+        assert!(GitRequest::parse(declared.as_bytes()).is_ok());
+        assert!(GitRequest::parse(declared.replace("declared", "hired").as_bytes()).is_err());
     }
 
     #[test]
@@ -554,7 +751,7 @@ mod tests {
             (3, Some(GitTarget::Removed), GitState::WorktreeRemoved),
         ] {
             assert_eq!(
-                state(reads.serve(key(session), || Ok(target), || false)),
+                state(reads.serve(key(session), || Ok(target.clone()), || false)),
                 answer
             );
         }

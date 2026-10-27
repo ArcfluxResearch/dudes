@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use dudes_proto::repository::RepoId;
 use dudes_proto::{
     DIFF_MANIFEST_LIFETIME_MS, DiffAvailability, DiffBinding, DiffContent, DiffEntry, DiffFile,
     DiffFreshness, DiffOmission, DiffOmissionReason, DiffPage, DiffRefusal, DiffResponse,
@@ -65,7 +66,8 @@ pub struct CandidateManifest {
     untracked: u32,
     untracked_lower_bound: bool,
     freshness: DiffFreshness,
-    metadata_digest: Option<String>,
+    metadata_digests: Vec<(Option<RepoId>, String)>,
+    subject_bytes: usize,
 }
 
 fn token(seed: &[u8; 32], domain: &[u8], position: usize) -> String {
@@ -92,10 +94,30 @@ impl CandidateManifest {
     pub fn build(
         binding: DiffBinding,
         now: Timestamp,
+        candidates: Vec<Candidate>,
+        untracked: u32,
+        enumeration_cut: bool,
+        seed: [u8; 32],
+    ) -> Result<Self, DiffRefusal> {
+        Self::build_bounded(
+            binding,
+            now,
+            candidates,
+            untracked,
+            enumeration_cut,
+            seed,
+            0,
+        )
+    }
+
+    pub(super) fn build_bounded(
+        binding: DiffBinding,
+        now: Timestamp,
         mut candidates: Vec<Candidate>,
         untracked: u32,
         enumeration_cut: bool,
         seed: [u8; 32],
+        subject_bytes: usize,
     ) -> Result<Self, DiffRefusal> {
         let fingerprint = |value: &str| {
             value.len() == 64
@@ -103,18 +125,35 @@ impl CandidateManifest {
                     .bytes()
                     .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
         };
-        if !fingerprint(&binding.baseline_id) || !fingerprint(&binding.target_id) {
+        if !fingerprint(&binding.baseline_id)
+            || !fingerprint(&binding.target_id)
+            || binding.repositories.is_empty()
+            || binding.repositories.len() > 8
+            || binding
+                .repositories
+                .iter()
+                .map(|member| &member.repo_id)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != binding.repositories.len()
+            || candidates.iter().any(|candidate| {
+                !binding.repositories.iter().any(|member| {
+                    member.repo_id == candidate.entry.repo_id && member.unavailable.is_none()
+                })
+            })
+        {
             return Err(DiffRefusal::Unreadable);
         }
         candidates.sort_by(|left, right| {
-            left.path
-                .cmp(&right.path)
-                .then(left.old_path.cmp(&right.old_path))
+            left.entry.repo_id.cmp(&right.entry.repo_id).then(
+                left.path
+                    .cmp(&right.path)
+                    .then(left.old_path.cmp(&right.old_path)),
+            )
         });
-        if candidates
-            .windows(2)
-            .any(|pair| pair[0].path == pair[1].path)
-        {
+        if candidates.windows(2).any(|pair| {
+            pair[0].entry.repo_id == pair[1].entry.repo_id && pair[0].path == pair[1].path
+        }) {
             return Err(DiffRefusal::Unreadable);
         }
         let total = candidates.len();
@@ -150,18 +189,15 @@ impl CandidateManifest {
             untracked,
             untracked_lower_bound: enumeration_cut,
             freshness: DiffFreshness::Unknown,
-            metadata_digest: None,
+            metadata_digests: Vec::new(),
+            subject_bytes,
         };
         for position in 1..manifest.candidates.len() {
             manifest
                 .cursors
                 .insert(token(&seed, b"cursor", position), position);
         }
-        while serde_json::to_vec(&manifest)
-            .map_err(|_| DiffRefusal::Unreadable)?
-            .len()
-            > MAX_DIFF_MANIFEST_BYTES
-        {
+        while manifest.metadata_bytes() > MAX_DIFF_MANIFEST_BYTES {
             if manifest.candidates.pop().is_none() {
                 return Err(DiffRefusal::Unreadable);
             }
@@ -185,8 +221,11 @@ impl CandidateManifest {
         self.expires_at
     }
 
-    pub(super) fn metadata_digest(&self) -> Option<&str> {
-        self.metadata_digest.as_deref()
+    pub(super) fn metadata_digest(&self, repo: Option<&RepoId>) -> Option<&str> {
+        self.metadata_digests
+            .iter()
+            .find(|(id, _)| id.as_ref() == repo)
+            .map(|(_, digest)| digest.as_str())
     }
 
     pub(super) fn bind_capture(
@@ -197,7 +236,7 @@ impl CandidateManifest {
         untracked_lower_bound: bool,
         freshness: DiffFreshness,
     ) -> Result<(), DiffRefusal> {
-        self.metadata_digest = Some(metadata);
+        self.metadata_digests = vec![(None, metadata)];
         self.omitted = self.omitted.saturating_add(omitted);
         self.omitted_lower_bound |= omitted_lower_bound;
         self.untracked_lower_bound = untracked_lower_bound;
@@ -217,6 +256,29 @@ impl CandidateManifest {
         Ok(())
     }
 
+    pub(super) fn bind_repositories(
+        &mut self,
+        metadata: Vec<(Option<RepoId>, String)>,
+        omitted: u32,
+        omitted_lower_bound: bool,
+        untracked_lower_bound: bool,
+        freshness: DiffFreshness,
+    ) -> Result<(), DiffRefusal> {
+        self.metadata_digests = metadata;
+        self.omitted = self.omitted.saturating_add(omitted);
+        self.omitted_lower_bound |= omitted_lower_bound;
+        self.untracked_lower_bound |= untracked_lower_bound;
+        self.freshness = if self.binding.check_lsn.is_some() {
+            freshness
+        } else {
+            DiffFreshness::Unknown
+        };
+        if self.metadata_bytes() > MAX_DIFF_MANIFEST_BYTES {
+            return Err(DiffRefusal::Unreadable);
+        }
+        Ok(())
+    }
+
     /// The immutable candidate set. No new enumeration occurs on page or content requests.
     #[must_use]
     pub fn candidates(&self) -> &[Candidate] {
@@ -226,7 +288,9 @@ impl CandidateManifest {
     /// The complete retained serialized metadata size, including its binding and cursor map.
     #[must_use]
     pub fn metadata_bytes(&self) -> usize {
-        serde_json::to_vec(self).map_or(usize::MAX, |bytes| bytes.len())
+        serde_json::to_vec(self).map_or(usize::MAX, |bytes| {
+            bytes.len().saturating_add(self.subject_bytes)
+        })
     }
 
     fn cursor(&self, position: usize) -> Option<String> {
@@ -364,7 +428,8 @@ impl CandidateManifest {
                 .ok_or(DiffRefusal::InvalidRequest)?;
             match samples.remove(id).ok_or(DiffRefusal::InvalidRequest)? {
                 SampledPair::Text(file) => {
-                    if file.path != candidate.entry.path
+                    if file.repo_id != candidate.entry.repo_id
+                        || file.path != candidate.entry.path
                         || file.old_path != candidate.entry.old_path
                         || file.kind != candidate.entry.kind
                     {
@@ -449,6 +514,17 @@ mod tests {
 
     fn binding() -> DiffBinding {
         DiffBinding {
+            hired_lsn: None,
+            start_lsn: None,
+            check_repo: None,
+            repositories: vec![dudes_proto::DiffRepositoryBinding {
+                repo_id: None,
+                baseline_id: "a".repeat(64),
+                target_id: "b".repeat(64),
+                unavailable: None,
+                preexisting_tracked: false,
+                preexisting_untracked: false,
+            }],
             card: CardId::NIL,
             seq: Seq(2),
             round: 1,
@@ -469,6 +545,7 @@ mod tests {
             path: RepoPath::from_bytes(path.as_bytes()).unwrap(),
             old_path: None,
             entry: DiffEntry {
+                repo_id: None,
                 entry_id: None,
                 old_path: None,
                 path,
@@ -547,6 +624,7 @@ mod tests {
             .iter()
             .map(|entry| {
                 SampledPair::Text(DiffFile {
+                    repo_id: None,
                     entry_id: entry.entry_id.clone().unwrap(),
                     old_path: None,
                     path: entry.path.clone(),
@@ -599,6 +677,7 @@ mod tests {
             .enumerate()
             .map(|(n, entry)| {
                 SampledPair::Text(DiffFile {
+                    repo_id: None,
                     entry_id: ids[n].clone(),
                     old_path: None,
                     path: entry.path.clone(),
@@ -635,6 +714,7 @@ mod tests {
             ("source\u{202e}text", DiffOmissionReason::UnsupportedText),
         ] {
             let file = DiffFile {
+                repo_id: None,
                 entry_id: id.clone(),
                 old_path: None,
                 path: entry.path.clone(),
@@ -718,6 +798,7 @@ mod tests {
         let entry = &first.entries[0];
         let id = entry.entry_id.clone().unwrap();
         let file = DiffFile {
+            repo_id: None,
             entry_id: id.clone(),
             old_path: None,
             path: entry.path.clone(),
