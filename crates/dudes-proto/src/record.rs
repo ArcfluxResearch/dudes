@@ -3464,7 +3464,7 @@ pub mod samples {
                 let Record::InstructionObservationStarted { owner, snapshot, .. } = record(RecordKind::InstructionObservationStarted) else { unreachable!() };
                 Record::InstructionObservationBatchStarted(crate::repository_instruction::RepositoryInstructionStart {
                     v: crate::repository_instruction::INSTRUCTION_BATCH_VERSION,
-                    binding: crate::repository_instruction::RepositoryInstructionBinding { hired_lsn: Lsn(1), ticket_start_lsn: None },
+                    binding: crate::repository_instruction::RepositoryInstructionBinding { hired_lsn: Lsn::from_parts(1, 256).unwrap(), ticket_start_lsn: None },
                     owner, ticket: None,
                     members: vec![crate::repository_instruction::RepositoryInstructionSnapshot {
                         repo_id: crate::repository::RepoId::parse("primary").unwrap(),
@@ -3476,7 +3476,7 @@ pub mod samples {
                 let Record::InstructionObservationFinished { owner, baseline, settlement, .. } = record(RecordKind::InstructionObservationFinished) else { unreachable!() };
                 Record::InstructionObservationBatchFinished(crate::repository_instruction::RepositoryInstructionFinish {
                     v: crate::repository_instruction::INSTRUCTION_BATCH_VERSION,
-                    binding: crate::repository_instruction::RepositoryInstructionBinding { hired_lsn: Lsn(1), ticket_start_lsn: None },
+                    binding: crate::repository_instruction::RepositoryInstructionBinding { hired_lsn: Lsn::from_parts(1, 256).unwrap(), ticket_start_lsn: None },
                     owner, ticket: None, baseline,
                     members: vec![crate::repository_instruction::RepositoryInstructionSettlement {
                         repo_id: crate::repository::RepoId::parse("primary").unwrap(), ending_root: None, settlement,
