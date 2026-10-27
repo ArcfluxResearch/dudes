@@ -37,6 +37,7 @@ pub(super) struct Facts<'a, 'txn> {
     pub leases: &'a RowTable<'txn>,
     pub board: &'a RowTable<'txn>,
     pub goals: &'a RowTable<'txn>,
+    pub turns: &'a RowTable<'txn>,
     pub completions: &'a RowTable<'txn>,
     pub instructions: &'a super::instructions::InstructionTable<'txn>,
     pub through: Lsn,
@@ -59,6 +60,7 @@ pub(super) fn apply(
         leases,
         board,
         goals,
+        turns,
         completions,
         instructions,
         through,
@@ -185,20 +187,29 @@ pub(super) fn apply(
                 .map(|scope| &scope.declaration)
         })
         .collect();
-    let issue_goals: Vec<(super::GoalRow, bool)> =
-        if matches!(entry.record, Record::TurnIssuedWithRepositories(_)) {
-            all_rows::<super::GoalRow>(goals)?
-                .into_iter()
-                .map(|goal| {
-                    let completed = get_row::<Lsn>(completions, &goal.id.to_bytes())?.is_some();
-                    Ok((goal, completed))
-                })
-                .collect::<Result<_>>()?
-        } else {
-            Vec::new()
-        };
-    let instruction_state = if matches!(entry.record, Record::TurnIssuedWithRepositories(_)) {
-        Some(super::instructions::read(instructions, through)?)
+    let mut issue_goals = Vec::new();
+    let mut issue_cards = Vec::new();
+    if matches!(entry.record, Record::TurnIssuedWithRepositories(_)) {
+        for row in current_tickets
+            .iter()
+            .filter(|row| row.view.claimed_by == agent)
+        {
+            if let Some(goal) = row.ticket.as_ref().and_then(|ticket| ticket.goal)
+                && let Some(goal) = get_row::<super::GoalRow>(goals, &goal.to_bytes())?
+            {
+                let completed = get_row::<Lsn>(completions, &goal.id.to_bytes())?.is_some();
+                issue_goals.push((goal, completed));
+                issue_cards.push(row.view.id);
+            }
+        }
+    }
+    let instruction_cache = if matches!(entry.record, Record::TurnIssuedWithRepositories(_)) {
+        Some(super::instructions::load(
+            instructions,
+            through,
+            entry,
+            &issue_cards,
+        )?)
     } else {
         None
     };
@@ -219,9 +230,9 @@ pub(super) fn apply(
                         .is_some_and(|owner| owner.goal == Some(goal.id))
                         && goal.status != dudes_types::GoalStatus::Abandoned
                         && !completed,
-                    instructions_pending: instruction_state
+                    instructions_pending: instruction_cache
                         .as_ref()
-                        .is_some_and(|state| state.pending_for_goal(goal.id)),
+                        .is_some_and(|cache| cache.state().pending_for_goal(goal.id)),
                 })
             }),
         )
@@ -252,6 +263,14 @@ pub(super) fn apply(
             }),
             active_tickets: &active_tickets,
             card_exists: ticket.is_some(),
+            turn_exists: entry
+                .record
+                .turn_issue()
+                .filter(|issue| issue.repositories.is_some())
+                .map(|issue| get_row::<super::TurnRow>(turns, &issue.turn.to_bytes()))
+                .transpose()?
+                .flatten()
+                .is_some(),
             active_round,
             goal_exists: entry
                 .record

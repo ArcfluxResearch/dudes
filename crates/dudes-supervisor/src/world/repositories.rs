@@ -127,6 +127,10 @@ impl World {
                 active_tickets: &active_tickets,
                 card_exists: ticket_id
                     .is_some_and(|card| self.recovery_card_changes.contains_key(&card)),
+                turn_exists: entry
+                    .record
+                    .turn_issue()
+                    .is_some_and(|issue| self.turns.contains_key(&issue.turn)),
                 goal_exists: entry
                     .record
                     .ticket_start()
