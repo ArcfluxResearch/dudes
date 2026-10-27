@@ -1553,44 +1553,10 @@ fn note_card(cards: &mut Vec<CardId>, ticket: Option<InstructionTicketAssociatio
 }
 
 fn issue_identity(record: &Record) -> Option<(AgentId, TurnId)> {
-    match record {
-        Record::TurnIssued {
-            agent,
-            turn,
-            mode: Mode::Managed,
-            ..
-        }
-        | Record::NoteOnlyTurnIssued {
-            agent,
-            turn,
-            mode: Mode::Managed,
-            ..
-        }
-        | Record::TurnIssuedWithBrowserNote {
-            agent,
-            turn,
-            mode: Mode::Managed,
-            ..
-        }
-        | Record::TaughtNoteOnlyTurnIssued {
-            agent,
-            turn,
-            mode: Mode::Managed,
-            ..
-        }
-        | Record::IdentifiedTaughtNoteOnlyTurnIssued {
-            agent,
-            turn,
-            mode: Mode::Managed,
-            ..
-        }
-        | Record::ConversationTurnIssued { agent, turn, .. }
-        | Record::IdentifiedConversationTurnIssued { agent, turn, .. } => Some((*agent, *turn)),
-        Record::MailWakeOnlyTurnIssued(issue) | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => {
-            Some((issue.agent, issue.turn))
-        }
-        _ => None,
-    }
+    record
+        .turn_issue()
+        .filter(|issue| issue.mode == Mode::Managed)
+        .map(|issue| (issue.agent, issue.turn))
 }
 
 fn review_fits(review: &InstructionPendingReview) -> bool {

@@ -946,6 +946,7 @@ impl World {
                 }
             }
         }
+        self.fold_managed_issue(lsn, &entry.record);
         match &entry.record {
             Record::ConversationDispatchUncertain {
                 agent,
@@ -1118,71 +1119,6 @@ impl World {
                     );
                 }
             }
-            Record::ConversationTurnIssued {
-                agent,
-                turn,
-                note_lsn,
-                context_lsn,
-                task,
-                session,
-                model_selection,
-                lsn_of_decision,
-                ..
-            }
-            | Record::IdentifiedConversationTurnIssued {
-                agent,
-                turn,
-                note_lsn,
-                context_lsn,
-                task,
-                session,
-                model_selection,
-                lsn_of_decision,
-                ..
-            } => {
-                let contract = if matches!(
-                    entry.record,
-                    Record::IdentifiedConversationTurnIssued { .. }
-                ) {
-                    TaskContract::Identified
-                } else {
-                    TaskContract::Legacy
-                };
-                let admitted = self.conversation_message(*agent, *note_lsn, *context_lsn).is_some()
-                    && self.conversation_task_matches(contract, *agent, *note_lsn, task)
-                    && self.eligible_browser_note(*agent, &BrowserNoteDestination::ManagedConversation { context_lsn: *context_lsn }).is_some_and(|(next, _)| next == *note_lsn)
-                    && self.agents.get(agent).is_some_and(|row| row.open_turn.is_none())
-                    && self.conversation_decisions.get(agent).is_some_and(|(at, note, context, decision, _)|
-                        *at == *lsn_of_decision && *note == *note_lsn && *context == *context_lsn && matches!(decision, NoteAdmission::Issue { task: issued } if issued == task));
-                if admitted && !self.turns.contains_key(turn) {
-                    self.browser_notes
-                        .get_mut(note_lsn)
-                        .expect("validated message")
-                        .state = BrowserNoteState::Reserved { turn: *turn };
-                    self.install_browser_turn(
-                        *turn,
-                        BrowserIssueRow {
-                            agent: *agent,
-                            note_lsn: *note_lsn,
-                            issue_lsn: lsn,
-                            goal: None,
-                            note_only: false,
-                            completion_lsn: None,
-                            contract: None,
-                            dispatch_intents: Vec::new(),
-                            uncertain_dispatches: Vec::new(),
-                            spawn_lsn: None,
-                            reissued: false,
-                            end_lsn: None,
-                            cancellation: None,
-                        },
-                        task,
-                        session.as_ref(),
-                        model_selection,
-                        &[],
-                    );
-                }
-            }
             Record::BrowserNoteQueued {
                 agent,
                 text,
@@ -1283,12 +1219,6 @@ impl World {
                         },
                     );
                 }
-            }
-            Record::NoteOnlyTurnIssued { .. }
-            | Record::TaughtNoteOnlyTurnIssued { .. }
-            | Record::IdentifiedTaughtNoteOnlyTurnIssued { .. }
-            | Record::TurnIssuedWithBrowserNote { .. } => {
-                self.fold_browser_issue(lsn, &entry.record);
             }
             Record::BrowserNoteDispatchIntent {
                 agent,
@@ -1520,83 +1450,7 @@ impl World {
                     row.context_lsn = lsn;
                 }
             }
-            Record::TurnIssued {
-                agent,
-                turn,
-                goal,
-                task,
-                session,
-                model_selection,
-                lsn_of_decision,
-                answers,
-                ..
-            } => {
-                // a record that omits the agent's oldest pending answer, although that
-                // answer precedes its decision, predates `answers` — this build's carry always lists
-                // the oldest. An absent list is "not recorded", never "carried none",
-                // and the agent has worked past every answer decided before it: each
-                // is retired without delivery, its `HumanAnswer` still in the journal.
-                if let Some(row) = self.agents.get_mut(agent)
-                    && row.pending_answers.front().is_some_and(|oldest| {
-                        oldest.lsn < *lsn_of_decision && !answers.contains(&oldest.lsn)
-                    })
-                {
-                    row.pending_answers
-                        .retain(|pending| pending.lsn > *lsn_of_decision);
-                }
-                self.install_managed_turn(
-                    *turn,
-                    TurnRow {
-                        repositories: None,
-                        issue_lsn: lsn,
-                        agent: *agent,
-                        goal: Some(*goal),
-                        status: TurnStatus::Issued,
-                        session: session.clone(),
-                        announced: session.clone(),
-                        session_confirmed: false,
-                        task: task.clone(),
-                        answers: answers.clone(),
-                        model_selection: model_selection.clone(),
-                        pid: None,
-                        start_time: None,
-                        boot: None,
-                        spawn_lsn: None,
-                        end_lsn: None,
-                        confirmation_lsn: None,
-                        mcp_grant: None,
-                    },
-                );
-            }
             Record::MailWakeTurnDecided(_) | Record::IdentifiedMailWakeTurnDecided(_) => {}
-            Record::MailWakeOnlyTurnIssued(issue)
-            | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => {
-                if self.mail_wakes.accepted(lsn) {
-                    self.install_managed_turn(
-                        issue.turn,
-                        TurnRow {
-                            repositories: None,
-                            issue_lsn: lsn,
-                            agent: issue.agent,
-                            goal: Some(issue.goal),
-                            status: TurnStatus::Issued,
-                            session: issue.session.clone(),
-                            announced: issue.session.clone(),
-                            session_confirmed: false,
-                            task: issue.task.as_str().to_owned(),
-                            answers: Vec::new(),
-                            model_selection: Some(issue.model_selection.clone()),
-                            pid: None,
-                            start_time: None,
-                            boot: None,
-                            spawn_lsn: None,
-                            end_lsn: None,
-                            confirmation_lsn: None,
-                            mcp_grant: None,
-                        },
-                    );
-                }
-            }
             Record::TurnSpawned {
                 agent,
                 turn,
@@ -2140,6 +1994,17 @@ impl World {
             Record::KillDeferred { .. } => {}
             Record::ClosingTime { .. } => {}
             Record::LiveActivityObserved { .. } => {}
+            Record::TurnIssued { .. }
+            | Record::TurnIssuedWithBrowserNote { .. }
+            | Record::NoteOnlyTurnIssued { .. }
+            | Record::TaughtNoteOnlyTurnIssued { .. }
+            | Record::IdentifiedTaughtNoteOnlyTurnIssued { .. }
+            | Record::ConversationTurnIssued { .. }
+            | Record::IdentifiedConversationTurnIssued { .. }
+            | Record::MailWakeOnlyTurnIssued(_)
+            | Record::IdentifiedMailWakeOnlyTurnIssued(_)
+            | Record::TurnIssuedWithRepositories(_) => {}
+
             Record::Checkpoint { .. } => {} // the writer's own record
             Record::RecoveryRequired(_)
             | Record::RecoveryAuthorized(_)
@@ -2444,12 +2309,174 @@ impl World {
 
     #[expect(
         clippy::too_many_lines,
+        reason = "one semantic issue fold retains each source-specific reservation and installation rule"
+    )]
+    fn fold_managed_issue(&mut self, lsn: Lsn, record: &Record) {
+        let Some(payload) = record.issue_payload() else {
+            return;
+        };
+        match payload {
+            dudes_proto::issue::ManagedIssueRef::Conversation {
+                agent,
+                turn,
+                note_lsn,
+                context_lsn,
+                task,
+                session,
+                model_selection,
+                lsn_of_decision,
+                ..
+            }
+            | dudes_proto::issue::ManagedIssueRef::IdentifiedConversation {
+                agent,
+                turn,
+                note_lsn,
+                context_lsn,
+                task,
+                session,
+                model_selection,
+                lsn_of_decision,
+                ..
+            } => {
+                let contract = if matches!(
+                    payload,
+                    dudes_proto::issue::ManagedIssueRef::IdentifiedConversation { .. }
+                ) {
+                    TaskContract::Identified
+                } else {
+                    TaskContract::Legacy
+                };
+                let admitted = self.conversation_message(*agent, *note_lsn, *context_lsn).is_some()
+                    && self.conversation_task_matches(contract, *agent, *note_lsn, task)
+                    && self.eligible_browser_note(*agent, &BrowserNoteDestination::ManagedConversation { context_lsn: *context_lsn }).is_some_and(|(next, _)| next == *note_lsn)
+                    && self.agents.get(agent).is_some_and(|row| row.open_turn.is_none())
+                    && self.conversation_decisions.get(agent).is_some_and(|(at, note, context, decision, _)|
+                        *at == *lsn_of_decision && *note == *note_lsn && *context == *context_lsn && matches!(decision, NoteAdmission::Issue { task: issued } if issued == task));
+                if admitted && !self.turns.contains_key(turn) {
+                    self.browser_notes
+                        .get_mut(note_lsn)
+                        .expect("validated message")
+                        .state = BrowserNoteState::Reserved { turn: *turn };
+                    self.install_browser_turn(
+                        *turn,
+                        BrowserIssueRow {
+                            agent: *agent,
+                            note_lsn: *note_lsn,
+                            issue_lsn: lsn,
+                            goal: None,
+                            note_only: false,
+                            completion_lsn: None,
+                            contract: None,
+                            dispatch_intents: Vec::new(),
+                            uncertain_dispatches: Vec::new(),
+                            spawn_lsn: None,
+                            reissued: false,
+                            end_lsn: None,
+                            cancellation: None,
+                        },
+                        task,
+                        session.as_ref(),
+                        model_selection,
+                        &[],
+                    );
+                }
+            }
+            dudes_proto::issue::ManagedIssueRef::RawNote { .. }
+            | dudes_proto::issue::ManagedIssueRef::TaughtNote { .. }
+            | dudes_proto::issue::ManagedIssueRef::IdentifiedTaughtNote { .. }
+            | dudes_proto::issue::ManagedIssueRef::GoalNote { .. } => {
+                self.fold_browser_issue(lsn, record);
+            }
+            dudes_proto::issue::ManagedIssueRef::Ordinary {
+                agent,
+                turn,
+                goal,
+                task,
+                session,
+                model_selection,
+                lsn_of_decision,
+                answers,
+                ..
+            } => {
+                // a record that omits the agent's oldest pending answer, although that
+                // answer precedes its decision, predates `answers` — this build's carry always lists
+                // the oldest. An absent list is "not recorded", never "carried none",
+                // and the agent has worked past every answer decided before it: each
+                // is retired without delivery, its `HumanAnswer` still in the journal.
+                if let Some(row) = self.agents.get_mut(agent)
+                    && row.pending_answers.front().is_some_and(|oldest| {
+                        oldest.lsn < *lsn_of_decision && !answers.contains(&oldest.lsn)
+                    })
+                {
+                    row.pending_answers
+                        .retain(|pending| pending.lsn > *lsn_of_decision);
+                }
+                self.install_managed_turn(
+                    *turn,
+                    TurnRow {
+                        repositories: None,
+                        issue_lsn: lsn,
+                        agent: *agent,
+                        goal: Some(*goal),
+                        status: TurnStatus::Issued,
+                        session: session.clone(),
+                        announced: session.clone(),
+                        session_confirmed: false,
+                        task: task.clone(),
+                        answers: answers.clone(),
+                        model_selection: model_selection.clone(),
+                        pid: None,
+                        start_time: None,
+                        boot: None,
+                        spawn_lsn: None,
+                        end_lsn: None,
+                        confirmation_lsn: None,
+                        mcp_grant: None,
+                    },
+                );
+            }
+            dudes_proto::issue::ManagedIssueRef::MailWake(issue)
+            | dudes_proto::issue::ManagedIssueRef::IdentifiedMailWake(issue) => {
+                if self.mail_wakes.accepted(lsn) {
+                    self.install_managed_turn(
+                        issue.turn,
+                        TurnRow {
+                            repositories: None,
+                            issue_lsn: lsn,
+                            agent: issue.agent,
+                            goal: Some(issue.goal),
+                            status: TurnStatus::Issued,
+                            session: issue.session.clone(),
+                            announced: issue.session.clone(),
+                            session_confirmed: false,
+                            task: issue.task.as_str().to_owned(),
+                            answers: Vec::new(),
+                            model_selection: Some(issue.model_selection.clone()),
+                            pid: None,
+                            start_time: None,
+                            boot: None,
+                            spawn_lsn: None,
+                            end_lsn: None,
+                            confirmation_lsn: None,
+                            mcp_grant: None,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
         reason = "one contract-qualified lifecycle join validates ownership before installing and charging the turn"
     )]
     fn fold_browser_issue(&mut self, lsn: Lsn, record: &Record) {
+        let Some(payload) = record.issue_payload() else {
+            return;
+        };
         let (agent, turn, goal, task, session, selection, decision, answers, note_lsn, completion) =
-            match record {
-                Record::NoteOnlyTurnIssued {
+            match payload {
+                dudes_proto::issue::ManagedIssueRef::RawNote {
                     agent,
                     turn,
                     goal,
@@ -2462,7 +2489,7 @@ impl World {
                     completion_lsn,
                     ..
                 }
-                | Record::TaughtNoteOnlyTurnIssued {
+                | dudes_proto::issue::ManagedIssueRef::TaughtNote {
                     agent,
                     turn,
                     goal,
@@ -2475,7 +2502,7 @@ impl World {
                     completion_lsn,
                     ..
                 }
-                | Record::IdentifiedTaughtNoteOnlyTurnIssued {
+                | dudes_proto::issue::ManagedIssueRef::IdentifiedTaughtNote {
                     agent,
                     turn,
                     goal,
@@ -2499,7 +2526,7 @@ impl World {
                     *note_lsn,
                     Some(*completion_lsn),
                 ),
-                Record::TurnIssuedWithBrowserNote {
+                dudes_proto::issue::ManagedIssueRef::GoalNote {
                     agent,
                     turn,
                     goal,
@@ -2524,18 +2551,20 @@ impl World {
                 ),
                 _ => return,
             };
-        let contract = match record {
-            Record::NoteOnlyTurnIssued { .. } => Some(NoteContract::Raw),
-            Record::TaughtNoteOnlyTurnIssued {
+        let contract = match payload {
+            dudes_proto::issue::ManagedIssueRef::RawNote { .. } => Some(NoteContract::Raw),
+            dudes_proto::issue::ManagedIssueRef::TaughtNote {
                 mode: dudes_types::Mode::Managed,
                 ..
             } => Some(NoteContract::Taught),
-            Record::IdentifiedTaughtNoteOnlyTurnIssued {
+            dudes_proto::issue::ManagedIssueRef::IdentifiedTaughtNote {
                 mode: dudes_types::Mode::Managed,
                 ..
             } => Some(NoteContract::IdentifiedTaught),
-            Record::TaughtNoteOnlyTurnIssued { .. }
-            | Record::IdentifiedTaughtNoteOnlyTurnIssued { .. } => return,
+            dudes_proto::issue::ManagedIssueRef::TaughtNote { .. }
+            | dudes_proto::issue::ManagedIssueRef::IdentifiedTaughtNote { .. } => {
+                return;
+            }
             _ => None,
         };
         if self.turns.contains_key(&turn) || self.browser_issues.contains_key(&turn) {

@@ -538,7 +538,7 @@ pub enum ConversationChargeScope {
     AgentAndFloor,
 }
 
-struct ManagedModeSchema;
+pub(crate) struct ManagedModeSchema;
 
 impl JsonSchema for ManagedModeSchema {
     fn schema_name() -> std::borrow::Cow<'static, str> {
@@ -549,7 +549,7 @@ impl JsonSchema for ManagedModeSchema {
     }
 }
 
-fn managed_mode<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Mode, D::Error> {
+pub(crate) fn managed_mode<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Mode, D::Error> {
     match Mode::deserialize(deserializer)? {
         Mode::Managed => Ok(Mode::Managed),
         Mode::Attached => Err(serde::de::Error::custom(
@@ -558,7 +558,7 @@ fn managed_mode<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Mode, D::E
     }
 }
 
-fn no_answers<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Lsn>, D::Error> {
+pub(crate) fn no_answers<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Lsn>, D::Error> {
     let answers = Vec::<Lsn>::deserialize(deserializer)?;
     if answers.is_empty() {
         Ok(answers)
@@ -2044,6 +2044,8 @@ pub enum Record {
     TicketEditedWithRepositories(Box<crate::repository::RepositoryTicketEdited>),
     /// An atomic goal and card start with exact hire, declaration and check authority.
     TicketStartedWithRepositories(Box<crate::repository::RepositoryTicketStarted>),
+    /// A managed issue with its exact recorded repository grant.
+    TurnIssuedWithRepositories(Box<crate::repository::RepositoryTurnIssued>),
     /// `ticket.remove`: the card leaves the board view and its queue. The record stays in the
     /// journal. Conditional on `expected_seq`.
     TicketRemoved {
@@ -2604,6 +2606,7 @@ impl Record {
             Self::TicketCreatedWithRepositories(_) => RecordKind::TicketCreatedWithRepositories,
             Self::TicketEditedWithRepositories(_) => RecordKind::TicketEditedWithRepositories,
             Self::TicketStartedWithRepositories(_) => RecordKind::TicketStartedWithRepositories,
+            Self::TurnIssuedWithRepositories(_) => RecordKind::TurnIssuedWithRepositories,
             Self::FloorDeviceEnrolled { .. } => RecordKind::FloorDeviceEnrolled,
             Self::FloorDeviceKeyEnrolled { .. } => RecordKind::FloorDeviceKeyEnrolled,
             Self::FloorDeviceFirstUsed { .. } => RecordKind::FloorDeviceFirstUsed,
@@ -2850,6 +2853,8 @@ pub enum RecordKind {
     TicketEditedWithRepositories = 105,
     /// [`Record::TicketStartedWithRepositories`].
     TicketStartedWithRepositories = 106,
+    /// [`Record::TurnIssuedWithRepositories`].
+    TurnIssuedWithRepositories = 107,
 }
 
 impl RecordKind {
@@ -2906,8 +2911,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 106] {
-        let mut kinds = [Self::AgentHired; 106];
+    const fn known_kinds() -> [Self; 107] {
+        let mut kinds = [Self::AgentHired; 107];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2973,6 +2978,7 @@ impl RecordKind {
         kinds[103] = Self::TicketCreatedWithRepositories;
         kinds[104] = Self::TicketEditedWithRepositories;
         kinds[105] = Self::TicketStartedWithRepositories;
+        kinds[106] = Self::TurnIssuedWithRepositories;
         kinds
     }
 
@@ -3032,6 +3038,7 @@ impl RecordKind {
                 | Self::TicketCreatedWithRepositories
                 | Self::TicketEditedWithRepositories
                 | Self::TicketStartedWithRepositories
+                | Self::TurnIssuedWithRepositories
         )
     }
 
@@ -3421,6 +3428,12 @@ pub mod samples {
     )]
     pub fn record(kind: RecordKind) -> Record {
         match kind {
+            RecordKind::TurnIssuedWithRepositories => {
+                let Record::AgentHiredWithRepositories(hire) = record(RecordKind::AgentHiredWithRepositories) else { unreachable!() };
+                let grant = crate::repository::RepositoryTurnGrant::select(Lsn::from_parts(1, 512).unwrap(), &hire.repositories, None).unwrap();
+                let payload = record(RecordKind::TurnIssued).issue_payload().unwrap().to_owned();
+                Record::TurnIssuedWithRepositories(Box::new(crate::repository::RepositoryTurnIssued { grant, payload }))
+            }
             RecordKind::TicketCreatedWithRepositories => {
                 let Record::TicketCreated { card, title, description, department, project, done_when, by, request } = record(RecordKind::TicketCreated) else { unreachable!() };
                 let catalog = repository_catalog();
@@ -4574,7 +4587,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 106);
+        assert_eq!(RecordKind::KNOWN.len(), 107);
         for &kind in RecordKind::KNOWN[46..66]
             .iter()
             .chain(&RecordKind::KNOWN[94..100])
@@ -5083,7 +5096,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            106,
+            107,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -6164,8 +6177,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 106);
-        assert_eq!(RecordKind::from_tag(107), None);
+        assert_eq!(RecordKind::KNOWN.len(), 107);
+        assert_eq!(RecordKind::from_tag(108), None);
     }
 
     #[test]
@@ -6592,6 +6605,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(107), None);
+        assert_eq!(RecordKind::from_tag(108), None);
     }
 }

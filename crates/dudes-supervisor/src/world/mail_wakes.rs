@@ -65,7 +65,9 @@ impl Fold {
             retired: owner.is_none_or(|row| row.retired),
             attached: owner.is_some_and(|row| row.attached),
             open_turn: owner.and_then(|row| row.open_turn),
-            turn_exists: matches!(record, Record::MailWakeOnlyTurnIssued(issue) | Record::IdentifiedMailWakeOnlyTurnIssued(issue) if world.turns.contains_key(&issue.turn)),
+            turn_exists: record
+                .mail_issue()
+                .is_some_and(|(issue, _)| world.turns.contains_key(&issue.turn)),
             receipt_exists: matches!(record, Record::Mail { id, .. } if self.mail.contains_key(id)),
             question_lsn: owner.and_then(|row| row.question_lsn),
             mails,
@@ -75,6 +77,9 @@ impl Fold {
     pub(super) fn affected(&self, record: &Record) -> Vec<AgentId> {
         if let Some((agent, _)) = record.goal_install() {
             return vec![agent];
+        }
+        if let Some((issue, _)) = record.mail_issue() {
+            return vec![issue.agent];
         }
         match record {
             Record::Mail {
@@ -93,8 +98,6 @@ impl Fold {
             }
             Record::MailWakeTurnDecided(decision)
             | Record::IdentifiedMailWakeTurnDecided(decision) => vec![decision.agent],
-            Record::MailWakeOnlyTurnIssued(issue)
-            | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => vec![issue.agent],
             Record::MailState { id, .. } => self
                 .mail
                 .get(id)
@@ -124,23 +127,16 @@ impl Fold {
                 }
             };
             if lsn > state.last_lsn
-                && matches!(
+                && (matches!(
                     entry.record,
-                    Record::MailWakeTurnDecided(_)
-                        | Record::IdentifiedMailWakeTurnDecided(_)
-                        | Record::MailWakeOnlyTurnIssued(_)
-                        | Record::IdentifiedMailWakeOnlyTurnIssued(_)
-                )
+                    Record::MailWakeTurnDecided(_) | Record::IdentifiedMailWakeTurnDecided(_)
+                ) || entry.record.mail_issue().is_some())
             {
                 self.accepted_lsn = Some(lsn);
             }
             self.states.insert(agent, applied.state);
             if applied.issued {
-                let (Record::MailWakeOnlyTurnIssued(issue)
-                | Record::IdentifiedMailWakeOnlyTurnIssued(issue)) = &entry.record
-                else {
-                    unreachable!();
-                };
+                let (issue, _) = entry.record.mail_issue().expect("accepted mail issue");
                 self.by_day.insert(key, count + 1);
                 self.origins.insert(issue.turn);
             }

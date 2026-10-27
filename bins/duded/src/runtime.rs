@@ -7266,9 +7266,7 @@ fn mail_acknowledged_by_effect(effect: &Effect) -> bool {
                     | Record::MailState { .. }
                     | Record::MailWakeTurnDecided(_)
                     | Record::IdentifiedMailWakeTurnDecided(_)
-                    | Record::MailWakeOnlyTurnIssued(_)
-                    | Record::IdentifiedMailWakeOnlyTurnIssued(_)
-            )
+            ) || entry.record.mail_issue().is_some()
         })
 }
 
@@ -8402,59 +8400,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     }
 
     fn output_notice(&self, record: &Record) -> Result<OutputNotice> {
-        Ok(match record {
-            Record::ConversationTurnIssued { agent, turn, .. }
-            | Record::IdentifiedConversationTurnIssued { agent, turn, .. }
-            | Record::TurnIssued {
-                agent,
-                turn,
-                mode: Mode::Managed,
-                ..
-            }
-            | Record::TurnIssuedWithBrowserNote {
-                agent,
-                turn,
-                mode: Mode::Managed,
-                ..
-            }
-            | Record::NoteOnlyTurnIssued {
-                agent,
-                turn,
-                mode: Mode::Managed,
-                ..
-            }
-            | Record::TaughtNoteOnlyTurnIssued {
-                agent,
-                turn,
-                mode: Mode::Managed,
-                ..
-            }
-            | Record::IdentifiedTaughtNoteOnlyTurnIssued {
-                agent,
-                turn,
-                mode: Mode::Managed,
-                ..
-            } if self
+        if let Some(issue) = record
+            .turn_issue()
+            .filter(|issue| issue.mode == Mode::Managed)
+            && self
                 .projections
-                .agent(*agent)?
-                .is_some_and(|row| row.mode == Mode::Managed && row.open_turn == Some(*turn)) =>
-            {
-                OutputNotice::Replace {
-                    agent: *agent,
-                    turn: *turn,
-                }
-            }
-            Record::MailWakeOnlyTurnIssued(issue)
-            | Record::IdentifiedMailWakeOnlyTurnIssued(issue)
-                if self.projections.agent(issue.agent)?.is_some_and(|row| {
-                    row.mode == Mode::Managed && row.open_turn == Some(issue.turn)
-                }) =>
-            {
-                OutputNotice::Replace {
-                    agent: issue.agent,
-                    turn: issue.turn,
-                }
-            }
+                .agent(issue.agent)?
+                .is_some_and(|row| row.mode == Mode::Managed && row.open_turn == Some(issue.turn))
+        {
+            return Ok(OutputNotice::Replace {
+                agent: issue.agent,
+                turn: issue.turn,
+            });
+        }
+        Ok(match record {
             Record::SessionLearned {
                 agent,
                 turn,
@@ -8510,9 +8469,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 | Record::MailState { .. }
                 | Record::MailWakeTurnDecided(_)
                 | Record::IdentifiedMailWakeTurnDecided(_)
-                | Record::MailWakeOnlyTurnIssued(_)
-                | Record::IdentifiedMailWakeOnlyTurnIssued(_)
-        ) {
+        ) || entry.record.mail_issue().is_some()
+        {
             anyhow::ensure!(
                 !self.mail_progression_fenced(),
                 "mail progression requires canonical recovery"

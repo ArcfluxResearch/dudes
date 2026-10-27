@@ -199,17 +199,9 @@ fn managed_owner(
 }
 
 fn issue_goal(record: &Record) -> Option<GoalId> {
-    match record {
-        Record::TurnIssued { goal, .. }
-        | Record::TurnIssuedWithBrowserNote { goal, .. }
-        | Record::NoteOnlyTurnIssued { goal, .. }
-        | Record::TaughtNoteOnlyTurnIssued { goal, .. }
-        | Record::IdentifiedTaughtNoteOnlyTurnIssued { goal, .. } => Some(*goal),
-        Record::MailWakeOnlyTurnIssued(issue) | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => {
-            Some(issue.goal)
-        }
-        _ => None,
-    }
+    record
+        .turn_issue()
+        .and_then(|issue| issue.instruction_goal())
 }
 
 fn owner_agent(owner: InstructionObservationOwner) -> AgentId {
@@ -977,7 +969,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return;
         }
         let goal = issue_goal(&entry.record);
-        let closing = (self.closing_active && matches!(entry.record, Record::TurnIssued { .. }))
+        let closing = (self.closing_active && entry.record.ordinary_issue().is_some())
             .then(|| {
                 self.world
                     .closing
@@ -1009,7 +1001,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             self.spawning.remove(&turn);
             return;
         };
-        let goal = self.world.turns.get(&turn).and_then(|row| row.goal);
+        let goal = self.world.turns.get(&turn).and_then(|row| {
+            row.repositories.as_ref().map_or(row.goal, |repositories| {
+                repositories.instruction_goal(row.goal)
+            })
+        });
         let owner = managed_owner(
             agent,
             turn,
@@ -1144,7 +1140,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                             && !row.attached
                             && row.automatic_hold.is_none()
                             && row.open_turn.is_none()
-                            && row.goal == starting.goal
+                            && row.goal == entry.record.turn_issue().and_then(|issue| issue.goal)
                     })
                     && starting
                         .goal
@@ -1169,10 +1165,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 }
                 self.instructions.ready_turns.insert(turn);
                 let Entry { at, record } = *entry;
-                let at = if matches!(
-                    &record,
-                    Record::MailWakeOnlyTurnIssued(_) | Record::IdentifiedMailWakeOnlyTurnIssued(_)
-                ) {
+                let at = if record.mail_issue().is_some() {
                     at
                 } else {
                     self.clock.now()
@@ -1196,26 +1189,32 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         closing: Option<Lsn>,
         operation: &crate::RecoveryOperation<'_>,
     ) -> bool {
-        match &entry.record {
-            Record::TurnIssued { task, answers, .. } => match closing {
+        if matches!(entry.record, Record::TurnIssuedWithRepositories(_)) {
+            return false;
+        }
+        let Some(payload) = entry.record.issue_payload() else {
+            return false;
+        };
+        match payload {
+            dudes_proto::issue::ManagedIssueRef::Ordinary { task, answers, .. } => match closing {
                 Some(announcement) => {
                     self.delayed_saving_admitted(agent, announcement, task, answers)
                 }
                 None => self.delayed_ordinary_admitted(agent, None, task, answers, operation),
             },
-            Record::TurnIssuedWithBrowserNote {
+            dudes_proto::issue::ManagedIssueRef::GoalNote {
                 note_lsn,
                 task,
                 answers,
                 ..
             } => self.delayed_ordinary_admitted(agent, Some(*note_lsn), task, answers, operation),
-            Record::ConversationTurnIssued {
+            dudes_proto::issue::ManagedIssueRef::Conversation {
                 note_lsn,
                 context_lsn,
                 task,
                 ..
             }
-            | Record::IdentifiedConversationTurnIssued {
+            | dudes_proto::issue::ManagedIssueRef::IdentifiedConversation {
                 note_lsn,
                 context_lsn,
                 task,
@@ -1226,19 +1225,19 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     && matches!(dudes_policy::admit_conversation(&input).decision,
                         dudes_proto::NoteAdmission::Issue { task: current } if current == *task)
             }),
-            Record::NoteOnlyTurnIssued {
+            dudes_proto::issue::ManagedIssueRef::RawNote {
                 goal,
                 note_lsn,
                 task,
                 ..
             }
-            | Record::TaughtNoteOnlyTurnIssued {
+            | dudes_proto::issue::ManagedIssueRef::TaughtNote {
                 goal,
                 note_lsn,
                 task,
                 ..
             }
-            | Record::IdentifiedTaughtNoteOnlyTurnIssued {
+            | dudes_proto::issue::ManagedIssueRef::IdentifiedTaughtNote {
                 goal,
                 note_lsn,
                 task,
@@ -1246,21 +1245,23 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             } => self.completed_note_input_for(agent).is_some_and(|input| {
                 input.goal() == *goal
                     && input.note_lsn() == *note_lsn
-                    && match &entry.record {
-                        Record::TaughtNoteOnlyTurnIssued { completion_lsn, .. }
-                        | Record::IdentifiedTaughtNoteOnlyTurnIssued { completion_lsn, .. } => {
-                            input.completion_lsn() == *completion_lsn
+                    && match payload {
+                        dudes_proto::issue::ManagedIssueRef::TaughtNote {
+                            completion_lsn, ..
                         }
+                        | dudes_proto::issue::ManagedIssueRef::IdentifiedTaughtNote {
+                            completion_lsn,
+                            ..
+                        } => input.completion_lsn() == *completion_lsn,
                         _ => true,
                     }
                     && matches!(dudes_policy::admit_completed_note(&input).decision,
                         dudes_proto::NoteAdmission::Issue { task: current } if current == *task)
             }),
-            Record::MailWakeOnlyTurnIssued(issue)
-            | Record::IdentifiedMailWakeOnlyTurnIssued(issue) => {
+            dudes_proto::issue::ManagedIssueRef::MailWake(issue)
+            | dudes_proto::issue::ManagedIssueRef::IdentifiedMailWake(issue) => {
                 self.delayed_mail_wake_admitted(issue, entry.at, self.clock.now())
             }
-            _ => false,
         }
     }
 

@@ -1630,20 +1630,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     self.move_status(*agent, event);
                 }
             }
-            Record::TurnIssued { agent, .. }
-            | Record::TurnIssuedWithBrowserNote { agent, .. }
-            | Record::NoteOnlyTurnIssued { agent, .. }
-            | Record::ConversationTurnIssued { agent, .. }
-            | Record::IdentifiedConversationTurnIssued { agent, .. }
-            | Record::TaughtNoteOnlyTurnIssued { agent, .. }
-            | Record::IdentifiedTaughtNoteOnlyTurnIssued { agent, .. } => {
-                self.move_status(*agent, FsmEvent::Continued);
-            }
-            Record::MailWakeOnlyTurnIssued(issue)
-            | Record::IdentifiedMailWakeOnlyTurnIssued(issue)
-                if mail_wake_accepted =>
-            {
-                self.move_status(issue.agent, FsmEvent::Continued);
+            record if record.turn_issue().is_some() => {
+                let issue = record.turn_issue().expect("matched issue");
+                if record.mail_issue().is_none() || mail_wake_accepted {
+                    self.move_status(issue.agent, FsmEvent::Continued);
+                }
             }
             Record::MailWakeTurnDecided(decision)
             | Record::IdentifiedMailWakeTurnDecided(decision)

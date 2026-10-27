@@ -95,6 +95,10 @@ pub struct RepositoryHistoryFacts<'a> {
     pub goal_exists: bool,
     /// Any existing card at the proposed creation identity.
     pub card_exists: bool,
+    /// A preceding turn already owns the proposed issue identity.
+    pub turn_exists: bool,
+    /// Active round selected from the preceding ticket lifecycle, independently of billing.
+    pub active_round: Option<&'a crate::repository::TicketRepositoryRound>,
 }
 
 /// The ticket-owned facts required to validate a declared edit or start.
@@ -157,6 +161,8 @@ pub enum RepositoryStateError {
     Ticket,
     /// Start does not match the exact queued ticket, hire, round, goal or check binding.
     Start,
+    /// Issue does not match the exact hire, active ticket round and selected copies.
+    Issue,
 }
 
 impl std::fmt::Display for RepositoryStateError {
@@ -172,6 +178,7 @@ impl std::fmt::Display for RepositoryStateError {
             Self::LegacyIssue => "restricted repositories require a scoped issue carrier",
             Self::Ticket => "ticket repository declaration does not match",
             Self::Start => "ticket start repository authority does not match",
+            Self::Issue => "turn repository grant does not match",
         })
     }
 }
@@ -188,6 +195,7 @@ pub const fn is_kind(kind: crate::RecordKind) -> bool {
             | crate::RecordKind::TicketCreatedWithRepositories
             | crate::RecordKind::TicketEditedWithRepositories
             | crate::RecordKind::TicketStartedWithRepositories
+            | crate::RecordKind::TurnIssuedWithRepositories
     )
 }
 
@@ -217,6 +225,17 @@ pub fn validate_shape(record: &Record) -> Result<(), RepositoryStateError> {
             validate_origins(std::iter::once(origin))
         }
         Record::AgentHiredWithRepositories(hire) => validate_hire_shape(&hire.repositories),
+        Record::TurnIssuedWithRepositories(issued) => {
+            let grant = &issued.grant;
+            if grant.project.is_empty() || grant.hired_lsn == Lsn::ZERO {
+                return Err(RepositoryStateError::Issue);
+            }
+            let view = record.turn_issue().ok_or(RepositoryStateError::Issue)?;
+            if view.mode != dudes_types::Mode::Managed {
+                return Err(RepositoryStateError::Issue);
+            }
+            validate_copies(&grant.repositories)
+        }
         Record::TicketCreatedWithRepositories(created) => {
             validate_declaration(&created.declaration)?;
             validate_check(
@@ -253,9 +272,14 @@ fn validate_hire_shape(scope: &ScopedRepositories) -> Result<(), RepositoryState
     if scope.project.id.is_empty() {
         return Err(RepositoryStateError::Catalog);
     }
+    validate_copies(&scope.repositories)
+}
+
+fn validate_copies(
+    repositories: &RepositorySet<crate::repository::OwnedRepository>,
+) -> Result<(), RepositoryStateError> {
     validate_origins(
-        scope
-            .repositories
+        repositories
             .entries()
             .iter()
             .map(|entry| &entry.value.origin),
@@ -264,13 +288,12 @@ fn validate_hire_shape(scope: &ScopedRepositories) -> Result<(), RepositoryState
     let mut identities = Vec::new();
     let mut leases = Vec::new();
     let mut git_ids = Vec::new();
-    let origins: Vec<_> = scope
-        .repositories
+    let origins: Vec<_> = repositories
         .entries()
         .iter()
         .map(|entry| &entry.value.origin)
         .collect();
-    for entry in scope.repositories.entries() {
+    for entry in repositories.entries() {
         let repo = &entry.value;
         if !absolute(&repo.execution.directory)
             || !absolute(&repo.execution.git_dir)
@@ -416,6 +439,10 @@ pub fn prepare(
                 pin: pin.clone(),
             }))
         }
+        Record::TurnIssuedWithRepositories(issue) => {
+            validate_issue(lsn, record, &issue.grant, before)?;
+            Ok(RepositoryHistoryChange::Unchanged)
+        }
         _ if record.turn_issue().is_some() && (was_scoped(before) || expanded(before)) => {
             Err(RepositoryStateError::LegacyIssue)
         }
@@ -560,10 +587,6 @@ fn expanded(before: RepositoryHistoryFacts<'_>) -> bool {
         .is_some_and(|(_, catalog)| catalog.entries().len() > 1)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one atomic start binds its ticket, goal, hire and check before either row changes"
-)]
 fn validate_start(
     lsn: Lsn,
     start: crate::repository_state::TicketStart<'_>,
@@ -630,6 +653,41 @@ fn validate_start(
     {
         return Err(RepositoryStateError::Ticket);
     }
+    validate_current_hire(start.agent, authority.hired_lsn, hire, before)?;
+    for entry in scope.declaration.repositories.entries() {
+        if hire
+            .repositories
+            .get(&entry.repo_id)
+            .is_none_or(|repo| repo.origin != entry.value)
+        {
+            return Err(RepositoryStateError::Start);
+        }
+    }
+    if hire
+        .repositories
+        .get(&authority.check_repo)
+        .is_none_or(|repo| repo.execution != authority.check_root)
+    {
+        return Err(RepositoryStateError::Start);
+    }
+    Ok(())
+}
+
+fn validate_current_hire(
+    agent: AgentId,
+    hired_lsn: Lsn,
+    hire: &ScopedRepositories,
+    before: RepositoryHistoryFacts<'_>,
+) -> Result<(), RepositoryStateError> {
+    let history = before.project.ok_or(RepositoryStateError::Catalog)?;
+    if history.project != hire.project.id {
+        return Err(RepositoryStateError::Catalog);
+    }
+    let latest = history
+        .revisions
+        .last_key_value()
+        .map(|(_, catalog)| catalog)
+        .ok_or(RepositoryStateError::Catalog)?;
     for entry in latest.entries() {
         if before
             .trust
@@ -647,9 +705,9 @@ fn validate_start(
             .iter()
             .find(|lease| lease.worktree == repo.worktree)
             .is_none_or(|lease| {
-                lease.agent != Some(start.agent)
+                lease.agent != Some(agent)
                     || lease.removed
-                    || lease.leased_lsn >= authority.hired_lsn
+                    || lease.leased_lsn >= hired_lsn
                     || lease.origin != repo.origin.directory
                     || lease.path != repo.execution.directory
                     || lease.base != repo.base
@@ -673,23 +731,35 @@ fn validate_start(
             return Err(RepositoryStateError::Trust);
         }
     }
-    for entry in scope.declaration.repositories.entries() {
-        if hire
-            .repositories
-            .get(&entry.repo_id)
-            .is_none_or(|repo| repo.origin != entry.value)
-        {
-            return Err(RepositoryStateError::Start);
-        }
-    }
-    if hire
-        .repositories
-        .get(&authority.check_repo)
-        .is_none_or(|repo| repo.execution != authority.check_root)
-    {
-        return Err(RepositoryStateError::Start);
-    }
     Ok(())
+}
+
+fn validate_issue(
+    lsn: Lsn,
+    record: &Record,
+    grant: &crate::repository::RepositoryTurnGrant,
+    before: RepositoryHistoryFacts<'_>,
+) -> Result<(), RepositoryStateError> {
+    let Some(HireRepositories::Scoped(hire)) = before.hire else {
+        return Err(RepositoryStateError::Issue);
+    };
+    let issue = record.turn_issue().ok_or(RepositoryStateError::Issue)?;
+    if before.turn_exists
+        || before.hired_lsn != Some(grant.hired_lsn)
+        || grant.hired_lsn >= lsn
+        || grant
+            .ticket
+            .as_ref()
+            .is_some_and(|round| round.start_lsn >= lsn)
+        || crate::repository::RepositoryTurnGrant::select(
+            grant.hired_lsn,
+            hire,
+            before.active_round,
+        )? != *grant
+    {
+        return Err(RepositoryStateError::Issue);
+    }
+    validate_current_hire(issue.agent, grant.hired_lsn, hire, before)
 }
 
 fn was_scoped(before: RepositoryHistoryFacts<'_>) -> bool {

@@ -2,9 +2,9 @@ use super::{CommandContext, Ctx, NoWrite, permit_refusal};
 use crate::floor_session::{FloorRecoveryAuthority, MutationPermit, RecoveryGrants};
 use crate::predicate::PredicateRunner;
 use dudes_journal::projections::recovery::{CheckedClaimSubject, CheckedWorkSubject};
+use dudes_proto::Entry;
 use dudes_proto::recovery::RecoveryWork;
 use dudes_proto::recovery_state::RecoveryClaimState;
-use dudes_proto::{Entry, Record};
 use dudes_supervisor::input::{PersistToken, RecoveryAppend, RecoveryIssueAppend, RecoveryRefusal};
 use dudes_supervisor::{Clock, ProcessHost, Rng, Supervisor};
 
@@ -71,19 +71,15 @@ impl AppendSubject<'_> {
 }
 
 fn issued_work(entry: &Entry) -> Option<RecoveryWork> {
-    match &entry.record {
-        Record::TurnIssued {
-            agent, goal, turn, ..
-        }
-        | Record::TurnIssuedWithBrowserNote {
-            agent, goal, turn, ..
-        } => Some(RecoveryWork {
-            agent: *agent,
-            goal: *goal,
-            turn: *turn,
-        }),
-        _ => None,
-    }
+    let issue = entry
+        .record
+        .turn_issue()
+        .filter(dudes_proto::repository_state::TurnIssue::recovery_new)?;
+    Some(RecoveryWork {
+        agent: issue.agent,
+        goal: issue.goal?,
+        turn: issue.turn,
+    })
 }
 
 fn pending_matches(parked: &RecoveryIssueAppend, checked: &CheckedClaimSubject) -> bool {

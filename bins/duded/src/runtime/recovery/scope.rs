@@ -35,16 +35,16 @@ fn record_works(record: &Record) -> Vec<RecoveryWork> {
             };
             vec![authorization.binding.work, target]
         }
-        Record::TurnIssued {
-            agent, goal, turn, ..
-        }
-        | Record::TurnIssuedWithBrowserNote {
-            agent, goal, turn, ..
-        } => {
+        record
+            if record
+                .turn_issue()
+                .is_some_and(|issue| issue.recovery_new()) =>
+        {
+            let issue = record.turn_issue().expect("matched goal issue");
             vec![RecoveryWork {
-                agent: *agent,
-                goal: *goal,
-                turn: *turn,
+                agent: issue.agent,
+                goal: issue.goal.expect("goal issue"),
+                turn: issue.turn,
             }]
         }
         _ => Vec::new(),

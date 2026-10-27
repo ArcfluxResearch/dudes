@@ -37,6 +37,10 @@ pub(super) struct Facts<'a, 'txn> {
     pub leases: &'a RowTable<'txn>,
     pub board: &'a RowTable<'txn>,
     pub goals: &'a RowTable<'txn>,
+    pub turns: &'a RowTable<'txn>,
+    pub completions: &'a RowTable<'txn>,
+    pub instructions: &'a super::instructions::InstructionTable<'txn>,
+    pub through: Lsn,
 }
 
 #[expect(
@@ -56,6 +60,10 @@ pub(super) fn apply(
         leases,
         board,
         goals,
+        turns,
+        completions,
+        instructions,
+        through,
     } = facts;
     let ticket_id = entry
         .record
@@ -120,6 +128,7 @@ pub(super) fn apply(
     let trust_rows: Vec<RepositoryTrust> =
         if matches!(entry.record, Record::AgentHiredWithRepositories(_))
             || entry.record.ticket_start().is_some()
+            || matches!(entry.record, Record::TurnIssuedWithRepositories(_))
         {
             rows(trust)?
         } else {
@@ -128,6 +137,7 @@ pub(super) fn apply(
     let lease_rows: Vec<WorktreeRow> =
         if matches!(entry.record, Record::AgentHiredWithRepositories(_))
             || entry.record.ticket_start().is_some()
+            || matches!(entry.record, Record::TurnIssuedWithRepositories(_))
         {
             all_rows(leases)?
         } else {
@@ -158,12 +168,14 @@ pub(super) fn apply(
             HireRepositories::Legacy(_) => None,
         })
         .collect();
-    let current_tickets: Vec<super::board::BoardRow> =
-        if matches!(entry.record, Record::ProjectRepositoriesRecorded { .. }) {
-            all_rows(board)?
-        } else {
-            Vec::new()
-        };
+    let current_tickets: Vec<super::board::BoardRow> = if matches!(
+        entry.record,
+        Record::ProjectRepositoriesRecorded { .. } | Record::TurnIssuedWithRepositories(_)
+    ) {
+        all_rows(board)?
+    } else {
+        Vec::new()
+    };
     let active_tickets: Vec<_> = current_tickets
         .iter()
         .filter(|row| row.view.status != dudes_types::CardStatus::Done)
@@ -175,6 +187,59 @@ pub(super) fn apply(
                 .map(|scope| &scope.declaration)
         })
         .collect();
+    let mut issue_goals = Vec::new();
+    let mut issue_cards = Vec::new();
+    if matches!(entry.record, Record::TurnIssuedWithRepositories(_)) {
+        for row in current_tickets
+            .iter()
+            .filter(|row| row.view.claimed_by == agent)
+        {
+            if let Some(goal) = row.ticket.as_ref().and_then(|ticket| ticket.goal)
+                && let Some(goal) = get_row::<super::GoalRow>(goals, &goal.to_bytes())?
+            {
+                let completed = get_row::<Lsn>(completions, &goal.id.to_bytes())?.is_some();
+                issue_goals.push((goal, completed));
+                issue_cards.push(row.view.id);
+            }
+        }
+    }
+    let instruction_cache = if matches!(entry.record, Record::TurnIssuedWithRepositories(_)) {
+        Some(super::instructions::load(
+            instructions,
+            through,
+            entry,
+            &issue_cards,
+        )?)
+    } else {
+        None
+    };
+    let active_round = if let Some(agent) = agent {
+        dudes_proto::repository_state::active_round(
+            agent,
+            current_tickets.iter().filter_map(|row| {
+                let ticket = row.ticket.as_ref()?;
+                let (goal, completed) = issue_goals
+                    .iter()
+                    .find(|(goal, _)| Some(goal.id) == ticket.goal)?;
+                Some(dudes_proto::repository_state::ActiveRepositoryRound {
+                    holder: row.view.claimed_by,
+                    status: row.view.status,
+                    round: goal.repository_round.as_ref()?,
+                    unfinished: owner
+                        .as_ref()
+                        .is_some_and(|owner| owner.goal == Some(goal.id))
+                        && goal.status != dudes_types::GoalStatus::Abandoned
+                        && !completed,
+                    instructions_pending: instruction_cache
+                        .as_ref()
+                        .is_some_and(|cache| cache.state().pending_for_goal(goal.id)),
+                })
+            }),
+        )
+        .map_err(|reason| Error::Repository { lsn, reason })?
+    } else {
+        None
+    };
     let change = history::prepare(
         lsn,
         &entry.record,
@@ -198,6 +263,15 @@ pub(super) fn apply(
             }),
             active_tickets: &active_tickets,
             card_exists: ticket.is_some(),
+            turn_exists: entry
+                .record
+                .turn_issue()
+                .filter(|issue| issue.repositories.is_some())
+                .map(|issue| get_row::<super::TurnRow>(turns, &issue.turn.to_bytes()))
+                .transpose()?
+                .flatten()
+                .is_some(),
+            active_round,
             goal_exists: entry
                 .record
                 .ticket_start()

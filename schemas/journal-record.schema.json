@@ -1700,6 +1700,16 @@
         }
       ]
     },
+    "ExplicitNullable_TicketRepositoryRound": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TicketRepositoryRound"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "ExplicitNullable_WorktreeId": {
       "anyOf": [
         {
@@ -5001,6 +5011,634 @@
         }
       ]
     },
+    "ManagedIssuePayload": {
+      "description": "An issued task, without authority to carry unrelated journal events.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The `TurnIssued` payload.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The agent."
+            },
+            "answers": {
+              "description": "Answer positions carried in the task, oldest first.",
+              "items": {
+                "$ref": "#/$defs/Lsn"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "$ref": "#/$defs/GoalId",
+              "description": "The goal it serves."
+            },
+            "kind": {
+              "const": "ordinary",
+              "type": "string"
+            },
+            "lsn_of_decision": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The `LoopDecided` that produced it."
+            },
+            "mode": {
+              "$ref": "#/$defs/ManagedMode",
+              "description": "Managed issuance only."
+            },
+            "model_selection": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ModelSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact prelaunch choice, absent only in historical ordinary work."
+            },
+            "session": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SessionId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Announced session, distinct from a later spawn announcement."
+            },
+            "task": {
+              "description": "The task text, one argv element or stdin.",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "The new turn."
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "turn",
+            "goal",
+            "task",
+            "mode",
+            "lsn_of_decision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The `TurnIssuedWithBrowserNote` payload.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The owning agent."
+            },
+            "answers": {
+              "description": "The exact carried answer identities, empty on a note-only turn.",
+              "items": {
+                "$ref": "#/$defs/Lsn"
+              },
+              "type": "array"
+            },
+            "goal": {
+              "$ref": "#/$defs/GoalId",
+              "description": "The original charged goal."
+            },
+            "kind": {
+              "const": "goal_note",
+              "type": "string"
+            },
+            "lsn_of_decision": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The exact ordinary or completed-note decision identity."
+            },
+            "mode": {
+              "$ref": "#/$defs/ManagedMode",
+              "description": "Managed issuance only."
+            },
+            "model_selection": {
+              "$ref": "#/$defs/ModelSelection",
+              "description": "The explicit prelaunch model selection."
+            },
+            "note_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The exact `BrowserNoteQueued` identity."
+            },
+            "session": {
+              "$ref": "#/$defs/ExplicitNullable_SessionId",
+              "description": "The explicitly recorded announced session, or null."
+            },
+            "task": {
+              "description": "The exact immutable task persisted before launch.",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "The exact issued turn identity."
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "turn",
+            "goal",
+            "task",
+            "session",
+            "mode",
+            "model_selection",
+            "lsn_of_decision",
+            "answers",
+            "note_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The `NoteOnlyTurnIssued` payload.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The owning agent."
+            },
+            "answers": {
+              "description": "The exact carried answer identities, empty on a note-only turn.",
+              "items": {
+                "$ref": "#/$defs/Lsn"
+              },
+              "maxItems": 0,
+              "type": "array"
+            },
+            "completion_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The durable ordinary goal Done identity."
+            },
+            "goal": {
+              "$ref": "#/$defs/GoalId",
+              "description": "The original charged goal."
+            },
+            "kind": {
+              "const": "raw_note",
+              "type": "string"
+            },
+            "lsn_of_decision": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The exact ordinary or completed-note decision identity."
+            },
+            "mode": {
+              "$ref": "#/$defs/ManagedMode",
+              "description": "Managed issuance only."
+            },
+            "model_selection": {
+              "$ref": "#/$defs/ModelSelection",
+              "description": "The explicit prelaunch model selection."
+            },
+            "note_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The exact `BrowserNoteQueued` identity."
+            },
+            "session": {
+              "$ref": "#/$defs/ExplicitNullable_SessionId",
+              "description": "The explicitly recorded announced session, or null."
+            },
+            "task": {
+              "description": "The exact immutable task persisted before launch.",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "The exact issued turn identity."
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "turn",
+            "goal",
+            "task",
+            "session",
+            "mode",
+            "model_selection",
+            "lsn_of_decision",
+            "answers",
+            "note_lsn",
+            "completion_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The `TaughtNoteOnlyTurnIssued` payload.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The owning agent."
+            },
+            "answers": {
+              "description": "The exact carried answer identities, empty on a note-only turn.",
+              "items": {
+                "$ref": "#/$defs/Lsn"
+              },
+              "maxItems": 0,
+              "type": "array"
+            },
+            "completion_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The durable ordinary goal Done identity."
+            },
+            "goal": {
+              "$ref": "#/$defs/GoalId",
+              "description": "The original charged goal."
+            },
+            "kind": {
+              "const": "taught_note",
+              "type": "string"
+            },
+            "lsn_of_decision": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The exact taught completed-note decision identity."
+            },
+            "mode": {
+              "$ref": "#/$defs/ManagedMode",
+              "description": "Managed issuance only."
+            },
+            "model_selection": {
+              "$ref": "#/$defs/ModelSelection",
+              "description": "The explicit prelaunch model selection."
+            },
+            "note_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The exact `BrowserNoteQueued` identity."
+            },
+            "session": {
+              "$ref": "#/$defs/ExplicitNullable_SessionId",
+              "description": "The explicitly recorded announced session, or null."
+            },
+            "task": {
+              "$ref": "#/$defs/TaughtNoteTask",
+              "description": "The exact immutable task persisted before launch."
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "The exact issued turn identity."
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "turn",
+            "goal",
+            "task",
+            "session",
+            "mode",
+            "model_selection",
+            "lsn_of_decision",
+            "answers",
+            "note_lsn",
+            "completion_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The `IdentifiedTaughtNoteOnlyTurnIssued` payload.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The owning agent."
+            },
+            "answers": {
+              "description": "The exact carried answer identities, empty on a note-only turn.",
+              "items": {
+                "$ref": "#/$defs/Lsn"
+              },
+              "maxItems": 0,
+              "type": "array"
+            },
+            "completion_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The durable ordinary goal Done identity."
+            },
+            "goal": {
+              "$ref": "#/$defs/GoalId",
+              "description": "The original charged goal."
+            },
+            "kind": {
+              "const": "identified_taught_note",
+              "type": "string"
+            },
+            "lsn_of_decision": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The exact taught completed-note decision identity."
+            },
+            "mode": {
+              "$ref": "#/$defs/ManagedMode",
+              "description": "Managed issuance only."
+            },
+            "model_selection": {
+              "$ref": "#/$defs/ModelSelection",
+              "description": "The explicit prelaunch model selection."
+            },
+            "note_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The exact `BrowserNoteQueued` identity."
+            },
+            "session": {
+              "$ref": "#/$defs/ExplicitNullable_SessionId",
+              "description": "The explicitly recorded announced session, or null."
+            },
+            "task": {
+              "$ref": "#/$defs/IdentifiedTaughtNoteTask",
+              "description": "The exact immutable task persisted before launch."
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "The exact issued turn identity."
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "turn",
+            "goal",
+            "task",
+            "session",
+            "mode",
+            "model_selection",
+            "lsn_of_decision",
+            "answers",
+            "note_lsn",
+            "completion_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The `ConversationTurnIssued` payload.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "Owning agent."
+            },
+            "charge_scope": {
+              "$ref": "#/$defs/ConversationChargeScope",
+              "description": "Immutable budget scope."
+            },
+            "context_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Captured context generation."
+            },
+            "kind": {
+              "const": "conversation",
+              "type": "string"
+            },
+            "lsn_of_decision": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact admitted decision."
+            },
+            "model_selection": {
+              "$ref": "#/$defs/ModelSelection",
+              "description": "Explicit prelaunch model selection."
+            },
+            "note_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact accepted message."
+            },
+            "session": {
+              "$ref": "#/$defs/ExplicitNullable_SessionId",
+              "description": "Explicit launch session or null."
+            },
+            "task": {
+              "description": "Exact task, persisted before launch.",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Single logical turn identity retained during crash recovery."
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "turn",
+            "note_lsn",
+            "context_lsn",
+            "charge_scope",
+            "task",
+            "session",
+            "model_selection",
+            "lsn_of_decision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The `IdentifiedConversationTurnIssued` payload.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "Owning agent."
+            },
+            "charge_scope": {
+              "$ref": "#/$defs/ConversationChargeScope",
+              "description": "Immutable budget scope."
+            },
+            "context_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Captured context generation."
+            },
+            "kind": {
+              "const": "identified_conversation",
+              "type": "string"
+            },
+            "lsn_of_decision": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact admitted decision."
+            },
+            "model_selection": {
+              "$ref": "#/$defs/ModelSelection",
+              "description": "Explicit prelaunch model selection."
+            },
+            "note_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact accepted message."
+            },
+            "session": {
+              "$ref": "#/$defs/ExplicitNullable_SessionId",
+              "description": "Explicit launch session or null."
+            },
+            "task": {
+              "description": "Exact task, persisted before launch, opening with the agent's identity line.",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Single logical turn identity retained during crash recovery."
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "turn",
+            "note_lsn",
+            "context_lsn",
+            "charge_scope",
+            "task",
+            "session",
+            "model_selection",
+            "lsn_of_decision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Historical mail-only work under its exact preparation.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "Recipient."
+            },
+            "answers": {
+              "description": "Required empty carrier, leaving pending answers deferred.",
+              "items": {
+                "$ref": "#/$defs/Lsn"
+              },
+              "maxItems": 0,
+              "type": "array"
+            },
+            "completion_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact ordinary Done position."
+            },
+            "goal": {
+              "$ref": "#/$defs/GoalId",
+              "description": "Original completed goal, used for normal usage and hop accounting."
+            },
+            "kind": {
+              "const": "mail_wake",
+              "type": "string"
+            },
+            "lsn_of_decision": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Current admitting resumed decision position."
+            },
+            "mode": {
+              "$ref": "#/$defs/MailWakeManagedMode",
+              "description": "Always Managed."
+            },
+            "model_selection": {
+              "$ref": "#/$defs/MailWakeModelSelection",
+              "description": "Required recorded selection; default remains distinct from absent."
+            },
+            "root_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Fresh preparation position."
+            },
+            "session": {
+              "$ref": "#/$defs/ExplicitNullable_MailWakeCarrierText",
+              "description": "Required announced session or explicit null, recovered normally on reissue."
+            },
+            "task": {
+              "$ref": "#/$defs/MailWakeTask",
+              "description": "Exact prepared task."
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Existing normal turn identity, minted only at issue."
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "turn",
+            "goal",
+            "completion_lsn",
+            "root_lsn",
+            "lsn_of_decision",
+            "task",
+            "session",
+            "mode",
+            "model_selection",
+            "answers"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Identified mail-only work under its exact preparation.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "Recipient."
+            },
+            "answers": {
+              "description": "Required empty carrier, leaving pending answers deferred.",
+              "items": {
+                "$ref": "#/$defs/Lsn"
+              },
+              "maxItems": 0,
+              "type": "array"
+            },
+            "completion_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact ordinary Done position."
+            },
+            "goal": {
+              "$ref": "#/$defs/GoalId",
+              "description": "Original completed goal, used for normal usage and hop accounting."
+            },
+            "kind": {
+              "const": "identified_mail_wake",
+              "type": "string"
+            },
+            "lsn_of_decision": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Current admitting resumed decision position."
+            },
+            "mode": {
+              "$ref": "#/$defs/MailWakeManagedMode",
+              "description": "Always Managed."
+            },
+            "model_selection": {
+              "$ref": "#/$defs/MailWakeModelSelection",
+              "description": "Required recorded selection; default remains distinct from absent."
+            },
+            "root_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Fresh preparation position."
+            },
+            "session": {
+              "$ref": "#/$defs/ExplicitNullable_MailWakeCarrierText",
+              "description": "Required announced session or explicit null, recovered normally on reissue."
+            },
+            "task": {
+              "$ref": "#/$defs/MailWakeTask",
+              "description": "Exact prepared task."
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Existing normal turn identity, minted only at issue."
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "turn",
+            "goal",
+            "completion_lsn",
+            "root_lsn",
+            "lsn_of_decision",
+            "task",
+            "session",
+            "mode",
+            "model_selection",
+            "answers"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ManagedMode": {
       "const": "managed",
       "type": "string"
@@ -6531,6 +7169,45 @@
       ],
       "type": "object"
     },
+    "RepositoryTurnGrant": {
+      "additionalProperties": false,
+      "description": "Complete authority selected before a managed issue is persisted.",
+      "properties": {
+        "catalog_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Hire's immutable observed catalog revision."
+        },
+        "hired_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Exact hire whose copies are selected."
+        },
+        "policy": {
+          "$ref": "#/$defs/RepositoryPolicy",
+          "description": "Required provider confinement policy."
+        },
+        "project": {
+          "description": "Recorded project identity.",
+          "type": "string"
+        },
+        "repositories": {
+          "$ref": "#/$defs/RepositorySet_OwnedRepository",
+          "description": "Exact selected copies in recorded order, with the execution primary."
+        },
+        "ticket": {
+          "$ref": "#/$defs/ExplicitNullable_TicketRepositoryRound",
+          "description": "Active ticket authority, independent of the issue's charged goal."
+        }
+      },
+      "required": [
+        "hired_lsn",
+        "project",
+        "catalog_lsn",
+        "policy",
+        "repositories",
+        "ticket"
+      ],
+      "type": "object"
+    },
     "SamplerVersions": {
       "description": "Sampler and text-policy revisions in force for a capture.",
       "properties": {
@@ -7017,6 +7694,100 @@
           "type": "string"
         }
       ]
+    },
+    "TicketRepositories": {
+      "description": "The sole repository authority owned by a ticket row.",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "repository_scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketRepositoryScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "project"
+      ],
+      "type": "object"
+    },
+    "TicketRepositoryRound": {
+      "additionalProperties": false,
+      "description": "The immutable ticket round selected at a start, retained by every issue in that round.",
+      "properties": {
+        "authority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketStartRepositories"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Frozen restricted start authority, absent for historical singleton starts."
+        },
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "The ticket."
+        },
+        "goal": {
+          "$ref": "#/$defs/GoalId",
+          "description": "The goal installed atomically with this start."
+        },
+        "repositories": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketRepositories"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The declaration, absent only when the historical prefix has no ticket creation."
+        },
+        "round": {
+          "description": "Recorded round number.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Actual start record position."
+        }
+      },
+      "required": [
+        "card",
+        "goal",
+        "start_lsn",
+        "round"
+      ],
+      "type": "object"
+    },
+    "TicketRepositoryScope": {
+      "additionalProperties": false,
+      "description": "Current check selection alongside a ticket's immutable declaration.",
+      "properties": {
+        "check_repo": {
+          "$ref": "#/$defs/RepoId",
+          "description": "Repository in which the command check runs."
+        },
+        "declaration": {
+          "$ref": "#/$defs/TicketDeclaration",
+          "description": "Creation-time authority, unchanged by check edits."
+        }
+      },
+      "required": [
+        "declaration",
+        "check_repo"
+      ],
+      "type": "object"
     },
     "TicketRequestAttribution": {
       "description": "The retry identity a Floor page gave a ticket creation or a model change, as digests only: the\ndigest of the browser-generated request id and the digest of the normalized request fields. A\nrepeat of the same id with the same fields is answered with the outcome already recorded.",
@@ -11363,6 +12134,34 @@
         "expected_seq",
         "round",
         "repositories"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "A managed issue with its exact recorded repository grant.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "The daemon's wall clock as `Clock::now()` reported it when the supervisor emitted the\n`Persist` that carried this record, UTC milliseconds. `lsn` orders; `at` labels —\nprojections tolerate a non-monotone `at` (clock steps, NTP) and never sort by it, and it\nis never an input to `decide()` (invariant 5)."
+        },
+        "grant": {
+          "$ref": "#/$defs/RepositoryTurnGrant",
+          "description": "Immutable selected repositories and ticket round."
+        },
+        "payload": {
+          "$ref": "#/$defs/ManagedIssuePayload",
+          "description": "Source-specific task, decision, model, session and reservation facts."
+        },
+        "t": {
+          "const": "turn_issued_with_repositories",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "grant",
+        "payload"
       ],
       "type": "object"
     },

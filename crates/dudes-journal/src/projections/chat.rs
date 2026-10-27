@@ -350,6 +350,205 @@ pub(super) fn apply(
     entry: &Entry,
 ) -> Result<()> {
     let mut window = windows(&tables.windows)?;
+    let issued_note = if let Some(payload) = entry.record.issue_payload() {
+        match payload {
+            dudes_proto::issue::ManagedIssueRef::Conversation {
+                agent,
+                turn,
+                note_lsn,
+                context_lsn,
+                task,
+                lsn_of_decision,
+                ..
+            }
+            | dudes_proto::issue::ManagedIssueRef::IdentifiedConversation {
+                agent,
+                turn,
+                note_lsn,
+                context_lsn,
+                task,
+                lsn_of_decision,
+                ..
+            } => {
+                let identified = matches!(
+                    payload,
+                    dudes_proto::issue::ManagedIssueRef::IdentifiedConversation { .. }
+                );
+                if get_row::<super::TurnRow>(turns, &turn.to_bytes())?.is_some() {
+                    return Err(invalid());
+                }
+                let value = conversation_note(tables, agents, *agent, *note_lsn, *context_lsn)?;
+                let mut first = None;
+                for pending in tables.notes.iter()? {
+                    let (position, encoded) = pending?;
+                    let queued: Note = serde_json::from_slice(encoded.value())
+                        .map_err(|source| Error::Row { source })?;
+                    if queued.agent == *agent
+                        && matches!(queued.state, NoteState::Queued)
+                        && queued.destination == value.destination
+                    {
+                        let priority = (queued.answer_to.is_none(), position.value());
+                        if first.is_none_or(|current| priority < current) {
+                            first = Some(priority);
+                        }
+                    }
+                }
+                if first.map(|(_, position)| position) != Some(note_lsn.0) {
+                    return Err(invalid());
+                }
+                let decisions = get_row::<Decisions>(&tables.decisions, &agent.to_bytes())?
+                    .ok_or_else(invalid)?;
+                let current =
+                    get_row::<AgentRow>(agents, &agent.to_bytes())?.ok_or_else(invalid)?;
+                if !conversation_task_matches(&value, *agent, identified, task)
+                    || current.open_turn.is_some()
+                    || decisions.conversation
+                        != Some((*lsn_of_decision, *note_lsn, *context_lsn, true))
+                    || decisions.conversation_identified != identified
+                {
+                    return Err(invalid());
+                }
+                reserve(
+                    tables,
+                    agents,
+                    &mut window,
+                    lsn,
+                    *agent,
+                    *turn,
+                    None,
+                    *note_lsn,
+                    None,
+                )?;
+            }
+            dudes_proto::issue::ManagedIssueRef::RawNote {
+                agent,
+                turn,
+                goal,
+                task,
+                note_lsn,
+                completion_lsn,
+                lsn_of_decision,
+                answers,
+                ..
+            }
+            | dudes_proto::issue::ManagedIssueRef::TaughtNote {
+                agent,
+                turn,
+                goal,
+                task,
+                note_lsn,
+                completion_lsn,
+                lsn_of_decision,
+                answers,
+                ..
+            }
+            | dudes_proto::issue::ManagedIssueRef::IdentifiedTaughtNote {
+                agent,
+                turn,
+                goal,
+                task,
+                note_lsn,
+                completion_lsn,
+                lsn_of_decision,
+                answers,
+                ..
+            } => {
+                let contract = match payload {
+                    dudes_proto::issue::ManagedIssueRef::TaughtNote { .. } => NoteContract::Taught,
+                    dudes_proto::issue::ManagedIssueRef::IdentifiedTaughtNote { .. } => {
+                        NoteContract::IdentifiedTaught
+                    }
+                    _ => NoteContract::Raw,
+                };
+                if contract.is_taught()
+                    && !matches!(
+                        payload,
+                        dudes_proto::issue::ManagedIssueRef::TaughtNote {
+                            mode: dudes_types::Mode::Managed,
+                            ..
+                        } | dudes_proto::issue::ManagedIssueRef::IdentifiedTaughtNote {
+                            mode: dudes_types::Mode::Managed,
+                            ..
+                        }
+                    )
+                {
+                    return Err(invalid());
+                }
+                if contract.is_taught()
+                    && (get_row::<super::TurnRow>(turns, &turn.to_bytes())?.is_some()
+                        || get_row::<AgentRow>(agents, &agent.to_bytes())?
+                            .is_some_and(|row| row.open_turn.is_some()))
+                {
+                    return Err(invalid());
+                }
+                let decisions = get_row::<Decisions>(&tables.decisions, &agent.to_bytes())?
+                    .ok_or_else(invalid)?;
+                if !answers.is_empty()
+                    || !decisions.note.is_some_and(|row| {
+                        row.lsn == *lsn_of_decision
+                            && row.goal == *goal
+                            && row.note_lsn == *note_lsn
+                            && row.completion_lsn == *completion_lsn
+                            && row.issued
+                            && row.contract == contract
+                    })
+                {
+                    return Err(invalid());
+                }
+                let value = note(&tables.notes, *note_lsn)?;
+                if match contract {
+                    NoteContract::Raw => task != value.task.as_ref().unwrap_or(&value.text),
+                    NoteContract::Taught | NoteContract::IdentifiedTaught => {
+                        !contract.task_matches(*agent, &value.text, task)
+                    }
+                } {
+                    return Err(invalid());
+                }
+                reserve(
+                    tables,
+                    agents,
+                    &mut window,
+                    lsn,
+                    *agent,
+                    *turn,
+                    Some(*goal),
+                    *note_lsn,
+                    Some((*completion_lsn, contract)),
+                )?;
+            }
+            dudes_proto::issue::ManagedIssueRef::GoalNote {
+                agent,
+                turn,
+                goal,
+                note_lsn,
+                lsn_of_decision,
+                ..
+            } => {
+                let decisions = get_row::<Decisions>(&tables.decisions, &agent.to_bytes())?
+                    .ok_or_else(invalid)?;
+                if decisions.ordinary != Some((*lsn_of_decision, *goal, true))
+                    || get_row::<Lsn>(&tables.completions, &goal.to_bytes())?.is_some()
+                {
+                    return Err(invalid());
+                }
+                reserve(
+                    tables,
+                    agents,
+                    &mut window,
+                    lsn,
+                    *agent,
+                    *turn,
+                    Some(*goal),
+                    *note_lsn,
+                    None,
+                )?;
+            }
+            _ => return Ok(()),
+        }
+        true
+    } else {
+        false
+    };
     match &entry.record {
         Record::ConversationDispatchUncertain {
             agent,
@@ -545,72 +744,6 @@ pub(super) fn apply(
             decisions.conversation_identified = identified;
             put_row(&mut tables.decisions, &agent.to_bytes(), &decisions)?;
         }
-        Record::ConversationTurnIssued {
-            agent,
-            turn,
-            note_lsn,
-            context_lsn,
-            task,
-            lsn_of_decision,
-            ..
-        }
-        | Record::IdentifiedConversationTurnIssued {
-            agent,
-            turn,
-            note_lsn,
-            context_lsn,
-            task,
-            lsn_of_decision,
-            ..
-        } => {
-            let identified = matches!(
-                entry.record,
-                Record::IdentifiedConversationTurnIssued { .. }
-            );
-            if get_row::<super::TurnRow>(turns, &turn.to_bytes())?.is_some() {
-                return Err(invalid());
-            }
-            let value = conversation_note(tables, agents, *agent, *note_lsn, *context_lsn)?;
-            let mut first = None;
-            for pending in tables.notes.iter()? {
-                let (position, encoded) = pending?;
-                let queued: Note = serde_json::from_slice(encoded.value())
-                    .map_err(|source| Error::Row { source })?;
-                if queued.agent == *agent
-                    && matches!(queued.state, NoteState::Queued)
-                    && queued.destination == value.destination
-                {
-                    let priority = (queued.answer_to.is_none(), position.value());
-                    if first.is_none_or(|current| priority < current) {
-                        first = Some(priority);
-                    }
-                }
-            }
-            if first.map(|(_, position)| position) != Some(note_lsn.0) {
-                return Err(invalid());
-            }
-            let decisions =
-                get_row::<Decisions>(&tables.decisions, &agent.to_bytes())?.ok_or_else(invalid)?;
-            let current = get_row::<AgentRow>(agents, &agent.to_bytes())?.ok_or_else(invalid)?;
-            if !conversation_task_matches(&value, *agent, identified, task)
-                || current.open_turn.is_some()
-                || decisions.conversation != Some((*lsn_of_decision, *note_lsn, *context_lsn, true))
-                || decisions.conversation_identified != identified
-            {
-                return Err(invalid());
-            }
-            reserve(
-                tables,
-                agents,
-                &mut window,
-                lsn,
-                *agent,
-                *turn,
-                None,
-                *note_lsn,
-                None,
-            )?;
-        }
         Record::BrowserNoteQueued {
             agent,
             text,
@@ -736,127 +869,6 @@ pub(super) fn apply(
                 contract,
             });
             put_row(&mut tables.decisions, &agent.to_bytes(), &decisions)?;
-        }
-        Record::NoteOnlyTurnIssued {
-            agent,
-            turn,
-            goal,
-            task,
-            note_lsn,
-            completion_lsn,
-            lsn_of_decision,
-            answers,
-            ..
-        }
-        | Record::TaughtNoteOnlyTurnIssued {
-            agent,
-            turn,
-            goal,
-            task,
-            note_lsn,
-            completion_lsn,
-            lsn_of_decision,
-            answers,
-            ..
-        }
-        | Record::IdentifiedTaughtNoteOnlyTurnIssued {
-            agent,
-            turn,
-            goal,
-            task,
-            note_lsn,
-            completion_lsn,
-            lsn_of_decision,
-            answers,
-            ..
-        } => {
-            let contract = match entry.record {
-                Record::TaughtNoteOnlyTurnIssued { .. } => NoteContract::Taught,
-                Record::IdentifiedTaughtNoteOnlyTurnIssued { .. } => NoteContract::IdentifiedTaught,
-                _ => NoteContract::Raw,
-            };
-            if contract.is_taught()
-                && !matches!(
-                    entry.record,
-                    Record::TaughtNoteOnlyTurnIssued {
-                        mode: dudes_types::Mode::Managed,
-                        ..
-                    } | Record::IdentifiedTaughtNoteOnlyTurnIssued {
-                        mode: dudes_types::Mode::Managed,
-                        ..
-                    }
-                )
-            {
-                return Err(invalid());
-            }
-            if contract.is_taught()
-                && (get_row::<super::TurnRow>(turns, &turn.to_bytes())?.is_some()
-                    || get_row::<AgentRow>(agents, &agent.to_bytes())?
-                        .is_some_and(|row| row.open_turn.is_some()))
-            {
-                return Err(invalid());
-            }
-            let decisions =
-                get_row::<Decisions>(&tables.decisions, &agent.to_bytes())?.ok_or_else(invalid)?;
-            if !answers.is_empty()
-                || !decisions.note.is_some_and(|row| {
-                    row.lsn == *lsn_of_decision
-                        && row.goal == *goal
-                        && row.note_lsn == *note_lsn
-                        && row.completion_lsn == *completion_lsn
-                        && row.issued
-                        && row.contract == contract
-                })
-            {
-                return Err(invalid());
-            }
-            let value = note(&tables.notes, *note_lsn)?;
-            if match contract {
-                NoteContract::Raw => task != value.task.as_ref().unwrap_or(&value.text),
-                NoteContract::Taught | NoteContract::IdentifiedTaught => {
-                    !contract.task_matches(*agent, &value.text, task)
-                }
-            } {
-                return Err(invalid());
-            }
-            reserve(
-                tables,
-                agents,
-                &mut window,
-                lsn,
-                *agent,
-                *turn,
-                Some(*goal),
-                *note_lsn,
-                Some((*completion_lsn, contract)),
-            )?;
-        }
-        Record::TurnIssuedWithBrowserNote {
-            agent,
-            turn,
-            goal,
-            note_lsn,
-            lsn_of_decision,
-            ..
-        } => {
-            let decisions =
-                get_row::<Decisions>(&tables.decisions, &agent.to_bytes())?.ok_or_else(invalid)?;
-            if decisions.ordinary != Some((*lsn_of_decision, *goal, true))
-                || get_row::<Lsn>(&tables.completions, &goal.to_bytes())?.is_some()
-            {
-                return Err(invalid());
-            }
-            reserve(
-                tables,
-                agents,
-                &mut window,
-                lsn,
-                *agent,
-                *turn,
-                Some(*goal),
-                *note_lsn,
-                None,
-            )?;
         }
         Record::BrowserNoteCancelled {
             agent, note_lsn, ..
@@ -1119,6 +1131,7 @@ pub(super) fn apply(
             window.turns.retain(|row| row.view.agent_id != *id);
             window.context.retain(|row| row.view.agent_id != *id);
         }
+        _ if issued_note => {}
         _ => return Ok(()),
     }
     for row in &mut window.turns {
