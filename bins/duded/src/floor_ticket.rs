@@ -250,14 +250,14 @@ impl TicketCreateIndex {
     }
 
     pub(crate) fn apply(&mut self, record: &dudes_proto::Record) -> Result<()> {
-        if let dudes_proto::Record::TicketCreated {
-            card,
-            request: Some(request),
-            ..
-        } = record
+        if let Some(created) = record.ticket_created()
+            && let Some(request) = created.request
             && self
                 .made
-                .insert(request.request_id_digest, (request.request_digest, *card))
+                .insert(
+                    request.request_id_digest,
+                    (request.request_digest, created.card),
+                )
                 .is_some()
         {
             bail!("duplicate Floor ticket request in journal");

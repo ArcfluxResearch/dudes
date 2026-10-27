@@ -87,6 +87,55 @@ pub struct TicketStart<'a> {
     pub goal: &'a Goal,
     /// Card revision named by the start.
     pub expected_seq: dudes_types::Seq,
+    /// Exact round and restricted selection, present only on the required scoped carrier.
+    pub repositories: Option<(u32, &'a crate::repository::TicketStartRepositories)>,
+}
+
+/// Common creation fields, borrowed from the original carrier.
+#[derive(Clone, Copy, Debug)]
+pub struct TicketCreated<'a> {
+    /// Original carrier.
+    pub source: &'a Record,
+    /// Ticket identity.
+    pub card: CardId,
+    /// Trimmed title.
+    pub title: &'a str,
+    /// Operator note.
+    pub description: &'a str,
+    /// Project department.
+    pub department: &'a str,
+    /// Recorded project identity.
+    pub project: &'a str,
+    /// Resolved check definition.
+    pub done_when: &'a crate::TicketCheck,
+    /// Author.
+    pub by: crate::Actor,
+    /// Browser retry attribution.
+    pub request: Option<&'a crate::record::TicketRequestAttribution>,
+    /// Explicit immutable declaration and check target.
+    pub repositories: Option<(
+        &'a crate::repository::TicketDeclaration,
+        &'a crate::repository::RepoId,
+    )>,
+}
+
+/// Common complete edit fields, without authority to replace the declaration.
+#[derive(Clone, Copy, Debug)]
+pub struct TicketEdited<'a> {
+    /// Ticket identity.
+    pub card: CardId,
+    /// Trimmed title.
+    pub title: &'a str,
+    /// Operator note.
+    pub description: &'a str,
+    /// Resolved replacement check.
+    pub done_when: &'a crate::TicketCheck,
+    /// Author.
+    pub by: crate::Actor,
+    /// Preceding card revision.
+    pub expected_seq: dudes_types::Seq,
+    /// Explicit target on the scoped edit carrier.
+    pub check_repo: Option<&'a crate::repository::RepoId>,
 }
 
 /// Common issue fields borrowed from the original source-specific carrier.
@@ -113,6 +162,80 @@ pub struct TurnIssue<'a> {
 }
 
 impl Record {
+    /// Borrow every ticket creation without lowering its physical carrier.
+    #[must_use]
+    pub fn ticket_created(&self) -> Option<TicketCreated<'_>> {
+        match self {
+            Self::TicketCreated {
+                card,
+                title,
+                description,
+                department,
+                project,
+                done_when,
+                by,
+                request,
+            } => Some(TicketCreated {
+                source: self,
+                card: *card,
+                title,
+                description,
+                department,
+                project,
+                done_when,
+                by: *by,
+                request: request.as_ref(),
+                repositories: None,
+            }),
+            Self::TicketCreatedWithRepositories(created) => Some(TicketCreated {
+                source: self,
+                card: created.card,
+                title: &created.title,
+                description: &created.description,
+                department: &created.department,
+                project: &created.declaration.project,
+                done_when: &created.done_when,
+                by: created.by,
+                request: created.request.as_ref(),
+                repositories: Some((&created.declaration, &created.check_repo)),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Borrow every complete ticket edit.
+    #[must_use]
+    pub fn ticket_edited(&self) -> Option<TicketEdited<'_>> {
+        match self {
+            Self::TicketEdited {
+                card,
+                title,
+                description,
+                done_when,
+                by,
+                expected_seq,
+            } => Some(TicketEdited {
+                card: *card,
+                title,
+                description,
+                done_when,
+                by: *by,
+                expected_seq: *expected_seq,
+                check_repo: None,
+            }),
+            Self::TicketEditedWithRepositories(edited) => Some(TicketEdited {
+                card: edited.card,
+                title: &edited.title,
+                description: &edited.description,
+                done_when: &edited.done_when,
+                by: edited.by,
+                expected_seq: edited.expected_seq,
+                check_repo: Some(&edited.check_repo),
+            }),
+            _ => None,
+        }
+    }
+
     /// Borrow the hire without manufacturing another record carrier.
     #[must_use]
     pub fn hire(&self) -> Option<HireRecord<'_>> {
@@ -204,6 +327,15 @@ impl Record {
                 agent: *agent,
                 goal,
                 expected_seq: *expected_seq,
+                repositories: None,
+            }),
+            Self::TicketStartedWithRepositories(start) => Some(TicketStart {
+                source: self,
+                card: start.card,
+                agent: start.agent,
+                goal: &start.goal,
+                expected_seq: start.expected_seq,
+                repositories: Some((start.round, &start.repositories)),
             }),
             _ => None,
         }
@@ -386,8 +518,16 @@ pub fn fold(lsn: Lsn, record: &Record, before: RepositoryFacts<'_>) -> Repositor
             }
         });
     }
-    if let Record::TicketCreated { project, .. } = record {
-        return RepositoryFold::Ticket(TicketRepositories::recorded(project));
+    if let Some(created) = record.ticket_created() {
+        return RepositoryFold::Ticket(created.repositories.map_or_else(
+            || TicketRepositories::recorded(created.project),
+            |(declaration, check_repo)| {
+                TicketRepositories::Declared(crate::repository::TicketRepositoryScope {
+                    declaration: declaration.clone(),
+                    check_repo: check_repo.clone(),
+                })
+            },
+        ));
     }
     if let Some(start) = record.ticket_start() {
         return RepositoryFold::Start(TicketRepositoryRound {
@@ -399,6 +539,9 @@ pub fn fold(lsn: Lsn, record: &Record, before: RepositoryFacts<'_>) -> Repositor
                 .map_or(before.prior_round, |(_, round)| round)
                 .saturating_add(1),
             repositories: before.ticket.map(|(repositories, _)| repositories.clone()),
+            authority: start
+                .repositories
+                .map(|(_, repositories)| repositories.clone()),
         });
     }
     if record.turn_issue().is_some() {
@@ -482,19 +625,15 @@ mod tests {
     }
 
     #[test]
-    fn singleton_ticket_authority_keeps_its_existing_json_and_schema() {
+    fn singleton_ticket_authority_keeps_project_a_string() {
         let project: TicketRepositories = "service".into();
+        let wire = serde_json::json!({"project": "service"});
+        assert_eq!(serde_json::to_value(&project).unwrap(), wire);
         assert_eq!(
-            serde_json::to_value(&project).unwrap(),
-            serde_json::json!("service")
-        );
-        assert_eq!(
-            serde_json::from_str::<TicketRepositories>("\"service\"").unwrap(),
+            serde_json::from_value::<TicketRepositories>(wire).unwrap(),
             project
         );
-        assert_eq!(
-            schemars::schema_for!(TicketRepositories).get("type"),
-            Some(&serde_json::json!("string"))
-        );
+        let schema = serde_json::to_value(schemars::schema_for!(TicketRepositories)).unwrap();
+        assert_eq!(schema["properties"]["project"]["type"], "string");
     }
 }

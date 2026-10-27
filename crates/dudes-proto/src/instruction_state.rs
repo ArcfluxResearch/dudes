@@ -88,6 +88,38 @@ pub struct InstructionFold {
     pub coverage_note: Option<(CardId, TicketCoverageNote)>,
 }
 
+impl InstructionFold {
+    /// Ticket rows whose review display or sequence must be refreshed after this record.
+    #[must_use]
+    pub fn ticket_cards(&self, state: &InstructionState, record: &Record) -> Vec<CardId> {
+        let mut cards = self.evidence_cards.clone();
+        let reviewed = self.reviewed.as_ref().map(|(card, _)| *card);
+        let changed = record
+            .ticket_start()
+            .map(|start| start.card)
+            .or_else(|| record.ticket_edited().map(|edited| edited.card))
+            .or(match record {
+                Record::CardTransition { card, .. } | Record::TicketAssigned { card, .. } => {
+                    Some(*card)
+                }
+                _ => None,
+            });
+        for card in reviewed.into_iter().chain(changed) {
+            if !cards.contains(&card) {
+                cards.push(card);
+            }
+        }
+        if matches!(record, Record::AgentRetired { .. }) {
+            for card in state.pending_cards() {
+                if !cards.contains(&card) {
+                    cards.push(card);
+                }
+            }
+        }
+        cards
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Issue {
     agent: AgentId,
@@ -1324,38 +1356,35 @@ impl InstructionState {
             | Record::PtyCloseCompleted { .. } => self.fold_pty(lsn, record, folded),
             Record::TicketAssigned { .. }
             | Record::TicketStarted { .. }
+            | Record::TicketStartedWithRepositories(_)
             | Record::TicketRemoved { .. } => self.fold_ticket(lsn, record),
             _ => {}
         }
     }
     fn fold_ticket(&mut self, lsn: Lsn, record: &Record) {
+        if let Some(start) = record.ticket_start() {
+            if let Some(&assignment_lsn) = self.assignments.get(&start.card) {
+                self.remove_association(start.card);
+                self.card_goals.insert(start.card, start.goal.id);
+                self.associations.insert(
+                    start.goal.id,
+                    InstructionTicketAssociation {
+                        card: start.card,
+                        goal: start.goal.id,
+                        assignment_lsn,
+                        seq_at_start: start.expected_seq.next(),
+                    },
+                );
+                if let Some(association) = self.associations.get(&start.goal.id) {
+                    self.ticket_history.insert(start.goal.id, *association);
+                }
+            }
+            return;
+        }
         match record {
             Record::TicketAssigned { card, .. } => {
                 self.assignments.insert(*card, lsn);
                 self.remove_association(*card);
-            }
-            Record::TicketStarted {
-                card,
-                goal,
-                expected_seq,
-                ..
-            } => {
-                if let Some(&assignment_lsn) = self.assignments.get(card) {
-                    self.remove_association(*card);
-                    self.card_goals.insert(*card, goal.id);
-                    self.associations.insert(
-                        goal.id,
-                        InstructionTicketAssociation {
-                            card: *card,
-                            goal: goal.id,
-                            assignment_lsn,
-                            seq_at_start: expected_seq.next(),
-                        },
-                    );
-                    if let Some(association) = self.associations.get(&goal.id) {
-                        self.ticket_history.insert(goal.id, *association);
-                    }
-                }
             }
             Record::TicketRemoved { card, .. } => {
                 self.assignments.remove(card);

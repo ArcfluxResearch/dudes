@@ -214,7 +214,7 @@ impl RecoveryCurrent<'_> {
                 goal == requested.work.goal
             }
             (
-                RecordKind::TicketStarted,
+                RecordKind::TicketStarted | RecordKind::TicketStartedWithRepositories,
                 RecoveryWitnessOwner::Ticket { agent, goal, card },
                 Some(ticket),
             ) => {
@@ -337,8 +337,10 @@ impl RecoveryCurrent<'_> {
                         | RecordKind::CardTransition
                         | RecordKind::Claim
                         | RecordKind::TicketCreated
+                        | RecordKind::TicketCreatedWithRepositories
                         | RecordKind::TicketAssigned
                         | RecordKind::TicketStarted
+                        | RecordKind::TicketStartedWithRepositories
                 )
             {
                 return Err(RecoveryStateError::Binding);

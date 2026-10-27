@@ -212,69 +212,70 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
     if let Some(start) = record.ticket_start() {
         return update_ticket(table, lsn, start.card, |row| start_ticket(row, lsn, start));
     }
-    match record {
-        Record::TicketCreated {
-            card,
-            title,
-            description,
-            department,
-            done_when,
-            by,
-            ..
-        } => {
-            let view = CardView {
-                id: *card,
-                title: title.clone(),
-                department: department.clone(),
-                status: CardStatus::Todo,
-                status_by: *by,
-                seq: Seq::ZERO,
-                claimed_by: None,
-                deps: Vec::new(),
-                ticket: None,
-            };
-            let ticket = TicketRow {
-                description: description.clone(),
-                repositories: match dudes_proto::repository_state::fold(
-                    lsn,
-                    record,
-                    dudes_proto::repository_state::RepositoryFacts::default(),
-                ) {
-                    dudes_proto::repository_state::RepositoryFold::Ticket(repositories) => {
-                        repositories
-                    }
-                    _ => return Ok(()),
-                },
-                done_when: done_when.clone(),
-                goal: None,
-                queue: None,
-                message: None,
-                round: 0,
-                reason: None,
-                summary: None,
-                last_turn_end: None,
-                check: None,
-                instruction_review: None,
-                coverage: None,
-            };
-            let row = BoardRow {
+    if let Some(created) = record.ticket_created() {
+        let dudes_proto::repository_state::RepositoryFold::Ticket(repositories) =
+            dudes_proto::repository_state::fold(
+                lsn,
+                record,
+                dudes_proto::repository_state::RepositoryFacts::default(),
+            )
+        else {
+            return Ok(());
+        };
+        let view = CardView {
+            id: created.card,
+            title: created.title.to_owned(),
+            department: created.department.to_owned(),
+            status: CardStatus::Todo,
+            status_by: created.by,
+            seq: Seq::ZERO,
+            claimed_by: None,
+            deps: Vec::new(),
+            ticket: None,
+        };
+        let ticket = TicketRow {
+            description: created.description.to_owned(),
+            repositories,
+            done_when: created.done_when.clone(),
+            goal: None,
+            queue: None,
+            message: None,
+            round: 0,
+            reason: None,
+            summary: None,
+            last_turn_end: None,
+            check: None,
+            instruction_review: None,
+            coverage: None,
+        };
+        return put_row(
+            table,
+            &created.card.to_bytes(),
+            &BoardRow {
                 recovery_change_lsn: lsn,
                 view,
                 claimed_lsn: None,
                 ticket: Some(ticket),
-            };
-            put_row(table, &card.to_bytes(), &row)
-        }
-        Record::TicketEdited {
-            card,
-            title,
-            description,
-            done_when,
-            expected_seq,
-            ..
-        } => update_ticket(table, lsn, *card, |row| {
-            edit_ticket(row, title, description, done_when, *expected_seq);
-        }),
+            },
+        );
+    }
+    if let Some(edited) = record.ticket_edited() {
+        return update_ticket(table, lsn, edited.card, |row| {
+            edit_ticket(
+                row,
+                edited.title,
+                edited.description,
+                edited.done_when,
+                edited.expected_seq,
+            );
+            if let Some(ticket) = row.ticket.as_mut()
+                && let Some(repo) = edited.check_repo
+            {
+                ticket.repositories.set_check_repo(repo);
+            }
+        });
+    }
+    match record {
         Record::TicketAssigned {
             card,
             agent,
@@ -294,15 +295,22 @@ pub(super) fn capture_recovery_change(
     lsn: Lsn,
     entry: &Entry,
 ) -> Result<()> {
-    let card = match &entry.record {
-        Record::CardCreated { card, .. }
-        | Record::CardTransition { card, .. }
-        | Record::Claim { card, .. }
-        | Record::TicketCreated { card, .. }
-        | Record::TicketAssigned { card, .. }
-        | Record::TicketStarted { card, .. }
-        | Record::TicketRemoved { card, .. } => *card,
-        _ => return Ok(()),
+    let ticket_card = entry
+        .record
+        .ticket_created()
+        .map(|created| created.card)
+        .or_else(|| entry.record.ticket_start().map(|start| start.card));
+    let card = if let Some(card) = ticket_card {
+        card
+    } else {
+        match &entry.record {
+            Record::CardCreated { card, .. }
+            | Record::CardTransition { card, .. }
+            | Record::Claim { card, .. }
+            | Record::TicketAssigned { card, .. }
+            | Record::TicketRemoved { card, .. } => *card,
+            _ => return Ok(()),
+        }
     };
     if let Some(mut row) = get_row::<BoardRow>(table, &card.to_bytes())? {
         row.recovery_change_lsn = lsn;
@@ -318,30 +326,7 @@ pub(super) fn apply_instruction(
     state: &dudes_proto::instruction_state::InstructionState,
     folded: &dudes_proto::instruction_state::InstructionFold,
 ) -> Result<()> {
-    let mut cards = folded.evidence_cards.clone();
-    if let Some((card, _)) = &folded.reviewed
-        && !cards.contains(card)
-    {
-        cards.push(*card);
-    }
-    match &entry.record {
-        Record::CardTransition { card, .. }
-        | Record::TicketAssigned { card, .. }
-        | Record::TicketStarted { card, .. }
-        | Record::TicketEdited { card, .. } => {
-            if !cards.contains(card) {
-                cards.push(*card);
-            }
-        }
-        Record::AgentRetired { .. } => {
-            for card in state.pending_cards() {
-                if !cards.contains(&card) {
-                    cards.push(card);
-                }
-            }
-        }
-        _ => {}
-    }
+    let cards = folded.ticket_cards(state, &entry.record);
     for card in cards {
         let Some(mut row) = get_row::<BoardRow>(table, &card.to_bytes())? else {
             continue;

@@ -967,3 +967,550 @@ fn retired_repository_class_survives_warm_reopen_and_empty_rebuild() {
     replay(&reader, &mut rebuilt).unwrap();
     assert_eq!(rebuilt.export().unwrap(), expected);
 }
+
+fn ticket_start(story: &Story) -> dudes_proto::repository::RepositoryTicketStarted {
+    use dudes_proto::repository::{TicketDeclaration, TicketStartRepositories};
+    use dudes_proto::{
+        CheckBaseline, CompletionCheckRef, Goal, GoalBudget, Predicate, TicketCheck,
+    };
+    use dudes_types::{CardId, GoalId, Seq};
+    use sha2::{Digest as _, Sha256};
+    let copies = story.hire.repositories.repositories.entries();
+    let check = TicketCheck {
+        id: "verify".into(),
+        label: "verification passes".into(),
+        predicate: Predicate::Command {
+            argv: vec!["/usr/bin/true".into()],
+            timeout_s: 30,
+        },
+    };
+    let fields = [
+        ("check_id", "verify"),
+        ("label", "verification passes"),
+        ("kind", "command"),
+        ("argc", "1"),
+        ("argv_0", "/usr/bin/true"),
+        ("timeout_s", "30"),
+        ("may_already_pass", "true"),
+    ];
+    let mut hash = Sha256::new();
+    hash.update(b"dudes.goal-check.v2\0");
+    for (name, value) in fields {
+        hash.update(u16::try_from(name.len()).unwrap().to_be_bytes());
+        hash.update(name.as_bytes());
+        hash.update(u32::try_from(value.len()).unwrap().to_be_bytes());
+        hash.update(value.as_bytes());
+    }
+    dudes_proto::repository::RepositoryTicketStarted {
+        card: CardId::from_parts(7, 1),
+        agent: story.hire.id,
+        expected_seq: Seq(2),
+        round: 1,
+        goal: Goal {
+            id: GoalId::from_parts(8, 1),
+            text: "Repair the web and API".into(),
+            predicate: check.predicate.clone(),
+            completion_check: Some(CompletionCheckRef {
+                id: check.id.clone(),
+                label: check.label.clone(),
+                revision: dudes_proto::record::Hex32::new(hash.finalize().into()),
+            }),
+            baseline: Some(CheckBaseline::MayAlreadyPass),
+            budget: GoalBudget {
+                usd: None,
+                tokens: None,
+            },
+            hop_cap: 4,
+        },
+        repositories: TicketStartRepositories {
+            hired_lsn: story.hired_lsn,
+            declaration: TicketDeclaration {
+                project: "service".into(),
+                catalog_lsn: story.hire.repositories.catalog_lsn,
+                repositories: RepositorySet::new(
+                    copies[0].repo_id.clone(),
+                    copies
+                        .iter()
+                        .take(2)
+                        .map(|copy| RepositoryEntry {
+                            repo_id: copy.repo_id.clone(),
+                            value: copy.value.origin.clone(),
+                        })
+                        .collect(),
+                )
+                .unwrap(),
+            },
+            check,
+            check_repo: copies[1].repo_id.clone(),
+            check_root: copies[1].value.execution.clone(),
+        },
+    }
+}
+
+fn seed_ticket(writer: &mut Writer, start: &dudes_proto::repository::RepositoryTicketStarted) {
+    use dudes_proto::Actor;
+    use dudes_proto::repository::{RepositoryTicketCreated, RepositoryTicketEdited};
+    use dudes_types::Seq;
+    append(
+        writer,
+        Record::TicketCreatedWithRepositories(Box::new(RepositoryTicketCreated {
+            card: start.card,
+            title: start.goal.text.clone(),
+            description: "Keep both changes together.".into(),
+            department: "eng".into(),
+            declaration: start.repositories.declaration.clone(),
+            done_when: start.repositories.check.clone(),
+            check_repo: start.repositories.check_repo.clone(),
+            by: Actor::System,
+            request: None,
+        })),
+    );
+    append(
+        writer,
+        Record::TicketEditedWithRepositories(Box::new(RepositoryTicketEdited {
+            card: start.card,
+            title: start.goal.text.clone(),
+            description: "Review both repositories.".into(),
+            done_when: start.repositories.check.clone(),
+            check_repo: start.repositories.check_repo.clone(),
+            by: Actor::System,
+            expected_seq: Seq::ZERO,
+        })),
+    );
+    append(
+        writer,
+        Record::TicketAssigned {
+            card: start.card,
+            agent: start.agent,
+            by: Actor::System,
+            message: None,
+            expected_seq: Seq(1),
+        },
+    );
+}
+
+#[test]
+fn a_declared_ticket_boots_and_reads_with_frozen_authority_without_enabling_execution() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let start = ticket_start(&story);
+    let (mut writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
+    seed_ticket(&mut writer, &start);
+    let start_lsn = append(
+        &mut writer,
+        Record::TicketStartedWithRepositories(Box::new(start.clone())),
+    );
+    drop(writer);
+    let host = SharedHost::new();
+    let mut settings = fixture.settings();
+    settings.floor_board_enabled = true;
+    let daemon = boot(
+        &settings,
+        common::seams(
+            &settings,
+            host.clone(),
+            Arc::new(RealRunner(OneShot::new())),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        ),
+    )
+    .unwrap();
+    let world_round = daemon
+        .world()
+        .ticket_repository_round(start.goal.id)
+        .unwrap();
+    assert_eq!(world_round.start_lsn, start_lsn);
+    assert_eq!(world_round.round, 1);
+    assert_eq!(world_round.authority, Some(start.repositories.clone()));
+    assert_eq!(
+        daemon.world().agents[&start.agent].goal,
+        Some(start.goal.id)
+    );
+    let mut running = common::start(daemon);
+    let response = Client::connect(settings.socket())
+        .unwrap()
+        .call_as_operator(
+            dudes_proto::rpc::Method::TicketRead,
+            Some(json!({"card": start.card})),
+            credential(&settings),
+        )
+        .unwrap();
+    assert!(response.error.is_none(), "{:?}", response.error);
+    let body = response.result.unwrap();
+    assert_eq!(body["ticket"]["project"], "service");
+    assert!(body["ticket"]["project"].is_string());
+    let read: dudes_proto::rpc::ticket::TicketReadResult = serde_json::from_value(body).unwrap();
+    let scope = read.ticket.repositories.declared().unwrap();
+    assert_eq!(scope.declaration, start.repositories.declaration);
+    assert_eq!(scope.check_repo, RepoId::parse("api").unwrap());
+    assert_eq!(
+        scope.declaration.repositories.primary_id(),
+        &RepoId::parse("web").unwrap()
+    );
+    assert_eq!(
+        start.repositories.check_root,
+        story
+            .hire
+            .repositories
+            .repositories
+            .get(&scope.check_repo)
+            .unwrap()
+            .execution
+    );
+    running.stop(ExitCause::Ended);
+    assert!(host.spawned().is_empty());
+    assert!(
+        !fixture
+            .records()
+            .iter()
+            .any(|record| record.turn_issue().is_some())
+    );
+    let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
+    let mut warm =
+        Projections::open(&settings.state_dir.join(duded::boot::PROJECTION_FILE)).unwrap();
+    assert_eq!(replay(&reader, &mut warm).unwrap().applied, 0);
+    let expected = warm.export().unwrap();
+    assert_eq!(
+        warm.goal(start.goal.id)
+            .unwrap()
+            .unwrap()
+            .repository_round
+            .as_ref()
+            .unwrap()
+            .authority,
+        Some(start.repositories)
+    );
+    let mut fresh = Projections::in_memory().unwrap();
+    replay(&reader, &mut fresh).unwrap();
+    assert_eq!(fresh.export().unwrap(), expected);
+}
+
+#[test]
+fn world_and_cache_refuse_a_reused_declared_start_without_partial_goal_installation() {
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let start = ticket_start(&story);
+    let (mut writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
+    seed_ticket(&mut writer, &start);
+    drop(writer);
+    let (mut writer, mut world, mut projection) = replay_pair(&fixture);
+    let valid = write_record(
+        &mut writer,
+        Record::TicketStartedWithRepositories(Box::new(start.clone())),
+    );
+    apply_pair(&mut world, &mut projection, &valid);
+    let duplicate = write_record(
+        &mut writer,
+        Record::TicketStartedWithRepositories(Box::new(start.clone())),
+    );
+    reject_pair(
+        &fixture,
+        &mut world,
+        &mut projection,
+        &duplicate,
+        dudes_proto::repository_state::history::RepositoryStateError::Start,
+    );
+    assert_eq!(
+        world
+            .ticket_repository_round(start.goal.id)
+            .unwrap()
+            .start_lsn,
+        valid.0
+    );
+    assert_eq!(projection.ticket(start.card).unwrap().unwrap().1.round, 1);
+}
+
+#[test]
+fn legacy_ticket_producers_refuse_declared_work_without_appending_any_record() {
+    use dudes_proto::rpc::{ErrorCode, Method};
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let mut ticket = ticket_start(&story);
+    let legacy = AgentId::from_parts(3, 99);
+    ticket.agent = legacy;
+    let (mut writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
+    let mut hired = legacy_hire(legacy, fixture.runtime.path());
+    let Record::AgentHired { workspace, .. } = &mut hired else {
+        unreachable!()
+    };
+    *workspace = Some(RecordedWorkspace {
+        id: "service".into(),
+        label: "Service".into(),
+    });
+    append(&mut writer, hired);
+    seed_ticket(&mut writer, &ticket);
+    drop(writer);
+    let host = SharedHost::new();
+    let mut settings = fixture.settings();
+    settings.floor_board_enabled = true;
+    let daemon = boot(
+        &settings,
+        common::seams(
+            &settings,
+            host.clone(),
+            Arc::new(RealRunner(OneShot::new())),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        ),
+    )
+    .unwrap();
+    let mut running = common::start(daemon);
+    let mut client = Client::connect(settings.socket()).unwrap();
+    let read = client
+        .call_as_operator(
+            Method::TicketRead,
+            Some(json!({"card": ticket.card})),
+            credential(&settings),
+        )
+        .unwrap();
+    assert!(read.error.is_none());
+    let read: dudes_proto::rpc::ticket::TicketReadResult =
+        serde_json::from_value(read.result.unwrap()).unwrap();
+    assert_eq!(read.card.status, dudes_types::CardStatus::Claimed);
+    assert_eq!(read.card.claimed_by, Some(legacy));
+    let before_lsn = Reader::open(&fixture.journal_dir()).unwrap().1.end;
+    let path = dudes_journal::segment::segment_path(&fixture.journal_dir(), before_lsn.segment());
+    let before_bytes = std::fs::read(&path).unwrap();
+    for (method, params) in [
+        (
+            Method::TicketAssign,
+            json!({"card": ticket.card, "agent": legacy, "expected_seq": read.card.seq}),
+        ),
+        (
+            Method::TicketEdit,
+            json!({"card": ticket.card, "title": "Other title", "expected_seq": read.card.seq}),
+        ),
+    ] {
+        let response = client
+            .call_as_operator(method, Some(params), credential(&settings))
+            .unwrap();
+        let error = response.error.unwrap();
+        assert_eq!(error.code, ErrorCode::Refused.code());
+        assert!(error.message.contains("Declared repository work"));
+        assert_eq!(
+            Reader::open(&fixture.journal_dir()).unwrap().1.end,
+            before_lsn
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
+    }
+    let response = client
+        .call_current_as_operator(
+            dudes_proto::rpc::CurrentMethod::TicketCheckout,
+            Some(json!({"card": ticket.card, "expected_seq": read.card.seq})),
+            credential(&settings),
+        )
+        .unwrap();
+    assert_eq!(response.error.unwrap().code, ErrorCode::Refused.code());
+    assert_eq!(
+        Reader::open(&fixture.journal_dir()).unwrap().1.end,
+        before_lsn
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
+    assert!(
+        !fixture
+            .records()
+            .iter()
+            .any(|record| record.ticket_start().is_some() || record.turn_issue().is_some())
+    );
+    running.stop(ExitCause::Ended);
+    assert!(host.spawned().is_empty());
+}
+
+#[test]
+fn stale_legacy_assignment_claim_and_transition_keep_the_same_scoped_start_facts() {
+    use dudes_proto::Actor;
+    use dudes_types::{CardStatus, Seq};
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let mut start = ticket_start(&story);
+    let (mut writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
+    seed_ticket(&mut writer, &start);
+    drop(writer);
+    let (mut writer, mut world, mut projection) = replay_pair(&fixture);
+    for record in [
+        Record::TicketAssigned {
+            card: start.card,
+            agent: AgentId::NIL,
+            by: Actor::System,
+            message: None,
+            expected_seq: Seq::ZERO,
+        },
+        Record::Claim {
+            card: start.card,
+            agent: start.agent,
+            expected_seq: Seq::ZERO,
+        },
+        Record::CardTransition {
+            card: start.card,
+            from: CardStatus::Doing,
+            to: CardStatus::Claimed,
+            by: Actor::System,
+            expected_seq: Seq::ZERO,
+            reason: None,
+        },
+    ] {
+        let recorded = write_record(&mut writer, record);
+        apply_pair(&mut world, &mut projection, &recorded);
+    }
+    let (card, ticket) = projection.ticket(start.card).unwrap().unwrap();
+    assert_eq!(card.seq, Seq(1));
+    assert_eq!(card.claimed_by, Some(start.agent));
+    assert!(ticket.queue.is_some());
+    start.expected_seq = Seq(1);
+    let recorded = write_record(
+        &mut writer,
+        Record::TicketStartedWithRepositories(Box::new(start.clone())),
+    );
+    apply_pair(&mut world, &mut projection, &recorded);
+    assert_eq!(
+        projection
+            .goal(start.goal.id)
+            .unwrap()
+            .unwrap()
+            .repository_round
+            .as_ref(),
+        world.ticket_repository_round(start.goal.id)
+    );
+    let mut rebuilt = Projections::in_memory().unwrap();
+    replay(
+        &Reader::open(&fixture.journal_dir()).unwrap().0,
+        &mut rebuilt,
+    )
+    .unwrap();
+    assert_eq!(rebuilt.export().unwrap(), projection.export().unwrap());
+}
+
+#[test]
+fn removing_a_plain_card_cannot_free_its_id_for_a_declared_ticket() {
+    use dudes_proto::Actor;
+    use dudes_types::Seq;
+    let fixture = Fixture::new();
+    let story = Story::seed(&fixture);
+    let start = ticket_start(&story);
+    let (mut writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
+    seed_ticket(&mut writer, &start);
+    drop(writer);
+    let created = fixture
+        .records()
+        .into_iter()
+        .find(|record| record.ticket_created().is_some())
+        .unwrap();
+    let (mut writer, mut world, mut projection) = replay_pair(&fixture);
+    let removal = Record::TicketRemoved {
+        card: start.card,
+        by: Actor::System,
+        expected_seq: Seq::ZERO,
+    };
+    for record in [
+        removal.clone(),
+        created.clone(),
+        Record::CardCreated {
+            card: start.card,
+            title: "A plain card now owns this identity".into(),
+            department: "eng".into(),
+            by: Actor::System,
+            deps: Vec::new(),
+        },
+        removal,
+    ] {
+        let recorded = write_record(&mut writer, record);
+        apply_pair(&mut world, &mut projection, &recorded);
+    }
+    assert!(projection.card(start.card).unwrap().is_some());
+    assert!(projection.ticket(start.card).unwrap().is_none());
+    let recorded = write_record(&mut writer, created);
+    reject_pair(
+        &fixture,
+        &mut world,
+        &mut projection,
+        &recorded,
+        dudes_proto::repository_state::history::RepositoryStateError::Ticket,
+    );
+}
+
+#[test]
+fn retirement_preserves_review_and_releases_queued_ticket_facts_in_both_folds() {
+    use dudes_proto::Actor;
+    use dudes_proto::repository::RepositoryTicketEdited;
+    use dudes_types::{CardStatus, Seq};
+    for review in [false, true] {
+        let fixture = Fixture::new();
+        let story = Story::seed(&fixture);
+        let start = ticket_start(&story);
+        let (mut writer, _) =
+            dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
+        seed_ticket(&mut writer, &start);
+        drop(writer);
+        let (mut writer, mut world, mut projection) = replay_pair(&fixture);
+        if review {
+            let recorded = write_record(
+                &mut writer,
+                Record::CardTransition {
+                    card: start.card,
+                    from: CardStatus::Claimed,
+                    to: CardStatus::Review,
+                    by: Actor::System,
+                    expected_seq: Seq(2),
+                    reason: None,
+                },
+            );
+            apply_pair(&mut world, &mut projection, &recorded);
+        }
+        let retired = write_record(
+            &mut writer,
+            Record::AgentRetired {
+                id: start.agent,
+                reason: "completed".into(),
+                browser_retire: None,
+            },
+        );
+        apply_pair(&mut world, &mut projection, &retired);
+        let (card, ticket) = projection.ticket(start.card).unwrap().unwrap();
+        assert_eq!(card.seq, Seq(3));
+        assert_eq!(
+            card.status,
+            if review {
+                CardStatus::Review
+            } else {
+                CardStatus::Todo
+            }
+        );
+        assert_eq!(card.claimed_by, review.then_some(start.agent));
+        assert!(ticket.queue.is_none());
+        let edited = write_record(
+            &mut writer,
+            Record::TicketEditedWithRepositories(Box::new(RepositoryTicketEdited {
+                card: start.card,
+                title: start.goal.text,
+                description: String::new(),
+                done_when: start.repositories.check,
+                check_repo: start.repositories.check_repo,
+                by: Actor::System,
+                expected_seq: Seq(3),
+            })),
+        );
+        if review {
+            reject_pair(
+                &fixture,
+                &mut world,
+                &mut projection,
+                &edited,
+                dudes_proto::repository_state::history::RepositoryStateError::Ticket,
+            );
+        } else {
+            apply_pair(&mut world, &mut projection, &edited);
+            let mut rebuilt = Projections::in_memory().unwrap();
+            replay(
+                &Reader::open(&fixture.journal_dir()).unwrap().0,
+                &mut rebuilt,
+            )
+            .unwrap();
+            assert_eq!(rebuilt.export().unwrap(), projection.export().unwrap());
+        }
+    }
+}
