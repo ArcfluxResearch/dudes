@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use dudes_proto::{Entry, Record, WorktreeRemoval};
-use dudes_types::{AgentId, GitCommit, WorktreeId};
+use dudes_types::{AgentId, GitCommit, Lsn, WorktreeId};
 use serde::{Deserialize, Serialize};
 
 use super::{RowTable, all_rows, get_row, put_row};
@@ -17,6 +17,8 @@ use crate::error::Result;
 pub struct WorktreeRow {
     /// The lease.
     pub worktree: WorktreeId,
+    /// Actual position of the durable lease before Git creates its copy.
+    pub leased_lsn: Lsn,
     /// The repository the tree was added from.
     pub origin: PathBuf,
     /// The tree.
@@ -67,7 +69,26 @@ impl WorktreeRow {
     }
 }
 
-pub(super) fn apply(table: &mut RowTable<'_>, entry: &Entry) -> Result<()> {
+pub(super) fn apply(table: &mut RowTable<'_>, lsn: Lsn, entry: &Entry) -> Result<()> {
+    if let Some(hire) = entry.record.hire() {
+        let dudes_proto::repository_state::RepositoryFold::Hire(repositories) =
+            dudes_proto::repository_state::fold(
+                lsn,
+                &entry.record,
+                dudes_proto::repository_state::RepositoryFacts::default(),
+            )
+        else {
+            return Ok(());
+        };
+        for worktree in repositories.worktrees() {
+            if let Some(mut row) = get_row::<WorktreeRow>(table, &worktree.to_bytes())?
+                && row.agent.is_none()
+            {
+                row.agent = Some(hire.agent);
+                put_row(table, &worktree.to_bytes(), &row)?;
+            }
+        }
+    }
     match &entry.record {
         Record::WorktreeLeased {
             worktree,
@@ -83,6 +104,7 @@ pub(super) fn apply(table: &mut RowTable<'_>, entry: &Entry) -> Result<()> {
                     &worktree.to_bytes(),
                     &WorktreeRow {
                         worktree: *worktree,
+                        leased_lsn: lsn,
                         origin: origin.clone(),
                         path: path.clone(),
                         branch: branch.clone(),
@@ -93,18 +115,6 @@ pub(super) fn apply(table: &mut RowTable<'_>, entry: &Entry) -> Result<()> {
                         removed: None,
                     },
                 )?;
-            }
-        }
-        Record::AgentHired {
-            id,
-            worktree: Some(worktree),
-            ..
-        } => {
-            if let Some(mut row) = get_row::<WorktreeRow>(table, &worktree.to_bytes())?
-                && row.agent.is_none()
-            {
-                row.agent = Some(*id);
-                put_row(table, &worktree.to_bytes(), &row)?;
             }
         }
         Record::AgentRetired { id, .. } => {

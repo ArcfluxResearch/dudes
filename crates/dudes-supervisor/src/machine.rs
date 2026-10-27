@@ -533,7 +533,7 @@ pub struct Supervisor<C: Clock, R: Rng> {
     closing_active: bool,
     closing_recovery: bool,
     /// Agents whose recorded worktree is missing, as [`Input::MissingWorktrees`] set them.
-    missing_worktrees: BTreeSet<AgentId>,
+    missing_worktrees: BTreeMap<AgentId, WorktreeId>,
     status: BTreeMap<AgentId, AgentStatus>,
     ledger: Ledger,
     live_issues: BTreeSet<TurnId>,
@@ -733,7 +733,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             world: World::default(),
             closing_active: false,
             closing_recovery: false,
-            missing_worktrees: BTreeSet::new(),
+            missing_worktrees: BTreeMap::new(),
             status: BTreeMap::new(),
             ledger: Ledger::new(),
             live_issues: BTreeSet::new(),
@@ -2045,24 +2045,24 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     // ---- start ------------------------------------------------------------------------------
 
-    fn set_missing_worktrees(&mut self, agents: Vec<AgentId>) {
+    fn set_missing_worktrees(&mut self, agents: Vec<(AgentId, WorktreeId)>) {
         self.missing_worktrees = agents.into_iter().collect();
     }
 
     /// Hold each agent the daemon reported a missing worktree for, once, at start. The set is
     /// drained, so an agent that is resumed after its tree is restored is not held again.
     fn hold_missing_worktrees(&mut self) {
-        for agent in std::mem::take(&mut self.missing_worktrees) {
+        for (agent, worktree) in std::mem::take(&mut self.missing_worktrees) {
             let Some(row) = self.world.agents.get(&agent) else {
                 continue;
             };
             if row.retired || row.automatic_hold.is_some() || self.protection_pending(agent) {
                 continue;
             }
-            if let Some(worktree) = row
+            if row
                 .repositories
-                .singleton()
-                .and_then(dudes_proto::repository::SingletonRepository::worktree)
+                .worktrees()
+                .any(|leased| leased == worktree)
             {
                 self.hold_agent(
                     agent,

@@ -225,45 +225,34 @@ pub(crate) fn apply(
             a.live_activity = None;
         });
     }
+    if let Some(hire) = record.hire() {
+        let RepositoryFold::Hire(repositories) =
+            dudes_proto::repository_state::fold(lsn, record, RepositoryFacts::default())
+        else {
+            return Ok(());
+        };
+        let fields = hire.fields;
+        let row = AgentRow {
+            id: hire.agent,
+            name: fields.name.to_owned(),
+            hired_at: entry.at,
+            hired_lsn: lsn,
+            context_lsn: lsn,
+            role: fields.role.to_owned(),
+            look_lsn: None,
+            department: fields.department.to_owned(),
+            provider: fields.provider,
+            character: fields.character,
+            accent: fields.accent,
+            repositories,
+            max_turns: fields.max_turns,
+            max_budget: fields.max_budget,
+            model: fields.model.cloned(),
+            ..AgentRow::default()
+        };
+        return put_row(table, &hire.agent.to_bytes(), &row);
+    }
     match record {
-        Record::AgentHired {
-            id,
-            name,
-            role,
-            department,
-            provider,
-            character,
-            accent,
-            max_turns,
-            max_budget,
-            model,
-            ..
-        } => {
-            let RepositoryFold::Hire(repositories) =
-                dudes_proto::repository_state::fold(lsn, record, RepositoryFacts::default())
-            else {
-                return Ok(());
-            };
-            let row = AgentRow {
-                id: *id,
-                name: name.clone(),
-                hired_at: entry.at,
-                hired_lsn: lsn,
-                context_lsn: lsn,
-                role: role.clone(),
-                look_lsn: None,
-                department: department.clone(),
-                provider: *provider,
-                character: *character,
-                accent: *accent,
-                repositories,
-                max_turns: *max_turns,
-                max_budget: *max_budget,
-                model: model.clone(),
-                ..AgentRow::default()
-            };
-            put_row(table, &id.to_bytes(), &row)
-        }
         Record::AgentRenamed { id, name, .. } => {
             update(table, lsn, *id, record, |row| row.name.clone_from(name))
         }

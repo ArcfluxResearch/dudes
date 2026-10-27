@@ -28,6 +28,7 @@ mod devices;
 mod mail_wakes;
 mod mcp;
 mod recovery;
+mod repositories;
 mod worktrees;
 
 pub use devices::DeviceRow;
@@ -553,6 +554,17 @@ pub struct World {
     /// The projects the operator trusts, by project id: the latest `WorkspaceTrustSet` per id,
     /// dropped once that record says `trusted: false`.
     pub workspace_trust: BTreeMap<String, TrustGrant>,
+    /// Immutable observed catalogs. Desired enrollment still comes only from configuration.
+    pub repository_projects:
+        BTreeMap<String, dudes_proto::repository_state::history::ProjectRepositoryHistory>,
+    /// Latest per-repository grants and retained revocations.
+    pub repository_trust: BTreeMap<
+        (String, dudes_proto::repository::RepoId),
+        dudes_proto::repository_state::history::RepositoryTrust,
+    >,
+    /// Lifetime repository class, retained when the agent retires.
+    pub repository_hires:
+        BTreeMap<AgentId, dudes_proto::repository_state::history::RepositoryHireClass>,
     /// Every browser that signed in to the Floor, by device id, removed ones included.
     pub floor_devices: BTreeMap<Hex32, DeviceRow>,
 }
@@ -775,6 +787,9 @@ impl World {
         entry: &Entry,
     ) -> Result<(), dudes_proto::recovery_state::RecoveryStateError> {
         use dudes_proto::recovery_state::RecoveryStateError;
+        let repository_change = self
+            .prepare_repository_record(lsn, entry)
+            .map_err(|_| RecoveryStateError::Binding)?;
         self.validate_record_authority(entry)
             .map_err(|_| RecoveryStateError::Binding)?;
         let prepared_recovery = self.prepare_recovery_record(lsn, entry)?;
@@ -815,6 +830,7 @@ impl World {
         let mut wakes = std::mem::take(&mut self.mail_wakes);
         wakes.apply(self, lsn, entry);
         self.mail_wakes = wakes;
+        self.apply_repository_change(repository_change);
         self.last_applied_lsn = Some(lsn);
         if matches!(
             entry.record,
@@ -1390,26 +1406,9 @@ impl World {
                     },
                 );
             }
-            Record::AgentHired {
-                id,
-                name,
-                role,
-                department,
-                provider,
-                character,
-                accent,
-                budget,
-                sandbox,
-                isolation,
-                max_turns,
-                max_budget,
-                model,
-                trusted,
-                worktree,
-                mcp_servers,
-                browser_onboarding,
-                ..
-            } => {
+            Record::AgentHired { .. } | Record::AgentHiredWithRepositories(_) => {
+                let hire = entry.record.hire().expect("hire carrier");
+                let fields = hire.fields;
                 let RepositoryFold::Hire(repositories) = dudes_proto::repository_state::fold(
                     lsn,
                     &entry.record,
@@ -1418,27 +1417,27 @@ impl World {
                     return Ok(());
                 };
                 self.agents.insert(
-                    *id,
+                    hire.agent,
                     AgentRow {
-                        name: name.clone(),
-                        role: role.clone(),
+                        name: fields.name.to_owned(),
+                        role: fields.role.to_owned(),
                         look_lsn: None,
-                        department: department.clone(),
-                        provider: *provider,
-                        character: *character,
-                        accent: *accent,
+                        department: fields.department.to_owned(),
+                        provider: fields.provider,
+                        character: fields.character,
+                        accent: fields.accent,
                         repositories,
-                        budget: *budget,
-                        sandbox: *sandbox,
-                        max_turns: *max_turns,
-                        max_budget: *max_budget,
-                        model: model.clone(),
-                        trusted: *trusted,
+                        budget: fields.budget,
+                        sandbox: fields.sandbox,
+                        max_turns: fields.max_turns,
+                        max_budget: fields.max_budget,
+                        model: fields.model.cloned(),
+                        trusted: fields.trusted,
                         mcp: McpPolicy::hired(
                             lsn,
-                            mcp_servers,
-                            *isolation,
-                            browser_onboarding.is_some(),
+                            fields.mcp_servers,
+                            fields.isolation,
+                            fields.browser_onboarding,
                         ),
                         retired: false,
                         halted: false,
@@ -1466,13 +1465,14 @@ impl World {
                         exhausted: None,
                     },
                 );
-                self.active_folder_users.insert(*id);
-                if let Some(worktree) = worktree {
-                    self.assign_worktree(*worktree, *id);
+                self.active_folder_users.insert(hire.agent);
+                let worktrees: Vec<_> = self.agents[&hire.agent].repositories.worktrees().collect();
+                for worktree in worktrees {
+                    self.assign_worktree(worktree, hire.agent);
                 }
             }
             Record::WorktreeLeased { .. } | Record::WorktreeRemoved { .. } => {
-                self.fold_worktree(&entry.record);
+                self.fold_worktree(&entry.record, lsn);
             }
             Record::AgentRetired { id, .. } => {
                 self.active_folder_users.remove(id);
@@ -2074,6 +2074,7 @@ impl World {
             Record::MemoryCondenseModelAdmitted { .. } => {} // history, read from the journal
             Record::FloorPeerRefused { .. } => {} // audit only
             Record::WorkspaceTrustSet { .. } => self.fold_workspace_trust(&entry.record, lsn),
+            Record::ProjectRepositoriesRecorded { .. } | Record::RepositoryTrustSet { .. } => {}
             Record::FloorDeviceEnrolled { .. }
             | Record::FloorDeviceKeyEnrolled { .. }
             | Record::FloorDeviceFirstUsed { .. }

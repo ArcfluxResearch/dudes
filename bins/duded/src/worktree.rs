@@ -40,6 +40,14 @@ const GITFILE_LIMIT: u64 = 4096;
 /// and `/dev/zero` cannot be read into memory.
 #[cfg(unix)]
 pub(crate) fn is_worktree(path: &Path, origin: &Path) -> bool {
+    let (Some(admin), Some(common)) = (worktree_git_dir(path), plain_git_dir(origin)) else {
+        return false;
+    };
+    admin.starts_with(common.join("worktrees"))
+}
+
+#[cfg(unix)]
+fn worktree_git_dir(path: &Path) -> Option<std::path::PathBuf> {
     use rustix::fs::{Mode, OFlags};
     use std::io::Read;
     // Opened without following a link and without blocking, then typed from the descriptor itself,
@@ -49,12 +57,12 @@ pub(crate) fn is_worktree(path: &Path, origin: &Path) -> bool {
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
         Mode::empty(),
     ) else {
-        return false;
+        return None;
     };
     let regular = rustix::fs::fstat(&fd)
         .is_ok_and(|stat| rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file());
     if !regular {
-        return false;
+        return None;
     }
     let mut text = String::new();
     if std::fs::File::from(fd)
@@ -62,22 +70,39 @@ pub(crate) fn is_worktree(path: &Path, origin: &Path) -> bool {
         .read_to_string(&mut text)
         .is_err()
     {
-        return false;
+        return None;
     }
-    let Some(target) = text
+    let target = text
         .lines()
         .next()
-        .and_then(|line| line.strip_prefix("gitdir: "))
-    else {
-        return false;
-    };
+        .and_then(|line| line.strip_prefix("gitdir: "))?;
     let Ok(admin) = std::fs::canonicalize(path.join(target.trim())) else {
-        return false;
+        return None;
     };
-    let Some(common) = plain_git_dir(origin) else {
-        return false;
-    };
-    admin.is_dir() && admin.starts_with(common.join("worktrees"))
+    admin.is_dir().then_some(admin)
+}
+
+/// Validate every frozen identity, including the exact Git administrative directory.
+#[cfg(unix)]
+pub(crate) fn is_owned_repository(repo: &dudes_proto::repository::OwnedRepository) -> bool {
+    fn matches(path: &Path, expected: dudes_proto::record::FileIdentity) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::canonicalize(path).is_ok_and(|canonical| canonical == path)
+            && std::fs::metadata(path).is_ok_and(|meta| {
+                meta.is_dir() && meta.dev() == expected.device && meta.ino() == expected.inode
+            })
+    }
+    matches(&repo.origin.directory, repo.origin.directory_identity)
+        && matches(&repo.origin.common_dir, repo.origin.common_identity)
+        && matches(&repo.execution.directory, repo.execution.directory_identity)
+        && matches(&repo.execution.git_dir, repo.execution.git_identity)
+        && plain_git_dir(&repo.origin.directory).as_ref() == Some(&repo.origin.common_dir)
+        && worktree_git_dir(&repo.execution.directory).as_ref() == Some(&repo.execution.git_dir)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn is_owned_repository(_: &dudes_proto::repository::OwnedRepository) -> bool {
+    false
 }
 
 /// The repository's `.git` directory when the origin is a plain checkout: `.git` is a directory

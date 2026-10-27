@@ -1,5 +1,7 @@
 //! One pure interpretation of hire, ticket-start and issue repository authority.
 
+pub mod history;
+
 use dudes_types::{AgentId, CardId, GoalId, Lsn, Mode, ModelSelection, SessionId, TurnId};
 
 use crate::repository::{
@@ -15,12 +17,61 @@ pub struct HireRecord<'a> {
     pub source: &'a Record,
     /// Hired agent.
     pub agent: AgentId,
-    /// Recorded root.
-    pub cwd: &'a std::path::Path,
-    /// Optional recorded enrollment.
-    pub workspace: Option<&'a crate::record::RecordedWorkspace>,
-    /// Optional recorded own-copy lease.
-    pub worktree: Option<dudes_types::WorktreeId>,
+    /// Ordinary hire fields, borrowed from either carrier.
+    pub fields: HireFields<'a>,
+    /// Recorded repository authority, without current enrollment lookup.
+    pub repositories: HireRepositoryRecord<'a>,
+}
+
+/// Ordinary agent lifecycle fields shared by historical and scoped hires.
+#[derive(Clone, Copy, Debug)]
+pub struct HireFields<'a> {
+    /// Display name.
+    pub name: &'a str,
+    /// Display role.
+    pub role: &'a str,
+    /// Floor department.
+    pub department: &'a str,
+    /// Selected engine.
+    pub provider: dudes_types::Provider,
+    /// Authored appearance.
+    pub character: Option<dudes_types::CastCharacter>,
+    /// Selected accent.
+    pub accent: Option<dudes_types::AccentColour>,
+    /// Daily admission ceilings.
+    pub budget: crate::AgentBudget,
+    /// Historical sandbox selection.
+    pub sandbox: Option<bool>,
+    /// Historical isolation selection.
+    pub isolation: Option<dudes_types::IsolationMode>,
+    /// Recorded provider turn limit.
+    pub max_turns: Option<u32>,
+    /// Recorded provider budget backstop.
+    pub max_budget: Option<dudes_types::Usd>,
+    /// Recorded model override.
+    pub model: Option<&'a dudes_types::ModelName>,
+    /// Historical singleton trust. Scoped trust is held per repository.
+    pub trusted: bool,
+    /// Historical MCP selection. Scoped policy admits no inherited servers.
+    pub mcp_servers: &'a [dudes_types::McpServerName],
+    /// Historical browser onboarding marker.
+    pub browser_onboarding: bool,
+}
+
+/// The original authority carried by a hire.
+#[derive(Clone, Copy, Debug)]
+pub enum HireRepositoryRecord<'a> {
+    /// Historical singleton facts.
+    Legacy {
+        /// Recorded execution root.
+        cwd: &'a std::path::Path,
+        /// Optional recorded enrollment.
+        workspace: Option<&'a crate::record::RecordedWorkspace>,
+        /// Optional owned-copy lease.
+        worktree: Option<dudes_types::WorktreeId>,
+    },
+    /// A required carrier's complete restricted set.
+    Scoped(&'a crate::repository::ScopedRepositories),
 }
 
 /// The atomic goal installation and card movement of a ticket start.
@@ -68,16 +119,71 @@ impl Record {
         match self {
             Self::AgentHired {
                 id,
+                name,
+                role,
+                department,
+                provider,
+                character,
+                accent,
+                budget,
+                sandbox,
+                isolation,
+                max_turns,
+                max_budget,
+                model,
+                trusted,
+                mcp_servers,
+                browser_onboarding,
                 cwd,
                 workspace,
                 worktree,
-                ..
             } => Some(HireRecord {
                 source: self,
                 agent: *id,
-                cwd,
-                workspace: workspace.as_ref(),
-                worktree: *worktree,
+                fields: HireFields {
+                    name,
+                    role,
+                    department,
+                    provider: *provider,
+                    character: *character,
+                    accent: *accent,
+                    budget: *budget,
+                    sandbox: *sandbox,
+                    isolation: *isolation,
+                    max_turns: *max_turns,
+                    max_budget: *max_budget,
+                    model: model.as_ref(),
+                    trusted: *trusted,
+                    mcp_servers,
+                    browser_onboarding: browser_onboarding.is_some(),
+                },
+                repositories: HireRepositoryRecord::Legacy {
+                    cwd,
+                    workspace: workspace.as_ref(),
+                    worktree: *worktree,
+                },
+            }),
+            Self::AgentHiredWithRepositories(hire) => Some(HireRecord {
+                source: self,
+                agent: hire.id,
+                fields: HireFields {
+                    name: &hire.name,
+                    role: &hire.role,
+                    department: &hire.department,
+                    provider: hire.provider,
+                    character: hire.character,
+                    accent: hire.accent,
+                    budget: hire.budget,
+                    max_turns: hire.max_turns,
+                    max_budget: hire.max_budget,
+                    model: hire.model.as_ref(),
+                    sandbox: None,
+                    isolation: None,
+                    trusted: false,
+                    mcp_servers: &[],
+                    browser_onboarding: false,
+                },
+                repositories: HireRepositoryRecord::Scoped(&hire.repositories),
             }),
             _ => None,
         }
@@ -269,11 +375,16 @@ pub enum RepositoryFold {
 #[must_use]
 pub fn fold(lsn: Lsn, record: &Record, before: RepositoryFacts<'_>) -> RepositoryFold {
     if let Some(hire) = record.hire() {
-        return RepositoryFold::Hire(HireRepositories::Legacy(SingletonRepository::recorded(
-            hire.cwd,
-            hire.workspace,
-            hire.worktree,
-        )));
+        return RepositoryFold::Hire(match hire.repositories {
+            HireRepositoryRecord::Legacy {
+                cwd,
+                workspace,
+                worktree,
+            } => HireRepositories::Legacy(SingletonRepository::recorded(cwd, workspace, worktree)),
+            HireRepositoryRecord::Scoped(repositories) => {
+                HireRepositories::Scoped(repositories.clone())
+            }
+        });
     }
     if let Record::TicketCreated { project, .. } = record {
         return RepositoryFold::Ticket(TicketRepositories::recorded(project));

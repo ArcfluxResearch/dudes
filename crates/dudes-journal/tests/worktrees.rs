@@ -218,7 +218,26 @@ fn replay_rebuilds_the_table_and_the_writers_checkpoints_change_nothing() {
         2,
         "a control: the removals reached the table"
     );
-    let with_checkpoints = replayed(checkpointed.path());
+    let mut with_checkpoints = replayed(checkpointed.path());
+    let checkpoint_leases: Vec<_> = Reader::open(checkpointed.path())
+        .unwrap()
+        .0
+        .iter_from(Lsn::ZERO)
+        .unwrap()
+        .map(Result::unwrap)
+        .filter_map(|(lsn, entry)| match entry.record {
+            Record::WorktreeLeased { worktree, .. } => Some((worktree, lsn)),
+            _ => None,
+        })
+        .collect();
+    for row in &mut with_checkpoints {
+        assert!(checkpoint_leases.contains(&(row.worktree, row.leased_lsn)));
+        row.leased_lsn = rows
+            .iter()
+            .find(|plain| plain.worktree == row.worktree)
+            .unwrap()
+            .leased_lsn;
+    }
     assert_eq!(with_checkpoints, rows);
 }
 
@@ -307,7 +326,7 @@ fn the_removal_cause_and_the_automatic_hold_keep_a_value_a_later_version_adds() 
 /// ordinary replay would skip them for ever. The version bump is what rebuilds it.
 #[test]
 fn a_version_37_cache_is_rebuilt_so_it_holds_the_leases_the_journal_records() {
-    assert_eq!(dudes_journal::PROJECTION_VERSION, 60);
+    assert_eq!(dudes_journal::PROJECTION_VERSION, 62);
     let dir = tempfile::tempdir().unwrap();
     let journal = dir.path().join("journal");
     write_journal(&journal, &lifecycle(AgentId::from_parts(5, 1)), 0);

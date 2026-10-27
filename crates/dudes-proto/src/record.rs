@@ -39,6 +39,7 @@ use crate::ticket::{TicketCheck, TicketReason};
 /// lacks it fails deserialisation, which is the right, visible failure for a file no released
 /// build can have produced.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(transform = crate::schema::close_repository_hire_entry)]
 pub struct Entry {
     /// The daemon's wall clock as `Clock::now()` reported it when the supervisor emitted the
     /// `Persist` that carried this record, UTC milliseconds. `lsn` orders; `at` labels —
@@ -662,6 +663,28 @@ impl JsonSchema for NonMailLoopDecisionSchema {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Record {
+    /// A valid project repository configuration was observed. Revisions never rebind an id.
+    ProjectRepositoriesRecorded {
+        /// Stable project identity.
+        project: String,
+        /// Ordered origin bindings and their primary.
+        repositories: crate::repository::RepositorySet<crate::repository::CatalogRepository>,
+    },
+    /// Per-repository operator trust. Revocation retains its immutable origin binding.
+    RepositoryTrustSet {
+        /// Stable project identity.
+        project: String,
+        /// Member of the named observed revision.
+        repo_id: crate::repository::RepoId,
+        /// Actual catalog position observed for this action.
+        catalog_lsn: Lsn,
+        /// Exact origin vouched for, retained on revocation.
+        origin: TrustedRepository,
+        /// Settings grant, or absence for revocation.
+        pin: Option<TrustPin>,
+    },
+    /// Atomically assigns every recorded owned copy to one restricted hire.
+    AgentHiredWithRepositories(Box<crate::repository::RepositoryHire>),
     /// `agent.hire`. Creates a managed agent; there is no attached-by-default option.
     AgentHired {
         /// The new agent.
@@ -2569,6 +2592,9 @@ impl Record {
             Self::RecoveryInvalidated(_) => RecordKind::RecoveryInvalidated,
             Self::FloorPeerRefused { .. } => RecordKind::FloorPeerRefused,
             Self::WorkspaceTrustSet { .. } => RecordKind::WorkspaceTrustSet,
+            Self::ProjectRepositoriesRecorded { .. } => RecordKind::ProjectRepositoriesRecorded,
+            Self::RepositoryTrustSet { .. } => RecordKind::RepositoryTrustSet,
+            Self::AgentHiredWithRepositories(_) => RecordKind::AgentHiredWithRepositories,
             Self::FloorDeviceEnrolled { .. } => RecordKind::FloorDeviceEnrolled,
             Self::FloorDeviceKeyEnrolled { .. } => RecordKind::FloorDeviceKeyEnrolled,
             Self::FloorDeviceFirstUsed { .. } => RecordKind::FloorDeviceFirstUsed,
@@ -2802,6 +2828,12 @@ pub enum RecordKind {
     IdentifiedMailWakeTurnDecided = 99,
     /// [`Record::IdentifiedMailWakeOnlyTurnIssued`].
     IdentifiedMailWakeOnlyTurnIssued = 100,
+    /// [`Record::ProjectRepositoriesRecorded`].
+    ProjectRepositoriesRecorded = 101,
+    /// [`Record::RepositoryTrustSet`].
+    RepositoryTrustSet = 102,
+    /// [`Record::AgentHiredWithRepositories`].
+    AgentHiredWithRepositories = 103,
 }
 
 impl RecordKind {
@@ -2858,8 +2890,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 100] {
-        let mut kinds = [Self::AgentHired; 100];
+    const fn known_kinds() -> [Self; 103] {
+        let mut kinds = [Self::AgentHired; 103];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2919,6 +2951,9 @@ impl RecordKind {
         kinds[97] = Self::IdentifiedTaughtNoteOnlyTurnIssued;
         kinds[98] = Self::IdentifiedMailWakeTurnDecided;
         kinds[99] = Self::IdentifiedMailWakeOnlyTurnIssued;
+        kinds[100] = Self::ProjectRepositoriesRecorded;
+        kinds[101] = Self::RepositoryTrustSet;
+        kinds[102] = Self::AgentHiredWithRepositories;
         kinds
     }
 
@@ -2972,6 +3007,9 @@ impl RecordKind {
                 | Self::RecoveryAuthorized
                 | Self::RecoveryInvalidated
                 | Self::BrowserHalt
+                | Self::ProjectRepositoriesRecorded
+                | Self::RepositoryTrustSet
+                | Self::AgentHiredWithRepositories
         )
     }
 
@@ -3318,10 +3356,79 @@ pub mod samples {
         }
     }
 
+    fn repository_path(path: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(format!("C:{path}"))
+        } else {
+            PathBuf::from(path)
+        }
+    }
+
+    /// A structurally valid repository catalog used by contract round trips.
+    #[must_use]
+    pub fn repository_catalog()
+    -> crate::repository::RepositorySet<crate::repository::CatalogRepository> {
+        crate::repository::RepositorySet::new(
+            crate::repository::RepoId::parse("primary").unwrap(),
+            vec![crate::repository::RepositoryEntry {
+                repo_id: crate::repository::RepoId::parse("primary").unwrap(),
+                value: crate::repository::CatalogRepository {
+                    label: "Service".into(),
+                    origin: TrustedRepository {
+                        directory: repository_path("/repos/service"),
+                        directory_identity: FileIdentity {
+                            device: 1,
+                            inode: 10,
+                        },
+                        common_dir: repository_path("/repos/service/.git"),
+                        common_identity: FileIdentity {
+                            device: 1,
+                            inode: 11,
+                        },
+                    },
+                },
+            }],
+        )
+        .unwrap()
+    }
+
     /// Every variant by kind. A missing sample does not compile; the count test covers extras.
-    #[allow(clippy::too_many_lines)] // one arm per variant; a table, not logic
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive sample match covers every journal carrier"
+    )]
     pub fn record(kind: RecordKind) -> Record {
         match kind {
+            RecordKind::ProjectRepositoriesRecorded => Record::ProjectRepositoriesRecorded { project: "service".into(), repositories: repository_catalog() },
+            RecordKind::RepositoryTrustSet => {
+                let Record::WorkspaceTrustSet { pin, .. } = record(RecordKind::WorkspaceTrustSet) else { unreachable!() };
+                Record::RepositoryTrustSet {
+                    project: "service".into(), repo_id: crate::repository::RepoId::parse("primary").unwrap(),
+                    catalog_lsn: Lsn::from_parts(1, 0).unwrap(), origin: repository_catalog().primary().origin.clone(), pin,
+                }
+            }
+            RecordKind::AgentHiredWithRepositories => Record::AgentHiredWithRepositories(Box::new(crate::repository::RepositoryHire {
+                id: agent(), name: "Kim".into(), character: None, accent: None, role: "engineer".into(),
+                department: "eng".into(), provider: Provider::Claude, budget: AgentBudget { usd_per_day: None, tokens_per_day: None },
+                max_turns: None, max_budget: None, model: None,
+                repositories: crate::repository::ScopedRepositories {
+                    project: RecordedWorkspace { id: "service".into(), label: "Service".into() },
+                    catalog_lsn: Lsn::from_parts(1, 0).unwrap(), policy: crate::repository::RepositoryPolicy::WorkingTreeV1,
+                    repositories: crate::repository::RepositorySet::new(crate::repository::RepoId::parse("primary").unwrap(), vec![
+                        crate::repository::RepositoryEntry {
+                            repo_id: crate::repository::RepoId::parse("primary").unwrap(),
+                            value: crate::repository::OwnedRepository {
+                                origin: repository_catalog().primary().origin.clone(),
+                                execution: crate::repository::ExecutionRepository {
+                                    directory: repository_path("/copies/service"), directory_identity: FileIdentity { device: 1, inode: 20 },
+                                    git_dir: repository_path("/repos/service/.git/worktrees/service"), git_identity: FileIdentity { device: 1, inode: 21 },
+                                }, worktree: WorktreeId::from_bytes([3; 16]), base: GitCommit::parse("0000000000000000000000000000000000000000").unwrap(),
+                                trust_lsn: Lsn::from_parts(1, 128).unwrap(),
+                            },
+                        },
+                    ]).unwrap(),
+                },
+            })),
             RecordKind::IdentifiedMailWakeTurnDecided => {
                 let Record::MailWakeTurnDecided(mut decision) =
                     record(RecordKind::MailWakeTurnDecided)
@@ -4415,10 +4522,10 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 100);
+        assert_eq!(RecordKind::KNOWN.len(), 103);
         for &kind in RecordKind::KNOWN[46..66]
             .iter()
-            .chain(&RecordKind::KNOWN[94..])
+            .chain(&RecordKind::KNOWN[94..100])
         {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {
@@ -4924,7 +5031,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            100,
+            103,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -6005,8 +6112,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 100);
-        assert_eq!(RecordKind::from_tag(101), None);
+        assert_eq!(RecordKind::KNOWN.len(), 103);
+        assert_eq!(RecordKind::from_tag(104), None);
     }
 
     #[test]
@@ -6428,6 +6535,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(101), None);
+        assert_eq!(RecordKind::from_tag(104), None);
     }
 }

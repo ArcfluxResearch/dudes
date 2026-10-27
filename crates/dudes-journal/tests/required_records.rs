@@ -109,7 +109,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     drop(writer);
     let path = segment_path(dir.path(), 1);
     let mut bytes = fs::read(&path).unwrap();
-    bytes.extend_from_slice(&raw_frame(2, 101, b"{\"t\":\"future\"}"));
+    bytes.extend_from_slice(&raw_frame(2, 104, b"{\"t\":\"future\"}"));
     fs::write(&path, &bytes).unwrap();
     let cache = dir.path().join("state.redb");
     fs::write(&cache, b"cache witness").unwrap();
@@ -123,7 +123,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     };
     let before = files();
 
-    let expected = "journal required record kind 101 at 1:";
+    let expected = "journal required record kind 104 at 1:";
     let reader_error = Reader::open(dir.path()).unwrap_err().to_string();
     assert!(reader_error.starts_with(expected), "{reader_error}");
     let writer_error = open(dir.path(), JournalOptions::default())
@@ -136,7 +136,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     let cache_before = advanced.export().unwrap();
     assert!(matches!(
         replay(&Reader::new(dir.path()), &mut advanced),
-        Err(Error::RequiredKind { kind: 101, .. })
+        Err(Error::RequiredKind { kind: 104, .. })
     ));
     assert_eq!(advanced.export().unwrap(), cache_before);
 
