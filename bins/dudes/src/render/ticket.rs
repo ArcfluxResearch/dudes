@@ -146,7 +146,7 @@ pub fn list(
             "{}  {}  {}  {}",
             read.card.id,
             state(read, names),
-            Escaped(&read.ticket.project),
+            Escaped(read.ticket.repositories.project()),
             Escaped(&read.card.title)
         )?;
     }
@@ -182,7 +182,11 @@ where
     if let Some(reason) = read.ticket.reason {
         writeln!(out, "Needs you: {}", reason.sentence())?;
     }
-    writeln!(out, "Project: {}", Escaped(&read.ticket.project))?;
+    writeln!(
+        out,
+        "Project: {}",
+        Escaped(read.ticket.repositories.project())
+    )?;
     writeln!(out, "Done when: {}", Escaped(&read.ticket.done_when.label))?;
     writeln!(out, "Round: {}", read.ticket.round)?;
     if !read.ticket.description.is_empty() {

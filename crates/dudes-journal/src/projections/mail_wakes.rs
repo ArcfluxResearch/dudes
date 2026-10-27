@@ -173,28 +173,6 @@ fn day_key(agent: AgentId, day: UtcDay) -> [u8; 20] {
     key
 }
 
-pub(super) fn normal_carrier(entry: &Entry) -> Option<Entry> {
-    let (Record::MailWakeOnlyTurnIssued(issue) | Record::IdentifiedMailWakeOnlyTurnIssued(issue)) =
-        &entry.record
-    else {
-        return None;
-    };
-    Some(Entry {
-        at: entry.at,
-        record: Record::TurnIssued {
-            agent: issue.agent,
-            turn: issue.turn,
-            goal: issue.goal,
-            task: issue.task.as_str().to_owned(),
-            session: issue.session.clone(),
-            mode: issue.mode,
-            model_selection: Some(issue.model_selection.clone()),
-            lsn_of_decision: issue.lsn_of_decision,
-            answers: Vec::new(),
-        },
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use dudes_proto::record::Hex32;

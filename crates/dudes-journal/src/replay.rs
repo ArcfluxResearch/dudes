@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn a_version_19_store_replays_recorded_appearance() {
         const LATCHED: u64 = 19;
-        assert_eq!(crate::PROJECTION_VERSION, 59);
+        assert_eq!(crate::PROJECTION_VERSION, 60);
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
         let path = dir.path().join("state.redb");
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn a_version_39_store_rebuilds_a_result_whose_check_did_not_run() {
         const LATCHED: u64 = 39;
-        assert_eq!(crate::PROJECTION_VERSION, 59);
+        assert_eq!(crate::PROJECTION_VERSION, 60);
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
         let path = dir.path().join("state.redb");
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn a_version_40_store_rebuilds_a_goals_baseline() {
         const LATCHED: u64 = 40;
-        assert_eq!(crate::PROJECTION_VERSION, 59);
+        assert_eq!(crate::PROJECTION_VERSION, 60);
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
         let path = dir.path().join("state.redb");
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn a_version_26_cursor_past_a_turn_rebuilds_the_trace_window() {
-        assert_eq!(crate::PROJECTION_VERSION, 59);
+        assert_eq!(crate::PROJECTION_VERSION, 60);
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
         let path = dir.path().join("state.redb");
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn a_version_20_store_rebuilds_renamed_display_text() {
         const LATCHED: u64 = 20;
-        assert_eq!(crate::PROJECTION_VERSION, 59);
+        assert_eq!(crate::PROJECTION_VERSION, 60);
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
         let path = dir.path().join("state.redb");
@@ -592,7 +592,7 @@ mod tests {
     #[test]
     fn a_version_21_store_rebuilds_the_retired_archive() {
         const LATCHED: u64 = 21;
-        assert_eq!(crate::PROJECTION_VERSION, 59);
+        assert_eq!(crate::PROJECTION_VERSION, 60);
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
         let path = dir.path().join("state.redb");
@@ -654,7 +654,7 @@ mod tests {
     #[test]
     fn a_version_17_store_replays_recorded_workspace_metadata() {
         const LATCHED: u64 = 17;
-        assert_eq!(crate::PROJECTION_VERSION, 59);
+        assert_eq!(crate::PROJECTION_VERSION, 60);
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
         let path = dir.path().join("state.redb");
@@ -690,7 +690,7 @@ mod tests {
         *field = None;
         let mut stale = Projections::open_with(&path, Fsync::None).unwrap();
         stale.apply(frame_lsn, crc, &old_fold_input).unwrap();
-        assert_eq!(stale.agents().unwrap()[0].workspace, None);
+        assert_eq!(stale.agents().unwrap()[0].repositories.workspace(), None);
         drop(stale);
         crate::projections::tests::write_schema_version(&path, LATCHED);
         let mut rebuilt = Projections::open_with(&path, Fsync::None).unwrap();
@@ -702,7 +702,10 @@ mod tests {
                 last_applied: lsn
             }
         );
-        assert_eq!(rebuilt.agents().unwrap()[0].workspace, Some(workspace));
+        assert_eq!(
+            rebuilt.agents().unwrap()[0].repositories.workspace(),
+            Some(&workspace)
+        );
     }
 
     /// A change to the `AgentHired` fold: a version-9 cache whose
@@ -720,7 +723,7 @@ mod tests {
         const LATCHED: u64 = 9;
         assert_eq!(
             crate::PROJECTION_VERSION,
-            59,
+            60,
             "this fold change owns the 9 -> 10 bump; moving the version requires re-deriving the \
              latched store and current build together"
         );

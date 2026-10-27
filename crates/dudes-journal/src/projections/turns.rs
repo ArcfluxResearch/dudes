@@ -18,6 +18,8 @@ use crate::error::{Error, Result};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TurnRow {
+    /// Frozen repository authority, absent for attached or historically unbound turns.
+    pub repositories: Option<dudes_proto::repository::TurnRepositories>,
     /// The turn.
     pub turn: TurnId,
     /// The agent.
@@ -78,6 +80,7 @@ pub struct TurnRow {
 impl Default for TurnRow {
     fn default() -> Self {
         Self {
+            repositories: None,
             turn: TurnId::NIL,
             agent: AgentId::NIL,
             goal: None,
@@ -193,110 +196,26 @@ pub(crate) fn apply(
     table: &mut RowTable<'_>,
     lsn: Lsn,
     entry: &Entry,
+    repositories: Option<dudes_proto::repository::TurnRepositories>,
 ) -> Result<Option<EndedTurn>> {
     let record = &entry.record;
+    if let Some(issue) = record.turn_issue() {
+        let row = TurnRow {
+            repositories,
+            turn: issue.turn,
+            agent: issue.agent,
+            goal: issue.goal,
+            mode: issue.mode,
+            status: TurnStatus::Issued,
+            lsn_issued: lsn,
+            session: issue.session.cloned(),
+            model_selection: issue.model_selection.cloned(),
+            ..TurnRow::default()
+        };
+        put_row(table, &issue.turn.to_bytes(), &row)?;
+        return Ok(None);
+    }
     match record {
-        Record::ConversationTurnIssued {
-            agent,
-            turn,
-            session,
-            model_selection,
-            ..
-        }
-        | Record::IdentifiedConversationTurnIssued {
-            agent,
-            turn,
-            session,
-            model_selection,
-            ..
-        } => {
-            let row = TurnRow {
-                turn: *turn,
-                agent: *agent,
-                goal: None,
-                mode: Mode::Managed,
-                status: TurnStatus::Issued,
-                lsn_issued: lsn,
-                session: session.clone(),
-                model_selection: Some(model_selection.clone()),
-                ..TurnRow::default()
-            };
-            put_row(table, &turn.to_bytes(), &row)?;
-            Ok(None)
-        }
-        Record::TurnIssued {
-            agent,
-            turn,
-            goal,
-            session,
-            mode,
-            model_selection,
-            ..
-        } => {
-            let row = TurnRow {
-                turn: *turn,
-                agent: *agent,
-                goal: Some(*goal),
-                mode: *mode,
-                status: TurnStatus::Issued,
-                lsn_issued: lsn,
-                session: session.clone(),
-                model_selection: model_selection.clone(),
-                ..TurnRow::default()
-            };
-            put_row(table, &turn.to_bytes(), &row)?;
-            Ok(None)
-        }
-        Record::NoteOnlyTurnIssued {
-            agent,
-            turn,
-            goal,
-            session,
-            mode,
-            model_selection,
-            ..
-        }
-        | Record::TaughtNoteOnlyTurnIssued {
-            agent,
-            turn,
-            goal,
-            session,
-            mode,
-            model_selection,
-            ..
-        }
-        | Record::IdentifiedTaughtNoteOnlyTurnIssued {
-            agent,
-            turn,
-            goal,
-            session,
-            mode,
-            model_selection,
-            ..
-        }
-        | Record::TurnIssuedWithBrowserNote {
-            agent,
-            turn,
-            goal,
-            session,
-            mode,
-            model_selection,
-            ..
-        } => {
-            let row = TurnRow {
-                turn: *turn,
-                agent: *agent,
-                goal: Some(*goal),
-                mode: *mode,
-                status: TurnStatus::Issued,
-                lsn_issued: lsn,
-                session: session.clone(),
-                model_selection: Some(model_selection.clone()),
-                ..TurnRow::default()
-            };
-            put_row(table, &turn.to_bytes(), &row)?;
-            Ok(None)
-        }
         Record::TurnSpawned {
             turn,
             pid,

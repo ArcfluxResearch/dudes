@@ -282,7 +282,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     claimant: agent,
                 }
             }),
-            worktree: row.worktree,
+            worktree: turn
+                .1
+                .repositories
+                .as_ref()
+                .and_then(dudes_proto::repository::TurnRepositories::singleton)
+                .ok_or(RecoveryRefusal::StaleWork)?
+                .worktree(),
             provider: row.provider,
             model_selection: turn.1.model_selection.clone(),
         })
@@ -967,7 +973,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             .as_ref()
             .and_then(|context| context.model.clone())
             .or_else(|| self.model_selection(row))?;
-        let launch = match self.launch(agent, row, task, &session, &selection) {
+        let launch = match self.launch(
+            agent,
+            row,
+            row.repositories.singleton(),
+            task,
+            &session,
+            &selection,
+        ) {
             ManagedLaunch::Ready(launch) => launch,
             ManagedLaunch::Unavailable => return None,
             ManagedLaunch::Refused(error) => {

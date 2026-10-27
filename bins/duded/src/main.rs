@@ -753,7 +753,7 @@ fn start() -> anyhow::Result<duded::ExitCause> {
         daemon.floor_addr(),
     );
     for (agent, row) in &daemon.world().agents {
-        if !row.retired && row.cwd.is_relative() {
+        if !row.retired && row.repositories.primary_cwd().is_relative() {
             let _ = write_line(
                 &mut io::stderr(),
                 &format!(

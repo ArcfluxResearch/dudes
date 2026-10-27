@@ -2059,7 +2059,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             if row.retired || row.automatic_hold.is_some() || self.protection_pending(agent) {
                 continue;
             }
-            if let Some(worktree) = row.worktree {
+            if let Some(worktree) = row
+                .repositories
+                .singleton()
+                .and_then(dudes_proto::repository::SingletonRepository::worktree)
+            {
                 self.hold_agent(
                     agent,
                     Provenance::Observed,
@@ -2241,7 +2245,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(selection) = recorded.or_else(|| self.model_selection(&row)) else {
             return;
         };
-        match self.launch(agent, &row, task, &session, &selection) {
+        match self.launch(
+            agent,
+            &row,
+            self.world
+                .turns
+                .get(&turn)
+                .and_then(|row| row.repositories.as_ref())
+                .and_then(dudes_proto::repository::TurnRepositories::singleton),
+            task,
+            &session,
+            &selection,
+        ) {
             ManagedLaunch::Ready(launch) => {
                 if self.spawn(agent, turn, launch, operation) {
                     // Only a re-issue this run actually took claims the announced id. `spawn()`
@@ -2316,6 +2331,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             launch = match self.launch(
                 agent,
                 &row,
+                self.world
+                    .turns
+                    .get(&turn)
+                    .and_then(|row| row.repositories.as_ref())
+                    .and_then(dudes_proto::repository::TurnRepositories::singleton),
                 &launch.task,
                 &launch.session,
                 &launch.selection,
@@ -2498,10 +2518,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(adapter) = self.adapters.get(row.provider) else {
             return;
         };
+        let Some(repository) = row.repositories.singleton() else {
+            return;
+        };
         let agent_dir = self.agent_dir(agent);
         let ctx = AgentCtx {
             agent,
-            cwd: &row.cwd,
+            cwd: repository.cwd(),
             agent_dir: &agent_dir,
             daemon_env: &self.config.daemon_env,
             sandbox: row.sandbox,
@@ -3028,10 +3051,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         &self,
         agent: AgentId,
         row: &AgentRow,
+        repository: Option<&dudes_proto::repository::SingletonRepository>,
         task: &str,
         session: &TurnSession,
         selection: &ModelSelection,
     ) -> ManagedLaunch {
+        let Some(repository) = repository else {
+            return ManagedLaunch::Refused(LaunchError::RepositoryAuthorityUnavailable);
+        };
         let Some(adapter) = self.adapters.get(row.provider) else {
             return ManagedLaunch::Unavailable;
         };
@@ -3052,7 +3079,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let agent_dir = self.agent_dir(agent);
         let ctx = AgentCtx {
             agent,
-            cwd: &row.cwd,
+            cwd: repository.cwd(),
             agent_dir: &agent_dir,
             daemon_env: &self.config.daemon_env,
             sandbox: row.sandbox,
@@ -3765,7 +3792,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             .get(&goal)
             .filter(|row| !row.cleared)
             .map(|row| (row.goal.predicate.clone(), row.agent));
-        let cwd = self.world.agents.get(&agent).map(|row| row.cwd.clone());
+        let cwd = self
+            .world
+            .agents
+            .get(&agent)
+            .and_then(|row| row.repositories.singleton())
+            .map(|repository| repository.cwd().to_path_buf());
         match (predicate, cwd) {
             (Some((predicate, judged_agent)), Some(cwd)) => {
                 if matches!(predicate, Predicate::BoardState { .. }) {

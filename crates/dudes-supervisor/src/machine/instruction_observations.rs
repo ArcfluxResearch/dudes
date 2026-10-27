@@ -883,14 +883,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     pub fn instruction_source(&self, agent: AgentId) -> Option<InstructionSource> {
         let row = self.world.agents.get(&agent)?;
         let adapter = self.adapters.shared(row.provider)?;
-        let cwd = match row.worktree {
-            Some(lease) => &self.world.worktrees.get(&lease)?.path,
-            None => &row.cwd,
+        let repository = row.repositories.singleton()?;
+        let cwd = match repository.worktree() {
+            Some(lease) => self.world.worktrees.get(&lease)?.path.as_path(),
+            None => repository.cwd(),
         };
         if cwd.as_os_str().as_encoded_bytes().len() > MAX_INSTRUCTION_PATH_BYTES {
             return None;
         }
-        let cwd = cwd.clone();
+        let cwd = cwd.to_path_buf();
         let mut clipped = self.config.daemon_env.len() > MAX_INSTRUCTION_INPUTS;
         let environment = self
             .config
@@ -928,7 +929,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             agent,
             provider: row.provider,
             cwd,
-            lease: row.worktree,
+            lease: repository.worktree(),
             mode: if row.attached {
                 Mode::Attached
             } else {

@@ -129,13 +129,14 @@ impl<H: ProcessHost> Census<'_, H> {
 
     fn owner_folder(&self, agent: AgentId) -> Option<&Path> {
         let row = self.world.agents.get(&agent)?;
-        match row.worktree {
+        let repository = row.repositories.singleton()?;
+        match repository.worktree() {
             Some(lease) => self
                 .world
                 .worktrees
                 .get(&lease)
                 .map(|lease| lease.path.as_path()),
-            None => Some(row.cwd.as_path()),
+            None => Some(repository.cwd()),
         }
     }
 
@@ -393,12 +394,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let Some(row) = sup.world().agents.get(&agent) else {
             return false;
         };
-        let cwd = match row.worktree {
+        let Some(repository) = row.repositories.singleton() else {
+            return false;
+        };
+        let cwd = match repository.worktree() {
             Some(lease) => match sup.world().worktrees.get(&lease) {
                 Some(lease) => lease.path.as_path(),
                 None => return false,
             },
-            None => row.cwd.as_path(),
+            None => repository.cwd(),
         };
         let Some(folder) = canonical_folder(cwd) else {
             return false;

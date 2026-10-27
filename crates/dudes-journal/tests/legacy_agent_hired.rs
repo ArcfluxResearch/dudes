@@ -99,7 +99,10 @@ fn a_legacy_hire_has_no_recorded_workspace_even_when_cwd_is_present() {
     }
     let mut projections = dudes_journal::Projections::in_memory().unwrap();
     projections.apply(Lsn(1), 1, &entries[0]).unwrap();
-    assert_eq!(projections.agents().unwrap()[0].workspace, None);
+    assert_eq!(
+        projections.agents().unwrap()[0].repositories.workspace(),
+        None
+    );
 }
 
 /// **Control for the subject.** The byte-identical fixture plus `"trusted": true` replays as

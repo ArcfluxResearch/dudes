@@ -132,7 +132,7 @@ fn a_created_ticket_is_a_todo_card_with_its_note_project_and_check() {
     assert_eq!(view.claimed_by, None);
     assert_eq!(view.title, "Fix the parser");
     assert_eq!(ticket.description, "Empty input panics.");
-    assert_eq!(ticket.project, "service");
+    assert_eq!(ticket.repositories.project(), "service");
     assert_eq!(ticket.done_when, check());
     assert_eq!((ticket.round, ticket.queue, ticket.goal), (0, None, None));
     assert_eq!(projections.cards().unwrap(), vec![view]);
@@ -478,14 +478,21 @@ fn goals_row_for_a_ticket_goal() {
             goal_replacement: None,
         },
     ]);
-    let row = ticket.goal(goal_id).unwrap().expect("the goal has a row");
+    let mut row = ticket.goal(goal_id).unwrap().expect("the goal has a row");
     assert_eq!(row.agent, agent());
     assert_eq!(row.text, "Fix the parser");
     assert_eq!(row.predicate, check().predicate);
+    let authority = row.repository_round.take().unwrap();
     assert_eq!(
-        serde_json::to_value(&row).unwrap(),
-        serde_json::to_value(plain.goal(goal_id).unwrap().unwrap()).unwrap()
+        (authority.card, authority.goal, authority.round),
+        (card(), goal_id, 1)
     );
+    assert_eq!(authority.start_lsn, Lsn(2));
+    assert!(
+        authority.repositories.is_none(),
+        "the prefix recorded no ticket creation"
+    );
+    assert_eq!(row, plain.goal(goal_id).unwrap().unwrap());
 }
 
 #[test]

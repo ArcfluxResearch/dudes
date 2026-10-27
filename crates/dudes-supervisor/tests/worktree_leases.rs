@@ -120,7 +120,11 @@ fn a_lease_moves_from_pending_to_active_to_released_to_removed() {
     let agent = hire_into(&mut harness, Some(tree));
     assert_eq!(state(&harness, tree), Some(WorktreeState::Active));
     assert_eq!(
-        harness.supervisor.world().agents[&agent].worktree,
+        harness.supervisor.world().agents[&agent]
+            .repositories
+            .singleton()
+            .unwrap()
+            .worktree(),
         Some(tree)
     );
     assert_eq!(
@@ -293,7 +297,14 @@ fn a_restart_rebuilds_the_same_table_from_the_journal() {
 fn a_hire_that_names_no_lease_leaves_the_table_empty() {
     let mut harness = Harness::new();
     let agent = harness.hire();
-    assert_eq!(harness.supervisor.world().agents[&agent].worktree, None);
+    assert_eq!(
+        harness.supervisor.world().agents[&agent]
+            .repositories
+            .singleton()
+            .unwrap()
+            .worktree(),
+        None
+    );
     assert!(harness.supervisor.world().worktrees.is_empty());
     assert_eq!(harness.supervisor.world().live_worktrees().count(), 0);
 }

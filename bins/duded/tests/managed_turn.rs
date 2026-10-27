@@ -374,8 +374,13 @@ fn two_managed_turns_resume_the_session_the_vendor_confirmed() {
         .join("../../examples/two-roles/bin/claude")
         .canonicalize()
         .expect("the example stand-in");
+    let scratch_home = fixture.runtime.path().join("home");
+    std::fs::create_dir(&scratch_home).unwrap();
+    let mut environment = standin_env(&work);
+    environment.retain(|variable| variable.name() != "HOME");
+    environment.push(EnvVar::new("HOME", scratch_home));
     let settings = duded::settings::Settings {
-        daemon_env: standin_env(&work),
+        daemon_env: environment,
         ..fixture.settings()
     };
     let children = ChildEnds::new();
@@ -418,6 +423,50 @@ fn two_managed_turns_resume_the_session_the_vendor_confirmed() {
     });
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     assert_two_turn_session(&fixture.records(), &work);
+    assert_repository_replay(&fixture, &settings);
+}
+
+fn assert_repository_replay(fixture: &Fixture, settings: &duded::Settings) {
+    use dudes_journal::{Projections, Reader, replay};
+    use dudes_types::Lsn;
+
+    let cache = settings.state_dir.join(duded::boot::PROJECTION_FILE);
+    let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
+    let live = Projections::open(&cache).unwrap();
+    let expected = live.export().unwrap();
+    let mut world = dudes_supervisor::World::default();
+    for item in reader.iter_from(Lsn::ZERO).unwrap() {
+        let (lsn, entry) = item.unwrap();
+        world.apply_checked(lsn, &entry).unwrap();
+    }
+    for row in live.agents().unwrap() {
+        let repositories = &world.agents[&row.id].repositories;
+        assert_eq!(&row.repositories, repositories);
+        assert_eq!(
+            repositories.singleton().unwrap().cwd(),
+            fixture.state.path()
+        );
+        assert!(
+            repositories.workspace().is_none(),
+            "enrollment is never invented"
+        );
+    }
+    for row in live.turns().unwrap() {
+        assert_eq!(row.repositories, world.turns[&row.turn].repositories);
+        let authority = row.repositories.as_ref().unwrap();
+        let owner = &world.agents[&row.agent];
+        assert!(authority.matches_hire(owner.mcp.hire_lsn, &owner.repositories));
+        assert_eq!(authority.singleton().unwrap().cwd(), fixture.state.path());
+    }
+    drop(live);
+    let mut warm = Projections::open(&cache).unwrap();
+    assert_eq!(replay(&reader, &mut warm).unwrap().applied, 0);
+    assert_eq!(warm.export().unwrap(), expected);
+    drop(warm);
+    let empty_cache = fixture.runtime.path().join("rebuilt.redb");
+    let mut rebuilt = Projections::open(&empty_cache).unwrap();
+    assert!(replay(&reader, &mut rebuilt).unwrap().applied > 0);
+    assert_eq!(rebuilt.export().unwrap(), expected);
 }
 
 /// A managed turn ending normally produces `TurnEnded` carrying `Some(Usage)`.

@@ -103,8 +103,10 @@ impl GitTarget {
     #[must_use]
     pub fn of(world: &World, agent: AgentId) -> Option<Self> {
         let row = world.agents.get(&agent)?;
-        let Some(worktree) = row.worktree else {
-            return (!row.retired).then(|| Self::Read(Tree::Checkout(row.cwd.clone())));
+        let repository = row.repositories.singleton()?;
+        let Some(worktree) = repository.worktree() else {
+            return (!row.retired)
+                .then(|| Self::Read(Tree::Checkout(repository.cwd().to_path_buf())));
         };
         Some(match world.worktrees.get(&worktree) {
             Some(lease) if lease.removed.is_none() && !row.retired => {

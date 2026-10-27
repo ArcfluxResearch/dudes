@@ -1,8 +1,7 @@
 //! The `agents` table: one row per hired agent, deleted on retire.
 
-use std::path::PathBuf;
-
-use dudes_proto::record::RecordedWorkspace;
+use dudes_proto::repository::HireRepositories;
+use dudes_proto::repository_state::{RepositoryFacts, RepositoryFold};
 use dudes_proto::{Entry, LiveActivityKind, LoopDecision, Record, TurnOutcome};
 use dudes_types::{
     AgentId, AgentStatus, BreakerRung, GoalId, GoalStatus, Lsn, Mode, Provenance, Provider,
@@ -44,11 +43,8 @@ pub struct AgentRow {
     pub department: String,
     /// Which CLI drives it.
     pub provider: Provider,
-    /// The repository it works in.
-    pub cwd: PathBuf,
-    /// Immutable enrolled identity and label copied from the hire record.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<RecordedWorkspace>,
+    /// Immutable repository authority copied from the hire record.
+    pub repositories: HireRepositories,
     /// Where it is in its life.
     pub status: AgentStatus,
     /// Latest journaled fixed activity, separate from lifecycle status.
@@ -119,9 +115,6 @@ pub struct AgentRow {
     /// lifetime [`AgentRow::max_turns`] describes. Not a spend ceiling: the day-bucketed budget
     /// views, not this, are what gate 5 admits against.
     pub max_budget: Option<Usd>,
-    /// The lease the agent was hired into, when it was hired into a worktree.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<dudes_types::WorktreeId>,
     /// The model override: what the hire named until an operator changes it. `None` means the
     /// engine's own selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,8 +143,7 @@ impl Default for AgentRow {
             look_lsn: None,
             department: String::new(),
             provider: Provider::Claude,
-            cwd: PathBuf::new(),
-            workspace: None,
+            repositories: HireRepositories::default(),
             status: AgentStatus::Idle,
             live_activity: None,
             mode: Mode::Managed,
@@ -176,7 +168,6 @@ impl Default for AgentRow {
             last_turn: None,
             max_turns: None,
             max_budget: None,
-            worktree: None,
             model: None,
         }
     }
@@ -243,14 +234,16 @@ pub(crate) fn apply(
             provider,
             character,
             accent,
-            cwd,
-            workspace,
             max_turns,
             max_budget,
-            worktree,
             model,
             ..
         } => {
+            let RepositoryFold::Hire(repositories) =
+                dudes_proto::repository_state::fold(lsn, record, RepositoryFacts::default())
+            else {
+                return Ok(());
+            };
             let row = AgentRow {
                 id: *id,
                 name: name.clone(),
@@ -263,11 +256,9 @@ pub(crate) fn apply(
                 provider: *provider,
                 character: *character,
                 accent: *accent,
-                cwd: cwd.clone(),
-                workspace: workspace.clone(),
+                repositories,
                 max_turns: *max_turns,
                 max_budget: *max_budget,
-                worktree: *worktree,
                 model: model.clone(),
                 ..AgentRow::default()
             };
@@ -373,23 +364,14 @@ fn apply_flow(
 ) -> Result<()> {
     let record = &entry.record;
     let goal_completed = completed_goal_for_settlement(table, goals, record)?;
+    if let Some(issue) = record.turn_issue() {
+        return update(table, lsn, issue.agent, record, |a| {
+            a.turns += 1;
+            a.open_turn = Some(issue.turn);
+            a.settle(goal_completed);
+        });
+    }
     match record {
-        // `TurnIssued.session` is what this turn *announced*; it moves `TurnRow::session` and
-        // nothing here. `open_turn` is what must
-        // survive: it is what stops a second turn being issued while one is open.
-        Record::TurnIssued { agent, turn, .. }
-        | Record::ConversationTurnIssued { agent, turn, .. }
-        | Record::IdentifiedConversationTurnIssued { agent, turn, .. }
-        | Record::NoteOnlyTurnIssued { agent, turn, .. }
-        | Record::TaughtNoteOnlyTurnIssued { agent, turn, .. }
-        | Record::IdentifiedTaughtNoteOnlyTurnIssued { agent, turn, .. }
-        | Record::TurnIssuedWithBrowserNote { agent, turn, .. } => {
-            update(table, lsn, *agent, record, |a| {
-                a.turns += 1;
-                a.open_turn = Some(*turn);
-                a.settle(goal_completed);
-            })
-        }
         Record::TurnSpawned {
             agent,
             turn,

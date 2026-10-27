@@ -1285,7 +1285,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .iter()
             .filter(|(_, row)| !row.retired)
             .filter_map(|(agent, row)| {
-                let tree = world.worktrees.get(&row.worktree?)?;
+                let tree = world
+                    .worktrees
+                    .get(&row.repositories.singleton()?.worktree()?)?;
                 (!crate::worktree::is_worktree(&tree.path, &tree.origin)).then_some(*agent)
             })
             .collect()
@@ -3329,7 +3331,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             reserved,
             budget,
             hop_cap,
-            cwd: self.sup.world().agents[&request.agent].cwd.clone(),
+            cwd: self.sup.world().agents[&request.agent]
+                .repositories
+                .singleton()
+                .ok_or(Err(GoalRefusal::UnavailableNoEffect))?
+                .cwd()
+                .to_path_buf(),
         })
     }
 
@@ -3392,7 +3399,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             GoalRefusal::UnavailableNoEffect
         })?;
         let Some(profile) = recorded
-            .and_then(|row| row.workspace)
+            .and_then(|row| row.repositories.workspace().cloned())
             .and_then(|workspace| self.ctx.enrollment.profile(&workspace.id))
         else {
             return Ok(None);
@@ -3401,11 +3408,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let Some(hired) = world.agents.get(&agent) else {
             return Ok(None);
         };
-        let directory = match hired.worktree {
-            None => Some(&hired.cwd),
-            Some(lease) => world.worktrees.get(&lease).map(|lease| &lease.origin),
+        let repository = hired
+            .repositories
+            .singleton()
+            .ok_or(GoalRefusal::UnavailableNoEffect)?;
+        let directory = match repository.worktree() {
+            None => Some(repository.cwd()),
+            Some(lease) => world
+                .worktrees
+                .get(&lease)
+                .map(|lease| lease.origin.as_path()),
         };
-        Ok((directory == Some(&profile.cwd)).then(|| profile.clone()))
+        Ok((directory == Some(profile.cwd.as_path())).then(|| profile.clone()))
     }
 
     /// What a renewal of `agent`'s goal is allowed: the numbers of [`Self::agent_profile`], while
@@ -3453,7 +3467,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let Predicate::Command { argv, timeout_s } = request.predicate.clone() else {
             unreachable!("a validated replacement carries a command")
         };
-        let cwd = self.sup.world().agents[&request.agent].cwd.clone();
+        let cwd = self.sup.world().agents[&request.agent]
+            .repositories
+            .singleton()
+            .ok_or_else(|| error(ErrorCode::Refused, "the recorded repository is unavailable"))?
+            .cwd()
+            .to_path_buf();
         let run = self.ctx.baselines.start_local(request.agent);
         self.start_baseline(run, argv, timeout_s, cwd)
     }
@@ -3656,7 +3675,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 .ok(),
             });
         }
-        Ok(row.cwd.clone())
+        Ok(row
+            .repositories
+            .singleton()
+            .ok_or_else(|| error(ErrorCode::Refused, "the recorded repository is unavailable"))?
+            .cwd()
+            .to_path_buf())
     }
 
     /// Whether `agent` has a turn, a post-turn check, or a check a local route started running
@@ -6479,9 +6503,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if row.retired {
             return Ok(());
         }
+        let repository = row
+            .repositories
+            .singleton()
+            .ok_or_else(|| error(ErrorCode::Refused, "the recorded repository is unavailable"))?;
         let Err(cause) = predicate::spec_for(
             argv,
-            &row.cwd,
+            repository.cwd(),
             &self.ctx.predicate_env,
             self.ctx.predicate_path.as_deref(),
         ) else {
@@ -8137,6 +8165,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one attachment executor keeps repository admission and owned process startup together"
+    )]
     fn open_pty<R: Rng>(
         &mut self,
         effect: &Effect,
@@ -8163,6 +8195,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .agents
             .get(&agent)
             .ok_or_else(|| anyhow::anyhow!("attached launch owner is unavailable"))?;
+        if row
+            .repositories
+            .singleton()
+            .is_none_or(|repository| repository.cwd() != spec.cwd)
+        {
+            queue.push_back(Input::PtyExited { agent });
+            report.record_open(
+                agent,
+                Err("the recorded repository is unavailable for this attachment".to_owned()),
+            )?;
+            return Ok(());
+        }
         if let Err(refusal) = self.admit_prior_attempt(sup, agent, None).and_then(|()| {
             self.admit_shared_folder(
                 sup,

@@ -63,7 +63,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .agents()
             .map_err(unreadable)?
             .into_iter()
-            .filter_map(|row| Some((row.id, row.workspace?.id)))
+            .filter_map(|row| Some((row.id, row.repositories.workspace()?.id.clone())))
             .collect();
         let working = hires
             .keys()
@@ -229,7 +229,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let profile: &Profile = self
             .ctx
             .enrollment
-            .profile(&ticket.project)
+            .profile(ticket.repositories.project())
             .ok_or(TicketReason::ProjectUnavailable)?;
         let allowance = Allowance::of(profile);
         if self.goal_wants_a_ceiling(agent, &allowance.budget) {

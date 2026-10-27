@@ -39,7 +39,7 @@ pub(super) fn capture(
     }
     // Stored at retirement so the window's size bound counts it; `released` is the state a retired
     // agent's tree is in until the operator removes it, and the read below corrects that one case.
-    let worktree = match agent.worktree {
+    let worktree = match agent.repositories.primary_worktree() {
         Some(lease) => get_row::<WorktreeRow>(leases, &lease.to_bytes())?.map(|lease| {
             let mut view = lease.view();
             view.state = dudes_proto::WorktreeViewState::Released;
@@ -55,7 +55,10 @@ pub(super) fn capture(
         character: agent.character,
         accent: agent.accent,
         provider: agent.provider,
-        workspace_label: agent.workspace.map(|workspace| workspace.label),
+        workspace_label: agent
+            .repositories
+            .workspace()
+            .map(|workspace| workspace.label.clone()),
         hired_at: agent.hired_at,
         retired_at: entry.at,
         turns: turns::count_for_agent(turns, id)?,

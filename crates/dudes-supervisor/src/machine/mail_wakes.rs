@@ -523,6 +523,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let launch = match self.launch(
             agent,
             &row,
+            row.repositories.singleton(),
             preparation.plan.task.as_str(),
             &session,
             &selection,

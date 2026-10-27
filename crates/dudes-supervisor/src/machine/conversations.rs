@@ -197,7 +197,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(selection) = self.model_selection(&row) else {
             return;
         };
-        let launch = match self.launch(agent, &row, task, &session, &selection) {
+        let launch = match self.launch(
+            agent,
+            &row,
+            row.repositories.singleton(),
+            task,
+            &session,
+            &selection,
+        ) {
             ManagedLaunch::Ready(launch) => launch,
             ManagedLaunch::Unavailable => return,
             ManagedLaunch::Refused(error) => {

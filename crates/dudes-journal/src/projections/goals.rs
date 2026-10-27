@@ -64,6 +64,8 @@ pub(super) fn has_fault(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GoalRow {
+    /// Immutable repository declaration and round installed by a ticket start.
+    pub repository_round: Option<dudes_proto::repository::TicketRepositoryRound>,
     /// The goal.
     pub id: GoalId,
     /// Actual goal installation position.
@@ -109,6 +111,7 @@ impl GoalRow {
 impl Default for GoalRow {
     fn default() -> Self {
         Self {
+            repository_round: None,
             id: GoalId::NIL,
             installed_lsn: Lsn::ZERO,
             agent: AgentId::NIL,
@@ -172,20 +175,18 @@ fn update(
     clippy::match_same_arms,
     reason = "the `Checkpoint` arm is deliberately identical to the wildcard: it exists so the change that teaches something to read a checkpoint has to visit this fold. `expect` rather than `allow` so that giving the arm a body of its own reports the stale attribute instead of leaving it behind"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per record kind this table folds"
-)]
 pub(crate) fn apply(
     table: &mut RowTable<'_>,
     first_done: &mut FirstDoneTable<'_>,
     agents: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
     lsn: Lsn,
     entry: &Entry,
+    repository_round: Option<dudes_proto::repository::TicketRepositoryRound>,
 ) -> Result<()> {
     let record = &entry.record;
     if let Some((agent, goal)) = record.goal_install() {
         let row = GoalRow {
+            repository_round,
             id: goal.id,
             installed_lsn: lsn,
             agent,
@@ -199,6 +200,14 @@ pub(crate) fn apply(
         };
         return put_row(table, &goal.id.to_bytes(), &row);
     }
+    if let Some(issue) = record.turn_issue()
+        && issue.mode == Mode::Managed
+        && let Some(goal) = issue.goal
+    {
+        return update(table, lsn, goal, record, |g| {
+            g.note_managed_issue(issue.turn);
+        });
+    }
     match record {
         // The row stays, with its counters: `dudes why` still has to explain a goal after it was
         // abandoned, and a `GoalSet` reusing the id is refused before it is ever appended.
@@ -210,39 +219,6 @@ pub(crate) fn apply(
         Record::GoalReassigned { goal, to, .. } => update(table, lsn, *goal, record, |g| {
             g.agent = *to;
         }),
-        // Gate 6 counts managed turns only (an attached end counts toward
-        // budget and *not* toward `hop_cap`). The wider counting question — re-issues, mixed mode —
-        // is separate; this is the count the hop cap needs and nothing more.
-        Record::TurnIssued {
-            goal,
-            turn,
-            mode: Mode::Managed,
-            ..
-        }
-        | Record::NoteOnlyTurnIssued {
-            goal,
-            turn,
-            mode: Mode::Managed,
-            ..
-        }
-        | Record::TaughtNoteOnlyTurnIssued {
-            goal,
-            turn,
-            mode: Mode::Managed,
-            ..
-        }
-        | Record::IdentifiedTaughtNoteOnlyTurnIssued {
-            goal,
-            turn,
-            mode: Mode::Managed,
-            ..
-        }
-        | Record::TurnIssuedWithBrowserNote {
-            goal,
-            turn,
-            mode: Mode::Managed,
-            ..
-        } => update(table, lsn, *goal, record, |g| g.note_managed_issue(*turn)),
         Record::PredicateResult {
             goal,
             provenance,

@@ -209,13 +209,15 @@ fn update_goal_ticket(
 
 /// The five ticket records: a ticket is a card with more to remember.
 fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<()> {
+    if let Some(start) = record.ticket_start() {
+        return update_ticket(table, lsn, start.card, |row| start_ticket(row, lsn, start));
+    }
     match record {
         Record::TicketCreated {
             card,
             title,
             description,
             department,
-            project,
             done_when,
             by,
             ..
@@ -233,7 +235,16 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
             };
             let ticket = TicketRow {
                 description: description.clone(),
-                project: project.clone(),
+                repositories: match dudes_proto::repository_state::fold(
+                    lsn,
+                    record,
+                    dudes_proto::repository_state::RepositoryFacts::default(),
+                ) {
+                    dudes_proto::repository_state::RepositoryFold::Ticket(repositories) => {
+                        repositories
+                    }
+                    _ => return Ok(()),
+                },
                 done_when: done_when.clone(),
                 goal: None,
                 queue: None,
@@ -272,14 +283,6 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
             expected_seq,
         } => update_ticket(table, lsn, *card, |row| {
             queue_ticket(row, lsn, (*agent, *by), message.as_deref(), *expected_seq);
-        }),
-        Record::TicketStarted {
-            card,
-            agent,
-            goal,
-            expected_seq,
-        } => update_ticket(table, lsn, *card, |row| {
-            start_ticket(row, lsn, *agent, goal.id, *expected_seq);
         }),
         Record::TicketRemoved { card, .. } => remove_ticket(table, lsn, *card),
         _ => Ok(()),
@@ -489,14 +492,30 @@ fn queue_ticket(
 }
 
 /// A start moves the card to Doing, links its goal and spends the stored message.
-fn start_ticket(row: &mut BoardRow, lsn: Lsn, agent: AgentId, goal: GoalId, expected_seq: Seq) {
+fn start_ticket(
+    row: &mut BoardRow,
+    lsn: Lsn,
+    start: dudes_proto::repository_state::TicketStart<'_>,
+) {
+    let facts = dudes_proto::repository_state::RepositoryFacts {
+        ticket: row
+            .ticket
+            .as_ref()
+            .map(|ticket| (&ticket.repositories, ticket.round)),
+        ..dudes_proto::repository_state::RepositoryFacts::default()
+    };
+    let dudes_proto::repository_state::RepositoryFold::Start(round) =
+        dudes_proto::repository_state::fold(lsn, start.source, facts)
+    else {
+        return;
+    };
     row.view.status = CardStatus::Doing;
     row.view.status_by = Actor::System;
-    row.view.seq = expected_seq.next();
-    row.view.claimed_by = Some(agent);
+    row.view.seq = start.expected_seq.next();
+    row.view.claimed_by = Some(start.agent);
     row.claimed_lsn.get_or_insert(lsn);
     if let Some(ticket) = &mut row.ticket {
-        ticket.goal = Some(goal);
+        ticket.goal = Some(round.goal);
         ticket.queue = None;
         ticket.message = None;
         ticket.reason = None;
@@ -504,7 +523,7 @@ fn start_ticket(row: &mut BoardRow, lsn: Lsn, agent: AgentId, goal: GoalId, expe
         ticket.last_turn_end = None;
         ticket.check = None;
         ticket.coverage = None;
-        ticket.round = ticket.round.saturating_add(1);
+        ticket.round = round.round;
     }
 }
 

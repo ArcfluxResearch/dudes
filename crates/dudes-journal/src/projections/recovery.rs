@@ -651,6 +651,13 @@ where
         through,
         &[turn.lsn_issued, goal.installed_lsn],
     )?;
+    let repositories = turn
+        .repositories
+        .as_ref()
+        .ok_or(RecoveryStateError::Binding)?;
+    if !repositories.matches_hire(agent.hired_lsn, &agent.repositories) {
+        return Err(RecoveryStateError::Binding.into());
+    }
     let mut issue = initial
         .history()
         .at(turn.lsn_issued)
@@ -665,7 +672,10 @@ where
         .clone_from(&turn.model_selection);
     let ticket = current_ticket(tables.board, &goal, initial.history())?;
     let lease = agent
-        .worktree
+        .repositories
+        .singleton()
+        .ok_or(RecoveryStateError::Binding)?
+        .worktree()
         .map(|id| {
             let row = super::get_row::<super::WorktreeRow>(tables.leases, &id.to_bytes())?
                 .ok_or(RecoveryStateError::Binding)?;
@@ -678,7 +688,7 @@ where
         .transpose()?;
     let current = RecoveryCurrent {
         through,
-        agent: current_agent(&agent),
+        agent: current_agent(&agent)?,
         goal: RecoveryGoalCurrent {
             goal: goal.id,
             agent: goal.agent,
@@ -827,12 +837,18 @@ fn standing_control(agent: &super::AgentRow) -> RecoveryStandingControl {
     }
 }
 
-fn current_agent(agent: &super::AgentRow) -> RecoveryAgentCurrent {
-    RecoveryAgentCurrent {
+fn current_agent(
+    agent: &super::AgentRow,
+) -> std::result::Result<RecoveryAgentCurrent, RecoveryStateError> {
+    Ok(RecoveryAgentCurrent {
         agent: agent.id,
         hired_lsn: agent.hired_lsn,
         provider: agent.provider,
-        worktree: agent.worktree,
+        worktree: agent
+            .repositories
+            .singleton()
+            .ok_or(RecoveryStateError::Binding)?
+            .worktree(),
         mode: agent.mode,
         retired: false,
         control: standing_control(agent),
@@ -840,7 +856,7 @@ fn current_agent(agent: &super::AgentRow) -> RecoveryAgentCurrent {
         control_lsn: agent.control_lsn,
         session: agent.session.clone(),
         session_lsn: agent.session_lsn,
-    }
+    })
 }
 
 fn current_ticket(
