@@ -261,3 +261,101 @@ fn the_start_the_daemon_writes_replays_to_a_working_ticket() {
     assert_eq!(cards[0].claimed_by, Some(agent()));
     running.stop(duded::ExitCause::Ended);
 }
+
+#[test]
+fn singleton_ticket_authority_survives_daemon_reopen_and_empty_cache_rebuild() {
+    use dudes_journal::{Projections, Reader, replay};
+    use dudes_types::Lsn;
+
+    let fixture = Fixture::new();
+    let mut records = story(honest_goal());
+    let Record::AgentHired { cwd, .. } = &mut records[0] else {
+        unreachable!();
+    };
+    *cwd = fixture.state.path().to_path_buf();
+    records.push(Record::Pause {
+        agent: agent(),
+        browser: None,
+    });
+    let mut issue = samples::record(RecordKind::TurnIssued);
+    let Record::TurnIssued {
+        agent: owner, goal, ..
+    } = &mut issue
+    else {
+        unreachable!();
+    };
+    *owner = agent();
+    *goal = honest_goal().id;
+    let turn = issue.turn_issue().unwrap().turn;
+    records.push(issue);
+    let settings = seed(&fixture, records);
+    let host = SharedHost::new();
+    let daemon = boot(
+        &settings,
+        common::seams(
+            &settings,
+            host.clone(),
+            Arc::new(ScriptedRunner::default()),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        ),
+    )
+    .unwrap();
+    let authority = daemon.world().turns[&turn].repositories.clone().unwrap();
+    let round = authority.ticket().unwrap();
+    assert_eq!(
+        (round.card, round.goal, round.round),
+        (card(), honest_goal().id, 1)
+    );
+    assert_eq!(round.repositories.as_ref().unwrap().project(), "service");
+    assert_eq!(authority.singleton().unwrap().cwd(), fixture.state.path());
+    let mut running = common::start(daemon);
+    running.stop(duded::ExitCause::Ended);
+    assert!(
+        host.spawned().is_empty(),
+        "a paused issued turn remains unlaunched"
+    );
+
+    let cache = settings.state_dir.join(duded::boot::PROJECTION_FILE);
+    let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
+    let live = Projections::open(&cache).unwrap();
+    let expected_ticket = live.ticket(card()).unwrap().unwrap();
+    let expected_export = live.export().unwrap();
+    assert_eq!(expected_ticket.1.repositories.project(), "service");
+    assert_eq!(expected_ticket.1.done_when, check());
+    assert_eq!(expected_ticket.1.round, 1);
+    assert_eq!(
+        live.turn(turn).unwrap().unwrap().repositories.as_ref(),
+        Some(&authority)
+    );
+    drop(live);
+    let mut warm = Projections::open(&cache).unwrap();
+    assert_eq!(replay(&reader, &mut warm).unwrap().applied, 0);
+    assert_eq!(warm.ticket(card()).unwrap().unwrap(), expected_ticket);
+    assert_eq!(warm.export().unwrap(), expected_export);
+    drop(warm);
+
+    let mut rebuilt = Projections::open(&fixture.runtime.path().join("rebuilt.redb")).unwrap();
+    assert!(replay(&reader, &mut rebuilt).unwrap().applied > 0);
+    assert_eq!(rebuilt.ticket(card()).unwrap().unwrap(), expected_ticket);
+    assert_eq!(
+        rebuilt.turn(turn).unwrap().unwrap().repositories.as_ref(),
+        Some(&authority)
+    );
+    assert_eq!(rebuilt.export().unwrap(), expected_export);
+    drop(rebuilt);
+    std::fs::remove_file(cache).unwrap();
+    let daemon = boot(&settings, seams(&settings)).unwrap();
+    assert_eq!(
+        daemon.world().turns[&turn].repositories.as_ref(),
+        Some(&authority)
+    );
+    assert!(
+        daemon
+            .world()
+            .last_applied_lsn
+            .is_some_and(|lsn| lsn > Lsn::ZERO)
+    );
+    let mut reopened = common::start(daemon);
+    reopened.stop(duded::ExitCause::Ended);
+}

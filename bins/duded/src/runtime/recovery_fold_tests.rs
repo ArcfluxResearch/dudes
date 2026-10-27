@@ -309,7 +309,7 @@ fn ordinary_owed(
         issue_lsn,
         hired_lsn: row.hired_lsn,
         ticket: None,
-        worktree: row.worktree,
+        worktree: row.repositories.singleton().unwrap().worktree(),
         provider: row.provider,
         model_selection: selection,
     }

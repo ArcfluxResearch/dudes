@@ -369,7 +369,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 .as_ref()
                 .and_then(|path| path.to_path().ok())
                 .or_else(|| self.pty_host.receipt(pty).map(|(_, cwd)| cwd.to_path_buf()))
-                .or_else(|| sup.world().agents.get(&agent).map(|row| row.cwd.clone()))
+                .or_else(|| {
+                    sup.world()
+                        .agents
+                        .get(&agent)
+                        .and_then(|row| row.repositories.singleton())
+                        .map(|repository| repository.cwd().to_path_buf())
+                })
                 .context("attached comparison path is unavailable")?;
             let (endpoint, _) = self.sample_instruction_boundary(
                 sup,

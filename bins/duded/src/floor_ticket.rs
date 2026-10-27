@@ -692,7 +692,7 @@ fn read_value(read: &TicketReadResult) -> Value {
     } = read;
     let TicketRow {
         description,
-        project,
+        repositories,
         done_when,
         round,
         reason,
@@ -714,7 +714,7 @@ fn read_value(read: &TicketReadResult) -> Value {
         "ticket": {
             "context": context_value(context),
             "note": description,
-            "project": project,
+            "project": repositories.project(),
             "check": {"id": done_when.id, "label": done_when.label},
             "round": round,
             "reason": reason,
@@ -1130,7 +1130,7 @@ mod tests {
             },
             ticket: TicketRow {
                 description: "n".repeat(8_192),
-                project: "service".to_owned(),
+                repositories: "service".into(),
                 done_when: TicketCheck {
                     id: "default".to_owned(),
                     label: "passes".to_owned(),
@@ -1323,7 +1323,7 @@ mod tests {
     #[test]
     fn oversized_identity_data_is_omitted_instead_of_returning_an_oversized_read() {
         let mut read = instruction_read_fixture();
-        read.ticket.project = "x".repeat(MAX_TICKET_BODY_BYTES);
+        read.ticket.repositories = "x".repeat(MAX_TICKET_BODY_BYTES).into();
         let body = read_body(&read);
         assert_eq!(body, json!({"state":"unavailable", "truncated":["ticket"]}));
         assert!(serde_json::to_vec(&body).expect("json").len() <= MAX_TICKET_BODY_BYTES);

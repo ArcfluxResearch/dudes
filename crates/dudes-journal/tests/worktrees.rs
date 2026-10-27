@@ -108,7 +108,10 @@ fn the_projection_follows_a_lease_from_pending_to_removed() {
 
     store.apply(Lsn(3), 7, &steps[2]).unwrap();
     let hired = store.agent(agent).unwrap().expect("the agent is projected");
-    assert_eq!(hired.worktree, Some(tree()));
+    assert_eq!(
+        hired.repositories.singleton().unwrap().worktree(),
+        Some(tree())
+    );
     let owner = |store: &Projections| {
         store
             .worktrees()
@@ -165,7 +168,17 @@ fn a_hire_into_no_worktree_and_a_second_hire_into_a_taken_one_leave_the_owner_al
         !row.agent_retired,
         "the retirement of an agent that does not own the lease says nothing about it"
     );
-    assert_eq!(store.agent(plain).unwrap().unwrap().worktree, None);
+    assert_eq!(
+        store
+            .agent(plain)
+            .unwrap()
+            .unwrap()
+            .repositories
+            .singleton()
+            .unwrap()
+            .worktree(),
+        None
+    );
 }
 
 fn journal_options(checkpoint_every: u64) -> JournalOptions {
@@ -294,7 +307,7 @@ fn the_removal_cause_and_the_automatic_hold_keep_a_value_a_later_version_adds() 
 /// ordinary replay would skip them for ever. The version bump is what rebuilds it.
 #[test]
 fn a_version_37_cache_is_rebuilt_so_it_holds_the_leases_the_journal_records() {
-    assert_eq!(dudes_journal::PROJECTION_VERSION, 59);
+    assert_eq!(dudes_journal::PROJECTION_VERSION, 60);
     let dir = tempfile::tempdir().unwrap();
     let journal = dir.path().join("journal");
     write_journal(&journal, &lifecycle(AgentId::from_parts(5, 1)), 0);

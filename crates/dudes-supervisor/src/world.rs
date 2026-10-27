@@ -15,9 +15,12 @@
 //! there is nothing to duplicate — one rule, one implementation.
 
 use dudes_proto::record::Hex32;
+use dudes_proto::repository::{
+    HireRepositories, TicketRepositories, TicketRepositoryRound, TurnRepositories,
+};
+use dudes_proto::repository_state::{RepositoryFacts, RepositoryFold};
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::PathBuf;
 
 #[cfg(test)]
 mod attached_turn_end_tests;
@@ -83,8 +86,8 @@ pub struct AgentRow {
     pub department: String,
     /// Which CLI drives it.
     pub provider: Provider,
-    /// The repository it works in.
-    pub cwd: PathBuf,
+    /// The immutable repository authority recorded at hire.
+    pub repositories: HireRepositories,
     /// Daily ceiling.
     pub budget: AgentBudget,
     /// The provider's sandbox on-switch, as the hire asked for it.
@@ -100,8 +103,6 @@ pub struct AgentRow {
     pub model: Option<dudes_types::ModelName>,
     /// Whether the operator vouched for the repository at hire.
     pub trusted: bool,
-    /// The lease this agent was hired into, when it was hired into a worktree.
-    pub worktree: Option<WorktreeId>,
     /// Desired managed-launch names and the immutable recorded hire origin.
     pub mcp: McpPolicy,
     /// `AgentRetired` was appended.
@@ -257,6 +258,8 @@ struct ObservedPredicateResult {
 /// One turn, as the confirmed entries describe it.
 #[derive(Clone, Debug)]
 pub struct TurnRow {
+    /// Frozen repository authority selected from the preceding hire and ticket round.
+    pub repositories: Option<TurnRepositories>,
     /// Actual immutable issue position.
     pub issue_lsn: Lsn,
     /// The agent.
@@ -478,7 +481,8 @@ pub struct World {
     pub goals: BTreeMap<GoalId, GoalRow>,
     observed_predicates: BTreeMap<GoalId, ObservedPredicateResult>,
     ticket_reviews: BTreeMap<GoalId, TicketReview>,
-    ticket_goals: BTreeMap<GoalId, (CardId, u32)>,
+    ticket_goals: BTreeMap<GoalId, TicketRepositoryRound>,
+    ticket_repositories: BTreeMap<CardId, TicketRepositories>,
     ticket_rounds: BTreeMap<CardId, u32>,
     /// Turns by id.
     pub turns: BTreeMap<TurnId, TurnRow>,
@@ -885,10 +889,32 @@ impl World {
                 row.exhausted = None;
             }
         }
-        if let Record::TicketStarted { card, goal, .. } = &entry.record {
-            let round = self.ticket_rounds.entry(*card).or_insert(0);
-            *round = round.saturating_add(1);
-            self.ticket_goals.insert(goal.id, (*card, *round));
+        if let RepositoryFold::Ticket(repositories) =
+            dudes_proto::repository_state::fold(lsn, &entry.record, RepositoryFacts::default())
+            && let Record::TicketCreated { card, .. } = &entry.record
+        {
+            self.ticket_repositories.insert(*card, repositories);
+        }
+        if let Some(start) = entry.record.ticket_start() {
+            let prior_round = self
+                .ticket_rounds
+                .get(&start.card)
+                .copied()
+                .unwrap_or_default();
+            let facts = RepositoryFacts {
+                ticket: self
+                    .ticket_repositories
+                    .get(&start.card)
+                    .map(|repositories| (repositories, prior_round)),
+                prior_round,
+                ..RepositoryFacts::default()
+            };
+            if let RepositoryFold::Start(round) =
+                dudes_proto::repository_state::fold(lsn, &entry.record, facts)
+            {
+                self.ticket_rounds.insert(start.card, round.round);
+                self.ticket_goals.insert(start.goal.id, round);
+            }
         }
         match &entry.record {
             Record::ConversationDispatchUncertain {
@@ -1372,7 +1398,6 @@ impl World {
                 provider,
                 character,
                 accent,
-                cwd,
                 budget,
                 sandbox,
                 isolation,
@@ -1385,6 +1410,13 @@ impl World {
                 browser_onboarding,
                 ..
             } => {
+                let RepositoryFold::Hire(repositories) = dudes_proto::repository_state::fold(
+                    lsn,
+                    &entry.record,
+                    RepositoryFacts::default(),
+                ) else {
+                    return Ok(());
+                };
                 self.agents.insert(
                     *id,
                     AgentRow {
@@ -1395,14 +1427,13 @@ impl World {
                         provider: *provider,
                         character: *character,
                         accent: *accent,
-                        cwd: cwd.clone(),
+                        repositories,
                         budget: *budget,
                         sandbox: *sandbox,
                         max_turns: *max_turns,
                         max_budget: *max_budget,
                         model: model.clone(),
                         trusted: *trusted,
-                        worktree: *worktree,
                         mcp: McpPolicy::hired(
                             lsn,
                             mcp_servers,
@@ -1502,6 +1533,7 @@ impl World {
                 self.install_managed_turn(
                     *turn,
                     TurnRow {
+                        repositories: None,
                         issue_lsn: lsn,
                         agent: *agent,
                         goal: Some(*goal),
@@ -1529,6 +1561,7 @@ impl World {
                     self.install_managed_turn(
                         issue.turn,
                         TurnRow {
+                            repositories: None,
                             issue_lsn: lsn,
                             agent: issue.agent,
                             goal: Some(issue.goal),
@@ -2106,6 +2139,25 @@ impl World {
             | Record::RecoveryAuthorized(_)
             | Record::RecoveryInvalidated(_) => {}
         }
+        if let Some(issue) = entry.record.turn_issue() {
+            let facts = RepositoryFacts {
+                hire: self
+                    .agents
+                    .get(&issue.agent)
+                    .map(|row| (row.mcp.hire_lsn, &row.repositories)),
+                round: issue.goal.and_then(|goal| self.ticket_goals.get(&goal)),
+                ..RepositoryFacts::default()
+            };
+            if let RepositoryFold::Issue(repositories) =
+                dudes_proto::repository_state::fold(lsn, &entry.record, facts)
+                && let Some(row) = self
+                    .turns
+                    .get_mut(&issue.turn)
+                    .filter(|row| row.issue_lsn == lsn)
+            {
+                row.repositories = repositories;
+            }
+        }
         Ok(())
     }
 
@@ -2546,6 +2598,7 @@ impl World {
         self.install_managed_turn(
             turn,
             TurnRow {
+                repositories: None,
                 issue_lsn,
                 agent,
                 goal,
@@ -2776,7 +2829,9 @@ impl World {
     /// The card and round a ticket start installed `goal` for; `None` for any other goal.
     #[must_use]
     pub fn ticket_goal(&self, goal: GoalId) -> Option<(CardId, u32)> {
-        self.ticket_goals.get(&goal).copied()
+        self.ticket_goals
+            .get(&goal)
+            .map(|round| (round.card, round.round))
     }
 
     /// Whether any turn was ever issued for `goal`.

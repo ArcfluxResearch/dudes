@@ -836,7 +836,7 @@ mod tests {
         };
         let ticket = TicketRow {
             description: String::new(),
-            project: "service".into(),
+            repositories: "service".into(),
             done_when: TicketCheck {
                 id: "default".into(),
                 label: "passes".into(),

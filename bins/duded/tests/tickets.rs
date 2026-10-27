@@ -528,7 +528,7 @@ fn a_created_ticket_replays_to_the_same_board_after_the_cache_is_deleted() {
     assert_eq!(first_view.card.status, CardStatus::Claimed);
     assert_eq!(first_view.card.claimed_by, Some(agent));
     assert_eq!(first_view.card.status_by, operator_of(&first_view.card));
-    assert_eq!(first_view.ticket.project, "service");
+    assert_eq!(first_view.ticket.repositories.project(), "service");
     assert_eq!(first_view.ticket.description, "");
     assert_eq!(first_view.ticket.done_when.id, "default");
     assert_eq!(first_view.ticket.message.as_deref(), Some("Mind the edge."));
@@ -1126,7 +1126,10 @@ fn several_projects_need_the_caller_to_name_one() {
         Method::TicketCreate,
         json!({"title": "Docs ticket", "project": "docs"}),
     );
-    assert_eq!(daemon.read(created.card).ticket.project, "docs");
+    assert_eq!(
+        daemon.read(created.card).ticket.repositories.project(),
+        "docs"
+    );
     daemon.stop();
 }
 

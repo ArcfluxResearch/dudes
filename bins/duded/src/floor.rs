@@ -252,13 +252,18 @@ pub(crate) fn agents(projections: &Projections, now: Timestamp) -> Result<Vec<Ag
     let mut directories: std::collections::BTreeMap<std::path::PathBuf, usize> =
         std::collections::BTreeMap::new();
     for row in &rows {
-        *directories.entry(row.cwd.clone()).or_default() += 1;
+        *directories
+            .entry(row.repositories.primary_cwd().to_path_buf())
+            .or_default() += 1;
     }
     rows.into_iter()
         .map(|row| {
-            let shares_checkout = directories.get(&row.cwd).is_some_and(|count| *count > 1);
+            let shares_checkout = directories
+                .get(row.repositories.primary_cwd())
+                .is_some_and(|count| *count > 1);
             let worktree = row
-                .worktree
+                .repositories
+                .primary_worktree()
                 .and_then(|id| leases.iter().find(|lease| lease.worktree == id))
                 .map(dudes_journal::WorktreeRow::view);
             let mut view = agent_view(projections, row, now)?;
@@ -337,7 +342,7 @@ fn agent_view(projections: &Projections, row: AgentRow, now: Timestamp) -> Resul
         look_lsn: row.look_lsn.map(|lsn| lsn.0.to_string()),
         department: row.department,
         provider: row.provider,
-        workspace: row.workspace,
+        workspace: row.repositories.workspace().cloned(),
         status: row.status,
         live_activity: row.live_activity.and_then(|activity| {
             remaining_lifetime(activity.at, now, u32::MAX).map(|expires_in_ms| LiveActivityView {

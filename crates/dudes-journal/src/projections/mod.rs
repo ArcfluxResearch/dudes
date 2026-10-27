@@ -60,6 +60,9 @@ use crate::writer::Fsync;
 /// is added**, or **when what a fold computes changes**; the store is then rebuilt from the
 /// journal.
 ///
+/// `60`: agent and issued-turn rows own normalized repository authority. Canonical board export
+/// includes complete stored ticket metadata.
+///
 /// `58`: ticket results come only from turns while Working. Older caches must replay to restore
 /// summaries and engine exits overwritten by later conversations. New rounds clear the prior exit.
 ///
@@ -268,7 +271,7 @@ use crate::writer::Fsync;
 /// `2` was the previous bump: the rows became at-derived and `turns.status` gained
 /// a *reachable* `Killed`, so a v1 row saying `Ended` for a killed turn was wrong. Half-right is
 /// worse than rebuilt.
-pub const PROJECTION_VERSION: u64 = 59;
+pub const PROJECTION_VERSION: u64 = 60;
 /// Entries applied per write transaction during replay.
 pub const BATCH: usize = 1000;
 
@@ -991,7 +994,7 @@ impl Projections {
             "goal_first_done",
             &txn.open_table(GOAL_FIRST_DONE)?,
         )?;
-        export_rows::<16, CardView>(&mut lines, "board", &txn.open_table(BOARD)?)?;
+        export_rows::<16, board::BoardRow>(&mut lines, "board", &txn.open_table(BOARD)?)?;
         for entry in txn.open_table(INSTRUCTIONS)?.iter()? {
             let (key, value) = entry?;
             let cell: serde_json::Value =
@@ -1186,13 +1189,55 @@ fn fold_batch<'a>(
                 lsn,
                 entry,
             )?;
-            let normal = mail_wakes::normal_carrier(entry);
-            let carrier = normal.as_ref().unwrap_or(entry);
-            activity::capture_before_source_update(&mut activity, &agents, &board, lsn, carrier)?;
+            let repository_round = if let Some(start) = entry.record.ticket_start() {
+                let ticket = get_row::<board::BoardRow>(&board, &start.card.to_bytes())?
+                    .and_then(|row| row.ticket);
+                let facts = dudes_proto::repository_state::RepositoryFacts {
+                    ticket: ticket
+                        .as_ref()
+                        .map(|ticket| (&ticket.repositories, ticket.round)),
+                    ..dudes_proto::repository_state::RepositoryFacts::default()
+                };
+                match dudes_proto::repository_state::fold(lsn, &entry.record, facts) {
+                    dudes_proto::repository_state::RepositoryFold::Start(round) => Some(round),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let repositories = if let Some(issue) = entry.record.turn_issue() {
+                let owner = get_row::<AgentRow>(&agents, &issue.agent.to_bytes())?;
+                let goal = issue
+                    .goal
+                    .map(|goal| get_row::<GoalRow>(&goals, &goal.to_bytes()))
+                    .transpose()?
+                    .flatten();
+                let facts = dudes_proto::repository_state::RepositoryFacts {
+                    hire: owner.as_ref().map(|row| (row.hired_lsn, &row.repositories)),
+                    round: goal.as_ref().and_then(|row| row.repository_round.as_ref()),
+                    ..dudes_proto::repository_state::RepositoryFacts::default()
+                };
+                match dudes_proto::repository_state::fold(lsn, &entry.record, facts) {
+                    dudes_proto::repository_state::RepositoryFold::Issue(repositories) => {
+                        repositories
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            activity::capture_before_source_update(&mut activity, &agents, &board, lsn, entry)?;
             retired::capture(&mut retired, &agents, &by_day, &turns, &leases, entry)?;
             question_history::capture(&mut history, &agents, lsn, entry)?;
-            agents::apply(&mut agents, &turns, &goals, lsn, carrier)?;
-            goals::apply(&mut goals, &mut first_done, &agents, lsn, carrier)?;
+            agents::apply(&mut agents, &turns, &goals, lsn, entry)?;
+            goals::apply(
+                &mut goals,
+                &mut first_done,
+                &agents,
+                lsn,
+                entry,
+                repository_round,
+            )?;
             let (instruction_state, instruction_fold) = instructions::apply(
                 &mut instruction_rows,
                 &agents,
@@ -1214,7 +1259,7 @@ fn fold_batch<'a>(
                     },
                 };
                 agents::apply(&mut agents, &turns, &goals, lsn, &cleared)?;
-                goals::apply(&mut goals, &mut first_done, &agents, lsn, &cleared)?;
+                goals::apply(&mut goals, &mut first_done, &agents, lsn, &cleared, None)?;
             }
             board::apply(&mut board, &turns, lsn, entry)?;
             board::capture_recovery_change(&mut board, lsn, entry)?;
@@ -1229,7 +1274,7 @@ fn fold_batch<'a>(
                 &instruction_fold,
             )?;
             worktrees::apply(&mut leases, entry)?;
-            let ended = turns::apply(&mut turns, lsn, carrier)?;
+            let ended = turns::apply(&mut turns, lsn, entry, repositories)?;
             traces::capture(&mut traces, &agents, &turns, entry, ended.is_some())?;
             budget::apply(
                 &mut by_goal,
@@ -1997,7 +2042,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_51_flat_native_receipt_rebuilds_its_spawn_key_from_the_journal() {
         use dudes_proto::instruction_state::InstructionBoundarySettlement;
-        assert_eq!(PROJECTION_VERSION, 59);
+        assert_eq!(PROJECTION_VERSION, 60);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let journal = dir.path().join("journal");
@@ -2461,7 +2506,7 @@ pub(crate) mod tests {
     /// cannot tell whether the constant was bumped when the rows changed meaning. This can.
     #[test]
     fn a_version_17_store_rebuilds_the_activity_window() {
-        assert_eq!(PROJECTION_VERSION, 59);
+        assert_eq!(PROJECTION_VERSION, 60);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let records = [
@@ -2495,7 +2540,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_24_store_rebuilds_the_current_live_kind() {
-        assert_eq!(PROJECTION_VERSION, 59);
+        assert_eq!(PROJECTION_VERSION, 60);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let entries = [
@@ -2533,7 +2578,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_25_store_rebuilds_retired_appearance() {
-        assert_eq!(PROJECTION_VERSION, 59);
+        assert_eq!(PROJECTION_VERSION, 60);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let mut hire = hired();
@@ -2645,7 +2690,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_8_store_is_rebuilt_for_per_turn_confirmation() {
         const LATCHED: u64 = 8;
-        assert_eq!(PROJECTION_VERSION, 59);
+        assert_eq!(PROJECTION_VERSION, 60);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2682,7 +2727,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_7_store_is_rebuilt_for_launch_refused_session_clear() {
         const LATCHED: u64 = 7;
-        assert_eq!(PROJECTION_VERSION, 59);
+        assert_eq!(PROJECTION_VERSION, 60);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2752,7 +2797,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 4;
         assert_eq!(
-            PROJECTION_VERSION, 59,
+            PROJECTION_VERSION, 60,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -3618,7 +3663,7 @@ pub(crate) mod tests {
     fn unread_mail_is_rebuilt_from_latest_mail_state() {
         const LATCHED: u64 = 10;
         assert_eq!(
-            PROJECTION_VERSION, 59,
+            PROJECTION_VERSION, 60,
             "this new table owns the 10 -> 11 bump; re-derive the latched store if the current \
              version moves"
         );
@@ -4085,7 +4130,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_11_budget_store_is_rebuilt_for_unknown_ends() {
-        assert_eq!(PROJECTION_VERSION, 59);
+        assert_eq!(PROJECTION_VERSION, 60);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let day = day_of(MIDNIGHT_MS);
@@ -4237,7 +4282,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 5;
         assert_eq!(
-            PROJECTION_VERSION, 59,
+            PROJECTION_VERSION, 60,
             "if this moves, re-derive LATCHED above it — a merge past another bump must move \
              both, or this test passes with this repair's own bump dropped"
         );
@@ -5220,6 +5265,56 @@ pub(crate) mod tests {
         assert_ne!(turn_lines(&before), turn_lines(&after));
     }
 
+    #[test]
+    fn canonical_board_export_distinguishes_ticket_metadata_at_the_same_cursor() {
+        let original = dudes_proto::record::samples::record(dudes_proto::RecordKind::TicketCreated);
+        let mut changed = original.clone();
+        let dudes_proto::Record::TicketCreated {
+            description,
+            project,
+            done_when,
+            ..
+        } = &mut changed
+        else {
+            unreachable!();
+        };
+        description.push_str(" with a second case");
+        project.push_str("-other");
+        done_when.label.push_str(" strictly");
+        let exports: Vec<_> = [original, changed]
+            .into_iter()
+            .map(|record| {
+                let mut store = Projections::in_memory().unwrap();
+                store.apply(Lsn(1), WITNESS, &stamped(1, record)).unwrap();
+                let export = store.export().unwrap();
+                let ticket = store.tickets().unwrap().pop().unwrap();
+                let board_line = export
+                    .lines()
+                    .find(|line| line.starts_with("board "))
+                    .unwrap();
+                let row: serde_json::Value =
+                    serde_json::from_str(board_line.splitn(3, ' ').nth(2).unwrap()).unwrap();
+                assert_eq!(row["ticket_row"], serde_json::to_value(&ticket.1).unwrap());
+                assert_eq!(row["ticket_row"]["round"], 0);
+                assert!(row["ticket_row"]["done_when"]["predicate"].is_object());
+                (ticket.0, export)
+            })
+            .collect();
+        assert_eq!(
+            exports[0].0, exports[1].0,
+            "the browser card view is identical"
+        );
+        assert_eq!(
+            exports[0].1.lines().take(2).collect::<Vec<_>>(),
+            exports[1].1.lines().take(2).collect::<Vec<_>>(),
+            "the cursor and witness are identical"
+        );
+        assert_ne!(
+            exports[0].1, exports[1].1,
+            "canonical export retains stored ticket authority"
+        );
+    }
+
     fn attached_by_system() -> Entry {
         stamped(
             1,
@@ -5328,7 +5423,7 @@ pub(crate) mod tests {
     fn a_version_13_store_is_rebuilt_for_question_identity() {
         const LATCHED: u64 = 13;
         assert_eq!(
-            PROJECTION_VERSION, 59,
+            PROJECTION_VERSION, 60,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5365,7 +5460,7 @@ pub(crate) mod tests {
     fn a_version_55_store_is_rebuilt_for_the_last_ended_turn() {
         const LATCHED: u64 = 55;
         assert_eq!(
-            PROJECTION_VERSION, 59,
+            PROJECTION_VERSION, 60,
             "if this moves, move LATCHED above it, so a merge past another bump re-derives both"
         );
         let dir = tempfile::tempdir().unwrap();
@@ -5459,7 +5554,7 @@ pub(crate) mod tests {
     fn a_version_14_store_is_rebuilt_for_control_identity() {
         const LATCHED: u64 = 14;
         assert_eq!(
-            PROJECTION_VERSION, 59,
+            PROJECTION_VERSION, 60,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5566,7 +5661,7 @@ pub(crate) mod tests {
     fn a_version_15_store_counts_the_reset_unknown_end() {
         const LATCHED: u64 = 15;
         assert_eq!(
-            PROJECTION_VERSION, 59,
+            PROJECTION_VERSION, 60,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -5839,7 +5934,7 @@ pub(crate) mod tests {
 
         #[test]
         fn a_version_38_store_rebuilds_the_first_completion_facts() {
-            assert_eq!(PROJECTION_VERSION, 59);
+            assert_eq!(PROJECTION_VERSION, 60);
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.redb");
             let history = [

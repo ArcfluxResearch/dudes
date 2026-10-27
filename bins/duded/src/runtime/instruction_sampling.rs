@@ -452,9 +452,10 @@ fn recorded_path(
     agent: AgentId,
 ) -> Option<(&Path, Option<WorktreeId>)> {
     let row = world.agents.get(&agent)?;
-    Some(match row.worktree {
+    let repository = row.repositories.singleton()?;
+    Some(match repository.worktree() {
         Some(lease) => (world.worktrees.get(&lease)?.path.as_path(), Some(lease)),
-        None => (row.cwd.as_path(), None),
+        None => (repository.cwd(), None),
     })
 }
 

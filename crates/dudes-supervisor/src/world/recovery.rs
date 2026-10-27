@@ -55,6 +55,13 @@ impl World {
             .turns
             .get(&binding.work.turn)
             .ok_or(RecoveryStateError::Binding)?;
+        let repositories = turn
+            .repositories
+            .as_ref()
+            .ok_or(RecoveryStateError::Binding)?;
+        if !repositories.matches_hire(agent.mcp.hire_lsn, &agent.repositories) {
+            return Err(RecoveryStateError::Binding.into());
+        }
         let mut issue = self
             .recovery_history
             .at(turn.issue_lsn)
@@ -88,7 +95,10 @@ impl World {
                 )
             });
         let lease = agent
-            .worktree
+            .repositories
+            .singleton()
+            .ok_or(RecoveryStateError::Binding)?
+            .worktree()
             .map(|id| {
                 let row = self.worktrees.get(&id).ok_or(RecoveryStateError::Binding)?;
                 Ok(RecoveryLeaseCurrent {
@@ -100,7 +110,7 @@ impl World {
             .transpose()?;
         RecoveryCurrent {
             through,
-            agent: current_agent(binding.work.agent, agent),
+            agent: current_agent(binding.work.agent, agent)?,
             goal: RecoveryGoalCurrent {
                 goal: goal.goal.id,
                 agent: goal.agent,
@@ -320,12 +330,19 @@ fn standing_control(agent: &super::AgentRow) -> RecoveryStandingControl {
     }
 }
 
-fn current_agent(id: dudes_types::AgentId, agent: &super::AgentRow) -> RecoveryAgentCurrent {
-    RecoveryAgentCurrent {
+fn current_agent(
+    id: dudes_types::AgentId,
+    agent: &super::AgentRow,
+) -> std::result::Result<RecoveryAgentCurrent, RecoveryStateError> {
+    Ok(RecoveryAgentCurrent {
         agent: id,
         hired_lsn: agent.mcp.hire_lsn,
         provider: agent.provider,
-        worktree: agent.worktree,
+        worktree: agent
+            .repositories
+            .singleton()
+            .ok_or(RecoveryStateError::Binding)?
+            .worktree(),
         mode: if agent.attached {
             Mode::Attached
         } else {
@@ -337,5 +354,5 @@ fn current_agent(id: dudes_types::AgentId, agent: &super::AgentRow) -> RecoveryA
         control_lsn: agent.control_lsn,
         session: agent.session.clone(),
         session_lsn: agent.session_lsn,
-    }
+    })
 }

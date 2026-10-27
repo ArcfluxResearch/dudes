@@ -80,16 +80,12 @@ fn event(
             agent: agent(agents, id)?,
         }));
     }
+    if let Some(issue) = record.turn_issue() {
+        return Ok(Some(ActivityEvent::TurnIssued {
+            agent: agent(agents, issue.agent)?,
+        }));
+    }
     Ok(Some(match record {
-        Record::TurnIssued { agent: id, .. }
-        | Record::NoteOnlyTurnIssued { agent: id, .. }
-        | Record::ConversationTurnIssued { agent: id, .. }
-        | Record::IdentifiedConversationTurnIssued { agent: id, .. }
-        | Record::TaughtNoteOnlyTurnIssued { agent: id, .. }
-        | Record::IdentifiedTaughtNoteOnlyTurnIssued { agent: id, .. }
-        | Record::TurnIssuedWithBrowserNote { agent: id, .. } => ActivityEvent::TurnIssued {
-            agent: agent(agents, *id)?,
-        },
         Record::TurnEnded { agent: id, .. } => ActivityEvent::TurnEnded {
             agent: agent(agents, *id)?,
         },

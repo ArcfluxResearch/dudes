@@ -224,13 +224,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 .any(|(agent_id, agent)| {
                     let recorded = self.ctx.projections.agent(*agent_id).map_or(true, |row| {
                         row.is_some_and(|row| {
-                            row.workspace.is_some_and(|workspace| workspace.id == id)
+                            row.repositories
+                                .workspace()
+                                .is_some_and(|workspace| workspace.id == id)
                         })
                     });
-                    let directory = match agent.worktree {
-                        None => Some(&agent.cwd),
-                        Some(lease) => world.worktrees.get(&lease).map(|lease| &lease.origin),
-                    };
+                    let directory = agent.repositories.singleton().and_then(|repository| {
+                        match repository.worktree() {
+                            None => Some(repository.cwd()),
+                            Some(lease) => world
+                                .worktrees
+                                .get(&lease)
+                                .map(|lease| lease.origin.as_path()),
+                        }
+                    });
                     recorded
                         || directory
                             .and_then(|directory| directory.canonicalize().ok())
@@ -241,7 +248,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
         let open = self.ctx.projections.tickets().map_or(true, |tickets| {
             tickets.iter().any(|(card, ticket)| {
-                ticket.project == id && card.status != dudes_types::CardStatus::Done
+                ticket.repositories.project() == id && card.status != dudes_types::CardStatus::Done
             })
         });
         open.then_some(Reason::OpenTickets)

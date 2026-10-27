@@ -65,7 +65,9 @@ pub struct TicketRow {
     /// The note; empty when there is none.
     pub description: String,
     /// The enrolled project the ticket runs in.
-    pub project: String,
+    #[serde(rename = "project")]
+    #[schemars(with = "String")]
+    pub repositories: crate::repository::TicketRepositories,
     /// The check that finishes it.
     pub done_when: TicketCheck,
     /// The goal the ticket's latest start installed. Kept as history after the work stops, and

@@ -444,6 +444,29 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         already_resolved: bool,
         sup: &Supervisor<super::Shared<C>, R>,
     ) -> std::io::Result<dudes_providers::launch::LaunchSpec> {
+        let issued = sup
+            .world()
+            .turns
+            .get(&turn)
+            .ok_or_else(|| std::io::Error::other("managed turn identity is unavailable"))?;
+        let owner = sup
+            .world()
+            .agents
+            .get(&issued.agent)
+            .ok_or_else(|| std::io::Error::other("managed turn owner is unavailable"))?;
+        let authority = issued
+            .repositories
+            .as_ref()
+            .filter(|authority| authority.matches_hire(owner.mcp.hire_lsn, &owner.repositories))
+            .ok_or_else(|| std::io::Error::other("managed repository authority is unavailable"))?;
+        let repository = authority
+            .singleton()
+            .ok_or_else(|| std::io::Error::other("managed repository authority is unsupported"))?;
+        if spec.cwd != repository.cwd() {
+            return Err(std::io::Error::other(
+                "managed launch differs from its recorded repository",
+            ));
+        }
         if already_resolved {
             Ok(spec.clone())
         } else {

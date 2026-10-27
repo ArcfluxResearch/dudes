@@ -237,7 +237,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             let profile = self
                 .ctx
                 .enrollment
-                .profile(&ticket.project)
+                .profile(ticket.repositories.project())
                 .ok_or_else(|| refusal(TicketRefusal::ProjectUnavailable, view.status))?;
             check_of(
                 profile,
@@ -472,9 +472,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 )
             })?
             .ok_or_else(unavailable)?;
-        match row.workspace {
+        match row
+            .repositories
+            .singleton()
+            .ok_or_else(unavailable)?
+            .workspace()
+        {
             None => Err(refusal(TicketRefusal::AgentNoProject, CardStatus::Todo)),
-            Some(workspace) if workspace.id == ticket.project => Ok(()),
+            Some(workspace) if workspace.id == ticket.repositories.project() => Ok(()),
             Some(_) => Err(unavailable()),
         }
     }
@@ -593,8 +598,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     "That ticket's agent is no longer available.",
                 )
             })?;
-        let (directory, worktree) = match agent.worktree {
-            None => (agent.cwd.clone(), None),
+        let repository = agent.repositories.singleton().ok_or_else(|| {
+            unavailable(
+                "repository_unavailable",
+                "That ticket's recorded repository is unavailable.",
+            )
+        })?;
+        let (directory, worktree) = match repository.worktree() {
+            None => (repository.cwd().to_path_buf(), None),
             Some(id) => {
                 let lease = world
                     .worktrees

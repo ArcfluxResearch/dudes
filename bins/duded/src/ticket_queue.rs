@@ -109,7 +109,7 @@ impl Facts<'_> {
                 self.tickets
                     .iter()
                     .find(|(view, ticket)| {
-                        ticket.project == project
+                        ticket.repositories.project() == project
                             && ticket.goal == Some(goal)
                             && view.claimed_by == Some(agent)
                     })
@@ -124,7 +124,7 @@ impl Facts<'_> {
         let holder = self
             .tickets
             .iter()
-            .filter(|(_, ticket)| ticket.project == project)
+            .filter(|(_, ticket)| ticket.repositories.project() == project)
             .find(|(view, ticket)| match view.status {
                 CardStatus::Doing | CardStatus::Review => true,
                 CardStatus::Blocked => {
@@ -159,7 +159,7 @@ impl Facts<'_> {
             .tickets
             .iter()
             .filter(|(view, ticket)| {
-                view.status == CardStatus::Claimed && ticket.project == project
+                view.status == CardStatus::Claimed && ticket.repositories.project() == project
             })
             .filter_map(|(view, ticket)| Some((view.id, view.claimed_by?, ticket.queue?)))
             .collect();
@@ -172,7 +172,7 @@ impl Facts<'_> {
         self.tickets
             .iter()
             .filter(|(view, _)| view.status == CardStatus::Claimed)
-            .map(|(_, ticket)| ticket.project.as_str())
+            .map(|(_, ticket)| ticket.repositories.project())
             .collect()
     }
 
@@ -208,10 +208,10 @@ impl Facts<'_> {
             }
             CardStatus::Claimed => {
                 let agent = view.claimed_by?;
-                self.agent_wait(agent, &ticket.project)
-                    .or_else(|| self.project_wait(&ticket.project))
+                self.agent_wait(agent, ticket.repositories.project())
+                    .or_else(|| self.project_wait(ticket.repositories.project()))
                     .or_else(|| {
-                        self.next_ticket(&ticket.project)
+                        self.next_ticket(ticket.repositories.project())
                             .filter(|next| *next != card)
                             .map(|next| TicketWait::Ticket { card: next })
                     })
@@ -439,7 +439,7 @@ mod tests {
                 instruction_review: None,
                 coverage: None,
                 description: String::new(),
-                project: PROJECT.into(),
+                repositories: PROJECT.into(),
                 done_when: TicketCheck {
                     id: "default".into(),
                     label: "passes".into(),
