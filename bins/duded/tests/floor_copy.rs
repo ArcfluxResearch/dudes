@@ -702,6 +702,8 @@ fn an_own_copy_hire_never_answers_from_a_plain_hire_with_the_same_attempt() {
 
 #[test]
 fn a_copy_is_refused_in_plain_words_and_nothing_is_made() {
+    use std::os::unix::fs::MetadataExt as _;
+
     let fixture = Fixture::new();
     let floor = floor(&fixture);
 
@@ -727,17 +729,19 @@ fn a_copy_is_refused_in_plain_words_and_nothing_is_made() {
     assert_refused_with(&revoked, "not trusted yet", &fixture, &floor);
 
     set_trust(&floor, true).expect("trusted once more");
-    // A folder whose `.git` is no longer a repository: git finds none above it either.
-    std::fs::remove_dir_all(floor.repo.join(".git")).unwrap();
-    std::fs::create_dir(floor.repo.join(".git")).unwrap();
+    let git_dir = floor.repo.join(".git");
+    let observed = std::fs::metadata(&git_dir).unwrap();
+    std::fs::remove_file(git_dir.join("HEAD")).unwrap();
+    let invalidated = std::fs::metadata(&git_dir).unwrap();
+    assert_eq!(
+        (observed.dev(), observed.ino()),
+        (invalidated.dev(), invalidated.ino()),
+        "invalid Git contents retain the observed directory identity"
+    );
     let before = fixture.records();
     let gone = hire_in_copy(&floor, 'D');
-    assert_eq!(gone, (403, Value::Null));
+    assert_refused_with(&gone, "not a git repository", &fixture, &floor);
     assert_eq!(fixture.records(), before);
-    assert_eq!(
-        (hired_agents(&fixture), leases(&fixture), trees(&floor)),
-        (0, 0, 0)
-    );
 }
 
 #[test]
