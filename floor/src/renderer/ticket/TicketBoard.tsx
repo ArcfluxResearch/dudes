@@ -25,6 +25,8 @@ import { titleOf } from '../setup/nextStep.ts';
 import type { FirstTaskAgent } from '../setup/nextStep.ts';
 import { agentWithoutProjectSentence, engineStopped } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
+import { NoteField } from './NoteField.tsx';
+import { noteTooLong, toLf } from './noteText.ts';
 import { BoardToolbar } from './BoardToolbar.tsx';
 import { arrange, choicesOf, filterRows, isFiltered, liveView, rowsOf, withoutFilters } from './browse.ts';
 import type { BrowseRow } from './browse.ts';
@@ -179,6 +181,7 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
   const projects = projectsOf(floor);
   const [draft, setDraft] = useState(readNewTicketDraft);
   const [priority, setPriority] = useState<Priority>('none');
+  const [noteStart, setNoteStart] = useState({ generation: 0, text: draft.note });
   const draftNow = useRef(draft);
   draftNow.current = draft;
   const { title, note, project: chosenProject, check: chosenCheck, agent } = draft;
@@ -194,14 +197,15 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
   const check = chosenCheck === null ? checks[0] ?? null : checks.find((entry) => entry.id === chosenCheck) ?? null;
   const { usable, unrecorded } = agentsFor(floor, project ?? '');
   const open = ticketActionsOpen(floor);
-  const ready = open && !ticket.sending && title.trim() !== '' && project !== null && check !== null;
+  const tooLong = noteTooLong(note);
+  const ready = open && !ticket.sending && title.trim() !== '' && tooLong === null && project !== null && check !== null;
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
     if (!ready || project === null || check === null) return;
     const sent = draft;
     const made = await createTicket({
-      title, note, project,
+      title, note: toLf(note), project,
       check: { id: check.id, revision: check.revision },
       agent: agent === '' || !usable.some((row) => row.id === agent) ? null : agent,
       priority,
@@ -211,6 +215,7 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
     if (!mounted.current || draftNow.current !== sent) return;
     setDraft(EMPTY_TICKET_DRAFT);
     setPriority('none');
+    setNoteStart({ generation: noteStart.generation + 1, text: '' });
     if (made.card !== null) onCreated(made.card);
   }
 
@@ -220,8 +225,9 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
         onChange={(event) => editDraft({ title: event.target.value })} />
     </Field>
     <Field label="Note (optional)" id={`${ids}-note`}>
-      <Textarea name="note" rows={3} maxLength={8192} value={note}
-        onChange={(event) => editDraft({ note: event.target.value })} />
+      <div data-ticket-note="">
+        <NoteField key={noteStart.generation} initial={noteStart.text} value={note} onNote={(text) => editDraft({ note: text })} />
+      </div>
     </Field>
     {projects.length > 1 || chosenProject !== null && project === null ? <Field label="Project" id={`${ids}-project`}>
       <Select id={`${ids}-project`} name="project" value={project ?? ''} placeholder="Choose a project"
@@ -257,7 +263,7 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
       <Button type="submit" variant="primary" className="ticket-create" aria-disabled={!ready || undefined} disabled={!ready}
         title={ready ? undefined : ticket.sending ? 'Wait for the current request to finish.' : !open
           ? 'Reconnect to Dudes before creating a ticket.' : title.trim() === '' ? 'Enter a title.'
-            : project === null ? 'Choose a project.' : 'Choose a completion check.'}>Create ticket</Button>
+            : tooLong !== null ? tooLong : project === null ? 'Choose a project.' : 'Choose a completion check.'}>Create ticket</Button>
       {onCancel === undefined ? null : <Button className="ticket-form-cancel" onClick={onCancel}>Cancel</Button>}
     </div>
   </form>;

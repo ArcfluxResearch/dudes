@@ -31,6 +31,7 @@ before(async () => {
   ({ StreamNotice } = await server.ssrLoadModule('/src/renderer/StreamNotice.tsx'));
   ({ JournalStoppedBanner } = await server.ssrLoadModule('/src/renderer/JournalStoppedBanner.tsx'));
   ({ browserControlDeps } = await server.ssrLoadModule('/src/renderer/control/control.ts'));
+  (await server.ssrLoadModule('/src/transport.ts')).pauseFloorRequests();
   Object.assign(browserControlDeps, {
     signedIn: () => true, epoch: () => 1, session: () => 1, refresh() {}, random() {},
     fetch: async (url, init) => {
@@ -418,7 +419,7 @@ test('the composer keeps its draft while Hire is opened and the roster changes',
     const newTicket = app.page.host.querySelector('.ticket-new-toggle');
     await act(async () => press(newTicket));
     const title = app.page.host.querySelector('[name="title"]');
-    const note = app.page.host.querySelector('[name="note"]');
+    const note = app.page.host.querySelector('[data-ticket-note]').querySelector('textarea');
     await act(async () => {
       propsOf(title).onChange({ target: { value: 'Preserve filters' } });
       propsOf(note).onChange({ target: { value: 'Keep <b>text</b> literal.' } });
@@ -428,11 +429,38 @@ test('the composer keeps its draft while Hire is opened and the roster changes',
     assert.deepEqual(hiredFrom, [hire]);
     await app.render({ ...app.floor, agents: [agent()] });
     assert.equal(app.page.host.querySelector('[name="title"]').value, 'Preserve filters');
-    assert.equal(app.page.host.querySelector('[name="note"]').value, 'Keep <b>text</b> literal.');
+    assert.equal(app.page.host.querySelector('[data-ticket-note]').querySelector('textarea').value, 'Keep <b>text</b> literal.');
     assert.notEqual(app.page.host.querySelector('.ticket-dialog').getAttribute('open'), null);
     await act(async () => press(app.page.host.querySelector('.ticket-form-cancel')));
     app.page.flushFocus();
     assert.equal(app.page.document.activeElement, newTicket);
+  } finally { await app.close(); }
+});
+
+test('the New ticket note counts bytes, sends line feeds, and starts empty after a create', async () => {
+  const app = await mount([]);
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    const typeNote = (value) => act(async () => propsOf(app.page.host.querySelector('[data-ticket-note]').querySelector('textarea')).onChange({ target: { value } }));
+    const submit = () => act(async () => propsOf(app.page.host.querySelector('.ticket-composer').querySelector('form')).onSubmit({ preventDefault() {} }));
+    const created = () => seen.filter(([url]) => url === '/floor/ticket');
+    await act(async () => propsOf(app.page.host.querySelector('[name="title"]')).onChange({ target: { value: 'Count bytes' } }));
+    reply = (url) => ({ status: 200, text: async () => JSON.stringify({ state: 'created', card: cardId(2), seq: 0, lsn: '4097' }) });
+
+    await typeNote('€'.repeat(3000));
+    assert.match(textOf(app.page.host.querySelector('[data-ticket-note]')), /The note is 9,000 bytes and the limit is 8,192/);
+    assert.equal(app.page.host.querySelector('.ticket-create').disabled, true);
+    await submit();
+    assert.equal(created().length, 0);
+
+    await typeNote('a'.repeat(3000));
+    assert.equal(app.page.host.querySelector('.ticket-create').disabled, false);
+    await typeNote('one\r\ntwo\rthree');
+    await submit();
+    assert.equal(created().length, 1);
+    assert.equal(created()[0][1].description, 'one\ntwo\nthree');
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    assert.equal(app.page.host.querySelector('[data-ticket-note]').querySelector('textarea').value, '');
   } finally { await app.close(); }
 });
 
@@ -814,8 +842,9 @@ test('New ticket keeps its fields after closing and a fresh mount, and clears on
   let app = await mount([]);
   try {
     await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
-    for (const [name, value] of [['title', 'Keep this task'], ['note', 'Keep the details too']]) {
-      await act(async () => propsOf(app.page.host.querySelector(`[name="${name}"]`)).onChange({ target: { value } }));
+    const fields = () => [app.page.host.querySelector('[name="title"]'), app.page.host.querySelector('[data-ticket-note]').querySelector('textarea')];
+    for (const [at, value] of [[0, 'Keep this task'], [1, 'Keep the details too']]) {
+      await act(async () => propsOf(fields()[at]).onChange({ target: { value } }));
     }
     await act(async () => pick(app.page, app.page.host.querySelector('[data-field="agent"]'), ADA));
     await act(async () => press(app.page.host.querySelector('.ticket-form-cancel')));
@@ -825,7 +854,7 @@ test('New ticket keeps its fields after closing and a fresh mount, and clears on
     app = await mount([]);
     await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
     assert.equal(app.page.host.querySelector('[name="title"]').value, 'Keep this task');
-    assert.equal(propsOf(app.page.host.querySelector('[name="note"]')).value, 'Keep the details too');
+    assert.equal(propsOf(app.page.host.querySelector('[data-ticket-note]').querySelector('textarea')).value, 'Keep the details too');
     assert.equal(pickedValue(app.page, app.page.host.querySelector('[data-field="agent"]')), ADA);
     reply = (url) => ({ status: url.endsWith('/assign') ? 409 : 200, text: async () => JSON.stringify(url.endsWith('/assign')
       ? { state: 'refused', reason: 'agent_unavailable' } : { state: 'created', card: cardId(2), seq: 0, lsn: '4097' }) });

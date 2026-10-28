@@ -85,6 +85,22 @@ export class Journey {
       el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`, `${selector} is missing`);
   }
 
+  /** Type into the New ticket note: the rich editor when it loaded, its plain text box when it did not. */
+  async typeNote(value) {
+    const found = `[...document.querySelector('[data-ticket-note]')?.getElementsByTagName('*') ?? []]
+      .find((el) => el.tagName === 'TEXTAREA' || el.isContentEditable && el.getAttribute('role') === 'textbox')`;
+    await this.until(`Boolean(${found})`, 'the note field did not load');
+    if (await this.evaluate(`${found}.tagName === 'TEXTAREA'`)) {
+      await this.evaluate(`(() => { const el = ${found};
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(el, ${JSON.stringify(value)});
+        el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    } else {
+      await this.evaluate(`${found}.focus()`);
+      await this.run.cdp.send('Input.insertText', { text: value }, this.run.cdp.session);
+    }
+    await this.until(`(${found}.value ?? ${found}.textContent) === ${JSON.stringify(value)}`, 'the note was not typed');
+  }
+
   /** Look at the screen now: save a picture and record any terminal command it shows. */
   async screen(name) {
     const text = await this.evaluate(`document.body.innerText + '\\n' + [...document.querySelectorAll('code')].map((el) => el.textContent).join('\\n')`);
@@ -189,7 +205,7 @@ export class Journey {
     await this.screen('board');
     await this.click('.ticket-new-toggle');
     await this.fill('input[name="title"]', 'Add a second note');
-    await this.fill('textarea[name="note"]', 'Add one more line to the notes.');
+    await this.typeNote('Add one more line to the notes.');
     await this.screen('new ticket');
     await this.click('.ticket-create');
     await this.until(`Boolean(document.querySelector('.ticket-panel'))`, 'the ticket was not created');
