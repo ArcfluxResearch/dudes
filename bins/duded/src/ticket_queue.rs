@@ -582,4 +582,117 @@ mod tests {
             assert_eq!(facts.next_ticket(PROJECT), None);
         });
     }
+
+    fn prioritized(
+        mut waiting: (CardView, TicketRow),
+        priority: Priority,
+    ) -> (CardView, TicketRow) {
+        waiting.1.priority = priority;
+        if let Some(key) = &mut waiting.1.queue {
+            key.rank = priority.rank();
+        }
+        waiting
+    }
+
+    /// The project's queue, each agent's own places and the next ticket to start all follow one
+    /// key: rework, then priority, then the position of the assignment.
+    #[test]
+    fn the_queue_and_every_place_in_it_follow_priority_then_age() {
+        let (first, second) = (agent(1), agent(2));
+        let world = world(&[first, second], &[]);
+        let mut rework = ticket(6, CardStatus::Claimed, Some(first), Some(50));
+        rework.1.queue = rework.1.queue.map(|key| QueueKey {
+            class: QueueClass::Rework,
+            ..key
+        });
+        let tickets = [
+            prioritized(
+                ticket(1, CardStatus::Claimed, Some(first), Some(10)),
+                Priority::Low,
+            ),
+            prioritized(
+                ticket(2, CardStatus::Claimed, Some(second), Some(11)),
+                Priority::Unset,
+            ),
+            prioritized(
+                ticket(3, CardStatus::Claimed, Some(first), Some(12)),
+                Priority::Urgent,
+            ),
+            prioritized(
+                ticket(4, CardStatus::Claimed, Some(second), Some(13)),
+                Priority::Medium,
+            ),
+            prioritized(
+                ticket(5, CardStatus::Claimed, Some(second), Some(14)),
+                Priority::High,
+            ),
+            prioritized(rework, Priority::Low),
+        ];
+        let card = |n: u128| CardId::from_parts(4, n);
+        with_facts(&world, &tickets, &[first, second], |facts| {
+            let queue: Vec<_> = facts
+                .queue(PROJECT)
+                .into_iter()
+                .map(|(card, agent, _)| (card, agent))
+                .collect();
+            assert_eq!(
+                queue,
+                [
+                    (card(6), first),
+                    (card(3), first),
+                    (card(5), second),
+                    (card(2), second),
+                    (card(4), second),
+                    (card(1), first),
+                ]
+            );
+            for agent in [first, second] {
+                let own: Vec<_> = queue
+                    .iter()
+                    .filter(|(_, holder)| *holder == agent)
+                    .map(|(card, _)| *card)
+                    .collect();
+                for (index, queued) in own.iter().enumerate() {
+                    assert_eq!(
+                        facts.position(agent, *queued),
+                        u32::try_from(index + 1).ok(),
+                        "{queued}"
+                    );
+                }
+            }
+            assert_eq!(facts.next_ticket(PROJECT), Some(card(6)));
+        });
+    }
+
+    /// Priority orders what is waiting and starts nothing: a free agent's Low ticket still starts
+    /// while an Urgent ticket waits behind its own busy agent.
+    #[test]
+    fn an_urgent_ticket_behind_a_busy_agent_does_not_hold_a_free_agents_low_one() {
+        let (busy, free) = (agent(1), agent(2));
+        let world = world(&[busy, free], &[(busy, GoalId::from_parts(8, 1))]);
+        let tickets = [
+            prioritized(
+                ticket(1, CardStatus::Claimed, Some(busy), Some(10)),
+                Priority::Urgent,
+            ),
+            prioritized(
+                ticket(2, CardStatus::Claimed, Some(free), Some(11)),
+                Priority::Low,
+            ),
+        ];
+        let hires = [busy, free]
+            .iter()
+            .map(|id| (*id, PROJECT.to_owned()))
+            .collect();
+        let working = BTreeSet::new();
+        let facts = Facts {
+            world: &world,
+            tickets: &tickets,
+            hires: &hires,
+            working: &working,
+            closing: false,
+        };
+        assert_eq!(facts.queue(PROJECT)[0].0, CardId::from_parts(4, 1));
+        assert_eq!(facts.next_ticket(PROJECT), Some(CardId::from_parts(4, 2)));
+    }
 }

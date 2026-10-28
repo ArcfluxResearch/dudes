@@ -1397,4 +1397,147 @@ mod tests {
         assert_eq!(shown["recovery"], true);
         assert_eq!(shown["seq_at_start"], 2);
     }
+
+    fn history_of(count: u32) -> dudes_proto::TicketHistory {
+        let events: Vec<_> = (1..=count)
+            .map(|lsn| dudes_proto::TicketHistoryEvent {
+                lsn: lsn.to_string(),
+                at: dudes_types::Timestamp::from_unix_millis(1_000),
+                by: dudes_proto::HistoryBy::Operator,
+                kind: dudes_proto::TicketHistoryKind::Edited,
+            })
+            .collect();
+        let kept = events.len().min(dudes_proto::MAX_TICKET_HISTORY);
+        dudes_proto::TicketHistory {
+            total: count,
+            events: events[events.len() - kept..].to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_request_names_a_priority_by_its_wire_word() {
+        let create = TicketRequest::parse(
+            TicketRoute::Create,
+            br#"{"title":"Fix it","priority":"urgent"}"#,
+        )
+        .unwrap();
+        let TicketRequest::Create(params, ..) = create else {
+            panic!("a create")
+        };
+        assert_eq!(params.priority, Some(Priority::Urgent));
+        let none = TicketRequest::parse(
+            TicketRoute::Edit,
+            br#"{"card":"01JBQ8XK2M3N4P5Q6R7S8T9VWX","expected_seq":1,"priority":"none"}"#,
+        )
+        .unwrap();
+        let TicketRequest::Edit(params) = none else {
+            panic!("an edit")
+        };
+        assert_eq!(params.priority, Some(Priority::Unset));
+        let agent = AgentId::from_parts(1, 2);
+        let assign = format!(
+            r#"{{"card":"01JBQ8XK2M3N4P5Q6R7S8T9VWX","agent":"{agent}","expected_seq":1,"priority":"low"}}"#
+        );
+        let TicketRequest::Assign(params) =
+            TicketRequest::parse(TicketRoute::Assign, assign.as_bytes()).unwrap()
+        else {
+            panic!("an assign")
+        };
+        assert_eq!(params.priority, Some(Priority::Low));
+        for bad in [
+            &br#"{"title":"x","priority":"critical"}"#[..],
+            br#"{"title":"x","priority":"Urgent"}"#,
+            br#"{"title":"x","priority":2}"#,
+        ] {
+            assert!(TicketRequest::parse(TicketRoute::Create, bad).is_err());
+        }
+    }
+
+    #[test]
+    fn the_retry_digest_covers_the_priority_only_when_one_is_named() {
+        let id = "A".repeat(43);
+        let digest = |body: String| {
+            let TicketRequest::Create(_, Some(attribution), _) =
+                TicketRequest::parse(TicketRoute::Create, body.as_bytes()).unwrap()
+            else {
+                panic!("a create with a retry identity")
+            };
+            attribution.request_digest
+        };
+        let plain = digest(format!(r#"{{"request_id":"{id}","title":"Fix it"}}"#));
+        let urgent = digest(format!(
+            r#"{{"request_id":"{id}","title":"Fix it","priority":"urgent"}}"#
+        ));
+        let low = digest(format!(
+            r#"{{"request_id":"{id}","title":"Fix it","priority":"low"}}"#
+        ));
+        assert_ne!(plain, urgent);
+        assert_ne!(urgent, low);
+        assert_eq!(
+            plain,
+            crate::floor_chat::digest_fields("dudes.ticket.create.v1", &[("title", "Fix it")]),
+            "a request that names no priority keeps the digest it always had"
+        );
+    }
+
+    #[test]
+    fn a_read_names_the_priority_and_the_history_it_left_out() {
+        let mut read = instruction_read_fixture();
+        read.ticket.instruction_review = None;
+        read.ticket.description = String::new();
+        read.ticket.summary = None;
+        read.ticket.priority = Priority::High;
+        read.history = history_of(60);
+        let body = read_body(&read);
+        assert_eq!(body["ticket"]["priority"], "high");
+        let events = body["ticket"]["history"].as_array().unwrap();
+        assert_eq!(events.len(), 48);
+        assert_eq!(events[0]["lsn"], "13");
+        assert_eq!(events[47]["lsn"], "60");
+        assert_eq!(body["ticket"]["history_omitted"], 12);
+        assert_eq!(
+            events[0],
+            json!({"lsn": "13", "at": body["ticket"]["history"][0]["at"], "by": "operator", "kind": "edited"})
+        );
+        read.ticket.priority = Priority::Unset;
+        assert_eq!(read_body(&read)["ticket"]["priority"], "none");
+    }
+
+    #[test]
+    fn history_is_cut_oldest_first_and_before_any_other_field() {
+        let mut read = instruction_read_fixture();
+        read.ticket.instruction_review = None;
+        read.ticket.summary = Some("s".repeat(100));
+        read.ticket.description = String::new();
+        let bare = serde_json::to_vec(&read_value(&read)).unwrap().len();
+        read.ticket.description = "n".repeat(MAX_TICKET_BODY_BYTES - 2_000 - bare);
+        read.history = history_of(48);
+        let full = read_value(&read);
+        let full_size = serde_json::to_vec(&full).unwrap().len();
+        assert!(full_size > MAX_TICKET_BODY_BYTES, "{full_size}");
+        let body = read_body(&read);
+        let size = serde_json::to_vec(&body).unwrap().len();
+        assert!(size <= MAX_TICKET_BODY_BYTES, "{size}");
+        let kept = body["ticket"]["history"].as_array().unwrap();
+        assert!(!kept.is_empty() && kept.len() < 48, "{}", kept.len());
+        assert_eq!(kept.last().unwrap()["lsn"], "48", "the newest event stays");
+        assert_eq!(
+            usize::try_from(body["ticket"]["history_omitted"].as_u64().unwrap()).unwrap(),
+            48 - kept.len()
+        );
+        assert_eq!(body["ticket"]["note"], full["ticket"]["note"]);
+        assert_eq!(body["ticket"]["summary"], full["ticket"]["summary"]);
+        assert!(body["ticket"]["truncated"].is_null());
+    }
+
+    #[test]
+    fn a_read_too_large_for_its_history_drops_it_whole_and_keeps_the_fields() {
+        let mut read = instruction_read_fixture();
+        read.history = history_of(48);
+        let body = read_body(&read);
+        assert!(serde_json::to_vec(&body).unwrap().len() <= MAX_TICKET_BODY_BYTES);
+        assert_eq!(body["ticket"]["history"], json!([]));
+        assert_eq!(body["ticket"]["history_omitted"], 48);
+        assert_eq!(body["ticket"]["note"], "n".repeat(8_192));
+    }
 }

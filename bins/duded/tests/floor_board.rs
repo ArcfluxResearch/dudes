@@ -621,7 +621,7 @@ fn a_title_only_ticket_is_authored_by_the_session_and_the_snapshot_holds_no_note
     let (view, payload) = page.snapshot();
     let cards = view["projection"]["cards"].as_array().expect("cards");
     let shown = cards.iter().find(|row| row["id"] == json!(card)).unwrap();
-    assert_eq!(shown["ticket"], json!({}));
+    assert_eq!(shown["ticket"], json!({"project": "service"}));
     assert!(
         !String::from_utf8_lossy(&payload).contains("NOTE-IN-THE-RECORD"),
         "the snapshot never carries a note"
