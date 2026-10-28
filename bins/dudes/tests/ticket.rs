@@ -1121,3 +1121,37 @@ fn checkout_reads_survive_a_stopped_writer_while_ticket_changes_stay_fenced() {
         before
     );
 }
+
+#[test]
+fn a_note_comes_from_standard_input_with_its_line_endings_made_lf() {
+    use std::io::Write as _;
+    let world = world();
+    let piped = world
+        .cli
+        .clone()
+        .args([
+            "--json",
+            "ticket",
+            "add",
+            "--title",
+            "From stdin",
+            "--note-file",
+            "-",
+        ])
+        .spawn_with_piped_stdin();
+    let mut stdin = piped.stdin;
+    stdin.write_all(b"# Plan\r\n- one\r\n").unwrap();
+    drop(stdin);
+    let run = piped
+        .result
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("cli finished");
+    piped.worker.join().unwrap();
+    assert_eq!(run.code(), 0, "{}", run.output());
+    let card = run.json::<TicketCreateResult>().card.to_string();
+    let shown = world.dudes(["--json", "ticket", "show", &card]);
+    assert_eq!(
+        shown.json::<TicketReadResult>().ticket.description,
+        "# Plan\n- one\n"
+    );
+}

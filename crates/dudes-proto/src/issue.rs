@@ -321,18 +321,17 @@ mod tests {
     use super::*;
     use crate::RecordKind;
     use crate::record::samples;
-    use crate::repository::{RepositoryTurnGrant, RepositoryTurnIssued, TicketRepositoryRound};
+    use crate::repository::TicketRepositoryRound;
 
     fn scoped(payload: ManagedIssuePayload) -> Record {
-        let Record::AgentHiredWithRepositories(hire) =
-            samples::record(RecordKind::AgentHiredWithRepositories)
+        let Record::TurnIssuedWithRepositories(mut issued) =
+            samples::record(RecordKind::TurnIssuedWithRepositories)
         else {
             unreachable!()
         };
-        Record::TurnIssuedWithRepositories(Box::new(RepositoryTurnIssued {
-            grant: RepositoryTurnGrant::select(Lsn(5), &hire.repositories, None).unwrap(),
-            payload,
-        }))
+        issued.grant.hired_lsn = Lsn(5);
+        issued.payload = payload;
+        Record::TurnIssuedWithRepositories(issued)
     }
 
     #[test]

@@ -865,10 +865,6 @@ fn an_agent_cannot_claim_a_ticket_or_move_its_own_to_done_and_a_plain_card_is_un
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one daemon, one story: the refusals are only meaningful against the same board"
-)]
 fn every_refusal_carries_its_fixed_code_and_plain_sentence_and_appends_nothing() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
@@ -954,7 +950,14 @@ fn every_refusal_carries_its_fixed_code_and_plain_sentence_and_appends_nothing()
         CardStatus::Todo,
     );
     assert_eq!(fixture.records().len(), before, "a refusal appends nothing");
+    daemon.stop();
+}
 
+#[test]
+fn a_ticket_can_pin_the_done_when_revision_it_was_shown() {
+    let fixture = Fixture::new();
+    let (settings, _repo) = enrolled(&fixture);
+    let mut daemon = start(settings);
     let strict: dudes_proto::rpc::ticket::TicketCreateResult = daemon.ok(
         Method::TicketCreate,
         json!({
@@ -972,7 +975,16 @@ fn every_refusal_carries_its_fixed_code_and_plain_sentence_and_appends_nothing()
         }),
     );
     assert_eq!(daemon.read(strict.card).ticket.done_when.id, "strict");
+    daemon.stop();
+}
 
+#[test]
+fn the_queue_holds_eight_tickets_and_moving_one_inside_it_is_free() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut daemon = start(settings);
+    let agent = daemon.paused_agent(&repo);
+    let card = daemon.create("Subject");
     // The queue holds eight; moving a ticket that is already in it does not count against it.
     let mut queued = vec![card];
     for index in 1..8 {

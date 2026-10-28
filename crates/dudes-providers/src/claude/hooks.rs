@@ -9,7 +9,7 @@ use dudes_proto::providers::claude::{
 };
 use dudes_proto::reply::{HookDecision, HookReply, VendorReply};
 use dudes_proto::{Event, EventKind};
-use dudes_types::{AgentId, Provenance, Timestamp};
+use dudes_types::{AgentId, ModelSelection, Provenance, Timestamp};
 use serde_json::Value;
 
 use crate::adapter::{AgentCtx, HookInstall, TurnSession};
@@ -32,6 +32,7 @@ pub(super) fn compose_attached(
     command: &OsStr,
     ctx: &AgentCtx<'_>,
     session: &TurnSession,
+    model: &ModelSelection,
 ) -> Option<LaunchSpec> {
     let TurnSession::Resume(_) = session else {
         return None;
@@ -42,6 +43,13 @@ pub(super) fn compose_attached(
         OsString::from("--settings"),
         settings_path(ctx).into_os_string(),
     ]);
+    if let Some(name) = model.selector() {
+        // A leading dash would read as a flag.
+        if name.is_empty() || name.starts_with('-') {
+            return None;
+        }
+        argv.extend([OsString::from("--model"), OsString::from(name)]);
+    }
     Some(LaunchSpec {
         argv,
         env: scrub_env(ctx.daemon_env),

@@ -2538,7 +2538,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             max_budget: row.max_budget,
             mcp_servers: &[],
         };
-        let Some(spec) = adapter.attached(&ctx, &TurnSession::Resume(session)) else {
+        let Some(model) = self.model_selection(&row) else {
+            return;
+        };
+        let Some(spec) = adapter.attached(&ctx, &TurnSession::Resume(session), &model) else {
             return;
         };
         // From the same context as the argv, so the `--settings` path it names is the file written.
