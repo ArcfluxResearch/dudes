@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Building2, ChevronDown, LogOut, Maximize2, Minimize2, Moon, Sun, Users } from 'lucide-react';
-import { currentPage, isPageView, openPage, subscribeToPage } from './navigation.ts';
+import { boardLinkFromAddress, currentAddress, currentPage, isPageView, openPage, subscribeToPage } from './navigation.ts';
 
 import { DeviceNotices } from './renderer/devices/DeviceNotices';
 import { getDevicesState, loadDevices, subscribeToDevices } from './renderer/devices/devices';
@@ -41,6 +41,7 @@ import { TicketBanner } from './renderer/ticket/TicketBanner';
 import { TicketNotice, TicketNoticeHost } from './renderer/ticket/TicketBoard.tsx';
 import { useDesktopNotifications } from './renderer/useDesktopNotifications';
 import { requestCardSelection } from './renderer/BoardPanel';
+import { showProject } from './renderer/ticket/browseState.ts';
 import { OpenCommand, SignInExpired } from './renderer/SignInExpired';
 import { StreamNotice } from './renderer/StreamNotice';
 import { NoticeStack } from './renderer/notices/NoticeStack';
@@ -160,6 +161,7 @@ function SignedInShell() {
   const [officeBar, setOfficeBar] = useState<HTMLDivElement | null>(null);
   const hire = useSyncExternalStore(subscribeToHire, getHireState, getHireState);
   const page = useSyncExternalStore(subscribeToPage, currentPage, () => null);
+  const address = useSyncExternalStore(subscribeToPage, currentAddress, () => '');
   const [panel, setPanel] = useState<'overview' | 'board' | null>(null);
   const view = page ?? panel;
   const [answerAsked, setAnswerAsked] = useState<{ readonly id: string } | null>(null);
@@ -237,6 +239,13 @@ function SignedInShell() {
     if (target.kind === 'ticket') openCard(target.id);
     else { setFocused(false); closeView(); setCrewOpen(true); openQuestion(target.id); }
   });
+
+  useEffect(() => {
+    const link = boardLinkFromAddress(address);
+    if (link === null) return;
+    if (link.project !== null) showProject(link.project);
+    openView('board');
+  }, [address]);
 
   useEffect(() => {
     if (page === null) return;

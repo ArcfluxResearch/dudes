@@ -279,8 +279,8 @@ fn linux_requires_the_recorded_and_current_pid_namespaces() {
         .instructions
         .attempt(Lsn(2))
         .unwrap()
-        .snapshot
-        .clone()
+        .legacy_snapshot()
+        .cloned()
         .unwrap();
     let key = world
         .managed_native_spawn_receipt(Lsn(2))
@@ -306,8 +306,8 @@ fn linux_missing_boot_evidence_cannot_qualify_through_matching_namespaces() {
         .instructions
         .attempt(Lsn(2))
         .unwrap()
-        .snapshot
-        .clone()
+        .legacy_snapshot()
+        .cloned()
         .unwrap();
     host.inner.host_boot = HostBoot::NotApplicable;
     assert!(!same_prior_run_scope(&host, &key, Some(&snapshot)));

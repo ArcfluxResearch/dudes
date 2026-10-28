@@ -537,7 +537,7 @@ mod tests {
                 .current_for_turn(turn)
                 .unwrap();
             assert_eq!(attempt.owner, owner);
-            assert_eq!(attempt.snapshot.as_ref(), Some(baseline.as_ref()));
+            assert_eq!(attempt.legacy_snapshot(), Some(baseline.as_ref()));
             assert!(
                 h.supervisor
                     .world()

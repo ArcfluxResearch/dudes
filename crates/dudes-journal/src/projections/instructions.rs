@@ -54,6 +54,155 @@ pub(super) fn load(
     InstructionCache::load(&CacheReader(table), through, &entry.record, cards)
 }
 
+fn owner_agent(owner: dudes_proto::InstructionObservationOwner) -> dudes_types::AgentId {
+    match owner {
+        dudes_proto::InstructionObservationOwner::Managed { agent, .. }
+        | dudes_proto::InstructionObservationOwner::AttachedProcess { agent, .. }
+        | dudes_proto::InstructionObservationOwner::AttachedTurn { agent, .. } => agent,
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "admission borrows the existing owning tables at one committed cut"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one adapter loads exact issue coverage and prospective round authority before the shared fold"
+)]
+pub(super) fn load_for_record(
+    table: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    agents: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
+    board: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
+    goals: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
+    turns: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
+    through: Lsn,
+    entry: &Entry,
+    cards: &[dudes_types::CardId],
+) -> Result<InstructionCache> {
+    use dudes_proto::repository_instruction::{self, RepositoryInstructionFacts};
+    let completion = repository_instruction::completion_card(&entry.record)
+        .map(|card| get_row::<BoardRow>(board, &card.to_bytes()))
+        .transpose()?
+        .flatten();
+    let completion_goal = completion
+        .as_ref()
+        .and_then(|row| row.ticket.as_ref())
+        .filter(|ticket| ticket.repositories.declared().is_some())
+        .and_then(|ticket| ticket.goal);
+    let required_turns: Vec<super::TurnRow> = if let Some(goal) = completion_goal {
+        super::all_rows::<super::TurnRow>(turns)?
+            .into_iter()
+            .filter(|turn| {
+                turn.repositories
+                    .as_ref()
+                    .and_then(|scope| scope.grant())
+                    .and_then(|grant| grant.ticket.as_ref())
+                    .is_some_and(|round| round.goal == goal)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let required_ids: Vec<_> = required_turns.iter().map(|turn| turn.turn).collect();
+    let prospective = matches!(&entry.record, Record::InstructionObservationBatchStarted(batch)
+        if matches!(batch.owner, dudes_proto::InstructionObservationOwner::Managed { issue: dudes_proto::InstructionIssueAssociation::Prospective, .. }));
+    let owner = repository_instruction::observation_owner(&entry.record);
+    let current_cards: Vec<BoardRow> = if prospective {
+        super::all_rows::<BoardRow>(board)?
+            .into_iter()
+            .filter(|row| row.view.claimed_by == owner.map(owner_agent))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut affected = cards.to_vec();
+    affected.extend(current_cards.iter().map(|row| row.view.id));
+    let cache = InstructionCache::load_with_turns(
+        &CacheReader(table),
+        through,
+        &entry.record,
+        &affected,
+        &required_ids,
+    )?;
+    if required_ids
+        .iter()
+        .any(|turn| !cache.state().repository_turn_covered(*turn))
+    {
+        return Err(Error::Instruction {
+            lsn: through,
+            reason: dudes_proto::instruction_state::InstructionStateError::PendingComparison,
+        });
+    }
+    if let Some(owner) = owner {
+        let agent = owner_agent(owner);
+        let current = get_row::<AgentRow>(agents, &agent.to_bytes())?;
+        let turn = match owner {
+            dudes_proto::InstructionObservationOwner::Managed { turn, .. }
+            | dudes_proto::InstructionObservationOwner::AttachedTurn { turn, .. } => {
+                get_row::<super::TurnRow>(turns, &turn.to_bytes())?
+            }
+            dudes_proto::InstructionObservationOwner::AttachedProcess { .. } => None,
+        };
+        let issued_scope = turn.as_ref().and_then(|turn| turn.repositories.as_ref());
+        let hire = current
+            .as_ref()
+            .map(|row| (row.hired_lsn, &row.repositories))
+            .or_else(|| issued_scope.map(|scope| (scope.hired_lsn(), scope.hire())));
+        let mut held_goals = Vec::new();
+        for row in &current_cards {
+            if let Some(goal) = row.ticket.as_ref().and_then(|ticket| ticket.goal)
+                && let Some(goal) = get_row::<GoalRow>(goals, &goal.to_bytes())?
+            {
+                held_goals.push(goal);
+            }
+        }
+        let round = dudes_proto::repository_state::active_round(
+            agent,
+            current_cards.iter().filter_map(|row| {
+                let goal = held_goals.iter().find(|goal| {
+                    row.ticket
+                        .as_ref()
+                        .is_some_and(|ticket| ticket.goal == Some(goal.id))
+                })?;
+                Some(dudes_proto::repository_state::ActiveRepositoryRound {
+                    holder: row.view.claimed_by,
+                    status: row.view.status,
+                    round: goal.repository_round.as_ref()?,
+                    unfinished: current
+                        .as_ref()
+                        .is_some_and(|owner| owner.goal == Some(goal.id))
+                        && goal.status != GoalStatus::Abandoned
+                        && goal.first_done.is_none(),
+                    instructions_pending: cache.state().pending_for_goal(goal.id),
+                })
+            }),
+        )
+        .map_err(|reason| Error::Repository {
+            lsn: through,
+            reason,
+        })?;
+        repository_instruction::validate_observation(
+            Lsn(through.0.saturating_add(1)),
+            &entry.record,
+            RepositoryInstructionFacts {
+                agent,
+                hire,
+                round,
+                issue: turn
+                    .as_ref()
+                    .zip(issued_scope.and_then(|scope| scope.grant()))
+                    .map(|(turn, grant)| (turn.lsn_issued, grant)),
+            },
+        )
+        .map_err(|reason| Error::Instruction {
+            lsn: through,
+            reason: reason.into(),
+        })?;
+    }
+    Ok(cache)
+}
+
 pub(super) fn facts(
     agents: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
     board: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
@@ -100,11 +249,16 @@ pub(super) fn facts(
     }))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the shared instruction fold borrows its existing owning tables"
+)]
 pub(super) fn apply(
     table: &mut InstructionTable<'_>,
     agents: &RowTable<'_>,
     board: &RowTable<'_>,
     goals: &RowTable<'_>,
+    turns: &RowTable<'_>,
     through: Lsn,
     lsn: Lsn,
     entry: &Entry,
@@ -122,7 +276,7 @@ pub(super) fn apply(
             }
         }
     }
-    let mut cache = load(table, through, entry, &cards)?;
+    let mut cache = load_for_record(table, agents, board, goals, turns, through, entry, &cards)?;
     let folded = cache
         .state_mut()
         .apply(lsn, entry, facts(agents, board, goals, entry)?, hash)

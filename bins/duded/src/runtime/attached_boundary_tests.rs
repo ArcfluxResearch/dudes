@@ -1322,7 +1322,7 @@ fn an_actual_failed_attached_open_settles_its_captured_attempt_as_unknown() {
         assert!(
             matches!(attempt.finished.as_ref().map(|finished| &finished.settlement),
             Some(InstructionSettlement::Unknown { reason: actual, end: None, sampled_at: None,
-                recovery: false, comparison }) if *actual == reason && comparison.changes.is_empty()
+                recovery: false, comparison: dudes_proto::instruction_state::InstructionComparisonEvidence::Legacy(comparison) }) if *actual == reason && comparison.changes.is_empty()
                 && comparison.gaps.iter().any(|found| found.reason == gap)),
             "a called Attached open is uncertain even when no spawn key was returned"
         );

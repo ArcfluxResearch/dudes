@@ -87,6 +87,7 @@ fn no_host_call_is_distinct_from_native_settlement_and_other_attempt_effects() {
     let mut interval = attempt(Lsn(31));
     interval.finished = Some(dudes_proto::instruction_state::InstructionFinished {
         lsn: Lsn(30),
+        repository_binding: None,
         settlement: InstructionSettlement::NoProcess {
             proof_lsn: Lsn(29),
             proof: dudes_proto::InstructionNoProcessProof::NoHostCall,

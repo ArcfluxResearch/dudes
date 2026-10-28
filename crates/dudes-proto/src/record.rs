@@ -2128,6 +2128,10 @@ pub enum Record {
     TicketBaselineBatchRecorded(crate::repository_review::RepositoryBaselineBatch),
     /// The complete declared repository set sampled after one frozen check result.
     TicketReviewBatchStamped(crate::repository_review::RepositoryStampBatch),
+    /// One physical instruction start covering every repository in the exact hire.
+    InstructionObservationBatchStarted(crate::repository_instruction::RepositoryInstructionStart),
+    /// One physical instruction settlement covering every repository in the exact hire.
+    InstructionObservationBatchFinished(crate::repository_instruction::RepositoryInstructionFinish),
     /// An exact interrupted-work boundary requiring explicit recovery consent.
     RecoveryRequired(crate::recovery::RecoveryRequired),
     /// Immutable operator consent for one canonical recovery episode.
@@ -2601,6 +2605,12 @@ impl Record {
             Self::TicketReviewStamped { .. } => RecordKind::TicketReviewStamped,
             Self::TicketBaselineBatchRecorded(_) => RecordKind::TicketBaselineBatchRecorded,
             Self::TicketReviewBatchStamped(_) => RecordKind::TicketReviewBatchStamped,
+            Self::InstructionObservationBatchStarted(_) => {
+                RecordKind::InstructionObservationBatchStarted
+            }
+            Self::InstructionObservationBatchFinished(_) => {
+                RecordKind::InstructionObservationBatchFinished
+            }
             Self::RecoveryRequired(_) => RecordKind::RecoveryRequired,
             Self::RecoveryAuthorized(_) => RecordKind::RecoveryAuthorized,
             Self::RecoveryInvalidated(_) => RecordKind::RecoveryInvalidated,
@@ -2865,6 +2875,10 @@ pub enum RecordKind {
     TicketBaselineBatchRecorded = 108,
     /// [`Record::TicketReviewBatchStamped`].
     TicketReviewBatchStamped = 109,
+    /// [`Record::InstructionObservationBatchStarted`].
+    InstructionObservationBatchStarted = 110,
+    /// [`Record::InstructionObservationBatchFinished`].
+    InstructionObservationBatchFinished = 111,
 }
 
 impl RecordKind {
@@ -2921,8 +2935,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 109] {
-        let mut kinds = [Self::AgentHired; 109];
+    const fn known_kinds() -> [Self; 111] {
+        let mut kinds = [Self::AgentHired; 111];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2991,6 +3005,8 @@ impl RecordKind {
         kinds[106] = Self::TurnIssuedWithRepositories;
         kinds[107] = Self::TicketBaselineBatchRecorded;
         kinds[108] = Self::TicketReviewBatchStamped;
+        kinds[109] = Self::InstructionObservationBatchStarted;
+        kinds[110] = Self::InstructionObservationBatchFinished;
         kinds
     }
 
@@ -3053,6 +3069,8 @@ impl RecordKind {
                 | Self::TurnIssuedWithRepositories
                 | Self::TicketBaselineBatchRecorded
                 | Self::TicketReviewBatchStamped
+                | Self::InstructionObservationBatchStarted
+                | Self::InstructionObservationBatchFinished
         )
     }
 
@@ -3442,6 +3460,29 @@ pub mod samples {
     )]
     pub fn record(kind: RecordKind) -> Record {
         match kind {
+            RecordKind::InstructionObservationBatchStarted => {
+                let Record::InstructionObservationStarted { owner, snapshot, .. } = record(RecordKind::InstructionObservationStarted) else { unreachable!() };
+                Record::InstructionObservationBatchStarted(crate::repository_instruction::RepositoryInstructionStart {
+                    v: crate::repository_instruction::INSTRUCTION_BATCH_VERSION,
+                    binding: crate::repository_instruction::RepositoryInstructionBinding { hired_lsn: Lsn::from_parts(1, 256).unwrap(), ticket_start_lsn: None },
+                    owner, ticket: None,
+                    members: vec![crate::repository_instruction::RepositoryInstructionSnapshot {
+                        repo_id: crate::repository::RepoId::parse("primary").unwrap(),
+                        root: Some(FileIdentity { device: 1, inode: 2 }), snapshot,
+                    }],
+                })
+            }
+            RecordKind::InstructionObservationBatchFinished => {
+                let Record::InstructionObservationFinished { owner, baseline, settlement, .. } = record(RecordKind::InstructionObservationFinished) else { unreachable!() };
+                Record::InstructionObservationBatchFinished(crate::repository_instruction::RepositoryInstructionFinish {
+                    v: crate::repository_instruction::INSTRUCTION_BATCH_VERSION,
+                    binding: crate::repository_instruction::RepositoryInstructionBinding { hired_lsn: Lsn::from_parts(1, 256).unwrap(), ticket_start_lsn: None },
+                    owner, ticket: None, baseline,
+                    members: vec![crate::repository_instruction::RepositoryInstructionSettlement {
+                        repo_id: crate::repository::RepoId::parse("primary").unwrap(), ending_root: None, settlement,
+                    }],
+                })
+            }
             RecordKind::TicketBaselineBatchRecorded => {
                 let Record::TicketBaselineRecorded { baseline, .. } = record(RecordKind::TicketBaselineRecorded) else { unreachable!() };
                 Record::TicketBaselineBatchRecorded(crate::repository_review::RepositoryBaselineBatch {
@@ -4634,7 +4675,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 109);
+        assert_eq!(RecordKind::KNOWN.len(), 111);
         for &kind in RecordKind::KNOWN[46..66]
             .iter()
             .chain(&RecordKind::KNOWN[94..100])
@@ -5143,7 +5184,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            109,
+            111,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -6224,8 +6265,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 109);
-        assert_eq!(RecordKind::from_tag(110), None);
+        assert_eq!(RecordKind::KNOWN.len(), 111);
+        assert_eq!(RecordKind::from_tag(112), None);
     }
 
     #[test]
@@ -6395,6 +6436,16 @@ mod tests {
                 RecordKind::TicketReviewBatchStamped,
                 109,
                 "ticket_review_batch_stamped",
+            ),
+            (
+                RecordKind::InstructionObservationBatchStarted,
+                110,
+                "instruction_observation_batch_started",
+            ),
+            (
+                RecordKind::InstructionObservationBatchFinished,
+                111,
+                "instruction_observation_batch_finished",
             ),
         ] {
             assert_eq!(kind.tag(), tag);
@@ -6662,6 +6713,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(110), None);
+        assert_eq!(RecordKind::from_tag(112), None);
     }
 }

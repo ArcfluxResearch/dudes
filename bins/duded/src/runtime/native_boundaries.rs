@@ -96,11 +96,7 @@ fn prior_boot<H: ProcessHost>(host: &H, world: &dudes_supervisor::World) -> Opti
                 return None;
             }
             examined += 1;
-            let Some(previous) = attempt
-                .snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.boot.as_ref())
-            else {
+            let Some(previous) = attempt.common_boot() else {
                 continue;
             };
             if previous != &current {
@@ -172,7 +168,7 @@ impl InheritedNativeBoundaries {
                 || attempt.owner != captured.owner
                 || attempt.spawn_lsn != Some(captured.spawn_lsn)
                 || attempt.boundary_settled.is_some()
-                || !same_prior_run_scope(host, &captured.key, attempt.snapshot.as_ref())
+                || !same_prior_run_scope(host, &captured.key, attempt.legacy_snapshot())
             {
                 continue;
             }
@@ -267,7 +263,7 @@ pub(super) fn owed_retry_observation(
         && attempt.spawn_lsn.is_none()
         && matches!(attempt.baseline, dudes_proto::InstructionBaselineRef::Started { lsn }
             if lsn == started)
-        && attempt.snapshot.as_ref().is_some_and(|snapshot| {
+        && attempt.legacy_snapshot().is_some_and(|snapshot| {
             snapshot.source == dudes_proto::InstructionSnapshotSource::Fresh
         }))
     .then_some((started, owner))
@@ -1219,7 +1215,7 @@ mod owed_retry_tests {
         assert!(matches!(
             &later.finished.as_ref().unwrap().settlement,
             InstructionSettlement::Compared { comparison, .. }
-                if *comparison == InstructionComparison::default()
+                if *comparison == dudes_proto::instruction_state::InstructionComparisonEvidence::Legacy(InstructionComparison::default())
         ));
         assert_eq!(world.turns[&turn].spawn_lsn, Some(Lsn(10)));
         assert!(world.turns[&turn].has_ended());

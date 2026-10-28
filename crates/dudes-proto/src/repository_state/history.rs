@@ -201,12 +201,19 @@ pub const fn is_kind(kind: crate::RecordKind) -> bool {
             | crate::RecordKind::TurnIssuedWithRepositories
             | crate::RecordKind::TicketBaselineBatchRecorded
             | crate::RecordKind::TicketReviewBatchStamped
+            | crate::RecordKind::InstructionObservationBatchStarted
+            | crate::RecordKind::InstructionObservationBatchFinished
     )
 }
 
 /// Validate the position-independent portion before serializing or accepting a carrier.
 pub fn validate_shape(record: &Record) -> Result<(), RepositoryStateError> {
     match record {
+        Record::InstructionObservationBatchStarted(_)
+        | Record::InstructionObservationBatchFinished(_) => {
+            crate::instruction::validate_instruction_record(record)
+                .map_err(|_| RepositoryStateError::Review)
+        }
         Record::TicketBaselineBatchRecorded(_) | Record::TicketReviewBatchStamped(_) => {
             crate::repository_review::validate_record(record)
         }

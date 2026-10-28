@@ -276,6 +276,8 @@ const ADD_PROJECT_FORM = 'src/renderer/project/AddProject.tsx';
 const TICKET_MODULE = 'src/renderer/ticket/ticket.ts';
 const TICKET_BOARD = 'src/renderer/ticket/TicketBoard.tsx';
 const TICKET_PANEL = 'src/renderer/ticket/TicketPanel.tsx';
+const BOARD_TOOLBAR = 'src/renderer/ticket/BoardToolbar.tsx';
+const TICKET_LIST = 'src/renderer/ticket/TicketList.tsx';
 const NOTIFICATION_OFFER = 'src/renderer/NotificationOffer.tsx';
 const RECOVERED_REVIEW = 'src/renderer/ticket/RecoveredReview.tsx';
 const ADMITTED_IN_TICKET_FORM = Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler', 'a submit handler']);
@@ -342,6 +344,7 @@ const ADMITTED = new Map([
   [ACTIVITY_PANEL, Object.freeze(['an input', 'a select', 'a change handler'])],
   [GOAL_PANEL, ADMITTED_IN_GOAL_FORM],
   [TICKET_BOARD, Object.freeze([...ADMITTED_IN_TICKET_FORM, 'a key handler'])], [TICKET_PANEL, ADMITTED_IN_TICKET_FORM],
+  [BOARD_TOOLBAR, Object.freeze(['an input', 'a select', 'a change handler', 'a key handler'])],
   [CHAT_PANEL, Object.freeze(['a textarea', 'an input', 'a change handler', 'a key handler'])],
   [RENAME_PANEL, Object.freeze(['an input', 'a change handler', 'a key handler'])],
   [ADD_PROJECT_FORM, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
@@ -530,6 +533,10 @@ const ADMITTED_HANDLERS = [
   { file: CONTROL_VIEW, tag: 'dialog', className: 'ticket-dialog', handler: 'onKeyDown',
     expression: "(event) => { if (event.key === 'Escape') event.stopPropagation(); }" },
   { file: TICKET_BOARD, tag: 'div', className: 'ticket-card-regions', handler: 'onKeyDown', expression: 'moveCardFocus' },
+  // The Board's search and filters change what the page shows and are remembered in this browser. They send nothing.
+  { file: BOARD_TOOLBAR, tag: 'input', handler: 'onChange', expression: '(event) => onChange({ search: event.target.value })' },
+  { file: BOARD_TOOLBAR, tag: 'input', handler: 'onKeyDown', expression: 'searchKey' },
+  { file: BOARD_TOOLBAR, tag: 'select', handler: 'onValueChange' },
   // The More menu's items run their action after the menu has closed, so each is one named, fixed call.
   { file: FLOOR_SHELL, tag: 'button', className: null, handler: 'onSelect', expression: 'closeView' },
   { file: FLOOR_SHELL, tag: 'button', className: null, handler: 'onSelect', expression: 'toggleCrew' },
@@ -1195,7 +1202,9 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(3).fill(GOAL_PANEL),
     ...Array(2).fill('src/renderer/ticket/StuckActions.tsx'),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
-    ...Array(8).fill(TICKET_BOARD),
+    ...Array(9).fill(TICKET_BOARD),
+    ...Array(2).fill(BOARD_TOOLBAR),
+    TICKET_LIST,
     ...Array(2).fill(NOTIFICATION_OFFER),
     ...Array(10).fill(TICKET_PANEL),
     ...Array(13).fill(HIRE_FORM),
@@ -1358,8 +1367,11 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TICKET_BOARD), 'utf8')), [
     '() => dismissNotice(notice)', '(event) => onHire(event.currentTarget)', 'onCancel',
-    '(event) => onSelect(card.id, event.currentTarget)', '(event) => onNewTicket(event.currentTarget)', '() => setDoneShown(doneShown + DONE_SHOWN)',
+    '(event) => onSelect(card.id, event.currentTarget)', '() => setDoneShown(doneShown + DONE_SHOWN)', '(event) => onNewTicket(event.currentTarget)',
+    'clear',
   ]);
+  assert.deepEqual(clicksIn(await readFile(resolve(floor, BOARD_TOOLBAR), 'utf8')), ['() => onChange({ layout: key })', 'onClear']);
+  assert.deepEqual(clicksIn(await readFile(resolve(floor, TICKET_LIST), 'utf8')), ['(event) => onSelect(card.id, event.currentTarget)']);
   // Opening Setup or Settings takes a fresh snapshot: the same resubscription Recheck starts.
   assert.match(center, /\{ view: 'setup', label: 'Setup', refresh: true \}/);
   assert.match(center, /\{ view: 'settings', label: 'Settings', refresh: true \}/);
