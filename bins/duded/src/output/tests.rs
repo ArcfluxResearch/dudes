@@ -277,22 +277,30 @@ fn heavy_event(id: &str) -> StepEvent {
 
 #[test]
 fn steps_of_every_kind_share_the_run_cap_and_the_oldest_orphan_goes_first() {
+    const PER_ORPHAN: usize = 10;
+    const WAITING: usize = 5;
     let output = OutputRegistry::new();
     let key_at = |pid: u32| AdoptionKey {
         pid,
         start_time: 20,
         boot: None,
     };
-    for pid in 1..=48_u32 {
-        for step in 0..20 {
+    // Capturing is linear in bytes, so capture only enough to pass the cap by two orphans' worth.
+    let probe = OutputRegistry::new();
+    probe.capture_step(&key_at(1), heavy_event("toolu_probe"));
+    let one_step = probe.state().step_bytes();
+    let orphans = (MAX_BYTES / one_step + 2 * PER_ORPHAN).div_ceil(PER_ORPHAN);
+    let orphans = u32::try_from(orphans).unwrap();
+    for pid in 1..=orphans {
+        for step in 0..PER_ORPHAN {
             output.capture_step(&key_at(pid), heavy_event(&format!("toolu_{pid}_{step}")));
         }
     }
     let (agent, turn) = (AgentId::from_parts(1, 1), TurnId::from_parts(2, 1));
     output.replace(agent, turn);
-    assert!(output.register(agent, turn, &key_at(100)));
-    for step in 0..20 {
-        output.capture_step(&key_at(100), heavy_event(&format!("toolu_w_{step}")));
+    assert!(output.register(agent, turn, &key_at(1_000)));
+    for step in 0..WAITING {
+        output.capture_step(&key_at(1_000), heavy_event(&format!("toolu_w_{step}")));
     }
     let state = output.state();
     assert!(
@@ -307,7 +315,7 @@ fn steps_of_every_kind_share_the_run_cap_and_the_oldest_orphan_goes_first() {
             .map_or(0, |orphan| orphan.steps.items.len())
     };
     assert_eq!(held(1), 0, "the oldest steps-only orphan is evicted first");
-    assert!(held(48) > 0, "the newest orphan keeps its steps");
+    assert!(held(orphans) > 0, "the newest orphan keeps its steps");
     assert!(
         !state.rings[&agent].pending_steps.items.is_empty(),
         "the waiting steps of a bound turn are counted and kept while newest"
