@@ -141,8 +141,10 @@ function Compare({ content, entry }: { readonly content: DiffContent; readonly e
   </div>;
 }
 
-export function DiffReview({ review, loading, onOpen, onPage }: {
+export function DiffReview({ review, loading, onOpen, onPage, ownCopy = false }: {
   readonly review: DiffReviewState;
+  /** The agent works in its own copy of the project. */
+  readonly ownCopy?: boolean;
   readonly loading: boolean;
   readonly onOpen: (entry: DiffEntry) => void;
   readonly onPage: () => void;
@@ -154,6 +156,9 @@ export function DiffReview({ review, loading, onOpen, onPage }: {
       <span className="diff-badge" data-freshness={page.freshness}><Badge state={FRESH_BADGE[page.freshness]}>{BADGE[page.freshness]}</Badge></span>{' '}
       <span className="diff-fresh-line min-w-0 flex-1 basis-64">{FRESHNESS[page.freshness]}</span>
     </p>
+    {ownCopy && (page.binding.preexisting_tracked || page.binding.preexisting_untracked)
+      ? <p className={cn('diff-warning', CALLOUT, 'border-warn bg-warn-soft')} data-earlier-work>
+        The agent’s copy held earlier uncommitted work when this ticket started, so it shows in this review.</p> : null}
     {page.binding.preexisting_tracked ? <p className={cn('diff-warning', CALLOUT, 'border-warn bg-warn-soft')}>
       Some tracked files already had changes when this attempt began, so the list below can include changes the agent did not make.</p> : null}
     {page.binding.preexisting_untracked ? <p className={cn('diff-warning', CALLOUT, 'border-warn bg-warn-soft')}>
@@ -273,7 +278,7 @@ export function DiffPanel({ card, expectedSeq, transport, ownCopy = false }: {
         <Button size="sm" onClick={() => { latest.current += 1; inflight.current = null; setState({ owner, phase: 'closed' }); }}>Hide changes</Button>
       </div>
       <p className="diff-status m-0 min-h-[1.5em] text-small" role="status">{loading ? 'Reading the checkout…' : state.phase === 'refused' ? failureText(state.reason) : ''}</p>
-      {review === null ? null : <DiffReview review={review} loading={loading} onOpen={open}
+      {review === null ? null : <DiffReview review={review} loading={loading} onOpen={open} ownCopy={ownCopy}
         onPage={() => { if (review.page.next_cursor !== null) void read({ mode: 'page', manifest_id: review.page.manifest_id, cursor: review.page.next_cursor }, review); }} />}
       {review === null ? <Disclosure summary="Local review details" className="diff-note">
         <p>For a local review, run <code className="font-mono text-[0.88em]">dudes ticket open {card}</code> in your terminal.</p>

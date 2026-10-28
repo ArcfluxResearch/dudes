@@ -145,6 +145,16 @@ test('new files from before the round are warned about, and only then', () => {
   assert.doesNotMatch(html(diffPage()), /already existed/);
 });
 
+test('an own copy that held uncommitted work at the start says so, and only then', () => {
+  const own = (page, ownCopy) => renderToStaticMarkup(createElement(DiffReview, {
+    review: { page, entries: page.entries, opened: null, content: null }, loading: false, onOpen() {}, onPage() {}, ownCopy }));
+  const line = /The agent’s copy held earlier uncommitted work when this ticket started, so it shows in this review\./;
+  assert.match(own(diffPage({ binding: diffBinding({ preexisting_tracked: true }) }), true), line);
+  assert.match(own(diffPage({ binding: diffBinding({ preexisting_untracked: true }) }), true), line);
+  assert.doesNotMatch(own(diffPage({ binding: diffBinding({ preexisting_tracked: true }) }), false), line);
+  assert.doesNotMatch(own(diffPage(), true), line);
+});
+
 test('a page of only new files lists them and never says nothing differs or that names are hidden', () => {
   const out = html(diffPage({ untracked: 0, entries: [
     diffEntry({ path: 'src/fresh.rs', kind: 'added' }),

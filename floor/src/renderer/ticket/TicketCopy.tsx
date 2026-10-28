@@ -2,7 +2,7 @@
 
 import type { CardRow } from '../board.ts';
 import type { FloorState } from '../floor/store.ts';
-import { Button, cn } from '../../ui/index.ts';
+import { Button } from '../../ui/index.ts';
 import { copyOf, copyState, earlierRoundLine, SHARED_LINE } from './copy.ts';
 import type { TicketHistory } from './history.ts';
 
@@ -16,7 +16,7 @@ export function BranchChip({ floor, card }: { readonly floor: FloorState; readon
   if (card.status !== 'doing' && card.status !== 'review') return null;
   const copy = copyOf(floor, card);
   if (copy === null || copy.kind !== 'own' || copy.worktree.state === 'removed') return null;
-  return <span className={cn('ticket-branch min-w-0 truncate rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-caption text-muted')}
+  return <span className="ticket-branch min-w-0 truncate rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-caption text-muted"
     title="The agent works in its own copy of the project, on this branch.">{copy.worktree.branch}</span>;
 }
 
