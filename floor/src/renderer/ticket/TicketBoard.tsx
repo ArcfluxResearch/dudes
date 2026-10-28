@@ -29,7 +29,9 @@ import { BoardToolbar } from './BoardToolbar.tsx';
 import { arrange, choicesOf, filterRows, isFiltered, liveView, rowsOf, withoutFilters } from './browse.ts';
 import type { BrowseRow } from './browse.ts';
 import { getBrowse, setBrowse, subscribeToBrowse } from './browseState.ts';
-import { getPlaced, placeTickets, subscribeToPlaced } from './placed.ts';
+import { PriorityMark } from './PriorityMark.tsx';
+import { PRIORITY_OPTIONS } from './priority.ts';
+import type { Priority } from './priority.ts';
 import { TicketList, TicketRow } from './TicketList.tsx';
 import { ShortcutHelp } from './ShortcutHelp.tsx';
 import { isMac } from './shortcuts.ts';
@@ -139,7 +141,7 @@ export function FirstTaskForm({ floor, agents }: { readonly floor: FloorState; r
     const note = task.trim() === titleOf(task) ? '' : task.trim();
     const made = await createTicket({
       title: titleOf(task), note, project: null,
-      check: { id: agent.check.id, revision: agent.check.revision }, agent: agent.id,
+      check: { id: agent.check.id, revision: agent.check.revision }, agent: agent.id, priority: 'none',
     });
     if (made.saved && mounted.current) setTask('');
   }
@@ -175,6 +177,7 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
   const ticket = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState);
   const projects = projectsOf(floor);
   const [draft, setDraft] = useState(readNewTicketDraft);
+  const [priority, setPriority] = useState<Priority>('none');
   const draftNow = useRef(draft);
   draftNow.current = draft;
   const { title, note, project: chosenProject, check: chosenCheck, agent } = draft;
@@ -200,11 +203,13 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
       title, note, project,
       check: { id: check.id, revision: check.revision },
       agent: agent === '' || !usable.some((row) => row.id === agent) ? null : agent,
+      priority,
     });
     if (!made.saved) return;
     clearNewTicketDraft(sent);
     if (!mounted.current || draftNow.current !== sent) return;
     setDraft(EMPTY_TICKET_DRAFT);
+    setPriority('none');
     if (made.card !== null) onCreated(made.card);
   }
 
@@ -227,6 +232,10 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
         onValueChange={(value) => editDraft({ check: value })}
         options={checks.map((entry) => ({ value: entry.id, label: choiceLabel(entry) }))} />
     </Field> : null}
+    <Field label="Priority" id={`${ids}-priority`}>
+      <Select id={`${ids}-priority`} name="priority" value={priority} onValueChange={(value) => setPriority(value as Priority)}
+        options={PRIORITY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))} />
+    </Field>
     {chosenCheck !== null && check === null && project !== null ? <p className={HINT} role="status">The saved check is no longer available. Choose a check before creating this ticket.</p> : null}
     {chosenProject !== null && project === null ? <p className={HINT} role="status">The saved project is no longer available. Choose a project before creating this ticket.</p> : null}
     {noProjects(floor) ? <NoTicketProjectHint floor={floor} />
@@ -273,6 +282,7 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
       onClick={(event) => onSelect(card.id, event.currentTarget)}>
       <span className="ticket-card-meta flex items-center justify-between gap-2">
         <Badge state={STATE_BADGE[card.status]} className="ticket-card-state">{stateWord(card)}</Badge>
+        <PriorityMark priority={card.ticket?.priority ?? 'none'} />
       </span>
       <strong className="text-body leading-normal font-semibold">{card.title}</strong>
       {failure === null ? null : <span className="ticket-note text-small whitespace-pre-wrap text-muted" title={failure}>An earlier engine attempt stopped. Open the ticket for details.</span>}
@@ -311,16 +321,10 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
   });
   const [doneShown, setDoneShown] = useState(DONE_SHOWN);
   const remembered = useSyncExternalStore(subscribeToBrowse, getBrowse, getBrowse);
-  const placed = useSyncExternalStore(subscribeToPlaced, getPlaced, getPlaced);
   const projects = useMemo(() => projectsOf(floor), [floor.checks, floor.settings, floor.agents]);
-  const rows = useMemo(() => rowsOf(floor, { projects, placed }), [floor.cards, floor.agents, projects, placed]);
+  const rows = useMemo(() => rowsOf(floor, projects), [floor.cards, floor.agents, projects]);
   const choices = useMemo(() => choicesOf(rows, projects, floor.agents.map((row) => ({ id: row.id, name: agentName(floor, row.id) }))),
     [rows, projects, floor.agents]);
-  const unplaced = floor.cards.filter((card) => card.ticket !== null && card.claimed_by === null && !placed.has(card.id)).map((card) => card.id);
-  const open = ticketActionsOpen(floor);
-  useEffect(() => {
-    if (open && unplaced.length > 0) void placeTickets(unplaced);
-  }, [open, unplaced.join(',')]);
   const view = liveView(remembered, choices);
   const filtered = isFiltered(view);
   const shown = filterRows(rows, view);

@@ -60,28 +60,41 @@ test('a decoder from before the board ignores the ticket member and still reads 
   // The current decoder reads the same card, and keeps the member.
   const current = board.decodeCards(wire);
   assert.equal(current.rejected, 0);
-  assert.deepEqual(current.rows[0].ticket, { position: 3, round: 2, reason: 'no_turns', stopping: true });
+  assert.deepEqual(current.rows[0].ticket, { position: 3, round: 2, reason: 'no_turns', stopping: true, priority: 'none', project: null });
 });
 
 test('a card keeps exactly the members a snapshot sends, and a plain card has none', () => {
   const read = (ticket) => board.decodeCards([ticketCard(1, 'todo', {}, ticket)]);
-  assert.deepEqual(read({}).rows[0].ticket, { position: null, round: 0, reason: null, stopping: false });
+  assert.deepEqual(read({}).rows[0].ticket, { position: null, round: 0, reason: null, stopping: false, priority: 'none', project: null });
   assert.equal(board.decodeCards([{ ...ticketCard(1, 'todo'), ticket: undefined }]).rows[0].ticket, null);
   for (const [what, ticket] of [
     ['an unknown reason', { reason: 'made_up' }],
     ['a position of zero', { position: 0 }],
     ['a fractional round', { round: 1.5 }],
     ['a stopping flag that is not a boolean', { stopping: 'yes' }],
+    ['an unknown priority', { priority: 'critical' }],
+    ['a priority that is not a word', { priority: 2 }],
+    ['a project that cannot be one', { project: 'a b/c' }],
+    ['a project that is not text', { project: 7 }],
   ]) {
     const { rows, rejected } = read(ticket);
     assert.deepEqual([rows.length, rejected], [0, 1], what);
   }
   // A member a newer daemon adds is ignored, and the card is kept with the members this page knows.
-  const newer = board.decodeCards([ticketCard(1, 'todo', {}, { position: 2, project: 'service', tags: ['x'] })]);
+  const newer = board.decodeCards([ticketCard(1, 'todo', {}, { position: 2, tags: ['x'] })]);
   assert.deepEqual([newer.rows.length, newer.rejected], [1, 0]);
-  assert.deepEqual(newer.rows[0].ticket, { position: 2, round: 0, reason: null, stopping: false });
+  assert.deepEqual(newer.rows[0].ticket, { position: 2, round: 0, reason: null, stopping: false, priority: 'none', project: null });
   assert.deepEqual(board.decodeCards([{ ...ticketCard(1, 'todo'), ticket: 'yes' }]).rejected, 1);
   assert.deepEqual(board.decodeCards([{ ...ticketCard(1, 'todo'), ticket: [] }]).rejected, 1);
+});
+
+test('a card reads its priority and project, and a card from an older daemon has neither', () => {
+  const read = (ticket) => board.decodeCards([ticketCard(1, 'todo', {}, ticket)]).rows[0].ticket;
+  assert.deepEqual([read({ priority: 'urgent', project: 'service' }).priority, read({ priority: 'urgent', project: 'service' }).project], ['urgent', 'service']);
+  for (const word of ['high', 'medium', 'low', 'none']) assert.equal(read({ priority: word }).priority, word);
+  assert.deepEqual([read({}).priority, read({}).project], ['none', null], 'the daemon leaves out a priority that is not set');
+  assert.equal(read({ project: 'a'.repeat(128) }).project, 'a'.repeat(128));
+  assert.equal(board.decodeCards([ticketCard(1, 'todo', {}, { project: 'a'.repeat(129) })]).rejected, 1);
 });
 
 test('a delta that removes a card takes it off the board', () => {

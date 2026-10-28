@@ -75,8 +75,8 @@ const panel = () => {
 
 const advance = (cursor, changes) => advanceStore(store, cursor, changes);
 
-async function open(fields, { git = false, status = 'review', cardFields = {} } = {}) {
-  subscribe(store, { agents: [agent()], cards: [ticketCard(1, status, { claimed_by: ADA, ...cardFields })], git });
+async function open(fields, { git = false, status = 'review', cardFields = {}, ticketFields = {} } = {}) {
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, status, { claimed_by: ADA, ...cardFields }, ticketFields)], git });
   advance('20');
   const { deps, seen } = daemon((url) => url === '/floor/ticket/read' ? json(200, reply(fields, { status })) : json(503, {}));
   await detail.loadDetail(store.getFloorState().cards[0], deps);
@@ -305,7 +305,7 @@ test('an interrupted ticket opens the recovery view, or names the switches that 
 test('the decoder keeps exactly the daemon\'s members and refuses the rest', async () => {
   const decode = (value, card = NEW) => detail.decodeDetail(value, card);
   assert.deepEqual(decode(reply()), {
-    context: null, instruction_review: null, coverage: null, truncated: [], note: 'Fix the flaky test', project: 'service', check: { id: 'default', label: 'default passes' }, round: 1, reason: null,
+    context: null, instruction_review: null, coverage: null, truncated: [], note: 'Fix the flaky test', project: 'service', priority: null, history: null, check: { id: 'default', label: 'default passes' }, round: 1, reason: null,
     summary: 'I fixed the test.', result: { pass: true, exit: 0, at: 1_787_394_600_000 }, position: null, waiting: null,
   });
   assert.equal(decode(reply(), cardId(2)), null, 'another ticket\'s reply');
@@ -705,4 +705,119 @@ test('an unobserved recovered ending boundary preserves the recorded baseline an
   assert.ok(!html.includes('starting boundary is missing') && !html.includes('pre-launch instruction baseline is missing'));
   assert.ok(!html.includes('process ended') && !html.includes('cleanup attempted') && !html.includes('Sampled during recovery.'));
   assert.deepEqual(detail.reviewedWatermark(detail.getDetailState(), store.getFloorState().cards[0]), INSTRUCTION_WATERMARK);
+});
+
+const AGENT_ID = ADA;
+const event = (kind, fields = {}, n = 1) => ({ lsn: String(n), at: 1_787_394_600_000 + n * 1000, by: 'operator', kind, ...fields });
+const EVENTS = [
+  event('created', {}, 1),
+  event('edited', {}, 2),
+  event('assigned', { agent: AGENT_ID }, 3),
+  event('started', { agent: AGENT_ID, round: 2 }, 4),
+  event('moved', { reason: 'held_launch' }, 5),
+  event('check_failed', { exit: 1 }, 6),
+  event('check_passed', { exit: 0 }, 7),
+  event('check_passed', { exit: null }, 8),
+  event('sent_back', { agent: AGENT_ID }, 9),
+  event('priority_set', { priority: 'high' }, 10),
+  event('priority_set', { priority: 'none' }, 11),
+  event('accepted', {}, 12),
+  event('returned', { agent: GRACE }, 13),
+];
+
+test('a sentence for each kind of event, with the agent named or not', async () => {
+  const words = await server.ssrLoadModule('/src/renderer/ticket/history.ts');
+  const name = (id) => id === ADA ? 'Ada' : null;
+  assert.deepEqual(EVENTS.map((e) => words.historySentence(e, name)), [
+    'Ticket created.',
+    'Edited.',
+    'Given to Ada.',
+    'Round 2 started with Ada.',
+    'Moved to Needs you: the agent\'s engine would not start.',
+    'Check failed (exit 1).',
+    'Check passed (exit 0).',
+    'Check passed.',
+    'Sent back to Ada.',
+    'Priority set to High.',
+    'Priority cleared.',
+    'Accepted.',
+    'Returned to To do when an agent was retired.',
+  ]);
+  assert.equal(words.omittedSentence(1), '1 earlier event not shown.');
+  assert.equal(words.omittedSentence(12), '12 earlier events not shown.');
+});
+
+test('the decoder reads priority and the events, and an older daemon sends neither', async () => {
+  const decode = (fields) => detail.decodeDetail(reply(fields), NEW);
+  const older = decode({});
+  assert.deepEqual([older.priority, older.history], [null, null]);
+  const newer = decode({ priority: 'urgent', history: EVENTS.slice(0, 2), history_omitted: 5 });
+  assert.equal(newer.priority, 'urgent');
+  assert.deepEqual(newer.history.events.map((e) => e.kind), ['created', 'edited']);
+  assert.equal(newer.history.omitted, 5);
+  assert.deepEqual(decode({ priority: 'none', history: [] }).history, { events: [], omitted: 0 });
+  for (const [what, fields] of [
+    ['an unknown priority', { priority: 'soon' }],
+    ['events that are not a list', { history: 'yes' }],
+    ['an event of an unknown kind', { history: [event('merged')] }],
+    ['an event with no agent where one is due', { history: [event('assigned')] }],
+    ['an event by someone unknown', { history: [{ ...event('created'), by: 'stranger' }] }],
+    ['a position that is not decimal text', { history: [{ ...event('created'), lsn: 12 }] }],
+    ['an exit code that is not a number', { history: [event('check_failed', { exit: 'x' })] }],
+    ['a reason that is not one', { history: [event('moved', { reason: 'made_up' })] }],
+    ['a count of omitted events below zero', { history: [], history_omitted: -1 }],
+    ['more events than the daemon keeps', { history: Array.from({ length: 49 }, (_, n) => event('edited', {}, n)) }],
+  ]) {
+    assert.equal(decode(fields), null, what);
+  }
+});
+
+test('the panel lists the events newest first as plain sentences, and says how many earlier ones it left out', async () => {
+  await open({ priority: 'none', history: EVENTS.slice(0, 4), history_omitted: 3 });
+  const html = panel();
+  const section = html.match(/<section aria-label="History"[^>]*>[\s\S]*?<\/section>/)[0];
+  const lines = [...section.matchAll(/<li[^>]*><span[^>]*>([^<]*)<\/span>/g)].map((m) => m[1]);
+  assert.deepEqual(lines, ['Round 2 started with Ada.', 'Given to Ada.', 'Edited.', 'Ticket created.']);
+  assert.match(section, /3 earlier events not shown\./);
+  assert.match(section, /<time[^>]*dateTime="2026-08-/);
+  assert.ok(!/<a\b|href=/.test(section), 'the events carry no link');
+});
+
+test('a ticket from an older daemon shows no History section, and one with no events says so', async () => {
+  await open();
+  assert.ok(!/aria-label="History"/.test(panel()));
+  detail.resetDetail();
+  await open({ priority: 'none', history: [], history_omitted: 0 });
+  assert.match(panel(), /<section aria-label="History"[^>]*><h4>History<\/h4><p[^>]*>Nothing recorded yet\.<\/p>/);
+});
+
+test('an agent\'s name in the events is plain text', async () => {
+  subscribe(store, { agents: [agent(ADA, '<b>Ada</b>')], cards: [ticketCard(1, 'review', { claimed_by: ADA })] });
+  advance('20');
+  const { deps } = daemon(() => json(200, reply({ priority: 'none', history: [event('assigned', { agent: ADA })] })));
+  await detail.loadDetail(store.getFloorState().cards[0], deps);
+  const html = panel();
+  assert.ok(html.includes('Given to &lt;b&gt;Ada&lt;/b&gt;.'));
+  assert.ok(!html.includes('<b>Ada'));
+});
+
+test('priority is a word once an agent has the ticket, and a choice while it is in To do', async () => {
+  await open({ priority: 'high' }, { status: 'doing', ticketFields: { priority: 'high' } });
+  const working = panel();
+  assert.match(working, /ticket-priority-word">High</);
+  assert.ok(!/data-field="ticket-priority"/.test(working), 'a working ticket\'s priority cannot be changed');
+  detail.resetDetail();
+  await open({ priority: 'urgent' }, { status: 'claimed', cardFields: { claimed_by: null }, ticketFields: { priority: 'urgent' } });
+  const todo = panel();
+  assert.match(todo, /data-field="ticket-priority"/);
+  assert.match(todo, /aria-label="Priority"/);
+  detail.resetDetail();
+  await open({ priority: 'none' }, { status: 'doing' });
+  assert.match(panel(), /ticket-priority-word">No priority</);
+});
+
+test('a ticket from an older daemon offers no priority at all', async () => {
+  await open({}, { status: 'claimed', cardFields: { claimed_by: null } });
+  const html = panel();
+  assert.ok(!/ticket-priority/.test(html) && !/data-field="ticket-priority"/.test(html));
 });

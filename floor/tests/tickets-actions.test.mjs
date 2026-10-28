@@ -46,7 +46,7 @@ beforeEach(() => {
 });
 
 const NEW = cardId(1);
-const FORM = { title: 'Fix it', note: '', project: null, check: { id: 'default', revision: REVISION }, agent: null };
+const FORM = { title: 'Fix it', note: '', project: null, check: { id: 'default', revision: REVISION }, agent: null, priority: 'none' };
 
 test('each action sends exactly the route\'s members, to its own path', async () => {
   subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'review', { claimed_by: ADA, seq: 7 })] });
@@ -371,4 +371,36 @@ test('terminal Accept explains the recorded project or own copy without inventin
     assert.equal(ticket.getTicketState().notice.text, expected);
     assert.doesNotMatch(ticket.getTicketState().notice.text, /opaque-project|dudes\//);
   }
+});
+
+test('priority travels with a create, a give and a quick change, and only when it is chosen', async () => {
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'todo', { seq: 7 })] });
+  const card = store.getFloorState().cards[0];
+  const sent = async (run, reply) => {
+    const { deps, seen } = daemon(() => reply);
+    await run(deps);
+    return seen.map((s) => [s.url, s.body]);
+  };
+  assert.deepEqual(ticket.createPayload({ ...FORM, priority: 'none' }), { title: 'Fix it', done_when: 'default', done_when_revision: REVISION });
+  assert.deepEqual(ticket.createPayload({ ...FORM, priority: 'urgent' }),
+    { title: 'Fix it', priority: 'urgent', done_when: 'default', done_when_revision: REVISION });
+  assert.deepEqual(await sent((deps) => ticket.changeTicket(card, { verb: 'priority', priority: 'low' }, deps), done('edited', NEW)),
+    [['/floor/ticket/edit', { card: NEW, expected_seq: 7, priority: 'low' }]]);
+  assert.deepEqual(await sent((deps) => ticket.changeTicket(card, { verb: 'priority', priority: 'none' }, deps), done('edited', NEW)),
+    [['/floor/ticket/edit', { card: NEW, expected_seq: 7, priority: 'none' }]], 'clearing a priority names none');
+  assert.deepEqual(await sent((deps) => ticket.changeTicket(card, { verb: 'assign', agent: ADA, message: '', priority: 'high' }, deps),
+    done('assigned', NEW, { start: { state: 'started' } })), [['/floor/ticket/assign', { card: NEW, expected_seq: 7, agent: ADA, priority: 'high' }]]);
+  assert.deepEqual(await sent((deps) => ticket.changeTicket(card, { verb: 'assign', agent: ADA, message: '' }, deps),
+    done('assigned', NEW, { start: { state: 'started' } })), [['/floor/ticket/assign', { card: NEW, expected_seq: 7, agent: ADA }]]);
+});
+
+test('a quick priority change says what it did, and a refusal is worded', async () => {
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'todo', { seq: 7 })] });
+  const card = store.getFloorState().cards[0];
+  await ticket.changeTicket(card, { verb: 'priority', priority: 'urgent' }, daemon(() => done('edited', NEW)).deps);
+  assert.equal(ticket.getTicketState().notice.text, 'Priority set to Urgent.');
+  await ticket.changeTicket(card, { verb: 'priority', priority: 'none' }, daemon(() => done('edited', NEW)).deps);
+  assert.equal(ticket.getTicketState().notice.text, 'Priority cleared.');
+  await ticket.changeTicket(card, { verb: 'priority', priority: 'low' }, daemon(() => refused('wrong_state')).deps);
+  assert.match(ticket.getTicketState().notice.text, /You can't do that to a ticket that is To do\./);
 });

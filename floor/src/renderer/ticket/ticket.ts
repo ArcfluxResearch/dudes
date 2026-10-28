@@ -25,6 +25,8 @@ import { decodeWorkspace } from '../workspace.ts';
 import { decodeWorktree } from '../worktree.ts';
 import { agentRow, agentName, holdingTicket, requiresInstructionReview } from './model.ts';
 import { getFloorState } from '../floor/store.ts';
+import { PRIORITY_WORDS } from './priority.ts';
+import type { Priority } from './priority.ts';
 import { COULD_NOT_CONFIRM, REFUSAL_CODES, WAITS, placeInLine, reasonSentence, refusalSentence, waitSentence } from './words.ts';
 import type { RefusalCode, Wait } from './words.ts';
 import { editableDetail, getDetailState, reviewedWatermark } from './detail.ts';
@@ -255,6 +257,7 @@ export interface NewTicket {
   readonly project: string | null;
   readonly check: { readonly id: string; readonly revision: string } | null;
   readonly agent: string | null;
+  readonly priority: Priority;
 }
 
 /** The members of a create request, and no others. */
@@ -262,6 +265,7 @@ export function createPayload(form: NewTicket): Record<string, string> {
   const payload: Record<string, string> = { title: form.title.trim() };
   if (form.note.trim() !== '') payload.description = form.note;
   if (form.project !== null) payload.project = form.project;
+  if (form.priority !== 'none') payload.priority = form.priority;
   if (form.check !== null) {
     payload.done_when = form.check.id;
     payload.done_when_revision = form.check.revision;
@@ -333,8 +337,10 @@ export async function createTicket(form: NewTicket, deps: ControlDeps = browserC
 }
 
 export type Change =
-  | { readonly verb: 'edit'; readonly title: string; readonly note: string; readonly check: { readonly id: string; readonly revision: string } | null }
-  | { readonly verb: 'assign'; readonly agent: string; readonly message: string }
+  | { readonly verb: 'edit'; readonly title: string; readonly note: string; readonly check: { readonly id: string; readonly revision: string } | null;
+    readonly priority?: Priority }
+  | { readonly verb: 'priority'; readonly priority: Priority }
+  | { readonly verb: 'assign'; readonly agent: string; readonly message: string; readonly priority?: Priority }
   | { readonly verb: 'accept' }
   | { readonly verb: 'stop' }
   | { readonly verb: 'remove' };
@@ -350,11 +356,14 @@ export function changePayload(card: CardRow, change: Change, watermark: Instruct
         payload.done_when = change.check.id;
         payload.done_when_revision = change.check.revision;
       }
+      if (change.priority !== undefined) payload.priority = change.priority;
       return payload;
     }
+    case 'priority': return { ...base, priority: change.priority };
     case 'assign': {
       const payload: Record<string, unknown> = { ...base, agent: change.agent };
       if (change.message.trim() !== '') payload.message = change.message.trim();
+      if (change.priority !== undefined) payload.priority = change.priority;
       return payload;
     }
     default:
@@ -362,7 +371,7 @@ export function changePayload(card: CardRow, change: Change, watermark: Instruct
   }
 }
 
-const DONE_TEXT: Readonly<Record<Exclude<Change['verb'], 'assign' | 'accept'>, string>> = Object.freeze({
+const DONE_TEXT: Readonly<Record<Exclude<Change['verb'], 'assign' | 'accept' | 'priority'>, string>> = Object.freeze({
   edit: 'Saved.', stop: 'Stopped. The agent finishes its current step.',
   remove: 'Removed.',
 });
@@ -397,7 +406,7 @@ export async function changeTicket(card: CardRow, change: Change, deps: ControlD
     return false;
   }
   commit({ sending: true, notice: null });
-  const outcome = await send(change.verb, changePayload(card, change, watermark), deps);
+  const outcome = await send(change.verb === 'priority' ? 'edit' : change.verb, changePayload(card, change, watermark), deps);
   if (outcome.kind !== 'done') {
     finishRequest(request, { card: card.id, tone: 'problem', text: problemText(outcome, card.status) });
     return false;
@@ -409,7 +418,9 @@ export async function changeTicket(card: CardRow, change: Change, deps: ControlD
       ? 'Stopped. Instruction review still needs you.'
     : change.verb === 'assign' && outcome.start !== null
     ? startText(outcome.start, agentName(getFloorState(), change.agent), holdingTicket(getFloorState(), change.agent)?.title)
-    : change.verb === 'assign' ? COULD_NOT_CONFIRM : change.verb === 'accept' ? acceptedText(card) : DONE_TEXT[change.verb];
+    : change.verb === 'assign' ? COULD_NOT_CONFIRM : change.verb === 'accept' ? acceptedText(card)
+      : change.verb === 'priority' ? (change.priority === 'none' ? 'Priority cleared.' : `Priority set to ${PRIORITY_WORDS[change.priority]}.`)
+        : DONE_TEXT[change.verb];
   const needs = change.verb === 'assign' && outcome.start?.state === 'needs_you';
   finishRequest(request, { card: card.id, tone: needs ? 'problem' : 'done', text,
     ...(change.verb === 'assign' && outcome.start !== null ? { whileWorking: true as const } : {}) });

@@ -407,12 +407,12 @@ test('the agent choice lists agents of the project and shows the rest as unavail
 test('creating a ticket sends the title, and the check by id and revision, and nothing else', async () => {
   subscribe(store, { agents: [agent()] });
   const payload = ticketState.createPayload({
-    title: '  Fix the flaky test  ', note: '', project: null, check: { id: 'default', revision: REVISION }, agent: null,
+    title: '  Fix the flaky test  ', note: '', project: null, check: { id: 'default', revision: REVISION }, agent: null, priority: 'none',
   });
   assert.deepEqual(payload, { title: 'Fix the flaky test', done_when: 'default', done_when_revision: REVISION });
   assert.deepEqual(ticketState.createPayload({
-    title: 'x', note: 'details', project: 'service', check: null, agent: ADA,
-  }), { title: 'x', description: 'details', project: 'service' });
+    title: 'x', note: 'details', project: 'service', check: null, agent: ADA, priority: 'urgent',
+  }), { title: 'x', description: 'details', project: 'service', priority: 'urgent' });
   void CHECKS;
   void cardId;
 });
@@ -429,4 +429,13 @@ test('a failed engine turn is shown on its card and detail until a successful en
   for (const html of show({ code: 1 })) assert.ok(html.includes('The engine stopped (exit 1) at 14:02'), html);
   for (const html of show({ signal: 15 })) assert.ok(html.includes('The engine stopped (SIGTERM) at 14:02'), html);
   for (const html of [...show({ code: 0 }), ...show({})]) assert.ok(!html.includes('The engine stopped'), html);
+});
+
+test('the new ticket form asks for a priority, with No priority first', () => {
+  subscribe(store, { agents: [agent()] });
+  const html = form();
+  assert.match(html, /<label[^>]*>Priority<\/label>/);
+  const list = html.match(/data-field="priority"[\s\S]*?<\/div>\s*<\/div>|data-field="priority"[\s\S]{0,1200}/)[0];
+  assert.deepEqual([...list.matchAll(/data-value="(\w+)"/g)].map((m) => m[1]), ['none', 'urgent', 'high', 'medium', 'low']);
+  assert.match(html, /data-field="priority"[^>]*>[\s\S]*?No priority/);
 });
