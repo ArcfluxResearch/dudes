@@ -37,6 +37,7 @@ use dudes_proto::rpc::goal::{CompletionCheckDeclaration, GoalSetParams};
 use dudes_proto::rpc::journal::JournalTailParams;
 use dudes_proto::rpc::recovery::RecoveryChoice;
 use dudes_proto::rpc::ticket::TicketCreateParams;
+use dudes_proto::ticket::Priority;
 use dudes_types::{AgentId, CardId, CardStatus, Lsn, MailId, Provider, Seq, Tokens, Usd};
 
 use crate::config::{self, Change, Key};
@@ -357,6 +358,8 @@ pub enum TicketCommand {
         note: Option<String>,
         /// The id of the project's check to finish it by.
         done_when: Option<String>,
+        /// The new priority; `none` clears it.
+        priority: Option<Priority>,
         /// The sequence the operator observed; the ticket's current one when absent.
         expected_seq: Option<Seq>,
     },
@@ -1065,10 +1068,10 @@ USAGE
 const TICKET_HELP: &str = "\
 USAGE
     dudes ticket add --title <text> [--note <text> | --note-file <path>] [--project <id>] [--done-when <check id>]
-               [--give-to <agent>]
+               [--priority urgent|high|medium|low|none] [--give-to <agent>]
 
     dudes ticket edit <card> [--title <text>] [--note <text> | --note-file <path>] [--done-when <check id>]
-                [--expected-seq <n>]
+                [--priority urgent|high|medium|low|none] [--expected-seq <n>]
 
     dudes ticket give <card> --agent <name or id> [--message <text>] [--expected-seq <n>]
 
@@ -1949,6 +1952,7 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
     let mut flags = Flags::new(rest);
     let mut card = None;
     let (mut title, mut note, mut project, mut done_when) = (None, None, None, None);
+    let mut priority = None;
     let (mut agent, mut message, mut status, mut seq) = (None, None, None, None);
     let mut print = false;
     let mut editor = None;
@@ -1961,6 +1965,7 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
             ("add" | "edit", "--note-file") => note_file = Some(flags.path("--note-file")?),
             ("add", "--project") => project = Some(flags.value("--project")?),
             ("add" | "edit", "--done-when") => done_when = Some(flags.value("--done-when")?),
+            ("add" | "edit", "--priority") => priority = Some(ticket_priority(&mut flags)?),
             ("add", "--give-to") => agent = Some(flags.value("--give-to")?.into()),
             ("give" | "changes", "--agent") => agent = Some(flags.value("--agent")?.into()),
             ("give" | "changes", "--message") => message = Some(flags.value("--message")?),
@@ -2040,10 +2045,10 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
                 })
             }
             "edit" => {
-                if title.is_none() && note.is_none() && done_when.is_none() {
+                if title.is_none() && note.is_none() && done_when.is_none() && priority.is_none() {
                     return Err(ArgError::Requires(
                         "ticket edit",
-                        "at least one of --title, --note, --note-file or --done-when",
+                        "at least one of --title, --note, --note-file, --done-when or --priority",
                     ));
                 }
                 Ok(TicketCommand::Edit {
@@ -2051,6 +2056,7 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
                     title,
                     note,
                     done_when,
+                    priority,
                     expected_seq: seq,
                 })
             }
@@ -2089,7 +2095,7 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
                 project,
                 done_when,
                 done_when_revision: None,
-                priority: None,
+                priority,
             },
             give_to: agent,
         }),
@@ -2140,6 +2146,22 @@ fn read_note_file<R: std::io::Read>(
         String::from_utf8(bytes).map_err(|_| fail("the note is not valid UTF-8".to_owned()))?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     Ok(text.replace("\r\n", "\n"))
+}
+
+fn ticket_priority(flags: &mut Flags<'_>) -> Result<Priority, ArgError> {
+    let value = flags.value("--priority")?;
+    match value.as_str() {
+        "urgent" => Ok(Priority::Urgent),
+        "high" => Ok(Priority::High),
+        "medium" => Ok(Priority::Medium),
+        "low" => Ok(Priority::Low),
+        "none" => Ok(Priority::Unset),
+        _ => Err(ArgError::BadValue {
+            flag: "--priority",
+            value,
+            what: "urgent, high, medium, low or none",
+        }),
+    }
 }
 
 fn ticket_status(flags: &mut Flags<'_>) -> Result<TicketStatus, ArgError> {

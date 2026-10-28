@@ -14,6 +14,7 @@ use dudes_proto::rpc::board::CardCreateResult;
 use dudes_proto::rpc::ticket::{
     TicketAssignOutcome, TicketAssignResult, TicketCreateResult, TicketReadResult,
 };
+use dudes_proto::ticket::Priority;
 use dudes_proto::{
     AgentBudget, ExitStatus, GoalBudget, InstructionEndBoundary, InstructionGapKind,
     InstructionObservationOwner, Predicate, Record, TicketReason, TurnOutcome,
@@ -446,6 +447,63 @@ fn the_whole_flow_adds_lists_shows_edits_gives_and_removes() {
     let listed = world.dudes(["ticket", "list"]);
     assert_eq!(listed.code(), 0, "{}", listed.output());
     assert_eq!(listed.stdout, "");
+}
+
+#[test]
+fn priority_is_set_on_add_changed_alone_on_edit_and_a_bad_value_is_refused() {
+    let world = world();
+    let priority_of = |card: &str| {
+        let shown = world.dudes(["--json", "ticket", "show", card]);
+        shown.json::<TicketReadResult>().ticket.priority
+    };
+    for (word, expected) in [
+        ("urgent", Priority::Urgent),
+        ("high", Priority::High),
+        ("medium", Priority::Medium),
+        ("low", Priority::Low),
+        ("none", Priority::Unset),
+    ] {
+        let added = world.dudes(["ticket", "add", "--title", word, "--priority", word]);
+        assert_eq!(added.code(), 0, "{}", added.output());
+        let card = added
+            .stdout
+            .strip_prefix("ticket ")
+            .unwrap()
+            .trim()
+            .to_owned();
+        assert_eq!(priority_of(&card), expected, "{word}");
+    }
+    let added = world.dudes(["ticket", "add", "--title", "plain"]);
+    let card = added
+        .stdout
+        .strip_prefix("ticket ")
+        .unwrap()
+        .trim()
+        .to_owned();
+    assert_eq!(priority_of(&card), Priority::Unset);
+    let edited = world.dudes(["ticket", "edit", &card, "--priority", "high"]);
+    assert_eq!(edited.code(), 0, "{}", edited.output());
+    assert_eq!(priority_of(&card), Priority::High);
+    let shown = world.dudes(["ticket", "show", &card]);
+    assert!(shown.stdout.contains("Priority: high"), "{}", shown.stdout);
+    let cleared = world.dudes(["ticket", "edit", &card, "--priority", "none"]);
+    assert_eq!(cleared.code(), 0, "{}", cleared.output());
+    assert_eq!(priority_of(&card), Priority::Unset);
+
+    let refused = [
+        world.dudes(["ticket", "add", "--title", "x", "--priority", "soon"]),
+        world.dudes(["ticket", "edit", &card, "--priority", "soon"]),
+        world.dudes(["ticket", "edit", &card]),
+    ];
+    for run in refused {
+        assert_eq!(run.code(), 1, "{}", run.output());
+    }
+    let bad = world.dudes(["ticket", "edit", &card, "--priority", "soon"]);
+    assert!(
+        bad.stderr.contains("urgent, high, medium, low or none"),
+        "{}",
+        bad.output()
+    );
 }
 
 #[test]
