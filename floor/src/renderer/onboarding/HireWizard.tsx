@@ -44,7 +44,7 @@ const ENGINE_REACH: Readonly<Record<HireEngine, string>> = Object.freeze({
 const NOTE = 'm-0 text-small leading-normal text-muted';
 const FIELDSET = 'm-0 flex min-w-0 flex-col gap-2 border-0 p-0';
 const LEGEND = 'mb-2 p-0 text-small font-medium text-ink';
-const FACTS = 'm-0 grid grid-cols-[minmax(0,10rem)_minmax(0,1fr)] gap-x-4 gap-y-1 text-base max-[640px]:grid-cols-1';
+const FACTS = 'm-0 grid grid-cols-[minmax(0,10rem)_minmax(0,1fr)] gap-x-4 gap-y-1 text-base max-[641px]:grid-cols-1';
 const CODE = 'rounded-sm bg-surface-2 px-1 font-mono text-small wrap-anywhere';
 
 function text(value: unknown): string {
@@ -213,14 +213,14 @@ export function HireWizardView({ hire, floor, onClose, onSettings }: {
 }) {
   return (
     <section className="flex flex-col font-sans text-ink" id="hire-wizard" data-hire-wizard="true" aria-labelledby="hire-title">
-      <header className="flex items-center justify-between gap-3 border-b border-line px-6 py-4 max-[640px]:px-4">
+      <header className="flex items-center justify-between gap-3 border-b border-line px-6 py-4 max-[641px]:px-4">
         <h2 id="hire-title" tabIndex={-1}
           className="m-0 rounded-md text-title font-semibold outline-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-solid focus-visible:outline-focus">Hire an agent</h2>
         {hire.outcome === null ? null : <Button ref={handFocusOnLeave}
           data-focus-on-leave="hire-open" onClick={onClose}>Close</Button>}
       </header>
       {floor.onboarding === null && noProjects(floor) && floor.settings?.switches.hire !== false
-        ? null : <div className="px-6 pt-4 max-[640px]:px-4"><UnavailableControls floor={floor} control="hire" /></div>}
+        ? null : <div className="px-6 pt-4 max-[641px]:px-4"><UnavailableControls floor={floor} control="hire" /></div>}
       {hire.outcome === null ? <HireForm hire={hire} floor={floor} onClose={onClose} onSettings={onSettings} />
         : <HireAnswer hire={hire} floor={floor} onClose={onClose} />}
     </section>
@@ -230,7 +230,7 @@ export function HireWizardView({ hire, floor, onClose, onSettings }: {
 /** The bar of buttons along the bottom of the dialog, which stays in view while the steps scroll. */
 function Actions({ children }: { readonly children: ReactNode }) {
   return <footer data-hire-actions="true"
-    className="sticky bottom-0 z-10 flex flex-wrap justify-end gap-2 border-t border-line bg-surface px-6 py-3 max-[640px]:px-4">{children}</footer>;
+    className="sticky bottom-0 z-10 flex flex-wrap justify-end gap-2 border-t border-line bg-surface px-6 py-3 max-[641px]:px-4">{children}</footer>;
 }
 
 function HireForm({ hire, floor, onClose, onSettings }: {
@@ -263,15 +263,15 @@ function HireForm({ hire, floor, onClose, onSettings }: {
 
   return (
     <>
-      {hire.prefill === null ? null : <p className={cn(NOTE, 'px-6 pt-4 max-[640px]:px-4')}>
+      {hire.prefill === null ? null : <p className={cn(NOTE, 'px-6 pt-4 max-[641px]:px-4')}>
         This prepares a new agent from archived details. Review each section.
       </p>}
-      <div className="grid gap-6 p-6 min-[801px]:grid-cols-[11rem_minmax(0,1fr)] max-[640px]:p-4">
+      <div className="grid gap-6 p-6 min-[801px]:grid-cols-[11rem_minmax(0,1fr)] max-[641px]:p-4">
         <nav aria-label="Hire sections" className="min-w-0">
           <ol className="m-0 flex list-none gap-1 p-0 min-[801px]:flex-col">
             {SECTIONS.map((entry, index) => {
               const current = entry.key === hire.section;
-              return <li key={entry.key} className="min-w-0 max-[800px]:flex-1">
+              return <li key={entry.key} className="min-w-0 max-[801px]:flex-1">
                 <button type="button" aria-current={current ? 'step' : undefined}
                   aria-disabled={stuck || (index > at && stepProblems.some((problem) =>
                     SECTIONS.findIndex((section) => section.key === problem.section) < index))}
@@ -280,11 +280,11 @@ function HireForm({ hire, floor, onClose, onSettings }: {
                     'transition-colors hover:bg-surface-2 waiting:cursor-not-allowed waiting:opacity-50',
                     'outline-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-solid focus-visible:outline-focus',
                     current ? 'bg-accent-soft' : 'bg-transparent',
-                    'max-[800px]:justify-items-center max-[800px]:gap-x-2 max-[800px]:text-center')}>
+                    'max-[801px]:justify-items-center max-[801px]:gap-x-2 max-[801px]:text-center')}>
                   <span data-hire-step="number" className={cn('row-span-2 inline-flex size-6 items-center justify-center rounded-pill text-small font-semibold tabular-nums',
-                    current ? 'bg-accent text-accent-fg' : 'bg-surface-2 text-muted', 'max-[800px]:row-span-1')}>{index + 1}</span>
-                  <span data-hire-step="label" className={cn('font-medium', !current && 'max-[800px]:sr-only')}>{entry.label}</span>
-                  <span data-hire-step="hint" className="text-small text-muted max-[800px]:sr-only">{entry.hint}</span>
+                    current ? 'bg-accent text-accent-fg' : 'bg-surface-2 text-muted', 'max-[801px]:row-span-1')}>{index + 1}</span>
+                  <span data-hire-step="label" className={cn('font-medium', !current && 'max-[801px]:sr-only')}>{entry.label}</span>
+                  <span data-hire-step="hint" className="text-small text-muted max-[801px]:sr-only">{entry.hint}</span>
                 </button>
               </li>;
             })}
@@ -410,8 +410,8 @@ function HireForm({ hire, floor, onClose, onSettings }: {
             || stepProblems.some((problem) => problem.section === hire.section)}
             onClick={() => { if (!frozen && !stuck) moveSection(1, floor); }}>Next</button>}
       </Actions>
-      {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <div className="px-6 pb-4 max-[640px]:px-4"><NoHireProjectHint floor={floor} /></div>)
-        : blocked === null || stuck ? null : <p className={cn(NOTE, 'px-6 pb-4 max-[640px]:px-4')} role="status">{blocked}</p>}
+      {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <div className="px-6 pb-4 max-[641px]:px-4"><NoHireProjectHint floor={floor} /></div>)
+        : blocked === null || stuck ? null : <p className={cn(NOTE, 'px-6 pb-4 max-[641px]:px-4')} role="status">{blocked}</p>}
     </>
   );
 }
@@ -458,7 +458,7 @@ function HirePortrait({ draft }: { readonly draft: HireDraft }) {
 /** What the journal already holds, for an operator who lost track of a Hire. */
 function Reconciliation({ floor }: { readonly floor: FloorState }) {
   return (
-    <div className="border-t border-line px-6 py-3 max-[640px]:px-4">
+    <div className="border-t border-line px-6 py-3 max-[641px]:px-4">
       <Disclosure data-hire-more="roster" summary={<span id="hire-roster-title">Agents already on the floor</span>}>
         <div className="flex flex-col gap-2 pt-2">
           <p className={NOTE}>
@@ -499,7 +499,7 @@ function HireAnswer({ hire, floor, onClose }: {
   const hiredName = hired === null ? '' : agentName(hire, floor, hired);
   return (
     <div data-hire-outcome={outcome.kind} aria-live="polite">
-      <div className="flex flex-col gap-4 p-6 max-[640px]:p-4">
+      <div className="flex flex-col gap-4 p-6 max-[641px]:p-4">
         <AnswerBody outcome={outcome} hire={hire} floor={floor} />
         {!settled ? null : !fresh ? <p className={NOTE}>You can hire another once the Floor has refreshed.</p>
           : floor.onboarding === null ? <p className={NOTE}>This session offers no further hires.</p> : null}

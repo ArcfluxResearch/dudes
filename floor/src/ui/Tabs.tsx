@@ -41,7 +41,7 @@ export type TabProps = {
 export function Tab({ selected, children, className, type = 'button', ref, ...rest }: TabProps) {
   return <button ref={ref} type={type} role="tab" aria-selected={selected} tabIndex={selected ? 0 : -1} data-ui="tab"
     data-state={selected ? 'selected' : 'idle'} {...rest}
-    className={cn('-mb-px box-border h-9 max-[800px]:h-11 shrink-0 cursor-pointer whitespace-nowrap border-0 border-b-2 border-transparent bg-transparent px-3',
+    className={cn('-mb-px box-border h-9 max-[801px]:h-11 shrink-0 cursor-pointer whitespace-nowrap border-0 border-b-2 border-transparent bg-transparent px-3',
       'font-sans text-base font-medium text-muted transition-[color,background-color,border-color,opacity] hover:text-ink',
       'disabled:cursor-not-allowed disabled:opacity-50 selected:border-accent selected:text-ink', RING_INSET, className)}>{children}</button>;
 }

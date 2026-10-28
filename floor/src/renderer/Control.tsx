@@ -85,7 +85,7 @@ export function FocusRoster({ collapsed, onToggle, ...roster }: Parameters<typeo
   readonly onToggle: () => void;
 }) {
   return (
-    <section className="focus-roster grid min-h-0 content-start gap-3 overflow-auto max-[800px]:order-first max-[800px]:max-h-56" aria-label="Focus roster">
+    <section className="focus-roster grid min-h-0 content-start gap-3 overflow-auto max-[801px]:order-first max-[801px]:max-h-56" aria-label="Focus roster">
       <Button className="focus-roster-toggle w-full" aria-expanded={!collapsed}
         aria-controls="focus-roster-list" onClick={onToggle}>
         {collapsed ? 'Show roster' : 'Hide roster'}
@@ -101,7 +101,7 @@ export function ControlNav({ floor, view, onToggle }: {
   readonly onToggle: (view: ControlView) => void;
 }) {
   return (
-    <nav className="control-nav flex flex-wrap items-center gap-1 max-[800px]:order-3 max-[800px]:basis-full max-[800px]:justify-between" aria-label="Views">
+    <nav className="control-nav flex flex-wrap items-center gap-1 max-[801px]:order-3 max-[801px]:basis-full max-[801px]:justify-between" aria-label="Views">
       {CONTROL_VIEWS.map((entry) => <Button key={entry.view} variant="ghost" id={viewButtonId(entry.view)}
         className={cn(view === entry.view && 'bg-accent-soft text-accent hover:bg-accent-soft hover:text-accent')}
         aria-pressed={view === entry.view}
@@ -212,7 +212,7 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
     <section id="control-panel" data-view={view} aria-labelledby={CONTROL_TITLE_ID}
       className={cn('control-panel relative z-(--layer-panels) box-border flex min-h-0 min-w-0 flex-col overflow-y-auto border-0 bg-bg font-sans text-ink',
         page ? 'static col-[1/-1] row-1 gap-4 px-[max(16px,calc((100%-832px)/2))] py-6'
-          : 'col-[1/-1] row-2 gap-6 px-9 pb-8 pt-6 max-[800px]:m-2 max-[800px]:max-h-128 max-[800px]:rounded-[10px] max-[800px]:p-5', view === 'board' && 'has-[dialog[open]]:overflow-y-hidden')}
+          : 'col-[1/-1] row-2 gap-6 px-9 pb-8 pt-6 max-[801px]:m-2 max-[801px]:max-h-128 max-[801px]:rounded-[10px] max-[801px]:p-5', view === 'board' && 'has-[dialog[open]]:overflow-y-hidden')}
       data-page={page ? 'true' : undefined}
       ref={handFocusOnLeave} data-focus-on-leave={viewButtonId(view)}
       onKeyDown={(event) => { if (closesPanel(event)) { event.stopPropagation(); if (full) closeOverlay(); else onClose(); } }}>
@@ -228,7 +228,7 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
       <div className={cn('control-view min-h-0 min-w-0 overflow-auto', page || view === 'board' ? 'flex-none overflow-visible' : 'flex-auto')}>{panels[view]}</div>
       {view === 'board' ? <TicketNotice floor={floor}
         card={open ? overlay?.kind === 'card' ? overlay.id : null : undefined} /> : null}
-      {view === 'board' ? <Dialog className="ticket-dialog focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-focus m-0 ml-auto h-dvh max-h-none w-[min(100vw,56rem,max(35rem,70vw))] max-w-[100vw] rounded-none rounded-l-xl border-y-0 border-r-0 data-[composer=true]:m-auto data-[composer=true]:h-fit data-[composer=true]:max-h-[calc(100dvh-4rem)] data-[composer=true]:w-[min(36rem,calc(100vw-2rem))] data-[composer=true]:rounded-xl data-[composer=true]:border max-[800px]:data-[composer=false]:w-screen max-[800px]:data-[composer=false]:rounded-none"
+      {view === 'board' ? <Dialog className="ticket-dialog focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-focus m-0 ml-auto h-dvh max-h-none w-[min(100vw,56rem,max(35rem,70vw))] max-w-[100vw] rounded-none rounded-l-xl border-y-0 border-r-0 data-[composer=true]:m-auto data-[composer=true]:h-fit data-[composer=true]:max-h-[calc(100dvh-4rem)] data-[composer=true]:w-[min(36rem,calc(100vw-2rem))] data-[composer=true]:rounded-xl data-[composer=true]:border max-[801px]:data-[composer=false]:w-screen max-[801px]:data-[composer=false]:rounded-none"
         id="selected-card-detail" ref={dialog}
         data-composer={overlay?.kind === 'new'}
         aria-label={overlay?.kind === 'new' ? 'New ticket' : 'Ticket detail'}
