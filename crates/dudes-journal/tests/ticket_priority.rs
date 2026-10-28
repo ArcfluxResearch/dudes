@@ -495,3 +495,133 @@ fn accepting_a_ticket_is_one_event() {
     assert_eq!(history.events.last().unwrap().by, HistoryBy::Operator);
     assert_eq!(history.total, 4);
 }
+
+fn asks(text: &str) -> Record {
+    Record::HumanQuestion {
+        agent: agent(),
+        text: text.into(),
+    }
+}
+
+fn answers(text: &str) -> Record {
+    Record::HumanAnswer {
+        agent: agent(),
+        text: text.into(),
+        provenance: None,
+        browser_answer: None,
+    }
+}
+
+fn asked(question_lsn: &str) -> TicketHistoryKind {
+    TicketHistoryKind::Asked {
+        agent: agent(),
+        question_lsn: question_lsn.into(),
+    }
+}
+
+fn answered(question_lsn: &str) -> TicketHistoryKind {
+    TicketHistoryKind::Answered {
+        agent: agent(),
+        question_lsn: question_lsn.into(),
+    }
+}
+
+fn working() -> Vec<Record> {
+    vec![
+        hire(),
+        created(1, None),
+        assigned(1, 0, None),
+        started(1, GoalId::from_parts(8, 1), 1),
+    ]
+}
+
+/// A goal question is an `asked` event on the ticket its agent is working, and the answer is an
+/// `answered` event on the same ticket carrying the question's position. A replay gives the same
+/// events and the same projection.
+#[test]
+fn a_question_and_its_answer_are_events_on_the_working_ticket() {
+    let mut records = working();
+    records.extend([asks("which branch?"), answers("main"), asks("again?")]);
+    records.push(answers("yes"));
+    let first = project_records(records.clone());
+    let history = first.ticket_history(card(1)).unwrap();
+    assert_eq!(
+        history.events[3..]
+            .iter()
+            .map(|event| (event.lsn.as_str(), event.by, event.kind.clone()))
+            .collect::<Vec<_>>(),
+        [
+            ("5", HistoryBy::Agent, asked("5")),
+            ("6", HistoryBy::Operator, answered("5")),
+            ("7", HistoryBy::Agent, asked("7")),
+            ("8", HistoryBy::Operator, answered("7")),
+        ]
+    );
+    let (view, _) = first.ticket(card(1)).unwrap().unwrap();
+    assert_eq!(view.status, CardStatus::Doing);
+    assert_eq!(
+        project_records(records).export().unwrap(),
+        first.export().unwrap()
+    );
+}
+
+/// A question asked when no Working ticket is held attaches to none, and so does its answer. A
+/// removed ticket takes its question events with it, so a later answer attaches to none.
+#[test]
+fn a_question_without_a_working_ticket_or_after_removal_attaches_to_none() {
+    let stopped = project_records([
+        hire(),
+        created(1, None),
+        assigned(1, 0, None),
+        asks("early"),
+        answers("later"),
+    ]);
+    assert_eq!(
+        kinds(&stopped, 1),
+        [
+            TicketHistoryKind::Created,
+            TicketHistoryKind::Assigned { agent: agent() },
+        ]
+    );
+
+    let mut records = working();
+    records.extend([
+        asks("q"),
+        moved(1, CardStatus::Doing, CardStatus::Review, 2, None),
+        Record::CardTransition {
+            card: card(1),
+            from: CardStatus::Review,
+            to: CardStatus::Done,
+            by: operator(),
+            expected_seq: Seq(3),
+            reason: None,
+        },
+        Record::TicketRemoved {
+            card: card(1),
+            by: operator(),
+            expected_seq: Seq(4),
+        },
+        answers("a"),
+    ]);
+    let removed = project_records(records);
+    assert!(removed.ticket_history(card(1)).unwrap().is_empty());
+}
+
+/// With two tickets each holding an unanswered question for one agent, the answer closes the
+/// newest, and a ticket that stopped working keeps the question it asked.
+#[test]
+fn an_answer_closes_the_newest_unanswered_question() {
+    let mut records = working();
+    records.extend([
+        asks("first"),
+        moved(1, CardStatus::Doing, CardStatus::Review, 2, None),
+        created(2, None),
+        assigned(2, 0, None),
+        started(2, GoalId::from_parts(8, 2), 1),
+        asks("second"),
+        answers("a"),
+    ]);
+    let projections = project_records(records);
+    assert_eq!(kinds(&projections, 1).last(), Some(&asked("5")));
+    assert_eq!(kinds(&projections, 2)[3..], [asked("10"), answered("10")]);
+}

@@ -22121,6 +22121,52 @@
             "agent"
           ],
           "type": "object"
+        },
+        {
+          "description": "Its agent asked the operator a question while working on it.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The asking agent."
+            },
+            "kind": {
+              "const": "asked",
+              "type": "string"
+            },
+            "question_lsn": {
+              "description": "The question's identity: the canonical decimal position of the question record.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "question_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A question it was asked got an answer. The answer is not kept here.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The agent that asked."
+            },
+            "kind": {
+              "const": "answered",
+              "type": "string"
+            },
+            "question_lsn": {
+              "description": "The question's identity, as on the matching `asked` event.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "question_lsn"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
