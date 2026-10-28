@@ -166,7 +166,7 @@ mod tests {
     use std::ffi::OsString;
     use std::path::Path;
 
-    use dudes_types::{AgentId, SessionId};
+    use dudes_types::{AgentId, ModelSelection, SessionId};
 
     use super::*;
     use crate::adapter::{Adapter, AgentCtx, TurnSession};
@@ -214,7 +214,11 @@ mod tests {
         let adapter: &dyn Adapter = &adapter;
 
         let spec = adapter
-            .attached(&ctx, &TurnSession::Resume(SessionId::from(UUID)))
+            .attached(
+                &ctx,
+                &TurnSession::Resume(SessionId::from(UUID)),
+                &ModelSelection::provider_default(),
+            )
             .expect("Claude is attachable with a vendor-confirmed session");
         let hook_settings = Path::new(AGENT_DIR)
             .join("hooks/settings.json")
@@ -280,11 +284,58 @@ mod tests {
             );
         }
 
+        let minted = TurnSession::First(SessionId::from(UUID));
         assert!(
             adapter
-                .attached(&ctx, &TurnSession::First(SessionId::from(UUID)))
+                .attached(&ctx, &minted, &ModelSelection::provider_default())
                 .is_none(),
             "a daemon-minted session is not vendor-confirmed and cannot be attached"
+        );
+    }
+
+    /// An attached launch passes the agent's model as two typed parts at the end of the argv, and
+    /// nothing when the agent is on the engine default.
+    #[test]
+    fn attached_launch_ends_in_the_agents_model() {
+        let adapter = ClaudeAdapter::new(config::ClaudeConfig::default());
+        let ctx = AgentCtx {
+            agent: AgentId::parse(AGENT).expect("fixture agent id"),
+            cwd: Path::new("//fixture.invalid/work tree"),
+            agent_dir: Path::new(AGENT_DIR),
+            daemon_env: &[],
+            sandbox: None,
+            trusted: true,
+            max_turns: None,
+            max_budget: None,
+            mcp_servers: &[],
+        };
+        let adapter: &dyn Adapter = &adapter;
+        let session = TurnSession::Resume(SessionId::from(UUID));
+        let spec = adapter
+            .attached(&ctx, &session, &ModelSelection::provider_default())
+            .expect("attachable");
+        let on_sonnet = adapter
+            .attached(&ctx, &session, &ModelSelection::named("sonnet"))
+            .expect("attachable on a named model");
+        assert_eq!(
+            on_sonnet.argv[..5],
+            spec.argv[..],
+            "a named model leaves the rest of the argv alone"
+        );
+        assert_eq!(
+            on_sonnet.argv[5..],
+            [OsString::from("--model"), OsString::from("sonnet")],
+            "a named model ends the argv with two typed parts"
+        );
+        assert!(
+            adapter
+                .attached(
+                    &ctx,
+                    &session,
+                    &ModelSelection::named("--dangerously-skip-permissions"),
+                )
+                .is_none(),
+            "a name that reads as a flag is never passed"
         );
     }
 
