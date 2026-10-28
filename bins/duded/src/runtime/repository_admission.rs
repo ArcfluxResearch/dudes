@@ -6,8 +6,9 @@ use std::path::Path;
 use anyhow::{Context as _, Result, anyhow, ensure};
 use dudes_proto::record::TrustedRepository;
 use dudes_proto::repository::{
-    CatalogRepository, HireRepositories, RepositoryEntry, RepositorySet,
+    CatalogRepository, HireRepositories, RepoId, RepositoryEntry, RepositorySet,
 };
+use dudes_proto::rpc::RpcError;
 use dudes_proto::{Entry, Record};
 use dudes_supervisor::{Clock, ProcessHost, RepositoryAdmission, Rng, World};
 use dudes_types::{AgentId, Lsn};
@@ -20,23 +21,25 @@ pub(crate) struct CurrentRepositories {
     pub(crate) invalid: bool,
     pub(crate) invalid_seq: u64,
     pub(crate) observed: BTreeMap<String, ObservedProject>,
+    bindings: BTreeMap<String, BTreeMap<RepoId, TrustedRepository>>,
 }
 
 pub(crate) struct ObservedProject {
-    pub(crate) lsn: Lsn,
+    pub(crate) lsn: Option<Lsn>,
     pub(crate) repositories: RepositorySet<CatalogRepository>,
 }
 
 fn catalog(
     profile: &Profile,
     recorded: Option<&dudes_proto::repository_state::history::ProjectRepositoryHistory>,
+    bindings: Option<&BTreeMap<RepoId, TrustedRepository>>,
 ) -> Result<Option<RepositorySet<CatalogRepository>>> {
     let configured = if let Some(configured) = &profile.repositories {
         std::borrow::Cow::Borrowed(configured)
     } else {
         if crate::worktree::plain_git_dir(&profile.cwd).is_none() {
             ensure!(
-                recorded.is_none(),
+                recorded.is_none() && bindings.is_none(),
                 "an observed repository binding cannot be resolved"
             );
             return Ok(None);
@@ -86,6 +89,16 @@ fn catalog(
         })
         .collect::<Result<Vec<_>>>()?;
     let repositories = RepositorySet::new(configured.primary_id().clone(), entries)?;
+    if let Some(bindings) = bindings {
+        for (repo_id, origin) in bindings {
+            ensure!(
+                repositories
+                    .get(repo_id)
+                    .is_none_or(|current| current.origin == *origin),
+                "an observed repository id cannot be rebound"
+            );
+        }
+    }
     for (index, member) in repositories.entries().iter().enumerate() {
         ensure!(
             !repositories.entries()[..index].iter().any(|other| {
@@ -129,8 +142,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         );
         for profile in &self.enrollment.profiles {
             if directory_overlaps(&profile.cwd, cwd)
-                && let Some(repositories) =
-                    catalog(profile, world.repository_projects.get(&profile.id))?
+                && let Some(repositories) = catalog(
+                    profile,
+                    world.repository_projects.get(&profile.id),
+                    self.current_repositories.bindings.get(&profile.id),
+                )?
             {
                 world.validate_repository_record(&Entry {
                     at: self.clock.now(),
@@ -315,6 +331,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let current = catalog(
             profile,
             self.sup.world().repository_projects.get(&profile.id),
+            self.ctx.current_repositories.bindings.get(&profile.id),
         )?
         .ok_or_else(|| anyhow!("use singleton project trust without --repo"))?;
         let observed = self
@@ -332,7 +349,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(crate::worktree::hire::RepositoryTrustTarget {
             project: project.to_owned(),
             repo_id: repo_id.clone(),
-            catalog_lsn: observed.lsn,
+            catalog_lsn: observed
+                .lsn
+                .ok_or_else(|| anyhow!("repository enrollment is not available yet"))?,
             origin,
         })
     }
@@ -389,13 +408,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(true)
     }
 
-    pub(super) fn invalidate_repository_enrollment(&mut self, seq: u64) -> Result<()> {
+    pub(super) fn invalidate_repository_enrollment(&mut self, seq: u64) -> Result<(), RpcError> {
         if seq < self.ctx.reloads.local_seq() || seq < self.ctx.current_repositories.invalid_seq {
             return Ok(());
         }
         self.ctx.current_repositories.invalid = true;
         self.ctx.current_repositories.invalid_seq = seq;
         self.pump(dudes_supervisor::Input::Tick)
+            .map_err(|_| super::refused("current project configuration could not be held"))
     }
 
     pub(super) fn validate_repository_enrollment(&self, candidate: &Enrollment) -> Result<()> {
@@ -403,6 +423,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             if let Some(repositories) = catalog(
                 profile,
                 self.sup.world().repository_projects.get(&profile.id),
+                self.ctx.current_repositories.bindings.get(&profile.id),
             )? {
                 self.sup.world().validate_repository_record(&Entry {
                     at: self.ctx.clock.now(),
@@ -503,11 +524,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             let Some(repositories) = catalog(
                 profile,
                 self.sup.world().repository_projects.get(&profile.id),
+                self.ctx.current_repositories.bindings.get(&profile.id),
             )?
             else {
                 continue;
             };
-            let known = self
+            let lsn = self
                 .sup
                 .world()
                 .repository_projects
@@ -518,29 +540,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         .iter()
                         .find_map(|(lsn, saved)| (saved == &repositories).then_some(*lsn))
                 });
-            let lsn = if let Some(lsn) = known {
-                lsn
-            } else {
-                self.pump_or_refuse(dudes_supervisor::Input::Command(
-                    dudes_supervisor::Command::RecordProjectRepositories {
-                        project: profile.id.clone(),
-                        repositories: repositories.clone(),
-                    },
-                ))
-                .map_err(|error| anyhow!(error.message))?;
-                self.sup
-                    .world()
-                    .repository_projects
-                    .get(&profile.id)
-                    .and_then(|history| {
-                        history
-                            .revisions
-                            .iter()
-                            .find_map(|(lsn, saved)| (saved == &repositories).then_some(*lsn))
-                    })
-                    .ok_or_else(|| anyhow!("catalog was not observed"))?
-            };
             observed.insert(profile.id.clone(), ObservedProject { lsn, repositories });
+        }
+        for (project, observation) in &observed {
+            let bindings = self
+                .ctx
+                .current_repositories
+                .bindings
+                .entry(project.clone())
+                .or_default();
+            for repository in observation.repositories.entries() {
+                bindings.insert(repository.repo_id.clone(), repository.value.origin.clone());
+            }
         }
         self.ctx.current_repositories.observed = observed;
         self.ctx.current_repositories.invalid = false;

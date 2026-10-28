@@ -28,7 +28,7 @@ fn legacy_configured(fixture: &Fixture, directory: &Path) -> (duded::Settings, P
         ),
     )
     .unwrap();
-    let mut settings = fixture.settings();
+    let mut settings = settings(fixture);
     settings.enrollment = duded::config::load_operator(&config).unwrap().enrollment;
     settings.operator_config = Some(config.clone());
     (settings, config)
@@ -61,7 +61,20 @@ fn a_plain_operator_hire_cannot_bypass_a_nonprimary_member_or_its_descendant() {
     let child = origins[0].value.origin.directory.join("src");
     std::fs::create_dir(&child).unwrap();
     let host = SharedHost::new();
-    let mut running = common::start(open(&settings, &host));
+    let daemon = open(&settings, &host);
+    assert!(daemon.world().repository_projects.is_empty());
+    let mut running = common::start(daemon);
+    let before = fixture.entries();
+    assert!(
+        call(
+            &settings,
+            Method::WorkspaceTrust,
+            json!({"workspace_id":"service","repo_id":"web","trusted":true})
+        )
+        .error
+        .is_some()
+    );
+    assert_eq!(fixture.entries(), before);
     for cwd in [
         &origins[0].value.origin.directory,
         &child,
@@ -122,6 +135,88 @@ fn reload_current(settings: &duded::Settings) -> dudes_proto::rpc::Response {
 }
 
 #[test]
+fn ordinary_legacy_start_and_reload_leave_catalog_writes_dormant() {
+    let fixture = Fixture::new();
+    let roots = tempfile::tempdir().unwrap();
+    let origin = create_origin(&roots.path().canonicalize().unwrap(), "web");
+    let (settings, _) = legacy_configured(&fixture, &origin.value.origin.directory);
+    let host = SharedHost::new();
+    for cold in [false, false, true] {
+        if cold {
+            std::fs::remove_file(settings.state_dir.join(duded::boot::PROJECTION_FILE)).unwrap();
+        }
+        let daemon = open(&settings, &host);
+        assert!(daemon.world().repository_projects.is_empty());
+        let mut running = common::start(daemon);
+        let response = reload_current(&settings);
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert_eq!(response.result.unwrap()["applied"], true);
+        assert!(
+            fixture.entries().iter().all(|(_, entry)| !matches!(
+                entry.record,
+                Record::ProjectRepositoriesRecorded { .. }
+            ))
+        );
+        assert!(host.spawned().is_empty());
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+}
+
+#[test]
+fn an_unrecorded_current_binding_cannot_downgrade_to_a_gitfile_on_reload() {
+    for remove_first in [false, true] {
+        let fixture = Fixture::new();
+        let roots = tempfile::tempdir().unwrap();
+        let root = roots.path().canonicalize().unwrap();
+        let original = create_origin(&root, "web");
+        let replacement = create_origin(&root, "replacement");
+        let directory = original.value.origin.directory.clone();
+        let (settings, config) = legacy_configured(&fixture, &directory);
+        let host = SharedHost::new();
+        let daemon = open(&settings, &host);
+        assert!(daemon.world().repository_projects.is_empty());
+        let mut running = common::start(daemon);
+        if remove_first {
+            let original = std::fs::read(&config).unwrap();
+            dudes_config::workspace::remove(&config, "service").unwrap();
+            let checked = call(&settings, Method::FloorEnrollmentReload, json!({}))
+                .result
+                .unwrap();
+            let applied = call(
+                &settings,
+                Method::FloorEnrollmentReload,
+                json!({"apply": {
+                    "sha256": checked["sha256"], "added": [],
+                    "removed": ["service"], "changed": [],
+                }}),
+            );
+            assert!(applied.error.is_none(), "{:?}", applied.error);
+            assert_eq!(applied.result.unwrap()["applied"], true);
+            std::fs::write(&config, original).unwrap();
+        }
+        std::fs::rename(&directory, root.join("preserved-web")).unwrap();
+        git(
+            &replacement.value.origin.directory,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                directory.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        assert!(directory.join(".git").is_file());
+        let before = fixture.entries();
+        assert!(reload_current(&settings).error.is_some());
+        assert!(plain_hire(&settings, &directory).error.is_some());
+        assert_eq!(fixture.entries(), before);
+        assert!(host.spawned().is_empty());
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one replacement fixture checks live refusal and both cache paths while retaining the original binding"
@@ -134,6 +229,21 @@ fn a_recorded_plain_binding_cannot_downgrade_to_a_gitfile_at_the_same_path() {
     let replacement = create_origin(&root, "replacement");
     let directory = original.value.origin.directory.clone();
     let (mut settings, config) = legacy_configured(&fixture, &directory);
+    let primary = RepoId::parse("primary").unwrap();
+    record_catalog(
+        &fixture,
+        RepositorySet::new(
+            primary.clone(),
+            vec![RepositoryEntry {
+                repo_id: primary,
+                value: CatalogRepository {
+                    label: "Service".into(),
+                    origin: original.value.origin.clone(),
+                },
+            }],
+        )
+        .unwrap(),
+    );
     let host = SharedHost::new();
     let daemon = open(&settings, &host);
     let binding = daemon.world().repository_projects["service"]
@@ -274,7 +384,7 @@ fn a_never_observed_legacy_gitfile_keeps_its_original_singleton_behavior() {
 fn a_missing_current_project_cannot_release_live_recorded_authority_or_admit_a_plain_hire() {
     let fixture = Fixture::new();
     let story = Story::seed(&fixture);
-    let settings = fixture.settings();
+    let settings = settings(&fixture);
     assert!(settings.enrollment.profiles.is_empty());
     let origin = story.hire.repositories.repositories.entries()[0]
         .value
@@ -336,7 +446,7 @@ fn a_missing_current_project_cannot_forget_an_unresolved_declaration_after_retir
     };
     ticket.check_repo = member.repo_id.clone();
     ticket.request = None;
-    let settings = fixture.settings();
+    let settings = settings(&fixture);
     let (mut writer, _) = dudes_journal::open(&fixture.journal_dir(), settings.journal).unwrap();
     append(&mut writer, Record::TicketCreatedWithRepositories(ticket));
     append(

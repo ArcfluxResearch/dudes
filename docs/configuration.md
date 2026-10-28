@@ -79,10 +79,12 @@ MCP servers are declared in the same file. See [Give an agent MCP servers](mcp-s
 
 ## Projects with explicit repositories
 
-On macOS and Linux, an existing project can enroll an ordered list of 1 to 8 plain repository
-checkouts. Linked worktrees, submodules, and symlinked `.git` directories are refused. Scoped execution
-is unavailable in this version. These projects cannot be hired into from the CLI or Floor,
-including by passing one member's folder with `--cwd`.
+On macOS and Linux, an existing project can configure an ordered list of 1 to 8 plain repository
+checkouts. Linked worktrees, submodules, and symlinked `.git` directories are refused. Starting or
+reloading the daemon validates the list in memory without recording a repository catalog.
+Per-repository trust for a newly configured list and scoped execution are unavailable in this version.
+These projects cannot be hired into from the CLI or Floor, including by passing one member's folder
+with `--cwd`.
 
 Replace a project's complete repository list in one edit:
 
@@ -90,16 +92,13 @@ Replace a project's complete repository list in one edit:
 dudes project repositories service --primary web \
   --repo web=/absolute/path/to/web --repo api=/absolute/path/to/api \
   --repo docs=/absolute/path/to/docs
-dudes project trust service --repo web
-dudes project trust service --repo api
-dudes project trust service --repo docs
 ```
 
 The command edits the existing project and asks the daemon to adopt the change. It creates no
 folder or Git repository. The 32-project limit counts projects, independently of their member count.
 Each repository id starts with a lowercase letter and uses at most 32 lowercase letters, digits,
-underscores, or hyphens. An id cannot later name another origin. Duplicate directories, overlapping
-roots, and shared Git common directories are refused.
+underscores, or hyphens. A recorded id cannot later name another origin. Duplicate directories,
+overlapping roots, and shared Git common directories are refused.
 
 The operator file uses `primary_repo` and ordered `repositories` instead of `cwd`. In an existing
 `[[floor.onboarding.workspaces]]` entry, replace its `cwd` line with:
@@ -114,9 +113,9 @@ repositories = [
 ```
 
 Keep the entry's checks and other settings. `cwd` and the explicit list cannot appear together.
-Trust remains an operator action and is never read from configuration. `--repo` is required when
-trusting or revoking one of these members. The existing settings inspection and refusals apply
-to each grant. Removing a member revokes its grant without deleting any checkout.
+Trust remains an operator action and is never read from configuration. An existing recorded catalog
+requires `--repo` when trusting or revoking a member. The existing settings inspection and refusals
+apply to each grant. Removing a member revokes its grant without deleting any checkout.
 
 Expanding a project pauses agents hired under its original singleton authority. Their old tickets,
 queued messages, and interrupted turns cannot gain access to new members. Resume stays refused

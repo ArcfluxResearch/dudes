@@ -278,6 +278,15 @@ fn current_expansion_holds_an_owed_legacy_launch_before_host_and_resume_cannot_o
     std::fs::create_dir(other.join(".git")).unwrap();
     daemon.ctx.enrollment = legacy_enrollment(root.clone());
     daemon.observe_repository_enrollment().unwrap();
+    daemon
+        .pump_or_refuse(Input::Command(Command::RecordProjectRepositories {
+            project: "service".into(),
+            repositories: daemon.ctx.current_repositories.observed["service"]
+                .repositories
+                .clone(),
+        }))
+        .unwrap();
+    daemon.observe_repository_enrollment().unwrap();
     let singleton_enrollment = daemon.ctx.enrollment.clone();
     let original_catalog = daemon.ctx.current_repositories.observed["service"].lsn;
     let attempt = prepared(&mut daemon, &fixture, Provider::Claude);
@@ -335,6 +344,14 @@ fn current_expansion_holds_an_owed_legacy_launch_before_host_and_resume_cannot_o
         pid: None,
     };
     assert!(daemon.enrollment_reload(&read).unwrap().applied);
+    daemon
+        .pump_or_refuse(Input::Command(Command::RecordProjectRepositories {
+            project: "service".into(),
+            repositories: daemon.ctx.current_repositories.observed["service"]
+                .repositories
+                .clone(),
+        }))
+        .unwrap();
     let before = fixture.entries();
     let mut queue = VecDeque::new();
     execute(&mut daemon, &attempt.spawn, &mut queue);

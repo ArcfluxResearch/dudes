@@ -33,7 +33,7 @@ fn configured(
     .unwrap();
     dudes_config::workspace::set_repositories(&config, "service", &repositories).unwrap();
     let operator = duded::config::load_operator(&config).unwrap();
-    let mut settings = fixture.settings();
+    let mut settings = settings(fixture);
     settings.enrollment = operator.enrollment;
     settings.operator_config = Some(config.clone());
     (settings, config)
@@ -50,6 +50,18 @@ fn call(
         .unwrap()
 }
 
+fn record_catalog(fixture: &Fixture, repositories: RepositorySet<CatalogRepository>) {
+    let (mut writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), fixture.settings().journal).unwrap();
+    append(
+        &mut writer,
+        Record::ProjectRepositoriesRecorded {
+            project: "service".into(),
+            repositories,
+        },
+    );
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -64,6 +76,10 @@ fn three_existing_repositories_round_trip_trust_and_refuse_every_cwd_hire_before
         .map(|name| create_origin(&root, name))
         .collect();
     let (settings, config) = configured(&fixture, &origins);
+    record_catalog(
+        &fixture,
+        RepositorySet::new(origins[1].repo_id.clone(), origins.clone()).unwrap(),
+    );
     let host = SharedHost::new();
     let daemon = boot(
         &settings,
@@ -242,7 +258,7 @@ fn a_malformed_operator_reload_closes_admission_before_reply_and_an_unauthorized
     )
     .unwrap();
     let original = std::fs::read(&config).unwrap();
-    let mut settings = fixture.settings();
+    let mut settings = settings(&fixture);
     settings.enrollment = duded::config::load_operator(&config).unwrap().enrollment;
     settings.operator_config = Some(config.clone());
     let host = SharedHost::new();

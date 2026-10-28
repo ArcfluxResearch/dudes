@@ -1668,9 +1668,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let _ = reply.send(answer);
                 }
                 Job::EnrollmentInvalid { seq, reply } => {
-                    let answer = self
-                        .invalidate_repository_enrollment(seq)
-                        .map_err(|_| refused("current project configuration could not be held"));
+                    let answer = self.invalidate_repository_enrollment(seq);
                     let _ = reply.send(answer);
                 }
                 Job::EnrollmentResync { window_id } => {
@@ -2265,8 +2263,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             ));
         }
         if let Err(failure) = self.validate_repository_enrollment(&read.config.enrollment) {
-            self.invalidate_repository_enrollment(read.seq)
-                .map_err(|_| refused("current project configuration could not be held"))?;
+            self.invalidate_repository_enrollment(read.seq)?;
             return Err(refused(&format!(
                 "project configuration refused: {failure}"
             )));
@@ -2308,8 +2305,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         ) {
             Ok(decision) => decision,
             Err(error) => {
-                self.invalidate_repository_enrollment(read.seq)
-                    .map_err(|_| refused("current project configuration could not be held"))?;
+                self.invalidate_repository_enrollment(read.seq)?;
                 return Err(crate::enrollment_reload::invalid(&error));
             }
         };
@@ -2325,16 +2321,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     })
                 }))
         {
-            self.invalidate_repository_enrollment(read.seq)
-                .map_err(|_| refused("current project configuration could not be held"))?;
+            self.invalidate_repository_enrollment(read.seq)?;
         }
         if decision.result.applied {
             let previous = std::mem::replace(&mut self.ctx.enrollment, decision.candidate);
             if let Err(failure) = self.observe_repository_enrollment() {
                 self.ctx.enrollment = previous;
                 self.ctx.reloads = previous_reload;
-                self.invalidate_repository_enrollment(read.seq)
-                    .map_err(|_| refused("current project configuration could not be held"))?;
+                self.invalidate_repository_enrollment(read.seq)?;
                 return Err(refused(&format!(
                     "project configuration could not be observed: {failure}"
                 )));
