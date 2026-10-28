@@ -11,12 +11,19 @@ import { journalPosition, recordedTime } from './format.ts';
 import { ReadNotice, snapshotReadState } from './ReadError.tsx';
 import { getReadAvailability, subscribeToReadAvailability } from './floor/reads.ts';
 import { Disclosure } from '../ui/index.ts';
+import { viewConfirmed } from './ticket/model.ts';
 
-let requestedCard: string | null = null;
+interface CardRequest {
+  readonly id: string;
+  /** Open the ticket as a page. Set by an address, which can arrive before the snapshot does. */
+  readonly full: boolean;
+}
+
+let requestedCard: CardRequest | null = null;
 const selectionListeners = new Set<() => void>();
 
-export function requestCardSelection(id: string): void {
-  requestedCard = id;
+export function requestCardSelection(id: string, full = false): void {
+  requestedCard = { id, full };
   for (const listener of selectionListeners) listener();
 }
 
@@ -25,7 +32,7 @@ function subscribeToCardSelection(listener: () => void): () => void {
   return () => { selectionListeners.delete(listener); };
 }
 
-function cardSelectionRequest(): string | null {
+function cardSelectionRequest(): CardRequest | null {
   return requestedCard;
 }
 
@@ -46,15 +53,19 @@ function author(floor: FloorState, by: CardActor): string {
   return by.kind === 'system' ? 'Dudes' : 'Browser session';
 }
 
-/** Select the card another part of the page asked the Board to open, once the snapshot holds it. */
-export function useRequestedCard(floor: FloorState, selectable: boolean, onSelect: (id: string) => void): void {
+/**
+ * Select the card another part of the page asked the Board to open, once the snapshot holds it. A request made from an
+ * address waits for a confirmed snapshot first, since a reload asks before the cards have arrived.
+ */
+export function useRequestedCard(floor: FloorState, selectable: boolean, onSelect: (id: string, full: boolean) => void): void {
   const requested = useSyncExternalStore(subscribeToCardSelection, cardSelectionRequest, cardSelectionRequest);
+  const confirmed = viewConfirmed(floor);
   useEffect(() => {
-    if (requested === null) return;
+    if (requested === null || (requested.full && !confirmed)) return;
     requestedCard = null;
     for (const listener of selectionListeners) listener();
-    if (selectable && floor.cards.some((card) => card.id === requested)) onSelect(requested);
-  }, [requested, selectable, floor.cards, onSelect]);
+    if (selectable && floor.cards.some((card) => card.id === requested.id)) onSelect(requested.id, requested.full);
+  }, [requested, confirmed, selectable, floor.cards, onSelect]);
 }
 
 export function CardDetail({ floor, card }: { readonly floor: FloorState; readonly card: CardRow | null }) {

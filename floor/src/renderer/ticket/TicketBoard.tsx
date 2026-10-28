@@ -31,6 +31,9 @@ import type { BrowseRow } from './browse.ts';
 import { getBrowse, setBrowse, subscribeToBrowse } from './browseState.ts';
 import { getPlaced, placeTickets, subscribeToPlaced } from './placed.ts';
 import { TicketList, TicketRow } from './TicketList.tsx';
+import { ShortcutHelp } from './ShortcutHelp.tsx';
+import { isMac } from './shortcuts.ts';
+import { useBoardShortcuts } from './useBoardShortcuts.ts';
 import { clearNewTicketDraft, EMPTY_TICKET_DRAFT, readNewTicketDraft, writeNewTicketDraft } from '../view.ts';
 import type { NewTicketDraft } from '../view.ts';
 
@@ -288,15 +291,24 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
   </li>;
 }
 
-export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNewTicket }: {
+export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNewTicket, paused = false }: {
   readonly floor: FloorState;
   readonly selectedId: string | null;
-  readonly onSelect: (id: string, opener?: HTMLElement) => void;
+  readonly onSelect: (id: string, opener?: HTMLElement, full?: boolean) => void;
   readonly forming?: boolean;
   readonly onNewTicket: (opener: HTMLElement) => void;
+  /** The Board is under a ticket page, so its shortcuts are off. */
+  readonly paused?: boolean;
 }) {
   const selectable = floor.phase === 'live' && !floor.stale;
-  useRequestedCard(floor, selectable, onSelect);
+  useRequestedCard(floor, selectable, (id, full) => onSelect(id, undefined, full));
+  const root = useRef<HTMLDivElement>(null);
+  const newButton = useRef<HTMLButtonElement>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  useBoardShortcuts({
+    active: !paused, root, newButton, canCreate: ticketActionsOpen(floor),
+    onNew: onNewTicket, onLayout: (layout) => setBrowse({ layout }), onHelp: () => setHelpOpen(true),
+  });
   const [doneShown, setDoneShown] = useState(DONE_SHOWN);
   const remembered = useSyncExternalStore(subscribeToBrowse, getBrowse, getBrowse);
   const placed = useSyncExternalStore(subscribeToPlaced, getPlaced, getPlaced);
@@ -327,14 +339,15 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
   const showMore = doneHidden > 0
     ? <p className={cn(HINT, 'flex flex-wrap items-center gap-x-2')}>{doneHidden} older card{doneHidden === 1 ? '' : 's'} not shown.{' '}
       <Button variant="secondary" size="sm" className="ticket-more" onClick={() => setDoneShown(doneShown + DONE_SHOWN)}>Show more</Button></p> : null;
-  return <div className="board-view ticket-board flex flex-col gap-6 font-sans text-base text-ink">
+  return <div ref={root} className="board-view ticket-board flex flex-col gap-6 font-sans text-base text-ink">
     {floor.ticket ? <section className="ticket-new" aria-label="New ticket">
-      <Button variant="primary" icon={<Plus {...ICON} />} className="ticket-new-toggle absolute top-8 right-20 max-[800px]:top-6 max-[800px]:right-14"
+      <Button ref={newButton} variant="primary" icon={<Plus {...ICON} />} className="ticket-new-toggle absolute top-8 right-20 max-[800px]:top-6 max-[800px]:right-14"
         aria-expanded={forming} disabled={!ticketActionsOpen(floor)}
         title={ticketActionsOpen(floor) ? undefined : 'Reconnect to Dudes before creating a ticket.'}
-        aria-haspopup="dialog" onClick={(event) => onNewTicket(event.currentTarget)}>New ticket</Button>
+        aria-haspopup="dialog" aria-keyshortcuts="c" onClick={(event) => onNewTicket(event.currentTarget)}>New ticket</Button>
     </section> : <TicketOffHint floor={floor} />}
-    <BoardToolbar view={view} choices={choices} total={rows.length} shown={shown.length} onChange={setBrowse} onClear={clear} />
+    <BoardToolbar view={view} choices={choices} total={rows.length} shown={shown.length} onChange={setBrowse} onClear={clear} onHelp={() => setHelpOpen(true)} />
+    {helpOpen ? <ShortcutHelp mac={isMac()} onClose={() => setHelpOpen(false)} /> : null}
     <div className="ticket-card-regions flex flex-col gap-6" onKeyDown={moveCardFocus}>
     {needsYou.length === 0 && hiddenNeeds === 0 ? null : <section className="ticket-lane rounded-lg border border-l-4 border-line border-l-warn bg-warn-soft/40 p-4"
       data-column={COLUMN_TONE.needs} data-lane="needs-you" aria-label="Needs you">

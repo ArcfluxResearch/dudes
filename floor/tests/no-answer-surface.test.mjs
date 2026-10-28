@@ -280,6 +280,10 @@ const BOARD_TOOLBAR = 'src/renderer/ticket/BoardToolbar.tsx';
 const TICKET_LIST = 'src/renderer/ticket/TicketList.tsx';
 const NOTIFICATION_OFFER = 'src/renderer/NotificationOffer.tsx';
 const RECOVERED_REVIEW = 'src/renderer/ticket/RecoveredReview.tsx';
+const QUICK_MENU = 'src/renderer/commands/QuickMenu.tsx';
+const COPY_LINK = 'src/renderer/ticket/CopyLink.tsx';
+const TICKET_PAGE = 'src/renderer/ticket/TicketPage.tsx';
+const SHORTCUT_HELP = 'src/renderer/ticket/ShortcutHelp.tsx';
 const ADMITTED_IN_TICKET_FORM = Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler', 'a submit handler']);
 const GIT_MODULE = 'src/renderer/git/git.ts';
 const GIT_PANEL = 'src/renderer/git/GitPanel.tsx';
@@ -310,7 +314,7 @@ const AGENT_ORDER = 'src/renderer/AgentOrder.tsx';
 const ARCHIVED_AGENTS = 'src/renderer/ArchivedAgents.tsx';
 const CONTROL_VIEW = 'src/renderer/Control.tsx';
 /** Escape closes a Control view, or the drawer from anywhere on the stage, unless a field already used it. It sends nothing. */
-const CLOSE_ON_ESCAPE = '(event) => { if (closesPanel(event)) { event.stopPropagation(); onClose(); } }';
+const CLOSE_ON_ESCAPE = '(event) => { if (closesPanel(event)) { event.stopPropagation(); if (full) closeOverlay(); else onClose(); } }';
 const CLOSE_DRAWER_ON_ESCAPE = '(event) => { if (closesDrawer(event, drawerOpen)) { event.stopPropagation(); clearSelection(); } }';
 const CLOSE_PAGE_ON_ESCAPE = '(event) => {\n        if (page !== null && closesPanel(event)) { event.stopPropagation(); closeView(); }\n      }';
 const ACTIVITY_PANEL = 'src/renderer/LogPanel.tsx';
@@ -329,6 +333,10 @@ const ADMITTED_WITHOUT_HANDLER = new Map([
   [LOGIN_PANEL, Object.freeze(['an input', 'a link'])],
   // The owned components. Field draws the input and textarea its call sites hand props to, and the tab list activates
   // the tab a key moved to.
+  // The ticket link, drawn read-only and selected when the browser refuses the clipboard.
+  [COPY_LINK, Object.freeze(['an input'])],
+  // The Board's shortcut guard looks for an editable region so that no key meant for typing is taken.
+  ['src/renderer/ticket/shortcuts.ts', Object.freeze(['an editable region'])],
   ['src/ui/Field.tsx', Object.freeze(['an input', 'a textarea'])],
   ['src/ui/Choice.tsx', Object.freeze(['an input'])],
   ['src/ui/Tabs.tsx', Object.freeze([ACTIVATION])],
@@ -345,6 +353,8 @@ const ADMITTED = new Map([
   [GOAL_PANEL, ADMITTED_IN_GOAL_FORM],
   [TICKET_BOARD, Object.freeze([...ADMITTED_IN_TICKET_FORM, 'a key handler'])], [TICKET_PANEL, ADMITTED_IN_TICKET_FORM],
   [BOARD_TOOLBAR, Object.freeze(['an input', 'a select', 'a change handler', 'a key handler'])],
+  // The command menu's search box only filters what the page already holds, and the help sheet's key handler only keeps Escape from closing the Board.
+  [QUICK_MENU, Object.freeze(['an input', 'a change handler', 'a key handler'])], [SHORTCUT_HELP, Object.freeze(['a key handler'])],
   [CHAT_PANEL, Object.freeze(['a textarea', 'an input', 'a change handler', 'a key handler'])],
   [RENAME_PANEL, Object.freeze(['an input', 'a change handler', 'a key handler'])],
   [ADD_PROJECT_FORM, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
@@ -533,6 +543,18 @@ const ADMITTED_HANDLERS = [
   { file: CONTROL_VIEW, tag: 'dialog', className: 'ticket-dialog', handler: 'onKeyDown',
     expression: "(event) => { if (event.key === 'Escape') event.stopPropagation(); }" },
   { file: TICKET_BOARD, tag: 'div', className: 'ticket-card-regions', handler: 'onKeyDown', expression: 'moveCardFocus' },
+  // The command menu and the shortcut sheet are dialogs that close on Escape without closing the panel under them. The menu's
+  // search box only filters the commands and tickets the page already holds. Nothing in them sends a request.
+  { file: QUICK_MENU, tag: 'dialog', className: 'command-menu', handler: 'onCancel',
+    expression: '(event) => { event.preventDefault(); onClose(); }' },
+  { file: QUICK_MENU, tag: 'dialog', className: 'command-menu', handler: 'onKeyDown',
+    expression: "(event) => { if (event.key === 'Escape') event.stopPropagation(); }" },
+  { file: QUICK_MENU, tag: 'input', handler: 'onChange', expression: '(event) => { setQuery(event.target.value); setActive(0); }' },
+  { file: QUICK_MENU, tag: 'input', handler: 'onKeyDown', expression: 'key' },
+  { file: SHORTCUT_HELP, tag: 'dialog', className: 'shortcut-help', handler: 'onCancel',
+    expression: '(event) => { event.preventDefault(); onClose(); }' },
+  { file: SHORTCUT_HELP, tag: 'dialog', className: 'shortcut-help', handler: 'onKeyDown',
+    expression: "(event) => { if (event.key === 'Escape') event.stopPropagation(); }" },
   // The Board's search and filters change what the page shows and are remembered in this browser. They send nothing.
   { file: BOARD_TOOLBAR, tag: 'input', handler: 'onChange', expression: '(event) => onChange({ search: event.target.value })' },
   { file: BOARD_TOOLBAR, tag: 'input', handler: 'onKeyDown', expression: 'searchKey' },
@@ -1185,7 +1207,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill('src/renderer/Roster.tsx'),
     'src/renderer/OverviewDialog.tsx',
     ...Array(3).fill(ARCHIVED_AGENTS),
-    ...Array(4).fill('src/renderer/Control.tsx'),
+    ...Array(5).fill('src/renderer/Control.tsx'),
     'src/renderer/DoneNotices.tsx',
     ...Array(3).fill('src/renderer/LiveWork.tsx'),
     'src/renderer/BoardNotes.tsx',
@@ -1203,8 +1225,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(2).fill('src/renderer/ticket/StuckActions.tsx'),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
     ...Array(9).fill(TICKET_BOARD),
-    ...Array(2).fill(BOARD_TOOLBAR),
-    TICKET_LIST,
+    ...Array(3).fill(BOARD_TOOLBAR),
+    TICKET_LIST, COPY_LINK, TICKET_PAGE, SHORTCUT_HELP,
     ...Array(2).fill(NOTIFICATION_OFFER),
     ...Array(10).fill(TICKET_PANEL),
     ...Array(13).fill(HIRE_FORM),
@@ -1234,7 +1256,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   ];
   assert.deepEqual(buttons.sort(), [...expected, AGENT_ORDER].sort());
   expected.sort();
-  const clickExpected = [...expected, LOGIN_PANEL, FLOOR_SHELL];
+  // Each command menu row takes a click, and the menu has no button of its own.
+  const clickExpected = [...expected, LOGIN_PANEL, FLOOR_SHELL, QUICK_MENU];
   clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
   // The menu items of More actions choose with `onSelect`, which the menu closes before it runs: Edit look and Retire.
   clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
@@ -1360,7 +1383,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => { if (row.second !== null) act(row.second, row.id); }',
     '() => setOpen((current) => !current)',
   ]);
-  assert.deepEqual(clicksIn(center), ['onToggle', '() => onToggle(entry.view)', 'onClose', 'closeOverlay']);
+  assert.deepEqual(clicksIn(center), ['onToggle', '() => onToggle(entry.view)', 'onClose', 'expandCard', 'closeOverlay']);
   assert.deepEqual(clicksIn(await readFile(resolve(source, 'renderer/OverviewDialog.tsx'), 'utf8')), ['onClose']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, NOTIFICATION_OFFER), 'utf8')), [
     '() => { void desktopNotificationPreference.setEnabled(true); }', 'desktopNotificationPreference.dismissOffer',
@@ -1370,7 +1393,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '(event) => onSelect(card.id, event.currentTarget)', '() => setDoneShown(doneShown + DONE_SHOWN)', '(event) => onNewTicket(event.currentTarget)',
     'clear',
   ]);
-  assert.deepEqual(clicksIn(await readFile(resolve(floor, BOARD_TOOLBAR), 'utf8')), ['() => onChange({ layout: key })', 'onClear']);
+  assert.deepEqual(clicksIn(await readFile(resolve(floor, BOARD_TOOLBAR), 'utf8')), ['() => onChange({ layout: key })', 'onClear', 'onHelp']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TICKET_LIST), 'utf8')), ['(event) => onSelect(card.id, event.currentTarget)']);
   // Opening Setup or Settings takes a fresh snapshot: the same resubscription Recheck starts.
   assert.match(center, /\{ view: 'setup', label: 'Setup', refresh: true \}/);
@@ -2794,10 +2817,12 @@ const ADMITTED_LISTENERS = Object.freeze([
   { path: 'src/renderer/chat/ChatPanel.tsx', line: "viewport.addEventListener('scroll', fit);" },
   { path: 'src/renderer/desktopNotifications.ts', line: "notification.addEventListener('click', () => {" },
   { path: 'src/renderer/floor/stream.ts', line: "document.addEventListener('visibilitychange', listener);" },
+  { path: 'src/renderer/ticket/useBoardShortcuts.ts', line: "document.addEventListener('keydown', onKey);" },
   { path: 'src/renderer/useHeldLayout.ts', line: "list.addEventListener('pointerenter', enter);" },
   { path: 'src/renderer/useHeldLayout.ts', line: "list.addEventListener('pointerleave', leave);" },
   { path: 'src/renderer/useHeldLayout.ts', line: "list.addEventListener('focusin', focusIn);" },
   { path: 'src/renderer/useHeldLayout.ts', line: "list.addEventListener('focusout', focusOut);" },
+  { path: 'src/shell.tsx', line: "document.addEventListener('keydown', onMenuKey);" },
   { path: 'src/shell.tsx', line: "preference.addEventListener('change', onThemePreference);" },
   { path: 'src/shell.tsx', line: "document.addEventListener('keydown', onShortcut);" },
   { path: 'src/signer.ts', line: "target.addEventListener(success, () => resolve(), { once: true });" },
