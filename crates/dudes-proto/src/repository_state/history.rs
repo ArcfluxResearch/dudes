@@ -471,7 +471,7 @@ pub fn prepare(
             validate_issue(lsn, record, &issue.grant, before)?;
             Ok(RepositoryHistoryChange::Unchanged)
         }
-        _ if record.turn_issue().is_some() && (was_scoped(before) || expanded(before)) => {
+        _ if record.turn_issue().is_some() && was_scoped(before) => {
             Err(RepositoryStateError::LegacyIssue)
         }
         _ => Ok(RepositoryHistoryChange::Unchanged),
@@ -608,13 +608,6 @@ fn declaration_matches(
             })
 }
 
-fn expanded(before: RepositoryHistoryFacts<'_>) -> bool {
-    before
-        .project
-        .and_then(|history| history.revisions.last_key_value())
-        .is_some_and(|(_, catalog)| catalog.entries().len() > 1)
-}
-
 fn validate_start(
     lsn: Lsn,
     start: crate::repository_state::TicketStart<'_>,
@@ -625,7 +618,6 @@ fn validate_start(
             .ticket
             .is_some_and(|ticket| ticket.repositories.declared().is_some())
             || was_scoped(before)
-            || expanded(before)
         {
             return Err(RepositoryStateError::Start);
         }

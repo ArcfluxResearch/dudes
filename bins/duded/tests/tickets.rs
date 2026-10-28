@@ -65,6 +65,7 @@ fn profile(id: &str, cwd: &Path, checks: Vec<EnrolledCheck>) -> Profile {
         checks,
         cwd: cwd.to_path_buf(),
         written_cwd: cwd.to_path_buf(),
+        repositories: None,
         department: "engineering".to_owned(),
         isolation: IsolationMode::Default,
         agent_budget: AgentBudget {
@@ -345,9 +346,11 @@ fn kinds(fixture: &Fixture) -> Vec<RecordKind> {
 #[test]
 fn checkout_returns_the_recorded_subdirectory_and_appends_nothing() {
     let fixture = Fixture::new();
-    let (settings, repo) = enrolled(&fixture);
+    let (mut settings, repo) = enrolled(&fixture);
     let directory = repo.join("source files");
     std::fs::create_dir(&directory).unwrap();
+    settings.enrollment.profiles[0].cwd = directory.clone();
+    settings.enrollment.profiles[0].written_cwd = directory.clone();
     let card = CardId::from_parts(4, 1);
     seed(
         &fixture,

@@ -63,6 +63,7 @@ pub mod machine;
 mod predicate_evidence;
 mod recovery_operation;
 mod redact;
+mod repository_admission;
 // Off in a default build. `src/testing.rs`'s header owns the reason; `cfg(test)` is here because
 // this crate's own unit tests reach the fakes through `crate::testing`, and a bare feature gate
 // would not compile.
@@ -92,4 +93,5 @@ pub use recovery_operation::{
     with_recovery_operation,
 };
 pub use redact::{Holder, REDACTED, Redactor, StreamScrubber, env_secrets};
+pub use repository_admission::RepositoryAdmission;
 pub use world::{DeviceRow, MintedFor, WorktreeRow, WorktreeState, World};

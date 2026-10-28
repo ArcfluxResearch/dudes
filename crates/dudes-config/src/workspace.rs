@@ -10,6 +10,7 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use dudes_proto::record::Hex32;
+use dudes_proto::repository::RepositorySet;
 use dudes_proto::rpc::floor::{CheckView, ChecksView, MAX_CHECKS_BYTES, WorkspaceChecks};
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, ENROLLED_CHECK_ID};
 use sha2::{Digest as _, Sha256};
@@ -88,6 +89,15 @@ pub struct NewCheck {
     pub may_already_pass: bool,
 }
 
+/// One existing repository in an explicit project configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepositoryDefinition {
+    /// Safe display label.
+    pub label: String,
+    /// Existing absolute repository directory.
+    pub path: PathBuf,
+}
+
 /// Why an edit was refused. The file is unchanged in every case.
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceError {
@@ -142,6 +152,24 @@ pub enum WorkspaceError {
     /// `remove` was given an id the file does not hold.
     #[error("no project is named `{0}`")]
     UnknownId(String),
+    /// Current configuration requires the restricted execution contract.
+    #[error(
+        "this project has explicit repositories; scoped repository execution is not available yet"
+    )]
+    ScopedExecutionUnavailable,
+    /// A repository list has invalid labels or overlapping directories.
+    #[error(
+        "repository labels must be 1 to 128 bytes without control characters, and repository roots must be distinct and nonoverlapping"
+    )]
+    InvalidRepositories,
+    /// Explicit members must be origin checkouts whose Git metadata is a directory.
+    #[error(
+        "{0} is not a plain repository checkout; explicit members cannot be linked worktrees, submodules, or use a symlinked .git directory"
+    )]
+    UnsupportedRepository(PathBuf),
+    /// The current project limit has been reached.
+    #[error("at most 32 projects may be enrolled")]
+    TooManyProjects,
     /// A check id outside 1 to 64 bytes of `[a-z][a-z0-9_-]*`.
     #[error("`{0}` is not a check id: use 1 to 64 of a-z, 0-9, _ and -, starting with a letter")]
     InvalidCheckId(String),
@@ -294,6 +322,9 @@ fn push(
     cwd: &Path,
 ) -> Result<(), WorkspaceError> {
     let list = workspaces(config, document)?;
+    if list.len() >= 32 {
+        return Err(WorkspaceError::TooManyProjects);
+    }
     if position(list, &new.id).is_some() {
         return Err(WorkspaceError::DuplicateId(new.id.clone()));
     }
@@ -569,11 +600,74 @@ pub fn directory(config: &Path, id: &str) -> Result<PathBuf, WorkspaceError> {
     let mut document = parse(config, bytes.as_deref())?;
     let list = workspaces(config, &mut document)?;
     let index = position(list, id).ok_or_else(|| WorkspaceError::UnknownId(id.to_owned()))?;
+    if list.get(index).is_some_and(|entry| {
+        entry.contains_key("repositories") || entry.contains_key("primary_repo")
+    }) {
+        return Err(WorkspaceError::ScopedExecutionUnavailable);
+    }
     list.get(index)
         .and_then(|entry| entry.get("cwd"))
         .and_then(Item::as_str)
         .map(PathBuf::from)
         .ok_or_else(|| WorkspaceError::Unreadable(config.to_path_buf()))
+}
+
+/// Replace one project's complete ordered repository configuration with existing checkouts.
+/// Other project settings and unrelated TOML remain in place.
+///
+/// # Errors
+/// Refuses unknown projects, missing or noncanonical checkouts, invalid labels and overlapping roots.
+pub fn set_repositories(
+    config: &Path,
+    id: &str,
+    repositories: &RepositorySet<RepositoryDefinition>,
+) -> Result<Edit, WorkspaceError> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut rows = ArrayOfTables::new();
+    for member in repositories.entries() {
+        let repository = &member.value;
+        let path = canonical_repository(&repository.path)?;
+        if !fs::symlink_metadata(path.join(".git")).is_ok_and(|meta| meta.file_type().is_dir()) {
+            return Err(WorkspaceError::UnsupportedRepository(path));
+        }
+        if repository.label.is_empty()
+            || repository.label.len() > 128
+            || repository.label.chars().any(char::is_control)
+            || roots
+                .iter()
+                .any(|other| path.starts_with(other) || other.starts_with(&path))
+        {
+            return Err(WorkspaceError::InvalidRepositories);
+        }
+        let mut row = Table::new();
+        row["repo_id"] = value(member.repo_id.as_str());
+        row["label"] = value(&repository.label);
+        row["path"] = value(
+            path.to_str()
+                .ok_or_else(|| WorkspaceError::NotUtf8(path.clone()))?,
+        );
+        rows.push(row);
+        roots.push(path);
+    }
+    let previous = read(config)?;
+    let mut document = parse(config, previous.as_deref())?;
+    let list = workspaces(config, &mut document)?;
+    let index = position(list, id).ok_or_else(|| WorkspaceError::UnknownId(id.to_owned()))?;
+    let entry = list.get_mut(index).expect("known project position");
+    let argv: Vec<_> = entry
+        .get("predicate_argv")
+        .and_then(Item::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect();
+    for root in &roots {
+        outside_repository(root, &argv)?;
+    }
+    entry.remove("cwd");
+    entry["primary_repo"] = value(repositories.primary_id().as_str());
+    entry["repositories"] = Item::ArrayOfTables(rows);
+    write(config, previous, document.to_string().into_bytes())
 }
 
 /// Put the file back as it was before an edit the daemon did not adopt.

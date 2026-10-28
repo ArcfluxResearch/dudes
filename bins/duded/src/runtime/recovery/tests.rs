@@ -154,11 +154,29 @@ fn append_history(daemon: &mut TestDaemon, record: dudes_proto::Record) {
     }
     assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
     assert!(daemon.sup.effects().is_empty());
+    daemon
+        .sup
+        .observe_repository_admission(daemon.ctx.repository_observation(daemon.sup.world()));
 }
 
 fn ticket_owner(daemon: &mut TestDaemon, fixture: &common::Fixture) -> dudes_types::AgentId {
     use dudes_proto::record::samples;
     use dudes_proto::{Record, RecordKind};
+    let project = fixture.state.path().canonicalize().unwrap();
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    let config = fixture.runtime.path().join("recovery-project.toml");
+    dudes_config::workspace::add(
+        &config,
+        &dudes_config::workspace::NewWorkspace::with_defaults(
+            project.clone(),
+            "main".into(),
+            "Main".into(),
+            dudes_config::check::changed_check(),
+        ),
+    )
+    .unwrap();
+    daemon.ctx.enrollment = crate::config::load_operator(&config).unwrap().enrollment;
+    daemon.observe_repository_enrollment().unwrap();
     let mut hired = samples::record(RecordKind::AgentHired);
     let Record::AgentHired {
         id,
@@ -172,7 +190,7 @@ fn ticket_owner(daemon: &mut TestDaemon, fixture: &common::Fixture) -> dudes_typ
     };
     let agent = *id;
     mcp_servers.clear();
-    *cwd = fixture.state.path().to_path_buf();
+    *cwd = project;
     *workspace = Some(dudes_proto::record::RecordedWorkspace {
         id: "main".into(),
         label: "Main".into(),

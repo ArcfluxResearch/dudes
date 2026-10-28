@@ -221,7 +221,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// that is not done names it. An agent counts when the projection recorded it under the
     /// project, or when its folder, resolved, is the project's folder or below it. A folder or
     /// projection that cannot be read counts as working, so the project stays.
-    fn removal_blocker(&self, id: &str, project: &Path) -> Option<Reason> {
+    pub(super) fn removal_blocker(&self, id: &str, project: &Path) -> Option<Reason> {
         let world = self.sup.world();
         let works =
             world

@@ -59,6 +59,8 @@ mod instruction_observations;
 pub use instruction_observations::InstructionSource;
 mod mail_wakes;
 mod recovery;
+#[cfg(test)]
+mod repository_admission_tests;
 mod ticket_review;
 #[cfg(test)]
 mod ticket_start;
@@ -530,6 +532,7 @@ pub struct Supervisor<C: Clock, R: Rng> {
     clock: C,
     rng: R,
     world: World,
+    repository_admission: crate::RepositoryAdmission,
     closing_active: bool,
     closing_recovery: bool,
     /// Agents whose recorded worktree is missing, as [`Input::MissingWorktrees`] set them.
@@ -731,6 +734,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             clock,
             rng,
             world: World::default(),
+            repository_admission: crate::RepositoryAdmission::default(),
             closing_active: false,
             closing_recovery: false,
             missing_worktrees: BTreeMap::new(),
@@ -807,6 +811,38 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// the directory is a startup fact and not a journaled one.
     pub fn set_agent_bin(&mut self, dir: Option<PathBuf>) {
         self.config.agent_bin = dir;
+    }
+
+    /// Replace current repository observations without changing journal-derived state.
+    pub fn observe_repository_admission(&mut self, admission: crate::RepositoryAdmission) {
+        self.repository_admission = admission;
+    }
+
+    /// Whether this exact hire has a current execution observation.
+    #[must_use]
+    pub fn repository_admitted(&self, agent: AgentId) -> bool {
+        self.world
+            .agents
+            .get(&agent)
+            .is_some_and(|row| self.repository_admission.allows(agent, row))
+    }
+
+    fn pause_repository_refusals(&mut self) {
+        let agents: Vec<_> = self.world.agents.iter().filter_map(|(agent, row)| {
+            (!row.retired && !row.paused && !self.repository_admitted(*agent)
+                && !self.ledger.values().any(|parked| {
+                    matches!(&parked.entry.record, Record::Pause { agent: pending, .. } if pending == agent)
+                })).then_some(*agent)
+        }).collect();
+        for agent in agents {
+            self.persist(
+                Record::Pause {
+                    agent,
+                    browser: None,
+                },
+                Then::Fold,
+            );
+        }
     }
 
     /// Accept hook and program activity samples for [`Input::ActivityFlush`] to journal.
@@ -1172,6 +1208,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         operation: &crate::RecoveryOperation<'_>,
     ) -> Result<Handled, DurableInputError> {
         self.pending.clear();
+        if !matches!(
+            &input,
+            Input::Replayed { .. } | Input::Spend { .. } | Input::Work { .. }
+        ) {
+            self.pause_repository_refusals();
+        }
         match input {
             Input::MissingWorktrees(agents) => self.set_missing_worktrees(agents),
             Input::Started => self.on_started(operation),
@@ -1487,6 +1529,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     fn persist_unobserved(&mut self, at: Timestamp, record: Record, then: Then) {
+        if record
+            .turn_issue()
+            .is_some_and(|issue| !self.repository_admitted(issue.agent))
+        {
+            return;
+        }
         let entry = Entry { at, record };
         self.next_token += 1;
         let token = PersistToken(self.next_token);
@@ -2211,6 +2259,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         recorded: Option<ModelSelection>,
         operation: &crate::RecoveryOperation<'_>,
     ) {
+        if !self.repository_admitted(agent) {
+            return;
+        }
         if !self.recovery_launch_allowed(agent, turn, operation) {
             self.ensure_recovery_admission(agent, operation);
             return;
@@ -2324,6 +2375,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         mut launch: Box<PreparedLaunch>,
         operation: &crate::RecoveryOperation<'_>,
     ) -> bool {
+        if !self.repository_admitted(agent) {
+            self.spawning.remove(&turn);
+            return false;
+        }
         if !self.recovery_launch_context_allowed(agent, turn, &launch.session, operation) {
             self.spawning.remove(&turn);
             return false;
@@ -2449,6 +2504,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         install: ManagedInstall,
         mcp_grant: Option<Lsn>,
     ) {
+        if self
+            .world
+            .turns
+            .get(&turn)
+            .is_none_or(|row| !self.repository_admitted(row.agent))
+        {
+            return;
+        }
         self.pending.push(Effect::Spawn {
             turn,
             spec,
@@ -2472,6 +2535,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         cols: u16,
         rows: u16,
     ) {
+        if !self.repository_admitted(agent) {
+            return;
+        }
         if self.compose_pair(agent, &mut spec) {
             self.pending.push(Effect::OpenPty {
                 agent,
@@ -2506,7 +2572,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(row) = self.world.agents.get(&agent).cloned() else {
             return;
         };
-        if row.retired || row.attached || row.open_turn.is_some() {
+        if row.retired
+            || row.attached
+            || row.open_turn.is_some()
+            || !self.repository_admitted(agent)
+        {
             return;
         }
         let Some(hook_command) = self
@@ -3711,7 +3781,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     fn launch_held(&self, agent: AgentId, operation: &crate::RecoveryOperation<'_>) -> bool {
-        !self.recovery_admission_allowed(agent, operation)
+        !self.repository_admitted(agent)
+            || !self.recovery_admission_allowed(agent, operation)
             || self.instructions.recovering()
             || self.instructions.pending_agents.contains(&agent)
             || self
@@ -4394,6 +4465,32 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     )]
     fn on_command(&mut self, command: Command) {
         match command {
+            Command::RecordProjectRepositories {
+                project,
+                repositories,
+            } => self.persist(
+                Record::ProjectRepositoriesRecorded {
+                    project,
+                    repositories,
+                },
+                Then::Fold,
+            ),
+            Command::SetRepositoryTrust {
+                project,
+                repo_id,
+                catalog_lsn,
+                origin,
+                pin,
+            } => self.persist(
+                Record::RepositoryTrustSet {
+                    project,
+                    repo_id,
+                    catalog_lsn,
+                    origin,
+                    pin,
+                },
+                Then::Fold,
+            ),
             Command::ConversationMessageQueued {
                 agent,
                 text,
@@ -4806,6 +4903,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             // filtered out of every re-issue since, so without this it would stay `Issued` until
             // the daemon restarted — a halt cleared hours ago still holding a turn.
             Command::Resume { agent, browser } => {
+                if !self.repository_admitted(agent) {
+                    return;
+                }
                 self.persist(
                     Record::Resume { agent, browser },
                     Then::ClearedCause { agent },

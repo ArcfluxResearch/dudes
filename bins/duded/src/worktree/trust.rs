@@ -169,7 +169,7 @@ fn vouch_for(git: &Git, origin: &Path, base: GitCommit) -> Result<Vouch, TrustRe
 }
 
 #[cfg(unix)]
-fn identity(path: &Path) -> Result<FileIdentity, TrustRefusal> {
+pub(crate) fn identity(path: &Path) -> Result<FileIdentity, TrustRefusal> {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::metadata(path).map_err(|_| TrustRefusal::NotARepository)?;
     Ok(FileIdentity {
@@ -179,7 +179,7 @@ fn identity(path: &Path) -> Result<FileIdentity, TrustRefusal> {
 }
 
 #[cfg(not(unix))]
-fn identity(_path: &Path) -> Result<FileIdentity, TrustRefusal> {
+pub(crate) fn identity(_path: &Path) -> Result<FileIdentity, TrustRefusal> {
     Err(TrustRefusal::Unsupported("this platform"))
 }
 

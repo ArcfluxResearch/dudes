@@ -247,7 +247,7 @@ fn legacy_hire(id: AgentId, cwd: PathBuf) -> Record {
     clippy::print_stdout,
     reason = "retain actual startup warning and unchanged legacy record observations"
 )]
-fn startup_warns_once_for_live_relative_cwd_without_mutating_history() {
+fn startup_warns_once_for_live_relative_cwd_and_preserves_hires() {
     let fixture = common::Fixture::new();
     let root = tempfile::tempdir().unwrap();
     let env = native_environment(&fixture, root.path());
@@ -289,10 +289,25 @@ fn startup_warns_once_for_live_relative_cwd_without_mutating_history() {
     }
     let mut daemon = NativeDaemon::start(&fixture, &env);
     let completion = daemon.stop().expect("native owned cleanup");
+    let observed = fixture.records();
     assert_eq!(
-        fixture.records(),
-        records,
-        "warning adds no journal or control record"
+        &observed[..records.len()],
+        records.as_slice(),
+        "historical hires stay exact"
+    );
+    assert_eq!(
+        &observed[records.len()..],
+        [
+            Record::Pause {
+                agent: live,
+                browser: None
+            },
+            Record::Pause {
+                agent: absolute,
+                browser: None
+            }
+        ],
+        "only live hires with unresolved current projects are paused"
     );
     let log = fs::read_to_string(fixture.runtime.path().join("daemon.stderr")).unwrap();
     assert!(

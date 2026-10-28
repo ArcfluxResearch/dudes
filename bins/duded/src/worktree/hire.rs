@@ -38,6 +38,19 @@ pub struct TrustTicket {
     pub vouch: Vouch,
 }
 
+/// One exact current enrollment member, frozen before its settings inspection.
+#[derive(Clone, Debug)]
+pub struct RepositoryTrustTarget {
+    /// Current project identity.
+    pub project: String,
+    /// Stable member identity.
+    pub repo_id: dudes_proto::repository::RepoId,
+    /// Actual validated current observation.
+    pub catalog_lsn: Lsn,
+    /// Complete current origin binding.
+    pub origin: dudes_proto::record::TrustedRepository,
+}
+
 /// Why a copy was not made, beside the refusal that says so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Why {
@@ -265,6 +278,9 @@ impl WorktreeHires {
         &self,
         params: &dudes_proto::rpc::workspace::TrustParams,
     ) -> Result<dudes_proto::rpc::workspace::TrustResult, RpcError> {
+        if let Some(repo_id) = &params.repo_id {
+            return self.trust_repository(params, repo_id);
+        }
         let refused = |text: String| RpcError {
             code: dudes_proto::rpc::ErrorCode::Refused.code(),
             message: format!("project trust: {text}"),
@@ -298,6 +314,49 @@ impl WorktreeHires {
         })?
         else {
             return Err(refused("the loop did not answer the trust call".to_owned()));
+        };
+        Ok(dudes_proto::rpc::workspace::TrustResult {
+            trusted: params.trusted,
+            changed,
+        })
+    }
+
+    fn trust_repository(
+        &self,
+        params: &dudes_proto::rpc::workspace::TrustParams,
+        repo_id: &dudes_proto::repository::RepoId,
+    ) -> Result<dudes_proto::rpc::workspace::TrustResult, RpcError> {
+        let refused = |message: String| RpcError {
+            code: dudes_proto::rpc::ErrorCode::Refused.code(),
+            message: format!("project trust: {message}"),
+            data: None,
+        };
+        let (target, vouch) = if params.trusted {
+            let Answered::RepositoryTrustTarget(target) =
+                self.handle.ask(Ask::RepositoryTrustTarget {
+                    project: params.workspace_id.clone(),
+                    repo_id: repo_id.clone(),
+                })?
+            else {
+                return Err(refused("current repository is unavailable".to_owned()));
+            };
+            self.git
+                .check_version()
+                .map_err(|error| refused(error.to_string()))?;
+            let vouch = super::trust::inspect(&self.git, &target.origin.directory)
+                .map_err(|error| refused(error.to_string()))?;
+            (Some(target), Some(Box::new(vouch)))
+        } else {
+            (None, None)
+        };
+        let Answered::TrustSet(changed) = self.handle.ask(Ask::RepositoryTrustSet {
+            target,
+            project: params.workspace_id.clone(),
+            repo_id: repo_id.clone(),
+            vouch,
+        })?
+        else {
+            return Err(refused("the trust action was not answered".to_owned()));
         };
         Ok(dudes_proto::rpc::workspace::TrustResult {
             trusted: params.trusted,

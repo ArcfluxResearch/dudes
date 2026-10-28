@@ -32,6 +32,9 @@ fn append(daemon: &mut TestDaemon, record: Record) -> Lsn {
     }
     assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
     assert!(daemon.sup.take_effects().is_empty());
+    daemon
+        .sup
+        .observe_repository_admission(daemon.ctx.repository_observation(daemon.sup.world()));
     lsn
 }
 
@@ -209,7 +212,21 @@ fn finishing(
 }
 
 fn boot_attached(fixture: &common::Fixture, project: &std::path::Path) -> (TestDaemon, AgentId) {
-    let settings = fixture.settings();
+    let project = project.canonicalize().unwrap();
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    let mut settings = fixture.settings();
+    let config = fixture.runtime.path().join("authority.toml");
+    dudes_config::workspace::add(
+        &config,
+        &dudes_config::workspace::NewWorkspace::with_defaults(
+            project.clone(),
+            "authority".into(),
+            "Authority".into(),
+            dudes_config::check::changed_check(),
+        ),
+    )
+    .unwrap();
+    settings.enrollment = crate::config::load_operator(&config).unwrap().enrollment;
     let seams = common::seams(
         &settings,
         common::SharedHost::new(),
@@ -236,7 +253,7 @@ fn boot_attached(fixture: &common::Fixture, project: &std::path::Path) -> (TestD
         panic!("canonical hire sample");
     };
     *id = agent;
-    *cwd = project.to_path_buf();
+    *cwd = project;
     *workspace = Some(RecordedWorkspace {
         id: "authority".into(),
         label: "Authority".into(),

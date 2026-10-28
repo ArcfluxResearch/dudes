@@ -129,6 +129,7 @@ mod prehost_boundary_tests;
 mod recovery;
 #[cfg(all(test, unix))]
 mod recovery_fold_tests;
+pub(crate) mod repository_admission;
 mod shared_folder;
 #[cfg(all(test, unix))]
 mod shared_folder_tests;
@@ -907,6 +908,7 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// Operator enrollment is run-local configuration, separate from journal projections. Loaded
     /// at start, and replaced only by an applied `floor.enrollment.reload`.
     pub(crate) enrollment: crate::floor_actions::Enrollment,
+    pub(crate) current_repositories: repository_admission::CurrentRepositories,
     /// The reload sequence, marks counter and resync window beside that enrollment.
     pub(crate) reloads: crate::enrollment_reload::ReloadState,
     /// Only attributed durable records populate this replayable attempt index.
@@ -1330,12 +1332,19 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     ///
     /// A journal append that did not become durable.
     pub(crate) fn started(&mut self) -> Result<()> {
+        let current_valid = self
+            .validate_repository_enrollment(&self.ctx.enrollment)
+            .is_ok();
+        self.ctx.current_repositories.invalid = !current_valid;
         self.ctx
             .inherited_native_boundaries
             .capture(self.sup.world());
         let missing = self.missing_worktrees();
         self.pump(Input::MissingWorktrees(missing))?;
         self.pump(Input::Started)?;
+        if current_valid {
+            self.observe_repository_enrollment()?;
+        }
         self.detach_gone_attachments()?;
         if self.sup.recovering_closing() {
             let attached: Vec<_> = self.sup.closing_recovery_attachments().collect();
@@ -1656,6 +1665,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 }
                 Job::EnrollmentReload { read, reply } => {
                     let answer = self.enrollment_reload(&read);
+                    let _ = reply.send(answer);
+                }
+                Job::EnrollmentInvalid { seq, reply } => {
+                    let answer = self.invalidate_repository_enrollment(seq);
                     let _ = reply.send(answer);
                 }
                 Job::EnrollmentResync { window_id } => {
@@ -2244,6 +2257,17 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         read: &crate::enrollment_reload::ReloadRead,
     ) -> Result<dudes_proto::rpc::floor::EnrollmentReloadResult, dudes_proto::rpc::RpcError> {
         use crate::enrollment_reload::{AddResync, Resync};
+        if read.seq < self.ctx.current_repositories.invalid_seq {
+            return Err(refused(
+                "a newer project configuration read must be resolved first",
+            ));
+        }
+        if let Err(failure) = self.validate_repository_enrollment(&read.config.enrollment) {
+            self.invalidate_repository_enrollment(read.seq)?;
+            return Err(refused(&format!(
+                "project configuration refused: {failure}"
+            )));
+        }
         if read.apply.is_some() {
             self.require_journal_writes()?;
         }
@@ -2269,7 +2293,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             condense_model: self.ctx.condense_model.clone(),
             ..crate::config::OperatorConfig::default()
         };
-        let decision = crate::enrollment_reload::decide(
+        let previous_reload = self.ctx.reloads.clone();
+        let decision = match crate::enrollment_reload::decide(
             &self.ctx.enrollment,
             &mut self.ctx.reloads,
             read,
@@ -2277,13 +2302,38 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             self.ctx.memory_config,
             running,
             self.ctx.clock.now(),
-        )
-        .map_err(|error| crate::enrollment_reload::invalid(&error))?;
+        ) {
+            Ok(decision) => decision,
+            Err(error) => {
+                self.invalidate_repository_enrollment(read.seq)?;
+                return Err(crate::enrollment_reload::invalid(&error));
+            }
+        };
         if read.apply.is_some() {
             decision.log(read.pid);
         }
+        if !decision.result.applied
+            && (decision.result.refused.is_some()
+                || !decision.result.removed.is_empty()
+                || decision.result.changed.iter().any(|changed| {
+                    changed.fields.iter().any(|field| {
+                        matches!(field.as_str(), "cwd" | "repositories" | "primary_repo")
+                    })
+                }))
+        {
+            self.invalidate_repository_enrollment(read.seq)?;
+        }
         if decision.result.applied {
-            self.ctx.enrollment = decision.candidate;
+            let previous = std::mem::replace(&mut self.ctx.enrollment, decision.candidate);
+            if let Err(failure) = self.observe_repository_enrollment() {
+                self.ctx.enrollment = previous;
+                self.ctx.reloads = previous_reload;
+                self.invalidate_repository_enrollment(read.seq)?;
+                return Err(refused(&format!(
+                    "project configuration could not be observed: {failure}"
+                )));
+            }
+            self.pump_or_refuse(Input::Tick)?;
             self.revoke_stale_grants();
             self.install_switches(decision.switches);
             match decision.resync {
@@ -2413,6 +2463,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 
     fn onboarding_profile_eligible(&self, profile: &crate::floor_actions::Profile) -> bool {
+        if profile.repositories.is_some() || self.ctx.current_repositories.invalid {
+            return false;
+        }
         let path_valid = profile
             .cwd
             .canonicalize()
@@ -2606,6 +2659,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .profile(&request.workspace_id)
             .cloned()
             .ok_or(OnboardRefusal::Forbidden)?;
+        self.ctx
+            .require_current_hire(self.sup.world(), &profile.cwd)
+            .map_err(|_| OnboardRefusal::Forbidden)?;
         // A hire is bound to the workspace revision its page was offered, so a
         // re-point that lands while a page shows the old entry cannot redirect a hire from it.
         if request.workspace_revision != profile.revision() {
@@ -2938,6 +2994,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             session_digest: session.digest(),
         };
         let agent = request.agent;
+        if request.verb == ControlVerb::Resume
+            && !self.ctx.repository_allowed(self.sup.world(), agent)
+        {
+            return Err(ControlRefusal::UnavailableNoEffect);
+        }
         let pumped = self.pump_browser(
             session,
             match request.verb {
@@ -3413,6 +3474,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// The running profile whose id the agent's hire recorded, while it enrolls the directory the
     /// agent was hired from (a worktree hire's lease origin).
     fn agent_profile(&self, agent: AgentId) -> Result<Option<Profile>, GoalRefusal> {
+        if !self.ctx.repository_allowed(self.sup.world(), agent) {
+            return Ok(None);
+        }
         let recorded = self.ctx.projections.agent(agent).map_err(|error| {
             tracing::error!(%error, ?agent, "could not read the agent projection");
             GoalRefusal::UnavailableNoEffect
@@ -4239,6 +4303,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "current observations, checked folding and effect execution retain one first-error boundary"
+    )]
     fn pump_inputs_with_work_refresh(
         &mut self,
         report: &mut PumpReport,
@@ -4297,6 +4365,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 {
                     break 'work Err(error);
                 }
+                self.sup.observe_repository_admission(
+                    self.ctx.repository_observation(self.sup.world()),
+                );
                 let Self {
                     sup, ctx, closing, ..
                 } = self;
@@ -4582,45 +4653,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             Ask::Mcp(params) => self.agent_mcp(params).map(Answered::Mcp),
             Ask::Model { params, by } => self.agent_model(params, by).map(|()| Answered::Done),
             Ask::ReplaceGoal(_) => unreachable!("replacement was handled before the writer fence"),
-            // The gate that keeps `agent.hire` and the launch reading one registry. Both ask
-            // `Supervisor::adapters`; without this arm a hire on a provider with no adapter is
-            // journaled, folded and shown on the floor as an agent, and then `Supervisor::launch`
-            // finds nothing and returns — for ever, with no record saying why.
-            //
-            // In front of the append, for the reason the `sandbox` refusal is: a
-            // refused hire must journal nothing, and `AgentHired` cannot be un-journaled. In the
-            // runtime rather than in `dudes-rpc` for the reason `Ask::Ask`'s gate below is — it
-            // reads state that lives behind the port. `dudes-rpc` depends on neither
-            // `dudes-supervisor` nor `dudes-providers`, so the door cannot see this registry at
-            // all.
-            Ask::Hire(params) if self.sup.adapters().get(params.provider).is_none() => {
-                Err(no_adapter_refusal(params.provider))
-            }
-            // **After the no-adapter guard, not beside it, and the order is a decision.** This
-            // query has to ask the named provider's adapter for its billing-variable list, and a
-            // provider with no adapter has no list to give. Placed first, this arm would own that
-            // `None` itself, and its natural handling would turn a misspelled `--provider` into a
-            // panic where the arm above makes it a refusal that names the provider. Placed here,
-            // the `None` has already been answered and the query is only ever asked about an
-            // adapter that exists.
-            Ask::Hire(params) if self.hire_wants_a_ceiling(&params) => {
-                Err(ceiling_required_refusal(params.provider))
-            }
-            Ask::Hire(params)
-                if params.model.is_some() && self.model_fixed_by_config(params.provider) =>
-            {
-                Err(error(ErrorCode::Refused, MODEL_FIXED_NOTE.to_owned()))
-            }
             Ask::Hire(params) => {
-                self.mcp_admission(&params)?;
-                if let Some((field, code)) = unsupported_hire_option(&params) {
-                    return Err(error(
-                        code,
-                        format!("agent.hire: {} does not support `{field}`", params.provider),
-                    ));
-                }
-                self.require_reserve(crate::reserve::Candidate::Agent(&params.budget))?;
-                self.refuse_overlap(&params.cwd, None)?;
+                self.hire_guards(&params, None)?;
                 self.refuse_shared_hire(&params, &params.cwd)?;
                 if params.checkout.is_some() || params.from.is_some() {
                     return Err(error(
@@ -4833,12 +4867,35 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Ok(Answered::Done)
             }
             Ask::TrustTarget(workspace_id) => match self.ctx.enrollment.profile(&workspace_id) {
-                Some(profile) => Ok(Answered::TrustTarget(profile.cwd.clone())),
+                Some(profile)
+                    if profile.repositories.is_none() && !self.ctx.current_repositories.invalid =>
+                {
+                    Ok(Answered::TrustTarget(profile.cwd.clone()))
+                }
+                Some(profile) if profile.repositories.is_some() => {
+                    Err(refused("choose the repository to trust with --repo <id>"))
+                }
+                Some(_) => Err(refused(
+                    "current project configuration must be resolved before trusting it",
+                )),
                 None => Err(error(
                     ErrorCode::InvalidParams,
                     format!("project trust: no project is named `{workspace_id}`"),
                 )),
             },
+            Ask::RepositoryTrustTarget { project, repo_id } => self
+                .repository_trust_target(&project, &repo_id)
+                .map(|target| Answered::RepositoryTrustTarget(Box::new(target)))
+                .map_err(|failure| refused(&format!("project trust: {failure}"))),
+            Ask::RepositoryTrustSet {
+                project,
+                repo_id,
+                target,
+                vouch,
+            } => self
+                .set_repository_trust(project, repo_id, target.as_deref(), vouch.as_deref())
+                .map(Answered::TrustSet)
+                .map_err(|failure| refused(&format!("project trust: {failure}"))),
             Ask::FloorDevice(change) => {
                 self.pump_or_refuse(Input::Command(Command::RecordFloorDevice(change)))?;
                 Ok(Answered::Done)
@@ -4861,7 +4918,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     .ctx
                     .enrollment
                     .profile(&workspace_id)
-                    .is_some_and(|profile| profile.cwd == directory);
+                    .is_some_and(|profile| {
+                        !self.ctx.current_repositories.invalid
+                            && profile.repositories.is_none()
+                            && profile.cwd == directory
+                    });
                 if !enrolled {
                     return Err(error(
                         ErrorCode::Refused,
@@ -4945,6 +5006,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
             Ask::Resume(agent) => {
                 self.require_live_agent(agent)?;
+                if !self.ctx.repository_allowed(self.sup.world(), agent) {
+                    return Err(refused(
+                        "current project repositories must be resolved before resuming",
+                    ));
+                }
                 self.command(Command::Resume {
                     agent,
                     browser: None,
@@ -6610,6 +6676,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         params: &HireParams,
         own: Option<dudes_types::WorktreeId>,
     ) -> Result<(), RpcError> {
+        self.ctx
+            .require_current_hire(self.sup.world(), &params.cwd)
+            .map_err(|failure| crate::worktree::unavailable(failure.to_string()))?;
         if self.sup.adapters().get(params.provider).is_none() {
             return Err(no_adapter_refusal(params.provider));
         }
@@ -6749,6 +6818,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         for id in stale {
             if let Err(error) = self.revoke_grant(id.clone()) {
                 tracing::warn!(project = %id, %error.message, "could not revoke a trust grant");
+            }
+        }
+        let stale: Vec<_> = self
+            .sup
+            .world()
+            .repository_trust
+            .values()
+            .filter(|grant| {
+                grant.pin.is_some()
+                    && self
+                        .ctx
+                        .current_repositories
+                        .observed
+                        .get(&grant.project)
+                        .and_then(|project| project.repositories.get(&grant.repo_id))
+                        .is_none_or(|member| member.origin != grant.origin)
+            })
+            .map(|grant| (grant.project.clone(), grant.repo_id.clone()))
+            .collect();
+        for (project, repo_id) in stale {
+            if let Err(error) = self.set_repository_trust(project.clone(), repo_id, None, None) {
+                tracing::warn!(%project, %error, "could not revoke a repository trust grant");
             }
         }
     }
@@ -6901,6 +6992,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let _ = reply.send(Err("Floor is shutting down".to_owned()));
                 }
                 Job::EnrollmentReload { reply, .. } => {
+                    let _ = reply.send(Err(refused("the daemon is shutting down")));
+                }
+                Job::EnrollmentInvalid { reply, .. } => {
                     let _ = reply.send(Err(refused("the daemon is shutting down")));
                 }
                 Job::ProtocolFailed(key) => {
@@ -8274,8 +8368,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         };
         let (instruction_owner, instruction_started) =
             self.start_attached_boundary(sup, agent, &spec.cwd, queue, waiting)?;
-        self.pending_attached_calls
-            .insert(instruction_started, instruction_owner);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(mailbox) = &mut self.mailbox {
             mailbox.begin_subject_context(
@@ -8287,6 +8379,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         self.children
             .redactor()
             .hold_env(dudes_supervisor::Holder::Pty(agent), &spec.env);
+        if !self.repository_allowed(sup.world(), agent) {
+            return self.record_failed_pty_open(
+                agent,
+                instruction_started,
+                PtyOpenFailure::Failed(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "current project repositories refuse this attachment",
+                )),
+                queue,
+                report,
+            );
+        }
+        self.pending_attached_calls
+            .insert(instruction_started, instruction_owner);
         match self.pty_host.open(spec, cols, rows) {
             Ok((pty, key)) => {
                 self.remember_attached_boundary(
@@ -8471,6 +8577,24 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         publication: FloorPublication,
         recovery: Option<recovery::AppendSubject<'_>>,
     ) -> Result<CheckedAppend> {
+        if let Record::WorktreeLeased { origin, .. } = &entry.record {
+            self.require_current_hire(world, origin)?;
+        }
+        if let Some(hire) = entry.record.hire() {
+            self.require_hire_authority(world, hire)?;
+        }
+        if let Some(issue) = entry.record.turn_issue() {
+            anyhow::ensure!(
+                self.repository_allowed(world, issue.agent),
+                "current repository admission refused this turn"
+            );
+        }
+        if let Some(start) = entry.record.ticket_start() {
+            anyhow::ensure!(
+                self.repository_allowed(world, start.agent),
+                "current repository admission refused this ticket"
+            );
+        }
         if matches!(
             entry.record,
             Record::Mail { .. }

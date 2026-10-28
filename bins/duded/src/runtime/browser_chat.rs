@@ -454,6 +454,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .agents
             .get(&issued.agent)
             .ok_or_else(|| std::io::Error::other("managed turn owner is unavailable"))?;
+        if !self.repository_turn_allowed(sup.world(), turn) {
+            return Err(std::io::Error::other(
+                "current project repositories do not admit this turn",
+            ));
+        }
         let authority = issued
             .repositories
             .as_ref()
@@ -506,6 +511,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the final authority check and actual host-call outcome stay in one visible boundary"
+    )]
     fn spawn_owned<R: Rng>(
         &mut self,
         turn: dudes_types::TurnId,
@@ -537,6 +546,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     before();
                 }
                 if !self.recovery_dispatch_allowed(sup, turn) {
+                    return Ok(());
+                }
+                if !self.repository_turn_allowed(sup.world(), turn) {
                     return Ok(());
                 }
                 let holder = dudes_supervisor::Holder::Turn(turn);

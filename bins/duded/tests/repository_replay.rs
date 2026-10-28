@@ -24,6 +24,8 @@ use dudes_types::{AgentId, GitCommit, Lsn, Timestamp, WorktreeId};
 use serde_json::json;
 
 mod common;
+#[path = "repository_replay/current_enrollment.rs"]
+mod current_enrollment;
 use common::{Fixture, SharedHost, TestClock};
 
 struct RealRunner(OneShot);
@@ -50,6 +52,30 @@ impl PredicateRunner for RealRunner {
 
     fn sweep(&self) {
         self.0.sweep();
+    }
+
+    fn run_captured(
+        &self,
+        spec: &dudes_providers::launch::LaunchSpec,
+        timeout: Duration,
+        stdout_cap: usize,
+    ) -> io::Result<duded::predicate::PredicateCaptured> {
+        self.0
+            .run_captured(spec, timeout, stdout_cap)
+            .map(|outcome| match outcome {
+                dudes_host::CapturedOutcome::Finished {
+                    exit,
+                    stdout,
+                    truncated,
+                    timed_out,
+                } => duded::predicate::PredicateCaptured::Finished {
+                    exit,
+                    stdout,
+                    truncated,
+                    timed_out,
+                },
+                dudes_host::CapturedOutcome::Swept => duded::predicate::PredicateCaptured::Swept,
+            })
     }
 }
 
@@ -563,7 +589,7 @@ fn losing_a_nonprimary_copy_holds_the_whole_hire_and_retains_the_other_copies() 
 }
 
 #[test]
-fn a_replayed_scoped_goal_is_held_before_any_legacy_issue_or_provider_spawn() {
+fn a_replayed_scoped_goal_is_paused_before_any_legacy_issue_or_provider_spawn() {
     let fixture = Fixture::new();
     let story = Story::seed(&fixture);
     let mut goal = samples::record(RecordKind::GoalSet);
@@ -577,13 +603,21 @@ fn a_replayed_scoped_goal_is_held_before_any_legacy_issue_or_provider_spawn() {
     drop(writer);
     let host = SharedHost::new();
     let (mut running, _) = start(&fixture, &host);
+    let before = fixture.entries();
+    assert!(
+        running
+            .handle
+            .ask(duded::ports::Ask::Resume(story.hire.id))
+            .is_err()
+    );
+    assert_eq!(fixture.entries(), before);
     running.stop(ExitCause::Ended);
     assert!(
         fixture
             .records()
             .iter()
-            .any(|record| matches!(record, Record::AgentHeld {
-        agent, cause: dudes_proto::AutomaticHold::LaunchRefused { .. }, ..
+            .any(|record| matches!(record, Record::Pause {
+        agent, ..
     } if *agent == story.hire.id))
     );
     assert!(

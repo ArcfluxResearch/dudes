@@ -650,6 +650,24 @@ pub enum Ask {
     WorktreeRemoved(dudes_types::WorktreeId),
     /// The directory an enrolled project is, for a trust grant to read.
     TrustTarget(String),
+    /// The exact current member an operator is about to inspect.
+    RepositoryTrustTarget {
+        /// Enrolled project.
+        project: String,
+        /// Stable repository member.
+        repo_id: dudes_proto::repository::RepoId,
+    },
+    /// Append a per-member grant after rechecking the inspected current binding.
+    RepositoryTrustSet {
+        /// The current member, absent when revoking a retained binding.
+        target: Option<Box<crate::worktree::hire::RepositoryTrustTarget>>,
+        /// Project identity.
+        project: String,
+        /// Member identity.
+        repo_id: dudes_proto::repository::RepoId,
+        /// Complete inspected grant, absent for revocation.
+        vouch: Option<Box<crate::worktree::trust::Vouch>>,
+    },
     /// `workspace.trust`: journal the grant, or its revocation when `vouch` is absent, once the
     /// project is still enrolled at `directory`.
     TrustSet {
@@ -727,6 +745,8 @@ pub enum Answered {
     WorktreeEntries(Vec<dudes_proto::rpc::worktree::WorktreeEntry>),
     /// The directory an enrolled project is.
     TrustTarget(PathBuf),
+    /// Current member with its exact observed revision and origin.
+    RepositoryTrustTarget(Box<crate::worktree::hire::RepositoryTrustTarget>),
     /// Whether a trust call appended a record: a revocation with no grant to revoke appends none.
     TrustSet(bool),
     /// Nothing to report; any record the command appended is durable.
@@ -959,6 +979,13 @@ pub enum Job {
         read: Box<crate::enrollment_reload::ReloadRead>,
         /// The method's result, or its refusal.
         reply: Sender<Result<dudes_proto::rpc::floor::EnrollmentReloadResult, RpcError>>,
+    },
+    /// An authenticated operator reload could not supply a valid current configuration.
+    EnrollmentInvalid {
+        /// The read's sequence, so an older failed read cannot revoke a later adoption.
+        seq: u64,
+        /// Acknowledged after current admission is closed and pauses are durable.
+        reply: Sender<Result<(), RpcError>>,
     },
     /// The add-only resync window ended.
     EnrollmentResync {
@@ -1742,6 +1769,14 @@ impl Handle {
 
     pub(crate) fn enrollment_resync(&self, window_id: u64) {
         let _ = self.jobs.send(Job::EnrollmentResync { window_id });
+    }
+
+    pub(crate) fn enrollment_invalid(&self, seq: u64) -> Result<(), RpcError> {
+        let (reply, answers) = mpsc::channel();
+        self.jobs
+            .send(Job::EnrollmentInvalid { seq, reply })
+            .map_err(|_| unavailable())?;
+        answers.recv().map_err(|_| unavailable())?
     }
 
     /// Wrap the loop's sender.

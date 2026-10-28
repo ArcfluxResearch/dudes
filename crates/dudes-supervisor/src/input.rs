@@ -640,7 +640,7 @@ pub enum Input {
         /// The not-appended browser dispatch intent being refused, when applicable.
         dispatch_token: Option<PersistToken>,
     },
-    /// The exact Attached port call failed after its starting observation was durable.
+    /// An Attached opening attempt failed after its starting observation was durable.
     InstructionAttachedOpenFailed {
         /// Captured physical starting observation, unaffected by a successor attachment.
         started_lsn: Lsn,
@@ -894,6 +894,27 @@ pub enum Command {
         /// The repository vouched for. Absent when `trusted` is false.
         repository: Option<dudes_proto::record::TrustedRepository>,
         /// The settings vouched for. Absent when `trusted` is false.
+        pin: Option<dudes_proto::record::TrustPin>,
+    },
+    /// Append a complete current configuration after daemon-side identity and reference checks.
+    RecordProjectRepositories {
+        /// Stable project identity.
+        project: String,
+        /// Validated ordered origins.
+        repositories:
+            dudes_proto::repository::RepositorySet<dudes_proto::repository::CatalogRepository>,
+    },
+    /// Append one inspected operator grant or revoke its retained binding.
+    SetRepositoryTrust {
+        /// Stable project identity.
+        project: String,
+        /// Stable repository member.
+        repo_id: dudes_proto::repository::RepoId,
+        /// Validated observed revision.
+        catalog_lsn: Lsn,
+        /// Original binding retained on revocation.
+        origin: dudes_proto::record::TrustedRepository,
+        /// Complete settings pin, absent on revocation.
         pin: Option<dudes_proto::record::TrustPin>,
     },
     /// Record a change to the Floor's device table.

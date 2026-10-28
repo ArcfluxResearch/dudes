@@ -178,6 +178,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             },
         }
         .ok_or_else(|| refusal(TicketRefusal::ProjectUnavailable, CardStatus::Todo))?;
+        if profile.repositories.is_some() || self.ctx.current_repositories.invalid {
+            return Err(refusal(TicketRefusal::ProjectUnavailable, CardStatus::Todo));
+        }
         let done_when = check_of(
             profile,
             request.done_when.as_deref(),
