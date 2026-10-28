@@ -22,7 +22,7 @@ export function History({ floor, history }: { readonly floor: FloorState; readon
         className="flex items-baseline justify-between gap-3">
         <span className="min-w-0">{historySentence(event, nameOf)}
           {event.kind === 'asked'
-            ? <span className="ticket-history-question mt-0.5 block text-small text-muted wrap-anywhere whitespace-pre-wrap">{questionWords(floor, event.agent, event.question_lsn) ?? TEXT_NOT_KEPT}</span>
+            ? <span className="ticket-history-question mt-0.5 block max-h-24 overflow-y-auto text-small text-muted wrap-anywhere whitespace-pre-wrap">{questionWords(floor, event.agent, event.question_lsn) ?? TEXT_NOT_KEPT}</span>
             : null}</span>
         <RelativeTime at={event.at} className="shrink-0 text-small text-muted" />
       </li>)}</ol>}
