@@ -16,12 +16,12 @@ const WASH: Readonly<Record<NoticeTone, string>> = { info: 'bg-surface', warn: '
 /** The notice stack's host, fixed over the bottom-left corner of the stage, and the banner row under the top bar. */
 export const NOTICE_AREA = cn(
   'notice-area pointer-events-none fixed bottom-[max(16px,env(safe-area-inset-bottom,0px))] left-4 z-(--layer-notices) box-border flex',
-  'max-h-[min(70dvh,448px)] w-[min(416px,calc(100vw-32px))] flex-col justify-end in-data-[focus=true]:left-auto in-data-[focus=true]:right-4 max-[800px]:left-2 max-[800px]:right-2 max-[800px]:w-auto',
-  'in-data-[focus=true]:max-h-[min(40dvh,224px)] max-[800px]:max-h-[min(40dvh,224px)]',
+  'max-h-[min(70dvh,448px)] w-[min(416px,calc(100vw-32px))] flex-col justify-end in-data-[focus=true]:left-auto in-data-[focus=true]:right-4 max-[801px]:left-2 max-[801px]:right-2 max-[801px]:w-auto',
+  'in-data-[focus=true]:max-h-[min(40dvh,224px)] max-[801px]:max-h-[min(40dvh,224px)]',
 );
 export const NOTICE_BANNER = cn(
   'notice-banner relative z-(--layer-notices) box-border data-[host=fixed]:fixed data-[host=fixed]:inset-x-0 data-[host=fixed]:top-0',
-  'data-[host=sticky]:sticky data-[host=sticky]:top-0 max-[800px]:data-[host=top]:fixed max-[800px]:data-[host=top]:inset-x-0 max-[800px]:data-[host=top]:top-0',
+  'data-[host=sticky]:sticky data-[host=sticky]:top-0 max-[801px]:data-[host=top]:fixed max-[801px]:data-[host=top]:inset-x-0 max-[801px]:data-[host=top]:top-0',
 );
 
 /** A floating notice: one card for every kind, its edge naming how serious it is. */

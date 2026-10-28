@@ -16,6 +16,8 @@ export interface SettingsWorkspace {
 export interface SettingsReport {
   /** Whether the daemon can open the system's folder dialog. */
   readonly folder_picker: boolean;
+  /** The folder new projects are created in, as the operator's file spells it, or null when none may be. */
+  readonly create_parent: string | null;
   readonly switches: Readonly<Record<(typeof SWITCHES)[number], boolean>>;
   readonly budget: {
     readonly floor_usd_per_day_micros: string | null;
@@ -47,6 +49,10 @@ function decimal(value: unknown): value is string {
 
 function ceiling(value: unknown): value is string | null { return value === null || decimal(value); }
 
+function createParent(value: unknown): value is string | null {
+  return value === null || (typeof value === 'string' && value.length > 0 && UTF8.encode(value).length <= 1024 && !/\p{Cc}/u.test(value));
+}
+
 function workspace(value: unknown): SettingsWorkspace | null {
   if (!exact(value, WORKSPACE_KEYS) || typeof value.workspace_id !== 'string'
     || !/^[A-Za-z0-9_-]{1,128}$/.test(value.workspace_id) || typeof value.label !== 'string'
@@ -59,8 +65,8 @@ function workspace(value: unknown): SettingsWorkspace | null {
 }
 
 export function decodeSettingsReport(value: unknown): SettingsReport | null {
-  if (!exact(value, ['switches', 'folder_picker', 'budget', 'providers', 'workspaces', 'about'])
-    || typeof value.folder_picker !== 'boolean' || !exact(value.switches, SWITCHES) || Object.values(value.switches).some((enabled) => typeof enabled !== 'boolean')
+  if (!exact(value, ['switches', 'folder_picker', 'create_parent', 'budget', 'providers', 'workspaces', 'about'])
+    || typeof value.folder_picker !== 'boolean' || !createParent(value.create_parent) || !exact(value.switches, SWITCHES) || Object.values(value.switches).some((enabled) => typeof enabled !== 'boolean')
     || !exact(value.budget, ['floor_usd_per_day_micros', 'per_turn_usd_micros', 'per_turn_tokens'])
     || !ceiling(value.budget.floor_usd_per_day_micros) || !decimal(value.budget.per_turn_usd_micros)
     || !decimal(value.budget.per_turn_tokens) || !Array.isArray(value.providers)
@@ -77,6 +83,7 @@ export function decodeSettingsReport(value: unknown): SettingsReport | null {
   const switches = value.switches as unknown as SettingsReport['switches'];
   return Object.freeze({
     folder_picker: value.folder_picker,
+    create_parent: value.create_parent,
     switches: Object.freeze({ answer: switches.answer, control: switches.control, recovery: switches.recovery, goal: switches.goal,
       retire: switches.retire, terminal: switches.terminal, hire: switches.hire, git: switches.git, renew: switches.renew,
       board: switches.board, diff: switches.diff, project: switches.project }),

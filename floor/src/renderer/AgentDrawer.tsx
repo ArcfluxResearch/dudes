@@ -44,7 +44,7 @@ export function Receipts({ floor, leaveFocusTo, focused = false }: {
 }) {
   return (
     <div className={cn('receipts grid max-h-[55%] w-[min(var(--side-width),45vw)] flex-none gap-2 overflow-auto pr-2 pt-2 empty:hidden',
-      'has-[[class~=recovery-receipt]:focus-within]:max-h-[calc(100dvh-8rem)] max-[800px]:m-2 max-[800px]:w-auto max-[800px]:p-0', focused && 'p-0')}>
+      'has-[[class~=recovery-receipt]:focus-within]:max-h-[calc(100dvh-8rem)] max-[801px]:m-2 max-[801px]:w-auto max-[801px]:p-0', focused && 'p-0')}>
       <PauseAllReceipt leaveFocusTo={leaveFocusTo} />
       <RenameStatus />
       <LookStatus />
@@ -59,11 +59,11 @@ export function Receipts({ floor, leaveFocusTo, focused = false }: {
 }
 
 const DRAWER = cn('agent-drawer m-0 box-border flex min-w-0 flex-col overflow-hidden border-0 border-solid border-line bg-surface text-ink',
-  'max-[800px]:fixed max-[800px]:inset-0 max-[800px]:z-1 max-[800px]:px-4 max-[800px]:pt-4 max-[800px]:pb-[calc(2rem+var(--notice-room,0px))]',
-  'max-[800px]:not-has-[[data-detail-tab=chat]]:top-[var(--banner-height,0px)]',
-  'max-[800px]:has-[[data-detail-tab=chat]]:top-[var(--chat-viewport-top,0px)] max-[800px]:has-[[data-detail-tab=chat]]:bottom-auto',
-  'max-[800px]:has-[[data-detail-tab=chat]]:h-[var(--chat-viewport-height,100dvh)]',
-  'max-[800px]:has-[[data-detail-tab=chat]]:pb-[calc(max(1rem,env(safe-area-inset-bottom,0px))+var(--notice-room,0px))]',
+  'max-[801px]:fixed max-[801px]:inset-0 max-[801px]:z-1 max-[801px]:px-4 max-[801px]:pt-4 max-[801px]:pb-[calc(2rem+var(--notice-room,0px))]',
+  'max-[801px]:not-has-[[data-detail-tab=chat]]:top-[var(--banner-height,0px)]',
+  'max-[801px]:has-[[data-detail-tab=chat]]:top-[var(--chat-viewport-top,0px)] max-[801px]:has-[[data-detail-tab=chat]]:bottom-auto',
+  'max-[801px]:has-[[data-detail-tab=chat]]:h-[var(--chat-viewport-height,100dvh)]',
+  'max-[801px]:has-[[data-detail-tab=chat]]:pb-[calc(max(1rem,env(safe-area-inset-bottom,0px))+var(--notice-room,0px))]',
   '[&_[class~=agent-detail]]:border-0 [&_[class~=agent-detail]]:bg-transparent [&_[class~=agent-detail]]:p-0 [&_[class~=agent-detail]]:shadow-none',
   '[&_[class~=agent-detail-identity]]:pr-8');
 const DOCKED = 'min-[801px]:relative min-[801px]:z-(--layer-panels) min-[801px]:w-[min(var(--side-width),45vw)] min-[801px]:flex-none min-[801px]:border-l min-[801px]:p-4';

@@ -82,10 +82,20 @@ test('no notice reserves room: the page has no rail, no bottom padding for it, a
   assert.match(area, /\bfixed\b/);
   assert.match(area, /pointer-events-none/);
   assert.doesNotMatch(area, /(?:^|\s|')h-/, 'the stack area sizes to its notices');
-  const shellRoot = /className=\{cn\('shell [^']*'/.exec(shell)?.[0] ?? '';
-  assert.doesNotMatch(shellRoot.replace(' max-[800px]:has-[.roster[data-sheet]]:pb-[4.5rem]', ''), /\bpb-/,
+  const shellRoot = /<main ref=\{shellRef\}[^>]*?className="shell [^"]*"/s.exec(shell)?.[0] ?? '';
+  assert.doesNotMatch(shellRoot.replace(' max-[801px]:has-[.roster[data-sheet]]:pb-[4.5rem]', ''), /\bpb-/,
     'the page keeps no bottom padding except a phone\'s room for its roster bar, so a full-height page never scrolls');
   assert.match(constant('NOTICE_BANNER'), /\brelative\b/, 'the banner sits in the page under the top bar');
-  assert.match(shellRoot, /max-\[800px\]:pt-\[var\(--banner-height,0px\)\]/, 'a phone makes room for its fixed banner and nothing else');
+  assert.match(shellRoot, /max-\[801px\]:pt-\[var\(--banner-height,0px\)\]/, 'a phone makes room for its fixed banner and nothing else');
 });
 
+test('the banner rides at the top of a page dialog instead of covering the top bar', async () => {
+  const shell = await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8');
+  const projects = await readFile(resolve(import.meta.dirname, '../src/renderer/project/ProjectsView.tsx'), 'utf8');
+  const hosted = /const BANNER_IN_DIALOG = '([^']*)';/.exec(shell)?.[1].split(',').map((part) => part.trim());
+  assert.deepEqual(hosted, ['.ticket-dialog', '.project-dialog']);
+  assert.match(shell, /modal\.matches\(BANNER_IN_DIALOG\) \? 'sticky' : 'fixed'/, 'a fixed banner sits over the top bar the dialog leaves in view');
+  assert.match(projects, /className="project-dialog"/, 'the Add project dialog is the one the shell hosts the banner in');
+  assert.match(await readFile(resolve(import.meta.dirname, '../src/renderer/notices/look.tsx'), 'utf8'), /data-\[host=sticky\]:sticky data-\[host=sticky\]:top-0/,
+    'the sticky host keeps the banner at the dialog top');
+});

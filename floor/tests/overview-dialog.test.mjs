@@ -64,15 +64,15 @@ function overview() {
   }));
 }
 
-test('the top bar lists exactly Overview, Board, Log, Setup and Settings, with no count for a waiting agent', () => {
+test('the top bar lists exactly Overview, Board, Projects, Log, Setup and Settings, with no count for a waiting agent', () => {
   subscribe([ada(), grace()]);
   assert.deepEqual(CONTROL_VIEWS.map(({ view, label }) => [view, label]), [
-    ['overview', 'Overview'], ['board', 'Board'], ['log', 'Log'], ['setup', 'Setup'], ['settings', 'Settings'],
+    ['overview', 'Overview'], ['board', 'Board'], ['projects', 'Projects'], ['log', 'Log'], ['setup', 'Setup'], ['settings', 'Settings'],
   ]);
   const html = renderToStaticMarkup(createElement(ControlNav, { floor: store.getFloorState(), view: null, onToggle() {} }));
   assert.deepEqual([...html.matchAll(/<button\b([^>]*)>([^<]+)<\/button>/g)]
     .map(([, attrs, label]) => [/\bid="([^"]+)"/.exec(attrs)?.[1], label]), [
-    ['view-overview', 'Overview'], ['view-board', 'Board'], ['view-log', 'Log'],
+    ['view-overview', 'Overview'], ['view-board', 'Board'], ['view-projects', 'Projects'], ['view-log', 'Log'],
     ['view-setup', 'Setup'], ['view-settings', 'Settings'],
   ]);
   const open = renderToStaticMarkup(createElement(ControlNav, { floor: store.getFloorState(), view: 'overview', onToggle() {} }));

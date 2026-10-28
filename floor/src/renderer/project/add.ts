@@ -11,7 +11,8 @@ import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { editDraft, mintAttemptId } from '../onboarding/hire.ts';
 
 export const REFUSALS = ['not_found', 'not_a_folder', 'not_allowed', 'not_git', 'changed', 'busy', 'config_changed', 'full',
-  'unknown', 'working', 'open_tickets', 'action_off'] as const;
+  'unknown', 'working', 'open_tickets', 'action_off', 'bad_name', 'no_parent', 'parent_unusable', 'exists', 'git_unavailable',
+  'create_failed'] as const;
 export type Refusal = (typeof REFUSALS)[number];
 export type NotHireable = 'ceiling_required' | 'check_not_runnable';
 
@@ -150,10 +151,11 @@ export function decodeAdded(status: number, text: string): Decoded<ProjectAdded>
 
 const PREVIEW_PATH = '/floor/project/preview';
 const ADD_PATH = '/floor/project/add';
+const CREATE_PATH = '/floor/project/create';
 const REMOVE_PATH = '/floor/project/remove';
 const CHOOSE_PATH = '/floor/project/choose';
 
-async function post(path: typeof PREVIEW_PATH | typeof ADD_PATH | typeof REMOVE_PATH | typeof CHOOSE_PATH, body: unknown, deps: AddDeps): Promise<{ status: number; text: string } | null> {
+async function post(path: typeof PREVIEW_PATH | typeof ADD_PATH | typeof CREATE_PATH | typeof REMOVE_PATH | typeof CHOOSE_PATH, body: unknown, deps: AddDeps): Promise<{ status: number; text: string } | null> {
   if (!deps.signedIn()) return null;
   try {
     const response = await deps.fetch(path, {
@@ -266,6 +268,12 @@ export function refusalLine(reason: Refusal): string {
     case 'open_tickets': return 'The project still has open tickets. Finish or remove them first, then remove the project.';
     case 'working': return 'An agent still works in this project. Retire it first, then remove the project.';
     case 'action_off': return 'Adding and removing projects from this page is turned off. Turn on Add and remove projects in Settings.';
+    case 'bad_name': return 'A project name is 1 to 64 letters, digits, dots, dashes or underscores, and starts with a letter or digit.';
+    case 'no_parent': return 'Dudes has no folder set for new projects, so it cannot create one here.';
+    case 'parent_unusable': return 'Dudes cannot use the folder set for new projects. Check that it exists, is a real folder and is one you can write to.';
+    case 'exists': return 'Something with that name is already in the folder for new projects. Choose another name.';
+    case 'git_unavailable': return 'Dudes needs git 2.28 or newer to start a repository, and could not find it.';
+    case 'create_failed': return 'Dudes could not start the repository for the new project.';
   }
 }
 
@@ -296,6 +304,157 @@ export function addedLine(added: ProjectAdded): string {
   }
   if (added.reason === 'check_not_runnable') return `${added.label} is added, but its check cannot run on this computer yet.`;
   return `${added.label} is added. You can hire an agent in it now.`;
+}
+
+export interface ProjectCreated extends ProjectAdded {
+  /** Where the new project's folder is. */
+  readonly folder: string;
+}
+
+/** A folder a failed creation left, and whether Dudes could confirm it is the one it made. */
+export interface LeftBehind {
+  readonly path: string;
+  readonly verified: boolean;
+}
+
+/** What the settings file holds after a creation failed once it had begun to change. */
+export type ConfigNote = 'unchanged' | 'restored' | 'conflict' | 'failed' | 'unknown';
+const CONFIG_NOTES: readonly unknown[] = ['unchanged', 'restored', 'conflict', 'failed', 'unknown'];
+
+export interface CreateRefusal {
+  readonly reason: Refusal;
+  readonly left: LeftBehind | null;
+  readonly config: ConfigNote | null;
+}
+
+export type CreateState =
+  | { readonly kind: 'idle' }
+  | { readonly kind: 'creating'; readonly name: string; readonly attempt: string }
+  | { readonly kind: 'created'; readonly created: ProjectCreated }
+  | { readonly kind: 'refused'; readonly name: string; readonly refusal: CreateRefusal }
+  | { readonly kind: 'unsure'; readonly name: string; readonly attempt: string };
+
+let creation: CreateState = Object.freeze({ kind: 'idle' });
+const createListeners = new Set<() => void>();
+
+export function getCreateState(): CreateState { return creation; }
+
+export function subscribeToCreate(listener: () => void): () => void {
+  createListeners.add(listener);
+  return () => { createListeners.delete(listener); };
+}
+
+function commitCreate(next: CreateState): void {
+  creation = Object.freeze(next);
+  for (const listener of [...createListeners]) listener();
+}
+
+export function resetCreate(): void { commitCreate({ kind: 'idle' }); }
+
+export type AddMode = 'folder' | 'new';
+let addMode: AddMode = 'folder';
+
+/** Which way of adding a project the dialog shows. It lives here, not in the component, so it survives the page re-drawing the section when the new project appears. */
+export function getAddMode(): AddMode { return addMode; }
+
+export function chooseAddMode(next: AddMode): void {
+  addMode = next;
+  for (const listener of [...createListeners]) listener();
+}
+
+/** The same rule the daemon applies: 1 to 64 letters, digits, dots, dashes and underscores, starting with a letter or digit. */
+export function validProjectName(name: string): boolean { return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name); }
+
+export type DecodedCreate =
+  | { readonly kind: 'ok'; readonly value: ProjectCreated }
+  | { readonly kind: 'refused'; readonly refusal: CreateRefusal }
+  | { readonly kind: 'pending' }
+  | { readonly kind: 'failed' };
+
+export function decodeCreated(status: number, text: string): DecodedCreate {
+  const fields = object(text);
+  if (fields === null) return { kind: 'failed' };
+  if (status === 202 && fields.state === 'pending') return { kind: 'pending' };
+  if (status === 409 && fields.state === 'refused' && (REFUSALS as readonly unknown[]).includes(fields.reason)) {
+    const left = fields.left_behind;
+    const leftOk = left === undefined || (typeof left === 'object' && left !== null && typeof (left as Record<string, unknown>).path === 'string'
+      && typeof (left as Record<string, unknown>).verified === 'boolean');
+    if (!leftOk || (fields.config !== undefined && !CONFIG_NOTES.includes(fields.config))) return { kind: 'failed' };
+    const found = left as { path: string; verified: boolean } | undefined;
+    return { kind: 'refused', refusal: Object.freeze({ reason: fields.reason as Refusal,
+      left: found === undefined ? null : Object.freeze({ path: found.path, verified: found.verified }),
+      config: (fields.config as ConfigNote | undefined) ?? null }) };
+  }
+  const reason = reasonOf(fields.reason);
+  if (status !== 200 || typeof fields.project_id !== 'string' || typeof fields.label !== 'string' || typeof fields.folder !== 'string'
+    || typeof fields.check_label !== 'string' || reason === undefined || typeof fields.hireable !== 'boolean'
+    || fields.hireable !== (reason === null)) return { kind: 'failed' };
+  return { kind: 'ok', value: Object.freeze({ projectId: fields.project_id, label: fields.label, folder: fields.folder,
+    checkLabel: fields.check_label, reason }) };
+}
+
+/**
+ * Create the project `typed` names, in the folder the operator's file sets. A retry after an answer
+ * that never arrived keeps the attempt, so the daemon answers again instead of making a second folder.
+ */
+export async function createNamed(typed: string, deps: AddDeps = browserAddDeps): Promise<void> {
+  const current = creation;
+  if (current.kind === 'creating') return;
+  const name = typed.trim();
+  if (!validProjectName(name)) return;
+  const attempt = current.kind === 'unsure' && current.name === name ? current.attempt : mintAttemptId(deps.random);
+  commitCreate({ kind: 'creating', name, attempt });
+  const body = { name, attempt_id: attempt };
+  for (let tries = 0; tries <= MOST_PENDING_RETRIES; tries += 1) {
+    const answer = await post(CREATE_PATH, body, deps);
+    const decoded = answer === null ? null : decodeCreated(answer.status, answer.text);
+    if (decoded === null || decoded.kind === 'failed') return commitCreate({ kind: 'unsure', name, attempt });
+    if (decoded.kind === 'refused') {
+      commitCreate({ kind: 'refused', name, refusal: decoded.refusal });
+      if (decoded.refusal.left !== null) deps.refresh();
+      return;
+    }
+    if (decoded.kind === 'ok') {
+      commitCreate({ kind: 'created', created: decoded.value });
+      if (decoded.value.reason === null) editDraft({ workspaceId: decoded.value.projectId });
+      deps.refresh();
+      return;
+    }
+    await deps.wait(500);
+  }
+  commitCreate({ kind: 'unsure', name, attempt });
+}
+
+/** The sentences for a creation that did not finish: what happened, then where any folder is and what the settings file holds. */
+export function createRefusalLines(refusal: CreateRefusal, name: string, parent: string): readonly string[] {
+  const lines: string[] = [];
+  switch (refusal.reason) {
+    case 'exists': lines.push(`${parent} already has something named ${name}. Choose another name, or add that folder with Use an existing folder.`); break;
+    case 'create_failed': lines.push(refusal.left === null
+      ? 'Dudes could not start the repository, so it removed the folder it made. Nothing was added.'
+      : 'Dudes could not start the repository, and could not safely remove the folder it made.'); break;
+    case 'config_changed': lines.push(refusal.left === null
+      ? 'The settings file changed while the project was being made, so nothing was added.'
+      : 'Dudes made the folder, but could not add it as a project.'); break;
+    default: lines.push(refusalLine(refusal.reason));
+  }
+  if (refusal.left !== null) {
+    lines.push(`The folder is still at ${refusal.left.path}.`);
+    if (!refusal.left.verified) lines.push('Dudes could not confirm that this is the folder it made, so look inside before you delete anything.');
+    lines.push('Dudes does not delete it for you. Delete it yourself, or add it with Use an existing folder.');
+  }
+  if (refusal.config === 'restored' || refusal.config === 'unchanged') lines.push('The settings file is as it was.');
+  if (refusal.config === 'conflict' || refusal.config === 'failed' || refusal.config === 'unknown') {
+    lines.push('Dudes could not confirm what the settings file holds, so check whether it lists this project.');
+  }
+  return lines;
+}
+
+/** What a created project looks like to the person who made it. */
+export function createdLine(created: ProjectCreated): string {
+  if (created.reason === 'ceiling_required') return `${created.label} is created in ${created.folder}. Set a spending limit for it in Settings before you hire here.`;
+  if (created.reason === 'check_not_runnable') return `${created.label} is created in ${created.folder}, but its check cannot run on this computer yet.`;
+  return `${created.label} is created in ${created.folder}. You can hire an agent in it now.`;
 }
 
 export interface ProjectRemoved {

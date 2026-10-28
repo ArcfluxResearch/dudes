@@ -239,12 +239,14 @@ export class Journey {
     const views = [
       { name: 'office', selector: '#office-open', ready: `location.hash === '' && !!document.querySelector('.office-canvas') && !document.querySelector('.control-panel')` },
       { name: 'board', selector: '#view-board', ready: `document.querySelector('.control-panel')?.dataset.view === 'board'` },
+      { name: 'projects', selector: '#view-projects', ready: `location.hash === '#/projects' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'projects'` },
       { name: 'log', selector: '#view-log', ready: `location.hash === '#/log' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'log'` },
       { name: 'setup', selector: '#view-setup', ready: `location.hash === '#/setup' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'setup'` },
       { name: 'settings', selector: '#view-settings', ready: `location.hash === '#/settings' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'settings'` },
     ];
+    const sizes = [[1440, 900], [800, 500], [801, 500], [390, 844]];
     try {
-      for (const [width, height] of [[1440, 900], [390, 844]]) {
+      for (const [width, height] of sizes) {
         await this.run.cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, this.run.cdp.session);
         for (const view of views) {
           await this.layoutOffice();
@@ -259,7 +261,7 @@ export class Journey {
             `viewport ${width}x${height} ${view.name} crew=${crewSize}: scrollHeight=${actual.scrollHeight}, innerWidth=${actual.windowWidth}, innerHeight=${actual.windowHeight}`);
         }
       }
-      console.log(`PASS viewport heights: 10 views, crew=${crewSize}`);
+      console.log(`PASS viewport heights: ${sizes.length * views.length} views, crew=${crewSize}`);
     } finally {
       await this.run.cdp.send('Emulation.setDeviceMetricsOverride', { width: saved.width, height: saved.height, deviceScaleFactor: 1, mobile: false }, this.run.cdp.session);
       await this.layoutOffice();
@@ -281,7 +283,7 @@ export class Journey {
   }
 
   async otherScreens() {
-    for (const name of ['log', 'setup', 'settings']) {
+    for (const name of ['projects', 'log', 'setup', 'settings']) {
       await this.click(`#view-${name}`);
       await this.until(`location.hash === '#/${name}' && document.querySelector('.control-panel[data-page]')?.dataset.view === '${name}'
         && !document.querySelector('.office-canvas')`, `${name} did not open as a page`);

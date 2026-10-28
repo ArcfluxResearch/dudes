@@ -3,10 +3,11 @@
 import { FolderOpen } from 'lucide-react';
 import { useId, useState, useSyncExternalStore } from 'react';
 
-import { Button, ICON, Input, Field, Notice } from '../../ui/index.ts';
+import { Button, ICON, Input, Field, Notice, Tab, TabList } from '../../ui/index.ts';
 import type { FloorState } from '../floor/store.ts';
-import { addPreviewed, addedLine, askToRemove, chooseFolder, getAddState, getRemoveState, lookAtFolder, notChosenLine, previewLines,
-  refusalLine, removeAsked, resetAdd, resetRemove, subscribeToAdd, subscribeToRemove } from './add.ts';
+import { addPreviewed, addedLine, askToRemove, chooseAddMode, chooseFolder, createNamed, createRefusalLines, createdLine, getAddMode, getAddState,
+  getCreateState, getRemoveState, lookAtFolder, notChosenLine, previewLines, refusalLine, removeAsked, resetAdd, resetCreate, resetRemove,
+  subscribeToAdd, subscribeToCreate, subscribeToRemove, validProjectName } from './add.ts';
 
 /** Whether this session may add a project from the page. */
 export function projectAddOn(floor: FloorState): boolean {
@@ -20,11 +21,13 @@ export function projectAddOn(floor: FloorState): boolean {
 export function AddProject({ floor, off }: { readonly floor: FloorState; readonly off?: React.ReactNode }) {
   const add = useSyncExternalStore(subscribeToAdd, getAddState, getAddState);
   const [typed, setTyped] = useState('');
+  const mode = useSyncExternalStore(subscribeToCreate, getAddMode, getAddMode);
   const id = useId();
   if (!projectAddOn(floor)) return off === undefined ? null : <>{off}</>;
   const busy = add.kind === 'looking' || add.kind === 'adding' || add.kind === 'choosing';
   const shown = add.kind === 'preview' || add.kind === 'adding' || add.kind === 'unsure' ? add.preview : null;
-  return <form data-add-project="form" aria-label="Add a project" className="flex w-full max-w-xl flex-col gap-3"
+  const parent = floor.settings?.create_parent ?? null;
+  const folderForm = <form data-add-project="form" aria-label="Add a project" className="flex w-full max-w-xl flex-col gap-3"
     onSubmit={(event) => {
       event.preventDefault();
       if (!busy) void lookAtFolder(typed);
@@ -60,6 +63,47 @@ export function AddProject({ floor, off }: { readonly floor: FloorState; readonl
     {add.kind === 'refused' ? <Notice tone="danger" role="alert">{refusalLine(add.reason)}</Notice> : null}
     {add.kind === 'not_chosen' ? <Notice tone="danger" role="alert">{notChosenLine(add.why)}</Notice> : null}
     {add.kind === 'failed' ? <Notice tone="danger" role="alert">Dudes did not answer. Nothing was added. Try again.</Notice> : null}
+  </form>;
+  if (parent === null) return folderForm;
+  return <div className="flex w-full max-w-xl flex-col gap-3">
+    <TabList label="How to add a project" className="overflow-y-hidden">
+      <Tab selected={mode === 'folder'} onClick={() => { chooseAddMode('folder'); }}>Use an existing folder</Tab>
+      <Tab selected={mode === 'new'} onClick={() => { chooseAddMode('new'); }}>Create a new project</Tab>
+    </TabList>
+    <div role="tabpanel">{mode === 'folder' ? folderForm : <CreateProject parent={parent} />}</div>
+  </div>;
+}
+
+/**
+ * The box where a newcomer names a project that does not exist yet. Dudes makes the folder in the
+ * place the operator's file sets, starts a git repository in it and adds it; the page never names a path.
+ */
+export function CreateProject({ parent }: { readonly parent: string }) {
+  const create = useSyncExternalStore(subscribeToCreate, getCreateState, getCreateState);
+  const [typed, setTyped] = useState('');
+  const id = useId();
+  const busy = create.kind === 'creating';
+  const name = typed.trim();
+  const valid = validProjectName(name);
+  return <form data-add-project="create-form" aria-label="Create a project" className="flex w-full max-w-xl flex-col gap-3"
+    onSubmit={(event) => {
+      event.preventDefault();
+      if (!busy && valid) void createNamed(typed);
+    }}>
+    <Field label="Project name" id={id} hint={`Dudes makes this folder in ${parent} and starts a git repository in it.`}
+      error={typed !== '' && !valid ? refusalLine('bad_name') : undefined}>
+      <Input name="name" type="text" autoComplete="off" spellCheck={false} className="font-mono" placeholder="my-app" value={create.kind === 'created' ? '' : typed}
+        disabled={busy} onChange={(event) => { setTyped(event.target.value); if (create.kind !== 'idle') resetCreate(); }} />
+    </Field>
+    <div><Button type="submit" variant="primary" data-add-project="create-submit" loading={busy}
+      aria-disabled={busy || !valid || undefined}
+      title={busy ? 'Wait for the project to be created.' : !valid ? 'Enter a project name first.' : undefined}>
+      {busy ? 'Creating…' : create.kind === 'unsure' ? 'Try again' : 'Create project'}</Button></div>
+    {create.kind === 'unsure' ? <Notice tone="warn" role="alert">Dudes did not confirm the project. Try again; it will not make the folder twice.</Notice> : null}
+    {create.kind === 'created' ? <Notice tone="ok" role="status">{createdLine(create.created)}</Notice> : null}
+    {create.kind === 'refused' ? <Notice tone="danger" role="alert">
+      <div className="flex flex-col gap-1">{createRefusalLines(create.refusal, create.name, parent).map((line) => <p key={line} className="m-0">{line}</p>)}</div>
+    </Notice> : null}
   </form>;
 }
 

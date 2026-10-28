@@ -210,7 +210,7 @@ export function TerminalPanelView({ channel, floor, theme = 'light' }: {
   const failed = ended && channel.ending !== 'detached';
   const detaching = channel.phase === 'detaching';
   return (
-    <section className="terminal-panel relative z-(--layer-terminal) max-[800px]:data-[terminal-expanded=true]:h-screen box-border flex min-h-0 flex-1 flex-col gap-3 rounded-lg border border-line bg-surface p-3 font-sans text-ink" aria-labelledby="terminal-title" data-terminal-agent-id={channel.agent}
+    <section className="terminal-panel relative z-(--layer-terminal) max-[801px]:data-[terminal-expanded=true]:h-screen box-border flex min-h-0 flex-1 flex-col gap-3 rounded-lg border border-line bg-surface p-3 font-sans text-ink" aria-labelledby="terminal-title" data-terminal-agent-id={channel.agent}
       data-terminal-phase={channel.phase} data-terminal-ending={ended ? channel.ending : undefined}
       data-terminal-expanded={expanded ? 'true' : 'false'}>
       <header className="terminal-head flex flex-wrap items-center justify-between gap-x-3 gap-y-2">

@@ -314,6 +314,8 @@ pub struct Settings {
     pub floor_diff_enabled: bool,
     /// [`crate::config::OperatorConfig::project_enabled`].
     pub floor_project_enabled: bool,
+    /// [`crate::config::OperatorConfig::create_parent`].
+    pub floor_create_parent: Option<String>,
     /// Where the Floor's engine sign-in gets its terminal. `None` leaves every sign-in refused as
     /// unavailable.
     pub engine_login: Option<EngineLogin>,

@@ -833,7 +833,7 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
         {inBar ? null : fullLine}
         <p className={cn('office-shelf', LINE, 'absolute bottom-12 right-[calc(var(--covered-right,0px)_+_0.75rem)] flex flex-wrap items-baseline gap-x-2 gap-y-0.5',
           'max-w-[min(22rem,calc(100%_-_var(--covered-left,0px)_-_var(--covered-right,0px)_-_1.5rem))] rounded-lg border border-line bg-surface px-3 py-2 shadow-card',
-          'max-[800px]:bottom-[3.75rem] data-[shelf=unavailable]:text-muted')} data-shelf={shelf.state}>
+          'max-[801px]:bottom-[3.75rem] data-[shelf=unavailable]:text-muted')} data-shelf={shelf.state}>
           <span className="office-shelf-label">{caption.label}</span>
           <strong className="office-shelf-value text-title font-semibold tabular-nums">{caption.value}</strong>
           {caption.day === null ? null : <small className="office-shelf-day basis-full text-small text-muted">{caption.day}</small>}
