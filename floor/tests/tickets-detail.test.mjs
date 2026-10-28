@@ -138,7 +138,7 @@ test('the facts around it: state, agent, check, round and the note', async () =>
   assert.match(html, /<dt>Agent<\/dt><dd>Ada<\/dd>/);
   assert.match(html, /<dt>Done when<\/dt><dd>default passes<\/dd>/);
   assert.match(html, /<dt>Round<\/dt><dd>1<\/dd>/);
-  assert.match(html, /<h4>Note<\/h4><p class="ticket-text">Fix the flaky test<\/p>/);
+  assert.match(html, /<h4>Note<\/h4><div class="ticket-text md[^"]*"><p>Fix the flaky test<\/p><\/div>/);
 });
 
 test('a ticket in Needs you shows its sentence, and a queued one the daemon\'s own words', async () => {

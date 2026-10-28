@@ -5,7 +5,8 @@
 // failed search for a closing delimiter is remembered so it never runs again, and nesting, table
 // size and element count are capped. Nothing sets innerHTML, and no attribute is taken from the
 // text: a link is its words followed by the address as text, never an anchor, and an image or raw
-// HTML stays literal.
+// HTML stays literal. One surface, a ticket's note, may turn links on: then an `http` or `https` address becomes an
+// anchor that opens in a new tab, and every other scheme stays text.
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -48,12 +49,13 @@ export const MARKDOWN = cn(
 );
 
 /** Every element the renderer can produce, so no tag name ever comes from the text. */
-type Tag = 'p' | 'br' | 'strong' | 'em' | 'code' | 'pre' | 'div' | 'span' | 'ul' | 'ol' | 'li' | 'blockquote'
+type Tag = 'a' | 'p' | 'br' | 'strong' | 'em' | 'code' | 'pre' | 'div' | 'span' | 'ul' | 'ol' | 'li' | 'blockquote'
   | 'table' | 'thead' | 'tbody' | 'tr' | 'th' | 'td';
-type Props = { readonly className?: string; readonly start?: number };
+type Props = { readonly className?: string; readonly start?: number; readonly href?: string };
 
-function tag(type: Tag, key: number, { className, start }: Props, c: ReactNode): ReactNode {
+function tag(type: Tag, key: number, { className, start, href }: Props, c: ReactNode): ReactNode {
   switch (type) {
+    case 'a': return <a key={key} href={href} target="_blank" rel="noopener noreferrer" className={className}>{c}</a>;
     case 'p': return <p key={key} className={className}>{c}</p>;
     case 'br': return <br key={key} className={className} />;
     case 'strong': return <strong key={key} className={className}>{c}</strong>;
@@ -79,6 +81,8 @@ function tag(type: Tag, key: number, { className, start }: Props, c: ReactNode):
 class Context {
   count = 0;
   private key = 0;
+
+  constructor(readonly links: boolean) {}
 
   el(type: Tag, props: Props, children: ReactNode): ReactNode {
     this.key += 1;
@@ -177,6 +181,11 @@ function bracket(text: string, at: number, to: number, ends: ReadonlyMap<number,
   return urlEnd === undefined ? null : { close: k, urlEnd };
 }
 
+/** An address a note may link to: `http` or `https`, and one the browser parses as such. */
+export function webAddress(url: string): boolean {
+  return /^https?:\/\//i.test(url) && URL.canParse(url);
+}
+
 function inline(ctx: Context, text: string, from: number, to: number, allowLink: boolean): ReactNode[] {
   const out: ReactNode[] = [];
   const failed = new Set<string>();
@@ -250,11 +259,15 @@ function inline(ctx: Context, text: string, from: number, to: number, allowLink:
           buffer += text.slice(i, found.urlEnd + 1);
         } else {
           const label = inline(ctx, text, i + 1, found.close, false);
-          flush();
-          out.push(...label);
           const url = text.slice(found.close + 2, found.urlEnd);
-          buffer += `${label.length > 0 ? ' ' : ''}(${url})`;
           flush();
+          if (ctx.links && webAddress(url)) {
+            out.push(ctx.el('a', { href: url }, label.length > 0 ? label : ctx.text(url)));
+          } else {
+            out.push(...label);
+            buffer += `${label.length > 0 ? ' ' : ''}(${url})`;
+            flush();
+          }
         }
         i = found.urlEnd + 1;
       } else {
@@ -498,8 +511,8 @@ function blocks(ctx: Context, lines: readonly string[], depth: number): ReactNod
   return out;
 }
 
-export function parseAgentMarkdown(text: string): ReactNode[] {
-  const ctx = new Context();
+export function parseAgentMarkdown(text: string, links = false): ReactNode[] {
+  const ctx = new Context(links);
   let cut = text.length;
   if (text.length > PARSE_LIMIT) {
     cut = text.lastIndexOf('\n', PARSE_LIMIT);
@@ -524,7 +537,7 @@ function useFrameText(text: string): string {
   return shown;
 }
 
-export function AgentMarkdown({ text }: { readonly text: string }) {
+export function AgentMarkdown({ text, links = false }: { readonly text: string; readonly links?: boolean }) {
   const shown = useFrameText(text);
-  return <>{useMemo(() => parseAgentMarkdown(shown), [shown])}</>;
+  return <>{useMemo(() => parseAgentMarkdown(shown, links), [shown, links])}</>;
 }

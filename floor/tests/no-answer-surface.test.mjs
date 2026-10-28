@@ -283,6 +283,9 @@ const NOTIFICATION_OFFER = 'src/renderer/NotificationOffer.tsx';
 const RECOVERED_REVIEW = 'src/renderer/ticket/RecoveredReview.tsx';
 const QUICK_MENU = 'src/renderer/commands/QuickMenu.tsx';
 const COPY_LINK = 'src/renderer/ticket/CopyLink.tsx';
+const NOTE_FIELD = 'src/renderer/ticket/NoteField.tsx';
+const NOTE_EDITOR = 'src/renderer/ticket/NoteRichEditor.tsx';
+const MARKDOWN_RENDERER = 'src/renderer/chat/markdown.tsx';
 const TICKET_PAGE = 'src/renderer/ticket/TicketPage.tsx';
 const SHORTCUT_HELP = 'src/renderer/ticket/ShortcutHelp.tsx';
 const ADMITTED_IN_TICKET_FORM = Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler', 'a submit handler']);
@@ -330,6 +333,8 @@ const ADMITTED_WITHOUT_HANDLER = new Map([
   [SETUP_VIEW, Object.freeze(['a link'])], [SETTINGS_VIEW, Object.freeze(['a link'])], [STREAM_NOTICE, Object.freeze(['a link'])],
   [RECOVERED_REVIEW, Object.freeze(['a link'])], [FIRST_TASK, Object.freeze(['a link'])],
   [GOAL_PANEL, Object.freeze(['a link'])],
+  // A ticket note's link: only the note turns links on, and only an http or https address becomes one.
+  [MARKDOWN_RENDERER, Object.freeze(['a link'])],
   // The sign-in link the engine printed, drawn whole in a read-only field and offered as one link to open in a new tab.
   [LOGIN_PANEL, Object.freeze(['an input', 'a link'])],
   // The owned components. Field draws the input and textarea its call sites hand props to, and the tab list activates
@@ -353,6 +358,8 @@ const ADMITTED = new Map([
   [ACTIVITY_PANEL, Object.freeze(['an input', 'a select', 'a change handler'])],
   [GOAL_PANEL, ADMITTED_IN_GOAL_FORM],
   [TICKET_BOARD, Object.freeze([...ADMITTED_IN_TICKET_FORM, 'a key handler'])], [TICKET_PANEL, ADMITTED_IN_TICKET_FORM],
+  // The note field's plain text box. The rich editor beside it is Tiptap's own contenteditable and draws no control.
+  [NOTE_FIELD, Object.freeze(['a textarea', 'a change handler'])],
   [BOARD_TOOLBAR, Object.freeze(['an input', 'a select', 'a change handler', 'a key handler'])],
   // The command menu's search box only filters what the page already holds, and the help sheet's key handler only keeps Escape from closing the Board.
   [QUICK_MENU, Object.freeze(['an input', 'a change handler', 'a key handler'])], [SHORTCUT_HELP, Object.freeze(['a key handler'])],
@@ -449,6 +456,7 @@ const ADMITTED_HANDLERS = [
     expression: '(event) => {\n            if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;\n            const target = detailTabTarget(tabs, id, event.key);\n            if (target === null) return;\n            event.preventDefault();\n            event.stopPropagation();\n            onTabChange(target);\n            event.currentTarget.ownerDocument.getElementById(`agent-detail-tab-${target}`)?.focus();\n          }' },
   { file: TERMINAL_PANEL, tag: 'div', className: 'terminal-actions', handler: 'onKeyDown', expression: TERMINAL_HEADER_KEYS },
   { file: TERMINAL_PANEL, tag: 'textarea', handler: 'onFocus', expression: '(event) => event.currentTarget.select()' },
+  { file: NOTE_FIELD, tag: 'textarea', handler: 'onChange', expression: '(event) => onNote(event.target.value)' },
   { file: FIRST_RUN_GUIDE, tag: 'aside', className: null, handler: 'onKeyDown',
     expression: "(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }" },
   { file: FIRST_TASK, tag: 'section', className: null, handler: 'onKeyDown',
@@ -800,6 +808,8 @@ function urlAttributesIn(text, file) {
       if (file === SETTINGS_VIEW && expression.getText(syntax) === ADMITTED_RELEASE_NOTES_HREF) continue;
       // The engine's own sign-in link, which `offerableLink` has already refused unless it is a plain https address.
       if (file === LOGIN_PANEL && expression.getText(syntax) === 'link') continue;
+      // A ticket note's link, which `webAddress` has already refused unless it is an http or https address.
+      if (file === MARKDOWN_RENDERER && tag === 'a' && expression.getText(syntax) === 'href') continue;
       found.push({ tag, name, expression: expression.getText(syntax) });
     }
   }
@@ -1199,7 +1209,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, the Projects page\'s Add project, Open board, ticket count and dialog buttons, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation, '
-  + 'and checkout differences\' explicit show, refresh, hide, open and more-files controls', async () => {
+  + 'the note field\'s Write and Preview tabs and the note editor\'s formatting buttons, and checkout differences\' explicit show, refresh, hide, open and more-files controls', async () => {
   const buttons = [];
   const clicks = [];
   for (const path of await filesUnder(source, ['.ts', '.tsx', '.html'])) {
@@ -1236,6 +1246,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     TICKET_LIST, COPY_LINK, TICKET_PAGE, SHORTCUT_HELP,
     ...Array(2).fill(NOTIFICATION_OFFER),
     ...Array(10).fill(TICKET_PANEL),
+    ...Array(2).fill(NOTE_FIELD),
+    NOTE_EDITOR,
     ...Array(13).fill(HIRE_FORM),
     HIRE_ENTRY,
     ...Array(8).fill(RETIRE_PANEL),

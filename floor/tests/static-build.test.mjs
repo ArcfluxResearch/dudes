@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test from 'node:test';
-import { servedOutputPath, validateRuntimeNotices } from '../scripts/write-release-manifest.mjs';
+import { editorNotices, servedOutputPath, validateRuntimeNotices } from '../scripts/write-release-manifest.mjs';
 
 const dist = resolve(import.meta.dirname, '../dist');
 
@@ -48,6 +48,6 @@ test('release manifest covers the static build and excludes build tools', async 
   // The interface libraries are carried once a screen imports the owned components, and not before.
   assert.deepEqual(
     carried.filter((entry) => !entry.startsWith('lucide-react@') && !entry.startsWith('tailwind-merge@')),
-    ['@xterm/xterm@6.0.0@MIT', 'react-dom@19.3.1@MIT', 'react@19.3.1@MIT', 'scheduler@0.28.0@MIT', 'three@0.186.1@MIT'],
+    ['@xterm/xterm@6.0.0@MIT', 'react-dom@19.3.1@MIT', 'react@19.3.1@MIT', 'scheduler@0.28.0@MIT', 'three@0.186.1@MIT', ...editorNotices].sort(),
   );
 });

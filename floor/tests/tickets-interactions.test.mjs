@@ -61,7 +61,9 @@ function pageForTickets() {
   const queued = [];
   const modals = [];
   const previousRaf = globalThis.requestAnimationFrame;
+  const previousCancel = globalThis.cancelAnimationFrame;
   globalThis.requestAnimationFrame = (run) => { queued.push(run); return queued.length; };
+  globalThis.cancelAnimationFrame = () => {};
   page.flushFocus = () => { for (const run of queued.splice(0)) run(); };
   Object.defineProperties(prototype, {
     isConnected: { get() { return page.document.body.contains(this); } },
@@ -116,7 +118,7 @@ function pageForTickets() {
   };
   page.document.querySelector = (selector) => page.document.body.querySelector(selector);
   const restore = page.restore;
-  page.restore = () => { restore(); globalThis.requestAnimationFrame = previousRaf; };
+  page.restore = () => { restore(); globalThis.requestAnimationFrame = previousRaf; globalThis.cancelAnimationFrame = previousCancel; };
   return page;
 }
 

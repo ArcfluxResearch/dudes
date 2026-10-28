@@ -286,6 +286,27 @@
     margin: 0;
   }
 
+  /* The rules the note editor needs from its library, which would otherwise inject them as a style element. */
+  .ProseMirror {
+    position: relative;
+    word-wrap: break-word;
+    white-space: break-spaces;
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0;
+  }
+
+  .ProseMirror pre {
+    white-space: pre-wrap;
+  }
+
+  img.ProseMirror-separator {
+    display: inline;
+    width: 0;
+    height: 0;
+    margin: 0;
+    border: none;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     [data-ui],
     [data-ui] *,
