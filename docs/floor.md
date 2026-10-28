@@ -231,7 +231,7 @@ Set a spending limit when your account bills per use.
   Floor's address shows the Board filtered to that project.
 - **A ticket note is Markdown.** The note shows as formatted text with headings, lists, code, small
   tables and links. Only `http` and `https` links open, in a new tab; raw HTML and images stay as
-  text. Edit opens a rich editor with Markdown shortcuts when the note survives it unchanged in meaning.
+  text. The New ticket form and Edit open a rich editor with Markdown shortcuts when the note survives it unchanged in meaning.
   A note with a table, an image, raw HTML or a task list opens as a Markdown text box with a Write and
   Preview tab instead, and so does any note when the editor cannot load. Saving a note you did not touch
   sends it back exactly as it was. Once you edit it in the rich editor, the whole note is rewritten in
