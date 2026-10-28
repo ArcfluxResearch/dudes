@@ -122,7 +122,17 @@ fn daemon_with(
     adapters: Adapters,
     tweak: impl FnOnce(&mut duded::Settings),
 ) -> (common::Running, duded::Settings, SharedHost) {
+    daemon_with_predicates(fixture, adapters, tweak, runner())
+}
+
+fn daemon_with_predicates<P: PredicateRunner + 'static>(
+    fixture: &Fixture,
+    adapters: Adapters,
+    tweak: impl FnOnce(&mut duded::Settings),
+    predicates: Arc<P>,
+) -> (common::Running, duded::Settings, SharedHost) {
     let mut settings = fixture.settings();
+    settings.predicate_path = path_env();
     tweak(&mut settings);
     let host = SharedHost::new();
     let daemon = boot(
@@ -130,7 +140,7 @@ fn daemon_with(
         Seams {
             host: host.clone(),
             pty_host: Box::new(duded::ports::ClosedPtyHost),
-            predicates: runner(),
+            predicates,
             clock: Arc::new(TestClock::new()),
             rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
             resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
@@ -248,7 +258,9 @@ fn a_worktree_hire_journals_the_lease_before_the_agent_and_works_in_its_own_tree
         .records()
         .iter()
         .filter_map(|record| match record {
-            Record::WorktreeLeased { worktree, .. } if *worktree == a.worktree => Some("leased-a"),
+            Record::WorktreeLeasedWithIdentity { worktree, .. } if *worktree == a.worktree => {
+                Some("leased-a")
+            }
             Record::AgentHired { id, .. } if *id == a.agent => Some("hired-a"),
             _ => None,
         })
@@ -262,13 +274,14 @@ fn a_worktree_hire_journals_the_lease_before_the_agent_and_works_in_its_own_tree
         .records()
         .into_iter()
         .find_map(|record| match record {
-            Record::WorktreeLeased {
+            Record::WorktreeLeasedWithIdentity {
                 worktree,
                 origin,
                 path,
                 branch,
                 base,
                 from,
+                ..
             } if worktree == a.worktree => Some((origin, path, branch, base, from)),
             _ => None,
         })
@@ -371,7 +384,9 @@ fn a_hire_from_a_lease_sees_its_commits_and_not_its_uncommitted_files() {
         .records()
         .into_iter()
         .find_map(|record| match record {
-            Record::WorktreeLeased { worktree, from, .. } if worktree == b.worktree => Some(from),
+            Record::WorktreeLeasedWithIdentity { worktree, from, .. } if worktree == b.worktree => {
+                Some(from)
+            }
             _ => None,
         });
     assert_eq!(lease_from, Some(Some(a.worktree)));
@@ -481,126 +496,169 @@ fn a_worktree_hire_that_names_a_model_is_refused_when_the_extra_arguments_set_on
 }
 
 #[test]
-fn a_failed_add_removes_the_lease_it_journaled() {
+fn a_failed_root_creation_refuses_before_a_lease_or_branch() {
     let fixture = Fixture::new();
     let git = git(&fixture);
     let repo = repo(&fixture, &git);
-    std::fs::write(
-        fixture.state.path().join("worktrees"),
-        "a file where the trees go",
-    )
-    .unwrap();
+    std::fs::write(fixture.state.path().join("worktrees"), "blocked").unwrap();
     let (mut running, settings, _) = daemon(&fixture, claude());
-    let mut client = connect(&settings);
-
-    let error = hire(&settings, &mut client, &worktree_params(&repo))
-        .expect_err("git cannot create the tree");
-    assert_eq!(gate(&error), Some(RefusalGate::WorktreeUnavailable));
+    let error = hire(&settings, &mut connect(&settings), &worktree_params(&repo)).unwrap_err();
     running.stop(ExitCause::Ended);
-
-    let records = fixture.records();
-    assert!(
-        matches!(
-            records.as_slice(),
-            [
-                Record::WorktreeLeased { .. },
-                Record::WorktreeRemoved {
-                    how: WorktreeRemoval::NeverAssigned,
-                    ..
-                }
-            ]
-        ),
-        "{records:?}"
-    );
+    assert_eq!(gate(&error), Some(RefusalGate::WorktreeUnavailable));
+    assert!(fixture.records().is_empty());
     assert_eq!(run(&git, &repo, &["branch", "--list", "dudes/*"]), "");
 }
 
-#[test]
-fn discard_removes_a_tree_a_deadline_kill_left_locked() {
-    let fixture = Fixture::new();
-    let git = git(&fixture);
-    let repo = repo(&fixture, &git);
-    let tree = fixture.runtime.path().join("half-made");
-    let commit = git.commit(&repo, "HEAD").unwrap();
-    git.add(&repo, &tree, "dudes/halfmade", commit).unwrap();
-    run(
-        &git,
-        &repo,
-        &[
-            "worktree",
-            "lock",
-            "--reason",
-            "initializing",
-            tree.to_str().unwrap(),
-        ],
-    );
-    assert!(
-        git.exec(
-            &repo,
-            &[
-                OsStr::new("worktree"),
-                OsStr::new("remove"),
-                OsStr::new("-f"),
-                tree.as_os_str()
-            ],
-            Duration::from_secs(30)
-        )
-        .is_err(),
-        "a control: one force refuses a locked tree"
-    );
-
-    git.discard(&repo, &tree, "dudes/halfmade");
-
-    assert!(!tree.exists());
-    assert_eq!(
-        run(&git, &repo, &["branch", "--list", "dudes/halfmade"]),
-        ""
-    );
+fn directory_identity(path: &Path) -> dudes_proto::record::WorktreeDirectoryIdentity {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).unwrap();
+    let born = meta
+        .created()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    dudes_proto::record::WorktreeDirectoryIdentity {
+        device: meta.dev(),
+        inode: meta.ino(),
+        created_secs: born.as_secs(),
+        created_nanos: born.subsec_nanos(),
+    }
 }
 
-#[test]
-fn a_lease_pending_at_boot_is_cleaned_up_and_ended() {
-    let fixture = Fixture::new();
-    let git = git(&fixture);
-    let repo = repo(&fixture, &git);
-    let tree = fixture.state.path().join("worktrees/pending-at-boot");
-    std::fs::create_dir_all(tree.parent().unwrap()).unwrap();
-    let commit = git.commit(&repo, "HEAD").unwrap();
-    let worktree = WorktreeId::from_bytes([5; 16]);
-    git.add(&repo, &tree, "dudes/050505050505", commit).unwrap();
+fn pending(fixture: &Fixture, origin: &Path, byte: u8) -> (WorktreeId, PathBuf, String) {
+    let id = WorktreeId::from_bytes([byte; 16]);
+    let path = fixture.state.path().join("worktrees").join(id.to_string());
+    std::fs::create_dir_all(&path).unwrap();
+    let identity = dudes_proto::record::WorktreeDirectoryAuthority {
+        origin: directory_identity(origin),
+        common: directory_identity(&origin.join(".git")),
+        root: directory_identity(&path),
+        parent: directory_identity(path.parent().unwrap()),
+    };
+    let branch = format!("dudes/{}", id.short());
+    let record = Record::WorktreeLeasedWithIdentity {
+        worktree: id,
+        origin: origin.to_path_buf(),
+        path: path.clone(),
+        branch: branch.clone(),
+        base: git(fixture).commit(origin, "HEAD").unwrap(),
+        from: None,
+        identity,
+    };
     let (mut writer, _) = dudes_journal::open(
         &fixture.journal_dir(),
-        dudes_journal::JournalOptions {
-            fsync: dudes_journal::Fsync::None,
-            ..dudes_journal::JournalOptions::default()
-        },
+        dudes_journal::JournalOptions::default(),
     )
     .unwrap();
     writer
         .append(&dudes_proto::Entry {
-            at: dudes_types::Timestamp::from_unix_millis(1_787_394_600_000),
-            record: Record::WorktreeLeased {
-                worktree,
-                origin: repo.clone(),
-                path: tree.clone(),
-                branch: "dudes/050505050505".into(),
-                base: commit,
-                from: None,
-            },
+            at: dudes_types::Timestamp::UNIX_EPOCH,
+            record,
         })
         .unwrap();
     drop(writer);
+    (id, path, branch)
+}
 
-    let (mut running, _settings, _) = daemon(&fixture, claude());
-    let how = fixture.await_record("the lease ended", |record| match record {
-        Record::WorktreeRemoved { worktree: w, how } if *w == worktree => Some(*how),
+fn cleanup_boot(fixture: &Fixture, id: WorktreeId) {
+    let (mut running, _, _) = daemon(fixture, claude());
+    fixture.await_record("pending cleanup ended", |record| match record {
+        Record::WorktreeRemoved {
+            worktree,
+            how: WorktreeRemoval::NeverAssigned,
+        } if *worktree == id => Some(()),
         _ => None,
     });
     running.stop(ExitCause::Ended);
+}
 
-    assert_eq!(how, WorktreeRemoval::NeverAssigned);
+#[test]
+fn a_proved_empty_root_is_cleaned_after_the_required_lease_fsync() {
+    let fixture = Fixture::new();
+    let git = git(&fixture);
+    let repo = repo(&fixture, &git);
+    let (id, tree, _) = pending(&fixture, &repo, 5);
+    assert!(std::fs::read_dir(&tree).unwrap().next().is_none());
+    cleanup_boot(&fixture, id);
     assert!(!tree.exists());
-    assert_eq!(run(&git, &repo, &["branch", "--list", "dudes/*"]), "");
+}
+
+#[test]
+fn a_definitely_absent_pending_root_is_settled_at_boot() {
+    let fixture = Fixture::new();
+    let repo = repo(&fixture, &git(&fixture));
+    let (id, tree, _) = pending(&fixture, &repo, 6);
+    std::fs::remove_dir(&tree).unwrap();
+    cleanup_boot(&fixture, id);
+    assert!(!tree.exists());
+}
+
+#[test]
+fn a_genuine_partial_git_registration_is_cleaned_and_its_branch_is_retained() {
+    let fixture = Fixture::new();
+    let git = git(&fixture);
+    let repo = repo(&fixture, &git);
+    let (id, tree, branch) = pending(&fixture, &repo, 7);
+    let admin = repo.join(".git/worktrees").join(id.to_string());
+    std::fs::create_dir_all(&admin).unwrap();
+    let canonical_tree = std::fs::canonicalize(&tree).unwrap();
+    // The pre-HEAD crash prefix has linking files and the initializing lock, with no ref store or index.
+    std::fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", canonical_tree.join(".git").display()),
+    )
+    .unwrap();
+    std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+    std::fs::write(admin.join("locked"), "initializing").unwrap();
+    std::fs::write(tree.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+    run(&git, &repo, &["branch", &branch]);
+    assert!(!admin.join("HEAD").exists() && !admin.join("index").exists());
+    cleanup_boot(&fixture, id);
+    assert!(!tree.exists());
+    assert!(!admin.exists());
+    assert_eq!(run(&git, &repo, &["branch", "--list", &branch]), branch);
+}
+
+#[test]
+fn a_legacy_pending_root_is_retained_at_boot() {
+    let fixture = Fixture::new();
+    let git = git(&fixture);
+    let repo = repo(&fixture, &git);
+    let (id, tree, branch) = pending(&fixture, &repo, 8);
+    let record = Record::WorktreeLeased {
+        worktree: WorktreeId::from_bytes([9; 16]),
+        origin: repo.clone(),
+        path: tree.clone(),
+        branch,
+        base: git.commit(&repo, "HEAD").unwrap(),
+        from: None,
+    };
+    // The first lease owns the original, while the legacy record sees the replacement.
+    let replacement = tree.with_file_name("saved-original");
+    std::fs::rename(&tree, &replacement).unwrap();
+    std::fs::create_dir(&tree).unwrap();
+    std::fs::write(tree.join("keep"), "replacement").unwrap();
+    let (mut writer, _) = dudes_journal::open(
+        &fixture.journal_dir(),
+        dudes_journal::JournalOptions::default(),
+    )
+    .unwrap();
+    writer
+        .append(&dudes_proto::Entry {
+            at: dudes_types::Timestamp::UNIX_EPOCH,
+            record,
+        })
+        .unwrap();
+    drop(writer);
+    let (sentinel, _, _) = pending(&fixture, &repo, 10);
+    cleanup_boot(&fixture, sentinel);
+    assert_eq!(
+        std::fs::read_to_string(tree.join("keep")).unwrap(),
+        "replacement"
+    );
+    assert!(!fixture.records().iter().any(
+        |record| matches!(record, Record::WorktreeRemoved { worktree, .. } if *worktree == id)
+    ));
 }
 
 #[test]
@@ -721,7 +779,7 @@ fn kinds(fixture: &Fixture) -> Vec<&'static str> {
         .records()
         .iter()
         .map(|record| match record {
-            Record::WorktreeLeased { .. } => "leased",
+            Record::WorktreeLeased { .. } | Record::WorktreeLeasedWithIdentity { .. } => "leased",
             Record::WorktreeRemoved {
                 how: WorktreeRemoval::NeverAssigned,
                 ..
@@ -797,11 +855,17 @@ fn a_new_tree_under_another_live_lease_is_refused_and_cleaned_up() {
         kinds(&fixture),
         ["leased", "hired", "other", "leased", "never_assigned"]
     );
-    assert_eq!(
-        run(&git, &repo, &["branch", "--list", "dudes/*"]),
-        "",
-        "its branch is gone too"
-    );
+    let retained = fixture
+        .records()
+        .iter()
+        .find_map(|record| {
+            record
+                .worktree_lease()
+                .filter(|lease| lease.identity.is_some())
+                .map(|lease| lease.branch.to_owned())
+        })
+        .unwrap();
+    assert_eq!(run(&git, &repo, &["branch", "--list", "dudes/*"]), retained);
     let left = std::fs::read_dir(fixture.state.path().join("worktrees")).map_or(0, Iterator::count);
     assert_eq!(left, 0, "and its tree");
 }
@@ -1248,4 +1312,255 @@ fn a_dangling_link_where_the_tree_was_is_not_a_removed_tree() {
     std::fs::remove_file(&tree.cwd).unwrap();
     removed(&mut client).expect("recorded once the path holds nothing");
     running.stop(ExitCause::Ended);
+}
+
+#[test]
+fn a_crash_between_two_copies_cleans_both_and_retry_uses_fresh_leases() {
+    let fixture = Fixture::new();
+    let git = git(&fixture);
+    let repo = repo(&fixture, &git);
+    let (first, first_root, first_branch) = pending(&fixture, &repo, 11);
+    git.add(
+        &repo,
+        &first_root,
+        &first_branch,
+        git.commit(&repo, "HEAD").unwrap(),
+    )
+    .unwrap();
+    let (second, second_root, _) = pending(&fixture, &repo, 12);
+    let (mut running, settings, _) = daemon(&fixture, claude());
+    for pending in [first, second] {
+        fixture.await_record("both pending copies settle", |record| match record {
+            Record::WorktreeRemoved {
+                worktree,
+                how: WorktreeRemoval::NeverAssigned,
+            } if *worktree == pending => Some(()),
+            _ => None,
+        });
+    }
+    assert!(!first_root.exists());
+    assert!(!second_root.exists());
+    let retried = hire(&settings, &mut connect(&settings), &worktree_params(&repo)).unwrap();
+    running.stop(ExitCause::Ended);
+    let fresh = hired(&fixture, retried.agent);
+    assert!(![first, second].contains(&fresh.worktree));
+    assert!(fresh.cwd.join("tracked.txt").is_file());
+    assert!(!fixture.records().iter().any(|record| matches!(
+        record,
+        Record::TurnIssued { .. } | Record::TurnSpawned { .. }
+    )));
+}
+
+#[test]
+fn an_advanced_pending_branch_and_its_copy_are_retained_at_boot() {
+    let fixture = Fixture::new();
+    let git = git(&fixture);
+    let repo = repo(&fixture, &git);
+    let (id, tree, branch) = pending(&fixture, &repo, 13);
+    git.add(&repo, &tree, &branch, git.commit(&repo, "HEAD").unwrap())
+        .unwrap();
+    std::fs::write(tree.join("new.txt"), "keep committed work").unwrap();
+    commit_all(&git, &tree, "later work");
+    let advanced = git.commit(&repo, &format!("refs/heads/{branch}")).unwrap();
+    let (sentinel, _, _) = pending(&fixture, &repo, 14);
+    cleanup_boot(&fixture, sentinel);
+    assert_eq!(
+        git.commit(&repo, &format!("refs/heads/{branch}")).unwrap(),
+        advanced
+    );
+    assert_eq!(
+        std::fs::read_to_string(tree.join("new.txt")).unwrap(),
+        "keep committed work"
+    );
+    assert!(!fixture.records().iter().any(
+        |record| matches!(record, Record::WorktreeRemoved { worktree, .. } if *worktree == id)
+    ));
+}
+
+struct PartialRegistrationFailure {
+    real: RealRunner,
+    journal: PathBuf,
+    replace: bool,
+    observed: std::sync::atomic::AtomicBool,
+}
+
+impl PredicateRunner for PartialRegistrationFailure {
+    fn run(&self, spec: &LaunchSpec, timeout: Duration) -> io::Result<PredicateOutcome> {
+        if spec
+            .argv
+            .windows(2)
+            .any(|args| args[0] == "worktree" && args[1] == "add")
+        {
+            let reader = dudes_journal::Reader::open(&self.journal).unwrap().0;
+            let record = reader
+                .iter_from(dudes_types::Lsn::ZERO)
+                .unwrap()
+                .map(Result::unwrap)
+                .map(|(_, entry)| entry.record)
+                .last()
+                .unwrap();
+            assert!(matches!(record, Record::WorktreeLeasedWithIdentity { .. }));
+            let lease = record.worktree_lease().unwrap();
+            assert!(std::fs::read_dir(lease.path).unwrap().next().is_none());
+            assert_eq!(directory_identity(lease.path), lease.identity.unwrap().root);
+            assert!(
+                !reader
+                    .iter_from(dudes_types::Lsn::ZERO)
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .any(|(_, entry)| matches!(
+                        entry.record,
+                        Record::AgentHired { .. }
+                            | Record::TurnIssued { .. }
+                            | Record::TurnSpawned { .. }
+                    ))
+            );
+            let admin = lease
+                .origin
+                .join(".git/worktrees")
+                .join(lease.path.file_name().unwrap());
+            std::fs::create_dir_all(&admin).unwrap();
+            std::fs::write(
+                admin.join("gitdir"),
+                format!(
+                    "{}\n",
+                    std::fs::canonicalize(lease.path)
+                        .unwrap()
+                        .join(".git")
+                        .display()
+                ),
+            )
+            .unwrap();
+            std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+            std::fs::write(admin.join("locked"), "initializing").unwrap();
+            std::fs::write(
+                lease.path.join(".git"),
+                format!("gitdir: {}\n", admin.display()),
+            )
+            .unwrap();
+            let real_git = Git::new(runner(), path_env(), Duration::from_secs(1));
+            run(
+                &real_git,
+                lease.origin,
+                &["branch", lease.branch, &lease.base.to_string()],
+            );
+            assert!(!admin.join("HEAD").exists() && !admin.join("index").exists());
+            if self.replace {
+                std::fs::rename(lease.path, lease.path.with_file_name("original-retained"))
+                    .unwrap();
+                std::fs::create_dir(lease.path).unwrap();
+                std::fs::write(
+                    lease.path.join(".git"),
+                    format!("gitdir: {}\n", admin.display()),
+                )
+                .unwrap();
+                std::fs::write(lease.path.join("keep"), "replacement").unwrap();
+            }
+            self.observed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            return Ok(PredicateOutcome::Finished {
+                exit: Some(1),
+                output_tail: "interrupted before checkout".into(),
+                timed_out: false,
+            });
+        }
+        self.real.run(spec, timeout)
+    }
+    fn sweep(&self) {
+        self.real.sweep();
+    }
+}
+
+#[test]
+fn failure_after_constructed_partial_registration_cleans_only_the_proved_copy() {
+    let fixture = Fixture::new();
+    let git = git(&fixture);
+    let repo = repo(&fixture, &git);
+    let interrupted = Arc::new(PartialRegistrationFailure {
+        real: RealRunner(OneShot::new()),
+        journal: fixture.journal_dir(),
+        replace: false,
+        observed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let (mut running, settings, _) =
+        daemon_with_predicates(&fixture, claude(), |_| {}, Arc::clone(&interrupted));
+    hire(&settings, &mut connect(&settings), &worktree_params(&repo)).unwrap_err();
+    running.stop(ExitCause::Ended);
+    assert!(
+        interrupted
+            .observed
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    let records = fixture.records();
+    assert!(matches!(
+        records.as_slice(),
+        [
+            Record::WorktreeLeasedWithIdentity { .. },
+            Record::WorktreeRemoved {
+                how: WorktreeRemoval::NeverAssigned,
+                ..
+            }
+        ]
+    ));
+    let lease = records[0].worktree_lease().unwrap();
+    assert!(!lease.path.exists());
+    assert_eq!(
+        run(&git, &repo, &["branch", "--list", lease.branch]),
+        lease.branch
+    );
+}
+
+#[test]
+fn a_plausible_replacement_survives_failed_add_and_daemon_restart() {
+    let fixture = Fixture::new();
+    let git = git(&fixture);
+    let repo = repo(&fixture, &git);
+    let interrupted = Arc::new(PartialRegistrationFailure {
+        real: RealRunner(OneShot::new()),
+        journal: fixture.journal_dir(),
+        replace: true,
+        observed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let (mut running, settings, _) =
+        daemon_with_predicates(&fixture, claude(), |_| {}, interrupted);
+    hire(&settings, &mut connect(&settings), &worktree_params(&repo)).unwrap_err();
+    running.stop(ExitCause::Ended);
+    let records = fixture.records();
+    assert_eq!(records.len(), 1);
+    let lease = records[0].worktree_lease().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(lease.path.join("keep")).unwrap(),
+        "replacement"
+    );
+    let (sentinel, _, _) = pending(&fixture, &repo, 15);
+    cleanup_boot(&fixture, sentinel);
+    assert_eq!(
+        std::fs::read_to_string(lease.path.join("keep")).unwrap(),
+        "replacement"
+    );
+    assert!(!fixture.records().iter().any(|record| matches!(record, Record::WorktreeRemoved { worktree, .. } if *worktree == lease.worktree)));
+}
+
+#[test]
+fn a_pending_copy_moved_for_cleanup_recovers_at_boot_from_its_durable_lease() {
+    let fixture = Fixture::new();
+    let git = git(&fixture);
+    let repo = repo(&fixture, &git);
+    let (id, tree, branch) = pending(&fixture, &repo, 16);
+    git.add(&repo, &tree, &branch, git.commit(&repo, "HEAD").unwrap())
+        .unwrap();
+    let holding = tree
+        .parent()
+        .unwrap()
+        .join(format!(".pending-cleanup-{id}"));
+    std::fs::rename(&tree, &holding).unwrap();
+    std::fs::File::open(tree.parent().unwrap())
+        .unwrap()
+        .sync_all()
+        .unwrap();
+    cleanup_boot(&fixture, id);
+    assert!(!tree.exists());
+    assert!(!holding.exists());
+    assert!(!repo.join(".git/worktrees").join(id.to_string()).exists());
+    assert_eq!(run(&git, &repo, &["branch", "--list", &branch]), branch);
 }

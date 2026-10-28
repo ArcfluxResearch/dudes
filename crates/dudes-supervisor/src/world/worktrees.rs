@@ -27,6 +27,8 @@ pub struct WorktreeRow {
     pub base: GitCommit,
     /// The lease this one was based on.
     pub from: Option<WorktreeId>,
+    /// Original cleanup authority, absent for a legacy lease.
+    pub identity: Option<dudes_proto::record::WorktreeDirectoryAuthority>,
     /// The agent hired into the tree. The first hire that names the lease is its owner.
     pub agent: Option<AgentId>,
     /// How the lease ended, once a `WorktreeRemoved` is recorded.
@@ -59,34 +61,25 @@ pub enum WorktreeState {
 
 impl World {
     pub(super) fn fold_worktree(&mut self, record: &Record, lsn: Lsn) {
-        match record {
-            Record::WorktreeLeased {
-                worktree,
-                origin,
-                path,
-                branch,
-                base,
-                from,
-            } => {
-                self.worktrees
-                    .entry(*worktree)
-                    .or_insert_with(|| WorktreeRow {
-                        origin: origin.clone(),
-                        leased_lsn: lsn,
-                        path: path.clone(),
-                        branch: branch.clone(),
-                        base: *base,
-                        from: *from,
-                        agent: None,
-                        removed: None,
-                    });
-            }
-            Record::WorktreeRemoved { worktree, how } => {
-                if let Some(row) = self.worktrees.get_mut(worktree) {
-                    row.removed.get_or_insert(*how);
-                }
-            }
-            _ => {}
+        if let Some(lease) = record.worktree_lease() {
+            self.worktrees
+                .entry(lease.worktree)
+                .or_insert_with(|| WorktreeRow {
+                    origin: lease.origin.to_path_buf(),
+                    leased_lsn: lsn,
+                    path: lease.path.to_path_buf(),
+                    branch: lease.branch.to_owned(),
+                    base: lease.base,
+                    from: lease.from,
+                    identity: lease.identity.cloned(),
+                    agent: None,
+                    removed: None,
+                });
+        }
+        if let Record::WorktreeRemoved { worktree, how } = record
+            && let Some(row) = self.worktrees.get_mut(worktree)
+        {
+            row.removed.get_or_insert(*how);
         }
     }
 

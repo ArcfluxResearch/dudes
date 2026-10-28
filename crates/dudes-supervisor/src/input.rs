@@ -866,7 +866,7 @@ pub enum Command {
         /// The operator's trust declaration for `cwd`; `false` when none was made.
         trusted: bool,
         /// The lease `cwd` is the tree of, when the hire is into a worktree. The daemon
-        /// has appended its `WorktreeLeased` first.
+        /// has durably appended its pending lease first.
         worktree: Option<dudes_types::WorktreeId>,
         /// The declared MCP servers the daemon admitted for this hire, sorted and without repeats.
         mcp_servers: Vec<dudes_types::McpServerName>,
@@ -874,10 +874,13 @@ pub enum Command {
     /// Lease a worktree for an agent that is not hired yet. Appended and fsynced
     /// before `git worktree add` runs.
     ///
-    /// The machine draws the lease's identity and derives the tree (`<data_dir>/worktrees/<id>`)
-    /// and the branch (`dudes/<first 12 hexadecimal characters>`) from it, so neither can disagree
-    /// with the identity. The caller finds the new lease as the key the world's table gained.
+    /// The caller first mints the lease identity and exclusively creates its root. The machine
+    /// derives the path and branch from that identity and persists the supplied directory authority.
     LeaseWorktree {
+        /// The identity minted before exclusive directory creation.
+        worktree: dudes_types::WorktreeId,
+        /// Directory authority captured from the empty root before this command.
+        identity: dudes_proto::record::WorktreeDirectoryAuthority,
         /// The repository the tree is added from.
         origin: PathBuf,
         /// The commit the branch is created at.

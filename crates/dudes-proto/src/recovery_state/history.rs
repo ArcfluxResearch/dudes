@@ -473,7 +473,10 @@ impl RecoveryWitness {
         }
         let valid = match (&self.evidence, self.reference.owner) {
             (E::Hire { .. }, O::Agent(_)) => self.reference.kind == K::AgentHired,
-            (E::Lease { .. }, O::Worktree(_)) => self.reference.kind == K::WorktreeLeased,
+            (E::Lease { .. }, O::Worktree(_)) => matches!(
+                self.reference.kind,
+                K::WorktreeLeased | K::WorktreeLeasedWithIdentity
+            ),
             (
                 E::Issue {
                     issued, carrier, ..
@@ -1090,7 +1093,8 @@ fn target_evidence(
                 role_digest: text_digest(role, hash),
             },
         )),
-        Record::WorktreeLeased { worktree, from, .. } => {
+        Record::WorktreeLeased { worktree, from, .. }
+        | Record::WorktreeLeasedWithIdentity { worktree, from, .. } => {
             Some((O::Worktree(*worktree), E::Lease { from: *from }))
         }
         Record::GoalSet { agent, goal, .. } => Some((

@@ -378,20 +378,17 @@ fn a_relative_worktree_hire_records_a_canonical_origin_and_its_distinct_lease() 
     let completion = daemon.stop().expect("native owned cleanup");
     assert!(completion.starts_with("complete "));
     assert_eq!(result.code(), exit::SUCCESS, "{}", result.output());
-    let (id, origin, path) = records
+    let lease = records
         .iter()
-        .find_map(|record| match record {
-            Record::WorktreeLeased {
-                worktree,
-                origin,
-                path,
-                ..
-            } => Some((*worktree, origin, path)),
-            _ => None,
-        })
+        .find_map(Record::worktree_lease)
         .expect("actual lease record");
+    assert!(
+        lease.identity.is_some(),
+        "a newly created copy requires durable directory identity"
+    );
+    let (id, origin, path) = (lease.worktree, lease.origin, lease.path);
     assert_eq!(origin.as_os_str(), canonical.as_os_str());
-    assert_ne!(path, &canonical);
+    assert_ne!(path, canonical.as_path());
     assert!(path.is_dir() && path.join(".git").is_file());
     let (cwd, worktree, workspace, trusted, provider) = records
         .iter()
@@ -407,7 +404,7 @@ fn a_relative_worktree_hire_records_a_canonical_origin_and_its_distinct_lease() 
             _ => None,
         })
         .expect("actual hire record");
-    assert_eq!(cwd, path);
+    assert_eq!(cwd.as_path(), path);
     assert_eq!(*worktree, Some(id));
     assert!(*trusted);
     assert_eq!(*provider, dudes_types::Provider::Claude);

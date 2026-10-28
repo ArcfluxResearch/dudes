@@ -11,7 +11,7 @@ use dudes_proto::repository::{
 use dudes_proto::rpc::RpcError;
 use dudes_proto::{Entry, Record};
 use dudes_supervisor::{Clock, ProcessHost, RepositoryAdmission, Rng, World};
-use dudes_types::{AgentId, Lsn};
+use dudes_types::{AgentId, Lsn, Timestamp};
 
 use super::{Ctx, Daemon, PredicateRunner};
 use crate::floor_actions::{ConfiguredRepository, Enrollment, Profile};
@@ -131,14 +131,55 @@ fn directory_contains(ancestor: &Path, path: &Path) -> bool {
     path.starts_with(ancestor) || crate::worktree::contains(ancestor, path)
 }
 
-impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
-    pub(super) fn require_current_hire(&self, world: &World, cwd: &Path) -> Result<()> {
+fn explicit_repository_roots<'a>(
+    enrollment: &'a Enrollment,
+    world: &'a World,
+) -> impl Iterator<Item = &'a Path> {
+    enrollment
+        .profiles
+        .iter()
+        .filter_map(|profile| profile.repositories.as_ref())
+        .flat_map(RepositorySet::entries)
+        .map(|entry| entry.value.path.as_path())
+        .chain(
+            world
+                .agents
+                .values()
+                .filter_map(|row| match &row.repositories {
+                    HireRepositories::Scoped(scope) => Some(scope),
+                    HireRepositories::Legacy(_) => None,
+                })
+                .flat_map(|scope| scope.repositories.entries())
+                .map(|entry| entry.value.recorded.execution.directory.as_path()),
+        )
+}
+
+pub(super) struct CurrentHireAdmission<'a> {
+    enrollment: &'a Enrollment,
+    current: &'a CurrentRepositories,
+}
+
+impl<'a> CurrentHireAdmission<'a> {
+    pub(super) fn new(enrollment: &'a Enrollment, current: &'a CurrentRepositories) -> Self {
+        Self {
+            enrollment,
+            current,
+        }
+    }
+
+    pub(super) fn require_current_hire(
+        &self,
+        world: &World,
+        cwd: &Path,
+        at: Timestamp,
+    ) -> Result<()> {
         ensure!(
-            !self.current_repositories.invalid,
+            !self.current.invalid,
             "current project configuration must be resolved before hiring"
         );
         ensure!(
-            !self.explicit_project_at(world, cwd),
+            !explicit_repository_roots(self.enrollment, world)
+                .any(|root| directory_overlaps(root, cwd)),
             "this folder belongs to an explicitly scoped project; repository execution is not available yet"
         );
         for profile in &self.enrollment.profiles {
@@ -146,11 +187,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 && let Some(repositories) = catalog(
                     profile,
                     world.repository_projects.get(&profile.id),
-                    self.current_repositories.bindings.get(&profile.id),
+                    self.current.bindings.get(&profile.id),
                 )?
             {
                 world.validate_repository_record(&Entry {
-                    at: self.clock.now(),
+                    at,
                     record: Record::ProjectRepositoriesRecorded {
                         project: profile.id.clone(),
                         repositories,
@@ -165,6 +206,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         &self,
         world: &World,
         hire: dudes_proto::repository_state::HireRecord<'_>,
+        at: Timestamp,
     ) -> Result<()> {
         match hire.repositories {
             dudes_proto::repository_state::HireRepositoryRecord::Legacy {
@@ -178,12 +220,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                         .context("the hired worktree's origin is unavailable")?,
                     None => cwd,
                 };
-                self.require_current_hire(world, origin)
+                self.require_current_hire(world, origin, at)
             }
             dudes_proto::repository_state::HireRepositoryRecord::Scoped(_) => {
                 anyhow::bail!("scoped repository execution is not available yet");
             }
         }
+    }
+}
+
+impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
+    pub(super) fn require_current_hire(&self, world: &World, cwd: &Path) -> Result<()> {
+        CurrentHireAdmission::new(&self.enrollment, &self.current_repositories)
+            .require_current_hire(world, cwd, self.clock.now())
+    }
+
+    pub(super) fn require_hire_authority(
+        &self,
+        world: &World,
+        hire: dudes_proto::repository_state::HireRecord<'_>,
+    ) -> Result<()> {
+        CurrentHireAdmission::new(&self.enrollment, &self.current_repositories)
+            .require_hire_authority(world, hire, self.clock.now())
     }
 
     fn legacy_ticket_allowed(
@@ -300,29 +358,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         })
     }
 
-    pub(super) fn explicit_project_at(&self, world: &World, cwd: &Path) -> bool {
-        self.explicit_repository_roots(world)
-            .any(|root| directory_overlaps(root, cwd))
-    }
-
     fn explicit_repository_roots<'a>(&'a self, world: &'a World) -> impl Iterator<Item = &'a Path> {
-        self.enrollment
-            .profiles
-            .iter()
-            .filter_map(|profile| profile.repositories.as_ref())
-            .flat_map(RepositorySet::entries)
-            .map(|entry| entry.value.path.as_path())
-            .chain(
-                world
-                    .agents
-                    .values()
-                    .filter_map(|row| match &row.repositories {
-                        HireRepositories::Scoped(scope) => Some(scope),
-                        HireRepositories::Legacy(_) => None,
-                    })
-                    .flat_map(|scope| scope.repositories.entries())
-                    .map(|entry| entry.value.recorded.execution.directory.as_path()),
-            )
+        explicit_repository_roots(&self.enrollment, world)
     }
 }
 

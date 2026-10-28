@@ -30,6 +30,9 @@ pub struct WorktreeRow {
     /// The lease this one was based on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<WorktreeId>,
+    /// Original cleanup authority, absent for a legacy lease.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<dudes_proto::record::WorktreeDirectoryAuthority>,
     /// The agent hired into the tree. The first hire that names the lease owns it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentId>,
@@ -80,34 +83,28 @@ pub(super) fn apply(table: &mut RowTable<'_>, lsn: Lsn, entry: &Entry) -> Result
             }
         }
     }
+    if let Some(lease) = entry.record.worktree_lease()
+        && get_row::<WorktreeRow>(table, &lease.worktree.to_bytes())?.is_none()
+    {
+        put_row(
+            table,
+            &lease.worktree.to_bytes(),
+            &WorktreeRow {
+                worktree: lease.worktree,
+                leased_lsn: lsn,
+                origin: lease.origin.to_path_buf(),
+                path: lease.path.to_path_buf(),
+                branch: lease.branch.to_owned(),
+                base: lease.base,
+                from: lease.from,
+                identity: lease.identity.cloned(),
+                agent: None,
+                agent_retired: false,
+                removed: None,
+            },
+        )?;
+    }
     match &entry.record {
-        Record::WorktreeLeased {
-            worktree,
-            origin,
-            path,
-            branch,
-            base,
-            from,
-        } => {
-            if get_row::<WorktreeRow>(table, &worktree.to_bytes())?.is_none() {
-                put_row(
-                    table,
-                    &worktree.to_bytes(),
-                    &WorktreeRow {
-                        worktree: *worktree,
-                        leased_lsn: lsn,
-                        origin: origin.clone(),
-                        path: path.clone(),
-                        branch: branch.clone(),
-                        base: *base,
-                        from: *from,
-                        agent: None,
-                        agent_retired: false,
-                        removed: None,
-                    },
-                )?;
-            }
-        }
         Record::AgentRetired { id, .. } => {
             for mut row in all_rows::<WorktreeRow>(table)? {
                 if row.agent == Some(*id) && !row.agent_retired {

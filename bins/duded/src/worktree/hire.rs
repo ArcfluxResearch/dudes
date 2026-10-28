@@ -95,6 +95,8 @@ pub struct LeaseView {
     pub branch: String,
     /// The commit the branch starts at.
     pub base: GitCommit,
+    /// Durable cleanup authority, absent for legacy leases.
+    pub identity: Option<dudes_proto::record::WorktreeDirectoryAuthority>,
 }
 
 /// What the connection thread needs to hire into a worktree.
@@ -129,8 +131,8 @@ impl WorktreeHires {
     ///
     /// # Errors
     ///
-    /// The refusal of whichever step said no. Nothing is left behind: a tree made for a hire that
-    /// does not happen is removed and its lease ended.
+    /// The refusal of whichever step said no. Proved pending copies are cleaned up.
+    /// Uncertain directories and their leases are retained for the operator.
     pub fn hire(&self, params: HireParams) -> Result<HireResult, RpcError> {
         let lease = self
             .prepare(&params, None)
@@ -158,8 +160,8 @@ impl WorktreeHires {
     ///
     /// # Errors
     ///
-    /// The refusal of whichever step said no. A tree made for a hire that does not happen is
-    /// removed and its lease ended.
+    /// The refusal of whichever step said no. Cleanup retains directories whose identity
+    /// or Git registration cannot be proved.
     pub fn prepare(
         &self,
         params: &HireParams,
@@ -258,14 +260,19 @@ impl WorktreeHires {
                 "the loop did not lease a worktree",
             )));
         };
-        if let Err(error) = self
-            .git
-            .add(&lease.origin, &lease.path, &lease.branch, lease.base)
-        {
+        if let Err(error) = self.add_copy(&lease) {
             self.discard(lease.worktree);
-            return Err(git_failed(&error));
+            return Err(refuse(error));
         }
         Ok(lease)
+    }
+
+    fn add_copy(&self, lease: &LeaseView) -> Result<(), RpcError> {
+        super::pending::verify_prepared(lease).map_err(super::unavailable)?;
+        self.git
+            .add(&lease.origin, &lease.path, &lease.branch, lease.base)
+            .map_err(|error| from_git(&error))?;
+        super::pending::verify(lease).map_err(super::unavailable)
     }
 
     /// `workspace.trust`: read the repository of an enrolled project and journal the operator's
@@ -364,7 +371,7 @@ impl WorktreeHires {
         })
     }
 
-    /// Remove the tree and branch of a lease the loop still reports as pending, then end the lease.
+    /// Remove a proved pending tree, retain its branch, then settle definite absence.
     ///
     /// A lease that is not pending, because an agent was hired into it after all, is left alone.
     pub fn discard(&self, worktree: WorktreeId) {
@@ -372,8 +379,18 @@ impl WorktreeHires {
         else {
             return;
         };
-        self.git.discard(&lease.origin, &lease.path, &lease.branch);
-        let _ = self.handle.ask(Ask::WorktreeNeverAssigned(worktree));
+        match super::pending::discard(&lease) {
+            Ok(()) => {
+                if let Err(error) = self.handle.ask(Ask::WorktreeNeverAssigned(worktree)) {
+                    tracing::warn!(%worktree, reason = %error.message, "pending worktree could not be settled");
+                }
+            }
+            Err(reason) => {
+                tracing::warn!(%worktree, %reason, path = %lease.path.display(),
+                    cleanup = ?super::pending::cleanup_path(&lease).ok(),
+                    "pending worktree retained for the operator");
+            }
+        }
     }
 
     /// Clean up every lease that was still pending when the daemon started: a crash after the

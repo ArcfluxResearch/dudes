@@ -1413,7 +1413,9 @@ impl World {
                     self.assign_worktree(worktree, hire.agent);
                 }
             }
-            Record::WorktreeLeased { .. } | Record::WorktreeRemoved { .. } => {
+            Record::WorktreeLeased { .. }
+            | Record::WorktreeLeasedWithIdentity { .. }
+            | Record::WorktreeRemoved { .. } => {
                 self.fold_worktree(&entry.record, lsn);
             }
             Record::AgentRetired { id, .. } => {

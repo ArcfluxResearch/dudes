@@ -26,7 +26,22 @@ fn lease(harness: &mut Harness, from: Option<WorktreeId>) -> WorktreeId {
         .keys()
         .copied()
         .collect();
+    let worktree = harness.supervisor.mint_worktree_id();
+    let directory = |inode| dudes_proto::record::WorktreeDirectoryIdentity {
+        device: 1,
+        inode,
+        created_secs: 1_700_000_000,
+        created_nanos: 1,
+    };
+    let identity = dudes_proto::record::WorktreeDirectoryAuthority {
+        origin: directory(1),
+        common: directory(2),
+        root: directory(3),
+        parent: directory(4),
+    };
     harness.drive(Input::Command(Command::LeaseWorktree {
+        worktree,
+        identity,
         origin: PathBuf::from("/repo"),
         base: GitCommit::parse(BASE).unwrap(),
         from,
@@ -83,7 +98,7 @@ fn state(harness: &Harness, worktree: WorktreeId) -> Option<WorktreeState> {
 fn leased_records(harness: &Harness) -> usize {
     harness
         .records()
-        .filter(|record| matches!(record, Record::WorktreeLeased { .. }))
+        .filter(|record| record.worktree_lease().is_some())
         .count()
 }
 

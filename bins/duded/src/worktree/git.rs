@@ -1,4 +1,4 @@
-//! The daemon's `git` child for worktree creation and cleanup.
+//! The daemon's `git` child for worktree creation and read-only questions.
 //!
 //! Every call is one typed argv for one owned child: the program is the absolute file the daemon's
 //! own `PATH` lookup found, and the environment is a short fixed list. The child runs through the
@@ -39,8 +39,6 @@ const MIN_VERSION: (u32, u32) = (2, 17);
 const QUICK: Duration = Duration::from_secs(20);
 /// How long `git worktree add` may take, which checks a whole tree out.
 pub const CHECKOUT_DEADLINE: Duration = Duration::from_secs(300);
-/// Removing a tree and its branch.
-const CLEANUP: Duration = Duration::from_secs(60);
 
 /// Why a git call did not produce an answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -306,7 +304,7 @@ impl Git {
     ///
     /// # Errors
     ///
-    /// [`GitError`]; after any error a half-made tree may exist, which [`Git::discard`] removes.
+    /// [`GitError`]; after any error a half-made tree may exist, which directory-bound pending cleanup handles.
     pub fn add(
         &self,
         origin: &Path,
@@ -330,36 +328,6 @@ impl Git {
             self.checkout,
         )
         .map(|_| ())
-    }
-
-    /// Remove a tree no agent ever ran in, and its branch. The double force is needed because a
-    /// deadline kill leaves the tree locked as initializing, which a single force refuses.
-    ///
-    /// Each step runs even when an earlier one failed, because the tree may already be gone and the
-    /// branch may never have been made. The caller decides from the file system whether it worked.
-    pub fn discard(&self, origin: &Path, path: &Path, branch: &str) {
-        let _ = self.exec(
-            origin,
-            &[
-                OsStr::new("worktree"),
-                OsStr::new("remove"),
-                OsStr::new("-f"),
-                OsStr::new("-f"),
-                OsStr::new("--"),
-                path.as_os_str(),
-            ],
-            CLEANUP,
-        );
-        let _ = self.exec(
-            origin,
-            &[
-                OsStr::new("branch"),
-                OsStr::new("-D"),
-                OsStr::new("--"),
-                OsStr::new(branch),
-            ],
-            CLEANUP,
-        );
     }
 }
 
