@@ -89,3 +89,13 @@ test('no notice reserves room: the page has no rail, no bottom padding for it, a
   assert.match(shellRoot, /max-\[801px\]:pt-\[var\(--banner-height,0px\)\]/, 'a phone makes room for its fixed banner and nothing else');
 });
 
+test('the banner rides at the top of a page dialog instead of covering the top bar', async () => {
+  const shell = await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8');
+  const projects = await readFile(resolve(import.meta.dirname, '../src/renderer/project/ProjectsView.tsx'), 'utf8');
+  const hosted = /const BANNER_IN_DIALOG = '([^']*)';/.exec(shell)?.[1].split(',').map((part) => part.trim());
+  assert.deepEqual(hosted, ['.ticket-dialog', '.project-dialog']);
+  assert.match(shell, /modal\.matches\(BANNER_IN_DIALOG\) \? 'sticky' : 'fixed'/, 'a fixed banner sits over the top bar the dialog leaves in view');
+  assert.match(projects, /className="project-dialog"/, 'the Add project dialog is the one the shell hosts the banner in');
+  assert.match(await readFile(resolve(import.meta.dirname, '../src/renderer/notices/look.tsx'), 'utf8'), /data-\[host=sticky\]:sticky data-\[host=sticky\]:top-0/,
+    'the sticky host keeps the banner at the dialog top');
+});
