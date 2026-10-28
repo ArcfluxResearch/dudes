@@ -282,7 +282,7 @@ export class Journey {
   }
 
   async otherScreens() {
-    for (const name of ['log', 'setup', 'settings']) {
+    for (const name of ['projects', 'log', 'setup', 'settings']) {
       await this.click(`#view-${name}`);
       await this.until(`location.hash === '#/${name}' && document.querySelector('.control-panel[data-page]')?.dataset.view === '${name}'
         && !document.querySelector('.office-canvas')`, `${name} did not open as a page`);
