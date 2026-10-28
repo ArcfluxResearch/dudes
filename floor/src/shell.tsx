@@ -207,7 +207,7 @@ function SignedInShell() {
       shell.style.setProperty('--notice-room', `${room === 0 ? 0 : room + 16}px`);
     };
     const update = () => {
-      const dialogs = shell.querySelectorAll<HTMLDialogElement>('.hire-dialog:modal, .retire-dialog:modal, .ticket-dialog:modal, .overview-dialog:modal');
+      const dialogs = shell.querySelectorAll<HTMLDialogElement>('.hire-dialog:modal, .retire-dialog:modal, .ticket-dialog:modal, .overview-dialog:modal, .project-dialog:modal');
       const modal = dialogs.item(dialogs.length - 1);
       const host = modal ?? shell;
       if (noticeArea.parentElement !== host) host.append(noticeArea);

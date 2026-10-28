@@ -239,6 +239,7 @@ export class Journey {
     const views = [
       { name: 'office', selector: '#office-open', ready: `location.hash === '' && !!document.querySelector('.office-canvas') && !document.querySelector('.control-panel')` },
       { name: 'board', selector: '#view-board', ready: `document.querySelector('.control-panel')?.dataset.view === 'board'` },
+      { name: 'projects', selector: '#view-projects', ready: `location.hash === '#/projects' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'projects'` },
       { name: 'log', selector: '#view-log', ready: `location.hash === '#/log' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'log'` },
       { name: 'setup', selector: '#view-setup', ready: `location.hash === '#/setup' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'setup'` },
       { name: 'settings', selector: '#view-settings', ready: `location.hash === '#/settings' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'settings'` },
