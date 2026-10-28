@@ -756,19 +756,25 @@ test('the decoder reads priority and the events, and an older daemon sends neith
   assert.deepEqual(newer.history.events.map((e) => e.kind), ['created', 'edited']);
   assert.equal(newer.history.omitted, 5);
   assert.deepEqual(decode({ priority: 'none', history: [] }).history, { events: [], omitted: 0 });
+  assert.equal(decode({ priority: 'soon' }), null, 'an unknown priority');
+  for (const [what, bad] of [
+    ['an event of an unknown kind', event('merged')],
+    ['an event with no agent where one is due', event('assigned')],
+    ['an event by someone unknown', { ...event('created'), by: 'stranger' }],
+    ['a position that is not decimal text', { ...event('created'), lsn: 12 }],
+    ['an exit code that is not a number', event('check_failed', { exit: 'x' })],
+    ['a reason that is not one', event('moved', { reason: 'made_up' })],
+  ]) {
+    const read = decode({ history: [EVENTS[0], bad], history_omitted: 2 });
+    assert.deepEqual([read.history.events.map((e) => e.kind), read.history.omitted], [['created'], 3], what);
+  }
   for (const [what, fields] of [
-    ['an unknown priority', { priority: 'soon' }],
     ['events that are not a list', { history: 'yes' }],
-    ['an event of an unknown kind', { history: [event('merged')] }],
-    ['an event with no agent where one is due', { history: [event('assigned')] }],
-    ['an event by someone unknown', { history: [{ ...event('created'), by: 'stranger' }] }],
-    ['a position that is not decimal text', { history: [{ ...event('created'), lsn: 12 }] }],
-    ['an exit code that is not a number', { history: [event('check_failed', { exit: 'x' })] }],
-    ['a reason that is not one', { history: [event('moved', { reason: 'made_up' })] }],
     ['a count of omitted events below zero', { history: [], history_omitted: -1 }],
     ['more events than the daemon keeps', { history: Array.from({ length: 49 }, (_, n) => event('edited', {}, n)) }],
   ]) {
-    assert.equal(decode(fields), null, what);
+    const read = decode(fields);
+    assert.deepEqual([read.note, read.history], ['Fix the flaky test', null], what);
   }
 });
 

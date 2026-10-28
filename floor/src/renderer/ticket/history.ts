@@ -99,13 +99,16 @@ function eventOf(value: unknown): HistoryEvent | null {
  * The history in a ticket read: `undefined` when the daemon sent none (an older daemon), `null` when what it sent
  * is not the shape it uses, and the events otherwise.
  */
-export function decodeHistory(events: unknown, omitted: unknown): TicketHistory | null | undefined {
+/**
+ * An event this page cannot read, such as a kind a newer daemon adds, counts as not shown rather than
+ * hiding the whole ticket, and a malformed list leaves the History section out.
+ */
+export function decodeHistory(events: unknown, omitted: unknown): TicketHistory | undefined {
   if (events === undefined) return undefined;
   const missed = omitted ?? 0;
-  if (!Array.isArray(events) || events.length > MAX_EVENTS || !count(missed)) return null;
-  const decoded = events.map(eventOf);
-  if (decoded.some((event) => event === null)) return null;
-  return Object.freeze({ events: Object.freeze(decoded as HistoryEvent[]), omitted: missed });
+  if (!Array.isArray(events) || events.length > MAX_EVENTS || !count(missed)) return undefined;
+  const decoded = events.map(eventOf).filter((event): event is HistoryEvent => event !== null);
+  return Object.freeze({ events: Object.freeze(decoded), omitted: missed + events.length - decoded.length });
 }
 
 /** Why a ticket moved into Needs you, in a few words. */

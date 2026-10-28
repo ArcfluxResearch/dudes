@@ -102,7 +102,6 @@ export function decodeDetail(body: Record<string, unknown>, card: string): Ticke
   const priority = ticket.priority === undefined ? null : priorityOf(ticket.priority);
   if (ticket.priority !== undefined && priority === null) return null;
   const history = decodeHistory(ticket.history, ticket.history_omitted);
-  if (history === null) return null;
   const truncated = ticket.truncated ?? [];
   if (!Array.isArray(truncated) || !truncated.every((field) => (TRUNCATED_FIELDS as readonly unknown[]).includes(field))
     || new Set(truncated).size !== truncated.length) return null;
