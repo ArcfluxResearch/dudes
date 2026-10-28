@@ -18,8 +18,10 @@ struct Scratch {
 }
 
 impl Scratch {
-    fn new() -> Option<Self> {
-        let binary = std::env::var_os("DUDES_PREVIOUS_DAEMON").map(PathBuf::from)?;
+    fn new() -> Self {
+        let binary = std::env::var_os("DUDES_PREVIOUS_DAEMON")
+            .map(PathBuf::from)
+            .expect("set DUDES_PREVIOUS_DAEMON to the previous-release daemon");
         assert!(binary.is_absolute());
         let root = tempfile::Builder::new()
             .prefix("dudes-wt-reader-")
@@ -32,7 +34,7 @@ impl Scratch {
                 .unwrap();
         }
         fs::write(root.path().join("operator.toml"), "").unwrap();
-        Some(Self { root, binary })
+        Self { root, binary }
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -113,9 +115,7 @@ fn journal_bytes(directory: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 }
 
 fn refuses(warm: bool) {
-    let Some(scratch) = Scratch::new() else {
-        return;
-    };
+    let scratch = Scratch::new();
     scratch.append(RecordKind::AgentRenamed);
     if warm {
         scratch.boot_control();
@@ -162,29 +162,29 @@ fn refuses(warm: bool) {
 }
 
 #[test]
+#[ignore = "requires DUDES_PREVIOUS_DAEMON pointing to the actual previous release"]
 fn previous_release_refuses_a_required_pending_lease_cold_before_serving_or_appending() {
     refuses(false);
 }
 
 #[test]
+#[ignore = "requires DUDES_PREVIOUS_DAEMON pointing to the actual previous release"]
 fn previous_release_refuses_a_required_pending_lease_warm_before_serving_or_appending() {
     refuses(true);
 }
 
 #[test]
+#[ignore = "requires DUDES_PREVIOUS_DAEMON pointing to the actual previous release"]
 fn previous_release_reads_an_unchanged_journal_cold() {
-    let Some(scratch) = Scratch::new() else {
-        return;
-    };
+    let scratch = Scratch::new();
     scratch.append(RecordKind::AgentRenamed);
     scratch.boot_control();
 }
 
 #[test]
+#[ignore = "requires DUDES_PREVIOUS_DAEMON pointing to the actual previous release"]
 fn previous_release_reads_an_unchanged_journal_warm() {
-    let Some(scratch) = Scratch::new() else {
-        return;
-    };
+    let scratch = Scratch::new();
     scratch.append(RecordKind::AgentRenamed);
     scratch.boot_control();
     scratch.boot_control();

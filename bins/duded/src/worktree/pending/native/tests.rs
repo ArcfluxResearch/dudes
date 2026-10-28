@@ -204,10 +204,10 @@ fn a_gitfile_symlink_is_retained_without_following_it() {
 }
 
 #[test]
+#[ignore = "requires an owned mounted DUDES_PENDING_MOUNT_FIXTURE"]
 fn a_mounted_descendant_is_refused_before_its_foreign_sentinel_is_removed() {
-    let Some(fixture) = std::env::var_os("DUDES_PENDING_MOUNT_FIXTURE") else {
-        return;
-    };
+    let fixture = std::env::var_os("DUDES_PENDING_MOUNT_FIXTURE")
+        .expect("set DUDES_PENDING_MOUNT_FIXTURE to the owned mounted fixture");
     let root = std::path::PathBuf::from(fixture).join("root");
     let sentinel = root.join("mounted/sentinel");
     assert_eq!(
