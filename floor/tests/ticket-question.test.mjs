@@ -73,8 +73,8 @@ function subscribe({ status = 'doing', holder = ADA, row = {}, answering = { max
   const ada = agent(ADA, 'Ada', asking ? { status: 'waiting', question: QUESTION, question_lsn: LSN, ...row } : row);
   const frame = {
     type: 'floor.snapshot',
-    projection: { lsn: 12, agents: [ada, agent(GRACE, 'Grace')], cards: [ticketCard(1, status, { claimed_by: holder })],
-      question_history: questions },
+    projection: { lsn: 12, agents: [ada, agent(GRACE, 'Grace')], cards: [ticketCard(1, status, { claimed_by: holder })] },
+    question_history: questions,
     ticket: {},
   };
   if (answering !== null) frame.answer = answering;
@@ -103,7 +103,7 @@ test('the ticket its agent is working shows the open question with its form and 
   subscribe();
   await open([asked()]);
   const shown = section(panel());
-  assert.match(shown, new RegExp(`^<section aria-label="Agent question" class="ticket-question" data-question-lsn="${LSN}"><h4>Agent question</h4>`));
+  assert.match(shown, new RegExp(`^<section aria-label="Agent question" class="ticket-question" data-question-lsn="${LSN}"><h4>Question from Ada</h4>`));
   assert.ok(shown.includes(`<p class="ticket-question-text wrap-anywhere">${QUESTION}</p>`), shown);
   assert.ok(!shown.includes('next work'), 'a Working ticket carries the answer');
   assert.match(shown, /<label[^>]*>Your answer<\/label>/);
@@ -301,7 +301,7 @@ test('the stream carries the answered-question list to the store, and it goes wi
   const kept = store.getFloorState().questionHistory;
   store.applyServerFrame(JSON.stringify({ type: 'floor.delta', delta: { lsn: 13, agents: [], cards: [] } }), store.getFloorState().epoch);
   assert.equal(store.getFloorState().questionHistory, kept, 'a delta without the list kept the old one');
-  store.applyServerFrame(JSON.stringify({ type: 'floor.delta', delta: { lsn: 14, agents: [], cards: [], question_history: [entry(30, 'c')] } }),
+  store.applyServerFrame(JSON.stringify({ type: 'floor.delta', delta: { lsn: 14, agents: [], cards: [] }, question_history: [entry(30, 'c')] }),
     store.getFloorState().epoch);
   assert.deepEqual(store.getFloorState().questionHistory.map((row) => row.question), ['c']);
   store.noteTransport('close');

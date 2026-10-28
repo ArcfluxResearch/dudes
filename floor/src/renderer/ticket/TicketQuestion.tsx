@@ -6,6 +6,7 @@ import { AnswerForm, AnswerStatus } from '../answer/AnswerPanel.tsx';
 import type { TicketHistory } from './history.ts';
 import { HINT } from './look.ts';
 import { lastAsker, NEXT_WORK, ticketQuestion } from './question.ts';
+import { readable } from './words.ts';
 
 const STATUS_TITLE = 'ticket-answer-status-title';
 
@@ -22,10 +23,12 @@ export function AskedQuestion({ floor, card, history }: {
   const question = ticketQuestion(floor, card, history);
   const asker = lastAsker(history);
   if (question === null && asker === null) return null;
+  const name = question?.row.name;
+  const heading = typeof name === 'string' && name !== '' ? `Question from ${readable(name)}` : 'Question';
   const answeringOff = floor.phase === 'live' && !floor.stale && !floor.answering;
   return <>
     {question === null ? null : <section aria-label="Agent question" className="ticket-question" data-question-lsn={question.questionLsn}>
-      <h4>Agent question</h4>
+      <h4>{heading}</h4>
       <p className="ticket-question-text max-h-48 overflow-y-auto rounded-md border border-line bg-warn-soft px-3 py-2 text-ink wrap-anywhere whitespace-pre-wrap">{question.text}</p>
       {question.carries ? null : <p className="ticket-question-next m-0" role="note">{NEXT_WORK}</p>}
       {answeringOff

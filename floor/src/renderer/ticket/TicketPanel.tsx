@@ -235,6 +235,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
     {failure === null ? null : <p className={NEEDS} role="note">An earlier engine attempt stopped. Open Details for its result.</p>}
     {card.status === 'blocked' ? <p className={NEEDS} role="note">{reasonSentence(ticket?.reason ?? null)}</p>
       : waiting === null ? null : <p className="ticket-wait m-0">{waiting}</p>}
+    <AskedQuestion floor={floor} card={card} history={shown?.history ?? null} />
     {shown === null && mine?.phase !== 'failed' ? <p role="status">Reading the ticket…</p> : null}
     {mine?.problem == null ? null : <p className={HINT} role="status">{mine.problem}</p>}
     {shown === null ? null : <>
@@ -450,7 +451,6 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
     data-ticket-status={card.status} data-mode={mode} ref={focusSheet} tabIndex={-1} data-focus-on-leave="view-board">
     <h3 id="card-detail-title" tabIndex={-1} className="m-0 text-page leading-normal font-semibold wrap-anywhere focus:outline-none">{card.title}</h3>
     <Facts floor={floor} card={card} />
-    <AskedQuestion floor={floor} card={card} history={shown?.history ?? null} />
     <StuckActions floor={floor} card={card} onReviewRecovery={onReviewRecovery} />
     {shown?.context == null ? null : <RecoveredReview context={shown.context} fresh={fresh} />}
     {shown?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={shown.instruction_review}

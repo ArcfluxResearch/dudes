@@ -3532,7 +3532,6 @@ impl Flow {
 
     /// One Floor answer to `agent`'s question at `question`.
     fn answer(
-        &self,
         page: &duded::floor_browser::Page,
         key: char,
         agent: AgentId,
@@ -3621,7 +3620,7 @@ fn a_floor_answer_on_a_working_ticket_carries_the_work_on() {
     assert_eq!(flow.history(card).last(), Some(&asked));
 
     let page = flow.page();
-    let (head, body) = flow.answer(&page, 'B', cody, question, "use release");
+    let (head, body) = Flow::answer(&page, 'B', cody, question, "use release");
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(body["state"], "answered");
     let answered_at = human_answers(&fixture, cody);
@@ -3669,7 +3668,7 @@ fn an_answer_to_a_retired_agents_question_is_refused_and_appends_nothing() {
     let before = fixture.records().len();
 
     let page = flow.page();
-    let (head, body) = flow.answer(&page, 'C', cody, question, "use release");
+    let (head, body) = Flow::answer(&page, 'C', cody, question, "use release");
     assert!(head.starts_with("HTTP/1.1 409"), "{head}");
     assert_eq!(body["reason"], "agent_retired");
     assert_eq!(fixture.records().len(), before);
@@ -3759,15 +3758,15 @@ fn an_answer_to_a_paused_agent_waits_for_the_resume() {
     flow.control(dudes_proto::rpc::Method::LoopPause, cody);
 
     let page = flow.page();
-    let (head, _) = flow.answer(&page, 'F', cody, question, "use release");
+    let (head, _) = Flow::answer(&page, 'F', cody, question, "use release");
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     flow.end_turn(&fixture, first, None);
-    let held = settled(&fixture, fixture.records().len());
+    let after_end = settled(&fixture, fixture.records().len());
     assert_eq!(
         Flow::turns(&fixture).len(),
         1,
         "the pause holds the next turn: {:?}",
-        held.iter().map(Record::kind).collect::<Vec<_>>()
+        after_end.iter().map(Record::kind).collect::<Vec<_>>()
     );
 
     flow.control(dudes_proto::rpc::Method::LoopResume, cody);
@@ -3802,7 +3801,7 @@ fn a_stopped_tickets_question_is_answered_into_the_agents_next_work() {
     flow.await_status(one, CardStatus::Blocked);
     flow.acknowledge_cleared_review(one, cody);
     let page = flow.page();
-    let (head, _) = flow.answer(&page, 'G', cody, question, "use release");
+    let (head, _) = Flow::answer(&page, 'G', cody, question, "use release");
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert!(matches!(
         flow.history(one).last(),

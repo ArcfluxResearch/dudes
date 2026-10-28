@@ -245,26 +245,30 @@ fn unanswered(table: &HistoryTable<'_>, agent: AgentId) -> Result<Option<(CardId
             serde_json::from_slice(value.value()).map_err(|source| Error::Row { source })?;
         for event in &history.events {
             let TicketHistoryKind::Asked {
-                agent: asker,
+                agent: holder,
                 question_lsn,
             } = &event.kind
             else {
                 continue;
             };
-            let answered = history.events.iter().any(|later| {
-                matches!(
-                    &later.kind,
-                    TicketHistoryKind::Answered { agent: who, question_lsn: asked }
-                        if *who == agent && asked == question_lsn
-                )
-            });
             let Ok(position) = question_lsn.parse::<u64>() else {
                 continue;
             };
-            if *asker == agent
-                && !answered
-                && newest.as_ref().is_none_or(|(best, _, _)| position > *best)
+            if *holder != agent
+                || newest
+                    .as_ref()
+                    .is_some_and(|(best, _, _)| position <= *best)
             {
+                continue;
+            }
+            let closed = history.events.iter().any(|later| {
+                matches!(
+                    &later.kind,
+                    TicketHistoryKind::Answered { agent: who, question_lsn: closing }
+                        if *who == agent && closing == question_lsn
+                )
+            });
+            if !closed {
                 newest = Some((
                     position,
                     CardId::from_bytes(*key.value()),

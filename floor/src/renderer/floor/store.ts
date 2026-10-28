@@ -933,7 +933,7 @@ function fromSnapshot(message: ServerMessage): FloorState {
     cards: cards.rows,
     activity: activity.rows,
     retiredAgents: retired.rows,
-    questionHistory: decodeQuestionHistory(projection.question_history),
+    questionHistory: decodeQuestionHistory(message.question_history),
     messages: messages.rows,
     threads: messages.threads,
     messagesLsn,
@@ -1025,8 +1025,8 @@ function fromDelta(delta: Record<string, unknown>, message: ServerMessage): Floo
     cards: Object.freeze([...nextCards.values()].sort((a, b) => a.id.localeCompare(b.id))),
     activity: activity.rows,
     retiredAgents: retired.rows,
-    questionHistory: delta.question_history === undefined || state.snapshotEpoch !== state.epoch
-      ? state.questionHistory : decodeQuestionHistory(delta.question_history),
+    questionHistory: message.question_history === undefined || state.snapshotEpoch !== state.epoch
+      ? state.questionHistory : decodeQuestionHistory(message.question_history),
     messages: messages.rows,
     threads: messages.threads,
     messagesLsn: messages.cut,

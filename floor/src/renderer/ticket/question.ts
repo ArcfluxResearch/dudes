@@ -61,19 +61,25 @@ export function ticketQuestion(floor: FloorState, card: CardRow, history: Ticket
   const asked = unansweredQuestion(history);
   if (asked === null) return null;
   const row = agentRow(floor, asked.agent);
-  if (row === null || row.question_lsn !== asked.questionLsn || typeof row.question !== 'string' || row.question === '') return null;
+  const text = row === null ? null : openWords(row, asked.questionLsn);
+  if (row === null || text === null) return null;
   return Object.freeze({
-    row, questionLsn: asked.questionLsn, text: readable(row.question),
+    row, questionLsn: asked.questionLsn, text,
     carries: card.status === 'doing' && card.claimed_by === asked.agent,
   });
+}
+
+/** The words of the question `row` holds open at `questionLsn`, or `null`. */
+function openWords(row: AgentRow, questionLsn: string): string | null {
+  return row.question_lsn === questionLsn && typeof row.question === 'string' && row.question !== ''
+    ? readable(row.question) : null;
 }
 
 /** The words of an asked question: the agent's open one, an answered one still listed, or `null`. */
 export function questionWords(floor: FloorState, agent: string, questionLsn: string): string | null {
   const row = agentRow(floor, agent);
-  if (row !== null && row.question_lsn === questionLsn && typeof row.question === 'string' && row.question !== '') {
-    return readable(row.question);
-  }
+  const open = row === null ? null : openWords(row, questionLsn);
+  if (open !== null) return open;
   const answered = floor.questionHistory.find((kept) => kept.agent === agent && kept.questionLsn === questionLsn);
   return answered === undefined ? null : readable(answered.question);
 }
