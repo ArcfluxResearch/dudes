@@ -7,6 +7,7 @@
 import type { CardRow } from '../board.ts';
 import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
+import type { Priority } from './priority.ts';
 import { goalIdOf } from '../goal/goal.ts';
 import { decodeWorkspace } from '../workspace.ts';
 import { NO_AGENT_YET, noAgentInProjectSentence, otherStateName, placeInLine, reasonSentence, stateName, waitSentence } from './words.ts';
@@ -97,9 +98,16 @@ export function boardColumns(cards: readonly CardRow[], doneShown: number = DONE
   });
 }
 
-/** Unassigned tickets first, then queued ones by their place in line. */
+/** The daemon's `Priority::rank`: Urgent, High, then Medium with no priority, then Low. */
+const PRIORITY_RANK: Readonly<Record<Priority, number>> = Object.freeze({ urgent: 0, high: 1, medium: 2, none: 2, low: 3 });
+
+/**
+ * Unassigned tickets first, by priority and then oldest first (ids are creation order), then
+ * queued ones by their place in the agent's line.
+ */
 function queueOrder(card: CardRow): number {
-  return card.status === 'claimed' ? 1 + (card.ticket?.position ?? 0) : 0;
+  return card.status === 'claimed' ? PRIORITY_RANK.low + 1 + (card.ticket?.position ?? 0)
+    : PRIORITY_RANK[card.ticket?.priority ?? 'none'];
 }
 
 export type TicketAction = 'give' | 'edit' | 'remove' | 'accept' | 'changes' | 'try_again' | 'stop';

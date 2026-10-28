@@ -75,6 +75,26 @@ function column(html, key) {
 
 const titles = (html) => [...html.matchAll(/<strong>([^<]+)<\/strong>/g)].map((m) => m[1]);
 
+test('unassigned tickets run by priority then age, and queued tickets keep their agents line', () => {
+  subscribe(store, {
+    agents: [agent()],
+    cards: [
+      ticketCard(1, 'todo', {}, { priority: 'low' }),
+      ticketCard(2, 'todo'),
+      ticketCard(3, 'claimed', { claimed_by: ADA }, { position: 2, priority: 'urgent' }),
+      ticketCard(4, 'todo', {}, { priority: 'urgent' }),
+      ticketCard(5, 'todo', {}, { priority: 'medium' }),
+      ticketCard(6, 'claimed', { claimed_by: ADA }, { position: 1, priority: 'low' }),
+      ticketCard(7, 'todo', {}, { priority: 'high' }),
+      ticketCard(8, 'todo', {}, { priority: 'urgent' }),
+    ],
+  });
+  const { columns } = model.boardColumns(store.getFloorState().cards);
+  assert.deepEqual(columns.todo.map((c) => c.title), [
+    'Ticket 4', 'Ticket 8', 'Ticket 7', 'Ticket 2', 'Ticket 5', 'Ticket 1', 'Ticket 6', 'Ticket 3',
+  ]);
+});
+
 test('each status lands in its column, and Needs you is a lane', () => {
   subscribe(store, {
     agents: [agent()],
