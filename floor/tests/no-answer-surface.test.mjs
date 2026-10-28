@@ -273,6 +273,7 @@ const RETIRE_MODULE = 'src/renderer/retire/retire.ts';
 const SETTINGS_EDIT_MODULE = 'src/renderer/settings/edit.ts';
 const ADD_PROJECT_MODULE = 'src/renderer/project/add.ts';
 const ADD_PROJECT_FORM = 'src/renderer/project/AddProject.tsx';
+const PROJECTS_VIEW = 'src/renderer/project/ProjectsView.tsx';
 const TICKET_MODULE = 'src/renderer/ticket/ticket.ts';
 const TICKET_BOARD = 'src/renderer/ticket/TicketBoard.tsx';
 const TICKET_PANEL = 'src/renderer/ticket/TicketPanel.tsx';
@@ -358,6 +359,8 @@ const ADMITTED = new Map([
   [CHAT_PANEL, Object.freeze(['a textarea', 'an input', 'a change handler', 'a key handler'])],
   [RENAME_PANEL, Object.freeze(['an input', 'a change handler', 'a key handler'])],
   [ADD_PROJECT_FORM, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
+  // The Add project dialog's key handler only keeps Escape from closing the page under it.
+  [PROJECTS_VIEW, Object.freeze(['a key handler'])],
   [SETTINGS_VIEW, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
   [LOOK_PANEL, Object.freeze(['a form', 'a textarea', 'a select', 'a change handler',
     'a submit handler', 'a key handler'])],
@@ -551,6 +554,10 @@ const ADMITTED_HANDLERS = [
     expression: "(event) => { if (event.key === 'Escape') event.stopPropagation(); }" },
   { file: QUICK_MENU, tag: 'input', handler: 'onChange', expression: '(event) => { setQuery(event.target.value); setActive(0); }' },
   { file: QUICK_MENU, tag: 'input', handler: 'onKeyDown', expression: 'key' },
+  { file: PROJECTS_VIEW, tag: 'dialog', className: 'project-dialog', handler: 'onCancel',
+    expression: '(event) => { event.preventDefault(); onClose(); }' },
+  { file: PROJECTS_VIEW, tag: 'dialog', className: 'project-dialog', handler: 'onKeyDown',
+    expression: "(event) => { if (event.key === 'Escape') event.stopPropagation(); }" },
   { file: SHORTCUT_HELP, tag: 'dialog', className: 'shortcut-help', handler: 'onCancel',
     expression: '(event) => { event.preventDefault(); onClose(); }' },
   { file: SHORTCUT_HELP, tag: 'dialog', className: 'shortcut-help', handler: 'onKeyDown',
@@ -1190,7 +1197,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
 
 test('the only activators are named selection, retry, view, Hire, answer, Chat, the roster\'s row, action and sheet buttons, pause, Stop this turn, Stop and send, Pause all, resume, goal change, look edit, model change and dismiss buttons, the notice stack\'s fold, History and Clear buttons, Overview Answer, Review work, Review ticket and Change navigation, a step\'s Show the output, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
-  + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
+  + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, the Projects page\'s Add project, Open board, ticket count and dialog buttons, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation, '
   + 'and checkout differences\' explicit show, refresh, hide, open and more-files controls', async () => {
   const buttons = [];
@@ -1237,6 +1244,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(MEMORY_PANEL),
     ...Array(4).fill(RENAME_PANEL),
     ...Array(9).fill(ADD_PROJECT_FORM),
+    ...Array(5).fill(PROJECTS_VIEW),
     ...Array(4).fill(LOOK_PANEL),
     ...Array(5).fill(MODEL_PANEL),
     LISTS_BAR,
@@ -2558,7 +2566,7 @@ test('session material has no browser persistence, URL, argv or log sink', async
   const navigation = await readFile(resolve(floor, NAVIGATION), 'utf8');
   const navigationSyntax = parsedByExtension(navigation, NAVIGATION);
   assert.deepEqual(navigationSyntax.statements.filter(ts.isImportDeclaration), []);
-  assert.match(navigation, /const PAGE_HASH: Readonly<Record<PageView, string>> = Object\.freeze\(\{\s*log: '#\/log', setup: '#\/setup', settings: '#\/settings',\s*\}\);/);
+  assert.match(navigation, /const PAGE_HASH: Readonly<Record<PageView, string>> = Object\.freeze\(\{\s*projects: '#\/projects', log: '#\/log', setup: '#\/setup', settings: '#\/settings',\s*\}\);/);
   assert.equal([...navigation.matchAll(/\bPAGE_HASH\b/g)].length, 2);
   const openPage = navigationSyntax.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === 'openPage');
   assert.equal(openPage.body.statements.length, 1);

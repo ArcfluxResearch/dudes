@@ -11,11 +11,13 @@ import { Roster } from './Roster.tsx';
 import { closesPanel, handFocusOnLeave, restoreFocusAfterDialog } from './focus.ts';
 import { StreamReadStatus } from './ReadError.tsx';
 import type { FloorState } from './floor/store.ts';
+import { ProjectsView } from './project/ProjectsView.tsx';
 import { SetupView } from './setup/SetupView.tsx';
 import { SettingsView } from './settings/SettingsView.tsx';
 import { CardDetail } from './BoardPanel.tsx';
 import { NewTicketForm, TicketBoard, TicketNotice, ticketActionsOpen } from './ticket/TicketBoard.tsx';
 import { CopyLink } from './ticket/CopyLink.tsx';
+import { showProject } from './ticket/browseState.ts';
 import { useRequestedNewTicket } from './ticket/newTicketRequest.ts';
 import { TicketPage } from './ticket/TicketPage.tsx';
 import { readNewTicketDraft, writeNewTicketDraft } from './view.ts';
@@ -26,14 +28,15 @@ import { HireEntry } from './onboarding/HireEntry.tsx';
 import { isPageView } from '../navigation.ts';
 import { Button, Dialog, ICON, IconButton, cn } from '../ui/index.ts';
 
-export type ControlView = 'overview' | 'board' | 'log' | 'setup' | 'settings';
+export type ControlView = 'overview' | 'board' | 'projects' | 'log' | 'setup' | 'settings';
 
 export type PanelView = Exclude<ControlView, 'overview'>;
 
-/** Control's views, in top bar order. Setup and Settings take a fresh snapshot when they open. */
+/** Control's views, in top bar order. Projects, Setup and Settings take a fresh snapshot when they open. */
 export const CONTROL_VIEWS: readonly { readonly view: ControlView; readonly label: string; readonly refresh: boolean }[] = [
   { view: 'overview', label: 'Overview', refresh: false },
   { view: 'board', label: 'Board', refresh: false },
+  { view: 'projects', label: 'Projects', refresh: true },
   { view: 'log', label: 'Log', refresh: false },
   { view: 'setup', label: 'Setup', refresh: true },
   { view: 'settings', label: 'Settings', refresh: true },
@@ -202,6 +205,7 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
         forming={overlay?.kind === 'new'} onNewTicket={openNewTicket} paused={full} /></div>
       {full && selectedCardId !== null ? <TicketPage id={selectedCardId} onBack={closeOverlay}>{ticketBody}</TicketPage> : null}
     </>,
+    projects: <ProjectsView floor={floor} onOpenBoard={(project) => { showProject(project); onView('board'); }} />,
     log: <LogPanel floor={floor} />,
     setup: <SetupView floor={floor} onGuide={onGuide} />,
     settings: <SettingsView floor={floor} onSetup={() => onView('setup')} />,

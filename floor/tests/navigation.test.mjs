@@ -3,12 +3,12 @@ import test from 'node:test';
 
 import { currentPage, isPageView, openPage, pageFromHash, subscribeToPage } from '../src/navigation.ts';
 
-test('only Log, Setup and Settings have page addresses', () => {
-  assert.deepEqual(['#/log', '#/setup', '#/settings'].map(pageFromHash), ['log', 'setup', 'settings']);
+test('only Projects, Log, Setup and Settings have page addresses', () => {
+  assert.deepEqual(['#/projects', '#/log', '#/setup', '#/settings'].map(pageFromHash), ['projects', 'log', 'setup', 'settings']);
   for (const hash of ['', '#', '#/office', '#/board', '#/overview', '#section', '#/settings/extra', '#bootstrap=link']) {
     assert.equal(pageFromHash(hash), null, hash);
   }
-  assert.deepEqual(['log', 'setup', 'settings', 'board', 'overview'].map(isPageView), [true, true, true, false, false]);
+  assert.deepEqual(['projects', 'log', 'setup', 'settings', 'board', 'overview'].map(isPageView), [true, true, true, true, false, false]);
 });
 
 test('page navigation writes the address and browser Back reads the address it restores', () => {
@@ -23,7 +23,7 @@ test('page navigation writes the address and browser Back reads the address it r
   const shown = [];
   const unsubscribe = subscribeToPage(() => shown.push(currentPage()));
   try {
-    for (const [page, hash] of [['log', '#/log'], ['setup', '#/setup'], ['settings', '#/settings']]) {
+    for (const [page, hash] of [['projects', '#/projects'], ['log', '#/log'], ['setup', '#/setup'], ['settings', '#/settings']]) {
       openPage(page);
       assert.equal(location.hash, hash);
     }
