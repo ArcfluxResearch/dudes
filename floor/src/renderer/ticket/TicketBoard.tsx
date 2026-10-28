@@ -30,7 +30,7 @@ import { arrange, choicesOf, filterRows, isFiltered, liveView, rowsOf, withoutFi
 import type { BrowseRow } from './browse.ts';
 import { getBrowse, setBrowse, subscribeToBrowse } from './browseState.ts';
 import { PriorityMark } from './PriorityMark.tsx';
-import { PRIORITY_OPTIONS } from './priority.ts';
+import { PRIORITY_OPTIONS, priorityOf } from './priority.ts';
 import type { Priority } from './priority.ts';
 import { TicketList, TicketRow } from './TicketList.tsx';
 import { ShortcutHelp } from './ShortcutHelp.tsx';
@@ -233,8 +233,8 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
         options={checks.map((entry) => ({ value: entry.id, label: choiceLabel(entry) }))} />
     </Field> : null}
     <Field label="Priority" id={`${ids}-priority`}>
-      <Select id={`${ids}-priority`} name="priority" value={priority} onValueChange={(value) => setPriority(value as Priority)}
-        options={PRIORITY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))} />
+      <Select id={`${ids}-priority`} name="priority" value={priority} options={PRIORITY_OPTIONS}
+        onValueChange={(value) => setPriority(priorityOf(value) ?? 'none')} />
     </Field>
     {chosenCheck !== null && check === null && project !== null ? <p className={HINT} role="status">The saved check is no longer available. Choose a check before creating this ticket.</p> : null}
     {chosenProject !== null && project === null ? <p className={HINT} role="status">The saved project is no longer available. Choose a project before creating this ticket.</p> : null}

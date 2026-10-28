@@ -366,16 +366,17 @@ test('a card shows a priority mark except when it has no priority, in the Board 
   assert.equal((list.match(/data-priority=/g) ?? []).length, 5);
   const row = list.match(/<button[^>]*data-card-id="01JBQ8XK2M3N4P5Q6R7S8T0003"[\s\S]*?<\/button>/)[0];
   assert.match(row, /data-priority="urgent"/);
-  assert.match(row, />Urgent<\/span>|Urgent<\/span>/);
+  assert.match(row, /Urgent<\/span>/);
   const plain = list.match(/<button[^>]*data-card-id="01JBQ8XK2M3N4P5Q6R7S8T0001"[\s\S]*?<\/button>/)[0];
   assert.doesNotMatch(plain, /data-priority/);
 });
 
-test('the toolbar offers a priority filter and the List offers grouping by priority', () => {
+test('the toolbar filters by priority, and the List offers to group by it', () => {
   seedPriorities();
   state.setBrowse({ layout: 'list', priority: 'urgent' });
   const html = board();
   assert.match(html, /aria-label="Priority"/);
   assert.deepEqual(rowTitles(html), ['Urgent six', 'Urgent three'], 'the queue order holds inside the filter');
   assert.match(html, /2 of 7 match/);
+  assert.match(html, /data-value="priority"[^>]*>[\s\S]*?Group by priority/);
 });

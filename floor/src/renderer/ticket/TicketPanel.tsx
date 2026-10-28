@@ -21,7 +21,7 @@ import { DIGEST_CAVEAT, digestSentence } from './digest.ts';
 import { checkDisplayCurrent, currentDetail, editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
 import { RecoveredReview } from './RecoveredReview.tsx';
 import { History } from './TicketHistory.tsx';
-import { PRIORITY_OPTIONS, PRIORITY_WORDS } from './priority.ts';
+import { PRIORITY_OPTIONS, PRIORITY_WORDS, priorityOf } from './priority.ts';
 import type { Priority } from './priority.ts';
 import type { TicketDetail, TruncatedTicketField } from './detail.ts';
 import { ACTION_LABEL, actionsOf, agentChoiceSentence, agentRow, cardWords, noProjects, projectOf, requiresInstructionReview } from './model.ts';
@@ -198,8 +198,8 @@ function PriorityRow({ floor, card, shown }: { readonly floor: FloorState; reado
   return <div className="ticket-priority-row flex flex-wrap items-center gap-3">
     <span className={FACT_LABEL}>Priority</span>
     {settable ? <Select aria-label="Priority" name="ticket-priority" className="w-40" value={priority} disabled={sending}
-      onValueChange={(value) => { void changeTicket(card, { verb: 'priority', priority: value as Priority }); }}
-      options={PRIORITY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))} />
+      onValueChange={(value) => { void changeTicket(card, { verb: 'priority', priority: priorityOf(value) ?? 'none' }); }}
+      options={PRIORITY_OPTIONS} />
       : <span className="ticket-priority-word">{PRIORITY_WORDS[priority]}</span>}
   </div>;
 }
@@ -310,8 +310,8 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
     </Field>
     {unrecorded.map((row) => <p key={row.id} className={HINT}>{agentWithoutProjectSentence(row.name)}</p>)}
     {choosesPriority ? <Field label="Priority" id={`${ids}-priority`}>
-      <Select id={`${ids}-priority`} name="priority" value={priority} onValueChange={(value) => setPriority(value as Priority)}
-        options={PRIORITY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))} />
+      <Select id={`${ids}-priority`} name="priority" value={priority} options={PRIORITY_OPTIONS}
+        onValueChange={(value) => setPriority(priorityOf(value) ?? 'none')} />
     </Field> : null}
     {mode === 'changes' ? <Field label="What should change?" id={`${ids}-message`}>
       <Textarea rows={3} maxLength={2048} value={message}
@@ -364,8 +364,8 @@ function EditForm({ floor, card, detail, onDone }: {
         options={checks.map((entry) => ({ value: entry.id, label: choiceLabel(entry) }))} />
     </Field> : null}
     <Field label="Priority" id={`${ids}-priority`}>
-      <Select id={`${ids}-priority`} name="priority" value={priority} onValueChange={(value) => setPriority(value as Priority)}
-        options={PRIORITY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))} />
+      <Select id={`${ids}-priority`} name="priority" value={priority} options={PRIORITY_OPTIONS}
+        onValueChange={(value) => setPriority(priorityOf(value) ?? 'none')} />
     </Field>
     <div className={FORM_ACTIONS}>
       <Button type="submit" variant="primary" disabled={sending || title.trim() === '' || !ticketActionsOpen(floor)
