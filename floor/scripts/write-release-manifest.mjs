@@ -74,12 +74,54 @@ export function servedOutputPath(path) {
   return hashedAsset(path) && servedExtensions.has(extension);
 }
 
+// The note editor loads as its own chunk, and its packages travel with it.
+export const editorNotices = [
+  '@tiptap/core@3.32.0@MIT',
+  '@tiptap/extension-blockquote@3.32.0@MIT',
+  '@tiptap/extension-bold@3.32.0@MIT',
+  '@tiptap/extension-code-block@3.32.0@MIT',
+  '@tiptap/extension-code@3.32.0@MIT',
+  '@tiptap/extension-document@3.32.0@MIT',
+  '@tiptap/extension-hard-break@3.32.0@MIT',
+  '@tiptap/extension-heading@3.32.0@MIT',
+  '@tiptap/extension-horizontal-rule@3.32.0@MIT',
+  '@tiptap/extension-italic@3.32.0@MIT',
+  '@tiptap/extension-link@3.32.0@MIT',
+  '@tiptap/extension-list@3.32.0@MIT',
+  '@tiptap/extension-paragraph@3.32.0@MIT',
+  '@tiptap/extension-strike@3.32.0@MIT',
+  '@tiptap/extension-text@3.32.0@MIT',
+  '@tiptap/extension-underline@3.32.0@MIT',
+  '@tiptap/extensions@3.32.0@MIT',
+  '@tiptap/markdown@3.32.0@MIT',
+  '@tiptap/react@3.32.0@MIT',
+  '@tiptap/starter-kit@3.32.0@MIT',
+  'fast-equals@5.4.5@MIT',
+  'linkifyjs@4.4.0@MIT',
+  'marked@17.0.6@MIT',
+  'orderedmap@2.1.1@MIT',
+  'prosemirror-commands@1.7.2@MIT',
+  'prosemirror-dropcursor@1.8.4@MIT',
+  'prosemirror-gapcursor@1.4.1@MIT',
+  'prosemirror-history@1.5.1@MIT',
+  'prosemirror-keymap@1.2.3@MIT',
+  'prosemirror-model@1.25.12@MIT',
+  'prosemirror-schema-list@1.5.1@MIT',
+  'prosemirror-state@1.4.4@MIT',
+  'prosemirror-transform@1.12.4@MIT',
+  'prosemirror-view@1.42.8@MIT',
+  'rope-sequence@1.3.4@MIT',
+  'use-sync-external-store@1.7.0@MIT',
+  'w3c-keyname@2.2.8@MIT',
+];
+
 const runtimeNotices = new Set([
   '@xterm/xterm@6.0.0@MIT',
   'react@19.3.1@MIT',
   'react-dom@19.3.1@MIT',
   'scheduler@0.28.0@MIT',
   'three@0.186.1@MIT',
+  ...editorNotices,
 ]);
 
 // The interface libraries a screen brings into the bundle once it imports the owned components. They are reviewed, but a

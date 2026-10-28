@@ -10,6 +10,7 @@ import {
   validManifestPath,
   validateBuildContract,
   validateRuntimeNotices,
+  editorNotices,
 } from '../scripts/write-release-manifest.mjs';
 
 const contract = JSON.parse(await readFile(resolve(import.meta.dirname, 'fixtures/static-contract.json'), 'utf8'));
@@ -43,7 +44,7 @@ test('tree digest is byte-sorted and canonical', () => {
 
 test('dependency licence check rejects missing and unreviewed MPL entries', async () => {
   const lock = JSON.parse(await readFile(resolve(import.meta.dirname, '../package-lock.json'), 'utf8'));
-  assert.equal(checkLock(lock).direct, 16);
+  assert.equal(checkLock(lock).direct, 23);
   const missing = structuredClone(lock);
   delete missing.packages['node_modules/react'].license;
   assert.throws(() => checkLock(missing), /unreviewed licence/);
@@ -83,6 +84,15 @@ test('runtime notices are exactly the copied code set', () => {
     { name: 'scheduler', version: '0.28.0', identifier: 'MIT', text: 'notice' },
     { name: 'three', version: '0.186.1', identifier: 'MIT', text: 'notice' },
   ];
+  const editor = editorNotices.map((entry) => {
+    const [, name, version, identifier] = /^(.+)@([^@]+)@([^@]+)$/.exec(entry);
+    return { name, version, identifier, text: 'notice' };
+  });
+  assert.equal(editor.length, 37);
+  assert.doesNotThrow(() => validateRuntimeNotices([...notices, ...editor]));
+  assert.throws(() => validateRuntimeNotices(notices), /runtime notice set/, 'the editor chunk lost its notices');
+  assert.throws(() => validateRuntimeNotices([...notices, ...editor.slice(1)]), /runtime notice set/, 'one editor package lost its notice');
+  notices.push(...editor);
   assert.doesNotThrow(() => validateRuntimeNotices(notices));
   for (const injected of [
     { name: 'vite', version: '8.3.0', identifier: 'MIT', text: 'notice' },

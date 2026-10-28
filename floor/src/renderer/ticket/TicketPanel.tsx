@@ -23,6 +23,8 @@ import { RecoveredReview } from './RecoveredReview.tsx';
 import { TicketCopy } from './TicketCopy.tsx';
 import { History } from './TicketHistory.tsx';
 import { AskedQuestion } from './TicketQuestion.tsx';
+import { NoteField, NoteView } from './NoteField.tsx';
+import { noteTooLong, toLf } from './noteText.ts';
 import { PRIORITY_OPTIONS, PRIORITY_WORDS, priorityOf } from './priority.ts';
 import type { Priority } from './priority.ts';
 import type { TicketDetail, TruncatedTicketField } from './detail.ts';
@@ -245,7 +247,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
       </p>}
       <section aria-label="Note"><h4>Note</h4>
         {shown.note === '' ? <p className="text-muted">{shown.truncated.includes('note')
-          ? 'The note was omitted from this view.' : 'No note.'}</p> : <p className="ticket-text whitespace-pre-wrap">{shown.note}</p>}
+          ? 'The note was omitted from this view.' : 'No note.'}</p> : <NoteView text={shown.note} />}
       </section>
       {card.status === 'todo' || card.status === 'claimed' ? null : <section aria-label="The agent's summary">
         <h4>{AGENT_SAYS}</h4>
@@ -344,13 +346,14 @@ function EditForm({ floor, card, detail, onDone }: {
   const [priority, setPriority] = useState<Priority>(card.ticket?.priority ?? 'none');
   const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
   const check = checks.find((entry) => entry.id === checkId) ?? null;
+  const tooLong = noteTooLong(text);
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
-    if (sending || title.trim() === '' || !ticketActionsOpen(floor) || !actionsOf(card).includes('edit')
+    if (sending || title.trim() === '' || tooLong !== null || !ticketActionsOpen(floor) || !actionsOf(card).includes('edit')
       || editableDetail(getDetailState(), card) === null) return;
     const saved = await changeTicket(card, {
-      verb: 'edit', title, note: text, check: check === null ? null : { id: check.id, revision: check.revision }, priority,
+      verb: 'edit', title, note: toLf(text), check: check === null ? null : { id: check.id, revision: check.revision }, priority,
     });
     if (saved) onDone();
   }
@@ -360,7 +363,7 @@ function EditForm({ floor, card, detail, onDone }: {
       <Input type="text" required maxLength={256} value={title} onChange={(event) => setTitle(event.target.value)} />
     </Field>
     <Field label="Note (optional)" id={`${ids}-note`}>
-      <Textarea rows={3} maxLength={8192} value={text} onChange={(event) => setText(event.target.value)} />
+      <NoteField initial={detail.note} value={text} onNote={setText} />
     </Field>
     {checks.length > 0 ? <Field label="Done when" id={`${ids}-check`}>
       <Select id={`${ids}-check`} value={checkId} onValueChange={setCheckId}
@@ -371,9 +374,10 @@ function EditForm({ floor, card, detail, onDone }: {
         onValueChange={(value) => setPriority(priorityOf(value) ?? 'none')} />
     </Field>
     <div className={FORM_ACTIONS}>
-      <Button type="submit" variant="primary" disabled={sending || title.trim() === '' || !ticketActionsOpen(floor)
+      <Button type="submit" variant="primary" disabled={sending || title.trim() === '' || tooLong !== null || !ticketActionsOpen(floor)
         || editableDetail(getDetailState(), card) === null}
         title={sending ? 'Wait for the current request to finish.' : title.trim() === '' ? 'Enter a title.'
+          : tooLong !== null ? tooLong
           : !ticketActionsOpen(floor) ? 'Reconnect to Dudes before editing.' : editableDetail(getDetailState(), card) === null
             ? 'Read the complete current note before editing.' : undefined}>Save</Button>
       <Button onClick={onDone}>Cancel</Button>
