@@ -1097,7 +1097,8 @@ USAGE
         finishes on its own. Give also retries a Needs you ticket.
         Edit and remove work on a ticket nobody is working on; an empty --note clears
         the note. --note-file reads the note from a file, or from standard input when
-        the path is -; it takes at most 8192 bytes of UTF-8 and cannot join --note.
+        the path is -; it takes at most 8192 bytes of UTF-8, refuses an empty file
+        (use --note '' to clear the note) and cannot join --note.
         Every change reads the ticket's current sequence just before the
         call, so --expected-seq is only for a script that wants a stale one refused.
         A ticket with an instruction review is the exception: Accept and Changes
@@ -1988,9 +1989,20 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
         if note.is_some() {
             return Err(ArgError::Conflicting("--note", "--note-file"));
         }
+        if path == std::path::Path::new("-") {
+            use std::io::{IsTerminal as _, Write as _};
+            if std::io::stdin().is_terminal() {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "Reading the note from standard input until end of file."
+                );
+            }
+        }
         let text = read_note_file(path, stdin_file)?;
-        if text.is_empty() && subcommand == "add" {
-            return Err(ArgError::NoteFile("the note is empty".to_owned()));
+        if text.is_empty() {
+            return Err(ArgError::NoteFile(
+                "the note is empty; use --note '' to clear the note".to_owned(),
+            ));
         }
         note = Some(text);
     }
@@ -2105,7 +2117,7 @@ fn stdin_file() -> std::io::Result<std::fs::File> {
 }
 
 /// A note read from `path`, or from `stdin` when the path is `-`: at most the note limit, UTF-8,
-/// with CRLF turned into LF because the daemon refuses a carriage return.
+/// with a leading byte-order mark dropped and CRLF turned into LF because the daemon refuses a carriage return.
 fn read_note_file<R: std::io::Read>(
     path: &std::path::Path,
     stdin: impl FnOnce() -> std::io::Result<R>,
@@ -2126,6 +2138,7 @@ fn read_note_file<R: std::io::Read>(
     }
     let text =
         String::from_utf8(bytes).map_err(|_| fail("the note is not valid UTF-8".to_owned()))?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     Ok(text.replace("\r\n", "\n"))
 }
 
@@ -5002,18 +5015,21 @@ mod devices_tests {
     }
 
     #[test]
-    fn an_empty_note_file_is_refused_on_add_and_clears_on_edit() {
+    fn an_empty_note_file_is_refused_on_add_and_edit_and_a_bom_is_dropped() {
         let dir = tempfile::tempdir().unwrap();
         let empty = note_path(&dir, b"");
-        assert!(matches!(
-            note_from("add", &["--note-file", &empty]),
-            Err(ArgError::NoteFile(_))
-        ));
+        for subcommand in ["add", "edit"] {
+            match note_from(subcommand, &["--note-file", &empty]) {
+                Err(ArgError::NoteFile(message)) => assert!(message.contains("--note ''")),
+                other => panic!("{other:?}"),
+            }
+        }
+        let bom = note_path(&dir, b"\xef\xbb\xbfhello");
         assert_eq!(
-            note_from("edit", &["--note-file", &empty])
+            note_from("edit", &["--note-file", &bom])
                 .unwrap()
                 .as_deref(),
-            Some("")
+            Some("hello")
         );
     }
 

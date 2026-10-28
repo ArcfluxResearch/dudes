@@ -142,8 +142,9 @@ refused.
 
 A longer note can come from a file: `--note-file notes.md` on `add` or `edit`, or `--note-file -` to
 read standard input. The file must be UTF-8 and at most 8,192 bytes, `\r\n` line endings become
-`\n`, and it cannot be combined with `--note`. An empty file is refused on `add` and clears the
-note on `edit`.
+`\n`, a leading byte-order mark is dropped, and it cannot be combined with `--note`. An empty file is
+refused on both `add` and `edit`; `--note ''` clears a note. With `-` on a terminal, the command says
+on standard error that it is reading the note until end of file.
 
 ## When a command is refused
 
