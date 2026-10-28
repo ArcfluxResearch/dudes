@@ -162,7 +162,7 @@ fn seed(journal: &std::path::Path) -> (RepositoryTicketStarted, RepositoryTicket
 )]
 fn a_version_66_cache_rebuilds_original_pins_instead_of_using_the_latest_grant() {
     use dudes_proto::repository::{HireRepositories, RepositoryTurnGrant, RepositoryTurnIssued};
-    assert_eq!(dudes_journal::PROJECTION_VERSION, 67);
+    assert_eq!(dudes_journal::PROJECTION_VERSION, 69);
     let dir = tempfile::tempdir().unwrap();
     let journal = dir.path().join("journal");
     let cache = dir.path().join("state.redb");
