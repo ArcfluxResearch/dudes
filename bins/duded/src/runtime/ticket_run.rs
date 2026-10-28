@@ -130,7 +130,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 let heads: Vec<CardId> = facts
                     .queued_projects()
                     .into_iter()
-                    .filter_map(|project| facts.next_ticket(project))
+                    .flat_map(|project| facts.next_tickets(project))
                     .collect();
                 (facts.owed_ticket_moves().into_iter().next(), heads)
             })?;
