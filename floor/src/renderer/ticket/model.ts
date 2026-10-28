@@ -9,7 +9,7 @@ import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { goalIdOf } from '../goal/goal.ts';
 import { decodeWorkspace } from '../workspace.ts';
-import { NO_AGENT_YET, noAgentInProjectSentence, otherStateName, placeInLine, reasonSentence, stateName, waitSentence } from './words.ts';
+import { decodeWorktree } from '../worktree.ts';import { NO_AGENT_YET, noAgentInProjectSentence, otherStateName, placeInLine, reasonSentence, stateName, waitSentence } from './words.ts';
 import type { Wait } from './words.ts';
 
 export type TicketColumn = 'todo' | 'working' | 'ready' | 'done';
@@ -134,12 +134,26 @@ export function viewConfirmed(floor: FloorState): boolean {
   return floor.phase === 'live' && !floor.stale && floor.snapshotEpoch === floor.epoch;
 }
 
-/** The ticket that holds an agent's project, if one does: its title names the wait. */
-export function holdingTicket(floor: FloorState, agent: string): CardRow | null {
+/**
+ * Where an agent works: its own copy's branch, which names one lease, or the project's shared
+ * folder. The snapshot cannot tell a multi-repo project, so a wait computed here may name no
+ * ticket there; the daemon's own wait is shown instead.
+ */
+function treeOf(floor: FloorState, agent: string | null): string {
+  return decodeWorktree(agentRow(floor, agent)?.worktree)?.branch ?? '';
+}
+
+/** Whether `other` is held by an agent of the same project and the same tree as `agent`. */
+function sharesTree(floor: FloorState, agent: string | null, other: CardRow): boolean {
   const project = decodeWorkspace(agentRow(floor, agent)?.workspace)?.id;
-  if (project === undefined) return null;
+  return project !== undefined && decodeWorkspace(agentRow(floor, other.claimed_by)?.workspace)?.id === project
+    && treeOf(floor, other.claimed_by) === treeOf(floor, agent);
+}
+
+/** The ticket that holds an agent's working tree, if one does: its title names the wait. */
+export function holdingTicket(floor: FloorState, agent: string): CardRow | null {
   return tickets(floor.cards).find((card) => (card.status === 'doing' || card.status === 'review')
-    && decodeWorkspace(agentRow(floor, card.claimed_by)?.workspace)?.id === project) ?? null;
+    && sharesTree(floor, agent, card)) ?? null;
 }
 
 export function agentRow(floor: FloorState, id: string | null): AgentRow | null {
@@ -158,7 +172,7 @@ export function agentName(floor: FloorState, id: string | null): string {
 
 /**
  * Why a ticket given to an agent has not started, read from the agents and cards in the snapshot,
- * in the order the daemon decides it: the agent first, then the project. The panel shows the
+ * in the order the daemon decides it: the agent first, then its working tree. The panel shows the
  * daemon's own words, which also cover the cases a snapshot cannot see.
  */
 export function waitOf(floor: FloorState, card: CardRow): { readonly wait: Wait; readonly text: string } | null {
@@ -173,9 +187,8 @@ export function waitOf(floor: FloorState, card: CardRow): { readonly wait: Wait;
     if (agent.mode === 'attached') return say('agent_attached');
     if (agent.status === 'running' || agent.status === 'waiting') return say('agent_busy');
   }
-  const project = projectOf(floor, card);
-  const holder = project === null ? undefined : tickets(floor.cards).find((other) => other.id !== card.id
-    && projectOf(floor, other) === project && (other.status === 'doing' || other.status === 'review'));
+  const holder = tickets(floor.cards).find((other) => other.id !== card.id
+    && (other.status === 'doing' || other.status === 'review') && sharesTree(floor, card.claimed_by, other));
   return holder === undefined ? null : say('ticket', holder.title);
 }
 

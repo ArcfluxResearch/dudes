@@ -224,6 +224,30 @@ test('a ticket waits for the one that holds its project', () => {
   assert.equal(model.cardWords(floor, floor.cards[1]).note, 'Waiting for Ticket 1 to be finished, accepted or sent back.');
 });
 
+test('a ticket names the holder of its own working tree, not of its project', () => {
+  const copy = (branch) => ({ branch, state: 'active' });
+  const AVA = '01HZX3NDEKTSV4RRFFQ69G5FAV';
+  subscribe(store, {
+    agents: [
+      agent(ADA, 'Ada', { worktree: copy('dudes/aaaaaaaaaaaa') }), agent(GRACE, 'Grace', { worktree: copy('dudes/bbbbbbbbbbbb') }),
+      agent(AVA, 'Ava'),
+    ],
+    cards: [
+      ticketCard(1, 'review', { claimed_by: ADA }),
+      ticketCard(2, 'claimed', { claimed_by: ADA }, { position: 1 }),
+      ticketCard(3, 'claimed', { claimed_by: GRACE }, { position: 1 }),
+      ticketCard(4, 'claimed', { claimed_by: AVA }, { position: 1 }),
+    ],
+  });
+  const floor = store.getFloorState();
+  const note = (n) => model.cardWords(floor, floor.cards[n - 1]).note;
+  assert.equal(note(2), 'Waiting for Ticket 1 to be finished, accepted or sent back.');
+  assert.equal(note(3), null, 'another copy is free');
+  assert.equal(note(4), null, 'the shared folder is free');
+  assert.equal(model.holdingTicket(floor, ADA)?.title, 'Ticket 1');
+  assert.equal(model.holdingTicket(floor, GRACE), null);
+});
+
 test('every state has its actions, so none is a dead end', () => {
   const expected = {
     todo: ['give', 'edit', 'remove'],

@@ -795,7 +795,7 @@ mod tests {
 
     /// A hire that owns copies of two repositories.
     fn two_repositories() -> HireRepositories {
-        use dudes_proto::repository::{RepoId, RepositoryEntry, RepositorySet};
+        use dudes_proto::repository::{RepoId, RepositorySet};
         let Record::AgentHiredWithRepositories(hire) =
             samples::record(RecordKind::AgentHiredWithRepositories)
         else {
@@ -806,11 +806,8 @@ mod tests {
         let mut second = first.clone();
         second.repo_id = RepoId::parse("docs").unwrap();
         second.value.worktree = WorktreeId::from_bytes([9; 16]);
-        scoped.repositories = RepositorySet::new(
-            first.repo_id.clone(),
-            vec![first, RepositoryEntry { ..second }],
-        )
-        .unwrap();
+        scoped.repositories =
+            RepositorySet::new(first.repo_id.clone(), vec![first, second]).unwrap();
         HireRepositories::Scoped(scoped)
     }
 
