@@ -8,6 +8,7 @@ use crate::floor_actions::{Enrollment, valid_workspace_id};
 pub(crate) fn view(
     switches: SettingsSwitches,
     folder_picker: bool,
+    create_parent: Option<String>,
     floor_usd_per_day: Option<Usd>,
     reserve: Spend,
     enrollment: &Enrollment,
@@ -57,6 +58,7 @@ pub(crate) fn view(
     let mut report = SettingsView::default();
     report.switches = switches;
     report.folder_picker = folder_picker;
+    report.create_parent = create_parent;
     report.budget.floor_usd_per_day_micros =
         floor_usd_per_day.map(|value| value.micros().to_string());
     report.budget.per_turn_usd_micros = reserve.usd.micros().to_string();
@@ -89,6 +91,7 @@ mod tests {
                 SettingsSwitches::default(),
                 available,
                 None,
+                None,
                 Spend::DEFAULT_PER_TURN_FLOOR,
                 &Enrollment::default(),
                 &Adapters::default(),
@@ -97,6 +100,25 @@ mod tests {
             let wire: serde_json::Value =
                 serde_json::from_slice(&serialize(&view).unwrap()).unwrap();
             assert_eq!(wire["folder_picker"], available);
+        }
+    }
+
+    #[test]
+    fn the_report_names_the_creation_parent_or_null() {
+        for parent in [None, Some("~/code".to_owned())] {
+            let view = view(
+                SettingsSwitches::default(),
+                false,
+                parent.clone(),
+                None,
+                Spend::DEFAULT_PER_TURN_FLOOR,
+                &Enrollment::default(),
+                &Adapters::default(),
+            )
+            .expect("a view");
+            let wire: serde_json::Value =
+                serde_json::from_slice(&serialize(&view).unwrap()).unwrap();
+            assert_eq!(wire["create_parent"], serde_json::json!(parent));
         }
     }
 

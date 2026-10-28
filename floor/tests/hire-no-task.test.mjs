@@ -23,7 +23,7 @@ const CHECKS = { workspaces: [{ workspace_id: 'repo_1', checks: [
   { id: 'default', label: 'Tests pass', revision: REV, may_already_pass: false }] }] };
 const SWITCHES = { answer: false, control: true, recovery: false, goal: true, retire: false, terminal: false, hire: true,
   git: false, renew: false, board: false, diff: false, project: false };
-const SETTINGS = { folder_picker: false, switches: SWITCHES, budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
+const SETTINGS = { folder_picker: false, create_parent: null, switches: SWITCHES, budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
   providers: ['claude'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 9 } };
 
 function subscribe({ ticket = {}, settings = SETTINGS } = {}) {

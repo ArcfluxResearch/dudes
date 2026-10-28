@@ -1236,7 +1236,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(5).fill(DIFF_PANEL),
     ...Array(4).fill(MEMORY_PANEL),
     ...Array(4).fill(RENAME_PANEL),
-    ...Array(6).fill(ADD_PROJECT_FORM),
+    ...Array(9).fill(ADD_PROJECT_FORM),
     ...Array(4).fill(LOOK_PANEL),
     ...Array(5).fill(MODEL_PANEL),
     LISTS_BAR,
@@ -1268,7 +1268,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
-  // The folder form submits with a button that has no click handler of its own.
+  // The folder form and the new-project form each submit with a button that has no click handler of its own.
+  clickExpected.splice(clickExpected.indexOf(ADD_PROJECT_FORM), 1);
   clickExpected.splice(clickExpected.indexOf(ADD_PROJECT_FORM), 1);
   // Each spending limit's Save button submits its form, and the switch takes its press through onCheckedChange.
   clickExpected.splice(clickExpected.indexOf(SETTINGS_VIEW), 1);
@@ -1765,7 +1766,7 @@ const REQUESTS = {
     fetches: ['deps.fetch', "fetch('/floor/retire')"],
   },
   [ADD_PROJECT_MODULE]: {
-    paths: ['/floor/project/preview', '/floor/project/add', '/floor/project/remove', '/floor/project/choose', 'application/json'],
+    paths: ['/floor/project/preview', '/floor/project/add', '/floor/project/create', '/floor/project/remove', '/floor/project/choose', 'application/json'],
     methods: ['POST'],
     fetches: ['floorFetch', 'floorFetch', 'fetch', 'floorFetch', 'deps.fetch(path)'],
   },

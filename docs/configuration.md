@@ -57,6 +57,24 @@ See [Recover an interrupted goal](goals-and-stopping.md#recover-an-interrupted-g
 An edit that takes a per-turn reserve to zero is written with a warning, because the daemon refuses
 to start while an agent it has hired has a ceiling in that unit.
 
+`floor.project` also takes `create_parent`, an absolute folder or one starting with `~/`, which you
+edit in the file: it has no `dudes config` key, and the daemon reads it at start, so change it and
+restart. With it set, the Add project dialog offers **Create a new project**. You type a name of 1
+to 64 letters, digits, `.`, `_` or `-`, starting with a letter or digit. Dudes makes that folder
+inside `create_parent` with mode `0700`, starts a git repository in it on the branch `main` with one
+empty commit named `Initialize project` by `Dudes <dudes@localhost>`, and adds it as a project with
+the "files changed" check. That needs git 2.28 or newer, on macOS and Linux. The folder must not
+exist yet, and neither `create_parent` nor any folder above it may be a symbolic link. Creating a
+project does not trust it and starts no agent. Once Dudes begins to change this file for the new
+project it never deletes the folder, even when it undoes the change, and it tells you the exact path
+that is left.
+
+```toml
+[floor.project]
+enabled = true
+create_parent = "~/projects"
+```
+
 MCP servers are declared in the same file. See [Give an agent MCP servers](mcp-servers.md).
 
 ## Budgets

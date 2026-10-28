@@ -928,6 +928,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) operator_config: Option<PathBuf>,
     /// The folders the Floor's project add will not take.
     pub(crate) project_folders: crate::floor_project::Folders,
+    /// `[floor.project] create_parent` as this run started with it, as the file spells it.
+    pub(crate) create_parent: Option<String>,
     /// Every `[floor.*]` switch as the last applied reload left it, shared with the gateway.
     pub(crate) switches: crate::floor_switches::SharedSwitches,
     /// Only attributed durable pauses and resumes populate this replayable request index.
@@ -2181,6 +2183,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let settings = crate::floor_settings::view(
             switches,
             live.project && self.ctx.folder_picker.available(),
+            self.ctx.create_parent.clone().filter(|spelled| {
+                live.project
+                    && cfg!(unix)
+                    && self.ctx.project_folders.create_parent(spelled).is_ok()
+            }),
             self.sup.config().floor_usd_per_day,
             self.sup.config().per_turn_floor,
             &self.ctx.enrollment,
@@ -2257,6 +2264,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             diff_enabled: running.diff,
             board_enabled: running.board,
             project_enabled: running.project,
+            create_parent: self.ctx.create_parent.clone(),
             condense_model_enabled: self.ctx.condense_model_enabled,
             condense_model: self.ctx.condense_model.clone(),
             ..crate::config::OperatorConfig::default()

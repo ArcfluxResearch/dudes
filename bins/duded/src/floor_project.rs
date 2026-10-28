@@ -57,6 +57,18 @@ pub enum Reason {
     Working,
     /// A ticket that is not done names the project.
     OpenTickets,
+    /// The new project's name is not one Dudes will create.
+    BadName,
+    /// No folder is set for new projects, or this platform cannot create one.
+    NoParent,
+    /// The folder for new projects cannot be used as it is spelled.
+    ParentUnusable,
+    /// Something already has the new project's name.
+    Exists,
+    /// There is no git new enough to start a repository.
+    GitUnavailable,
+    /// Starting the repository failed after the folder was made.
+    CreateFailed,
 }
 
 impl Reason {
@@ -75,6 +87,12 @@ impl Reason {
             Self::Unknown => "unknown",
             Self::Working => "working",
             Self::OpenTickets => "open_tickets",
+            Self::BadName => "bad_name",
+            Self::NoParent => "no_parent",
+            Self::ParentUnusable => "parent_unusable",
+            Self::Exists => "exists",
+            Self::GitUnavailable => "git_unavailable",
+            Self::CreateFailed => "create_failed",
         }
     }
 }
@@ -206,9 +224,130 @@ pub struct AddRequest {
     pub(crate) label: Option<String>,
 }
 
+/// `POST /floor/project/create` as the page sends it. The folder is never the page's to name: only
+/// a child name, beneath the parent the operator's file sets.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateBody {
+    name: String,
+    #[serde(default)]
+    label: Option<String>,
+    attempt_id: String,
+}
+
+/// A name for a new project's folder: 1 to 64 characters, starting with a letter or digit, then
+/// letters, digits, `.`, `_` or `-`. It cannot be a path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChildName(String);
+
+impl ChildName {
+    /// The name `text` spells, or `None`.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        let mut bytes = text.bytes();
+        let first = bytes.next()?;
+        (text.len() <= 64
+            && first.is_ascii_alphanumeric()
+            && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')))
+        .then(|| Self(text.to_owned()))
+    }
+
+    /// The name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// One bounded create request.
+#[derive(Clone, Debug)]
+#[cfg_attr(not(unix), allow(dead_code, reason = "only a Unix creation reads it"))]
+pub struct CreateRequest {
+    pub(crate) attempt_id: Hex32,
+    pub(crate) attempt_wire: String,
+    pub(crate) digest: Hex32,
+    pub(crate) name: ChildName,
+    pub(crate) label: Option<String>,
+}
+
+/// Why a create body is not a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreateParse {
+    /// Wrong shape, too large, an unknown field such as a path, or a bad attempt.
+    Malformed,
+    /// The name is not one Dudes will create.
+    BadName,
+}
+
+/// Where the daemon stands before it makes the folder, read on the loop.
+#[derive(Clone, Debug)]
+#[cfg_attr(not(unix), allow(dead_code, reason = "only a Unix creation reads it"))]
+pub struct CreatePlan {
+    /// The parent as the operator's file spells it, `~/` expanded.
+    pub(crate) parent: PathBuf,
+    /// The SHA-256 of the operator's file when the plan was made.
+    pub(crate) config_sha: Hex32,
+}
+
+/// What the loop is asked to publish once the folder and its repository exist.
+#[derive(Clone, Debug)]
+pub struct Enroll {
+    pub(crate) folder: PathBuf,
+    pub(crate) label: String,
+    pub(crate) config_sha: Hex32,
+    /// The sequence number the caller took with the reload lock it still holds.
+    pub(crate) seq: u64,
+}
+
+/// What became of the operator's file when an enrollment failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigState {
+    /// It was never replaced, or is as it was.
+    Unchanged,
+    /// It held our bytes and was put back.
+    Restored,
+    /// Someone else changed it, so it was left alone.
+    Conflict,
+    /// It held our bytes and could not be put back.
+    Failed,
+    /// The daemon did not answer, or did not report the project once the file held it, so what
+    /// the file holds is not known to the caller.
+    Unknown,
+}
+
+impl ConfigState {
+    /// The fixed code the page shows.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Unchanged => "unchanged",
+            Self::Restored => "restored",
+            Self::Conflict => "conflict",
+            Self::Failed => "failed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// An enrollment that did not happen. `replaced` is true once the file may hold the new project:
+/// from then on the folder is never removed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnrollFailure {
+    /// Why it failed.
+    pub reason: Reason,
+    /// Whether the file may hold the new project.
+    pub replaced: bool,
+    /// What the file holds now.
+    pub config: ConfigState,
+}
+
 /// What a project job carries.
 #[derive(Clone, Debug)]
 pub enum ProjectRequest {
+    /// Read what creating a project needs from the loop.
+    CreatePlan,
+    /// Enroll the folder just created.
+    CreateEnroll(Enroll),
     /// Look at a folder and say what adding it would do.
     Preview(PreviewRequest),
     /// Add the folder.
@@ -268,8 +407,12 @@ pub struct Removed {
 }
 
 /// The answer to a project job.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum ProjectAnswer {
+    /// What creating a project needs.
+    Plan(CreatePlan),
+    /// A created folder's enrollment.
+    Enrolled(Result<Added, EnrollFailure>),
     /// A preview.
     Preview(Preview),
     /// An add, new or repeated.
@@ -303,6 +446,36 @@ pub(crate) fn parse_add(bytes: &[u8]) -> Option<AddRequest> {
         digest,
         folder: body.folder,
         check: body.check,
+        label: body.label,
+    })
+}
+
+/// The create request a body holds.
+pub(crate) fn parse_create(bytes: &[u8]) -> Result<CreateRequest, CreateParse> {
+    let body: CreateBody = parse(bytes).ok_or(CreateParse::Malformed)?;
+    if body.label.as_deref().is_some_and(|label| {
+        label.is_empty() || label.len() > 128 || label.chars().any(char::is_control)
+    }) {
+        return Err(CreateParse::Malformed);
+    }
+    let attempt_id = crate::floor_actions::decode_attempt(&body.attempt_id)
+        .map_err(|_| CreateParse::Malformed)?;
+    let name = ChildName::parse(&body.name).ok_or(CreateParse::BadName)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"dudes.project.create.v1\0");
+    for part in [name.as_str(), body.label.as_deref().unwrap_or("")] {
+        hasher.update(
+            u32::try_from(part.len())
+                .expect("bounded field")
+                .to_be_bytes(),
+        );
+        hasher.update(part.as_bytes());
+    }
+    Ok(CreateRequest {
+        attempt_id,
+        attempt_wire: body.attempt_id,
+        digest: Hex32::new(hasher.finalize().into()),
+        name,
         label: body.label,
     })
 }
@@ -427,6 +600,27 @@ impl Folders {
             return Err(Reason::NotGit);
         }
         Ok(canonical)
+    }
+
+    /// The folder new projects are created in, from the operator's spelling of it. Only the spelling
+    /// is judged here; whether it holds a symlink is judged when it is opened.
+    ///
+    /// # Errors
+    ///
+    /// [`Reason::ParentUnusable`] for a spelling that is not an absolute path made of plain names,
+    /// or a folder Dudes will not take (the same rule as an added folder, without the `.git` need).
+    pub fn create_parent(&self, spelled: &str) -> Result<PathBuf, Reason> {
+        let path = match spelled.strip_prefix("~/") {
+            Some(rest) => self.home.as_ref().ok_or(Reason::ParentUnusable)?.join(rest),
+            None => PathBuf::from(spelled),
+        };
+        let plain = path.is_absolute()
+            && path
+                .components()
+                .all(|part| matches!(part, Component::RootDir | Component::Normal(_)));
+        (plain && self.allows(&path))
+            .then_some(path)
+            .ok_or(Reason::ParentUnusable)
     }
 
     fn allows(&self, folder: &Path) -> bool {
@@ -563,6 +757,97 @@ mod tests {
             Ok(canonical(root.path().join("outside"))),
             "outside home"
         );
+    }
+
+    #[test]
+    fn a_child_name_is_one_plain_name() {
+        for good in ["a", "my-app", "app.v2", "A_b-c.d", &"x".repeat(64)] {
+            assert_eq!(
+                ChildName::parse(good).as_ref().map(ChildName::as_str),
+                Some(good)
+            );
+        }
+        for bad in [
+            "",
+            ".",
+            "..",
+            ".git",
+            "-x",
+            "_x",
+            "a/b",
+            "a\\b",
+            "a b",
+            "a\0b",
+            "\u{e9}",
+            "a\n",
+            &"x".repeat(65),
+        ] {
+            assert_eq!(ChildName::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_creation_body_names_only_a_child_an_attempt_and_a_label() {
+        let attempt = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let create = |body: serde_json::Value| parse_create(body.to_string().as_bytes());
+        let ok = create(serde_json::json!({"name": "app", "attempt_id": attempt}))
+            .expect("a name and an attempt");
+        assert_eq!(ok.name.as_str(), "app");
+        let labelled =
+            create(serde_json::json!({"name": "app", "label": "App", "attempt_id": attempt}))
+                .expect("a label");
+        assert_ne!(
+            ok.digest, labelled.digest,
+            "the label is part of the request"
+        );
+        assert!(matches!(
+            create(serde_json::json!({"name": "a/b", "attempt_id": attempt})),
+            Err(CreateParse::BadName)
+        ));
+        for bad in [
+            serde_json::json!({"name": "app", "attempt_id": attempt, "path": "/tmp/x"}),
+            serde_json::json!({"name": "app", "attempt_id": attempt, "parent": "/tmp"}),
+            serde_json::json!({"name": "app", "attempt_id": "short"}),
+            serde_json::json!({"name": "app", "label": "", "attempt_id": attempt}),
+            serde_json::json!({"attempt_id": attempt}),
+        ] {
+            assert!(
+                matches!(create(bad.clone()), Err(CreateParse::Malformed)),
+                "{bad}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_creation_parent_follows_the_folder_rule() {
+        let root = tempfile::tempdir().expect("root");
+        let home = root.path().canonicalize().expect("home").join("home");
+        let state = home.join("state");
+        fs::create_dir_all(&state).expect("state");
+        let folders = Folders::new(Some(&home), &[&state]);
+        let spelled = |path: &Path| path.to_str().expect("UTF-8").to_owned();
+        assert_eq!(folders.create_parent("~/code"), Ok(home.join("code")));
+        assert_eq!(
+            folders.create_parent(&spelled(&home.join("code/new"))),
+            Ok(home.join("code/new"))
+        );
+        for refused in [
+            "~".to_owned(),
+            "/".to_owned(),
+            spelled(&home),
+            "~/.hidden/projects".to_owned(),
+            "~/state".to_owned(),
+            "~/state/inside".to_owned(),
+            "~/code/../other".to_owned(),
+            "code".to_owned(),
+        ] {
+            assert_eq!(
+                folders.create_parent(&refused),
+                Err(Reason::ParentUnusable),
+                "{refused}"
+            );
+        }
     }
 
     #[test]

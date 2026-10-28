@@ -85,6 +85,9 @@ pub struct OperatorConfig {
     /// `[floor.project] enabled`: whether the Floor may add or remove a project. It only gates; the route
     /// that adds one checks it.
     pub project_enabled: bool,
+    /// `[floor.project] create_parent`: the folder, as written (absolute or starting `~/`), beneath
+    /// which the Floor may create a new project. Absent means it may not. Read at start only.
+    pub create_parent: Option<String>,
     /// The `[providers.<name>]` tables the operator wrote.
     pub providers: ProviderTables,
     /// `[memory] condense_model_enabled`: whether a condense may spend a one-shot model call for
@@ -156,6 +159,7 @@ enum ConfigErrorKind {
     InvalidRetire,
     InvalidRenew,
     InvalidBoard,
+    InvalidCreateParent,
     InvalidProvider(&'static str),
     UnreadProvider(Option<String>),
     InvalidMcp(dudes_providers::mcp::DeclarationError),
@@ -256,6 +260,10 @@ impl fmt::Display for ConfigError {
             ConfigErrorKind::InvalidBoard => write!(
                 formatter,
                 "enables [floor.board] without both [floor.control] and [floor.goal] enabled"
+            ),
+            ConfigErrorKind::InvalidCreateParent => write!(
+                formatter,
+                "has a [floor.project] create_parent that is not an absolute path or one starting with `~/`"
             ),
             ConfigErrorKind::InvalidProvider(name) => write!(
                 formatter,
@@ -359,11 +367,21 @@ struct DiffTable {
     enabled: bool,
 }
 
-/// `[floor.project]`: whether the Floor may add or remove a project.
+/// `[floor.project]`: whether the Floor may add or remove a project, and where it may create one.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ProjectTable {
     enabled: bool,
+    create_parent: Option<String>,
+}
+
+/// Most bytes in a configured creation parent.
+const MAX_CREATE_PARENT_BYTES: usize = 1024;
+
+fn create_parent_is_spelled(text: &str) -> bool {
+    text.len() <= MAX_CREATE_PARENT_BYTES
+        && (text.starts_with('/') || text.starts_with("~/"))
+        && !text.chars().any(char::is_control)
 }
 
 #[derive(Default, Deserialize)]
@@ -787,7 +805,15 @@ pub(crate) fn parse_operator_and_memory_with_options(
     let terminal_enabled = floor.terminal.unwrap_or_default().enabled;
     let git_enabled = floor.git.unwrap_or_default().enabled;
     let diff_enabled = floor.diff.unwrap_or_default().enabled;
-    let project_enabled = floor.project.unwrap_or_default().enabled;
+    let project = floor.project.unwrap_or_default();
+    let project_enabled = project.enabled;
+    let create_parent = project.create_parent;
+    if create_parent
+        .as_deref()
+        .is_some_and(|text| !create_parent_is_spelled(text))
+    {
+        return Err(ConfigError::new(path, ConfigErrorKind::InvalidCreateParent));
+    }
     let floor_usd_per_day = budget
         .floor_usd_per_day
         .map(|value| {
@@ -852,6 +878,7 @@ pub(crate) fn parse_operator_and_memory_with_options(
                 git_enabled,
                 diff_enabled,
                 project_enabled,
+                create_parent,
                 providers,
                 condense_model_enabled,
                 condense_model,
@@ -1060,6 +1087,39 @@ mod tests {
         ] {
             std::fs::write(&path, text).unwrap();
             assert!(super::load_operator(&path).is_err());
+        }
+    }
+
+    #[test]
+    fn the_creation_parent_is_an_absolute_or_home_relative_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        for (text, parent) in [
+            ("", None),
+            ("[floor.project]\nenabled = true\n", None),
+            (
+                "[floor.project]\ncreate_parent = '/work/new'\n",
+                Some("/work/new"),
+            ),
+            (
+                "[floor.project]\ncreate_parent = '~/code'\n",
+                Some("~/code"),
+            ),
+        ] {
+            std::fs::write(&path, text).unwrap();
+            let loaded = super::load_operator(&path).unwrap();
+            assert_eq!(loaded.create_parent.as_deref(), parent, "{text}");
+        }
+        for text in [
+            "[floor.project]\ncreate_parent = ''\n",
+            "[floor.project]\ncreate_parent = 'code'\n",
+            "[floor.project]\ncreate_parent = '~'\n",
+            "[floor.project]\ncreate_parent = '~kim/code'\n",
+            "[floor.project]\ncreate_parent = \"/a\\nb\"\n",
+            "[floor.project]\ncreate_parent = 7\n",
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert!(super::load_operator(&path).is_err(), "{text}");
         }
     }
 

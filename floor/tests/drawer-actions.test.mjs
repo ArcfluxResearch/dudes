@@ -49,7 +49,7 @@ function drawer({ off = [], fields = {} } = {}) {
   for (const key of ['control', 'retire', 'terminal']) if (!off.includes(key)) frame[key] = ON;
   store.applyServerFrame(JSON.stringify(frame), epoch);
   const settings = {
-    folder_picker: false, switches: { answer: false, control: true, goal: false, retire: true, terminal: !off.includes('terminal'), hire: false },
+    folder_picker: false, create_parent: null, switches: { answer: false, control: true, goal: false, retire: true, terminal: !off.includes('terminal'), hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
     providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 9 },
   };
