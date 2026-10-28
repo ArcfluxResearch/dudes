@@ -12,7 +12,9 @@ mod text;
 
 pub use manifest::{Candidate, CandidateManifest, EncodedResponse, SampledPair};
 pub use path::RepoPath;
-pub use reader::{BaselineCapture, DiffReader, ReviewBatchCapture, ReviewCapture, ReviewSubject};
+pub use reader::{
+    BaselineCapture, DiffReader, ReviewBatch, ReviewBatchCapture, ReviewCapture, ReviewSubject,
+};
 
 /// Text and sensitive-content recognizer version used by this reader.
 pub const TEXT_POLICY_VERSION: u32 = text::POLICY_VERSION;

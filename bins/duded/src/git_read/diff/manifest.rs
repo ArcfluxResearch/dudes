@@ -221,6 +221,17 @@ impl CandidateManifest {
         self.expires_at
     }
 
+    pub(super) fn matches_repositories<'a>(
+        &self,
+        ids: impl Iterator<Item = &'a Option<RepoId>>,
+    ) -> bool {
+        self.binding
+            .repositories
+            .iter()
+            .map(|member| &member.repo_id)
+            .eq(ids)
+    }
+
     pub(super) fn metadata_digest(&self, repo: Option<&RepoId>) -> Option<&str> {
         self.metadata_digests
             .iter()
