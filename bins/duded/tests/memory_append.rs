@@ -253,7 +253,7 @@ fn assert_memory_publication_refuses_corruption(source: &str) {
         exact_code_line_position(append, line)
             .unwrap_or_else(|| panic!("publication code line is absent: {line}"))
     };
-    let committed = position("let committed = self.append_checked(entry, recovery)?;");
+    let committed = position("let committed = self.append_checked(world, entry, recovery)?;");
     let projecting = position("let post_fsync = (|| -> Result<()> {");
     let applied = position("let applied = self.memory.apply_entry(lsn, entry).inspect_err(|_| {");
     let corrupt = position("MemoryApply::Corrupt(reason) => {");
