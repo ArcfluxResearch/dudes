@@ -71,7 +71,7 @@ fn write_bundle(dir: &Path, tag: &str) {
         "schema_version": 1,
         "base_path": "/floor/",
         "daemon_version": env!("CARGO_PKG_VERSION"),
-        "browser_wire_version": 9,
+        "browser_wire_version": 10,
         "asset_tree_sha256": hex(&tree.finalize()),
         "files": files,
     });

@@ -178,10 +178,18 @@ impl World {
         )
     }
 
-    pub(super) fn apply_repository_change(&mut self, change: RepositoryHistoryChange) {
+    pub(super) fn apply_repository_change(
+        &mut self,
+        change: RepositoryHistoryChange,
+    ) -> Option<HireRepositories> {
         match change {
-            RepositoryHistoryChange::Hired { agent, class } => {
+            RepositoryHistoryChange::Hired {
+                agent,
+                class,
+                repositories,
+            } => {
                 self.repository_hires.insert(agent, class);
+                return Some(repositories);
             }
             RepositoryHistoryChange::Project(row) => {
                 self.repository_projects.insert(row.project.clone(), row);
@@ -192,6 +200,7 @@ impl World {
             }
             RepositoryHistoryChange::Unchanged => {}
         }
+        None
     }
 }
 

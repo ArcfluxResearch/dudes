@@ -29,17 +29,21 @@ export interface TicketQuestion {
 
 interface Asked { readonly agent: string; readonly questionLsn: string }
 
-/** The newest `asked` event with no `answered` event for the same question, or `null`. */
-export function unansweredQuestion(history: TicketHistory | null | undefined): Asked | null {
+/**
+ * Every `asked` event with no `answered` event for the same question, oldest first, one per agent: an
+ * agent holds one open question, so a ticket that changed hands can show one question per agent.
+ */
+export function unansweredQuestions(history: TicketHistory | null | undefined): readonly Asked[] {
   const events = history?.events ?? [];
+  const open: Asked[] = [];
   for (let at = events.length - 1; at >= 0; at -= 1) {
     const event = events[at]!;
-    if (event.kind !== 'asked') continue;
+    if (event.kind !== 'asked' || open.some((kept) => kept.agent === event.agent)) continue;
     const closed = events.some((later) => later.kind === 'answered' && later.agent === event.agent
       && later.question_lsn === event.question_lsn);
-    if (!closed) return { agent: event.agent, questionLsn: event.question_lsn };
+    if (!closed) open.unshift({ agent: event.agent, questionLsn: event.question_lsn });
   }
-  return null;
+  return open;
 }
 
 /** The agent that asked the ticket's newest question, answered or not. */
@@ -53,20 +57,23 @@ export function lastAsker(history: TicketHistory | null | undefined): string | n
 }
 
 /**
- * The open goal question this ticket shows. It needs the history's unanswered question and an agent row
- * still holding that very question, so a question answered, closed some other way or asked in a
- * conversation never shows: a conversation question has a position no `asked` event carries.
+ * The open goal questions this ticket shows, oldest first. Each needs an unanswered question in the
+ * history and an agent row still holding that very question, so a question answered, closed some other
+ * way or asked in a conversation never shows: a conversation question has a position no `asked` event
+ * carries.
  */
-export function ticketQuestion(floor: FloorState, card: CardRow, history: TicketHistory | null | undefined): TicketQuestion | null {
-  const asked = unansweredQuestion(history);
-  if (asked === null) return null;
-  const row = agentRow(floor, asked.agent);
-  const text = row === null ? null : openWords(row, asked.questionLsn);
-  if (row === null || text === null) return null;
-  return Object.freeze({
-    row, questionLsn: asked.questionLsn, text,
-    carries: card.status === 'doing' && card.claimed_by === asked.agent,
-  });
+export function ticketQuestions(floor: FloorState, card: CardRow, history: TicketHistory | null | undefined): readonly TicketQuestion[] {
+  const shown: TicketQuestion[] = [];
+  for (const asked of unansweredQuestions(history)) {
+    const row = agentRow(floor, asked.agent);
+    const text = row === null ? null : openWords(row, asked.questionLsn);
+    if (row === null || text === null) continue;
+    shown.push(Object.freeze({
+      row, questionLsn: asked.questionLsn, text,
+      carries: card.status === 'doing' && card.claimed_by === asked.agent,
+    }));
+  }
+  return shown;
 }
 
 /** The words of the question `row` holds open at `questionLsn`, or `null`. */

@@ -1298,8 +1298,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         .repositories
                         .entries()
                         .iter()
-                        .find(|entry| !crate::worktree::is_owned_repository(&entry.value))
-                        .map(|entry| entry.value.worktree),
+                        .find(|entry| !crate::worktree::is_owned_repository(&entry.value.recorded))
+                        .map(|entry| entry.value.recorded.worktree),
                 };
                 missing.map(|worktree| (*agent, worktree))
             })

@@ -75,6 +75,26 @@ function column(html, key) {
 
 const titles = (html) => [...html.matchAll(/<strong>([^<]+)<\/strong>/g)].map((m) => m[1]);
 
+test('unassigned tickets run by priority then age, and queued tickets keep their agents line', () => {
+  subscribe(store, {
+    agents: [agent()],
+    cards: [
+      ticketCard(1, 'todo', {}, { priority: 'low' }),
+      ticketCard(2, 'todo'),
+      ticketCard(3, 'claimed', { claimed_by: ADA }, { position: 2, priority: 'urgent' }),
+      ticketCard(4, 'todo', {}, { priority: 'urgent' }),
+      ticketCard(5, 'todo', {}, { priority: 'medium' }),
+      ticketCard(6, 'claimed', { claimed_by: ADA }, { position: 1, priority: 'low' }),
+      ticketCard(7, 'todo', {}, { priority: 'high' }),
+      ticketCard(8, 'todo', {}, { priority: 'urgent' }),
+    ],
+  });
+  const { columns } = model.boardColumns(store.getFloorState().cards);
+  assert.deepEqual(columns.todo.map((c) => c.title), [
+    'Ticket 4', 'Ticket 8', 'Ticket 7', 'Ticket 2', 'Ticket 5', 'Ticket 1', 'Ticket 6', 'Ticket 3',
+  ]);
+});
+
 test('each status lands in its column, and Needs you is a lane', () => {
   subscribe(store, {
     agents: [agent()],
@@ -224,6 +244,37 @@ test('a ticket waits for the one that holds its project', () => {
   assert.equal(model.cardWords(floor, floor.cards[1]).note, 'Waiting for Ticket 1 to be finished, accepted or sent back.');
 });
 
+test('a ticket names the holder of its own working tree, not of its project', () => {
+  const copy = (branch) => ({ branch, state: 'active' });
+  const AVA = '01HZX3NDEKTSV4RRFFQ69G5FAV';
+  subscribe(store, {
+    agents: [
+      agent(ADA, 'Ada', { worktree: copy('dudes/aaaaaaaaaaaa') }), agent(GRACE, 'Grace', { worktree: copy('dudes/bbbbbbbbbbbb') }),
+      agent(AVA, 'Ava'),
+    ],
+    cards: [
+      ticketCard(1, 'review', { claimed_by: ADA }),
+      ticketCard(2, 'claimed', { claimed_by: ADA }, { position: 1 }),
+      ticketCard(3, 'claimed', { claimed_by: GRACE }, { position: 1 }),
+      ticketCard(4, 'claimed', { claimed_by: AVA }, { position: 1 }),
+    ],
+  });
+  const floor = store.getFloorState();
+  const note = (n) => model.cardWords(floor, floor.cards[n - 1]).note;
+  assert.equal(note(2), 'Waiting for Ticket 1 to be finished, accepted or sent back.');
+  assert.equal(model.holdingTicket(floor, ADA)?.title, 'Ticket 1');
+});
+
+test('a card names the project holder when no ticket holds its own tree, as in a multi-repo project', () => {
+  const copy = (branch) => ({ branch, state: 'active' });
+  subscribe(store, {
+    agents: [agent(ADA, 'Ada', { worktree: copy('dudes/aaaaaaaaaaaa') }), agent(GRACE, 'Grace', { worktree: copy('dudes/bbbbbbbbbbbb') })],
+    cards: [ticketCard(1, 'doing', { claimed_by: ADA }), ticketCard(2, 'claimed', { claimed_by: GRACE }, { position: 1 })],
+  });
+  const floor = store.getFloorState();
+  assert.equal(model.cardWords(floor, floor.cards[1]).note, 'Waiting for Ticket 1 to be finished, accepted or sent back.');
+});
+
 test('every state has its actions, so none is a dead end', () => {
   const expected = {
     todo: ['give', 'edit', 'remove'],
@@ -327,7 +378,7 @@ test('unavailable project choices do not imply missing agents or missing enrollm
   const settings = {
     folder_picker: false, create_parent: null, switches: { answer: false, control: true, recovery: false, goal: true, retire: false, terminal: false, hire: true, git: false, renew: false, board: false, diff: false, project: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
-    providers: ['claude'], about: { daemon_version: '0.85.0', browser_wire_version: 9 },
+    providers: ['claude'], about: { daemon_version: '0.85.0', browser_wire_version: 10 },
     workspaces: [{ workspace_id: 'service', label: 'Service', agent_usd_per_day_micros: null,
       agent_tokens_per_day: null, goal_usd_micros: null, goal_tokens: null }],
   };

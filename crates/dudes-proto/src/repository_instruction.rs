@@ -320,14 +320,14 @@ pub fn validate_start(
     }
     for (member, expected) in batch.members.iter().zip(hire.repositories.entries()) {
         if let Some(root) = member.root
-            && (root != expected.value.execution.directory_identity
+            && (root != expected.value.recorded.execution.directory_identity
                 || member
                     .snapshot
                     .execution_folder
                     .as_ref()
                     .and_then(|path| path.to_path().ok())
                     .as_deref()
-                    != Some(expected.value.execution.directory.as_path()))
+                    != Some(expected.value.recorded.execution.directory.as_path()))
         {
             return Err(InstructionValidationError::InvalidBoundary);
         }
@@ -338,7 +338,7 @@ pub fn validate_start(
             .map(|input| input.context)
             .chain(member.snapshot.gaps.iter().map(|gap| gap.context))
         {
-            if matches!(context, crate::InstructionPathContext::OwnedWorktree { lease } if lease != expected.value.worktree)
+            if matches!(context, crate::InstructionPathContext::OwnedWorktree { lease } if lease != expected.value.recorded.worktree)
             {
                 return Err(InstructionValidationError::InvalidBoundary);
             }
@@ -424,7 +424,10 @@ pub fn validate_observation(
                         .repositories
                         .get(&member.repo_id)
                         .ok_or(InstructionValidationError::InvalidBoundary)?;
-                    validate_ending_root(member, Some(expected.execution.directory_identity))?;
+                    validate_ending_root(
+                        member,
+                        Some(expected.recorded.execution.directory_identity),
+                    )?;
                 }
             }
             if matches!(batch.baseline, InstructionBaselineRef::Started { .. }) {
