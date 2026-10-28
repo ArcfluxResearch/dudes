@@ -43,9 +43,19 @@ pub struct PreparedRepositoryGroup {
     pub repositories: RepositorySet<OwnedRepository>,
 }
 
+enum PreparationFailure {
+    Refused(RpcError),
+    Uncertain(RpcError),
+}
+
+impl From<RpcError> for PreparationFailure {
+    fn from(error: RpcError) -> Self {
+        Self::Refused(error)
+    }
+}
+
 struct PendingCopy {
     lease: LeaseView,
-    original: RepositoryHireOrigin,
     owned: Option<OwnedRepository>,
 }
 
@@ -66,10 +76,11 @@ impl WorktreeHires {
         let mut pending = Vec::new();
         let prepared = match self.prepare_group(&plan, &bases, &mut pending) {
             Ok(prepared) => prepared,
-            Err(error) => {
+            Err(PreparationFailure::Refused(error)) => {
                 self.discard_group(&pending);
                 return Err(error);
             }
+            Err(PreparationFailure::Uncertain(error)) => return Err(error),
         };
         match self
             .handle
@@ -151,30 +162,27 @@ impl WorktreeHires {
         plan: &RepositoryHirePlan,
         bases: &BTreeMap<RepoId, GitCommit>,
         pending: &mut Vec<PendingCopy>,
-    ) -> Result<PreparedRepositoryGroup, RpcError> {
+    ) -> Result<PreparedRepositoryGroup, PreparationFailure> {
         let mut order: Vec<_> = plan.repositories.entries().iter().collect();
         order.sort_by(|left, right| left.repo_id.cmp(&right.repo_id));
         let mut copies = BTreeMap::new();
         for entry in order {
             self.verify_group(plan, bases, pending)?;
-            let Answered::WorktreeLeased(lease) = self.handle.ask(Ask::RepositoryHireLease {
+            let lease = match self.handle.ask(Ask::RepositoryHireLease {
                 plan: Box::new(plan.clone()),
                 repo_id: entry.repo_id.clone(),
                 base: bases[&entry.repo_id],
-            })?
-            else {
-                return Err(super::super::unavailable(
-                    "the loop did not lease a repository copy",
-                ));
+            }) {
+                Ok(Answered::WorktreeLeased(lease)) => lease,
+                Ok(Answered::RepositoryHireRejected(error)) => return Err(error.into()),
+                Err(error) => return Err(PreparationFailure::Uncertain(error)),
+                Ok(other) => return Err(PreparationFailure::Uncertain(super::unexpected(&other))),
             };
             pending.push(PendingCopy {
                 lease: lease.clone(),
-                original: entry.value.clone(),
                 owned: None,
             });
-            self.git
-                .add(&lease.origin, &lease.path, &lease.branch, lease.base)
-                .map_err(|error| super::from_git(&error))?;
+            self.add_copy(&lease)?;
             let owned = self.inspect_copy(&lease, &entry.value)?;
             pending
                 .last_mut()
@@ -259,31 +267,7 @@ impl WorktreeHires {
 
     fn discard_group(&self, pending: &[PendingCopy]) {
         for copy in pending {
-            let origin = &copy.original.origin;
-            let same_origin =
-                super::super::trust::still_there(origin, &copy.lease.origin, &copy.lease.origin)
-                    && super::super::plain_git_dir(&copy.lease.origin).as_ref()
-                        == Some(&origin.common_dir);
-            let same_copy = match &copy.owned {
-                Some(owned) => super::super::is_owned_repository(owned),
-                None => {
-                    std::fs::symlink_metadata(&copy.lease.path).is_err()
-                        || super::super::is_worktree(&copy.lease.path, &copy.lease.origin)
-                }
-            };
-            let same_branch = self
-                .git
-                .commit(
-                    &copy.lease.origin,
-                    &format!("refs/heads/{}", copy.lease.branch),
-                )
-                .map_or_else(
-                    |_| !copy.lease.path.exists(),
-                    |base| base == copy.lease.base,
-                );
-            if same_origin && same_copy && same_branch {
-                self.discard(copy.lease.worktree);
-            }
+            self.discard(copy.lease.worktree);
         }
     }
 }

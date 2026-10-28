@@ -9,7 +9,8 @@ use dudes_proto::rpc::{ErrorCode, RpcError};
 use dudes_supervisor::{Clock, Command, Input, ProcessHost, Rng, World};
 use dudes_types::{AgentId, GitCommit, IsolationMode};
 
-use super::{Ctx, Daemon, PredicateRunner};
+use super::repository_admission::CurrentHireAdmission;
+use super::{Ctx, Daemon, PredicateRunner, PreparedWorktreeLease};
 use crate::ports::Answered;
 use crate::worktree::hire::{PreparedRepositoryGroup, RepositoryHireOrigin, RepositoryHirePlan};
 
@@ -17,38 +18,23 @@ fn refused(message: impl Into<String>) -> RpcError {
     crate::worktree::unavailable(message)
 }
 
-pub(super) struct RepositoryLeaseAppend {
+#[derive(Clone)]
+pub(crate) struct RepositoryLeaseAppend {
     pub(super) plan: RepositoryHirePlan,
     pub(super) repo_id: RepoId,
-    pub(super) base: GitCommit,
+    pub(super) prepared: PreparedWorktreeLease,
 }
 
-impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
+impl CurrentHireAdmission<'_> {
     fn current_repository_hire_target(
         &self,
-        _world: &World,
+        world: &World,
         project: &str,
     ) -> anyhow::Result<ProjectHireTarget> {
-        anyhow::ensure!(
-            !self.current_repositories.invalid,
-            "current project configuration is unavailable"
-        );
-        let profile = self
-            .enrollment
-            .profile(project)
-            .filter(|profile| profile.repositories.is_some())
-            .ok_or_else(|| anyhow::anyhow!("select a project with an explicit repository list"))?;
-        let current = super::repository_admission::catalog(profile)?
-            .ok_or_else(|| anyhow::anyhow!("current project repositories are unavailable"))?;
-        let observed = self
-            .current_repositories
-            .observed
-            .get(project)
-            .filter(|observed| observed.repositories == current)
-            .ok_or_else(|| anyhow::anyhow!("current repository observation is unavailable"))?;
+        let (_, observed) = self.current_project_repositories(world, project)?;
         Ok(ProjectHireTarget {
             project_id: project.to_owned(),
-            expected_revision: observed.lsn,
+            expected_revision: observed.lsn.expect("recorded current catalog"),
         })
     }
 
@@ -57,19 +43,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         world: &World,
         target: &ProjectHireTarget,
     ) -> anyhow::Result<(RecordedWorkspace, RepositorySet<RepositoryHireOrigin>)> {
+        let (profile, observed) = self.current_project_repositories(world, &target.project_id)?;
         anyhow::ensure!(
-            self.current_repository_hire_target(world, &target.project_id)? == *target,
+            observed.lsn == Some(target.expected_revision),
             "the project's observed repository revision changed"
         );
-        let profile = self
-            .enrollment
-            .profile(&target.project_id)
-            .expect("current project target");
         anyhow::ensure!(
             profile.isolation != IsolationMode::Inherit,
             "restricted repository hires cannot inherit settings"
         );
-        let catalog = &self.current_repositories.observed[&target.project_id].repositories;
+        let catalog = &observed.repositories;
         let entries = catalog
             .entries()
             .iter()
@@ -103,19 +86,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         ))
     }
 
-    fn require_repository_capability(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            !self.current_repositories.invalid,
-            "current project configuration is unavailable"
-        );
-        #[cfg(test)]
-        if self.current_repositories.test_hire_capability {
-            return Ok(());
-        }
-        anyhow::bail!("restricted repository execution has no verified provider capability yet");
-    }
-
-    fn require_repository_hire_plan(
+    pub(super) fn require_repository_hire_plan(
         &self,
         world: &World,
         plan: &RepositoryHirePlan,
@@ -133,46 +104,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             "the project's configuration or original trust grants changed during the copy"
         );
         self.require_repository_capability()
-    }
-
-    pub(super) fn consume_repository_lease(
-        &mut self,
-        world: &World,
-        entry: &dudes_proto::Entry,
-    ) -> anyhow::Result<bool> {
-        let Some(admitted) = self.repository_lease_append.take() else {
-            return Ok(false);
-        };
-        let dudes_proto::Record::WorktreeLeased {
-            worktree,
-            origin,
-            base,
-            from,
-            path,
-            branch,
-        } = &entry.record
-        else {
-            anyhow::bail!("a repository lease admission cannot append another record");
-        };
-        self.require_repository_hire_plan(world, &admitted.plan)?;
-        let selected = admitted
-            .plan
-            .repositories
-            .get(&admitted.repo_id)
-            .ok_or_else(|| anyhow::anyhow!("the repository is outside the group admission"))?;
-        anyhow::ensure!(
-            *origin == selected.origin.directory
-                && *base == admitted.base
-                && from.is_none()
-                && !world.worktrees.contains_key(worktree)
-                && *branch == format!("dudes/{}", worktree.short())
-                && self
-                    .agents_root
-                    .parent()
-                    .is_some_and(|root| *path == root.join("worktrees").join(worktree.to_string())),
-            "the repository lease does not match its exact admitted group member"
-        );
-        Ok(true)
     }
 
     pub(super) fn require_scoped_hire_authority(
@@ -205,12 +136,50 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     }
 }
 
+impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
+    pub(super) fn consume_repository_lease(
+        &mut self,
+        world: &World,
+        entry: &dudes_proto::Entry,
+    ) -> anyhow::Result<Option<RepositoryLeaseAppend>> {
+        let Some(admitted) = self.repository_lease_append.take() else {
+            return Ok(None);
+        };
+        let lease = entry.record.worktree_lease().ok_or_else(|| {
+            anyhow::anyhow!("a repository lease admission cannot append another record")
+        })?;
+        CurrentHireAdmission::new(&self.enrollment, &self.current_repositories)
+            .require_repository_hire_plan(world, &admitted.plan)?;
+        let selected = admitted
+            .plan
+            .repositories
+            .get(&admitted.repo_id)
+            .ok_or_else(|| anyhow::anyhow!("the repository is outside the group admission"))?;
+        let expected = &admitted.prepared.lease;
+        anyhow::ensure!(
+            lease.origin == selected.origin.directory
+                && lease.worktree == expected.worktree
+                && lease.origin == expected.origin
+                && lease.base == expected.base
+                && lease.path == expected.path
+                && lease.branch == expected.branch
+                && lease.from == admitted.prepared.from
+                && lease.from.is_none()
+                && lease.identity.is_some()
+                && lease.identity == expected.identity.as_ref()
+                && !world.worktrees.contains_key(&lease.worktree),
+            "the repository lease does not match its exact admitted group member"
+        );
+        Ok(Some(admitted))
+    }
+}
+
 impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<H, P, C, R> {
     pub(super) fn repository_hire_target(
         &self,
         project: &str,
     ) -> Result<ProjectHireTarget, RpcError> {
-        self.ctx
+        CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories)
             .current_repository_hire_target(self.sup.world(), project)
             .map_err(|error| refused(error.to_string()))
     }
@@ -237,10 +206,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             ));
         }
         self.hire_option_guards(&params)?;
-        let (project, repositories) = self
-            .ctx
-            .current_repository_hire_facts(self.sup.world(), target)
-            .map_err(|error| refused(error.to_string()))?;
+        let (project, repositories) =
+            CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories)
+                .current_repository_hire_facts(self.sup.world(), target)
+                .map_err(|error| refused(error.to_string()))?;
         for entry in repositories.entries() {
             self.refuse_overlap(&entry.value.origin.directory, None)?;
         }
@@ -250,7 +219,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             repositories,
             params,
         };
-        self.ctx
+        CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories)
             .require_repository_hire_plan(self.sup.world(), &plan)
             .map_err(|error| refused(error.to_string()))?;
         Ok(plan)
@@ -258,7 +227,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     fn revalidate_repository_hire(&self, plan: &RepositoryHirePlan) -> Result<(), RpcError> {
         self.hire_option_guards(&plan.params)?;
-        self.ctx
+        CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories)
             .require_repository_hire_plan(self.sup.world(), plan)
             .map_err(|error| refused(error.to_string()))?;
         for entry in plan.repositories.entries() {
@@ -273,40 +242,44 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         repo_id: &RepoId,
         base: GitCommit,
     ) -> Result<Answered, RpcError> {
-        self.revalidate_repository_hire(plan)?;
-        let origin = plan
-            .repositories
-            .get(repo_id)
-            .ok_or_else(|| refused("the repository is outside the original project admission"))?
-            .origin
-            .directory
-            .clone();
-        let before: std::collections::BTreeSet<_> =
-            self.sup.world().worktrees.keys().copied().collect();
-        if self.ctx.repository_lease_append.is_some() {
-            return Err(refused(
+        if self.ctx.repository_lease_append.take().is_some() {
+            return Ok(Answered::RepositoryHireRejected(refused(
                 "another repository lease append is already admitted",
-            ));
+            )));
         }
+        let prepared = (|| {
+            self.revalidate_repository_hire(plan)?;
+            let origin = plan
+                .repositories
+                .get(repo_id)
+                .ok_or_else(|| refused("the repository is outside the original project admission"))?
+                .origin
+                .directory
+                .clone();
+            let prepared = self.prepare_worktree_lease(origin, base, None)?;
+            self.revalidate_repository_hire(plan)?;
+            Ok::<_, RpcError>(prepared)
+        })();
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => return Ok(Answered::RepositoryHireRejected(error)),
+        };
         self.ctx.repository_lease_append = Some(RepositoryLeaseAppend {
             plan: plan.clone(),
             repo_id: repo_id.clone(),
-            base,
+            prepared: prepared.clone(),
         });
-        let appended = self.pump_or_refuse(Input::Command(Command::LeaseWorktree {
-            origin,
-            base,
-            from: None,
-        }));
+        let appended = self.append_worktree_lease(prepared);
         self.ctx.repository_lease_append = None;
-        appended?;
-        self.sup
-            .world()
-            .worktrees
-            .iter()
-            .find(|(id, _)| !before.contains(*id))
-            .map(|(id, row)| Answered::WorktreeLeased(super::lease_view(*id, row)))
-            .ok_or_else(|| refused("the repository lease was not journaled"))
+        match appended {
+            Ok(lease) => Ok(Answered::WorktreeLeased(lease)),
+            Err(failure) if super::known_preappend_refusal(&failure) => Ok(
+                Answered::RepositoryHireRejected(refused(failure.to_string())),
+            ),
+            Err(failure) => Err(refused(format!(
+                "the repository lease is uncertain; copies are retained for replay: {failure}"
+            ))),
+        }
     }
 
     fn prepared_repository_hire(
@@ -335,6 +308,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     lease.origin != repo.origin.directory
                         || lease.path != repo.execution.directory
                         || lease.base != repo.base
+                        || lease.identity.is_none()
+                        || crate::worktree::pending::verify(&lease).is_err()
                 })
             {
                 return Err(refused(
@@ -377,9 +352,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     pub(super) fn repository_hire_commit(
         &mut self,
-        prepared: PreparedRepositoryGroup,
+        prepared: &PreparedRepositoryGroup,
     ) -> Result<Answered, RpcError> {
-        let hire = match self.prepared_repository_hire(&prepared) {
+        let hire = match self.prepared_repository_hire(prepared) {
             Ok(hire) => hire,
             Err(error) => return Ok(Answered::RepositoryHireRejected(error)),
         };
@@ -391,9 +366,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 ErrorCode::InternalError,
                 format!("the daemon could not complete the repository hire: {failure}"),
             );
-            if failure.downcast_ref::<super::KnownNoEffect>().is_some()
-                && self.newest_agent() == before
-            {
+            if super::known_preappend_refusal(&failure) && self.newest_agent() == before {
                 return Ok(Answered::RepositoryHireRejected(error));
             }
             return Err(error);

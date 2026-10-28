@@ -415,8 +415,14 @@ fn a_trusted_project_hires_into_its_own_copy_as_the_command_line_does() {
         assert!(*trusted, "a copy is a trusted hire");
         assert!(worktree.is_some(), "the hire names its lease");
         assert!(
-            cwd.starts_with(floor.settings.state_dir.join("worktrees"))
-                && cwd.join(".git").is_file(),
+            cwd.starts_with(
+                floor
+                    .settings
+                    .state_dir
+                    .canonicalize()
+                    .unwrap()
+                    .join("worktrees")
+            ) && cwd.join(".git").is_file(),
             "the agent works in a real tree the daemon made: {}",
             cwd.display()
         );

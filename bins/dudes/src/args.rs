@@ -3133,6 +3133,10 @@ fn worktree(tail: &[OsString]) -> Result<WorktreeCommand, ArgError> {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one hire parser keeps target selection beside its mutually exclusive options"
+)]
 fn hire(tail: &[OsString]) -> Result<Command, ArgError> {
     let mut flags = Flags::new(tail);
     let (mut name, mut role, mut department, mut provider, mut cwd) =

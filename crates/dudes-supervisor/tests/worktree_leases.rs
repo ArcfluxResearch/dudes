@@ -43,6 +43,12 @@ fn lease(harness: &mut Harness, from: Option<WorktreeId>) -> WorktreeId {
         worktree,
         identity,
         origin: PathBuf::from("/repo"),
+        path: harness
+            .supervisor
+            .config()
+            .data_dir
+            .join("worktrees")
+            .join(worktree.to_string()),
         base: GitCommit::parse(BASE).unwrap(),
         from,
     }));

@@ -58,8 +58,8 @@ impl CurrentMethod {
             | Self::FloorSessionImport
             | Self::RecoveryInspect
             | Self::RecoverySubmit
-            | Self::RecoveryReceipt => None,
-            Self::WorkspaceRepositoryTarget => None,
+            | Self::RecoveryReceipt
+            | Self::WorkspaceRepositoryTarget => None,
         }
     }
 }
