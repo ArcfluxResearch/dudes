@@ -104,6 +104,25 @@ mod tests {
     }
 
     #[test]
+    fn the_report_names_the_creation_parent_or_null() {
+        for parent in [None, Some("~/code".to_owned())] {
+            let view = view(
+                SettingsSwitches::default(),
+                false,
+                parent.clone(),
+                None,
+                Spend::DEFAULT_PER_TURN_FLOOR,
+                &Enrollment::default(),
+                &Adapters::default(),
+            )
+            .expect("a view");
+            let wire: serde_json::Value =
+                serde_json::from_slice(&serialize(&view).unwrap()).unwrap();
+            assert_eq!(wire["create_parent"], serde_json::json!(parent));
+        }
+    }
+
+    #[test]
     fn a_settings_view_serializes_up_to_32_kib_and_no_further() {
         let sized = |len| {
             let mut view = SettingsView::default();

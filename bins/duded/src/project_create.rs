@@ -18,13 +18,11 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Mutex, PoisonError, TryLockError};
+use std::sync::{Mutex, PoisonError};
 
 use dudes_proto::record::Hex32;
 
-use crate::floor_project::{
-    Added, ConfigState, CreateRequest, ProjectAnswer, ProjectRequest, Reason, Refusal,
-};
+use crate::floor_project::{Added, ConfigState, CreateRequest, Reason};
 use crate::floor_session::SessionIdentity;
 use crate::ports::Handle;
 
@@ -37,6 +35,10 @@ const MOST_SESSIONS: usize = 64;
 
 /// Where a folder the operator has to deal with was left.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(unix),
+    allow(dead_code, reason = "only a Unix creation makes a folder")
+)]
 pub(crate) struct LeftBehind {
     pub(crate) path: PathBuf,
     /// False when the folder or its parent could not be confirmed to be the ones this attempt
@@ -46,6 +48,10 @@ pub(crate) struct LeftBehind {
 
 /// A project that now exists.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    not(unix),
+    allow(dead_code, reason = "only a Unix creation makes a folder")
+)]
 pub(crate) struct Created {
     pub(crate) added: Added,
     pub(crate) folder: PathBuf,
@@ -53,6 +59,10 @@ pub(crate) struct Created {
 
 /// A creation that did not finish.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    not(unix),
+    allow(dead_code, reason = "only a Unix creation makes a folder")
+)]
 pub(crate) struct Refused {
     /// The fixed code the page shows.
     pub(crate) code: &'static str,
@@ -74,6 +84,10 @@ impl Refused {
 
 /// How a creation ended.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    not(unix),
+    allow(dead_code, reason = "only a Unix creation makes a folder")
+)]
 pub(crate) enum Outcome {
     Created(Created),
     Refused(Refused),
@@ -110,10 +124,13 @@ pub(crate) enum Lookup {
     Miss,
 }
 
+/// A session's finished creations, oldest first: attempt, the request's digest and the outcome.
+type Finished = VecDeque<(Hex32, Hex32, Outcome)>;
+
 /// The finished creations of each live session, for the length of the run.
 #[derive(Debug, Default)]
 pub(crate) struct CreateResults {
-    sessions: Mutex<BTreeMap<[u8; 32], VecDeque<(Hex32, Hex32, Outcome)>>>,
+    sessions: Mutex<BTreeMap<[u8; 32], Finished>>,
 }
 
 impl CreateResults {
@@ -181,15 +198,16 @@ mod unix {
     use std::ffi::{CString, OsStr, OsString};
     use std::os::fd::OwnedFd;
     use std::path::{Path, PathBuf};
+    use std::sync::TryLockError;
     use std::time::Duration;
 
     use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags};
 
     use super::{
-        Created, Done, LeftBehind, Outcome, ProjectAnswer, ProjectRequest, Reason, Refusal,
-        Refused, SessionIdentity, TryLockError,
+        ConfigState, CreateRequest, Created, Done, LeftBehind, Outcome, Reason, Refused,
+        SessionIdentity,
     };
-    use crate::floor_project::{ConfigState, CreateRequest, Enroll, EnrollFailure};
+    use crate::floor_project::{Enroll, EnrollFailure, ProjectAnswer, ProjectRequest, Refusal};
     use crate::ports::Handle;
     use crate::worktree::git::{Git, GitError};
 
@@ -225,10 +243,6 @@ mod unix {
         done
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one sequence: plan, make the folder, start the repository, enroll, and clean up by how far it got"
-    )]
     fn create(
         handle: &Handle,
         session: &SessionIdentity,
@@ -241,9 +255,8 @@ mod unix {
             Ok(_) => return Done::refused(Reason::CreateFailed),
             Err(refusal) => return Done::untouched(gate(refusal)),
         };
-        let parent = match Parent::open(&plan.parent) {
-            Ok(parent) => parent,
-            Err(()) => return Done::refused(Reason::ParentUnusable),
+        let Ok(parent) = Parent::open(&plan.parent) else {
+            return Done::refused(Reason::ParentUnusable);
         };
         let child = match parent.make_child(request.name.as_str()) {
             Ok(child) => child,
@@ -332,7 +345,7 @@ mod unix {
                 );
                 match gate(refusal) {
                     Outcome::Refused(gated) => refused.code = gated.code,
-                    other if refused.left_behind.is_none() => return made(other),
+                    other if refused.left_behind.is_none() => return Done::untouched(other),
                     _ => {}
                 }
                 made(Outcome::Refused(refused))
@@ -455,15 +468,14 @@ mod unix {
 
     impl EmptyTemplate {
         fn new() -> Result<Self, GitError> {
+            use std::fmt::Write as _;
             use std::os::unix::fs::DirBuilderExt as _;
             let mut salt = [0u8; 8];
             getrandom::fill(&mut salt).expect("the operating system's entropy source");
-            let name = salt
-                .iter()
-                .fold(String::from("dudes-empty-template-"), |mut name, byte| {
-                    name.push_str(&format!("{byte:02x}"));
-                    name
-                });
+            let mut name = String::from("dudes-empty-template-");
+            for byte in salt {
+                let _ = write!(name, "{byte:02x}");
+            }
             let path = std::env::temp_dir().join(name);
             std::fs::DirBuilder::new()
                 .mode(0o700)
@@ -498,7 +510,12 @@ mod unix {
     }
 
     fn identity_of(stat: &rustix::fs::Stat) -> Identity {
-        #[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_lossless,
+            clippy::unnecessary_cast,
+            reason = "st_dev and st_ino are signed on some targets and unsigned on others; only equality matters"
+        )]
         Identity {
             device: stat.st_dev as u64,
             inode: stat.st_ino as u64,
@@ -581,18 +598,16 @@ mod unix {
                     let stat = rustix::fs::fstat(&fd)?;
                     Ok((fd, identity_of(&stat)))
                 });
-            match opened {
-                Ok((fd, id)) => Ok(Child {
-                    fd,
-                    path: self.path.join(name),
-                    name: c_name,
-                    id,
-                }),
-                Err(_) => {
-                    let _ = rustix::fs::unlinkat(&self.fd, &c_name, AtFlags::REMOVEDIR);
-                    Err(MakeError::Unusable)
-                }
-            }
+            let Ok((fd, id)) = opened else {
+                let _ = rustix::fs::unlinkat(&self.fd, &c_name, AtFlags::REMOVEDIR);
+                return Err(MakeError::Unusable);
+            };
+            Ok(Child {
+                fd,
+                path: self.path.join(name),
+                name: c_name,
+                id,
+            })
         }
 
         /// Whether `child`'s name here still reaches the folder this attempt made.

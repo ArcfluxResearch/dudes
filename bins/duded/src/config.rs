@@ -1090,6 +1090,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_creation_parent_is_an_absolute_or_home_relative_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        for (text, parent) in [
+            ("", None),
+            ("[floor.project]\nenabled = true\n", None),
+            (
+                "[floor.project]\ncreate_parent = '/work/new'\n",
+                Some("/work/new"),
+            ),
+            (
+                "[floor.project]\ncreate_parent = '~/code'\n",
+                Some("~/code"),
+            ),
+        ] {
+            std::fs::write(&path, text).unwrap();
+            let loaded = super::load_operator(&path).unwrap();
+            assert_eq!(loaded.create_parent.as_deref(), parent, "{text}");
+        }
+        for text in [
+            "[floor.project]\ncreate_parent = ''\n",
+            "[floor.project]\ncreate_parent = 'code'\n",
+            "[floor.project]\ncreate_parent = '~'\n",
+            "[floor.project]\ncreate_parent = '~kim/code'\n",
+            "[floor.project]\ncreate_parent = \"/a\\nb\"\n",
+            "[floor.project]\ncreate_parent = 7\n",
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert!(super::load_operator(&path).is_err(), "{text}");
+        }
+    }
+
     fn resolve(
         platform: ConfigPlatform,
         pairs: &[(&str, PathBuf)],

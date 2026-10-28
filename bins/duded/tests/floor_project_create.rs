@@ -7,6 +7,7 @@ mod common;
 use common::PageHttp as _;
 
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -79,6 +80,16 @@ impl PredicateRunner for Real {
     }
 }
 
+/// The first `git` on the test's own `PATH`.
+fn system_git() -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+        .map(|dir| dir.join("git"))
+        .find(|path| path.is_file())
+        .expect("git")
+}
+
+type Prepare = Box<dyn FnOnce(&Path, &Path)>;
+
 struct Floor {
     fixture: Fixture,
     running: common::Running,
@@ -101,7 +112,7 @@ struct Setup {
     /// The `PATH` the daemon finds `git` on.
     path: Option<OsString>,
     /// Runs before the daemon boots, with the parent and the root.
-    prepare: Box<dyn FnOnce(&Path, &Path)>,
+    prepare: Prepare,
 }
 
 impl Default for Setup {
@@ -124,12 +135,14 @@ fn floor(setup: Setup) -> Floor {
     (setup.prepare)(&parent, &canonical);
     let mut text = String::from("[floor.hire]\nenabled = true\n[floor.project]\nenabled = true\n");
     if let Some(spelled) = setup.create_parent {
-        text.push_str(&format!(
-            "create_parent = {}\n",
+        writeln!(
+            text,
+            "create_parent = {}",
             spelled
                 .replace("{parent}", parent.to_str().expect("UTF-8"))
                 .replace("{root}", canonical.to_str().expect("UTF-8"))
-        ));
+        )
+        .expect("text");
     }
     text.push_str(&setup.extra);
     let config = fixture.state.path().join("config.toml");
@@ -211,14 +224,11 @@ impl Floor {
 
     /// Run the system's `git` in `cwd` through the same runner the daemon uses.
     fn git(&self, cwd: &Path, args: &[&str]) -> String {
-        let git = std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
-            .map(|dir| dir.join("git"))
-            .find(|path| path.is_file())
-            .expect("git");
-        let mut argv = vec![git.into_os_string()];
-        argv.extend(args.iter().map(OsString::from));
+        let program = system_git();
+        let mut words = vec![program.into_os_string()];
+        words.extend(args.iter().map(OsString::from));
         let spec = LaunchSpec {
-            argv,
+            argv: words,
             env: vec![
                 EnvVar::new("PATH", std::env::var_os("PATH").unwrap_or_default()),
                 EnvVar::new("GIT_CONFIG_NOSYSTEM", "1"),
@@ -433,11 +443,13 @@ fn without_a_parent_there_is_no_creation() {
 fn the_project_cap_is_checked_before_anything_is_made() {
     let mut extra = String::new();
     for index in 0..32 {
-        extra.push_str(&format!(
+        write!(
+            extra,
             "[[floor.onboarding.workspaces]]\nworkspace_id = 'p{index:02}'\nlabel = 'P{index:02}'\n\
              completion_check_label = 'Checks pass'\ncwd = 'REPO{index:02}'\ndepartment = 'engineering'\n\
              isolation = 'default'\nhop_cap = 3\npredicate_argv = ['/usr/bin/true']\npredicate_timeout_s = 10\n"
-        ));
+        )
+        .expect("text");
     }
     let repos = tempfile::tempdir().expect("repos");
     let base = repos.path().canonicalize().expect("canonical");
@@ -485,12 +497,14 @@ fn a_failure_after_the_file_was_replaced_keeps_the_folder_and_names_it() {
         .join("by-hand");
     std::fs::create_dir_all(hand.join(".git")).expect("repository marker");
     let mut text = std::fs::read_to_string(&floor.config).expect("operator file");
-    text.push_str(&format!(
+    write!(
+        text,
         "[[floor.onboarding.workspaces]]\nworkspace_id = 'by-hand'\nlabel = 'By hand'\n\
          completion_check_label = 'Checks pass'\ncwd = '{}'\ndepartment = 'engineering'\n\
          isolation = 'default'\nhop_cap = 3\npredicate_argv = ['/usr/bin/true']\npredicate_timeout_s = 10\n",
         hand.display()
-    ));
+    )
+    .expect("text");
     std::fs::write(&floor.config, &text).expect("hand edit");
 
     let (status, body) = floor.named("kept", ATTEMPT);
@@ -520,10 +534,7 @@ fn a_failure_after_the_file_was_replaced_keeps_the_folder_and_names_it() {
 #[test]
 fn a_failure_before_the_file_is_touched_removes_the_folder() {
     let shim = tempfile::tempdir().expect("shim");
-    let real = std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
-        .map(|dir| dir.join("git"))
-        .find(|path| path.is_file())
-        .expect("git");
+    let real = system_git();
     let script = shim.path().canonicalize().expect("canonical").join("git");
     std::fs::write(
         &script,

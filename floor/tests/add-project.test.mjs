@@ -18,13 +18,13 @@ function reply(status, body) {
   return { status, text: () => Promise.resolve(JSON.stringify(body)) };
 }
 
-function floor(project) {
+function floor(project, createParent = null) {
   resetFloorStore();
   const epoch = beginFloorEpoch();
   noteTransport('open');
   const switches = { answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false,
     hire: true, git: false, renew: false, board: false, diff: false, project };
-  const settings = { folder_picker: false, switches, budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '1', per_turn_tokens: '1' },
+  const settings = { folder_picker: false, create_parent: createParent, switches, budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '1', per_turn_tokens: '1' },
     providers: ['claude'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 9 } };
   applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 1, agents: [] }, settings }), epoch);
   return getFloorState();
@@ -201,6 +201,133 @@ test('removing a project asks once on the page, sends nothing until confirmed, a
     assert.equal(remove.refusalLine('unknown'), 'That project is no longer in the list.');
     assert.doesNotMatch(remove.refusalLine('config_changed'), /add the project again/);
     remove.resetRemove();
+  } finally {
+    await server.close();
+  }
+});
+
+const CREATED = { project_id: 'new-app', label: 'new-app', check_label: 'files changed', hireable: true, reason: null, folder: '/work/projects/new-app' };
+
+test('the box offers creating a project only where the operator set a folder for it', async () => {
+  const root = resolve(import.meta.dirname, '..');
+  const server = await createServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
+  try {
+    const { AddProject, CreateProject } = await server.ssrLoadModule('/src/renderer/project/AddProject.tsx');
+    const { resetAdd, resetCreate, chooseAddMode, getAddMode } = await server.ssrLoadModule('/src/renderer/project/add.ts');
+    resetAdd();
+    resetCreate();
+    chooseAddMode('folder');
+    const without = renderToStaticMarkup(createElement(AddProject, { floor: floor(true) }));
+    assert.doesNotMatch(without, /Create a new project|role="tab"/);
+    assert.match(without, /Folder on this computer/);
+    const tabs = renderToStaticMarkup(createElement(AddProject, { floor: floor(true, '~/projects') }));
+    assert.match(tabs, /role="tablist"[^]*Use an existing folder[^]*Create a new project/);
+    assert.match(tabs, /aria-selected="true"[^>]*>Use an existing folder</, 'the folder box stays the first choice');
+    assert.match(tabs, /Folder on this computer/);
+    assert.equal(renderToStaticMarkup(createElement(AddProject, { floor: floor(false, '~/projects') })), '', 'off is off');
+    chooseAddMode('new');
+    assert.equal(getAddMode(), 'new');
+    const chosen = renderToStaticMarkup(createElement(AddProject, { floor: floor(true, '~/projects') }));
+    assert.match(chosen, /aria-selected="true"[^>]*>Create a new project</, 'the choice is kept outside the component, so a redraw keeps it');
+    assert.match(chosen, /aria-label="Create a project"/);
+    assert.doesNotMatch(chosen, /Folder on this computer/);
+    chooseAddMode('folder');
+
+    const form = renderToStaticMarkup(createElement(CreateProject, { parent: '~/projects' }));
+    assert.match(form, /aria-label="Create a project"/);
+    assert.match(form, /Project name/);
+    assert.match(form, /Dudes makes this folder in ~\/projects and starts a git repository in it\./);
+    assert.match(form, /placeholder="my-app"/);
+    assert.match(form, /data-add-project="create-submit"[^>]*aria-disabled="true"[^>]*>Create project</, 'no name, no request');
+    assert.doesNotMatch(form, /name="(path|folder|parent)"/, 'the page never names a path');
+  } finally {
+    await server.close();
+  }
+});
+
+test('creating a project sends only a name under one attempt, and tells the person where any folder is', async () => {
+  const root = resolve(import.meta.dirname, '..');
+  const server = await createServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
+  try {
+    const add = await server.ssrLoadModule('/src/renderer/project/add.ts');
+    const { CreateProject } = await server.ssrLoadModule('/src/renderer/project/AddProject.tsx');
+    const sent = [];
+    let refreshed = 0;
+    const script = [];
+    const deps = {
+      fetch: (url, init) => { sent.push([url, JSON.parse(init.body)]); return script.shift() ?? Promise.reject(new Error('down')); },
+      signedIn: () => true, random: (bytes) => { bytes.fill(7); }, refresh: () => { refreshed += 1; }, wait: () => Promise.resolve(),
+    };
+    assert.ok(add.validProjectName('my-app.v2_x'));
+    for (const bad of ['', '-a', '.a', 'a/b', 'a b', 'a'.repeat(65), '..']) assert.ok(!add.validProjectName(bad), bad);
+
+    add.resetCreate();
+    await add.createNamed('bad/name', deps);
+    assert.deepEqual(sent, [], 'a name the daemon would refuse is not sent');
+    assert.equal(add.getCreateState().kind, 'idle');
+
+    script.push(Promise.resolve(reply(202, { attempt_id: 'x', state: 'pending' })), Promise.resolve(reply(200, CREATED)));
+    await add.createNamed('  new-app ', deps);
+    assert.equal(sent.length, 2, 'a pending answer is asked again');
+    assert.deepEqual(sent[0], sent[1], 'with the same body');
+    assert.deepEqual(Object.keys(sent[0][1]).sort(), ['attempt_id', 'name']);
+    assert.equal(sent[0][0], '/floor/project/create');
+    assert.equal(sent[0][1].name, 'new-app');
+    assert.match(sent[0][1].attempt_id, ATTEMPT);
+    assert.equal(add.getCreateState().kind, 'created');
+    assert.match(add.createdLine(add.getCreateState().created), /new-app is created in \/work\/projects\/new-app\. You can hire an agent in it now\./);
+    assert.equal(refreshed, 1, 'the project appears with no reload');
+
+    add.resetCreate();
+    script.push(Promise.resolve(reply(409, { state: 'refused', reason: 'exists' })));
+    await add.createNamed('taken', deps);
+    assert.equal(add.getCreateState().kind, 'refused');
+    const shown = () => renderToStaticMarkup(createElement(CreateProject, { parent: '~/projects' }));
+    assert.match(shown(), /~\/projects already has something named taken\. Choose another name/);
+
+    add.resetCreate();
+    script.push(Promise.resolve(reply(409, {
+      state: 'refused', reason: 'config_changed', config: 'restored', left_behind: { path: '/work/projects/kept', verified: true },
+    })));
+    await add.createNamed('kept', deps);
+    const kept = shown();
+    assert.match(kept, /Dudes made the folder, but could not add it as a project\./);
+    assert.match(kept, /The folder is still at \/work\/projects\/kept\./);
+    assert.match(kept, /does not delete it for you/);
+    assert.match(kept, /The settings file is as it was\./);
+    assert.doesNotMatch(kept, /could not confirm that this is the folder/);
+    assert.equal(refreshed, 2, 'a folder was left, so the page looks again');
+
+    add.resetCreate();
+    script.push(Promise.resolve(reply(409, {
+      state: 'refused', reason: 'config_changed', config: 'failed', left_behind: { path: '/work/projects/odd', verified: false },
+    })));
+    await add.createNamed('odd', deps);
+    const odd = shown();
+    assert.match(odd, /could not confirm that this is the folder it made, so look inside before you delete anything/);
+    assert.match(odd, /check that it does not list this project/);
+
+    add.resetCreate();
+    script.push(Promise.resolve(reply(409, { state: 'refused', reason: 'create_failed' })));
+    await add.createNamed('doomed', deps);
+    assert.match(shown(), /could not start the repository, so it removed the folder it made\. Nothing was added\./);
+    for (const reason of ['bad_name', 'no_parent', 'parent_unusable', 'git_unavailable']) {
+      assert.ok(add.refusalLine(reason).length > 20, reason);
+      assert.doesNotMatch(add.refusalLine(reason), /dudes |git init|`/, reason);
+    }
+
+    add.resetCreate();
+    sent.length = 0;
+    await add.createNamed('flaky', deps);
+    assert.equal(add.getCreateState().kind, 'unsure');
+    const attempt = sent[0][1].attempt_id;
+    script.push(Promise.resolve(reply(200, { ...CREATED, project_id: 'flaky', label: 'flaky' })));
+    await add.createNamed('flaky', deps);
+    assert.equal(sent[1][1].attempt_id, attempt, 'a retry keeps the attempt, so the daemon cannot make a second folder');
+    assert.equal(add.getCreateState().kind, 'created');
+    assert.deepEqual(add.decodeCreated(200, 'nope'), { kind: 'failed' });
+    assert.deepEqual(add.decodeCreated(409, JSON.stringify({ state: 'refused', reason: 'exists', left_behind: { path: 1 } })), { kind: 'failed' });
+    add.resetCreate();
   } finally {
     await server.close();
   }

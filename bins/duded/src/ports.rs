@@ -1386,6 +1386,7 @@ impl Handle {
     }
 
     /// The daemon's hardened git, once the daemon has wired it in.
+    #[cfg_attr(not(unix), allow(dead_code, reason = "only a Unix creation reads it"))]
     pub(crate) fn git(&self) -> Option<crate::worktree::git::Git> {
         self.worktrees().map(|worktrees| worktrees.git().clone())
     }

@@ -107,6 +107,7 @@ impl WorktreeHires {
     }
 
     /// The daemon's hardened git.
+    #[cfg_attr(not(unix), allow(dead_code, reason = "only a Unix creation reads it"))]
     pub(crate) const fn git(&self) -> &Git {
         &self.git
     }

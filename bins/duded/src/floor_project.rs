@@ -261,6 +261,7 @@ impl ChildName {
 
 /// One bounded create request.
 #[derive(Clone, Debug)]
+#[cfg_attr(not(unix), allow(dead_code, reason = "only a Unix creation reads it"))]
 pub struct CreateRequest {
     pub(crate) attempt_id: Hex32,
     pub(crate) attempt_wire: String,
@@ -280,6 +281,7 @@ pub enum CreateParse {
 
 /// Where the daemon stands before it makes the folder, read on the loop.
 #[derive(Clone, Debug)]
+#[cfg_attr(not(unix), allow(dead_code, reason = "only a Unix creation reads it"))]
 pub struct CreatePlan {
     /// The parent as the operator's file spells it, `~/` expanded.
     pub(crate) parent: PathBuf,
@@ -754,6 +756,97 @@ mod tests {
             Ok(canonical(root.path().join("outside"))),
             "outside home"
         );
+    }
+
+    #[test]
+    fn a_child_name_is_one_plain_name() {
+        for good in ["a", "my-app", "app.v2", "A_b-c.d", &"x".repeat(64)] {
+            assert_eq!(
+                ChildName::parse(good).as_ref().map(ChildName::as_str),
+                Some(good)
+            );
+        }
+        for bad in [
+            "",
+            ".",
+            "..",
+            ".git",
+            "-x",
+            "_x",
+            "a/b",
+            "a\\b",
+            "a b",
+            "a\0b",
+            "\u{e9}",
+            "a\n",
+            &"x".repeat(65),
+        ] {
+            assert_eq!(ChildName::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_creation_body_names_only_a_child_an_attempt_and_a_label() {
+        let attempt = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let create = |body: serde_json::Value| parse_create(body.to_string().as_bytes());
+        let ok = create(serde_json::json!({"name": "app", "attempt_id": attempt}))
+            .expect("a name and an attempt");
+        assert_eq!(ok.name.as_str(), "app");
+        let labelled =
+            create(serde_json::json!({"name": "app", "label": "App", "attempt_id": attempt}))
+                .expect("a label");
+        assert_ne!(
+            ok.digest, labelled.digest,
+            "the label is part of the request"
+        );
+        assert!(matches!(
+            create(serde_json::json!({"name": "a/b", "attempt_id": attempt})),
+            Err(CreateParse::BadName)
+        ));
+        for bad in [
+            serde_json::json!({"name": "app", "attempt_id": attempt, "path": "/tmp/x"}),
+            serde_json::json!({"name": "app", "attempt_id": attempt, "parent": "/tmp"}),
+            serde_json::json!({"name": "app", "attempt_id": "short"}),
+            serde_json::json!({"name": "app", "label": "", "attempt_id": attempt}),
+            serde_json::json!({"attempt_id": attempt}),
+        ] {
+            assert!(
+                matches!(create(bad.clone()), Err(CreateParse::Malformed)),
+                "{bad}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_creation_parent_follows_the_folder_rule() {
+        let root = tempfile::tempdir().expect("root");
+        let home = root.path().canonicalize().expect("home").join("home");
+        let state = home.join("state");
+        fs::create_dir_all(&state).expect("state");
+        let folders = Folders::new(Some(&home), &[&state]);
+        let spelled = |path: &Path| path.to_str().expect("UTF-8").to_owned();
+        assert_eq!(folders.create_parent("~/code"), Ok(home.join("code")));
+        assert_eq!(
+            folders.create_parent(&spelled(&home.join("code/new"))),
+            Ok(home.join("code/new"))
+        );
+        for refused in [
+            "~".to_owned(),
+            "/".to_owned(),
+            spelled(&home),
+            "~/.hidden/projects".to_owned(),
+            "~/state".to_owned(),
+            "~/state/inside".to_owned(),
+            "~/code/../other".to_owned(),
+            "code".to_owned(),
+        ] {
+            assert_eq!(
+                folders.create_parent(&refused),
+                Err(Reason::ParentUnusable),
+                "{refused}"
+            );
+        }
     }
 
     #[test]
