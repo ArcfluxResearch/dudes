@@ -3356,7 +3356,6 @@ fn a_priority_change_is_an_edit_the_queue_follows() {
             TicketHistoryKind::PrioritySet {
                 priority: Priority::High
             },
-            TicketHistoryKind::Edited,
             TicketHistoryKind::PrioritySet {
                 priority: Priority::Unset
             },
@@ -3384,11 +3383,34 @@ fn an_assignment_can_set_the_priority_and_sent_back_work_keeps_it() {
 
     let (turn, ..) = Flow::await_turn_number(&fixture, 1);
     flow.end_turn(&fixture, turn, None);
-    flow.await_completed_review(one);
+    let review = flow.await_completed_review(one);
+    let sent_back = |flow: &mut Flow, priority: &str| {
+        let detail = flow.current_review_detail(one);
+        let watermark = detail.ticket.instruction_review.unwrap().watermark;
+        flow.call(
+            dudes_proto::rpc::Method::TicketAssign,
+            json!({
+                "card": one, "agent": cody, "message": "again", "priority": priority,
+                "expected_seq": detail.card.seq, "review_watermark": watermark,
+            }),
+        )
+    };
+    let appended = fixture.records().len();
+    let refused = sent_back(&mut flow, "urgent");
     assert_eq!(
-        flow.give_ok(one, cody, Some("again")),
-        TicketAssignOutcome::Started
+        refused.error.unwrap().message,
+        "the priority cannot change while asking for changes after an instruction review"
     );
+    assert_eq!(
+        fixture.records().len(),
+        appended,
+        "a refusal appends nothing"
+    );
+    let unchanged = flow.read(one);
+    assert_eq!(unchanged.ticket.priority, Priority::Low);
+    assert_eq!(unchanged.card.seq, review.seq);
+    let same = sent_back(&mut flow, "low");
+    assert!(same.error.is_none(), "{:?}", same.error);
     let read = flow.read(one);
     assert_eq!(read.ticket.priority, Priority::Low);
     let kinds: Vec<_> = read

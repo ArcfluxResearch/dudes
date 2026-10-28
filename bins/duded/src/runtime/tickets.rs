@@ -534,8 +534,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
     }
 
-    /// An agent's queue in serving order: the cards it holds in To do, rework first and then by
-    /// the position of their assignment.
+    /// An agent's queue in serving order: the cards it holds in To do, rework first, then by
+    /// priority, then by the position of their assignment.
     fn agent_queue(
         &self,
         agent: AgentId,

@@ -174,6 +174,10 @@ pub enum QueueClass {
     New,
 }
 
+fn default_rank() -> u8 {
+    Priority::Unset.rank()
+}
+
 /// A ticket's place in its agent's queue: class first, then its priority rank, then the position
 /// of the assignment.
 #[derive(
@@ -182,7 +186,9 @@ pub enum QueueClass {
 pub struct QueueKey {
     /// The class.
     pub class: QueueClass,
-    /// The ticket's [`Priority::rank`].
+    /// The ticket's [`Priority::rank`]. A key from a daemon that predates priority ranks like an
+    /// unset one.
+    #[serde(default = "default_rank")]
     pub rank: u8,
     /// The journal position of the `TicketAssigned` that queued it. Positions are unique, so keys
     /// never tie.
@@ -672,6 +678,14 @@ mod tests {
         keys.sort();
         let order: Vec<u64> = keys.iter().map(|key| key.lsn.0).collect();
         assert_eq!(order, [6, 5, 2, 3, 4, 1]);
+    }
+
+    #[test]
+    fn a_queue_key_from_before_priority_ranks_like_an_unset_one() {
+        let key: QueueKey =
+            serde_json::from_value(serde_json::json!({"class": "new", "lsn": 7})).unwrap();
+        assert_eq!(key.rank, 2);
+        assert_eq!(key.lsn, Lsn(7));
     }
 
     #[test]

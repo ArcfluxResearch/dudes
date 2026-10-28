@@ -325,7 +325,7 @@ fn sent_back_work_keeps_its_priority_and_runs_first() {
 }
 
 /// An edit that changes both the words and the priority writes both events. An edit that changes
-/// neither still leaves one.
+/// neither writes none, though it still advances the ticket's `seq`.
 #[test]
 fn history_tells_each_change_in_its_own_event() {
     let agent_id = agent();
@@ -389,8 +389,6 @@ fn history_tells_each_change_in_its_own_event() {
             TicketHistoryKind::PrioritySet {
                 priority: Priority::Low
             },
-            TicketHistoryKind::Edited,
-            TicketHistoryKind::Edited,
             TicketHistoryKind::PrioritySet {
                 priority: Priority::Urgent
             },
@@ -407,11 +405,11 @@ fn history_tells_each_change_in_its_own_event() {
         ]
     );
     let history = projections.ticket_history(card(1)).unwrap();
-    assert_eq!(history.total, 12);
+    assert_eq!(history.total, 10);
     assert_eq!(history.omitted(), 0);
     assert_eq!(history.events[0].lsn, "2");
     assert_eq!(history.events[0].by, HistoryBy::Operator);
-    assert_eq!(history.events[10].by, HistoryBy::Daemon);
+    assert_eq!(history.events[8].by, HistoryBy::Daemon);
 }
 
 #[test]

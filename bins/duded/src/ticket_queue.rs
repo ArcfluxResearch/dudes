@@ -152,8 +152,8 @@ impl Facts<'_> {
             .then_some(TicketWait::ProjectBusy)
     }
 
-    /// The tickets waiting in `project`'s queues, in serving order: given-again work first, then
-    /// by the position of the assignment, across every agent hired into the project.
+    /// The tickets waiting in `project`'s queues, in serving order: given-again work first, then by
+    /// priority, then by the position of the assignment, across every agent hired into the project.
     pub(crate) fn queue(&self, project: &str) -> Vec<(CardId, AgentId, QueueKey)> {
         let mut queue: Vec<_> = self
             .tickets

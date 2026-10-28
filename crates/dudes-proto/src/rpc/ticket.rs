@@ -85,8 +85,8 @@ pub struct TicketAssignParams {
     /// What to tell the agent when sending work back: at most 2,048 bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// The priority to give the ticket with the assignment. Absent keeps its current one. Not
-    /// accepted together with `review_watermark`.
+    /// The priority to give the ticket with the assignment. Absent keeps its current one. With
+    /// `review_watermark` it must equal the current priority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<Priority>,
     /// The ticket's `seq` as last seen.

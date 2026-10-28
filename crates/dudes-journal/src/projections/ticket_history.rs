@@ -102,7 +102,7 @@ fn edited_events(board: &RowTable<'_>, record: &Record) -> Result<Events> {
         .priority
         .filter(|priority| *priority != ticket.priority);
     let mut out = Vec::new();
-    if text || priority.is_none() {
+    if text {
         out.push((edited.card, by(edited.by), TicketHistoryKind::Edited));
     }
     if let Some(priority) = priority {

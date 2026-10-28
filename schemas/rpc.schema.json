@@ -18291,7 +18291,8 @@
           "description": "The journal position of the `TicketAssigned` that queued it. Positions are unique, so keys\nnever tie."
         },
         "rank": {
-          "description": "The ticket's [`Priority::rank`].",
+          "default": 2,
+          "description": "The ticket's [`Priority::rank`]. A key from a daemon that predates priority ranks like an\nunset one.",
           "format": "uint8",
           "maximum": 255,
           "minimum": 0,
@@ -18300,7 +18301,6 @@
       },
       "required": [
         "class",
-        "rank",
         "lsn"
       ],
       "type": "object"
@@ -21472,7 +21472,7 @@
               "type": "null"
             }
           ],
-          "description": "The priority to give the ticket with the assignment. Absent keeps its current one. Not\naccepted together with `review_watermark`."
+          "description": "The priority to give the ticket with the assignment. Absent keeps its current one. With\n`review_watermark` it must equal the current priority."
         },
         "review_watermark": {
           "anyOf": [
