@@ -119,6 +119,7 @@ test('the top bar reaches every Control view, and the office opens with Crew bes
     .map(([, attrs, label]) => [/\bid="([^"]+)"/.exec(attrs)?.[1], /aria-pressed="(\w+)"/.exec(attrs)?.[1], label]), [
     ['view-overview', 'false', 'Overview'],
     ['view-board', 'false', 'Board'],
+    ['view-projects', 'false', 'Projects'],
     ['view-log', 'false', 'Log'],
     ['view-setup', 'false', 'Setup'],
     ['view-settings', 'false', 'Settings'],
@@ -218,10 +219,10 @@ test('closing the drawer hands focus to the Crew row only while Crew is open and
 
 test('each Control view opens under its own heading and only office panels have a close button', () => {
   const floor = store.getFloorState();
-  for (const [view, label] of [['overview', 'Overview'], ['board', 'Board'], ['log', 'Log'],
+  for (const [view, label] of [['overview', 'Overview'], ['board', 'Board'], ['projects', 'Projects'], ['log', 'Log'],
     ['setup', 'Setup'], ['settings', 'Settings']]) {
     const html = renderToStaticMarkup(createElement(Control, { floor, view, selectedId: null, onClose() {}, onView() {}, onOpenQuestion() {} }));
-    const page = ['log', 'setup', 'settings'].includes(view);
+    const page = ['projects', 'log', 'setup', 'settings'].includes(view);
     const panel = html.match(/^<section [^>]*>/)?.[0] ?? '';
     assert.match(panel, new RegExp(`^<section id="control-panel" data-view="${view}" aria-labelledby="control-title" class="control-panel [^"]*" `
       + `${page ? 'data-page="true" ' : ''}data-focus-on-leave="view-${view}">`), view);

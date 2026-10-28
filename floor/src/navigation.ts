@@ -1,11 +1,12 @@
-export type PageView = 'log' | 'setup' | 'settings';
+export type PageView = 'projects' | 'log' | 'setup' | 'settings';
 
 const PAGE_HASH: Readonly<Record<PageView, string>> = Object.freeze({
-  log: '#/log', setup: '#/setup', settings: '#/settings',
+  projects: '#/projects', log: '#/log', setup: '#/setup', settings: '#/settings',
 });
 
 export function pageFromHash(hash: string): PageView | null {
   switch (hash) {
+    case '#/projects': return 'projects';
     case '#/log': return 'log';
     case '#/setup': return 'setup';
     case '#/settings': return 'settings';
@@ -14,7 +15,7 @@ export function pageFromHash(hash: string): PageView | null {
 }
 
 export function isPageView(view: string): view is PageView {
-  return view === 'log' || view === 'setup' || view === 'settings';
+  return view === 'projects' || view === 'log' || view === 'setup' || view === 'settings';
 }
 
 export function currentPage(): PageView | null {
