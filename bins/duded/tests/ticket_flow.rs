@@ -3622,6 +3622,14 @@ fn a_floor_answer_on_a_working_ticket_carries_the_work_on() {
     assert_eq!(flow.history(card).last(), Some(&asked));
 
     let page = flow.page();
+    let before = fixture.records().len();
+    let elsewhere = dudes_types::Lsn::from_parts(1, 1).unwrap();
+    let (head, body) = Flow::answer(&page, 'A', cody, elsewhere, "use release");
+    assert!(head.starts_with("HTTP/1.1 409"), "{head}");
+    assert_eq!(body["reason"], "question_closed");
+    assert_eq!(fixture.records().len(), before);
+    assert_eq!(flow.agent(cody).question_lsn, Some(question.0.to_string()));
+
     let (head, body) = Flow::answer(&page, 'B', cody, question, "use release");
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(body["state"], "answered");
@@ -3640,6 +3648,31 @@ fn a_floor_answer_on_a_working_ticket_carries_the_work_on() {
     let (second, _, _, task) = Flow::await_turn_number(&fixture, 2);
     assert!(task.contains("use release"), "{task}");
     assert_eq!(issued_answers(&fixture, second), answered_at);
+    let decision = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(_, entry)| match entry.record {
+            Record::TurnIssued {
+                turn,
+                lsn_of_decision,
+                ..
+            } if turn == second => Some(lsn_of_decision),
+            _ => None,
+        })
+        .expect("the answering turn is issued");
+    assert!(decision > answered_at[0], "the decision follows the answer");
+    let decided = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| (lsn == decision).then_some(entry.record))
+        .expect("the decision is journaled");
+    assert!(
+        matches!(
+            decided,
+            Record::LoopDecided { agent, decision: LoopDecision::Continue { .. }, .. } if agent == cody
+        ),
+        "{decided:?}"
+    );
     fixture.await_record("the answering turn's TurnSpawned", |record| {
         matches!(record, Record::TurnSpawned { turn, .. } if *turn == second).then_some(())
     });
