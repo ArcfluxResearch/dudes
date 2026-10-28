@@ -23,7 +23,7 @@ pub(crate) fn absent(path: &Path) -> Result<bool, String> {
 
 /// Recheck every derived location immediately before the absence record is appended.
 pub(crate) fn settled(lease: &LeaseView) -> Result<(), String> {
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     native::verify_absence(lease)?;
     let cleanup = cleanup_path(lease)?;
     let admin = lease
@@ -41,7 +41,7 @@ pub(crate) fn settled(lease: &LeaseView) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod native {
     use std::fs::File;
     use std::io::Read;
@@ -69,8 +69,45 @@ mod native {
             .map_err(fail)
     }
 
+    #[cfg(target_os = "linux")]
+    fn open_on_mount(
+        parent: &File,
+        name: impl rustix::path::Arg,
+        flags: OFlags,
+    ) -> rustix::io::Result<rustix::fd::OwnedFd> {
+        rustix::fs::openat2(
+            parent,
+            name,
+            flags,
+            Mode::empty(),
+            rustix::fs::ResolveFlags::NO_XDEV | rustix::fs::ResolveFlags::BENEATH,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open_on_mount(
+        parent: &File,
+        name: impl rustix::path::Arg,
+        flags: OFlags,
+    ) -> rustix::io::Result<rustix::fd::OwnedFd> {
+        let enclosing = rustix::fs::fstatfs(parent)?;
+        let fd = rustix::fs::openat(parent, name, flags, Mode::empty())?;
+        let opened = rustix::fs::fstatfs(&fd)?;
+        if enclosing.f_type == 0
+            || enclosing.f_mntonname[0] == 0
+            || opened.f_type == 0
+            || opened.f_mntonname[0] == 0
+        {
+            return Err(rustix::io::Errno::NOTSUP);
+        }
+        if enclosing.f_fsid != opened.f_fsid || enclosing.f_type != opened.f_type {
+            return Err(rustix::io::Errno::XDEV);
+        }
+        Ok(fd)
+    }
+
     fn child(parent: &File, name: impl rustix::path::Arg) -> Result<Option<File>, String> {
-        match rustix::fs::openat(parent, name, DIRECTORY, Mode::empty()) {
+        match open_on_mount(parent, name, DIRECTORY) {
             Ok(fd) => Ok(Some(File::from(fd))),
             Err(rustix::io::Errno::NOENT) => Ok(None),
             Err(error) => Err(fail(error)),
@@ -120,6 +157,7 @@ mod native {
             .create(parent_path)
             .map_err(fail)?;
         let parent = open(parent_path)?;
+        open_on_mount(&parent, ".", DIRECTORY).map_err(fail)?;
         let origin_file = open(origin)?;
         let common = open(&origin.join(".git"))?;
         let name = path.file_name().ok_or("the copy has no directory name")?;
@@ -193,11 +231,10 @@ mod native {
     }
 
     fn text(parent: &File, name: impl rustix::path::Arg) -> Result<Option<String>, String> {
-        let fd = match rustix::fs::openat(
+        let fd = match open_on_mount(
             parent,
             name,
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
         ) {
             Ok(fd) => fd,
             Err(rustix::io::Errno::NOENT) => return Ok(None),
@@ -386,7 +423,7 @@ mod native {
 
     fn remove_contents(directory: &File) -> Result<(), String> {
         for name in names(directory)? {
-            match rustix::fs::openat(directory, name.as_c_str(), DIRECTORY, Mode::empty()) {
+            match open_on_mount(directory, name.as_c_str(), DIRECTORY) {
                 Ok(fd) => {
                     remove_contents(&File::from(fd))?;
                     rustix::fs::unlinkat(directory, name.as_c_str(), AtFlags::REMOVEDIR)
@@ -493,25 +530,25 @@ mod native {
     mod tests;
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use native::{discard, prepare, verify, verify_prepared};
 
-#[cfg(not(unix))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn prepare(_: &Path, _: &Path) -> Result<WorktreeDirectoryAuthority, String> {
     Err("directory-bound worktree creation is unsupported on this platform".into())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn verify(_: &LeaseView) -> Result<(), String> {
     Err("directory identity is unsupported on this platform".into())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn discard(_: &LeaseView) -> Result<(), String> {
     Err("directory-bound cleanup is unsupported on this platform; retained".into())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn verify_prepared(_: &LeaseView) -> Result<(), String> {
     Err("directory identity is unsupported on this platform".into())
 }

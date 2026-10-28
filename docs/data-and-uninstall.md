@@ -26,7 +26,10 @@ Dudes also leaves files in these places:
   hire automatically removes only a pending copy whose recorded directory identity still matches.
   Unproved or replaced folders and Git registrations are retained and identified in the daemon log.
   Pending cleanup leaves every branch for the operator, including branches with newer commits.
-  New copies require a filesystem that exposes directory birth identity as well as device and inode.
+  Cleanup refuses mounted descendants and retains their data. New copies require directory birth
+  identity and mount containment support. Linux needs `openat2` with mount-crossing refusal, available
+  since kernel 5.6. macOS compares mount identities on opened directories. An unavailable or failed
+  containment check retains the pending copy.
   Older pending leases have no directory identity, so a present copy needs operator inspection.
   A crash before the lease is recorded can leave an empty folder; Dudes does not adopt or remove it.
 - `install.sh` puts `duded`, `dudes` and `dudes-hook` in `~/.local/bin`, or in `<dir>/bin` when

@@ -202,3 +202,34 @@ fn a_gitfile_symlink_is_retained_without_following_it() {
     assert_eq!(std::fs::read_to_string(&foreign).unwrap(), "keep");
     assert!(lease.path.is_dir());
 }
+
+#[test]
+fn a_mounted_descendant_is_refused_before_its_foreign_sentinel_is_removed() {
+    let Some(fixture) = std::env::var_os("DUDES_PENDING_MOUNT_FIXTURE") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(fixture).join("root");
+    let sentinel = root.join("mounted/sentinel");
+    assert_eq!(
+        std::fs::read_to_string(&sentinel).unwrap(),
+        "foreign sentinel"
+    );
+    let directory = open(&root).unwrap();
+    assert!(
+        child(&directory, "mounted").is_err(),
+        "a mounted child was admitted for traversal"
+    );
+    assert!(remove_contents(&directory).is_err());
+    assert_eq!(
+        std::fs::read_to_string(&sentinel).unwrap(),
+        "foreign sentinel"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_kernel_refuses_the_procfs_mount_without_descent() {
+    let root = open(Path::new("/")).unwrap();
+    let error = open_on_mount(&root, "proc", DIRECTORY).unwrap_err();
+    assert_eq!(error, rustix::io::Errno::XDEV);
+}
