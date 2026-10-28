@@ -237,14 +237,23 @@ impl Git {
     ///
     /// [`GitError::Unavailable`] when git is missing or older than 2.17.
     pub fn check_version(&self) -> Result<(), GitError> {
+        self.check_at_least(MIN_VERSION)
+    }
+
+    /// Whether this git is at least `minimum`, as `(major, minor)`.
+    ///
+    /// # Errors
+    ///
+    /// [`GitError::Unavailable`] when git is missing, unreadable or older.
+    pub fn check_at_least(&self, minimum: (u32, u32)) -> Result<(), GitError> {
         let cwd = std::env::temp_dir();
         let text = self.exec(&cwd, &[OsStr::new("--version")], QUICK)?;
         let version = parse_version(&text)
             .ok_or_else(|| GitError::Unavailable(format!("unreadable git version: {text}")))?;
-        if version < MIN_VERSION {
+        if version < minimum {
             return Err(GitError::Unavailable(format!(
-                "git {}.{} is older than 2.17, which added `git worktree remove`",
-                version.0, version.1
+                "git {}.{} is older than {}.{}",
+                version.0, version.1, minimum.0, minimum.1
             )));
         }
         Ok(())

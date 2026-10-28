@@ -1738,6 +1738,7 @@ pub(crate) fn settings_at(state: &Path, runtime: &Path) -> Settings {
         floor_git_enabled: false,
         floor_diff_enabled: false,
         floor_project_enabled: false,
+        floor_create_parent: None,
         engine_login: None,
         floor_board_enabled: false,
         // Off by default in the shared test harness, so the many existing tests that never

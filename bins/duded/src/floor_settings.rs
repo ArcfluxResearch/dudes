@@ -8,6 +8,7 @@ use crate::floor_actions::{Enrollment, valid_workspace_id};
 pub(crate) fn view(
     switches: SettingsSwitches,
     folder_picker: bool,
+    create_parent: Option<String>,
     floor_usd_per_day: Option<Usd>,
     reserve: Spend,
     enrollment: &Enrollment,
@@ -57,6 +58,7 @@ pub(crate) fn view(
     let mut report = SettingsView::default();
     report.switches = switches;
     report.folder_picker = folder_picker;
+    report.create_parent = create_parent;
     report.budget.floor_usd_per_day_micros =
         floor_usd_per_day.map(|value| value.micros().to_string());
     report.budget.per_turn_usd_micros = reserve.usd.micros().to_string();
@@ -88,6 +90,7 @@ mod tests {
             let view = view(
                 SettingsSwitches::default(),
                 available,
+                None,
                 None,
                 Spend::DEFAULT_PER_TURN_FLOOR,
                 &Enrollment::default(),

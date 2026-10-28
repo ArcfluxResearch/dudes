@@ -636,6 +636,9 @@ pub struct SettingsView {
     pub switches: SettingsSwitches,
     /// Whether the daemon can open the system's folder dialog for Add project and Hire.
     pub folder_picker: bool,
+    /// The folder beneath which the Floor may create a new project, as the operator's file spells
+    /// it; `None` when it may not.
+    pub create_parent: Option<String>,
     /// Admission ceilings and reserves for this daemon run.
     pub budget: SettingsBudget,
     /// Registered adapters, independent of executable availability.

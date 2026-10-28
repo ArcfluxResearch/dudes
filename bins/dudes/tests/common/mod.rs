@@ -327,6 +327,7 @@ impl Fixture {
             floor_git_enabled: false,
             floor_diff_enabled: false,
             floor_project_enabled: false,
+            floor_create_parent: None,
             engine_login: None,
             floor_board_enabled: false,
             // Off by default here too: nothing in this suite exercises the

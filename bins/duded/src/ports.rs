@@ -1162,6 +1162,8 @@ pub struct Handle {
     chat_file_hold: Arc<Mutex<Option<(Sender<()>, Receiver<()>)>>>,
     /// The folder dialog the Floor's project routes open, wired once the daemon has built it.
     folder_picker: Arc<std::sync::OnceLock<Arc<crate::folder_picker::FolderPicker>>>,
+    /// What each Floor session's finished project creations answered, so a retry is told again.
+    create_results: Arc<crate::project_create::CreateResults>,
 }
 
 /// How long a hook waits for the loop's answer in production.
@@ -1381,6 +1383,16 @@ impl Handle {
     /// The worktree path the daemon wired in, once it has.
     fn worktrees(&self) -> Option<Arc<crate::worktree::hire::WorktreeHires>> {
         self.worktrees.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// The daemon's hardened git, once the daemon has wired it in.
+    pub(crate) fn git(&self) -> Option<crate::worktree::git::Git> {
+        self.worktrees().map(|worktrees| worktrees.git().clone())
+    }
+
+    /// What this run's Floor sessions have finished creating.
+    pub(crate) fn create_results(&self) -> &crate::project_create::CreateResults {
+        &self.create_results
     }
 
     /// Wire in the folder dialog, so the Floor's project routes can open it.
@@ -1754,6 +1766,7 @@ impl Handle {
             #[cfg(feature = "testing")]
             chat_file_hold: Arc::new(Mutex::new(None)),
             folder_picker: Arc::default(),
+            create_results: Arc::default(),
         }
     }
 
