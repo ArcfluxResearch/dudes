@@ -82,10 +82,16 @@ impl PredicateRunner for Real {
 
 /// The first `git` on the test's own `PATH`.
 fn system_git() -> PathBuf {
+    on_test_path("git")
+}
+
+/// The first `program` on the test's own `PATH`. A stand-in names its tools by full path because
+/// the daemon runs git with a `PATH` holding only the stand-in's folder.
+fn on_test_path(program: &str) -> PathBuf {
     std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
-        .map(|dir| dir.join("git"))
+        .map(|dir| dir.join(program))
         .find(|path| path.is_file())
-        .expect("git")
+        .expect(program)
 }
 
 type Prepare = Box<dyn FnOnce(&Path, &Path)>;
@@ -207,10 +213,11 @@ impl HeldCommit {
             &script,
             format!(
                 "#!/bin/sh\ncase \" $* \" in *\" commit \"*)\n: > '{}'\nn=0\n\
-                 while [ ! -e '{}' ] && [ $n -lt 200 ]; do sleep 0.05; n=$((n+1)); done;;\nesac\n\
+                 while [ ! -e '{}' ] && [ $n -lt 200 ]; do '{}' 0.05; n=$((n+1)); done;;\nesac\n\
                  exec '{}' \"$@\"\n",
                 marker.display(),
                 release.display(),
+                on_test_path("sleep").display(),
                 system_git().display()
             ),
         )
