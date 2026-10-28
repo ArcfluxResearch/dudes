@@ -4730,7 +4730,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 }
                 let before: std::collections::BTreeSet<_> =
                     self.sup.world().worktrees.keys().copied().collect();
+                let worktree = self.sup.mint_worktree_id();
+                let path = self
+                    .sup
+                    .config()
+                    .data_dir
+                    .join("worktrees")
+                    .join(worktree.to_string());
+                let identity = crate::worktree::pending::prepare(&origin, &path)
+                    .map_err(crate::worktree::unavailable)?;
+                self.worktree_admission(&params)?;
+                self.trust_still_holds(trust.as_deref(), &origin, &params.cwd)?;
                 self.pump_or_refuse(Input::Command(Command::LeaseWorktree {
+                    worktree,
+                    identity,
                     origin,
                     base,
                     from,
@@ -4748,6 +4761,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     ));
                 };
                 self.worktree_admission(&params)?;
+                crate::worktree::pending::verify(&lease).map_err(crate::worktree::unavailable)?;
                 self.refuse_overlap(&lease.path, Some(worktree))?;
                 self.refuse_shared_hire(&params, &lease.path)?;
                 let workspace = self.ctx.enrollment.workspace_for_cwd(&params.cwd);
@@ -4790,9 +4804,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 let Some(lease) = self.pending_lease(worktree) else {
                     return Err(refused("the lease is not pending"));
                 };
-                if std::fs::symlink_metadata(&lease.path).is_ok() {
-                    return Err(refused("the tree still exists"));
-                }
+                crate::worktree::pending::settled(&lease).map_err(|reason| refused(&reason))?;
                 self.pump_or_refuse(Input::Command(Command::RemoveWorktree {
                     worktree,
                     how: dudes_proto::WorktreeRemoval::NeverAssigned,
@@ -7685,6 +7697,7 @@ fn lease_view(
         path: row.path.clone(),
         branch: row.branch.clone(),
         base: row.base,
+        identity: row.identity.clone(),
     }
 }
 

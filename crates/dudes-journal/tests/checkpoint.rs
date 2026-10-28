@@ -212,7 +212,9 @@ fn placement(kind: RecordKind) -> Placement {
         | RecordKind::FloorDeviceUsed => Placement::Out(
             "inert in every journal projection; only the supervisor's world folds them, and its own tests replay them",
         ),
-        RecordKind::WorktreeLeased | RecordKind::WorktreeRemoved => Placement::Out(
+        RecordKind::WorktreeLeased
+        | RecordKind::WorktreeLeasedWithIdentity
+        | RecordKind::WorktreeRemoved => Placement::Out(
             "the lease lifecycle needs its own agent and removal order; tests/worktrees.rs replays it with and without checkpoints",
         ),
         RecordKind::MailWakeTurnDecided

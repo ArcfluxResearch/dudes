@@ -714,6 +714,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         CardId::from_ulid(self.rng.ulid())
     }
 
+    /// Mint an unpredictable lease identity before the daemon creates its empty root.
+    pub fn mint_worktree_id(&mut self) -> WorktreeId {
+        let mut bytes = self.rng.ulid().to_bytes();
+        bytes.reverse();
+        WorktreeId::from_bytes(bytes)
+    }
+
     /// Mint a mail conversation id from the daemon's configured random source.
     pub fn mint_thread_id(&mut self) -> ThreadId {
         ThreadId::from_ulid(self.rng.ulid())
@@ -4664,15 +4671,16 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 };
                 self.persist(record, Then::Fold);
             }
-            Command::LeaseWorktree { origin, base, from } => {
-                // A ULID leads with its millisecond timestamp, and the branch name takes the first
-                // 12 hexadecimal characters of the identity, so two leases made in one millisecond
-                // would share a branch. The random end leads instead.
-                let mut bytes = self.rng.ulid().to_bytes();
-                bytes.reverse();
-                let worktree = WorktreeId::from_bytes(bytes);
+            Command::LeaseWorktree {
+                worktree,
+                origin,
+                base,
+                from,
+                identity,
+            } => {
                 self.persist(
-                    Record::WorktreeLeased {
+                    Record::WorktreeLeasedWithIdentity {
+                        identity,
                         worktree,
                         origin,
                         path: self

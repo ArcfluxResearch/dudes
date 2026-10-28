@@ -325,7 +325,7 @@ fn leases(fixture: &Fixture) -> usize {
     fixture
         .records()
         .iter()
-        .filter(|record| matches!(record, Record::WorktreeLeased { .. }))
+        .filter(|record| record.worktree_lease().is_some())
         .count()
 }
 

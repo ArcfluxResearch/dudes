@@ -751,6 +751,7 @@ mod tests {
             | Record::PtyCloseRequested { .. }
             | Record::PtySpawned { .. }
             | Record::WorktreeLeased { .. }
+            | Record::WorktreeLeasedWithIdentity { .. }
             | Record::WorktreeRemoved { .. }
             | Record::TicketCreated { .. }
             | Record::TicketEdited { .. }

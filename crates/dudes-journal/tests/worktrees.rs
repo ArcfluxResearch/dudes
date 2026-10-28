@@ -326,7 +326,7 @@ fn the_removal_cause_and_the_automatic_hold_keep_a_value_a_later_version_adds() 
 /// ordinary replay would skip them for ever. The version bump is what rebuilds it.
 #[test]
 fn a_version_37_cache_is_rebuilt_so_it_holds_the_leases_the_journal_records() {
-    assert_eq!(dudes_journal::PROJECTION_VERSION, 69);
+    assert_eq!(dudes_journal::PROJECTION_VERSION, 70);
     let dir = tempfile::tempdir().unwrap();
     let journal = dir.path().join("journal");
     write_journal(&journal, &lifecycle(AgentId::from_parts(5, 1)), 0);
@@ -428,4 +428,40 @@ fn the_archive_keeps_a_released_tree_visible_until_it_is_removed() {
             .state,
         dudes_proto::WorktreeViewState::Removed
     );
+}
+
+#[test]
+fn identity_bearing_leases_are_required_and_rebuild_the_same_lifecycle() {
+    let new = samples::record(RecordKind::WorktreeLeasedWithIdentity);
+    let authority = new.worktree_lease().unwrap().identity.cloned().unwrap();
+    let agent = AgentId::from_parts(5, 3);
+    let steps = vec![
+        entry(new),
+        hired(agent, Some(tree())),
+        retired(agent),
+        removed(tree(), WorktreeRemoval::Operator),
+    ];
+    let plain = tempfile::tempdir().unwrap();
+    let checkpointed = tempfile::tempdir().unwrap();
+    write_journal(plain.path(), &steps, 0);
+    write_journal(checkpointed.path(), &steps, 1);
+    let expected = replayed(plain.path());
+    let actual = replayed(checkpointed.path());
+    assert_eq!(expected[0].identity, Some(authority));
+    assert_eq!(actual[0].identity, expected[0].identity);
+    assert_eq!(actual[0].agent, expected[0].agent);
+    assert_eq!(actual[0].removed, expected[0].removed);
+    let segment = segment_path(plain.path(), 1);
+    let bytes = fs::read(&segment).unwrap();
+    let header = Header::parse(
+        bytes[..dudes_journal::frame::HEADER_LEN]
+            .try_into()
+            .unwrap(),
+    );
+    assert_eq!(header.kind, RecordKind::WorktreeLeasedWithIdentity.tag());
+    assert!(RecordKind::WorktreeLeasedWithIdentity.requires_required_frame());
+    let unknown = reframed(&bytes, RecordKind::WorktreeLeasedWithIdentity.tag(), 1000);
+    fs::write(&segment, unknown).unwrap();
+    let error = Reader::open(plain.path()).unwrap_err().to_string();
+    assert!(error.contains("1000"), "{error}");
 }

@@ -573,7 +573,7 @@ fn a_hire_keeps_its_revision_across_label_edits_but_cannot_omit_a_new_member() {
 #[test]
 fn a_cache_without_lifetime_markers_rebuilds_retired_legacy_hire_identity() {
     use dudes_proto::repository_state::history::RepositoryHireClass;
-    assert_eq!(dudes_journal::PROJECTION_VERSION, 69);
+    assert_eq!(dudes_journal::PROJECTION_VERSION, 70);
     let dir = tempfile::tempdir().unwrap();
     let journal = dir.path().join("journal");
     let cache = dir.path().join("state.redb");
@@ -627,3 +627,36 @@ fn a_cache_without_lifetime_markers_rebuilds_retired_legacy_hire_identity() {
 
 #[path = "repositories/declared_tickets.rs"]
 mod declared_tickets;
+
+#[test]
+fn an_identity_bearing_pending_lease_normalizes_into_atomic_repository_authority() {
+    let (mut prefix, hire) = authority();
+    let old = prefix.pop().unwrap();
+    let lease = old.record.worktree_lease().unwrap();
+    let Record::WorktreeLeasedWithIdentity { identity, .. } =
+        samples::record(RecordKind::WorktreeLeasedWithIdentity)
+    else {
+        unreachable!()
+    };
+    prefix.push(entry(Record::WorktreeLeasedWithIdentity {
+        worktree: lease.worktree,
+        origin: lease.origin.to_path_buf(),
+        path: lease.path.to_path_buf(),
+        branch: lease.branch.to_owned(),
+        base: lease.base,
+        from: lease.from,
+        identity: identity.clone(),
+    }));
+    let mut store = Projections::in_memory().unwrap();
+    apply_prefix(&mut store, &prefix);
+    store
+        .apply(
+            Lsn(4),
+            2,
+            &entry(Record::AgentHiredWithRepositories(Box::new(hire.clone()))),
+        )
+        .unwrap();
+    let row = &store.worktrees().unwrap()[0];
+    assert_eq!(row.identity, Some(identity));
+    assert_eq!(row.agent, Some(hire.id));
+}

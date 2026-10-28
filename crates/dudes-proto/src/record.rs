@@ -1934,6 +1934,24 @@ pub enum Record {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<WorktreeId>,
     },
+    /// A required pre-copy lease carrying the exact directories cleanup may remove.
+    WorktreeLeasedWithIdentity {
+        /// The lease.
+        worktree: WorktreeId,
+        /// The repository the tree is added from.
+        origin: PathBuf,
+        /// The tree. Never shown on the Floor.
+        path: PathBuf,
+        /// `dudes/` and the first 12 hexadecimal characters of `worktree`.
+        branch: String,
+        /// The commit the branch is created at.
+        base: GitCommit,
+        /// The lease this one was based on, when the hire named one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<WorktreeId>,
+        /// Durable directory authority, captured before Git starts.
+        identity: WorktreeDirectoryAuthority,
+    },
     /// A lease ended: its tree is gone. Dudes appends it only for a tree no agent ran in, or at
     /// the operator's explicit request.
     WorktreeRemoved {
@@ -2342,6 +2360,90 @@ pub struct FileIdentity {
     pub inode: u64,
 }
 
+/// A directory identity that also distinguishes inode reuse after removal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WorktreeDirectoryIdentity {
+    /// The filesystem device.
+    pub device: u64,
+    /// The directory inode.
+    pub inode: u64,
+    /// Birth time in seconds since the Unix epoch.
+    pub created_secs: u64,
+    /// Nanoseconds within the birth-time second.
+    pub created_nanos: u32,
+}
+
+/// Original directory authority captured before a pending copy is initialized.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WorktreeDirectoryAuthority {
+    /// The original repository root.
+    pub origin: WorktreeDirectoryIdentity,
+    /// Its plain `.git` common directory.
+    pub common: WorktreeDirectoryIdentity,
+    /// The exclusively created empty copy root.
+    pub root: WorktreeDirectoryIdentity,
+    /// The daemon's worktree parent.
+    pub parent: WorktreeDirectoryIdentity,
+}
+
+/// The shared view of legacy and identity-bearing leases.
+#[derive(Clone, Copy, Debug)]
+pub struct WorktreeLease<'a> {
+    /// Lease identity.
+    pub worktree: WorktreeId,
+    /// Original repository root.
+    pub origin: &'a std::path::Path,
+    /// Leased copy root.
+    pub path: &'a std::path::Path,
+    /// Branch retained for the operator.
+    pub branch: &'a str,
+    /// Resolved starting commit.
+    pub base: GitCommit,
+    /// Prior lease used as a base.
+    pub from: Option<WorktreeId>,
+    /// Absent on a legacy lease.
+    pub identity: Option<&'a WorktreeDirectoryAuthority>,
+}
+
+impl Record {
+    /// Normalize both lease carriers without inventing cleanup authority for older records.
+    #[must_use]
+    pub fn worktree_lease(&self) -> Option<WorktreeLease<'_>> {
+        let (Self::WorktreeLeased {
+            worktree,
+            origin,
+            path,
+            branch,
+            base,
+            from,
+        }
+        | Self::WorktreeLeasedWithIdentity {
+            worktree,
+            origin,
+            path,
+            branch,
+            base,
+            from,
+            ..
+        }) = self
+        else {
+            return None;
+        };
+        Some(WorktreeLease {
+            worktree: *worktree,
+            origin,
+            path,
+            branch,
+            base: *base,
+            from: *from,
+            identity: match self {
+                Self::WorktreeLeasedWithIdentity { identity, .. } => Some(identity),
+                _ => None,
+            },
+        })
+    }
+}
+
 /// The repository an operator trusted, by name and by identity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TrustedRepository {
@@ -2595,6 +2697,7 @@ impl Record {
                 RecordKind::IdentifiedMailWakeOnlyTurnIssued
             }
             Self::WorktreeLeased { .. } => RecordKind::WorktreeLeased,
+            Self::WorktreeLeasedWithIdentity { .. } => RecordKind::WorktreeLeasedWithIdentity,
             Self::WorktreeRemoved { .. } => RecordKind::WorktreeRemoved,
             Self::AgentMcpServersChanged { .. } => RecordKind::AgentMcpServersChanged,
             Self::AgentModelChanged { .. } => RecordKind::AgentModelChanged,
@@ -2890,6 +2993,8 @@ pub enum RecordKind {
     InstructionObservationBatchStarted = 110,
     /// [`Record::InstructionObservationBatchFinished`].
     InstructionObservationBatchFinished = 111,
+    /// [`Record::WorktreeLeasedWithIdentity`].
+    WorktreeLeasedWithIdentity = 112,
 }
 
 impl RecordKind {
@@ -2946,8 +3051,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 111] {
-        let mut kinds = [Self::AgentHired; 111];
+    const fn known_kinds() -> [Self; 112] {
+        let mut kinds = [Self::AgentHired; 112];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -3018,6 +3123,7 @@ impl RecordKind {
         kinds[108] = Self::TicketReviewBatchStamped;
         kinds[109] = Self::InstructionObservationBatchStarted;
         kinds[110] = Self::InstructionObservationBatchFinished;
+        kinds[111] = Self::WorktreeLeasedWithIdentity;
         kinds
     }
 
@@ -3082,6 +3188,7 @@ impl RecordKind {
                 | Self::TicketReviewBatchStamped
                 | Self::InstructionObservationBatchStarted
                 | Self::InstructionObservationBatchFinished
+                | Self::WorktreeLeasedWithIdentity
         )
     }
 
@@ -3955,6 +4062,11 @@ pub mod samples {
                     .unwrap(),
                 from: None,
             },
+            RecordKind::WorktreeLeasedWithIdentity => {
+                let Record::WorktreeLeased { worktree, origin, path, branch, base, from } = record(RecordKind::WorktreeLeased) else { unreachable!() };
+                let directory = WorktreeDirectoryIdentity { device: 1, inode: 2, created_secs: 1_700_000_000, created_nanos: 1 };
+                Record::WorktreeLeasedWithIdentity { worktree, origin, path, branch, base, from, identity: WorktreeDirectoryAuthority { origin: directory, common: directory, root: directory, parent: directory } }
+            }
             RecordKind::WorktreeRemoved => Record::WorktreeRemoved {
                 worktree: WorktreeId::from_bytes([0x11; 16]),
                 how: WorktreeRemoval::Operator,
@@ -4697,7 +4809,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 111);
+        assert_eq!(RecordKind::KNOWN.len(), 112);
         for &kind in RecordKind::KNOWN[46..66]
             .iter()
             .chain(&RecordKind::KNOWN[94..100])
@@ -5194,6 +5306,36 @@ mod tests {
     /// Journal format: every variant has a permanent, unique `kind` tag, and `from_tag` is the
     /// inverse of `tag`. An unknown tag maps to `None` so a reader skips the frame.
     #[test]
+    fn identified_worktree_lease_requires_every_directory_authority() {
+        let record = samples::record(RecordKind::WorktreeLeasedWithIdentity);
+        assert_eq!(record.kind().tag(), 112);
+        assert!(record.requires_required_frame());
+        let encoded = serde_json::to_value(&record).unwrap();
+        assert_eq!(encoded["t"], "worktree_leased_with_identity");
+        assert_eq!(
+            serde_json::from_value::<Record>(encoded.clone()).unwrap(),
+            record
+        );
+        for key in ["identity", "worktree", "origin", "path", "branch", "base"] {
+            let mut absent = encoded.clone();
+            absent.as_object_mut().unwrap().remove(key);
+            assert!(serde_json::from_value::<Record>(absent).is_err(), "{key}");
+        }
+        for key in ["origin", "common", "root", "parent"] {
+            let mut absent = encoded.clone();
+            absent["identity"].as_object_mut().unwrap().remove(key);
+            assert!(serde_json::from_value::<Record>(absent).is_err(), "{key}");
+        }
+        assert!(
+            samples::record(RecordKind::WorktreeLeased)
+                .worktree_lease()
+                .unwrap()
+                .identity
+                .is_none()
+        );
+    }
+
+    #[test]
     fn record_kinds_are_unique_and_invertible() {
         let mut tags: Vec<u16> = RecordKind::KNOWN.iter().map(|k| k.tag()).collect();
         tags.sort_unstable();
@@ -5206,7 +5348,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            111,
+            112,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -6287,8 +6429,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 111);
-        assert_eq!(RecordKind::from_tag(112), None);
+        assert_eq!(RecordKind::KNOWN.len(), 112);
+        assert_eq!(RecordKind::from_tag(1000), None);
     }
 
     #[test]
@@ -6735,6 +6877,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(112), None);
+        assert_eq!(RecordKind::from_tag(1000), None);
     }
 }

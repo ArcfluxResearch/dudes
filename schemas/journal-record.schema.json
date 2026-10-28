@@ -8435,6 +8435,70 @@
       "minimum": 0,
       "type": "integer"
     },
+    "WorktreeDirectoryAuthority": {
+      "description": "Original directory authority captured before a pending copy is initialized.",
+      "properties": {
+        "common": {
+          "$ref": "#/$defs/WorktreeDirectoryIdentity",
+          "description": "Its plain `.git` common directory."
+        },
+        "origin": {
+          "$ref": "#/$defs/WorktreeDirectoryIdentity",
+          "description": "The original repository root."
+        },
+        "parent": {
+          "$ref": "#/$defs/WorktreeDirectoryIdentity",
+          "description": "The daemon's worktree parent."
+        },
+        "root": {
+          "$ref": "#/$defs/WorktreeDirectoryIdentity",
+          "description": "The exclusively created empty copy root."
+        }
+      },
+      "required": [
+        "origin",
+        "common",
+        "root",
+        "parent"
+      ],
+      "type": "object"
+    },
+    "WorktreeDirectoryIdentity": {
+      "description": "A directory identity that also distinguishes inode reuse after removal.",
+      "properties": {
+        "created_nanos": {
+          "description": "Nanoseconds within the birth-time second.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created_secs": {
+          "description": "Birth time in seconds since the Unix epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "device": {
+          "description": "The filesystem device.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inode": {
+          "description": "The directory inode.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "device",
+        "inode",
+        "created_secs",
+        "created_nanos"
+      ],
+      "type": "object"
+    },
     "WorktreeId": {
       "description": "WorktreeId: a daemon-created git worktree (32 lowercase hexadecimal characters).",
       "maxLength": 32,
@@ -11987,6 +12051,60 @@
         "path",
         "branch",
         "base"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A required pre-copy lease carrying the exact directories cleanup may remove.",
+      "properties": {
+        "base": {
+          "$ref": "#/$defs/GitCommit",
+          "description": "The commit the branch is created at."
+        },
+        "branch": {
+          "description": "`dudes/` and the first 12 hexadecimal characters of `worktree`.",
+          "type": "string"
+        },
+        "from": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorktreeId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The lease this one was based on, when the hire named one."
+        },
+        "identity": {
+          "$ref": "#/$defs/WorktreeDirectoryAuthority",
+          "description": "Durable directory authority, captured before Git starts."
+        },
+        "origin": {
+          "description": "The repository the tree is added from.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The tree. Never shown on the Floor.",
+          "type": "string"
+        },
+        "t": {
+          "const": "worktree_leased_with_identity",
+          "type": "string"
+        },
+        "worktree": {
+          "$ref": "#/$defs/WorktreeId",
+          "description": "The lease."
+        }
+      },
+      "required": [
+        "t",
+        "worktree",
+        "origin",
+        "path",
+        "branch",
+        "base",
+        "identity"
       ],
       "type": "object"
     },
