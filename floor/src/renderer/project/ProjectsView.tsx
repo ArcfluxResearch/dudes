@@ -66,7 +66,7 @@ function ProjectCard({ row, onOpenBoard }: { readonly row: ProjectRow; readonly 
     <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
       <div className="grid min-w-0 gap-0.5">
         <h3 id={headingId} className="m-0 text-title font-semibold text-ink [overflow-wrap:anywhere]">{row.label}</h3>
-        <Code className="w-fit bg-transparent px-0 text-muted">{row.id}</Code>
+        {row.id === row.label ? null : <Code className="w-fit bg-transparent px-0 text-muted">{row.id}</Code>}
       </div>
       <Button data-project-board={row.id} aria-label={`Open board for ${row.label}`}
         onClick={() => onOpenBoard(row.id)}>Open board</Button>
