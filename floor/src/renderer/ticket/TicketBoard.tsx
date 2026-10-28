@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { createContext, useContext, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
+import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, FormEvent, KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { handFocusAfterLeave } from '../focus.ts';
@@ -18,7 +18,7 @@ import type { FloorState } from '../floor/store.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
 import { decodeWorkspace } from '../workspace.ts';
-import { agentChoiceSentence, agentRow, boardColumns, cardWords, DONE_SHOWN, noProjects, otherCards, plainColumnOf, TICKET_COLUMNS } from './model.ts';
+import { agentChoiceSentence, agentName, agentRow, boardColumns, cardWords, DONE_SHOWN, noProjects, otherCards, plainColumnOf, TICKET_COLUMNS } from './model.ts';
 import type { TicketColumn } from './model.ts';
 import type { Notice } from './ticket.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
@@ -26,6 +26,11 @@ import { titleOf } from '../setup/nextStep.ts';
 import type { FirstTaskAgent } from '../setup/nextStep.ts';
 import { agentWithoutProjectSentence, engineStopped, otherStateName, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
+import { BoardToolbar } from './BoardToolbar.tsx';
+import { arrange, choicesOf, filterRows, isFiltered, liveView, rowsOf, withoutFilters } from './browse.ts';
+import type { BrowseRow } from './browse.ts';
+import { getBrowse, setBrowse, subscribeToBrowse } from './browseState.ts';
+import { TicketList, TicketRow } from './TicketList.tsx';
 import { clearNewTicketDraft, EMPTY_TICKET_DRAFT, readNewTicketDraft, writeNewTicketDraft } from '../view.ts';
 import type { NewTicketDraft } from '../view.ts';
 
@@ -298,10 +303,28 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
   const selectable = floor.phase === 'live' && !floor.stale;
   useRequestedCard(floor, selectable, onSelect);
   const [doneShown, setDoneShown] = useState(DONE_SHOWN);
-  const { columns, needsYou, doneHidden } = boardColumns(floor.cards, doneShown);
-  const other = otherCards(floor.cards);
+  const remembered = useSyncExternalStore(subscribeToBrowse, getBrowse, getBrowse);
+  const rows = useMemo(() => rowsOf(floor), [floor.cards, floor.agents]);
+  const choices = useMemo(() => choicesOf(rows, projectsOf(floor), floor.agents.map((row) => ({ id: row.id, name: agentName(floor, row.id) }))),
+    [rows, floor.agents, floor.checks, floor.settings]);
+  const view = liveView(remembered, choices);
+  const filtered = isFiltered(view);
+  const shown = filterRows(rows, view);
+  const list = view.layout === 'list';
+  const cards = shown.map((row) => row.card);
+  const { columns, needsYou, doneHidden } = boardColumns(cards, doneShown);
+  const arranged = list ? arrange(shown, doneShown) : null;
+  const other = list ? [] : otherCards(cards);
+  const hiddenNeeds = rows.filter((row) => row.status === 'needs').length - needsYou.length;
+  const clear = () => setBrowse(withoutFilters(getBrowse()));
   const draw = (card: CardRow) => <TicketCard key={card.id} floor={floor} card={card} selected={card.id === selectedId}
     selectable={selectable} onSelect={onSelect} />;
+  const now = Date.now();
+  const drawRow = (row: BrowseRow) => <TicketRow key={row.card.id} floor={floor} row={row} selected={row.card.id === selectedId}
+    selectable={selectable} onSelect={onSelect} now={now} />;
+  const showMore = doneHidden > 0
+    ? <p className={cn(HINT, 'flex flex-wrap items-center gap-x-2')}>{doneHidden} older card{doneHidden === 1 ? '' : 's'} not shown.{' '}
+      <Button variant="secondary" size="sm" className="ticket-more" onClick={() => setDoneShown(doneShown + DONE_SHOWN)}>Show more</Button></p> : null;
   return <div className="board-view ticket-board flex flex-col gap-6 font-sans text-base text-ink">
     {floor.ticket ? <section className="ticket-new" aria-label="New ticket">
       <Button variant="primary" icon={<Plus {...ICON} />} className="ticket-new-toggle absolute top-8 right-20 max-[800px]:top-6 max-[800px]:right-14"
@@ -309,28 +332,38 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
         title={ticketActionsOpen(floor) ? undefined : 'Reconnect to Dudes before creating a ticket.'}
         aria-haspopup="dialog" onClick={(event) => onNewTicket(event.currentTarget)}>New ticket</Button>
     </section> : <TicketOffHint floor={floor} />}
+    <BoardToolbar view={view} choices={choices} total={rows.length} shown={shown.length} onChange={setBrowse} onClear={clear} />
     <div className="ticket-card-regions flex flex-col gap-6" onKeyDown={moveCardFocus}>
-    {needsYou.length === 0 ? null : <section className="ticket-lane rounded-lg border border-l-4 border-line border-l-warn bg-warn-soft/40 p-4"
+    {needsYou.length === 0 && hiddenNeeds === 0 ? null : <section className="ticket-lane rounded-lg border border-l-4 border-line border-l-warn bg-warn-soft/40 p-4"
       data-column={COLUMN_TONE.needs} data-lane="needs-you" aria-label="Needs you">
-      <h3 className="m-0 mb-3 text-small font-semibold text-ink">Needs you ({needsYou.length})</h3>
-      <ul className="m-0 grid list-none grid-cols-2 gap-3 p-0 max-[800px]:grid-cols-1">{needsYou.map(draw)}</ul>
+      <h3 className="m-0 mb-3 text-small font-semibold text-ink">Needs you{needsYou.length === 0 ? '' : ` (${needsYou.length})`}</h3>
+      {hiddenNeeds === 0 ? null : <p className="ticket-hidden-needs m-0 mb-3 flex flex-wrap items-center gap-x-2 text-base text-ink" role="status">
+        {hiddenNeeds === 1 ? '1 ticket that needs you is' : `${hiddenNeeds} tickets that need you are`} hidden by the search or filters.{' '}
+        <Button variant="secondary" size="sm" className="ticket-show-hidden" onClick={clear}>Show {hiddenNeeds === 1 ? 'it' : 'them'}</Button></p>}
+      {needsYou.length === 0 ? null : list
+        ? <ul className="m-0 flex list-none flex-col overflow-hidden rounded-lg border border-b-0 border-line p-0">{arranged!.needs.map(drawRow)}</ul>
+        : <ul className="m-0 grid list-none grid-cols-2 gap-3 p-0 max-[800px]:grid-cols-1">{needsYou.map(draw)}</ul>}
     </section>}
-    <div className="grid grid-cols-[repeat(4,minmax(14rem,1fr))] items-stretch gap-4 overflow-x-auto pb-2 max-[1199px]:gap-3 max-[800px]:grid-cols-[minmax(0,1fr)]">
+    {arranged !== null ? <>
+      <TicketList rows={arranged.rest} group={view.group} drawRow={drawRow} />
+      {arranged.needs.length === 0 && arranged.rest.length === 0 ? <p className="ticket-empty m-0 rounded-md border border-dashed border-line-strong px-3 py-4 text-small text-muted">
+        {filtered ? 'No tickets match the search or filters.' : floor.ticket ? 'No tickets yet. Choose New ticket to make one.' : 'No cards on the Board yet.'}</p> : null}
+      {showMore}
+    </> : <div className="grid grid-cols-[repeat(4,minmax(14rem,1fr))] items-stretch gap-4 overflow-x-auto pb-2 max-[1199px]:gap-3 max-[800px]:grid-cols-[minmax(0,1fr)]">
       {TICKET_COLUMNS.map((column) => {
-        const cards = columns[column.key];
+        const inColumn = columns[column.key];
         return <section className="flex min-w-0 flex-col gap-3 rounded-lg bg-surface-2 p-3" key={column.key} data-column={COLUMN_TONE[column.key]}
           data-ticket-column={column.key} aria-label={column.title}>
           <h3 className="m-0 flex items-center gap-2 text-small font-semibold text-ink">
             <span aria-hidden="true" className={cn('size-2 shrink-0 rounded-pill', COLUMN_DOT[column.key])} />
-            {column.title} ({cards.length})</h3>
-          <ul className="m-0 flex list-none flex-col gap-3 p-0">{cards.map(draw)}</ul>
-          {cards.length === 0 ? <p className="ticket-empty m-0 rounded-md border border-dashed border-line-strong px-3 py-4 text-small text-muted">{(floor.ticket ? EMPTY_COLUMN : EMPTY_COLUMN_CARDS)[column.key]}</p> : null}
-          {column.key === 'done' && doneHidden > 0
-            ? <p className={cn(HINT, 'flex flex-wrap items-center gap-x-2')}>{doneHidden} older card{doneHidden === 1 ? '' : 's'} not shown.{' '}
-              <Button variant="secondary" size="sm" className="ticket-more" onClick={() => setDoneShown(doneShown + DONE_SHOWN)}>Show more</Button></p> : null}
+            {column.title} ({inColumn.length})</h3>
+          <ul className="m-0 flex list-none flex-col gap-3 p-0">{inColumn.map(draw)}</ul>
+          {inColumn.length === 0 ? <p className="ticket-empty m-0 rounded-md border border-dashed border-line-strong px-3 py-4 text-small text-muted">{filtered
+            ? 'No tickets match the search or filters.' : (floor.ticket ? EMPTY_COLUMN : EMPTY_COLUMN_CARDS)[column.key]}</p> : null}
+          {column.key === 'done' ? showMore : null}
         </section>;
       })}
-    </div>
+    </div>}
     </div>
     {other.length === 0 ? null : <section className="ticket-plain flex flex-col gap-3" aria-label="Other board cards">
       <h3 className="m-0 text-small font-semibold text-ink">Other board cards ({other.length})</h3>
@@ -343,6 +376,14 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
 function moveCardFocus(event: KeyboardEvent<HTMLDivElement>): void {
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
   if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  const row = (event.target as HTMLElement).closest<HTMLButtonElement>('.ticket-row');
+  if (row !== null) {
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || row.disabled) return;
+    const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('.ticket-row:not(:disabled)')];
+    event.preventDefault();
+    rows[rows.indexOf(row) + (event.key === 'ArrowDown' ? 1 : -1)]?.focus();
+    return;
+  }
   const card = (event.target as HTMLElement).closest<HTMLButtonElement>('.ticket-card');
   if (card === null || card.disabled) return;
   const list = card.closest('ul');
