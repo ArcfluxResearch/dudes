@@ -9,7 +9,7 @@ import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { goalIdOf } from '../goal/goal.ts';
 import { decodeWorkspace } from '../workspace.ts';
-import { NO_AGENT_YET, noAgentInProjectSentence, placeInLine, reasonSentence, waitSentence } from './words.ts';
+import { NO_AGENT_YET, noAgentInProjectSentence, otherStateName, placeInLine, reasonSentence, stateName, waitSentence } from './words.ts';
 import type { Wait } from './words.ts';
 
 export type TicketColumn = 'todo' | 'working' | 'ready' | 'done';
@@ -177,6 +177,12 @@ export function waitOf(floor: FloorState, card: CardRow): { readonly wait: Wait;
   const holder = project === null ? undefined : tickets(floor.cards).find((other) => other.id !== card.id
     && projectOf(floor, other) === project && (other.status === 'doing' || other.status === 'review'));
   return holder === undefined ? null : say('ticket', holder.title);
+}
+
+/** The word on a card's badge. */
+export function stateWord(card: CardRow): string {
+  if (card.ticket?.stopping) return 'Stopping…';
+  return card.ticket === null && plainColumnOf(card) === null ? otherStateName(card.status) : stateName(card.status);
 }
 
 export interface CardWords {

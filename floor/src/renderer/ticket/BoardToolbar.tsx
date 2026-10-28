@@ -12,7 +12,7 @@ const LAYOUTS: readonly { readonly key: BoardLayout; readonly label: string; rea
   { key: 'list', label: 'List', icon: <List {...ICON} /> },
 ]);
 
-const FILTER = 'w-40 max-[800px]:w-full';
+const FILTER = 'w-40 max-[800px]:w-full max-[800px]:min-w-0';
 
 /** Layout, search, filters and grouping for the Board, and how many tickets they leave. */
 export function BoardToolbar({ view, choices, total, shown, onChange, onClear }: {
@@ -29,13 +29,13 @@ export function BoardToolbar({ view, choices, total, shown, onChange, onClear }:
     event.preventDefault();
     onChange({ search: '' });
   }
-  return <div className="board-toolbar flex flex-wrap items-center gap-2 max-[800px]:flex-col max-[800px]:items-stretch" role="group" aria-label="Show tickets">
-    <div role="group" aria-label="Layout" className="inline-flex gap-0.5 rounded-md bg-surface-2 p-0.5 max-[800px]:self-start">
+  return <div className="board-toolbar flex flex-wrap items-center gap-2 max-[800px]:grid max-[800px]:grid-cols-2" role="group" aria-label="Show tickets">
+    <div role="group" aria-label="Layout" className="inline-flex gap-0.5 rounded-md bg-surface-2 p-0.5 max-[800px]:col-span-2 max-[800px]:justify-self-start">
       {LAYOUTS.map(({ key, label, icon }) => <Button key={key} variant="ghost" size="sm" icon={icon}
         className="board-layout aria-pressed:bg-surface aria-pressed:text-ink aria-pressed:shadow-card" data-layout={key}
         aria-pressed={view.layout === key} onClick={() => onChange({ layout: key })}>{label}</Button>)}
     </div>
-    <div className="relative max-[800px]:w-full">
+    <div className="relative max-[800px]:col-span-2">
       <Search {...ICON} aria-hidden="true" className="pointer-events-none absolute top-2 left-2.5 text-subtle" />
       <Input type="search" name="board-search" className="board-search w-56 pl-8 max-[800px]:w-full" aria-label="Search tickets by title, agent or project"
         placeholder="Search tickets" maxLength={128} autoComplete="off" value={view.search}
@@ -53,7 +53,7 @@ export function BoardToolbar({ view, choices, total, shown, onChange, onClear }:
     {view.layout === 'list' ? <Select aria-label="Group by" name="board-group" className={FILTER} value={view.group}
       onValueChange={(group) => onChange({ group: group as GroupBy })}
       options={(Object.keys(GROUP_NAMES) as GroupBy[]).map((key) => ({ value: key, label: key === 'none' ? GROUP_NAMES[key] : `Group by ${GROUP_NAMES[key].toLowerCase()}` }))} /> : null}
-    <p className="board-count m-0 flex items-center gap-2 text-small text-muted" role="status">
+    <p className="board-count m-0 flex items-center gap-2 text-small text-muted max-[800px]:col-span-2" role="status">
       {filtered ? `${shown} of ${total} match` : `${total} ${total === 1 ? 'ticket' : 'tickets'}`}
       {filtered ? <Button variant="ghost" size="sm" icon={<X {...ICON} />} className="board-clear" onClick={onClear}>Clear filters</Button> : null}
     </p>

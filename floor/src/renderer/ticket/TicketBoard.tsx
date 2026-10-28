@@ -10,26 +10,26 @@ import { accentOf } from '../appearance.ts';
 import { initialOf } from '../Portrait.tsx';
 import { Plus } from 'lucide-react';
 import { Badge, Button, Field, ICON, Input, RING, Select, Textarea, cn } from '../../ui/index.ts';
-import type { BadgeState } from '../../ui/index.ts';
-import { FORM_ACTIONS, HINT } from './look.ts';
+import { FORM_ACTIONS, HINT, STATE_BADGE } from './look.ts';
 
 import { useRequestedCard } from '../BoardPanel.tsx';
 import type { FloorState } from '../floor/store.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
 import { decodeWorkspace } from '../workspace.ts';
-import { agentChoiceSentence, agentName, agentRow, boardColumns, cardWords, DONE_SHOWN, noProjects, otherCards, plainColumnOf, TICKET_COLUMNS } from './model.ts';
+import { agentChoiceSentence, agentName, agentRow, boardColumns, cardWords, DONE_SHOWN, noProjects, otherCards, plainColumnOf, stateWord, TICKET_COLUMNS } from './model.ts';
 import type { TicketColumn } from './model.ts';
 import type { Notice } from './ticket.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
 import { titleOf } from '../setup/nextStep.ts';
 import type { FirstTaskAgent } from '../setup/nextStep.ts';
-import { agentWithoutProjectSentence, engineStopped, otherStateName, stateName } from './words.ts';
+import { agentWithoutProjectSentence, engineStopped } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 import { BoardToolbar } from './BoardToolbar.tsx';
 import { arrange, choicesOf, filterRows, isFiltered, liveView, rowsOf, withoutFilters } from './browse.ts';
 import type { BrowseRow } from './browse.ts';
 import { getBrowse, setBrowse, subscribeToBrowse } from './browseState.ts';
+import { getPlaced, placeTickets, subscribeToPlaced } from './placed.ts';
 import { TicketList, TicketRow } from './TicketList.tsx';
 import { clearNewTicketDraft, EMPTY_TICKET_DRAFT, readNewTicketDraft, writeNewTicketDraft } from '../view.ts';
 import type { NewTicketDraft } from '../view.ts';
@@ -42,10 +42,6 @@ const COLUMN_TONE: Readonly<Record<TicketColumn | 'needs', string>> = Object.fre
 
 const COLUMN_DOT: Readonly<Record<TicketColumn, string>> = Object.freeze({
   todo: 'bg-subtle', working: 'bg-info', ready: 'bg-accent', done: 'bg-ok',
-});
-
-const STATE_BADGE: Readonly<Record<CardRow['status'], BadgeState>> = Object.freeze({
-  todo: 'waiting', claimed: 'waiting', doing: 'working', review: 'ready', blocked: 'needs-you', done: 'done',
 });
 
 /** With tickets off, only the daemon's recorded states can fill a column, and nothing here can wait on the operator. */
@@ -273,8 +269,7 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
       title={selectable ? undefined : 'Reconnect to Dudes before opening this ticket.'}
       onClick={(event) => onSelect(card.id, event.currentTarget)}>
       <span className="ticket-card-meta flex items-center justify-between gap-2">
-        <Badge state={STATE_BADGE[card.status]} className="ticket-card-state">{card.ticket?.stopping ? 'Stopping…'
-          : card.ticket === null && plainColumnOf(card) === null ? otherStateName(card.status) : stateName(card.status)}</Badge>
+        <Badge state={STATE_BADGE[card.status]} className="ticket-card-state">{stateWord(card)}</Badge>
       </span>
       <strong className="text-body leading-normal font-semibold">{card.title}</strong>
       {failure === null ? null : <span className="ticket-note text-small whitespace-pre-wrap text-muted" title={failure}>An earlier engine attempt stopped. Open the ticket for details.</span>}
@@ -304,9 +299,16 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
   useRequestedCard(floor, selectable, onSelect);
   const [doneShown, setDoneShown] = useState(DONE_SHOWN);
   const remembered = useSyncExternalStore(subscribeToBrowse, getBrowse, getBrowse);
-  const rows = useMemo(() => rowsOf(floor), [floor.cards, floor.agents]);
-  const choices = useMemo(() => choicesOf(rows, projectsOf(floor), floor.agents.map((row) => ({ id: row.id, name: agentName(floor, row.id) }))),
-    [rows, floor.agents, floor.checks, floor.settings]);
+  const placed = useSyncExternalStore(subscribeToPlaced, getPlaced, getPlaced);
+  const projects = useMemo(() => projectsOf(floor), [floor.checks, floor.settings, floor.agents]);
+  const rows = useMemo(() => rowsOf(floor, { projects, placed }), [floor.cards, floor.agents, projects, placed]);
+  const choices = useMemo(() => choicesOf(rows, projects, floor.agents.map((row) => ({ id: row.id, name: agentName(floor, row.id) }))),
+    [rows, projects, floor.agents]);
+  const unplaced = floor.cards.filter((card) => card.ticket !== null && card.claimed_by === null && !placed.has(card.id)).map((card) => card.id);
+  const open = ticketActionsOpen(floor);
+  useEffect(() => {
+    if (open && unplaced.length > 0) void placeTickets(unplaced);
+  }, [open, unplaced.join(',')]);
   const view = liveView(remembered, choices);
   const filtered = isFiltered(view);
   const shown = filterRows(rows, view);

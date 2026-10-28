@@ -2,8 +2,8 @@
 //
 // Reading the board as a list: which tickets match the search and filters, the order the queue runs
 // them in, and how a list is grouped. All of it comes from the snapshot's cards and agents. A card
-// does not carry its project, so a ticket's project is its agent's, and a ticket not yet given to an
-// agent has none.
+// does not carry its project, so a ticket's project is its agent's, and the project of a ticket no
+// agent holds is the one read from the ticket (see `placed.ts`).
 
 import type { CardRow } from '../board.ts';
 import type { FloorState } from '../floor/store.ts';
@@ -93,14 +93,24 @@ function statusOf(card: CardRow): StatusKey | null {
   return card.status === 'blocked' ? 'needs' : columnOf(card);
 }
 
-export function rowsOf(floor: FloorState): readonly BrowseRow[] {
+export interface Places {
+  /** Every project the page knows, to name the ones a ticket was read to be in. */
+  readonly projects: readonly { readonly id: string; readonly label: string }[];
+  /** The project of each ticket no agent held, once read: ticket id to project id. */
+  readonly placed: ReadonlyMap<string, string>;
+}
+
+export function rowsOf(floor: FloorState, places: Places): readonly BrowseRow[] {
+  const labels = new Map(places.projects.map((project) => [project.id, project.label]));
   return floor.cards.map((card) => {
     const workspace = decodeWorkspace(agentRow(floor, card.claimed_by)?.workspace);
+    const placed = places.placed.get(card.id) ?? null;
+    const project = workspace?.id ?? placed;
+    const label = workspace?.label ?? (placed === null ? null : labels.get(placed) ?? placed);
     const name = card.claimed_by === null ? null : agentName(floor, card.claimed_by);
     return Object.freeze({
-      card, status: statusOf(card), project: workspace?.id ?? null, projectLabel: workspace?.label ?? null,
-      agent: card.claimed_by, agentName: name,
-      text: [card.title, name ?? '', workspace?.label ?? ''].join('\n').toLowerCase(),
+      card, status: statusOf(card), project, projectLabel: label, agent: card.claimed_by, agentName: name,
+      text: [card.title, name ?? '', label ?? ''].join('\n').toLowerCase(),
     });
   });
 }
@@ -129,7 +139,7 @@ export function choicesOf(
   const agentChoices = agents.map((agent) => ({ value: agent.id, label: agent.name })).sort(byLabel);
   return Object.freeze({
     projects: Object.freeze(rows.some((row) => row.project === null)
-      ? [...projectChoices, { value: NONE, label: 'No project yet' }] : projectChoices),
+      ? [...projectChoices, { value: NONE, label: 'No project' }] : projectChoices),
     agents: Object.freeze(rows.some((row) => row.agent === null)
       ? [...agentChoices, { value: NONE, label: 'Unassigned' }] : agentChoices),
   });
@@ -191,7 +201,7 @@ export function groupRows(rows: readonly BrowseRow[], by: GroupBy): readonly Row
   if (by === 'none') return rows.length === 0 ? [] : [{ key: 'all', label: null, rows }];
   const groups = new Map<string, { label: string; rows: BrowseRow[] }>();
   for (const row of rows) {
-    const [key, label] = by === 'project' ? [row.project ?? NONE, row.projectLabel ?? 'No project yet']
+    const [key, label] = by === 'project' ? [row.project ?? NONE, row.projectLabel ?? 'No project']
       : by === 'agent' ? [row.agent ?? NONE, row.agentName ?? 'Unassigned']
         : [row.status ?? OTHER, row.status === null ? 'Other cards' : STATUS_NAMES[row.status]];
     const group = groups.get(key) ?? { label, rows: [] };

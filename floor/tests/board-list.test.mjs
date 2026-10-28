@@ -12,7 +12,7 @@ import { renderToStaticMarkup as renderRaw } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { plainMarkup } from './helpers/markup.mjs';
-import { ADA, GRACE, agent, plainCard, subscribe, ticketCard } from './helpers/tickets.mjs';
+import { ADA, GRACE, agent, cardId, daemon, json, plainCard, subscribe, ticketCard } from './helpers/tickets.mjs';
 
 const renderToStaticMarkup = (...args) => plainMarkup(renderRaw(...args));
 const root = resolve(import.meta.dirname, '..');
@@ -21,6 +21,7 @@ let server;
 let store;
 let browse;
 let state;
+let placed;
 let navigation;
 let TicketBoard;
 let ticketState;
@@ -31,6 +32,7 @@ before(async () => {
   store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   browse = await server.ssrLoadModule('/src/renderer/ticket/browse.ts');
   state = await server.ssrLoadModule('/src/renderer/ticket/browseState.ts');
+  placed = await server.ssrLoadModule('/src/renderer/ticket/placed.ts');
   navigation = await server.ssrLoadModule('/src/navigation.ts');
   ({ TicketBoard } = await server.ssrLoadModule('/src/renderer/ticket/TicketBoard.tsx'));
   ticketState = await server.ssrLoadModule('/src/renderer/ticket/ticket.ts');
@@ -40,6 +42,7 @@ beforeEach(() => {
   store.resetFloorStore();
   ticketState.resetTicket();
   state.resetBrowse();
+  placed.resetPlaced();
 });
 
 /** Ada works in `service`, Grace in `website`. Ticket 1 and the plain card 7 have no agent. */
@@ -59,6 +62,7 @@ function seed() {
   return store.getFloorState();
 }
 
+const NO_PLACES = { projects: [], placed: new Map() };
 const titlesOf = (rows) => rows.map((row) => row.card.title);
 const view = (patch) => ({ ...browse.DEFAULT_VIEW, ...patch });
 
@@ -78,7 +82,7 @@ test('the remembered view parses field by field and never restores a search', ()
 });
 
 test('filters combine, a search needs every word, and "none" matches tickets with no project or agent', () => {
-  const rows = browse.rowsOf(seed());
+  const rows = browse.rowsOf(seed(), NO_PLACES);
   assert.deepEqual(titlesOf(browse.filterRows(rows, browse.DEFAULT_VIEW)), [
     'Write docs', 'Fix login bug', 'Refactor billing', 'Add landing page', 'Migrate database', 'Ship footer', 'Plain seven']);
   const by = (patch) => titlesOf(browse.filterRows(rows, view(patch)));
@@ -99,7 +103,7 @@ test('filters combine, a search needs every word, and "none" matches tickets wit
 });
 
 test('the queue order puts Needs you apart, then Ready for you, Working, To do in the daemon\'s order, then Done', () => {
-  const rows = browse.rowsOf(seed());
+  const rows = browse.rowsOf(seed(), NO_PLACES);
   const { needs, rest, doneHidden } = browse.arrange(rows);
   assert.deepEqual(titlesOf(needs), ['Migrate database']);
   assert.deepEqual(titlesOf(rest), ['Add landing page', 'Refactor billing', 'Write docs', 'Plain seven', 'Fix login bug', 'Ship footer']);
@@ -110,19 +114,19 @@ test('the queue order puts Needs you apart, then Ready for you, Working, To do i
 
 test('a card that no column fits comes last and groups as Other cards', () => {
   subscribe(store, { cards: [plainCard(1, 'todo'), plainCard(2, 'review')] });
-  const rows = browse.rowsOf(store.getFloorState());
+  const rows = browse.rowsOf(store.getFloorState(), NO_PLACES);
   assert.deepEqual(titlesOf(browse.arrange(rows).rest), ['Plain 1', 'Plain 2']);
   assert.deepEqual(browse.groupRows(browse.arrange(rows).rest, 'status').map((g) => [g.label, titlesOf(g.rows)]),
     [['To do', ['Plain 1']], ['Other cards', ['Plain 2']]]);
 });
 
 test('groups sort by name with "none" last, keep the queue order inside, and status groups follow the queue', () => {
-  const rest = browse.arrange(browse.rowsOf(seed())).rest;
+  const rest = browse.arrange(browse.rowsOf(seed(), NO_PLACES)).rest;
   const show = (by) => browse.groupRows(rest, by).map((g) => [g.label, titlesOf(g.rows)]);
   assert.deepEqual(show('project'), [
     ['Service', ['Refactor billing', 'Fix login bug']],
     ['Website', ['Add landing page', 'Ship footer']],
-    ['No project yet', ['Write docs', 'Plain seven']],
+    ['No project', ['Write docs', 'Plain seven']],
   ]);
   assert.deepEqual(show('agent'), [
     ['Ada', ['Refactor billing', 'Fix login bug']],
@@ -140,15 +144,15 @@ test('groups sort by name with "none" last, keep the queue order inside, and sta
 
 test('the choices list every project and agent, add "none" only when a ticket has none, and drop what no longer exists', () => {
   const floor = seed();
-  const rows = browse.rowsOf(floor);
+  const rows = browse.rowsOf(floor, NO_PLACES);
   const choices = browse.choicesOf(rows, [{ id: 'service', label: 'Service' }, { id: 'docs', label: 'Docs' }],
     [{ id: GRACE, name: 'Grace' }, { id: ADA, name: 'Ada' }]);
   assert.deepEqual(choices.projects, [
     { value: 'docs', label: 'Docs' }, { value: 'service', label: 'Service' }, { value: 'website', label: 'Website' },
-    { value: '~none', label: 'No project yet' }]);
+    { value: '~none', label: 'No project' }]);
   assert.deepEqual(choices.agents, [
     { value: ADA, label: 'Ada' }, { value: GRACE, label: 'Grace' }, { value: '~none', label: 'Unassigned' }]);
-  const given = browse.rowsOf({ ...floor, cards: floor.cards.filter((card) => card.claimed_by !== null) });
+  const given = browse.rowsOf({ ...floor, cards: floor.cards.filter((card) => card.claimed_by !== null) }, NO_PLACES);
   assert.deepEqual(browse.choicesOf(given, [], []).projects.map((c) => c.value), ['service', 'website']);
   assert.deepEqual(browse.liveView(view({ project: 'gone', agent: GRACE }), choices), view({ agent: GRACE }));
   const same = view({ project: 'docs' });
@@ -230,9 +234,13 @@ test('the Board draws columns by default and the List draws one row per ticket w
   assert.match(row, /Website/);
   assert.match(row, /Grace/);
   assert.match(row, /dateTime="2024-11-02T20:26:28\.820Z"/);
+  const queued = list.match(/<button[^>]*data-card-id="01JBQ8XK2M3N4P5Q6R7S8T0002"[\s\S]*?<\/button>/)[0];
+  assert.match(queued, /Fix login bug.*next in line/, 'the place in line stays on the row');
+  assert.doesNotMatch(queued, /ticket-note/, 'a row keeps to one line unless it needs you');
+  assert.match(list.match(/<button[^>]*data-card-id="01JBQ8XK2M3N4P5Q6R7S8T0005"[\s\S]*?<\/button>/)[0], /ticket-note/, 'a Needs you row says why');
   assert.match(list, /aria-controls="selected-card-detail"/);
   assert.match(list, /Unassigned/);
-  assert.match(list, /No project yet/);
+  assert.match(list, /No project/);
 });
 
 test('grouping the List by project draws a headed list per project, and the Board keeps its columns', () => {
@@ -240,7 +248,7 @@ test('grouping the List by project draws a headed list per project, and the Boar
   state.setBrowse({ layout: 'list', group: 'project' });
   const html = board();
   const headings = [...html.matchAll(/<h3[^>]*>([^<]*(?:<!-- -->)?[^<]*)<\/h3>/g)].map((m) => m[1].replace(/<!-- -->/g, ''));
-  assert.deepEqual(headings.filter((text) => /\(\d+\)/.test(text)), ['Needs you (1)', 'Service (2)', 'Website (2)', 'No project yet (2)']);
+  assert.deepEqual(headings.filter((text) => /\(\d+\)/.test(text)), ['Needs you (1)', 'Service (2)', 'Website (2)', 'No project (2)']);
   state.setBrowse({ layout: 'board' });
   assert.match(board(), /data-ticket-column="working"/, 'grouping applies to the List only');
 });
@@ -287,4 +295,62 @@ test('an empty list tells the operator how to start', () => {
   subscribe(store, { agents: [agent()], cards: [] });
   state.setBrowse({ layout: 'list' });
   assert.match(board(), /No tickets yet\. Choose New ticket to make one\./);
+});
+
+/** A read reply in the shape the daemon sends it, with `project` for the card asked about. */
+const readReply = (projects) => (url, body) => url === '/floor/ticket/read' && projects[body.card] !== undefined
+  ? json(200, { state: 'ok', card: { id: body.card, seq: 1 }, ticket: { project: projects[body.card] } }) : json(503, {});
+
+test('the project of a ticket no agent holds is read once, one read at a time, and a failed read waits to be retried', async () => {
+  const [one, two, three] = [cardId(1), cardId(2), cardId(3)];
+  let flying = 0;
+  let most = 0;
+  const projects = { [one]: 'service', [two]: 'website' };
+  const answer = readReply(projects);
+  const { deps, seen } = daemon(async (url, body) => {
+    flying += 1;
+    most = Math.max(most, flying);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    flying -= 1;
+    return answer(url, body);
+  });
+  let clock = 1_000;
+  await placed.placeTickets([one, two, three], deps, () => clock);
+  assert.deepEqual([...placed.getPlaced()], [[one, 'service'], [two, 'website']]);
+  assert.equal(most, 1, 'reads do not overlap');
+  assert.deepEqual(seen.map((request) => request.body.card), [one, two, three]);
+
+  await placed.placeTickets([one, two, three], deps, () => clock);
+  assert.equal(seen.length, 3, 'a placed ticket is not read again, and a failed one waits');
+  clock += placed.RETRY_MS - 1;
+  await placed.placeTickets([three], deps, () => clock);
+  assert.equal(seen.length, 3);
+  projects[three] = 'service';
+  clock += 1;
+  await placed.placeTickets([three], deps, () => clock);
+  assert.equal(seen.length, 4);
+  assert.equal(placed.getPlaced().get(three), 'service');
+});
+
+test('a read reply that names another ticket or a project that cannot be one places nothing', async () => {
+  const [one, two] = [cardId(1), cardId(2)];
+  const { deps } = daemon(async (url, body) => body.card === one
+    ? json(200, { state: 'ok', card: { id: two, seq: 1 }, ticket: { project: 'service' } })
+    : json(200, { state: 'ok', card: { id: two, seq: 1 }, ticket: { project: 'a b/c' } }));
+  await placed.placeTickets([one, two], deps);
+  assert.equal(placed.getPlaced().size, 0);
+});
+
+test('a ticket no agent holds is filtered and grouped by the project it was read to be in', async () => {
+  seed();
+  const unassigned = cardId(1);
+  const { deps } = daemon(readReply({ [unassigned]: 'service' }));
+  await placed.placeTickets([unassigned], deps);
+  const floor = store.getFloorState();
+  const places = { projects: [{ id: 'service', label: 'Service' }], placed: placed.getPlaced() };
+  const rows = browse.rowsOf(floor, places);
+  assert.deepEqual(titlesOf(browse.filterRows(rows, view({ project: 'service' }))), ['Write docs', 'Fix login bug', 'Refactor billing', 'Migrate database']);
+  assert.deepEqual(titlesOf(browse.filterRows(rows, view({ project: browse.NONE }))), ['Plain seven']);
+  assert.deepEqual(titlesOf(browse.filterRows(rows, view({ search: 'service' }))), ['Write docs', 'Fix login bug', 'Refactor billing', 'Migrate database']);
+  assert.deepEqual(browse.groupRows(rows, 'project').map((g) => [g.label, g.rows.length]), [['Service', 4], ['Website', 2], ['No project', 1]]);
 });

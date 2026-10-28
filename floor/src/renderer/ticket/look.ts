@@ -1,3 +1,6 @@
+import type { BadgeState } from '../../ui/index.ts';
+import type { CardRow } from '../board.ts';
+
 
 /** A line of guidance under a heading or beside a control. The hook class is what the tests and the page find it by. */
 export const HINT = 'ticket-hint m-0 text-small text-muted';
@@ -22,3 +25,8 @@ export const PATH = 'git-path data font-mono text-small wrap-anywhere';
 export const CARD_DETAIL = 'card-detail flex flex-col gap-4 p-6 font-sans text-body text-ink wrap-anywhere max-[800px]:px-4 max-[800px]:pt-4';
 export const CARD_HEADING = 'm-0 text-page font-semibold focus:outline-none';
 export const CARD_FACTS = 'm-0 grid gap-3 [&_dd]:m-0 [&_dd]:mt-0.5 [&_dt]:text-caption [&_dt]:font-semibold [&_dt]:tracking-label [&_dt]:text-muted [&_dt]:uppercase';
+
+/** The badge each state of a card wears. */
+export const STATE_BADGE: Readonly<Record<CardRow['status'], BadgeState>> = Object.freeze({
+  todo: 'waiting', claimed: 'waiting', doing: 'working', review: 'ready', blocked: 'needs-you', done: 'done',
+});
