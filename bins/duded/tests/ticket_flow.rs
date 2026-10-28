@@ -33,11 +33,11 @@ use dudes_providers::launch::LaunchSpec;
 use dudes_providers::stream::ScopedUsage;
 use dudes_rpc::Client;
 use dudes_rpc::auth::PeerProvenance;
-use dudes_supervisor::Input;
 use dudes_supervisor::host::{
     AdoptionKey, HostBoot, KillOutcome, Liveness, NativeBoundaryAcknowledgement,
     NativeBoundaryReceipt, OwnedTargets, ProcessHost, SpawnResult,
 };
+use dudes_supervisor::{Clock as _, Input};
 use dudes_types::{
     AgentId, AgentStatus, CardId, CardStatus, GoalId, IsolationMode, Seq, Timestamp, TurnId, Usage,
     Usd,
@@ -252,6 +252,7 @@ struct Flow {
     repo: PathBuf,
     column: Arc<ScriptedColumn>,
     redactor: dudes_supervisor::Redactor,
+    floor: Option<std::net::SocketAddr>,
 }
 
 fn credential(settings: &duded::Settings) -> OperatorCredential {
@@ -308,6 +309,7 @@ impl Flow {
         let tokens = seams.rng.tokens();
         let daemon = duded::boot(&settings, seams).unwrap();
         let append_failure = daemon.append_failure();
+        let floor = daemon.floor_addr();
         if let Some(nth) = options.refuse_nth_append {
             append_failure.fail_nth(nth);
         }
@@ -325,6 +327,7 @@ impl Flow {
             repo,
             column,
             redactor,
+            floor,
         }
     }
 
@@ -3441,6 +3444,376 @@ fn an_assignment_can_set_the_priority_and_sent_back_work_keeps_it() {
                 round: 2
             },
         ]
+    );
+    flow.stop();
+}
+
+const FLOOR_FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/floor-release-v9"
+);
+
+fn floor_answers(settings: &mut duded::Settings) {
+    settings.floor = Some(duded::settings::FloorSettings {
+        assets_dir: PathBuf::from(FLOOR_FIXTURE),
+        port: Some(0),
+    });
+    settings.floor_answer_enabled = true;
+}
+
+/// A canonical request identity: `k` then 42 `A`s, the 43 characters of 32 bytes.
+fn request_id(k: char) -> String {
+    format!("{k}{}", "A".repeat(42))
+}
+
+/// Everything a launched child is handed that could carry a task: its arguments and its input.
+fn handed_to(spec: &LaunchSpec) -> String {
+    let mut text = spec
+        .argv
+        .iter()
+        .map(|part| part.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let dudes_providers::launch::LaunchInput::WriteThenClose(bytes) = &spec.stdin {
+        text.push_str(&String::from_utf8_lossy(bytes));
+    }
+    text
+}
+
+impl Flow {
+    /// A browser signed in to the Floor.
+    fn page(&self) -> duded::floor_browser::Page {
+        let at = TestClock::new().now().unix_millis();
+        common::floor_session_on(&self.settings, self.floor.expect("a Floor"), move || at)
+    }
+
+    /// `agent`, in the turn it is running, asks `text` through its own token. Answers the
+    /// question's position.
+    fn ask(&mut self, fixture: &Fixture, agent: AgentId, text: &str) -> dudes_types::Lsn {
+        let hash = fixture.await_record("agent token", |record| match record {
+            Record::HookTokenMinted {
+                agent: owner,
+                token_hash,
+            } if *owner == agent => Some(token_hash.clone()),
+            _ => None,
+        });
+        let token = self.tokens.token_of(&hash);
+        fixture.await_record("the asking turn's TurnSpawned", |record| {
+            matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent)
+                .then_some(())
+        });
+        self.column.set(PeerProvenance::Agent(agent));
+        let mut as_agent = Client::connect(self.settings.socket()).unwrap();
+        let published = as_agent
+            .call(
+                dudes_proto::rpc::Method::SystemPing,
+                Some(json!({"token": token.expose()})),
+            )
+            .unwrap();
+        assert!(published.error.is_none(), "{:?}", published.error);
+        let asked = as_agent
+            .call(
+                dudes_proto::rpc::Method::AgentAsk,
+                Some(json!({"token": token.expose(), "text": text})),
+            )
+            .unwrap();
+        assert!(asked.error.is_none(), "{:?}", asked.error);
+        self.column.set(PeerProvenance::NoRecordedAgent);
+        fixture
+            .entries()
+            .into_iter()
+            .rev()
+            .find_map(|(lsn, entry)| match entry.record {
+                Record::HumanQuestion { agent: owner, .. } if owner == agent => Some(lsn),
+                _ => None,
+            })
+            .expect("the question is journaled")
+    }
+
+    /// One Floor answer to `agent`'s question at `question`.
+    fn answer(
+        page: &duded::floor_browser::Page,
+        key: char,
+        agent: AgentId,
+        question: dudes_types::Lsn,
+        text: &str,
+    ) -> (String, Value) {
+        common::floor_post(
+            page,
+            "/floor/answer",
+            &json!({
+                "request_id": request_id(key),
+                "agent": agent,
+                "question_lsn": question.0.to_string(),
+                "text": text,
+            }),
+        )
+    }
+
+    fn history(&mut self, card: CardId) -> Vec<TicketHistoryKind> {
+        self.read(card)
+            .history
+            .events
+            .into_iter()
+            .map(|event| event.kind)
+            .collect()
+    }
+}
+
+fn human_answers(fixture: &Fixture, agent: AgentId) -> Vec<dudes_types::Lsn> {
+    fixture
+        .entries()
+        .into_iter()
+        .filter_map(|(lsn, entry)| match entry.record {
+            Record::HumanAnswer { agent: owner, .. } if owner == agent => Some(lsn),
+            _ => None,
+        })
+        .collect()
+}
+
+fn issued_answers(fixture: &Fixture, turn: TurnId) -> Vec<dudes_types::Lsn> {
+    fixture
+        .records()
+        .into_iter()
+        .find_map(|record| match record {
+            Record::TurnIssued {
+                turn: issued,
+                answers,
+                ..
+            } if issued == turn => Some(answers),
+            _ => None,
+        })
+        .expect("the turn is issued")
+}
+
+fn no_typed_input(fixture: &Fixture) {
+    assert!(!fixture.records().iter().any(|record| matches!(
+        record.kind(),
+        RecordKind::PtyWriteRequested
+            | RecordKind::PtyWriteCompleted
+            | RecordKind::Steer
+            | RecordKind::SteerConsumed
+    )));
+}
+
+/// The ticket shows the question its agent asked, one Floor answer carries the work on, and the
+/// history tells both. The card never leaves Working. The answer reaches the next turn in its
+/// task and in the journal's `answers`, and nothing is typed into a terminal.
+#[test]
+fn a_floor_answer_on_a_working_ticket_carries_the_work_on() {
+    let fixture = Fixture::new();
+    let (mut settings, repo) = enrolled(&fixture);
+    floor_answers(&mut settings);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let cody = flow.hire("Cody");
+    let card = flow.create("One");
+    flow.give_ok(card, cody, None);
+    let (first, ..) = Flow::await_turn_number(&fixture, 1);
+    let question = flow.ask(&fixture, cody, "which branch?");
+
+    assert_eq!(flow.card(card).status, CardStatus::Doing);
+    assert_eq!(flow.agent(cody).question_lsn, Some(question.0.to_string()));
+    let asked = TicketHistoryKind::Asked {
+        agent: cody,
+        question_lsn: question.0.to_string(),
+    };
+    assert_eq!(flow.history(card).last(), Some(&asked));
+
+    let page = flow.page();
+    let (head, body) = Flow::answer(&page, 'B', cody, question, "use release");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(body["state"], "answered");
+    let answered_at = human_answers(&fixture, cody);
+    assert_eq!(answered_at.len(), 1);
+    let answered = TicketHistoryKind::Answered {
+        agent: cody,
+        question_lsn: question.0.to_string(),
+    };
+    let history = flow.history(card);
+    assert_eq!(history[history.len() - 2..], [asked, answered]);
+    assert_eq!(flow.card(card).status, CardStatus::Doing);
+    assert_eq!(flow.agent(cody).question_lsn, None);
+
+    flow.end_turn(&fixture, first, None);
+    let (second, _, _, task) = Flow::await_turn_number(&fixture, 2);
+    assert!(task.contains("use release"), "{task}");
+    assert_eq!(issued_answers(&fixture, second), answered_at);
+    fixture.await_record("the answering turn's TurnSpawned", |record| {
+        matches!(record, Record::TurnSpawned { turn, .. } if *turn == second).then_some(())
+    });
+    let delivered = flow.host.spawned();
+    assert!(handed_to(delivered.last().unwrap()).contains("use release"));
+    assert_eq!(flow.card(card).status, CardStatus::Doing);
+    no_typed_input(&fixture);
+    flow.stop();
+}
+
+/// A retired agent's question cannot be answered: the Floor refuses, nothing is appended, and
+/// the ticket's history gains no `answered`.
+#[test]
+fn an_answer_to_a_retired_agents_question_is_refused_and_appends_nothing() {
+    let fixture = Fixture::new();
+    let (mut settings, repo) = enrolled(&fixture);
+    floor_answers(&mut settings);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let cody = flow.hire("Cody");
+    let card = flow.create("One");
+    flow.give_ok(card, cody, None);
+    Flow::await_turn_number(&fixture, 1);
+    let question = flow.ask(&fixture, cody, "which branch?");
+    flow.ok::<Value>(
+        dudes_proto::rpc::Method::AgentRetire,
+        json!({"agent": cody, "reason": "done"}),
+    );
+    let before = fixture.records().len();
+
+    let page = flow.page();
+    let (head, body) = Flow::answer(&page, 'C', cody, question, "use release");
+    assert!(head.starts_with("HTTP/1.1 409"), "{head}");
+    assert_eq!(body["reason"], "agent_retired");
+    assert_eq!(fixture.records().len(), before);
+    assert!(human_answers(&fixture, cody).is_empty());
+    assert!(
+        !flow
+            .history(card)
+            .iter()
+            .any(|kind| matches!(kind, TicketHistoryKind::Answered { .. }))
+    );
+    flow.stop();
+}
+
+/// Two answers racing for one question give one `HumanAnswer`, and the loser is told the
+/// question is closed.
+#[test]
+fn two_racing_floor_answers_give_one_human_answer() {
+    let fixture = Fixture::new();
+    let (mut settings, repo) = enrolled(&fixture);
+    floor_answers(&mut settings);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let cody = flow.hire("Cody");
+    let card = flow.create("One");
+    flow.give_ok(card, cody, None);
+    Flow::await_turn_number(&fixture, 1);
+    let question = flow.ask(&fixture, cody, "which branch?");
+    let page = Arc::new(flow.page());
+
+    let threads: Vec<_> = ['D', 'E']
+        .into_iter()
+        .map(|key| {
+            let page = Arc::clone(&page);
+            std::thread::spawn(move || {
+                common::floor_post(
+                    &page,
+                    "/floor/answer",
+                    &json!({
+                        "request_id": request_id(key),
+                        "agent": cody,
+                        "question_lsn": question.0.to_string(),
+                        "text": format!("answer {key}"),
+                    }),
+                )
+            })
+        })
+        .collect();
+    let replies: Vec<(String, Value)> = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect();
+
+    let mut statuses: Vec<_> = replies
+        .iter()
+        .map(|(head, _)| head.lines().next().unwrap().to_owned())
+        .collect();
+    statuses.sort();
+    assert!(statuses[0].starts_with("HTTP/1.1 200"), "{statuses:?}");
+    assert!(statuses[1].starts_with("HTTP/1.1 409"), "{statuses:?}");
+    assert!(
+        replies
+            .iter()
+            .any(|(_, body)| body["reason"] == "question_closed")
+    );
+    assert_eq!(human_answers(&fixture, cody).len(), 1);
+    let answers = flow
+        .history(card)
+        .into_iter()
+        .filter(|kind| matches!(kind, TicketHistoryKind::Answered { .. }))
+        .count();
+    assert_eq!(answers, 1);
+    flow.stop();
+}
+
+/// A paused agent accepts the answer, the control gate holds its next turn, and a resume then
+/// issues the turn with the answer.
+#[test]
+fn an_answer_to_a_paused_agent_waits_for_the_resume() {
+    let fixture = Fixture::new();
+    let (mut settings, repo) = enrolled(&fixture);
+    floor_answers(&mut settings);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let cody = flow.hire("Cody");
+    let card = flow.create("One");
+    flow.give_ok(card, cody, None);
+    let (first, ..) = Flow::await_turn_number(&fixture, 1);
+    let question = flow.ask(&fixture, cody, "which branch?");
+    flow.control(dudes_proto::rpc::Method::LoopPause, cody);
+
+    let page = flow.page();
+    let (head, _) = Flow::answer(&page, 'F', cody, question, "use release");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    flow.end_turn(&fixture, first, None);
+    let after_end = settled(&fixture, fixture.records().len());
+    assert_eq!(
+        Flow::turns(&fixture).len(),
+        1,
+        "the pause holds the next turn: {:?}",
+        after_end.iter().map(Record::kind).collect::<Vec<_>>()
+    );
+
+    flow.control(dudes_proto::rpc::Method::LoopResume, cody);
+    let (second, _, _, task) = Flow::await_turn_number(&fixture, 2);
+    assert!(task.contains("use release"), "{task}");
+    assert_eq!(
+        issued_answers(&fixture, second),
+        human_answers(&fixture, cody)
+    );
+    flow.stop();
+}
+
+/// A ticket stopped while its question is open keeps the question. The answer still lands in its
+/// history, and the next work the agent gets carries it.
+#[test]
+fn a_stopped_tickets_question_is_answered_into_the_agents_next_work() {
+    let fixture = Fixture::new();
+    let (mut settings, repo) = enrolled(&fixture);
+    floor_answers(&mut settings);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let cody = flow.hire("Cody");
+    let (one, two) = (flow.create("One"), flow.create("Two"));
+    flow.give_ok(one, cody, None);
+    let (first, ..) = Flow::await_turn_number(&fixture, 1);
+    let question = flow.ask(&fixture, cody, "which branch?");
+    let params = stop_params(&mut flow, one);
+    flow.ok::<Value>(dudes_proto::rpc::Method::TicketStop, params);
+    assert_eq!(flow.card(one).status, CardStatus::Todo);
+    assert_eq!(flow.agent(cody).question_lsn, Some(question.0.to_string()));
+
+    flow.end_turn(&fixture, first, None);
+    flow.await_status(one, CardStatus::Blocked);
+    flow.acknowledge_cleared_review(one, cody);
+    let page = flow.page();
+    let (head, _) = Flow::answer(&page, 'G', cody, question, "use release");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert!(matches!(
+        flow.history(one).last(),
+        Some(TicketHistoryKind::Answered { .. })
+    ));
+
+    flow.give_ok(two, cody, None);
+    let (next, _, _, task) = Flow::await_turn_number(&fixture, 2);
+    assert!(task.contains("use release"), "{task}");
+    assert_eq!(
+        issued_answers(&fixture, next),
+        human_answers(&fixture, cody)
     );
     flow.stop();
 }

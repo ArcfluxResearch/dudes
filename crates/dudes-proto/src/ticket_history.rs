@@ -89,6 +89,20 @@ pub enum TicketHistoryKind {
         /// The retired agent.
         agent: AgentId,
     },
+    /// Its agent asked the operator a question while working on it.
+    Asked {
+        /// The asking agent.
+        agent: AgentId,
+        /// The question's identity: the canonical decimal position of the question record.
+        question_lsn: String,
+    },
+    /// A question it was asked got an answer. The answer is not kept here.
+    Answered {
+        /// The agent that asked.
+        agent: AgentId,
+        /// The question's identity, as on the matching `asked` event.
+        question_lsn: String,
+    },
 }
 
 impl TicketHistoryKind {

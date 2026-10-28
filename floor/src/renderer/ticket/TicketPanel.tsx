@@ -21,6 +21,7 @@ import { DIGEST_CAVEAT, digestSentence } from './digest.ts';
 import { checkDisplayCurrent, currentDetail, editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
 import { RecoveredReview } from './RecoveredReview.tsx';
 import { History } from './TicketHistory.tsx';
+import { AskedQuestion } from './TicketQuestion.tsx';
 import { PRIORITY_OPTIONS, PRIORITY_WORDS, priorityOf } from './priority.ts';
 import type { Priority } from './priority.ts';
 import type { TicketDetail, TruncatedTicketField } from './detail.ts';
@@ -234,6 +235,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
     {failure === null ? null : <p className={NEEDS} role="note">An earlier engine attempt stopped. Open Details for its result.</p>}
     {card.status === 'blocked' ? <p className={NEEDS} role="note">{reasonSentence(ticket?.reason ?? null)}</p>
       : waiting === null ? null : <p className="ticket-wait m-0">{waiting}</p>}
+    <AskedQuestion floor={floor} card={card} history={shown?.history ?? null} />
     {shown === null && mine?.phase !== 'failed' ? <p role="status">Reading the ticket…</p> : null}
     {mine?.problem == null ? null : <p className={HINT} role="status">{mine.problem}</p>}
     {shown === null ? null : <>

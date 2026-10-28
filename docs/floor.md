@@ -256,6 +256,13 @@ Set a spending limit when your account bills per use.
   Working. Accept, Ask for changes and Remove for one that is Ready for you. Try again, Stop and
   Remove for one in Needs you. Remove for one that is Done, to clear it off the board. Accept is your verdict that the work is what you asked for. The check
   passing only means the daemon's own run passed.
+- **Agent question.** When the agent working a ticket asks you something, the ticket shows the question
+  and an answer box, and the History lists "Asked a question." and "Answered at ...". The answer goes
+  through the same route as the agent's own panel, so it needs **Answer questions** on (`dudes config set
+  floor.answer on`; without it the question is read-only) and the ticket stays Working. If the ticket
+  is stopped or was given to another agent, the question is still open and still blocks that agent, and
+  the panel says the answer goes to the agent's next work. Questions asked in a chat stay in
+  **Messages**.
 - **Banner.** The top bar says how many tickets are ready for you or need you, and how many agents
   working a ticket are asking you a question. The roster's heading says the same. A
   turn ending never raises it. While a ticket waits for you, its agent's roster row and the top

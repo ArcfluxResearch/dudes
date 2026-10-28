@@ -6,11 +6,14 @@
 
 import { TICKET_REASONS } from '../board.ts';
 import type { TicketReason } from '../board.ts';
+import { recordedTime } from '../format.ts';
 import { PRIORITY_WORDS, priorityOf } from './priority.ts';
 import type { Priority } from './priority.ts';
 
 const AGENT_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const LSN = /^(?:0|[1-9][0-9]{0,19})$/;
+/** A question's position, as the projection sends it: positive decimal text. */
+const QUESTION_LSN = /^[1-9][0-9]{0,19}$/;
 /** The daemon keeps 48 events a ticket, so a longer list is not one it sent. */
 const MAX_EVENTS = 48;
 
@@ -27,7 +30,9 @@ export type HistoryKind =
   | { readonly kind: 'check_failed'; readonly exit: number | null }
   | { readonly kind: 'priority_set'; readonly priority: Priority }
   | { readonly kind: 'accepted' }
-  | { readonly kind: 'returned'; readonly agent: string };
+  | { readonly kind: 'returned'; readonly agent: string }
+  | { readonly kind: 'asked'; readonly agent: string; readonly question_lsn: string }
+  | { readonly kind: 'answered'; readonly agent: string; readonly question_lsn: string };
 
 export type HistoryEvent = HistoryKind & {
   /** The journal position of the record that caused it, as decimal text. */
@@ -75,6 +80,9 @@ function eventOf(value: unknown): HistoryEvent | null {
     case 'assigned': return agent === null ? null : Object.freeze({ ...head, kind: 'assigned', agent });
     case 'sent_back': return agent === null ? null : Object.freeze({ ...head, kind: 'sent_back', agent });
     case 'returned': return agent === null ? null : Object.freeze({ ...head, kind: 'returned', agent });
+    case 'asked':
+    case 'answered': return agent === null || typeof value.question_lsn !== 'string' || !QUESTION_LSN.test(value.question_lsn) ? null
+      : Object.freeze({ ...head, kind: value.kind, agent, question_lsn: value.question_lsn });
     case 'started': return agent === null || !count(value.round) ? null
       : Object.freeze({ ...head, kind: 'started', agent, round: value.round });
     case 'moved': return typeof value.reason === 'string' && (TICKET_REASONS as readonly string[]).includes(value.reason)
@@ -132,8 +140,12 @@ const MOVED: Readonly<Record<TicketReason, string>> = Object.freeze({
 
 const WHO = 'an agent';
 
-/** One plain sentence for an event. `nameOf` gives an agent's name, or `null` for one that is gone. */
-export function historySentence(event: HistoryEvent, nameOf: (agent: string) => string | null): string {
+/**
+ * One plain sentence for an event. `nameOf` gives an agent's name, or `null` for one that is gone, and `timeOf` words
+ * a recorded time.
+ */
+export function historySentence(event: HistoryEvent, nameOf: (agent: string) => string | null,
+  timeOf: (at: number) => string = recordedTime): string {
   const agent = 'agent' in event ? nameOf(event.agent) ?? WHO : WHO;
   const code = (exit: number | null) => exit === null ? '' : ` (exit ${exit})`;
   switch (event.kind) {
@@ -148,6 +160,8 @@ export function historySentence(event: HistoryEvent, nameOf: (agent: string) => 
     case 'priority_set': return event.priority === 'none' ? 'Priority cleared.' : `Priority set to ${PRIORITY_WORDS[event.priority]}.`;
     case 'accepted': return 'Accepted.';
     case 'returned': return `Returned to To do when ${agent} was retired.`;
+    case 'asked': return 'Asked a question.';
+    case 'answered': return `Answered at ${timeOf(event.at)}.`;
   }
 }
 

@@ -213,6 +213,73 @@ fn retired_events(board: &RowTable<'_>, agent: AgentId) -> Result<Events> {
         .collect())
 }
 
+fn asked_events(board: &RowTable<'_>, lsn: Lsn, agent: AgentId) -> Result<Events> {
+    Ok(all_rows::<BoardRow>(board)?
+        .into_iter()
+        .filter(|row| {
+            row.ticket.is_some()
+                && row.view.claimed_by == Some(agent)
+                && row.view.status == CardStatus::Doing
+        })
+        .map(|row| {
+            (
+                row.view.id,
+                HistoryBy::Agent,
+                TicketHistoryKind::Asked {
+                    agent,
+                    question_lsn: lsn.0.to_string(),
+                },
+            )
+        })
+        .collect())
+}
+
+/// The ticket holding `agent`'s newest `asked` event that no `answered` event on that ticket
+/// closes, with that question's identity. The scan reads only the history table, so a replay
+/// finds the same ticket.
+fn unanswered(table: &HistoryTable<'_>, agent: AgentId) -> Result<Option<(CardId, String)>> {
+    let mut newest: Option<(u64, CardId, String)> = None;
+    for entry in table.iter()? {
+        let (key, value) = entry?;
+        let history: TicketHistory =
+            serde_json::from_slice(value.value()).map_err(|source| Error::Row { source })?;
+        for event in &history.events {
+            let TicketHistoryKind::Asked {
+                agent: holder,
+                question_lsn,
+            } = &event.kind
+            else {
+                continue;
+            };
+            let Ok(position) = question_lsn.parse::<u64>() else {
+                continue;
+            };
+            if *holder != agent
+                || newest
+                    .as_ref()
+                    .is_some_and(|(best, _, _)| position <= *best)
+            {
+                continue;
+            }
+            let closed = history.events.iter().any(|later| {
+                matches!(
+                    &later.kind,
+                    TicketHistoryKind::Answered { agent: who, question_lsn: closing }
+                        if *who == agent && closing == question_lsn
+                )
+            });
+            if !closed {
+                newest = Some((
+                    position,
+                    CardId::from_bytes(*key.value()),
+                    question_lsn.clone(),
+                ));
+            }
+        }
+    }
+    Ok(newest.map(|(_, card, question_lsn)| (card, question_lsn)))
+}
+
 /// The events `entry` causes, before the board folds it.
 fn events(board: &RowTable<'_>, lsn: Lsn, entry: &Entry, folded: Folded<'_>) -> Result<Events> {
     let record = &entry.record;
@@ -250,6 +317,7 @@ fn events(board: &RowTable<'_>, lsn: Lsn, entry: &Entry, folded: Folded<'_>) -> 
         }),
         Record::PredicateResult { .. } => check_events(board, record),
         Record::AgentRetired { id, .. } => retired_events(board, *id),
+        Record::HumanQuestion { agent, .. } => asked_events(board, lsn, *agent),
         _ => Ok(Vec::new()),
     }
 }
@@ -283,6 +351,16 @@ pub(super) fn capture(
         Record::TicketRemoved { card, .. } => {
             if ticket(board, *card)?.is_some() {
                 table.remove(&card.to_bytes())?;
+            }
+            return Ok(());
+        }
+        Record::HumanAnswer { agent, .. } => {
+            if let Some((card, question_lsn)) = unanswered(table, *agent)? {
+                let kind = TicketHistoryKind::Answered {
+                    agent: *agent,
+                    question_lsn,
+                };
+                append(table, card, event(lsn, entry, HistoryBy::Operator, kind))?;
             }
             return Ok(());
         }
