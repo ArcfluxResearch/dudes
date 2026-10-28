@@ -89,7 +89,7 @@ impl PairedIssues {
         let scoped = if let Some(payload) = record.issue_payload() {
             let grant = RepositoryTurnGrant::select(
                 self.story.hired_lsn,
-                &self.story.hire.repositories,
+                scoped_hire(&self.world, self.story.hire.id),
                 self.world
                     .active_repository_round(self.story.hire.id)
                     .unwrap(),
@@ -603,7 +603,7 @@ fn scoped_grants_refuse_changed_catalog_round_copy_and_trust_before_installing_a
     let (mut log, start) = PairedIssues::new(&fixture);
     let grant = RepositoryTurnGrant::select(
         log.story.hired_lsn,
-        &log.story.hire.repositories,
+        scoped_hire(&log.world, log.story.hire.id),
         log.world.active_repository_round(start.agent).unwrap(),
     )
     .unwrap();
@@ -691,7 +691,7 @@ fn scoped_grants_refuse_changed_catalog_round_copy_and_trust_before_installing_a
 }
 
 #[test]
-fn a_scoped_issue_replays_its_frozen_task_before_a_refused_provider_launch() {
+fn a_restored_scoped_issue_replays_its_frozen_task_before_a_refused_provider_launch() {
     let fixture = Fixture::new();
     let (mut log, start) = PairedIssues::new(&fixture);
     let task = "Preserve this exact task through restart";
@@ -710,6 +710,20 @@ fn a_scoped_issue_replays_its_frozen_task_before_a_refused_provider_launch() {
         json!({"lsn_of_decision": decision}),
     );
     let saved = log.world.turns[&turn].clone();
+    let grant = log.projection.repository_trust().unwrap().remove(0);
+    for pin in [None, grant.pin.clone()] {
+        let recorded = write_record(
+            &mut log.writer,
+            Record::RepositoryTrustSet {
+                project: grant.project.clone(),
+                repo_id: grant.repo_id.clone(),
+                catalog_lsn: grant.catalog_lsn,
+                origin: grant.origin.clone(),
+                pin,
+            },
+        );
+        apply_pair(&mut log.world, &mut log.projection, &recorded);
+    }
     drop(log);
     let host = SharedHost::new();
     let settings = fixture.settings();
@@ -738,6 +752,15 @@ fn a_scoped_issue_replays_its_frozen_task_before_a_refused_provider_launch() {
         )
         .unwrap();
     assert!(response.error.is_none());
+    let refused = Client::connect(settings.socket())
+        .unwrap()
+        .call_as_operator(
+            dudes_proto::rpc::Method::AgentAttach,
+            Some(json!({"agent": start.agent, "cols": 80, "rows": 24})),
+            credential(&settings),
+        )
+        .unwrap();
+    assert!(refused.error.is_some());
     running.stop(ExitCause::Ended);
     assert!(host.spawned().is_empty());
     let records = Reader::open(&fixture.journal_dir())
@@ -885,9 +908,12 @@ fn pending_instruction_review_retains_scope_after_the_charge_goal_is_cleared() {
             .goal,
         start.goal.id
     );
-    let grant =
-        RepositoryTurnGrant::select(log.story.hired_lsn, &log.story.hire.repositories, None)
-            .unwrap();
+    let grant = RepositoryTurnGrant::select(
+        log.story.hired_lsn,
+        scoped_hire(&log.world, log.story.hire.id),
+        None,
+    )
+    .unwrap();
     let record = Record::TurnIssuedWithRepositories(Box::new(RepositoryTurnIssued {
         grant,
         payload: legacy_issue(start.agent)
@@ -908,4 +934,152 @@ fn pending_instruction_review_retains_scope_after_the_charge_goal_is_cleared() {
         })
     ));
     assert!(log.world.apply_checked(next, &entry).is_err());
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journal prefix proves restored trust retains both hire and issued authority"
+)]
+fn equivalent_retrust_restores_authority_without_rewriting_the_hire_or_issue() {
+    let fixture = Fixture::new();
+    let (mut log, start) = PairedIssues::new(&fixture);
+    let decision = log.append(Record::LoopDecided {
+        agent: start.agent,
+        input_digest: "original".into(),
+        gate_trace: trace(),
+        decision: LoopDecision::Continue {
+            task: "Keep the original task".into(),
+        },
+    });
+    let turn = TurnId::from_parts(31, 1);
+    log.issue(
+        RecordKind::TurnIssued,
+        start.goal.id,
+        turn,
+        "Keep the original task",
+        json!({"lsn_of_decision": decision}),
+    );
+    let hired = log.world.agents[&start.agent].repositories.clone();
+    let frozen = log.projection.turn(turn).unwrap().unwrap();
+    let task = log.world.turns[&turn].task.clone();
+    let answers = log.world.turns[&turn].answers.clone();
+    let original = log
+        .projection
+        .repository_trust()
+        .unwrap()
+        .into_iter()
+        .find(|trust| trust.repo_id.as_str() == "docs")
+        .unwrap();
+    let pin = original.pin.clone().unwrap();
+    let mut candidate = frozen
+        .repositories
+        .as_ref()
+        .unwrap()
+        .grant()
+        .unwrap()
+        .clone();
+    assert_eq!(candidate.repositories.entries().len(), 2);
+    assert!(hired.worktrees().count() > candidate.repositories.entries().len());
+    let mut payload = legacy_issue(start.agent)
+        .issue_payload()
+        .unwrap()
+        .to_owned();
+    let dudes_proto::issue::ManagedIssuePayload::Ordinary {
+        goal,
+        turn: candidate_turn,
+        ..
+    } = &mut payload
+    else {
+        unreachable!()
+    };
+    *goal = start.goal.id;
+    *candidate_turn = TurnId::from_parts(31, 2);
+    let issue = Entry {
+        at: Timestamp::UNIX_EPOCH,
+        record: Record::TurnIssuedWithRepositories(Box::new(RepositoryTurnIssued {
+            grant: candidate.clone(),
+            payload,
+        })),
+    };
+    let trust_record = |pin| Record::RepositoryTrustSet {
+        project: original.project.clone(),
+        repo_id: original.repo_id.clone(),
+        catalog_lsn: original.catalog_lsn,
+        origin: original.origin.clone(),
+        pin,
+    };
+    for changed in [
+        None,
+        Some(dudes_proto::record::TrustPin {
+            config: dudes_proto::record::Hex32::new([99; 32]),
+            ..pin.clone()
+        }),
+    ] {
+        let recorded = write_record(&mut log.writer, trust_record(changed));
+        apply_pair(&mut log.world, &mut log.projection, &recorded);
+        let next = Lsn(log.projection.last_applied_lsn().0 + 1);
+        let before = log.projection.export().unwrap();
+        assert!(matches!(
+            log.projection.apply(next, 1, &issue),
+            Err(dudes_journal::Error::Repository {
+                reason: dudes_proto::repository_state::history::RepositoryStateError::Trust,
+                ..
+            })
+        ));
+        assert!(log.world.apply_checked(next, &issue).is_err());
+        assert_eq!(log.projection.export().unwrap(), before);
+    }
+    let restored = write_record(&mut log.writer, trust_record(Some(pin)));
+    assert_ne!(restored.0, original.lsn);
+    apply_pair(&mut log.world, &mut log.projection, &restored);
+    let recorded = write_record(&mut log.writer, issue.record);
+    apply_pair(&mut log.world, &mut log.projection, &recorded);
+    assert_eq!(log.world.agents[&start.agent].repositories, hired);
+    assert_eq!(log.projection.turn(turn).unwrap().unwrap(), frozen);
+    assert_eq!(log.world.turns[&turn].task, task);
+    assert_eq!(log.world.turns[&turn].answers, answers);
+    assert_eq!(log.world.turns[&turn].repositories, frozen.repositories);
+    let HireRepositories::Scoped(current) = &log.world.agents[&start.agent].repositories else {
+        panic!("scoped hire")
+    };
+    candidate = RepositoryTurnGrant::select(
+        log.story.hired_lsn,
+        current,
+        log.world.active_repository_round(start.agent).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        candidate,
+        *frozen.repositories.as_ref().unwrap().grant().unwrap()
+    );
+    let expected = log.projection.export().unwrap();
+    assert_eq!(
+        current
+            .repositories
+            .get(&original.repo_id)
+            .unwrap()
+            .recorded
+            .trust_lsn,
+        original.lsn
+    );
+    drop(log);
+    let reader = Reader::open(&fixture.journal_dir()).unwrap().0;
+    let original_entry = reader
+        .iter_from(Lsn::ZERO)
+        .unwrap()
+        .map(Result::unwrap)
+        .find(|(lsn, _)| *lsn == original.lsn)
+        .unwrap()
+        .1;
+    assert!(
+        matches!(original_entry.record, Record::RepositoryTrustSet { repo_id, origin, pin, .. }
+        if repo_id == original.repo_id && origin == original.origin && pin == original.pin)
+    );
+    let mut warm = Projections::open(&fixture.state.path().join("paired.redb")).unwrap();
+    assert_eq!(replay(&reader, &mut warm).unwrap().applied, 0);
+    assert_eq!(warm.export().unwrap(), expected);
+    let mut cold = Projections::in_memory().unwrap();
+    replay(&reader, &mut cold).unwrap();
+    assert_eq!(cold.export().unwrap(), expected);
 }

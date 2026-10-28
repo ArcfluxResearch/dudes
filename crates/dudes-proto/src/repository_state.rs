@@ -5,8 +5,7 @@ pub mod history;
 use dudes_types::{AgentId, CardId, GoalId, Lsn, Mode, ModelSelection, SessionId, TurnId};
 
 use crate::repository::{
-    HireRepositories, SingletonRepository, TicketRepositories, TicketRepositoryRound,
-    TurnRepositories,
+    HireRepositories, TicketRepositories, TicketRepositoryRound, TurnRepositories,
 };
 use crate::{Goal, Record};
 
@@ -72,6 +71,25 @@ pub enum HireRepositoryRecord<'a> {
     },
     /// A required carrier's complete restricted set.
     Scoped(&'a crate::repository::ScopedRepositories),
+}
+
+impl HireRepositoryRecord<'_> {
+    /// Every recorded lease, without constructing normalized execution authority.
+    pub fn worktrees(&self) -> impl Iterator<Item = dudes_types::WorktreeId> + '_ {
+        let (legacy, scoped) = match self {
+            Self::Legacy { worktree, .. } => (*worktree, None),
+            Self::Scoped(scope) => (None, Some(*scope)),
+        };
+        legacy
+            .into_iter()
+            .chain(scoped.into_iter().flat_map(|scope| {
+                scope
+                    .repositories
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.value.worktree)
+            }))
+    }
 }
 
 /// The atomic goal installation and card movement of a ticket start.
@@ -570,8 +588,6 @@ pub struct RepositoryFacts<'a> {
 pub enum RepositoryFold {
     /// No repository-bearing carrier.
     Unchanged,
-    /// Authority established by a hire.
-    Hire(HireRepositories),
     /// Declaration established by ticket creation.
     Ticket(TicketRepositories),
     /// Immutable round established by a ticket start.
@@ -583,18 +599,6 @@ pub enum RepositoryFold {
 /// Interpret recorded repository authority without configuration or filesystem observations.
 #[must_use]
 pub fn fold(lsn: Lsn, record: &Record, before: RepositoryFacts<'_>) -> RepositoryFold {
-    if let Some(hire) = record.hire() {
-        return RepositoryFold::Hire(match hire.repositories {
-            HireRepositoryRecord::Legacy {
-                cwd,
-                workspace,
-                worktree,
-            } => HireRepositories::Legacy(SingletonRepository::recorded(cwd, workspace, worktree)),
-            HireRepositoryRecord::Scoped(repositories) => {
-                HireRepositories::Scoped(repositories.clone())
-            }
-        });
-    }
     if let Some(created) = record.ticket_created() {
         return RepositoryFold::Ticket(created.repositories.map_or_else(
             || TicketRepositories::recorded(created.project),
@@ -655,7 +659,10 @@ mod tests {
         *worktree = Some(dudes_types::WorktreeId::from_bytes([3; 16]));
         let view = record.hire().unwrap();
         assert!(std::ptr::eq(view.source, &raw const record));
-        let RepositoryFold::Hire(hire) = fold(Lsn(3), &record, RepositoryFacts::default()) else {
+        let history::RepositoryHistoryChange::Hired {
+            repositories: hire, ..
+        } = history::prepare(Lsn(3), &record, history::RepositoryHistoryFacts::default()).unwrap()
+        else {
             panic!("hire authority");
         };
         let repository = hire.singleton().unwrap();

@@ -130,7 +130,7 @@ impl ReviewLog {
         };
         let grant = RepositoryTurnGrant::select(
             self.story.hired_lsn,
-            &self.story.hire.repositories,
+            scoped_hire(&self.world, self.story.hire.id),
             self.world.ticket_repository_round(self.goal),
         )
         .unwrap();

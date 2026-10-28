@@ -36,6 +36,8 @@ takes. Add `--json` for the same answer as data.
 - **Done when.** `--done-when <check id>` picks one of the project's named checks. The default is
   the project's own check. The daemon runs it, and what an agent says about its own work never
   counts as passing.
+- **Priority.** `--priority urgent|high|medium|low|none` sets how soon the ticket should be served;
+  `dudes ticket edit <card> --priority high` changes it alone. `dudes ticket show` prints it.
 - **Note.** Optional. A one-line ticket is a normal ticket.
 
 Give the ticket to an agent hired into the same project:
@@ -139,6 +141,12 @@ nobody has started, and remove on any ticket that is not being worked on; stop a
 first. Each command reads the ticket's current sequence just before it acts. Pass
 `--expected-seq <n>` only when a script wants a ticket that has changed since it looked to be
 refused.
+
+A longer note can come from a file: `--note-file notes.md` on `add` or `edit`, or `--note-file -` to
+read standard input. The file must be UTF-8 and at most 8,192 bytes, `\r\n` line endings become
+`\n`, a leading byte-order mark is dropped, and it cannot be combined with `--note`. An empty file is
+refused on both `add` and `edit`; `--note ''` clears a note. With `-` on a terminal, the command says
+on standard error that it is reading the note until end of file.
 
 ## When a command is refused
 

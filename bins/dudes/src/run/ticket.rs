@@ -327,6 +327,7 @@ pub(super) fn command(
             title,
             note,
             done_when,
+            priority,
             expected_seq,
         } => {
             let params = encode(&TicketEditParams {
@@ -335,7 +336,7 @@ pub(super) fn command(
                 description: note.clone(),
                 done_when: done_when.clone(),
                 done_when_revision: None,
-                priority: None,
+                priority: *priority,
                 expected_seq: session.seq(*card, *expected_seq)?,
             })?;
             let result: Empty = typed(session.call(Method::TicketEdit, Some(params))?)?;

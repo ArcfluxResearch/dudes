@@ -29,6 +29,7 @@ const root = resolve(import.meta.dirname, '..');
 const NEW = cardId(1);
 const QUESTION = 'Which branch should I rebase onto?';
 const LSN = '1099511628288';
+const GRACE_LSN = '1099511628400';
 const OLDER = '1099511628100';
 
 let server;
@@ -67,13 +68,13 @@ const answered = (lsn = LSN, n = 5) => event('answered', { agent: ADA, question_
 
 /** A live subscription: Ada asks `QUESTION` at `LSN` on a ticket in `status`, with answering on unless `answering` is null. */
 function subscribe({ status = 'doing', holder = ADA, row = {}, answering = { max_text_bytes: 4096 }, asking = true,
-  questions = [] } = {}) {
+  questions = [], graceAsks = null } = {}) {
   const epoch = store.beginFloorEpoch();
   store.noteTransport('open');
   const ada = agent(ADA, 'Ada', asking ? { status: 'waiting', question: QUESTION, question_lsn: LSN, ...row } : row);
   const frame = {
     type: 'floor.snapshot',
-    projection: { lsn: 12, agents: [ada, agent(GRACE, 'Grace')], cards: [ticketCard(1, status, { claimed_by: holder })] },
+    projection: { lsn: 12, agents: [ada, agent(GRACE, 'Grace', graceAsks === null ? {} : { status: 'waiting', question: graceAsks, question_lsn: GRACE_LSN })], cards: [ticketCard(1, status, { claimed_by: holder })] },
     question_history: questions,
     ticket: {},
   };
@@ -167,6 +168,20 @@ test('a question the history does not name, an answered one and a changed one sh
   assert.equal(section(panel()), null, 'no history');
 });
 
+test('a ticket that changed hands shows each open question with its asker, and the holder carries the answer', async () => {
+  subscribe({ holder: GRACE, graceAsks: 'Which test first?' });
+  await open([asked(LSN, 4), event('asked', { agent: GRACE, question_lsn: GRACE_LSN }, 6)]);
+  const html = panel();
+  const shown = [...html.matchAll(/<section aria-label="Agent question"[^>]*>[\s\S]*?<\/section>/g)].map((m) => m[0]);
+  assert.equal(shown.length, 2, html);
+  assert.match(shown[0], /<h4>Question from Ada<\/h4>/);
+  assert.match(shown[0], /ticket-question-next/, 'the first asker is no longer the holder');
+  assert.match(shown[1], /<h4>Question from Grace<\/h4>/);
+  assert.ok(!shown[1].includes('ticket-question-next'), 'the holder carries the answer');
+  assert.ok(shown[1].includes('Which test first?'));
+  assert.match(shown[1], new RegExp(`data-answer-agent-id="${GRACE}" data-answer-question-lsn="${GRACE_LSN}"`));
+});
+
 test('the question is plain text', async () => {
   const text = '<b>bold</b><script>alert(1)</script> & ‮evil';
   subscribe({ row: { question: text } });
@@ -179,14 +194,14 @@ test('the question is plain text', async () => {
   }
 });
 
-test('the model reads the newest unanswered question and whether its ticket carries the answer', () => {
+test('the model reads the unanswered questions and whether its ticket carries the answer', () => {
   const events = (...list) => ({ events: list.map((e) => ({ ...e })), omitted: 0 });
-  assert.equal(question.unansweredQuestion(null), null);
-  assert.equal(question.unansweredQuestion(events()), null);
-  assert.deepEqual(question.unansweredQuestion(events(asked(OLDER, 1), asked(LSN, 2))), { agent: ADA, questionLsn: LSN });
-  assert.deepEqual(question.unansweredQuestion(events(asked(OLDER, 1), asked(LSN, 2), answered(LSN, 3))), { agent: ADA, questionLsn: OLDER },
+  assert.deepEqual(question.unansweredQuestions(null), []);
+  assert.deepEqual(question.unansweredQuestions(events()), []);
+  assert.deepEqual(question.unansweredQuestions(events(asked(OLDER, 1), asked(LSN, 2))), [{ agent: ADA, questionLsn: LSN }]);
+  assert.deepEqual(question.unansweredQuestions(events(asked(OLDER, 1), asked(LSN, 2), answered(LSN, 3))), [{ agent: ADA, questionLsn: OLDER }],
     'the answered one closes itself and leaves the older');
-  assert.equal(question.unansweredQuestion(events(asked(LSN, 1), answered(LSN, 2))), null);
+  assert.deepEqual(question.unansweredQuestions(events(asked(LSN, 1), answered(LSN, 2))), []);
   assert.equal(question.lastAsker(events(asked(LSN, 1), answered(LSN, 2))), ADA);
   assert.equal(question.lastAsker(events(event('created'))), null);
 });

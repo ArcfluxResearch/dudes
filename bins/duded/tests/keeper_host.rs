@@ -105,10 +105,9 @@ fn in_group(group: u32) -> Vec<Row> {
 }
 
 /// Whether anything that is not a zombie is still in `group`.
-fn live_in(group: u32) -> bool {
-    in_group(group)
-        .iter()
-        .any(|row| !row.state.starts_with('Z'))
+fn live_in(rows: &[Row], group: u32) -> bool {
+    rows.iter()
+        .any(|row| row.group == group && !row.state.starts_with('Z'))
 }
 
 fn await_group_empty(group: u32, bound: Duration) -> Duration {
@@ -230,7 +229,7 @@ fn a_keeper_that_cannot_start_fails_the_launch_and_no_task_is_written() {
     if let Ok(pid) = fs::read_to_string(dir.path().join("pid")) {
         let pid: u32 = pid.trim().parse().expect("pid");
         assert!(
-            !live_in(pid),
+            !live_in(&table(), pid),
             "the agent of a failed launch is still running"
         );
     }
@@ -517,9 +516,10 @@ fn recorded(dir: &Path) -> Vec<AdoptionKey> {
 
 /// Kill the helper the way a crash does and measure how long its agents outlive it.
 fn kill_daemon_and_measure(mut helper: Child, keys: &[AdoptionKey]) -> Duration {
+    let before = table();
     for key in keys {
         assert!(
-            live_in(key.pid),
+            live_in(&before, key.pid),
             "agent {} was not running before the crash",
             key.pid
         );
@@ -527,18 +527,28 @@ fn kill_daemon_and_measure(mut helper: Child, keys: &[AdoptionKey]) -> Duration 
     let killed = Instant::now();
     helper.kill().expect("SIGKILL");
     helper.wait().expect("reap helper");
-    for key in keys {
-        await_group_empty_live(key.pid, Duration::from_secs(5));
-    }
+    await_groups_empty_live(keys, Duration::from_secs(5));
     killed.elapsed()
 }
 
 /// Like [`await_group_empty`], but a zombie does not count: the helper is gone, so whoever adopted
 /// the orphans reaps them on its own schedule.
-fn await_group_empty_live(group: u32, bound: Duration) {
+fn await_groups_empty_live(keys: &[AdoptionKey], bound: Duration) {
     let start = Instant::now();
-    while live_in(group) {
-        assert!(start.elapsed() < bound, "group {group} outlived its daemon");
+    loop {
+        let rows = table();
+        let live: Vec<_> = keys
+            .iter()
+            .filter(|key| live_in(&rows, key.pid))
+            .map(|key| key.pid)
+            .collect();
+        if live.is_empty() {
+            return;
+        }
+        assert!(
+            start.elapsed() < bound,
+            "groups {live:?} outlived their daemon"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
