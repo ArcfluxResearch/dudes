@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test, { before, after } from 'node:test';
 
@@ -89,13 +89,27 @@ test('no notice reserves room: the page has no rail, no bottom padding for it, a
   assert.match(shellRoot, /max-\[801px\]:pt-\[var\(--banner-height,0px\)\]/, 'a phone makes room for its fixed banner and nothing else');
 });
 
-test('the banner rides at the top of a page dialog instead of covering the top bar', async () => {
-  const shell = await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8');
-  const projects = await readFile(resolve(import.meta.dirname, '../src/renderer/project/ProjectsView.tsx'), 'utf8');
+test('the banner rides at the top of every modal dialog instead of covering the top bar', async () => {
+  const source = resolve(import.meta.dirname, '../src');
+  const shell = await readFile(resolve(source, 'shell.tsx'), 'utf8');
   const hosted = /const BANNER_IN_DIALOG = '([^']*)';/.exec(shell)?.[1].split(',').map((part) => part.trim());
-  assert.deepEqual(hosted, ['.ticket-dialog', '.project-dialog']);
-  assert.match(shell, /modal\.matches\(BANNER_IN_DIALOG\) \? 'sticky' : 'fixed'/, 'a fixed banner sits over the top bar the dialog leaves in view');
-  assert.match(projects, /className="project-dialog"/, 'the Add project dialog is the one the shell hosts the banner in');
-  assert.match(await readFile(resolve(import.meta.dirname, '../src/renderer/notices/look.tsx'), 'utf8'), /data-\[host=sticky\]:sticky data-\[host=sticky\]:top-0/,
-    'the sticky host keeps the banner at the dialog top');
+  assert.deepEqual(hosted, ['.hire-dialog', '.retire-dialog', '.ticket-dialog', '.overview-dialog', '.project-dialog']);
+  assert.match(shell, /noticeBanner\.dataset\.host = modal === null \? 'top' : 'sticky'/, 'a modal never gets a banner fixed over the top bar it leaves in view');
+  const look = await readFile(resolve(source, 'renderer/notices/look.tsx'), 'utf8');
+  assert.match(look, /data-\[host=sticky\]:sticky data-\[host=sticky\]:top-0/, 'the sticky host keeps the banner at the dialog top');
+  assert.doesNotMatch(look, /data-\[host=fixed\]/, 'no host pins the banner to the window over a dialog');
+  const popups = ['command-menu', 'shortcut-help'];
+  const modals = new Map();
+  for (const file of await readdir(source, { recursive: true, encoding: 'utf8' })) {
+    if (!/\.tsx$/.test(file) || file.startsWith('ui/')) continue;
+    const text = await readFile(resolve(source, file), 'utf8');
+    if (!/showModal\(\)|ref=\{openConfirmation\}/.test(text)) continue;
+    for (const [, classes] of text.matchAll(/<Dialog\b[^>]*?className="([^"]*)"/gs)) {
+      for (const name of classes.split(/\s+/).filter((part) => /(?:dialog|menu|help)$/.test(part))) modals.set(name, file);
+    }
+  }
+  assert.ok(modals.size >= 7, 'the scan finds the dialogs the Floor opens');
+  for (const [name, file] of modals) {
+    assert.ok(hosted.includes(`.${name}`) || popups.includes(name), `${file} opens a modal .${name} that the banner does not ride in`);
+  }
 });

@@ -20,7 +20,7 @@ export const NOTICE_AREA = cn(
   'in-data-[focus=true]:max-h-[min(40dvh,224px)] max-[801px]:max-h-[min(40dvh,224px)]',
 );
 export const NOTICE_BANNER = cn(
-  'notice-banner relative z-(--layer-notices) box-border data-[host=fixed]:fixed data-[host=fixed]:inset-x-0 data-[host=fixed]:top-0',
+  'notice-banner relative z-(--layer-notices) box-border',
   'data-[host=sticky]:sticky data-[host=sticky]:top-0 max-[801px]:data-[host=top]:fixed max-[801px]:data-[host=top]:inset-x-0 max-[801px]:data-[host=top]:top-0',
 );
 
