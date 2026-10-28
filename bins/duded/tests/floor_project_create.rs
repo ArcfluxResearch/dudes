@@ -188,7 +188,88 @@ fn floor(setup: Setup) -> Floor {
     }
 }
 
+/// A `git` that stops at the first commit until the test lets it go, so a test can act while a
+/// creation is half done.
+struct HeldCommit {
+    _dir: tempfile::TempDir,
+    path: OsString,
+    marker: PathBuf,
+    release: PathBuf,
+}
+
+impl HeldCommit {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("shim");
+        let base = dir.path().canonicalize().expect("canonical");
+        let (marker, release) = (base.join("held"), base.join("release"));
+        let script = base.join("git");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncase \" $* \" in *\" commit \"*)\n: > '{}'\nn=0\n\
+                 while [ ! -e '{}' ] && [ $n -lt 200 ]; do sleep 0.05; n=$((n+1)); done;;\nesac\n\
+                 exec '{}' \"$@\"\n",
+                marker.display(),
+                release.display(),
+                system_git().display()
+            ),
+        )
+        .expect("shim");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("exec");
+        // The first run of a new script is slow on some systems; take that cost now.
+        let spec = LaunchSpec {
+            argv: vec![script.clone().into_os_string(), OsString::from("--version")],
+            env: vec![EnvVar::new(
+                "PATH",
+                std::env::var_os("PATH").unwrap_or_default(),
+            )],
+            cwd: base.clone(),
+            stdin: LaunchInput::Null,
+        };
+        Real(Arc::new(OneShot::new()))
+            .run(&spec, Duration::from_secs(30))
+            .expect("shim runs");
+        Self {
+            path: base.into_os_string(),
+            _dir: dir,
+            marker,
+            release,
+        }
+    }
+
+    fn setup(&self) -> Setup {
+        Setup {
+            path: Some(self.path.clone()),
+            ..Setup::default()
+        }
+    }
+
+    fn wait_until_held(&self) {
+        for _ in 0..200 {
+            if self.marker.exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("the creation never reached the commit");
+    }
+
+    fn release(&self) {
+        std::fs::write(&self.release, "").expect("release");
+    }
+}
+
 impl Floor {
+    /// Send the creation of `name` from another thread, so the test can act while it runs.
+    fn create_in_background(&self, name: &str) -> std::thread::JoinHandle<(u16, Value)> {
+        let page = Arc::clone(&self.page);
+        let body = json!({"name": name, "attempt_id": ATTEMPT});
+        std::thread::spawn(move || {
+            let reply = page.post(CREATE, &body);
+            (reply.status(), reply.json())
+        })
+    }
+
     fn create(&self, body: &Value) -> (u16, Value) {
         let reply = self.page.post(CREATE, body);
         (reply.status(), reply.json())
@@ -578,5 +659,105 @@ fn no_git_means_no_folder() {
     });
     floor.refused("child", "git_unavailable");
     assert_eq!(floor.entries(), Vec::<String>::new());
+    floor.finish();
+}
+
+/// While a creation runs, the same attempt is told to wait, and the same attempt for another name
+/// is a conflict. When it finishes, the first try gets the project.
+#[test]
+fn a_retry_while_the_first_try_runs_is_told_to_wait() {
+    let held = HeldCommit::new();
+    let floor = floor(held.setup());
+    let first = floor.create_in_background("slow");
+    held.wait_until_held();
+
+    let (status, body) = floor.named("slow", ATTEMPT);
+    assert_eq!(
+        (status, body),
+        (202, json!({"attempt_id": ATTEMPT, "state": "pending"}))
+    );
+    let reply = floor
+        .page
+        .post(CREATE, &json!({"name": "other", "attempt_id": ATTEMPT}));
+    assert_eq!(
+        reply.status(),
+        409,
+        "the attempt is in use for another name"
+    );
+
+    held.release();
+    let (status, created) = first.join().expect("first try");
+    assert_eq!(
+        (status, created["project_id"].as_str()),
+        (200, Some("slow")),
+        "{created}"
+    );
+    assert_eq!(floor.entries(), ["slow"]);
+    floor.finish();
+}
+
+/// A file edited after the plan was read is not overwritten: the enrollment refuses before it
+/// touches the file, and the folder this attempt made is removed.
+#[test]
+fn a_file_edited_during_the_creation_is_left_alone_and_the_folder_removed() {
+    let held = HeldCommit::new();
+    let floor = floor(held.setup());
+    let first = floor.create_in_background("racing");
+    held.wait_until_held();
+    let mut edited = std::fs::read_to_string(&floor.config).expect("operator file");
+    edited.push_str("# edited by hand\n");
+    std::fs::write(&floor.config, &edited).expect("edit");
+    held.release();
+
+    let (status, body) = first.join().expect("first try");
+    assert_eq!(
+        (status, body),
+        (
+            409,
+            json!({"state": "refused", "reason": "config_changed", "config": "unchanged"})
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(&floor.config).expect("file"),
+        edited
+    );
+    assert_eq!(floor.entries(), Vec::<String>::new(), "the folder was left");
+    floor.finish();
+}
+
+/// A parent the file no longer names is not used, even though the daemon still has the old one:
+/// the folder made beneath the old parent is removed and the file is not touched.
+#[test]
+fn a_parent_the_file_no_longer_names_removes_the_folder() {
+    let floor = floor(Setup::default());
+    let other = floor
+        .root
+        .path()
+        .canonicalize()
+        .expect("root")
+        .join("other");
+    std::fs::create_dir(&other).expect("other");
+    let text = std::fs::read_to_string(&floor.config).expect("operator file");
+    let edited = text.replace(
+        floor.parent.to_str().expect("UTF-8"),
+        other.to_str().expect("UTF-8"),
+    );
+    assert_ne!(edited, text);
+    std::fs::write(&floor.config, &edited).expect("edit");
+
+    let (status, body) = floor.named("child", ATTEMPT);
+    assert_eq!(
+        (status, body),
+        (
+            409,
+            json!({"state": "refused", "reason": "config_changed", "config": "unchanged"})
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(&floor.config).expect("file"),
+        edited
+    );
+    assert_eq!(floor.entries(), Vec::<String>::new(), "the folder was left");
+    assert_eq!(std::fs::read_dir(&other).expect("other").count(), 0);
     floor.finish();
 }

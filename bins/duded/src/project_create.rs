@@ -7,7 +7,10 @@
 //! or reload meets `busy`.
 //!
 //! The folder is never the page's to name. The page sends a child name, and the folder is made
-//! with `mkdirat` beneath a parent opened one component at a time without following links.
+//! with `mkdirat` beneath a parent opened one component at a time without following links. Git
+//! runs in the folder by its path, and the folder is checked against the handle held for it just
+//! before the first git step and again after the last. A process of the same user that swaps the
+//! folder for a link between those checks and the steps can still make git run elsewhere.
 //!
 //! # When the folder is removed
 //!
@@ -95,8 +98,8 @@ pub(crate) enum Outcome {
     Unavailable,
 }
 
-/// An outcome, and whether this attempt made a folder. Only such an outcome is remembered: a
-/// refusal that touched nothing is safe to try again, and a retry may even want to.
+/// An outcome, and whether it leaves a folder this attempt made. Only such an outcome is
+/// remembered: a refusal that touched nothing, or removed what it made, is safe to try again.
 #[derive(Clone, Debug)]
 pub(crate) struct Done {
     pub(crate) outcome: Outcome,
@@ -114,6 +117,23 @@ impl Done {
     fn refused(reason: Reason) -> Self {
         Self::untouched(Outcome::Refused(Refused::plain(reason)))
     }
+
+    /// The outcome of an attempt that made a folder.
+    #[cfg_attr(
+        not(unix),
+        allow(dead_code, reason = "only a Unix creation makes a folder")
+    )]
+    fn made(outcome: Outcome) -> Self {
+        let made_folder = match &outcome {
+            Outcome::Created(_) => true,
+            Outcome::Refused(refused) => refused.left_behind.is_some(),
+            Outcome::Forbidden | Outcome::Unavailable => false,
+        };
+        Self {
+            outcome,
+            made_folder,
+        }
+    }
 }
 
 /// What the results hold for an attempt.
@@ -127,10 +147,57 @@ pub(crate) enum Lookup {
 /// A session's finished creations, oldest first: attempt, the request's digest and the outcome.
 type Finished = VecDeque<(Hex32, Hex32, Outcome)>;
 
+/// The finished creations of each session, and when each session was last used.
+#[derive(Debug, Default)]
+struct Store {
+    tick: u64,
+    sessions: BTreeMap<[u8; 32], (u64, Finished)>,
+}
+
+impl Store {
+    fn lookup(&mut self, key: [u8; 32], attempt: Hex32, digest: Hex32) -> Lookup {
+        let Some((used, results)) = self.sessions.get_mut(&key) else {
+            return Lookup::Miss;
+        };
+        self.tick += 1;
+        *used = self.tick;
+        results.iter().find(|(id, ..)| *id == attempt).map_or(
+            Lookup::Miss,
+            |(_, found, outcome)| {
+                if *found == digest {
+                    Lookup::Hit(outcome.clone())
+                } else {
+                    Lookup::Mismatch
+                }
+            },
+        )
+    }
+
+    fn remember(&mut self, key: [u8; 32], attempt: Hex32, digest: Hex32, outcome: Outcome) {
+        if self.sessions.len() >= MOST_SESSIONS && !self.sessions.contains_key(&key) {
+            let least_recent = self
+                .sessions
+                .iter()
+                .min_by_key(|(_, (used, _))| *used)
+                .map(|(key, _)| *key);
+            if let Some(key) = least_recent {
+                self.sessions.remove(&key);
+            }
+        }
+        self.tick += 1;
+        let (used, results) = self.sessions.entry(key).or_default();
+        *used = self.tick;
+        if results.len() >= MOST_RESULTS {
+            results.pop_front();
+        }
+        results.push_back((attempt, digest, outcome));
+    }
+}
+
 /// The finished creations of each live session, for the length of the run.
 #[derive(Debug, Default)]
 pub(crate) struct CreateResults {
-    sessions: Mutex<BTreeMap<[u8; 32], Finished>>,
+    store: Mutex<Store>,
 }
 
 impl CreateResults {
@@ -140,21 +207,12 @@ impl CreateResults {
         attempt: Hex32,
         digest: Hex32,
     ) -> Lookup {
-        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut store = self.store.lock().unwrap_or_else(PoisonError::into_inner);
         if !session.is_valid() {
-            sessions.remove(&session.limit_key());
+            store.sessions.remove(&session.limit_key());
             return Lookup::Miss;
         }
-        sessions
-            .get(&session.limit_key())
-            .and_then(|results| results.iter().find(|(id, ..)| *id == attempt))
-            .map_or(Lookup::Miss, |(_, found, outcome)| {
-                if *found == digest {
-                    Lookup::Hit(outcome.clone())
-                } else {
-                    Lookup::Mismatch
-                }
-            })
+        store.lookup(session.limit_key(), attempt, digest)
     }
 
     pub(crate) fn remember(
@@ -164,19 +222,12 @@ impl CreateResults {
         digest: Hex32,
         outcome: Outcome,
     ) {
-        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut store = self.store.lock().unwrap_or_else(PoisonError::into_inner);
         if !session.is_valid() {
-            sessions.remove(&session.limit_key());
+            store.sessions.remove(&session.limit_key());
             return;
         }
-        if sessions.len() >= MOST_SESSIONS && !sessions.contains_key(&session.limit_key()) {
-            sessions.pop_first();
-        }
-        let results = sessions.entry(session.limit_key()).or_default();
-        if results.len() >= MOST_RESULTS {
-            results.pop_front();
-        }
-        results.push_back((attempt, digest, outcome));
+        store.remember(session.limit_key(), attempt, digest, outcome);
     }
 }
 
@@ -214,8 +265,9 @@ mod unix {
     /// `--initial-branch` arrived in git 2.28.
     const MINIMUM_GIT: (u32, u32) = (2, 28);
 
-    /// How long any one git step may take. A new repository takes milliseconds.
-    const STEP: Duration = Duration::from_secs(30);
+    /// How long any one git step may take. A new repository takes milliseconds, so the six steps
+    /// hold the reload lock for 30 seconds at the very most.
+    const STEP: Duration = Duration::from_secs(5);
 
     const FIRST_COMMIT: &str = "Initialize project";
     const AUTHOR: &str = "Dudes <dudes@localhost>";
@@ -263,29 +315,20 @@ mod unix {
             Err(MakeError::Exists) => return Done::refused(Reason::Exists),
             Err(MakeError::Unusable) => return Done::refused(Reason::ParentUnusable),
         };
-        let made = |outcome| Done {
-            outcome,
-            made_folder: true,
-        };
-
+        if !confirmed(&parent, &child) {
+            return Done::made(Outcome::Refused(unconfirmed(&child)));
+        }
         if let Err(error) = start_repository(git, &child.path) {
             tracing::warn!(%error, "floor project create: the repository did not start");
-            return made(Outcome::Refused(cleaned(
+            return Done::made(Outcome::Refused(cleaned(
                 &parent,
                 &child,
                 Reason::CreateFailed,
                 ConfigState::Unchanged,
             )));
         }
-        if !parent.is_at_path() || !parent.holds(&child) {
-            return made(Outcome::Refused(Refused {
-                code: Reason::CreateFailed.code(),
-                left_behind: Some(LeftBehind {
-                    path: child.path.clone(),
-                    verified: false,
-                }),
-                config: None,
-            }));
+        if !confirmed(&parent, &child) {
+            return Done::made(Outcome::Refused(unconfirmed(&child)));
         }
 
         let enroll = Enroll {
@@ -298,7 +341,7 @@ mod unix {
             seq,
         };
         match handle.project(session.clone(), ProjectRequest::CreateEnroll(enroll)) {
-            Ok(ProjectAnswer::Enrolled(Ok(added))) => made(Outcome::Created(Created {
+            Ok(ProjectAnswer::Enrolled(Ok(added))) => Done::made(Outcome::Created(Created {
                 added,
                 folder: child.path,
             })),
@@ -306,14 +349,14 @@ mod unix {
                 reason,
                 replaced: false,
                 ..
-            }))) => made(Outcome::Refused(cleaned(
+            }))) => Done::made(Outcome::Refused(cleaned(
                 &parent,
                 &child,
                 reason,
                 ConfigState::Unchanged,
             ))),
             Ok(ProjectAnswer::Enrolled(Err(EnrollFailure { reason, config, .. }))) => {
-                made(Outcome::Refused(Refused {
+                Done::made(Outcome::Refused(Refused {
                     code: reason.code(),
                     left_behind: Some(LeftBehind {
                         path: child.path,
@@ -322,13 +365,13 @@ mod unix {
                     config: Some(config),
                 }))
             }
-            Ok(_) => made(Outcome::Refused(cleaned(
+            Ok(_) => Done::made(Outcome::Refused(cleaned(
                 &parent,
                 &child,
                 Reason::CreateFailed,
                 ConfigState::Unchanged,
             ))),
-            Err(Refusal::Unavailable) => made(Outcome::Refused(Refused {
+            Err(Refusal::Unavailable) => Done::made(Outcome::Refused(Refused {
                 code: Reason::ConfigChanged.code(),
                 left_behind: Some(LeftBehind {
                     path: child.path,
@@ -348,7 +391,7 @@ mod unix {
                     other if refused.left_behind.is_none() => return Done::untouched(other),
                     _ => {}
                 }
-                made(Outcome::Refused(refused))
+                Done::made(Outcome::Refused(refused))
             }
         }
     }
@@ -367,10 +410,27 @@ mod unix {
         }
     }
 
+    /// Whether the folder is still the one this attempt made, in the parent it was made in.
+    fn confirmed(parent: &Parent, child: &Child) -> bool {
+        parent.is_at_path() && parent.holds(child)
+    }
+
+    /// The refusal when the folder could not be confirmed to be the one this attempt made.
+    fn unconfirmed(child: &Child) -> Refused {
+        Refused {
+            code: Reason::CreateFailed.code(),
+            left_behind: Some(LeftBehind {
+                path: child.path.clone(),
+                verified: false,
+            }),
+            config: None,
+        }
+    }
+
     /// The refusal after a failure before the file was touched: the folder removed when it is
     /// still the one this attempt made and holds what the start left, else left and named.
     fn cleaned(parent: &Parent, child: &Child, reason: Reason, config: ConfigState) -> Refused {
-        let verified = parent.is_at_path() && parent.holds(child);
+        let verified = confirmed(parent, child);
         let removed = verified && parent.remove(child).is_ok();
         Refused {
             code: reason.code(),
@@ -460,7 +520,7 @@ mod unix {
         {
             return Err(wrong("history"));
         }
-        git.commit(folder, "HEAD").map(|_| ())
+        Ok(())
     }
 
     /// A directory with nothing in it, for `git init` to copy instead of any template of its own.
@@ -471,7 +531,8 @@ mod unix {
             use std::fmt::Write as _;
             use std::os::unix::fs::DirBuilderExt as _;
             let mut salt = [0u8; 8];
-            getrandom::fill(&mut salt).expect("the operating system's entropy source");
+            getrandom::fill(&mut salt)
+                .map_err(|error| GitError::Failed(format!("no empty template: {error}")))?;
             let mut name = String::from("dudes-empty-template-");
             for byte in salt {
                 let _ = write!(name, "{byte:02x}");
@@ -770,5 +831,84 @@ mod unix {
             std::fs::create_dir(path.join("home")).expect("a new folder under the old name");
             assert!(!parent.is_at_path());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(byte: u8) -> Hex32 {
+        Hex32::new([byte; 32])
+    }
+
+    fn recalled(store: &mut Store, key: u8, attempt: u8) -> &'static str {
+        match store.lookup([key; 32], id(attempt), id(attempt)) {
+            Lookup::Hit(_) => "hit",
+            Lookup::Mismatch => "mismatch",
+            Lookup::Miss => "miss",
+        }
+    }
+
+    #[test]
+    fn a_session_remembers_its_last_thirty_two_results() {
+        let mut store = Store::default();
+        for attempt in 0..33 {
+            store.remember([1; 32], id(attempt), id(attempt), Outcome::Unavailable);
+        }
+        assert_eq!(recalled(&mut store, 1, 0), "miss", "the oldest was dropped");
+        assert_eq!(recalled(&mut store, 1, 1), "hit");
+        assert_eq!(recalled(&mut store, 1, 32), "hit");
+        assert_eq!(store.sessions[&[1; 32]].1.len(), 32);
+    }
+
+    #[test]
+    fn an_attempt_reused_for_another_request_is_a_mismatch() {
+        let mut store = Store::default();
+        store.remember([1; 32], id(7), id(8), Outcome::Unavailable);
+        assert!(matches!(
+            store.lookup([1; 32], id(7), id(9)),
+            Lookup::Mismatch
+        ));
+        assert!(matches!(
+            store.lookup([1; 32], id(7), id(8)),
+            Lookup::Hit(Outcome::Unavailable)
+        ));
+        assert!(matches!(store.lookup([2; 32], id(7), id(8)), Lookup::Miss));
+    }
+
+    #[test]
+    fn the_session_unused_the_longest_is_the_one_dropped() {
+        let mut store = Store::default();
+        for key in 0..64 {
+            store.remember([key; 32], id(1), id(1), Outcome::Unavailable);
+        }
+        assert_eq!(recalled(&mut store, 0, 1), "hit", "key 0 is used again");
+        store.remember([64; 32], id(1), id(1), Outcome::Unavailable);
+        assert_eq!(store.sessions.len(), 64);
+        assert_eq!(recalled(&mut store, 1, 1), "miss", "unused the longest");
+        assert_eq!(recalled(&mut store, 0, 1), "hit", "lowest key, but in use");
+        assert_eq!(recalled(&mut store, 64, 1), "hit");
+        store.remember([0; 32], id(2), id(2), Outcome::Unavailable);
+        assert_eq!(store.sessions.len(), 64, "a known session adds no entry");
+    }
+
+    #[test]
+    fn only_an_outcome_that_leaves_a_folder_is_remembered() {
+        let refusal = |left_behind| {
+            Done::made(Outcome::Refused(Refused {
+                code: "create_failed",
+                left_behind,
+                config: Some(ConfigState::Unchanged),
+            }))
+        };
+        assert!(!refusal(None).made_folder, "the folder was removed");
+        let left = LeftBehind {
+            path: PathBuf::from("/work/app"),
+            verified: true,
+        };
+        assert!(refusal(Some(left)).made_folder);
+        assert!(!Done::made(Outcome::Unavailable).made_folder);
+        assert!(!Done::refused(Reason::Busy).made_folder);
     }
 }

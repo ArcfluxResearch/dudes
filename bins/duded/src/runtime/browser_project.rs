@@ -277,17 +277,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if replaced && self.adopt(path, written, seq, added, removed) {
             return Ok(());
         }
-        Err(match dudes_config::workspace::read_bytes(path) {
-            Ok(now) if now.as_deref() == Some(written) => {
-                if dudes_config::workspace::restore(path, previous).is_ok() {
-                    ConfigState::Restored
-                } else {
-                    ConfigState::Failed
-                }
-            }
-            Ok(now) if now.as_deref() == previous => ConfigState::Unchanged,
-            _ => ConfigState::Conflict,
-        })
+        Err(config_after_failure(path, previous, written))
     }
 
     /// What creating a project needs from the loop: the parent the operator's file names, and
@@ -384,7 +374,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .ctx
             .enrollment
             .profile(&id)
-            .ok_or_else(|| after(ConfigState::Unchanged))?;
+            .ok_or_else(|| after(ConfigState::Unknown))?;
         Ok(self.added(profile))
     }
 
@@ -464,6 +454,22 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 }
 
+/// What the operator's file holds after `written` could not be adopted, putting `previous` back
+/// when the file still holds `written`.
+fn config_after_failure(path: &Path, previous: Option<&[u8]>, written: &[u8]) -> ConfigState {
+    match dudes_config::workspace::read_bytes(path) {
+        Ok(now) if now.as_deref() == Some(written) => {
+            if dudes_config::workspace::restore(path, previous).is_ok() {
+                ConfigState::Restored
+            } else {
+                ConfigState::Failed
+            }
+        }
+        Ok(now) if now.as_deref() == previous => ConfigState::Unchanged,
+        _ => ConfigState::Conflict,
+    }
+}
+
 /// The SHA-256 of an operator file's bytes; a missing file digests as empty.
 fn file_digest(bytes: Option<&[u8]>) -> dudes_proto::record::Hex32 {
     dudes_proto::record::Hex32::new(sha2::Sha256::digest(bytes.unwrap_or_default()).into())
@@ -495,5 +501,47 @@ const fn uncapped_goal() -> GoalBudget {
     GoalBudget {
         usd: None,
         tokens: None,
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn the_file_is_reported_as_it_is_after_a_failed_adoption() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("config.toml");
+        let (old, new): (&[u8], &[u8]) = (b"old = 1\n", b"new = 2\n");
+
+        std::fs::write(&path, new).expect("ours");
+        assert_eq!(
+            config_after_failure(&path, Some(old), new),
+            ConfigState::Restored
+        );
+        assert_eq!(std::fs::read(&path).expect("file"), old);
+
+        assert_eq!(
+            config_after_failure(&path, Some(old), new),
+            ConfigState::Unchanged,
+            "never replaced"
+        );
+
+        std::fs::write(&path, b"someone = 3\n").expect("theirs");
+        assert_eq!(
+            config_after_failure(&path, Some(old), new),
+            ConfigState::Conflict
+        );
+        assert_eq!(std::fs::read(&path).expect("file"), b"someone = 3\n");
+
+        std::fs::write(&path, new).expect("ours again");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))
+            .expect("read-only folder");
+        let failed = config_after_failure(&path, Some(old), new);
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("writable folder");
+        assert_eq!(failed, ConfigState::Failed);
+        assert_eq!(std::fs::read(&path).expect("file"), new);
     }
 }

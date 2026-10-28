@@ -305,7 +305,16 @@ test('creating a project sends only a name under one attempt, and tells the pers
     await add.createNamed('odd', deps);
     const odd = shown();
     assert.match(odd, /could not confirm that this is the folder it made, so look inside before you delete anything/);
-    assert.match(odd, /check that it does not list this project/);
+    assert.match(odd, /check whether it lists this project/);
+
+    add.resetCreate();
+    script.push(Promise.resolve(reply(409, {
+      state: 'refused', reason: 'config_changed', config: 'unknown', left_behind: { path: '/work/projects/lost', verified: true },
+    })));
+    await add.createNamed('lost', deps);
+    const lost = shown();
+    assert.match(lost, /check whether it lists this project/);
+    assert.doesNotMatch(lost, /as it was/);
 
     add.resetCreate();
     script.push(Promise.resolve(reply(409, { state: 'refused', reason: 'create_failed' })));

@@ -310,7 +310,8 @@ pub enum ConfigState {
     Conflict,
     /// It held our bytes and could not be put back.
     Failed,
-    /// The daemon did not answer, so what the file holds is not known.
+    /// The daemon did not answer, or did not report the project once the file held it, so what
+    /// the file holds is not known to the caller.
     Unknown,
 }
 

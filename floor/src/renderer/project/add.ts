@@ -445,7 +445,7 @@ export function createRefusalLines(refusal: CreateRefusal, name: string, parent:
   }
   if (refusal.config === 'restored' || refusal.config === 'unchanged') lines.push('The settings file is as it was.');
   if (refusal.config === 'conflict' || refusal.config === 'failed' || refusal.config === 'unknown') {
-    lines.push('Dudes could not confirm what the settings file holds, so check that it does not list this project.');
+    lines.push('Dudes could not confirm what the settings file holds, so check whether it lists this project.');
   }
   return lines;
 }
