@@ -3529,7 +3529,15 @@ pub mod samples {
             }
             RecordKind::TurnIssuedWithRepositories => {
                 let Record::AgentHiredWithRepositories(hire) = record(RecordKind::AgentHiredWithRepositories) else { unreachable!() };
-                let grant = crate::repository::RepositoryTurnGrant::select(Lsn::from_parts(1, 512).unwrap(), &hire.repositories, None).unwrap();
+                let scope = hire.repositories;
+                let grant = crate::repository::RepositoryTurnGrant {
+                    hired_lsn: Lsn::from_parts(1, 512).unwrap(),
+                    project: scope.project.id,
+                    catalog_lsn: scope.catalog_lsn,
+                    policy: scope.policy,
+                    repositories: scope.repositories,
+                    ticket: None,
+                };
                 let payload = record(RecordKind::TurnIssued).issue_payload().unwrap().to_owned();
                 Record::TurnIssuedWithRepositories(Box::new(crate::repository::RepositoryTurnIssued { grant, payload }))
             }

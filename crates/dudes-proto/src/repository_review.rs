@@ -9,7 +9,7 @@ use crate::diff_stamp::{
     SamplerVersions, StampPayload, TicketBinding,
 };
 use crate::record::FileIdentity;
-use crate::repository::{HireRepositories, RepoId, ScopedRepositories, TicketRepositoryRound};
+use crate::repository::{HireRepositories, RepoId, ScopedHireRepositories, TicketRepositoryRound};
 use crate::repository_state::history::RepositoryStateError;
 use crate::{DiffFreshness, DiffRefusal, Evidence, Predicate, Record};
 
@@ -516,7 +516,7 @@ fn authority<'a>(
     binding: RepositoryReviewBinding,
     facts: ReviewFacts<'a>,
     review: &RepositoryReview,
-) -> Result<&'a ScopedRepositories, RepositoryStateError> {
+) -> Result<&'a ScopedHireRepositories, RepositoryStateError> {
     let round = facts.round.ok_or(RepositoryStateError::Review)?;
     let authority = round
         .authority
@@ -539,7 +539,7 @@ fn authority<'a>(
         || hire
             .repositories
             .get(&authority.check_repo)
-            .is_none_or(|repo| repo.execution != authority.check_root)
+            .is_none_or(|repo| repo.recorded.execution != authority.check_root)
         || !authority
             .declaration
             .repositories
@@ -646,7 +646,7 @@ fn fold_baseline(
             .get(&member.repo_id)
             .ok_or(RepositoryStateError::Review)?;
         if let BaselineOutcome::Captured { device, inode, .. } = member.outcome
-            && repo.execution.directory_identity != (FileIdentity { device, inode })
+            && repo.recorded.execution.directory_identity != (FileIdentity { device, inode })
         {
             return Err(RepositoryStateError::Review);
         }
@@ -690,7 +690,7 @@ fn fold_stamp(
             && (hire
                 .repositories
                 .get(&member.repo_id)
-                .is_none_or(|repo| repo.execution.directory_identity != root)
+                .is_none_or(|repo| repo.recorded.execution.directory_identity != root)
                 || !matches!(before.outcome, BaselineOutcome::Captured { device, inode, .. } if root == (FileIdentity { device, inode })))
         {
             return Err(RepositoryStateError::Review);

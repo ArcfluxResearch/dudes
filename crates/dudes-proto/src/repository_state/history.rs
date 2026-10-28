@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::Record;
 use crate::record::{TrustPin, TrustedRepository};
 use crate::repository::{
-    CatalogRepository, HireRepositories, RepoId, RepositorySet, ScopedRepositories,
-    TicketDeclaration, TicketRepositories,
+    CatalogRepository, HireRepositories, HiredRepository, RepoId, RepositoryEntry, RepositorySet,
+    ScopedHireRepositories, ScopedRepositories, SingletonRepository, TicketDeclaration,
+    TicketRepositories,
 };
 
 /// Immutable observed revisions and permanent id bindings for one project.
@@ -80,7 +81,7 @@ pub struct RepositoryHistoryFacts<'a> {
     /// Leases named by a hire.
     pub leases: &'a [RepositoryLease<'a>],
     /// Live restricted hires that a newly observed revision must preserve.
-    pub active_hires: &'a [&'a ScopedRepositories],
+    pub active_hires: &'a [&'a ScopedHireRepositories],
     /// Existing authority for the affected agent, when present.
     pub hire: Option<&'a HireRepositories>,
     /// Whether this identity has ever been hired, and under which repository class.
@@ -131,6 +132,8 @@ pub enum RepositoryHistoryChange {
         agent: AgentId,
         /// Lifetime repository class.
         class: RepositoryHireClass,
+        /// Complete normalized authority installed on the agent row.
+        repositories: HireRepositories,
     },
     /// A new immutable observed revision and its retained first bindings.
     Project(ProjectRepositoryHistory),
@@ -357,21 +360,31 @@ pub fn prepare(
     validate_shape(record)?;
     validate_ticket_record(lsn, record, before)?;
     if let Some(hire) = record.hire() {
-        let class = match hire.repositories {
-            crate::repository_state::HireRepositoryRecord::Legacy { .. } => {
+        let (class, repositories) = match hire.repositories {
+            crate::repository_state::HireRepositoryRecord::Legacy {
+                cwd,
+                workspace,
+                worktree,
+            } => {
                 if was_scoped(before) {
                     return Err(RepositoryStateError::Hire);
                 }
-                RepositoryHireClass::Legacy
+                (
+                    RepositoryHireClass::Legacy,
+                    HireRepositories::Legacy(SingletonRepository::recorded(
+                        cwd, workspace, worktree,
+                    )),
+                )
             }
-            crate::repository_state::HireRepositoryRecord::Scoped(scope) => {
-                validate_hire(lsn, scope, before)?;
-                RepositoryHireClass::Scoped
-            }
+            crate::repository_state::HireRepositoryRecord::Scoped(scope) => (
+                RepositoryHireClass::Scoped,
+                HireRepositories::Scoped(validate_hire(lsn, scope, before)?),
+            ),
         };
         return Ok(RepositoryHistoryChange::Hired {
             agent: hire.agent,
             class,
+            repositories,
         });
     }
     match record {
@@ -410,7 +423,7 @@ pub fn prepare(
                 if hire.repositories.entries().iter().any(|entry| {
                     repositories
                         .get(&entry.repo_id)
-                        .is_none_or(|repo| repo.origin != entry.value.origin)
+                        .is_none_or(|repo| repo.origin != entry.value.recorded.origin)
                 }) {
                     return Err(RepositoryStateError::Referenced);
                 }
@@ -673,7 +686,7 @@ fn validate_start(
         if hire
             .repositories
             .get(&entry.repo_id)
-            .is_none_or(|repo| repo.origin != entry.value)
+            .is_none_or(|repo| repo.recorded.origin != entry.value)
         {
             return Err(RepositoryStateError::Start);
         }
@@ -681,7 +694,7 @@ fn validate_start(
     if hire
         .repositories
         .get(&authority.check_repo)
-        .is_none_or(|repo| repo.execution != authority.check_root)
+        .is_none_or(|repo| repo.recorded.execution != authority.check_root)
     {
         return Err(RepositoryStateError::Start);
     }
@@ -691,7 +704,7 @@ fn validate_start(
 fn validate_current_hire(
     agent: AgentId,
     hired_lsn: Lsn,
-    hire: &ScopedRepositories,
+    hire: &ScopedHireRepositories,
     before: RepositoryHistoryFacts<'_>,
 ) -> Result<(), RepositoryStateError> {
     let history = before.project.ok_or(RepositoryStateError::Catalog)?;
@@ -714,7 +727,7 @@ fn validate_current_hire(
         }
     }
     for entry in hire.repositories.entries() {
-        let repo = &entry.value;
+        let repo = &entry.value.recorded;
         if before
             .leases
             .iter()
@@ -732,15 +745,14 @@ fn validate_current_hire(
         }
         if latest
             .get(&entry.repo_id)
-            .is_none_or(|repo| repo.origin != entry.value.origin)
+            .is_none_or(|current| current.origin != repo.origin)
             || before
                 .trust
                 .iter()
                 .find(|trust| trust.project == hire.project.id && trust.repo_id == entry.repo_id)
                 .is_none_or(|trust| {
-                    trust.lsn != entry.value.trust_lsn
-                        || trust.pin.is_none()
-                        || trust.origin != entry.value.origin
+                    trust.pin.as_ref() != Some(entry.value.original_pin())
+                        || trust.origin != repo.origin
                 })
         {
             return Err(RepositoryStateError::Trust);
@@ -786,7 +798,7 @@ fn validate_hire(
     lsn: Lsn,
     scope: &ScopedRepositories,
     before: RepositoryHistoryFacts<'_>,
-) -> Result<(), RepositoryStateError> {
+) -> Result<ScopedHireRepositories, RepositoryStateError> {
     if before.hire.is_some() || before.hire_class.is_some() {
         return Err(RepositoryStateError::Hire);
     }
@@ -811,6 +823,7 @@ fn validate_hire(
                 .map(|lease| first.min(lease.leased_lsn))
                 .ok_or(RepositoryStateError::Lease)
         })?;
+    let mut entries = Vec::with_capacity(scope.repositories.entries().len());
     for entry in scope.repositories.entries() {
         let repo = &entry.value;
         let trust = before
@@ -841,8 +854,21 @@ fn validate_hire(
         {
             return Err(RepositoryStateError::Lease);
         }
+        entries.push(RepositoryEntry {
+            repo_id: entry.repo_id.clone(),
+            value: HiredRepository::new(
+                repo.clone(),
+                trust.pin.clone().ok_or(RepositoryStateError::Trust)?,
+            ),
+        });
     }
-    Ok(())
+    Ok(ScopedHireRepositories {
+        project: scope.project.clone(),
+        catalog_lsn: scope.catalog_lsn,
+        policy: scope.policy,
+        repositories: RepositorySet::new(scope.repositories.primary_id().clone(), entries)
+            .map_err(|_| RepositoryStateError::Binding)?,
+    })
 }
 
 fn matches_catalog(catalog: &RepositorySet<CatalogRepository>, scope: &ScopedRepositories) -> bool {

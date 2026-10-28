@@ -54,7 +54,7 @@ pub(super) fn apply(
     facts: Facts<'_, '_>,
     lsn: Lsn,
     entry: &Entry,
-) -> Result<()> {
+) -> Result<Option<HireRepositories>> {
     let Facts {
         agents,
         leases,
@@ -112,7 +112,7 @@ pub(super) fn apply(
         && entry.record.ticket_start().is_none()
         && entry.record.ticket_edited().is_none()
     {
-        return Ok(());
+        return Ok(None);
     }
     let history: Option<ProjectRepositoryHistory> = project
         .map(|project| {
@@ -287,8 +287,13 @@ pub(super) fn apply(
     )
     .map_err(|reason| Error::Repository { lsn, reason })?;
     match change {
-        RepositoryHistoryChange::Hired { agent, class } => {
+        RepositoryHistoryChange::Hired {
+            agent,
+            class,
+            repositories,
+        } => {
             super::put_row(hires, &agent.to_bytes(), &class)?;
+            return Ok(Some(repositories));
         }
         RepositoryHistoryChange::Project(row) => {
             let bytes = serde_json::to_vec(&row).map_err(|source| Error::Row { source })?;
@@ -302,7 +307,7 @@ pub(super) fn apply(
         }
         RepositoryHistoryChange::Unchanged => {}
     }
-    Ok(())
+    Ok(None)
 }
 
 pub(super) fn export(
