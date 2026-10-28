@@ -21,6 +21,7 @@ import { DIGEST_CAVEAT, digestSentence } from './digest.ts';
 import { checkDisplayCurrent, currentDetail, editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
 import { RecoveredReview } from './RecoveredReview.tsx';
 import { History } from './TicketHistory.tsx';
+import { AskedQuestion } from './TicketQuestion.tsx';
 import { PRIORITY_OPTIONS, PRIORITY_WORDS, priorityOf } from './priority.ts';
 import type { Priority } from './priority.ts';
 import type { TicketDetail, TruncatedTicketField } from './detail.ts';
@@ -449,6 +450,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
     data-ticket-status={card.status} data-mode={mode} ref={focusSheet} tabIndex={-1} data-focus-on-leave="view-board">
     <h3 id="card-detail-title" tabIndex={-1} className="m-0 text-page leading-normal font-semibold wrap-anywhere focus:outline-none">{card.title}</h3>
     <Facts floor={floor} card={card} />
+    <AskedQuestion floor={floor} card={card} history={shown?.history ?? null} />
     <StuckActions floor={floor} card={card} onReviewRecovery={onReviewRecovery} />
     {shown?.context == null ? null : <RecoveredReview context={shown.context} fresh={fresh} />}
     {shown?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={shown.instruction_review}

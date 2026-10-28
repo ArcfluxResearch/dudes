@@ -117,13 +117,13 @@ test('Escape and the close button end the dialog and focus returns to the Overvi
   assert.match(shell, /\{view === null \|\| view === 'overview' \|\| focused \? null : <Control /);
 });
 
-test('a stream frame that still carries answered-question history is read without it and without a rejection', () => {
+test('a stream frame that carries answered-question history is read without a rejection, and the overview does not draw it', () => {
   const epoch = store.beginFloorEpoch();
   store.noteTransport('open');
-  store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 12, agents: [ada()] }, answer: SIBLING,
-    question_history: [{ agent_id: ADA, question_lsn: '8', answer_lsn: '9', question: 'Earlier ask' }] }), epoch);
+  store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', answer: SIBLING, projection: { lsn: 12, agents: [ada()],
+    question_history: [{ agent_id: ADA, question_lsn: '8', answer_lsn: '9', question: 'Earlier ask' }] } }), epoch);
   assert.equal(store.getFloorState().rejected, 0);
   assert.equal(store.getFloorState().agents.length, 1);
-  assert.equal('questionHistory' in store.getFloorState(), false);
+  assert.deepEqual(store.getFloorState().questionHistory, [{ agent: ADA, questionLsn: '8', question: 'Earlier ask' }]);
   assert.ok(!overview().includes('Earlier ask'));
 });

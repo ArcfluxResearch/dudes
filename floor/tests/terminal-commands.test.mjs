@@ -14,15 +14,18 @@ import {
  * Source lines in `src/renderer` that can show a terminal command. Lower it when you remove one.
  * It includes the one line that names `dudes open`, which every signed-out message draws: a page with
  * no session has nothing left to ask the daemon with, so only a terminal can get the person back in.
+ * It also includes the line on a ticket's question that says how to turn answering on, because the
+ * command line is the only place that switch lives.
  */
-const PLACES = 13;
+const PLACES = 14;
 /**
  * The different `dudes ...` commands those lines name. Lower it when the last mention of one goes.
  * It includes `dudes project trust`, the one named exit of the optional own-copy box on Hire, which
  * the page shows only for an untrusted project another agent already works in, and `dudes open`, the
- * way back in from a page that has no session.
+ * way back in from a page that has no session, and `dudes config set`, which a ticket's question
+ * names for turning answering on.
  */
-const DISTINCT_DUDES_COMMANDS = 9;
+const DISTINCT_DUDES_COMMANDS = 10;
 
 const renderer = resolve(import.meta.dirname, '../src/renderer');
 
