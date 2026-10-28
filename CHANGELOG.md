@@ -11,6 +11,31 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.100.0] - 2026-10-28
+
+### Highlights
+
+- **Find and browse tickets on the Board.** The Board gains a List layout beside the columns, a search box, and filters for project, agent, status and priority. The List can group its rows. Your layout, filters and grouping are remembered. (#274, #282)
+- **Move around the Board from the keyboard, and open a ticket as a page.** `/` searches, `c` starts a new ticket, `j` and `k` (or the arrow keys) move through the visible tickets, `b` and `l` switch layout, and `?` lists the shortcuts. Cmd+K on macOS or Ctrl+K elsewhere opens a command menu with New ticket, Open Board, Open List and your tickets by title. A ticket's **Full page** button fills the Board area with it, **Back** returns to the same layout, filters and scroll position, and **Copy link** gives an address that opens the ticket. (#276)
+- **Rank tickets with a priority and read a ticket's history.** A ticket can be Urgent, High, Medium or Low. A project's queue starts the Urgent ones first, then High, then Medium and unranked together by age, then Low. Board cards and List rows show a priority mark, and the new-ticket, edit and give forms and a quick control on a To do ticket set it. A ticket's page and dialog list its newest 48 events, newest first, and say how many older ones they leave out. (#280, #282)
+- **See an agent's question on its ticket.** When an agent asks a question while it works a ticket, the ticket shows the open question with the answer form under it, and the history records the asking and the answering. A ticket that is not Working says the answer goes to the agent's next work. With answering off the question is read-only and names the setting. (#283)
+- **A Projects page, and new projects from the Floor.** Projects shows a card for each project with its agents and tickets, a button that opens its Board, and Add project. With `floor.project.create_parent` set, the Add project dialog also offers **Create a new project**, which needs only a name, makes the folder and reports what became of it, including the exact path when a failure leaves one behind. (#278, #275)
+
+### Changes
+
+- The journal now records repository sets, per-repository trust, declared ticket repository authority, review baselines and copy hires. This is groundwork for tickets that span several repositories. No command or Floor screen offers it yet, and existing journals replay unchanged. (#262, #263, #265, #266, #267, #268)
+
+### Fixes
+
+- With about twelve or more agents the Floor no longer scrolls past the bottom of the window to reach the last roster label. (#256)
+- A window exactly 800 pixels wide no longer scrolls to over twice its height, and a phone-sized office stays inside the window. (#277)
+- The sign-in banner stays inside the Hire, Retire and Overview dialogs instead of covering the top bar. (#281)
+
+### Breaking
+
+- **The first start after the upgrade rebuilds the saved views once.** Dudes rebuilds the board views from the journal. Nothing is lost. (#280, #283)
+- **Going back to 0.99.1 ignores ticket priority.** An older daemon reads the journal, orders every project's queue by age, and shows no priority or history. Starting 0.100.0 again brings them back. (#280)
+
 ## [0.99.1] - 2026-10-27
 
 ### Fixes
@@ -484,7 +509,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.99.1...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.100.0...HEAD
+[0.100.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.99.1...v0.100.0
 [0.99.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.99.0...v0.99.1
 [0.99.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.98.0...v0.99.0
 [0.98.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.97.1...v0.98.0
