@@ -101,7 +101,7 @@ underscores, or hyphens. A recorded id cannot later name another origin. Duplica
 overlapping roots, and shared Git common directories are refused.
 
 The operator file uses `primary_repo` and ordered `repositories` instead of `cwd`. In an existing
-`[[floor.onboarding.workspaces]]` entry, replace its `cwd` line with:
+project entry, replace its `cwd` line with:
 
 ```toml
 primary_repo = "web"

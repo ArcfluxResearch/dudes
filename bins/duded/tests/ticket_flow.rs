@@ -1340,7 +1340,6 @@ fn a_check_that_cannot_run_sends_the_ticket_to_needs_you() {
 }
 
 const CHECK_CANNOT_RUN: &str = "The check cannot run: its program is missing, or it is a file inside the project that an agent could change. Install the program, or use one outside the project's repository. To use a script from the repository, run it through its interpreter, for example `sh test.sh` for a shell script; an agent can still edit that script, so review its changes before you accept the work. Then Give to agent. If the check itself is wrong, Remove this ticket and create it again.";
-const PROJECT_UNAVAILABLE: &str = "This project is not set up any more. Enroll it again with `dudes project add`, then Give to agent, or Remove the ticket.";
 const CEILING_REQUIRED: &str = "Set a spending limit first, because your account bills per use. Add one to the project's enrollment (`dudes project add`) or the agent's hire, then Give to agent.";
 const RESERVE_MISSING: &str = "A per-turn spending reserve is missing. Run `dudes config set budget.per_turn_floor.usd <dollars>` (or `budget.per_turn_floor.tokens <count>`), then Give to agent.";
 
@@ -1507,12 +1506,9 @@ fn an_agent_hired_without_a_project_starts_nothing() {
     flow.stop();
 }
 
-/// The reasons that only show at boot, because the hire that makes them possible cannot be
-/// made on a running daemon: a project that is no longer enrolled, a spending limit that is
-/// required and absent, and a per-turn reserve that is not set. Each moves a queued ticket to
-/// Needs you when the daemon starts, with the sentence for its reason, and starts nothing.
+/// An unresolved current project holds queued work. Budget and reserve refusals move it to Needs you.
 #[test]
-fn a_ticket_that_cannot_start_at_boot_goes_to_needs_you_with_its_reason() {
+fn boot_holds_unavailable_projects_and_reports_budget_refusals() {
     let card = CardId::from_parts(4, 1);
     let no_ceiling = AgentBudget {
         usd_per_day: None,
@@ -1526,12 +1522,12 @@ fn a_ticket_that_cannot_start_at_boot_goes_to_needs_you_with_its_reason() {
     };
     seed(&fixture, given("service", &repo, None, card));
     let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
-    assert_needs_you(
-        &mut flow,
-        card,
-        TicketReason::ProjectUnavailable,
-        PROJECT_UNAVAILABLE,
+    assert_eq!(flow.card(card).status, CardStatus::Claimed);
+    assert_eq!(
+        flow.read(card).waiting.unwrap().wait,
+        TicketWait::AgentPaused
     );
+    assert!(started_goals(&fixture.records()).is_empty());
     flow.stop();
 
     let fixture = Fixture::new();
@@ -1629,9 +1625,16 @@ fn a_ticket_start_and_a_goal_set_replay_to_the_same_world() {
     };
 
     let mut worlds = Vec::new();
+    let recorded_root = match &live[0] {
+        Record::AgentHired { cwd, .. } => cwd.clone(),
+        _ => unreachable!(),
+    };
     for ticket in [true, false] {
         let fixture = Fixture::new();
-        let (settings, repo) = enrolled(&fixture);
+        let (mut settings, _) = enrolled(&fixture);
+        settings.enrollment.profiles[0].cwd = recorded_root.clone();
+        settings.enrollment.profiles[0].written_cwd = recorded_root.clone();
+        let repo = recorded_root.clone();
         let records = if ticket {
             live[..=start].to_vec()
         } else {
@@ -1880,10 +1883,9 @@ fn a_started_ticket_records_its_baseline_before_its_first_turn() {
     flow.stop();
 }
 
-/// An agent whose recorded worktree has no lease has no readable tree. The round still records a
-/// finite unavailable baseline, before its first turn, and the turn is issued.
+/// An unknown recorded lease holds the agent before any baseline or issue.
 #[test]
-fn a_round_whose_agent_has_no_readable_tree_records_an_unavailable_baseline_and_still_issues() {
+fn a_round_with_an_unresolved_lease_stays_queued_without_issuing() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
     let card = CardId::from_parts(4, 1);
@@ -1893,34 +1895,23 @@ fn a_round_whose_agent_has_no_readable_tree_records_an_unavailable_baseline_and_
     };
     *worktree = Some(dudes_types::WorktreeId::from_bytes([0xab; 16]));
     seed(&fixture, records);
-    let flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
-    let (_, agent, goal, _) = Flow::await_turn_number(&fixture, 1);
-
-    let entries = fixture.entries();
-    let baseline_lsn = lsn_of_first(&entries, RecordKind::TicketBaselineRecorded);
-    assert!(baseline_lsn < lsn_of_first(&entries, RecordKind::TurnIssued));
-    let Some(Record::TicketBaselineRecorded { baseline, .. }) = entries
-        .iter()
-        .map(|(_, entry)| entry.record.clone())
-        .find(|record| record.kind() == RecordKind::TicketBaselineRecorded)
-    else {
-        panic!("the baseline was journaled")
-    };
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    assert_eq!(flow.card(card).status, CardStatus::Claimed);
     assert_eq!(
-        baseline.binding,
-        dudes_proto::diff_stamp::TicketBinding {
-            card,
-            round: 1,
-            goal,
-            claimant: agent,
-        }
+        flow.read(card).waiting.unwrap().wait,
+        TicketWait::AgentPaused
     );
-    assert_eq!(
-        baseline.outcome,
-        dudes_proto::diff_stamp::BaselineOutcome::Unavailable {
-            reason: dudes_proto::DiffRefusal::Unreadable
-        }
+    assert!(
+        fixture
+            .records()
+            .iter()
+            .all(|record| record.turn_issue().is_none()
+                && !matches!(
+                    record,
+                    Record::TicketBaselineRecorded { .. } | Record::TicketStarted { .. }
+                ))
     );
+    assert!(flow.host.spawned().is_empty());
     flow.stop();
 }
 
@@ -2054,9 +2045,7 @@ fn a_crash_before_completed_instruction_review_accepts_the_same_goal_once() {
     assert_eq!(started_goals(&records).len(), 1);
 }
 
-/// A ticket given back from Ready for you is not sent to Ready for you again on the previous
-/// round's pass. When its start is refused it ends in Needs you with the reason, and nothing
-/// moves it to Ready for you until a new start has a turn and an observed pass of its own.
+/// Unresolved current authority holds rework in its queue without reusing the previous round's pass.
 #[test]
 fn a_reworked_ticket_whose_start_is_refused_does_not_return_on_the_old_pass() {
     let card = CardId::from_parts(4, 1);
@@ -2124,21 +2113,17 @@ fn a_reworked_ticket_whose_start_is_refused_does_not_return_on_the_old_pass() {
     ]);
     seed(&fixture, records);
     let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
-    assert_needs_you(
-        &mut flow,
-        card,
-        TicketReason::ProjectUnavailable,
-        PROJECT_UNAVAILABLE,
+    assert_eq!(flow.card(card).status, CardStatus::Claimed);
+    assert_eq!(
+        flow.read(card).waiting.unwrap().wait,
+        TicketWait::AgentPaused
     );
     let after = settled(&fixture, fixture.records().len());
     flow.stop();
     assert_eq!(
         transitions(&after, card),
-        [
-            (CardStatus::Doing, CardStatus::Review, Actor::System),
-            (CardStatus::Claimed, CardStatus::Blocked, Actor::System),
-        ],
-        "the old pass moved the ticket once, and the refused start moved it to Needs you"
+        [(CardStatus::Doing, CardStatus::Review, Actor::System)],
+        "the old pass moved the ticket once; current admission holds rework in its queue"
     );
 }
 

@@ -49,6 +49,35 @@ fn hired(response: dudes_proto::rpc::Response) -> AgentId {
 }
 
 #[test]
+fn a_configured_legacy_hire_starts_its_first_goal_task() {
+    let fixture = Fixture::new();
+    let roots = tempfile::tempdir().unwrap();
+    let origin = create_origin(&roots.path().canonicalize().unwrap(), "web");
+    let (settings, _) = legacy_configured(&fixture, &origin.value.origin.directory);
+    let host = SharedHost::new();
+    let mut running = common::start(open(&settings, &host));
+    let agent = hired(plain_hire(&settings, &origin.value.origin.directory));
+    let mut goal = common::goal_params(agent, &[common::false_program()]);
+    goal.text = "Perform the configured first task".into();
+    let response = call(
+        &settings,
+        Method::GoalSet,
+        serde_json::to_value(goal).unwrap(),
+    );
+    assert!(response.error.is_none(), "{:?}", response.error);
+    fixture.await_record("configured first task spawn", |record| {
+        matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent).then_some(())
+    });
+    assert!(fixture.records().iter().any(|record| {
+        record.turn_issue().is_some_and(|issue| {
+            issue.agent == agent && issue.task.contains("configured first task")
+        })
+    }));
+    assert!(!host.spawned().is_empty());
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+#[test]
 fn an_unassigned_hire_cannot_resume_after_its_folder_becomes_an_explicit_member() {
     let fixture = Fixture::new();
     let roots = tempfile::tempdir().unwrap();

@@ -3474,6 +3474,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// The running profile whose id the agent's hire recorded, while it enrolls the directory the
     /// agent was hired from (a worktree hire's lease origin).
     fn agent_profile(&self, agent: AgentId) -> Result<Option<Profile>, GoalRefusal> {
+        if !self.ctx.repository_allowed(self.sup.world(), agent) {
+            return Ok(None);
+        }
         let recorded = self.ctx.projections.agent(agent).map_err(|error| {
             tracing::error!(%error, ?agent, "could not read the agent projection");
             GoalRefusal::UnavailableNoEffect

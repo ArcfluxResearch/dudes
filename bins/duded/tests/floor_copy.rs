@@ -730,8 +730,14 @@ fn a_copy_is_refused_in_plain_words_and_nothing_is_made() {
     // A folder whose `.git` is no longer a repository: git finds none above it either.
     std::fs::remove_dir_all(floor.repo.join(".git")).unwrap();
     std::fs::create_dir(floor.repo.join(".git")).unwrap();
+    let before = fixture.records();
     let gone = hire_in_copy(&floor, 'D');
-    assert_refused_with(&gone, "not a git repository", &fixture, &floor);
+    assert_eq!(gone, (403, Value::Null));
+    assert_eq!(fixture.records(), before);
+    assert_eq!(
+        (hired_agents(&fixture), leases(&fixture), trees(&floor)),
+        (0, 0, 0)
+    );
 }
 
 #[test]

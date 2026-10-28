@@ -8899,7 +8899,9 @@ fn browser_workspace_label_survives_enrollment_change_removal_and_replay() {
     operator_reload(&settings, apply(&sha, &[], &[], &["repo_1"])).unwrap();
     assert_eq!(workspace_of(&page), expected);
     let sha = rewrite(&settings, RELOAD_BUDGET);
-    operator_reload(&settings, apply(&sha, &[], &["repo_1"], &[])).unwrap();
+    let (_, refusal) = operator_reload(&settings, apply(&sha, &[], &["repo_1"], &[]))
+        .expect_err("a live hire retains its project");
+    assert!(refusal.contains("live hire still references"), "{refusal}");
     assert_eq!(workspace_of(&page), expected);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     settings.enrollment = load_operator(settings.operator_config.as_ref().unwrap())
@@ -9006,7 +9008,10 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
         "the real change is reported"
     );
     assert_eq!(result["workspaces"], json!(["repo_1"]));
-    assert_eq!(offered(&page), only_repo_1);
+    assert!(
+        offered(&page).is_empty(),
+        "unresolved current admission stays closed"
+    );
 
     let sha = rewrite(
         &settings,
@@ -9019,7 +9024,10 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
         json!(["repo_3"]),
         "the real change is shown"
     );
-    assert_eq!(offered(&page), only_repo_1);
+    assert!(
+        offered(&page).is_empty(),
+        "unresolved current admission stays closed"
+    );
 
     #[cfg(unix)]
     {
@@ -9034,7 +9042,10 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
             message.contains("project `repo_2` in [floor.onboarding] workspaces whose cwd is not its canonical form"),
             "{message}"
         );
-        assert_eq!(offered(&page), only_repo_1);
+        assert!(
+            offered(&page).is_empty(),
+            "unresolved current admission stays closed"
+        );
     }
 
     let older = rewrite(&settings, &with_repo_2);
@@ -9104,24 +9115,23 @@ fn a_reload_applies_enrollment_whatever_the_mcp_variables() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// A page that saw `repo_1` before a reload re-pointed it cannot hire into the new folder.
+/// A page that saw `repo_1` before a label change cannot hire under its old revision.
 #[test]
 fn browser_hire_is_bound_to_the_workspace_revision_it_saw() {
     let fixture = Fixture::new();
-    let (repo_1, moved) = (
-        reload_repo(&fixture, "repo_1"),
-        reload_repo(&fixture, "moved"),
-    );
+    let repo_1 = reload_repo(&fixture, "repo_1");
     let settings = reload_settings(&fixture, &reload_config(&[("repo_1", &repo_1)]));
     let (mut running, addr, _) = boot_reload(&settings);
     let page = exchange(addr, &issue(&settings).bootstrap);
     assert_eq!(offered(&page), vec![("repo_1".to_owned(), Value::Null)]);
 
-    let sha = rewrite(&settings, &reload_config(&[("repo_1", &moved)]));
+    let changed =
+        reload_config(&[("repo_1", &repo_1)]).replace("Workspace repo_1", "Renamed project");
+    let sha = rewrite(&settings, &changed);
     let result = operator_reload(&settings, apply(&sha, &[], &[], &["repo_1"])).expect("applied");
     assert_eq!(
         result["changed"],
-        json!([{"id": "repo_1", "fields": ["cwd"]}])
+        json!([{"id": "repo_1", "fields": ["label"]}])
     );
 
     let journal = fixture.records().len();
@@ -9150,7 +9160,7 @@ fn browser_hire_is_bound_to_the_workspace_revision_it_saw() {
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
     assert!(fixture.records().iter().any(|record| matches!(
         record,
-        Record::AgentHired { cwd, browser_onboarding: Some(_), .. } if *cwd == moved
+        Record::AgentHired { cwd, browser_onboarding: Some(_), .. } if *cwd == repo_1
     )));
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -9236,12 +9246,10 @@ fn enrollment_reload_is_operator_only() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// `repo_1`'s directory becomes a symlink to another repository after start. A reload that leaves
-/// its entry unchanged keeps the start-time canonical `cwd`, so the entry drops out of the offer
-/// rather than being re-pointed with no mark and no resync.
+/// A filesystem replacement closes admission even when the written project entry did not change.
 #[cfg(unix)]
 #[test]
-fn enrollment_reload_ignores_a_symlink_in_an_unchanged_entry() {
+fn enrollment_reload_refuses_replacement_of_a_known_unchanged_entry() {
     let fixture = Fixture::new();
     let (repo_1, repo_2, other) = (
         reload_repo(&fixture, "repo_1"),
@@ -9259,21 +9267,13 @@ fn enrollment_reload_ignores_a_symlink_in_an_unchanged_entry() {
         &settings,
         &reload_config(&[("repo_1", &repo_1), ("repo_2", &repo_2)]),
     );
-    let result = operator_reload(&settings, apply(&sha, &["repo_2"], &[], &[])).expect("applied");
-    assert_eq!(result["applied"], true);
-    assert_eq!(
-        result["changed"],
-        json!([]),
-        "an unchanged entry is not a change"
+    let (_, refusal) = operator_reload(&settings, apply(&sha, &["repo_2"], &[], &[]))
+        .expect_err("the observed origin cannot be replaced");
+    assert!(
+        refusal.contains("observed repository id cannot be rebound"),
+        "{refusal}"
     );
-    assert_eq!(
-        offered(&page)
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect::<Vec<_>>(),
-        ["repo_2"],
-        "repo_1 keeps its start-time cwd, which no longer canonicalizes to itself"
-    );
+    assert!(offered(&page).is_empty());
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
@@ -13063,6 +13063,9 @@ fn browser_renew_refuses_unenrolled_moved_and_changed_workspaces() {
     let moved = reload_repo(&fixture, "moved");
     let tree = fixture.state.path().join("trees").join("leased");
     std::fs::create_dir_all(&tree).expect("the leased tree");
+    let admin = repo.join(".git/worktrees/leased");
+    std::fs::create_dir_all(&admin).expect("the lease's existing Git metadata");
+    std::fs::write(tree.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
     // Below every id this run mints, so a later hire is still the newest agent.
     let leased = AgentId::from_parts(0, 32);
     let lease = dudes_types::WorktreeId::from_bytes([9; 16]);
@@ -13156,13 +13159,17 @@ fn browser_renew_refuses_unenrolled_moved_and_changed_workspaces() {
 
     let repointed = renew_config(&renew_entry("repo_1", &moved, 7, Some("1"), None));
     let sha = rewrite(&settings, &repointed);
-    operator_reload(&settings, apply(&sha, &[], &[], &["repo_1"])).expect("reload applies");
+    operator_reload(&settings, apply(&sha, &[], &[], &["repo_1"]))
+        .expect_err("a recorded origin cannot be rebound");
+    let before = fixture.records();
     let (head, response) = renew(agent, goal, ("7", Some("1000000"), None));
     refused(&head, &response, "workspace_unavailable");
     assert_eq!(fixture.records(), before, "an id re-pointed elsewhere");
 
     let sha = rewrite(&settings, &renew_config(""));
-    operator_reload(&settings, apply(&sha, &[], &["repo_1"], &[])).expect("reload applies");
+    operator_reload(&settings, apply(&sha, &[], &["repo_1"], &[]))
+        .expect_err("live hires retain their project");
+    let before = fixture.records();
     let (head, response) = renew(agent, goal, ("7", Some("1000000"), None));
     refused(&head, &response, "workspace_unavailable");
     assert_eq!(fixture.records(), before, "a removed workspace");
@@ -16101,7 +16108,10 @@ mod project_add {
         assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
         assert_eq!(body["reason"], "config_changed", "{body}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "put back");
-        assert_eq!(offered(&page).len(), 1, "still live");
+        assert!(
+            offered(&page).is_empty(),
+            "unadopted configuration closes admission"
+        );
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
 }

@@ -308,6 +308,12 @@ fn a_browser_hire_with_a_model_issues_its_first_turn_under_it() {
         .keys()
         .next_back()
         .expect("hired");
+    h.supervisor
+        .observe_repository_admission(dudes_supervisor::RepositoryAdmission::new([(
+            agent,
+            h.supervisor.world().agents[&agent].mcp.hire_lsn,
+            true,
+        )]));
     h.set_goal(agent, &["npm", "test"]);
     let turn = h.open_turn(agent).expect("a turn was issued");
     assert_eq!(

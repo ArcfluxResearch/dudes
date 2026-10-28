@@ -2346,8 +2346,8 @@ fn replay_keeps_recorded_check_and_allowance_after_reserve_and_enrollment_change
                     timeout_s: 23,
                 },
             )],
-            cwd: fixture.state.path().to_path_buf(),
-            written_cwd: fixture.state.path().to_path_buf(),
+            cwd: fixture.state.path().canonicalize().unwrap(),
+            written_cwd: fixture.state.path().canonicalize().unwrap(),
             repositories: None,
             department: "infra".into(),
             isolation: IsolationMode::Default,
@@ -2365,7 +2365,7 @@ fn replay_keeps_recorded_check_and_allowance_after_reserve_and_enrollment_change
     };
     let daemon = boot(&settings, replay_seams(&settings)).unwrap();
     let mut running = common::start(daemon);
-    let agent = common::hire(&running.handle, fixture.state.path());
+    let agent = common::hire(&running.handle, &settings.enrollment.profiles[0].cwd);
     let mut source = common::goal_params(agent, &["/usr/bin/false"]);
     source.budget = settings.enrollment.profiles[0].goal_budget;
     let old = common::set_goal(&running.handle, source);
