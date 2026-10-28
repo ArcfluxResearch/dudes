@@ -476,6 +476,17 @@ pub enum Seen {
         /// Frozen ending baseline.
         baseline: Option<Box<dudes_proto::InstructionSnapshot>>,
     },
+    /// One all-hire observation request; the pure harness performs no filesystem reads.
+    SampleRepositoryInstructions {
+        /// Run-local correlation.
+        request: crate::input::InstructionRequest,
+        /// Recorded physical owner.
+        owner: dudes_proto::InstructionObservationOwner,
+        /// Frozen issue authority.
+        grant: Box<dudes_proto::repository::RepositoryTurnGrant>,
+        /// Frozen ending baseline.
+        baseline: Option<Box<dudes_proto::repository_instruction::RepositoryInstructionStart>>,
+    },
 }
 
 impl Seen {
@@ -487,6 +498,18 @@ impl Seen {
     )]
     pub fn of(effect: &Effect) -> Self {
         match effect {
+            Effect::SampleRepositoryInstructions {
+                request,
+                owner,
+                grant,
+                baseline,
+                ..
+            } => Self::SampleRepositoryInstructions {
+                request: *request,
+                owner: *owner,
+                grant: grant.clone(),
+                baseline: baseline.clone(),
+            },
             Effect::ResolveInstructionRecoveryTicket {
                 request,
                 association,
@@ -616,6 +639,7 @@ impl Seen {
         match self {
             Self::ResolveInstructionRecoveryTicket { .. } => "ResolveInstructionRecoveryTicket",
             Self::SampleInstructions { .. } => "SampleInstructions",
+            Self::SampleRepositoryInstructions { .. } => "SampleRepositoryInstructions",
             Self::MailWakeRefresh { .. } => "MailWakeRefresh",
             Self::MailWakeNotify { .. } => "MailWakeNotify",
             Self::PrepareBrowserLaunch { .. } => "PrepareBrowserLaunch",
@@ -975,6 +999,80 @@ impl Harness {
                 goal,
                 baseline,
             )),
+            Seen::SampleRepositoryInstructions {
+                request,
+                owner,
+                grant,
+                baseline,
+            } => {
+                let world = self.supervisor.world();
+                let dudes_proto::InstructionObservationOwner::Managed { agent, turn, .. } = owner
+                else {
+                    return None;
+                };
+                let hire = if let Some(issued) = world.turns.get(&turn) {
+                    issued.repositories.as_ref()?.hire()
+                } else {
+                    &world.agents.get(&agent)?.repositories
+                };
+                let dudes_proto::repository::HireRepositories::Scoped(hire) = hire else {
+                    return None;
+                };
+                let Input::InstructionSampled {
+                    snapshot, ticket, ..
+                } = Self::mock_instruction_sample(
+                    world,
+                    request,
+                    grant.ticket.as_ref().map(|round| round.goal),
+                    None,
+                )
+                else {
+                    unreachable!("scalar mock produces a sample")
+                };
+                let sample = dudes_proto::repository_instruction::RepositoryInstructionStart {
+                    v: dudes_proto::repository_instruction::INSTRUCTION_BATCH_VERSION,
+                    binding: dudes_proto::repository_instruction::RepositoryInstructionBinding {
+                        hired_lsn: grant.hired_lsn,
+                        ticket_start_lsn: grant.ticket.as_ref().map(|round| round.start_lsn),
+                    },
+                    owner,
+                    ticket: baseline.as_ref().map_or(ticket, |before| before.ticket),
+                    members: hire
+                        .repositories
+                        .entries()
+                        .iter()
+                        .map(|member| {
+                            dudes_proto::repository_instruction::RepositoryInstructionSnapshot {
+                                repo_id: member.repo_id.clone(),
+                                root: None,
+                                snapshot: (*snapshot).clone(),
+                            }
+                        })
+                        .collect(),
+                };
+                let comparisons = baseline.map(|_| {
+                    sample
+                        .members
+                        .iter()
+                        .map(|member| {
+                            dudes_proto::repository_instruction::RepositoryInstructionComparison {
+                                repo_id: member.repo_id.clone(),
+                                ending_root: None,
+                                comparison: dudes_proto::InstructionComparison {
+                                    changes: Vec::new(),
+                                    gaps: member.snapshot.gaps.clone(),
+                                    usage: member.snapshot.usage,
+                                },
+                            }
+                        })
+                        .collect()
+                });
+                Some(Input::RepositoryInstructionsSampled {
+                    request,
+                    sample: Box::new(sample),
+                    comparisons,
+                })
+            }
             Seen::PrepareBrowserLaunch {
                 turn,
                 generation,

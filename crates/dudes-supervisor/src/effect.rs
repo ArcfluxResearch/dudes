@@ -7,7 +7,7 @@
 //! - **Every effect is journaled before it is acted on.** With read-only exceptions the machine emits a
 //!   [`Effect::Persist`] first and the acting effect only on its acknowledgement. The read-only exceptions
 //!   are [`Effect::Probe`], [`Effect::MailWakeRefresh`], [`Effect::SampleInstructions`], and
-//!   [`Effect::ResolveInstructionRecoveryTicket`].
+//!   [`Effect::SampleRepositoryInstructions`] and [`Effect::ResolveInstructionRecoveryTicket`].
 //! - **`Spawn` has one decider and one constructor.** The decider is a private `spawn()` that
 //!   every path routes through — the live one, on the `Persisted` branch for the token that
 //!   carried `TurnIssued`, and every re-issue. It refuses a turn whose launch this run has
@@ -244,6 +244,19 @@ pub enum Effect {
         /// Durable baseline for an ending comparison, absent before launch.
         baseline: Option<Box<dudes_proto::InstructionSnapshot>>,
     },
+    /// Observe every recorded hired repository through one physical sample request.
+    SampleRepositoryInstructions {
+        /// Exact volatile sample identity.
+        request: InstructionRequest,
+        /// Actual owned attempt.
+        owner: dudes_proto::InstructionObservationOwner,
+        /// Authority frozen for the issue, independently of goal charging.
+        grant: Box<dudes_proto::repository::RepositoryTurnGrant>,
+        /// Actual admitted model composition.
+        selection: dudes_types::ModelSelection,
+        /// Durable all-hire baseline, absent before launch.
+        baseline: Option<Box<dudes_proto::repository_instruction::RepositoryInstructionStart>>,
+    },
 }
 
 impl fmt::Debug for Effect {
@@ -281,7 +294,8 @@ impl fmt::Debug for Effect {
                 .field("request", request)
                 .field("association", association)
                 .finish(),
-            Self::SampleInstructions { request, owner, .. } => f
+            Self::SampleInstructions { request, owner, .. }
+            | Self::SampleRepositoryInstructions { request, owner, .. } => f
                 .debug_struct("SampleInstructions")
                 .field("request", request)
                 .field("owner", owner)
@@ -436,6 +450,7 @@ impl Effect {
         match self {
             Self::ResolveInstructionRecoveryTicket { .. } => "ResolveInstructionRecoveryTicket",
             Self::SampleInstructions { .. } => "SampleInstructions",
+            Self::SampleRepositoryInstructions { .. } => "SampleRepositoryInstructions",
             Self::MailWakeRefresh { .. } => "MailWakeRefresh",
             Self::MailWakeNotify { .. } => "MailWakeNotify",
             Self::PrepareBrowserLaunch { .. } => "PrepareBrowserLaunch",

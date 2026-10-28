@@ -8378,7 +8378,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     ticket,
                 });
             }
-            Effect::SampleInstructions { .. } => {
+            Effect::SampleInstructions { .. } | Effect::SampleRepositoryInstructions { .. } => {
                 self.sample_instructions(effect, queue, sup)?;
             }
             Effect::MailWakeRefresh { .. } | Effect::MailWakeNotify { .. } => {

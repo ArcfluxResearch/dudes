@@ -564,6 +564,21 @@ pub enum Input {
         /// Ending comparison against the supplied durable baseline; absent for starting samples.
         comparison: Option<Box<dudes_proto::InstructionComparison>>,
     },
+    /// One bounded endpoint for every repository of the exact hired set.
+    RepositoryInstructionsSampled {
+        /// Exact volatile request.
+        request: InstructionRequest,
+        /// Complete ordered endpoint, retaining frozen provenance and unknown members.
+        sample: Box<dudes_proto::repository_instruction::RepositoryInstructionStart>,
+        /// Ending comparisons under the same aggregate budget, absent before launch.
+        comparisons:
+            Option<Vec<dudes_proto::repository_instruction::RepositoryInstructionComparison>>,
+    },
+    /// The requested frozen repository observation could not be constructed.
+    RepositoryInstructionsUnavailable {
+        /// Exact volatile request whose existing continuation owns the failure.
+        request: InstructionRequest,
+    },
     /// One entry from the journal, in `lsn` order. Feeds the *same* fold as [`Input::Persisted`],
     /// which is what makes a replayed decision equal to the live one (invariant 1).
     Replayed {

@@ -16,17 +16,17 @@ use crate::worktree::git::Git;
 use crate::worktree::hire::{RepositoryHirePlan, WorktreeHires};
 pub(super) use common::repository_runner::Runner;
 
-struct Setup {
-    fixture: common::Fixture,
+pub(super) struct Setup {
+    pub(super) fixture: common::Fixture,
     roots: tempfile::TempDir,
-    settings: crate::Settings,
+    pub(super) settings: crate::Settings,
     runner: Arc<Runner>,
     git: Git,
-    host: common::SharedHost,
+    pub(super) host: common::SharedHost,
 }
 
 impl Setup {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let fixture = common::Fixture::new();
         let roots = tempfile::tempdir().unwrap();
         let root = roots.path().canonicalize().unwrap();
@@ -97,7 +97,7 @@ impl Setup {
         }
     }
 
-    fn boot(
+    pub(super) fn boot(
         &self,
         capability: bool,
     ) -> Daemon<common::SharedHost, Runner, common::TestClock, common::FixtureRng> {
@@ -124,7 +124,7 @@ impl Setup {
         daemon
     }
 
-    fn start(&self, capability: bool) -> (common::Running, WorktreeHires, HireParams) {
+    pub(super) fn start(&self, capability: bool) -> (common::Running, WorktreeHires, HireParams) {
         self.start_from(self.boot(capability))
     }
 

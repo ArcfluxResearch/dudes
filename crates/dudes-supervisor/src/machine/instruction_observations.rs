@@ -11,9 +11,20 @@ use dudes_proto::instruction::{
     InstructionSnapshotSource, InstructionTicketAssociation, InstructionUnknownReason,
     MAX_INSTRUCTION_INPUTS, MAX_INSTRUCTION_PATH_BYTES,
 };
+use dudes_proto::instruction_state::InstructionSnapshotEvidence;
+use dudes_proto::repository::RepositoryTurnGrant;
+use dudes_proto::repository_instruction::{
+    RepositoryInstructionComparison, RepositoryInstructionFinish, RepositoryInstructionSettlement,
+    RepositoryInstructionStart,
+};
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "instruction_observations/repository_tests.rs"]
+mod repository_tests;
+
 /// Bounded metadata for pure declaration after the daemon resolves its execution folder.
+#[derive(Clone)]
 pub struct InstructionSource {
     /// Recorded owner.
     pub agent: AgentId,
@@ -138,6 +149,7 @@ pub(super) struct Starting {
     owner: InstructionObservationOwner,
     goal: Option<GoalId>,
     ticket: Option<InstructionTicketAssociation>,
+    repositories: Option<Box<RepositoryTurnGrant>>,
     action: StartAction,
 }
 
@@ -396,7 +408,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         } else if let Some(end_lsn) = end_lsn {
             self.queue_recovery_check(agent, turn);
             let end = InstructionEndBoundary::ManagedTurn { turn, end_lsn };
-            if let Some(snapshot) = attempt.legacy_snapshot().cloned() {
+            if let Some(snapshot) = attempt.snapshot.clone() {
                 self.instructions.ending.insert(attempt.baseline);
                 let row = self.world.turns.get(&turn);
                 let goal = row.and_then(|row| row.goal);
@@ -479,7 +491,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 attempt.owner,
                 attempt.ticket.map(|ticket| ticket.goal),
                 ModelSelection::provider_default(),
-                Some(Box::new(snapshot)),
+                Some(Box::new(InstructionSnapshotEvidence::Legacy(snapshot))),
                 Awaiting::End(Ending {
                     owner: attempt.owner,
                     ticket: attempt.ticket,
@@ -901,20 +913,54 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 ),
             _ => None,
         };
-        if let Some(start) = start {
+        let repository = start
+            .map(|start| {
+                (
+                    start.binding,
+                    start
+                        .members
+                        .iter()
+                        .map(|member| member.repo_id.clone())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .or_else(|| {
+                if matches!(baseline, InstructionBaselineRef::Started { .. }) {
+                    return None;
+                }
+                let InstructionObservationOwner::Managed { turn, .. } = owner else {
+                    return None;
+                };
+                let scope = self.world.turns.get(&turn)?.repositories.as_ref()?;
+                let grant = scope.grant()?;
+                let dudes_proto::repository::HireRepositories::Scoped(hire) = scope.hire() else {
+                    return None;
+                };
+                Some((
+                    dudes_proto::repository_instruction::RepositoryInstructionBinding {
+                        hired_lsn: scope.hired_lsn(),
+                        ticket_start_lsn: grant.ticket.as_ref().map(|round| round.start_lsn),
+                    },
+                    hire.repositories
+                        .entries()
+                        .iter()
+                        .map(|member| member.repo_id.clone())
+                        .collect(),
+                ))
+            });
+        if let Some((binding, members)) = repository {
             Record::InstructionObservationBatchFinished(
                 dudes_proto::repository_instruction::RepositoryInstructionFinish {
                     v: dudes_proto::repository_instruction::INSTRUCTION_BATCH_VERSION,
-                    binding: start.binding,
+                    binding,
                     owner,
                     ticket,
                     baseline,
-                    members: start
-                        .members
-                        .iter()
-                        .map(|member| {
+                    members: members
+                        .into_iter()
+                        .map(|repo_id| {
                             dudes_proto::repository_instruction::RepositoryInstructionSettlement {
-                                repo_id: member.repo_id.clone(),
+                                repo_id,
                                 ending_root: None,
                                 settlement: settlement.clone(),
                             }
@@ -936,11 +982,43 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     #[must_use]
     pub fn instruction_source(&self, agent: AgentId) -> Option<InstructionSource> {
         let row = self.world.agents.get(&agent)?;
-        let adapter = self.adapters.shared(row.provider)?;
         let repository = row.repositories.singleton()?;
         let cwd = match repository.worktree() {
             Some(lease) => self.world.worktrees.get(&lease)?.path.as_path(),
             None => repository.cwd(),
+        };
+        self.instruction_source_for_folder(agent, cwd)
+    }
+
+    /// Declare metadata only for an exact recorded execution folder, without primary fallback.
+    #[must_use]
+    pub fn instruction_source_for_folder(
+        &self,
+        agent: AgentId,
+        cwd: &Path,
+    ) -> Option<InstructionSource> {
+        let row = self.world.agents.get(&agent)?;
+        let adapter = self.adapters.shared(row.provider)?;
+        let lease = match &row.repositories {
+            dudes_proto::repository::HireRepositories::Legacy(repository) => {
+                let recorded = match repository.worktree() {
+                    Some(lease) => self.world.worktrees.get(&lease)?.path.as_path(),
+                    None => repository.cwd(),
+                };
+                if recorded != cwd {
+                    return None;
+                }
+                repository.worktree()
+            }
+            dudes_proto::repository::HireRepositories::Scoped(hire) => Some(
+                hire.repositories
+                    .entries()
+                    .iter()
+                    .find(|member| member.value.recorded.execution.directory == cwd)?
+                    .value
+                    .recorded
+                    .worktree,
+            ),
         };
         if cwd.as_os_str().as_encoded_bytes().len() > MAX_INSTRUCTION_PATH_BYTES {
             return None;
@@ -983,7 +1061,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             agent,
             provider: row.provider,
             cwd,
-            lease: repository.worktree(),
+            lease,
             mode: if row.attached {
                 Mode::Attached
             } else {
@@ -1044,6 +1122,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             owner,
             goal,
             ticket: None,
+            repositories: entry
+                .record
+                .turn_issue()
+                .and_then(|issue| issue.repositories)
+                .cloned()
+                .map(Box::new),
             action: StartAction::Issue {
                 entry: Box::new(entry),
                 then: Box::new(then),
@@ -1078,6 +1162,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             owner,
             goal,
             ticket: None,
+            repositories: self
+                .world
+                .turns
+                .get(&turn)
+                .and_then(|row| row.repositories.as_ref())
+                .and_then(|scope| scope.grant())
+                .cloned()
+                .map(Box::new),
             action: StartAction::Retry { launch },
         };
         self.request_instruction_sample(owner, goal, selection, None, Awaiting::Start(starting));
@@ -1088,18 +1180,88 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         owner: InstructionObservationOwner,
         goal: Option<GoalId>,
         selection: ModelSelection,
-        baseline: Option<Box<InstructionSnapshot>>,
+        baseline: Option<Box<InstructionSnapshotEvidence>>,
         awaiting: Awaiting,
     ) {
+        let grant = match &awaiting {
+            Awaiting::Start(starting) => starting.repositories.clone(),
+            Awaiting::End(_) => match owner {
+                InstructionObservationOwner::Managed { turn, .. } => self
+                    .world
+                    .turns
+                    .get(&turn)
+                    .and_then(|row| row.repositories.as_ref())
+                    .and_then(|scope| scope.grant())
+                    .cloned()
+                    .map(Box::new),
+                _ => None,
+            },
+        };
+        if grant.is_none()
+            && baseline
+                .as_ref()
+                .is_some_and(|baseline| baseline.repositories().is_some())
+        {
+            if let Awaiting::End(ending) = awaiting {
+                self.persist_instruction_unknown(
+                    UnknownFinish {
+                        owner,
+                        ticket: ending.ticket,
+                        baseline: ending.baseline,
+                        reason: InstructionUnknownReason::IncompleteCoverage,
+                        coverage: vec![InstructionGapKind::EndingBoundaryMissing],
+                        end: Some(ending.end),
+                        recovery: ending.recovery,
+                    },
+                    Then::InstructionCompared {
+                        baseline: ending.baseline,
+                        then: ending.then,
+                    },
+                );
+            }
+            return;
+        }
+        if grant.is_none()
+            && matches!(&awaiting, Awaiting::Start(_))
+            && self
+                .world
+                .agents
+                .get(&owner_agent(owner))
+                .is_some_and(|row| {
+                    matches!(
+                        row.repositories,
+                        dudes_proto::repository::HireRepositories::Scoped(_)
+                    )
+                })
+        {
+            self.instructions.pending_agents.remove(&owner_agent(owner));
+            return;
+        }
         self.instructions.next_request += 1;
         let request = InstructionRequest(self.instructions.next_request);
         self.instructions.awaiting.insert(request, awaiting);
+        if let Some(grant) = grant {
+            self.pending.push(Effect::SampleRepositoryInstructions {
+                request,
+                owner,
+                grant,
+                selection,
+                baseline: baseline.and_then(|baseline| match *baseline {
+                    InstructionSnapshotEvidence::Repositories(batch) => Some(Box::new(batch)),
+                    InstructionSnapshotEvidence::Legacy(_) => None,
+                }),
+            });
+            return;
+        }
         self.pending.push(Effect::SampleInstructions {
             request,
             owner,
             goal,
             selection,
-            baseline,
+            baseline: baseline.and_then(|baseline| match *baseline {
+                InstructionSnapshotEvidence::Legacy(snapshot) => Some(Box::new(snapshot)),
+                InstructionSnapshotEvidence::Repositories(_) => None,
+            }),
         });
     }
 
@@ -1113,6 +1275,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(awaiting) = self.instructions.awaiting.remove(&request) else {
             return;
         };
+        if matches!(&awaiting, Awaiting::Start(starting) if starting.repositories.is_some())
+            || matches!(&awaiting, Awaiting::End(ending) if matches!(ending.baseline,
+                InstructionBaselineRef::Started { lsn } if self.world.instructions.attempt(lsn)
+                    .is_some_and(|attempt| attempt.repository_binding().is_some())))
+        {
+            self.instructions.awaiting.insert(request, awaiting);
+            return;
+        }
         match awaiting {
             Awaiting::Start(mut starting) => {
                 starting.ticket = ticket.filter(|ticket| Some(ticket.goal) == starting.goal);
@@ -1175,6 +1345,286 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         then: ending.then,
                     },
                 );
+            }
+        }
+    }
+
+    pub(super) fn repository_instructions_sampled(
+        &mut self,
+        request: InstructionRequest,
+        sample: RepositoryInstructionStart,
+        comparisons: Option<Vec<RepositoryInstructionComparison>>,
+    ) {
+        let Some(awaiting) = self.instructions.awaiting.remove(&request) else {
+            return;
+        };
+        match awaiting {
+            Awaiting::Start(starting) => {
+                self.repository_instruction_start(request, sample, starting);
+            }
+            Awaiting::End(ending) => {
+                self.repository_instruction_end(request, &sample, comparisons, ending);
+            }
+        }
+    }
+
+    fn repository_instruction_start(
+        &mut self,
+        request: InstructionRequest,
+        sample: RepositoryInstructionStart,
+        mut starting: Starting,
+    ) {
+        let Some(grant) = starting.repositories.as_ref() else {
+            self.instructions
+                .awaiting
+                .insert(request, Awaiting::Start(starting));
+            return;
+        };
+        let agent = owner_agent(starting.owner);
+        let row = self.world.agents.get(&agent);
+        let turn = match starting.owner {
+            InstructionObservationOwner::Managed { turn, .. } => Some(turn),
+            _ => None,
+        };
+        let issued = turn.and_then(|turn| self.world.turns.get(&turn));
+        let issue_grant = issued
+            .and_then(|turn| turn.repositories.as_ref())
+            .and_then(|scope| scope.grant());
+        let facts = dudes_proto::repository_instruction::RepositoryInstructionFacts {
+            agent,
+            hire: row.map(|row| (row.mcp.hire_lsn, &row.repositories)),
+            round: self.world.active_repository_round(agent).ok().flatten(),
+            issue: issued
+                .zip(issue_grant)
+                .map(|(issued, grant)| (issued.issue_lsn, grant)),
+        };
+        let next = Lsn(self
+            .world
+            .last_applied_lsn
+            .unwrap_or(Lsn::ZERO)
+            .0
+            .saturating_add(1));
+        if sample.owner != starting.owner
+            || sample.binding.hired_lsn != grant.hired_lsn
+            || sample.binding.ticket_start_lsn != grant.ticket.as_ref().map(|round| round.start_lsn)
+            || sample
+                .ticket
+                .map(|ticket| (ticket.card, ticket.goal, ticket.assignment_lsn))
+                != grant.ticket.as_ref().and_then(|round| {
+                    self.world
+                        .instructions
+                        .recorded_association_for_goal(round.goal)
+                        .filter(|ticket| ticket.card == round.card)
+                        .map(|ticket| (ticket.card, ticket.goal, ticket.assignment_lsn))
+                })
+            || sample.validate().is_err()
+        {
+            self.instructions
+                .awaiting
+                .insert(request, Awaiting::Start(starting));
+            return;
+        }
+        let current = if issued.is_some() {
+            issue_grant == Some(grant.as_ref())
+        } else {
+            row.and_then(|row| match &row.repositories {
+                dudes_proto::repository::HireRepositories::Scoped(hire) => {
+                    Some((row.mcp.hire_lsn, hire))
+                }
+                dudes_proto::repository::HireRepositories::Legacy(_) => None,
+            })
+            .is_some_and(|(hired_lsn, hire)| {
+                self.world
+                    .active_repository_round(agent)
+                    .is_ok_and(|round| {
+                        RepositoryTurnGrant::select(hired_lsn, hire, round).as_ref()
+                            == Ok(grant.as_ref())
+                    })
+            })
+        };
+        if !current {
+            self.cancel_repository_start(&starting);
+            return;
+        }
+        if dudes_proto::repository_instruction::validate_start(next, &sample, facts).is_err() {
+            self.instructions
+                .awaiting
+                .insert(request, Awaiting::Start(starting));
+            return;
+        }
+        starting.ticket = sample.ticket;
+        self.persist(
+            Record::InstructionObservationBatchStarted(sample),
+            Then::InstructionBaselineSaved {
+                start: Box::new(starting),
+            },
+        );
+    }
+
+    fn repository_instruction_end(
+        &mut self,
+        request: InstructionRequest,
+        sample: &RepositoryInstructionStart,
+        comparisons: Option<Vec<RepositoryInstructionComparison>>,
+        ending: Ending,
+    ) {
+        let before = match ending.baseline {
+            InstructionBaselineRef::Started { lsn } => self
+                .world
+                .instructions
+                .attempt(lsn)
+                .and_then(|attempt| attempt.snapshot.as_ref())
+                .and_then(InstructionSnapshotEvidence::repositories),
+            _ => None,
+        };
+        let Some(before) = before else {
+            self.instructions
+                .awaiting
+                .insert(request, Awaiting::End(ending));
+            return;
+        };
+        let Some(comparisons) = comparisons.filter(|comparisons| {
+            sample.validate().is_ok()
+                && sample.binding == before.binding
+                && sample.owner == ending.owner
+                && sample.ticket == ending.ticket
+                && sample
+                    .members
+                    .iter()
+                    .map(|member| &member.repo_id)
+                    .eq(before.members.iter().map(|member| &member.repo_id))
+                && comparisons.len() == sample.members.len()
+                && comparisons
+                    .iter()
+                    .zip(&sample.members)
+                    .all(|(comparison, endpoint)| {
+                        comparison.repo_id == endpoint.repo_id
+                            && comparison.ending_root == endpoint.root
+                    })
+        }) else {
+            self.instructions
+                .awaiting
+                .insert(request, Awaiting::End(ending));
+            return;
+        };
+        let sampled_at = sample
+            .members
+            .iter()
+            .map(|member| member.snapshot.sampled_at)
+            .max()
+            .unwrap_or_else(|| self.clock.now());
+        let finish = RepositoryInstructionFinish {
+            v: sample.v,
+            binding: sample.binding,
+            owner: ending.owner,
+            ticket: ending.ticket,
+            baseline: ending.baseline,
+            members: comparisons
+                .into_iter()
+                .map(|member| RepositoryInstructionSettlement {
+                    repo_id: member.repo_id,
+                    ending_root: member.ending_root,
+                    settlement: InstructionSettlement::Compared {
+                        end: ending.end,
+                        sampled_at,
+                        recovery: ending.recovery,
+                        comparison: member.comparison,
+                    },
+                })
+                .collect(),
+        };
+        if finish.validate().is_err() {
+            self.instructions
+                .awaiting
+                .insert(request, Awaiting::End(ending));
+            return;
+        }
+        self.persist(
+            Record::InstructionObservationBatchFinished(finish),
+            Then::InstructionCompared {
+                baseline: ending.baseline,
+                then: ending.then,
+            },
+        );
+    }
+
+    fn cancel_repository_start(&mut self, starting: &Starting) {
+        let agent = owner_agent(starting.owner);
+        self.instructions.pending_agents.remove(&agent);
+        let InstructionObservationOwner::Managed { turn, .. } = starting.owner else {
+            return;
+        };
+        let Some(issued) = self.world.turns.get(&turn) else {
+            return;
+        };
+        let issue_lsn = issued.issue_lsn;
+        let ticket = issued
+            .repositories
+            .as_ref()
+            .and_then(|scope| scope.grant())
+            .and_then(|grant| grant.ticket.as_ref())
+            .and_then(|round| {
+                self.world
+                    .instructions
+                    .recorded_association_for_goal(round.goal)
+                    .filter(|ticket| ticket.card == round.card)
+            });
+        self.spawning.remove(&turn);
+        if self.world.instructions.has_attempt_for_turn(turn) {
+            return;
+        }
+        let baseline = InstructionBaselineRef::MissingIssueBoundary { turn, issue_lsn };
+        self.persist_instruction_unknown(
+            UnknownFinish {
+                owner: managed_owner(
+                    agent,
+                    turn,
+                    InstructionIssueAssociation::Issued { issue_lsn },
+                ),
+                ticket,
+                baseline,
+                reason: InstructionUnknownReason::UnrecordedLaunchBoundary,
+                coverage: vec![
+                    InstructionGapKind::MissingBaseline,
+                    InstructionGapKind::UnrecordedLaunchBoundary,
+                ],
+                end: None,
+                recovery: true,
+            },
+            Then::Fold,
+        );
+    }
+
+    pub(super) fn repository_instructions_unavailable(&mut self, request: InstructionRequest) {
+        let Some(awaiting) = self.instructions.awaiting.remove(&request) else {
+            return;
+        };
+        match awaiting {
+            Awaiting::Start(starting) if starting.repositories.is_some() => {
+                self.cancel_repository_start(&starting);
+            }
+            Awaiting::End(ending)
+                if matches!(ending.baseline, InstructionBaselineRef::Started { lsn }
+                if self.world.instructions.attempt(lsn).is_some_and(|attempt| attempt.repository_binding().is_some())) =>
+            {
+                self.persist_instruction_unknown(
+                    UnknownFinish {
+                        owner: ending.owner,
+                        ticket: ending.ticket,
+                        baseline: ending.baseline,
+                        reason: InstructionUnknownReason::IncompleteCoverage,
+                        coverage: vec![InstructionGapKind::EndingBoundaryMissing],
+                        end: Some(ending.end),
+                        recovery: ending.recovery,
+                    },
+                    Then::InstructionCompared {
+                        baseline: ending.baseline,
+                        then: ending.then,
+                    },
+                );
+            }
+            awaiting => {
+                self.instructions.awaiting.insert(request, awaiting);
             }
         }
     }
@@ -1413,7 +1863,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some((started_lsn, attempt)) = self.world.instructions.current_for_turn(turn) else {
             return self.resume_after(then, end_lsn, operation);
         };
-        let Some(snapshot) = attempt.legacy_snapshot().cloned() else {
+        let Some(snapshot) = attempt.snapshot.clone() else {
             return self.resume_after(then, end_lsn, operation);
         };
         let owner = attempt.owner;
