@@ -126,6 +126,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             if self.ctx.journal_writes_stopped() || self.ctx.closing_failed_after.is_some() {
                 break;
             }
+            // One tree per start holds only because this loop is single-threaded and re-reads the
+            // facts after each append: a start's check covers the card's sequence, not its tree.
             let (owed, heads) = self.with_ticket_facts(|facts| {
                 let heads: Vec<CardId> = facts
                     .queued_projects()
@@ -197,7 +199,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         })
     }
 
-    /// Start a ticket that `next_ticket` named: build its goal, admit it as any goal is admitted,
+    /// Start a ticket that `next_tickets` named: build its goal, admit it as any goal is admitted,
     /// and append one record. A reason only the operator can fix moves the ticket to Needs you
     /// instead, so it leaves the queue and does not hold the project.
     fn start_ticket(&mut self, card: CardId) -> Result<(), RpcError> {

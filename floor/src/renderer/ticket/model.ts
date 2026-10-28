@@ -9,7 +9,8 @@ import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { goalIdOf } from '../goal/goal.ts';
 import { decodeWorkspace } from '../workspace.ts';
-import { decodeWorktree } from '../worktree.ts';import { NO_AGENT_YET, noAgentInProjectSentence, otherStateName, placeInLine, reasonSentence, stateName, waitSentence } from './words.ts';
+import { decodeWorktree } from '../worktree.ts';
+import { NO_AGENT_YET, noAgentInProjectSentence, otherStateName, placeInLine, reasonSentence, stateName, waitSentence } from './words.ts';
 import type { Wait } from './words.ts';
 
 export type TicketColumn = 'todo' | 'working' | 'ready' | 'done';
@@ -136,8 +137,8 @@ export function viewConfirmed(floor: FloorState): boolean {
 
 /**
  * Where an agent works: its own copy's branch, which names one lease, or the project's shared
- * folder. The snapshot cannot tell a multi-repo project, so a wait computed here may name no
- * ticket there; the daemon's own wait is shown instead.
+ * folder. The snapshot cannot tell a multi-repo hire, whose row shows only its primary lease, so
+ * `holderOf` falls back to the project's holder when no ticket holds the same tree.
  */
 function treeOf(floor: FloorState, agent: string | null): string {
   return decodeWorktree(agentRow(floor, agent)?.worktree)?.branch ?? '';
@@ -150,10 +151,17 @@ function sharesTree(floor: FloorState, agent: string | null, other: CardRow): bo
     && treeOf(floor, other.claimed_by) === treeOf(floor, agent);
 }
 
+function holderOf(floor: FloorState, agent: string | null, except: string | null): CardRow | null {
+  const project = decodeWorkspace(agentRow(floor, agent)?.workspace)?.id;
+  if (project === undefined) return null;
+  const holders = tickets(floor.cards).filter((card) => card.id !== except && (card.status === 'doing' || card.status === 'review')
+    && decodeWorkspace(agentRow(floor, card.claimed_by)?.workspace)?.id === project);
+  return holders.find((card) => sharesTree(floor, agent, card)) ?? holders[0] ?? null;
+}
+
 /** The ticket that holds an agent's working tree, if one does: its title names the wait. */
 export function holdingTicket(floor: FloorState, agent: string): CardRow | null {
-  return tickets(floor.cards).find((card) => (card.status === 'doing' || card.status === 'review')
-    && sharesTree(floor, agent, card)) ?? null;
+  return holderOf(floor, agent, null);
 }
 
 export function agentRow(floor: FloorState, id: string | null): AgentRow | null {
@@ -187,9 +195,8 @@ export function waitOf(floor: FloorState, card: CardRow): { readonly wait: Wait;
     if (agent.mode === 'attached') return say('agent_attached');
     if (agent.status === 'running' || agent.status === 'waiting') return say('agent_busy');
   }
-  const holder = tickets(floor.cards).find((other) => other.id !== card.id
-    && (other.status === 'doing' || other.status === 'review') && sharesTree(floor, card.claimed_by, other));
-  return holder === undefined ? null : say('ticket', holder.title);
+  const holder = holderOf(floor, card.claimed_by, card.id);
+  return holder === null ? null : say('ticket', holder.title);
 }
 
 /** The word on a card's badge. */
