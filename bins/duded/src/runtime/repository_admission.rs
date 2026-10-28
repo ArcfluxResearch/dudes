@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context as _, Result, anyhow, ensure};
 use dudes_proto::record::TrustedRepository;
 use dudes_proto::repository::{
     CatalogRepository, HireRepositories, RepositoryEntry, RepositorySet,
@@ -27,11 +27,18 @@ pub(crate) struct ObservedProject {
     pub(crate) repositories: RepositorySet<CatalogRepository>,
 }
 
-fn catalog(profile: &Profile) -> Result<Option<RepositorySet<CatalogRepository>>> {
+fn catalog(
+    profile: &Profile,
+    recorded: Option<&dudes_proto::repository_state::history::ProjectRepositoryHistory>,
+) -> Result<Option<RepositorySet<CatalogRepository>>> {
     let configured = if let Some(configured) = &profile.repositories {
         std::borrow::Cow::Borrowed(configured)
     } else {
         if crate::worktree::plain_git_dir(&profile.cwd).is_none() {
+            ensure!(
+                recorded.is_none(),
+                "an observed repository binding cannot be resolved"
+            );
             return Ok(None);
         }
         let primary =
@@ -103,7 +110,65 @@ fn catalog(profile: &Profile) -> Result<Option<RepositorySet<CatalogRepository>>
     Ok(Some(repositories))
 }
 
+fn directory_overlaps(left: &Path, right: &Path) -> bool {
+    left.starts_with(right)
+        || right.starts_with(left)
+        || crate::worktree::contains(left, right)
+        || crate::worktree::contains(right, left)
+}
+
 impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
+    pub(super) fn require_current_hire(&self, world: &World, cwd: &Path) -> Result<()> {
+        ensure!(
+            !self.current_repositories.invalid,
+            "current project configuration must be resolved before hiring"
+        );
+        ensure!(
+            !self.explicit_project_at(world, cwd),
+            "this folder belongs to an explicitly scoped project; repository execution is not available yet"
+        );
+        for profile in &self.enrollment.profiles {
+            if directory_overlaps(&profile.cwd, cwd)
+                && let Some(repositories) =
+                    catalog(profile, world.repository_projects.get(&profile.id))?
+            {
+                world.validate_repository_record(&Entry {
+                    at: self.clock.now(),
+                    record: Record::ProjectRepositoriesRecorded {
+                        project: profile.id.clone(),
+                        repositories,
+                    },
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_hire_authority(
+        &self,
+        world: &World,
+        hire: dudes_proto::repository_state::HireRecord<'_>,
+    ) -> Result<()> {
+        match hire.repositories {
+            dudes_proto::repository_state::HireRepositoryRecord::Legacy {
+                cwd, worktree, ..
+            } => {
+                let origin = match worktree {
+                    Some(id) => world
+                        .worktrees
+                        .get(&id)
+                        .map(|lease| lease.origin.as_path())
+                        .context("the hired worktree's origin is unavailable")?,
+                    None => cwd,
+                };
+                self.require_current_hire(world, origin)
+            }
+            dudes_proto::repository_state::HireRepositoryRecord::Scoped(_) => {
+                anyhow::bail!("scoped repository execution is not available yet");
+            }
+        }
+    }
+
     fn legacy_ticket_allowed(
         &self,
         world: &World,
@@ -218,15 +283,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .iter()
             .filter_map(|profile| profile.repositories.as_ref())
             .flat_map(RepositorySet::entries)
-            .any(|entry| {
-                crate::worktree::contains(&entry.value.path, cwd)
-                    || crate::worktree::contains(cwd, &entry.value.path)
-            })
+            .any(|entry| directory_overlaps(&entry.value.path, cwd))
             || world.agents.values().any(|row| {
                 matches!(&row.repositories, HireRepositories::Scoped(scope)
                 if scope.repositories.entries().iter().any(|entry| {
-                    crate::worktree::contains(&entry.value.recorded.execution.directory, cwd)
-                        || crate::worktree::contains(cwd, &entry.value.recorded.execution.directory)
+                    directory_overlaps(&entry.value.recorded.execution.directory, cwd)
                 }))
             })
     }
@@ -251,8 +312,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             profile.repositories.is_some(),
             "use singleton project trust without --repo"
         );
-        let current = catalog(profile)?
-            .ok_or_else(|| anyhow!("use singleton project trust without --repo"))?;
+        let current = catalog(
+            profile,
+            self.sup.world().repository_projects.get(&profile.id),
+        )?
+        .ok_or_else(|| anyhow!("use singleton project trust without --repo"))?;
         let observed = self
             .ctx
             .current_repositories
@@ -336,7 +400,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     pub(super) fn validate_repository_enrollment(&self, candidate: &Enrollment) -> Result<()> {
         for profile in &candidate.profiles {
-            if let Some(repositories) = catalog(profile)? {
+            if let Some(repositories) = catalog(
+                profile,
+                self.sup.world().repository_projects.get(&profile.id),
+            )? {
                 self.sup.world().validate_repository_record(&Entry {
                     at: self.ctx.clock.now(),
                     record: Record::ProjectRepositoriesRecorded {
@@ -347,6 +414,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
         }
         for row in self.sup.world().agents.values().filter(|row| !row.retired) {
+            if let Some(project) = row.repositories.workspace() {
+                ensure!(
+                    candidate.profile(&project.id).is_some(),
+                    "a live hire still references the project"
+                );
+            }
             let HireRepositories::Legacy(repository) = &row.repositories else {
                 continue;
             };
@@ -374,16 +447,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             );
         }
         for (view, ticket) in self.ctx.projections.tickets()? {
-            if view.status == dudes_types::CardStatus::Done
-                || ticket.repositories.declared().is_some()
-            {
+            if view.status == dudes_types::CardStatus::Done {
                 continue;
             }
             let project = ticket.repositories.project();
             let profile = candidate
                 .profile(project)
                 .ok_or_else(|| anyhow!("an unresolved ticket still references the project"))?;
-            if let Some(history) = self.sup.world().repository_projects.get(project) {
+            if ticket.repositories.declared().is_none()
+                && let Some(history) = self.sup.world().repository_projects.get(project)
+            {
                 for origin in history.bindings.values() {
                     ensure!(
                         profile.repositories.as_ref().map_or(
@@ -427,7 +500,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let profiles = self.ctx.enrollment.profiles.clone();
         let mut observed = BTreeMap::new();
         for profile in &profiles {
-            let Some(repositories) = catalog(profile)? else {
+            let Some(repositories) = catalog(
+                profile,
+                self.sup.world().repository_projects.get(&profile.id),
+            )?
+            else {
                 continue;
             };
             let known = self

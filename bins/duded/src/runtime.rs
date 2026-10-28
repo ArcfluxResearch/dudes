@@ -2665,6 +2665,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .profile(&request.workspace_id)
             .cloned()
             .ok_or(OnboardRefusal::Forbidden)?;
+        self.ctx
+            .require_current_hire(self.sup.world(), &profile.cwd)
+            .map_err(|_| OnboardRefusal::Forbidden)?;
         // A hire is bound to the workspace revision its page was offered, so a
         // re-point that lands while a page shows the old entry cannot redirect a hire from it.
         if request.workspace_revision != profile.revision() {
@@ -4653,45 +4656,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             Ask::Mcp(params) => self.agent_mcp(params).map(Answered::Mcp),
             Ask::Model { params, by } => self.agent_model(params, by).map(|()| Answered::Done),
             Ask::ReplaceGoal(_) => unreachable!("replacement was handled before the writer fence"),
-            // The gate that keeps `agent.hire` and the launch reading one registry. Both ask
-            // `Supervisor::adapters`; without this arm a hire on a provider with no adapter is
-            // journaled, folded and shown on the floor as an agent, and then `Supervisor::launch`
-            // finds nothing and returns — for ever, with no record saying why.
-            //
-            // In front of the append, for the reason the `sandbox` refusal is: a
-            // refused hire must journal nothing, and `AgentHired` cannot be un-journaled. In the
-            // runtime rather than in `dudes-rpc` for the reason `Ask::Ask`'s gate below is — it
-            // reads state that lives behind the port. `dudes-rpc` depends on neither
-            // `dudes-supervisor` nor `dudes-providers`, so the door cannot see this registry at
-            // all.
-            Ask::Hire(params) if self.sup.adapters().get(params.provider).is_none() => {
-                Err(no_adapter_refusal(params.provider))
-            }
-            // **After the no-adapter guard, not beside it, and the order is a decision.** This
-            // query has to ask the named provider's adapter for its billing-variable list, and a
-            // provider with no adapter has no list to give. Placed first, this arm would own that
-            // `None` itself, and its natural handling would turn a misspelled `--provider` into a
-            // panic where the arm above makes it a refusal that names the provider. Placed here,
-            // the `None` has already been answered and the query is only ever asked about an
-            // adapter that exists.
-            Ask::Hire(params) if self.hire_wants_a_ceiling(&params) => {
-                Err(ceiling_required_refusal(params.provider))
-            }
-            Ask::Hire(params)
-                if params.model.is_some() && self.model_fixed_by_config(params.provider) =>
-            {
-                Err(error(ErrorCode::Refused, MODEL_FIXED_NOTE.to_owned()))
-            }
             Ask::Hire(params) => {
-                self.mcp_admission(&params)?;
-                if let Some((field, code)) = unsupported_hire_option(&params) {
-                    return Err(error(
-                        code,
-                        format!("agent.hire: {} does not support `{field}`", params.provider),
-                    ));
-                }
-                self.require_reserve(crate::reserve::Candidate::Agent(&params.budget))?;
-                self.refuse_overlap(&params.cwd, None)?;
+                self.hire_guards(&params, None)?;
                 self.refuse_shared_hire(&params, &params.cwd)?;
                 if params.checkout.is_some() || params.from.is_some() {
                     return Err(error(
@@ -6713,16 +6679,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         params: &HireParams,
         own: Option<dudes_types::WorktreeId>,
     ) -> Result<(), RpcError> {
-        if self.ctx.current_repositories.invalid {
-            return Err(crate::worktree::unavailable(
-                "current project configuration must be resolved before hiring",
-            ));
-        }
-        if self.ctx.explicit_project_at(self.sup.world(), &params.cwd) {
-            return Err(crate::worktree::unavailable(
-                "this folder belongs to an explicitly scoped project; repository execution is not available yet",
-            ));
-        }
+        self.ctx
+            .require_current_hire(self.sup.world(), &params.cwd)
+            .map_err(|failure| crate::worktree::unavailable(failure.to_string()))?;
         if self.sup.adapters().get(params.provider).is_none() {
             return Err(no_adapter_refusal(params.provider));
         }
@@ -8609,6 +8568,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         publication: FloorPublication,
         recovery: Option<recovery::AppendSubject<'_>>,
     ) -> Result<CheckedAppend> {
+        if let Record::WorktreeLeased { origin, .. } = &entry.record {
+            self.require_current_hire(world, origin)?;
+        }
+        if let Some(hire) = entry.record.hire() {
+            self.require_hire_authority(world, hire)?;
+        }
         if let Some(issue) = entry.record.turn_issue() {
             anyhow::ensure!(
                 self.repository_allowed(world, issue.agent),
