@@ -453,6 +453,8 @@ mod instruction_tests {
         };
         read.ticket.instruction_review = Some(InstructionPendingReview {
             watermark,
+            coverage_unknown: false,
+            repository_gaps: Vec::new(),
             pending_comparison: false,
             intervals: Vec::new(),
             changed_paths: Vec::new(),
@@ -507,6 +509,8 @@ mod instruction_tests {
     fn the_act_on_this_state_lines_wait_for_the_comparison_to_settle() {
         let mut read = reading();
         read.ticket.instruction_review = Some(InstructionPendingReview {
+            coverage_unknown: false,
+            repository_gaps: Vec::new(),
             watermark: InstructionReviewWatermark {
                 through_lsn: Lsn(9),
                 set_digest: Hex32::new([0xdd; 32]),

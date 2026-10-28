@@ -203,7 +203,7 @@ pub(super) struct CreatedTicket {
     holder: Option<AgentId>,
     seq: Seq,
     pub round: u32,
-    goal: Option<GoalId>,
+    pub(super) goal: Option<GoalId>,
     queued: bool,
     recovery_wait: bool,
     removed: bool,

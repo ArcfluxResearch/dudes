@@ -23,6 +23,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 #[cfg(test)]
 mod attached_turn_end_tests;
 mod devices;
+mod instructions;
 mod mail_wakes;
 mod mcp;
 mod recovery;
@@ -780,6 +781,8 @@ impl World {
             .prepare_repository_record(lsn, entry)
             .map_err(|_| RecoveryStateError::Binding)?;
         self.validate_record_authority(entry)
+            .map_err(|_| RecoveryStateError::Binding)?;
+        self.validate_instruction_authority(lsn, entry)
             .map_err(|_| RecoveryStateError::Binding)?;
         let prepared_review = self
             .prepare_review_record(lsn, entry)
@@ -1956,6 +1959,8 @@ impl World {
             Record::TicketEdited { .. } | Record::TicketEditedWithRepositories(_) => {}
             Record::InstructionObservationStarted { .. }
             | Record::InstructionObservationFinished { .. }
+            | Record::InstructionObservationBatchStarted(_)
+            | Record::InstructionObservationBatchFinished(_)
             | Record::InstructionAttemptBoundarySettled { .. }
             | Record::TicketInstructionReviewed { .. } => {}
             Record::TicketBaselineRecorded { .. }

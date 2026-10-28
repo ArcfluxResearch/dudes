@@ -1851,15 +1851,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Then::InstructionAttachedHookEnded => self.attached_hook_ended(lsn, false, Then::Fold),
             Then::InstructionPreHostEnded { attempt, then } => {
                 self.persist(
-                    Record::InstructionObservationFinished {
-                        owner: attempt.owner,
-                        ticket: attempt.ticket,
-                        baseline: attempt.baseline,
-                        settlement: dudes_proto::InstructionSettlement::NoProcess {
+                    self.instruction_control_record(
+                        attempt.owner,
+                        attempt.ticket,
+                        attempt.baseline,
+                        dudes_proto::InstructionSettlement::NoProcess {
                             proof_lsn: lsn,
                             proof: dudes_proto::InstructionNoProcessProof::NoHostCall,
                         },
-                    },
+                    ),
                     *then,
                 );
             }
@@ -1972,15 +1972,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             } => {
                 if let Some(attempt) = instruction_attempt {
                     self.persist(
-                        Record::InstructionObservationFinished {
-                            owner: attempt.owner,
-                            ticket: attempt.ticket,
-                            baseline: attempt.baseline,
-                            settlement: dudes_proto::InstructionSettlement::NoProcess {
+                        self.instruction_control_record(
+                            attempt.owner,
+                            attempt.ticket,
+                            attempt.baseline,
+                            dudes_proto::InstructionSettlement::NoProcess {
                                 proof_lsn: lsn,
                                 proof: dudes_proto::InstructionNoProcessProof::NoHostCall,
                             },
-                        },
+                        ),
                         Then::LaunchAdmissionHeld {
                             agent,
                             turn,

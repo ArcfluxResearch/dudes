@@ -315,6 +315,8 @@ pub enum TicketRefusal {
     Busy,
     /// A related instruction comparison is unfinished.
     InstructionComparisonPending,
+    /// Scoped hired-repository instruction coverage is unknown.
+    InstructionCoverageUnknown,
     /// The caller supplied no exact current instruction review evidence.
     InstructionReviewRequired,
 }
@@ -336,6 +338,7 @@ impl TicketRefusal {
             Self::LimitReached => "limit_reached",
             Self::Busy => "busy",
             Self::InstructionComparisonPending => "instruction_comparison_pending",
+            Self::InstructionCoverageUnknown => "instruction_coverage_unknown",
             Self::InstructionReviewRequired => "instruction_review_required",
         }
     }
@@ -365,6 +368,7 @@ impl TicketRefusal {
             Self::LimitReached => "Too many tickets for now. Remove some, or wait.".to_owned(),
             Self::Busy => "Another ticket request is still running. Try again in a moment.".to_owned(),
             Self::InstructionComparisonPending => "Instruction comparison is still pending. Read the ticket again when it finishes.".to_owned(),
+            Self::InstructionCoverageUnknown => "Instruction coverage is incomplete in a hired repository. Ask for changes before accepting this work.".to_owned(),
             Self::InstructionReviewRequired => "Read the current instruction review before acknowledging it.".to_owned(),
         }
     }

@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use super::{
     End, InstructionAttempt, InstructionBaselineRef, InstructionBoundaryAbsenceProof,
     InstructionBoundarySettlement, InstructionFinished, InstructionNativeBoundaryReceipt,
-    InstructionObservationOwner, InstructionSettlement, InstructionSnapshot, InstructionState,
-    InstructionTicketAssociation, Issue, NativeReceipt, baseline_key, issue_identity, owner_agent,
+    InstructionObservationOwner, InstructionSettlement, InstructionSnapshotEvidence,
+    InstructionState, InstructionTicketAssociation, Issue, NativeReceipt, baseline_key,
+    issue_identity, owner_agent,
 };
 use crate::record::Record;
 use crate::rpc::pty::PtyId;
@@ -76,10 +77,24 @@ impl InstructionCache {
         record: &Record,
         affected_cards: &[CardId],
     ) -> Result<Self, R::Error> {
+        Self::load_with_turns(reader, through, record, affected_cards, &[])
+    }
+
+    /// Load exact scoped issue coverage cells needed at an ordinary completion boundary.
+    pub fn load_with_turns<R: InstructionCacheReader>(
+        reader: &R,
+        through: Lsn,
+        record: &Record,
+        affected_cards: &[CardId],
+        turns: &[TurnId],
+    ) -> Result<Self, R::Error> {
         let mut loader = Loader::new(reader, through);
         loader.record(record)?;
         for card in affected_cards {
             loader.card(*card)?;
+        }
+        for turn in turns {
+            loader.get(Key::Issue(*turn))?;
         }
         Ok(loader.finish())
     }
@@ -257,7 +272,7 @@ enum Cell {
     },
     Snapshot {
         lsn: Lsn,
-        value: InstructionSnapshot,
+        value: InstructionSnapshotEvidence,
     },
     Finished {
         lsn: Lsn,
@@ -771,13 +786,37 @@ impl<'a, R: InstructionCacheReader> Loader<'a, R> {
         Ok(())
     }
 
+    fn finish_observation(
+        &mut self,
+        owner: InstructionObservationOwner,
+        ticket: Option<InstructionTicketAssociation>,
+        baseline: InstructionBaselineRef,
+        settlement: Option<&InstructionSettlement>,
+    ) -> Result<(), R::Error> {
+        self.attempt(baseline_key(baseline), false)?;
+        self.owner(owner)?;
+        self.ticket(ticket)?;
+        if let Some(ticket) = ticket {
+            self.card(ticket.card)?;
+        }
+        if let Some(InstructionSettlement::NoProcess { proof_lsn, .. }) = settlement {
+            self.get(Key::NoHostHold(*proof_lsn))?;
+            self.get(Key::NoHostClaim(*proof_lsn))?;
+            self.get(Key::NativeReceipt(*proof_lsn))?;
+        }
+        Ok(())
+    }
+
     fn record(&mut self, record: &Record) -> Result<(), R::Error> {
         if let Some((_, turn)) = issue_identity(record) {
             self.get(Key::Issue(turn))?;
             self.current_turn(turn, false)?;
         }
         match record {
-            Record::InstructionObservationStarted { owner, ticket, .. } => {
+            Record::InstructionObservationBatchStarted(
+                crate::repository_instruction::RepositoryInstructionStart { owner, ticket, .. },
+            )
+            | Record::InstructionObservationStarted { owner, ticket, .. } => {
                 self.owner(*owner)?;
                 self.ticket(*ticket)?;
                 if let Some(ticket) = ticket {
@@ -789,18 +828,14 @@ impl<'a, R: InstructionCacheReader> Loader<'a, R> {
                 ticket,
                 baseline,
                 settlement,
-            } => {
-                self.attempt(baseline_key(*baseline), false)?;
-                self.owner(*owner)?;
-                self.ticket(*ticket)?;
-                if let Some(ticket) = ticket {
-                    self.card(ticket.card)?;
-                }
-                if let InstructionSettlement::NoProcess { proof_lsn, .. } = settlement {
-                    self.get(Key::NoHostHold(*proof_lsn))?;
-                    self.get(Key::NoHostClaim(*proof_lsn))?;
-                    self.get(Key::NativeReceipt(*proof_lsn))?;
-                }
+            } => self.finish_observation(*owner, *ticket, *baseline, Some(settlement))?,
+            Record::InstructionObservationBatchFinished(batch) => {
+                self.finish_observation(
+                    batch.owner,
+                    batch.ticket,
+                    batch.baseline,
+                    batch.members.first().map(|member| &member.settlement),
+                )?;
             }
             Record::TicketInstructionReviewed { card, .. }
             | Record::TicketAssigned { card, .. }

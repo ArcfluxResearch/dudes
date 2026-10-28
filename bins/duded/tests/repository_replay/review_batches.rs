@@ -9,6 +9,9 @@ use dudes_proto::repository_review::{
 use dudes_proto::{DiffFreshness, DiffRefusal, Evidence, Gate, GateStep, LoopDecision};
 use dudes_types::{GoalId, Provenance, TurnId};
 
+#[path = "review_batches/instruction_batches.rs"]
+mod instruction_batches;
+
 struct ReviewLog {
     writer: Writer,
     world: dudes_supervisor::World,
