@@ -36,6 +36,8 @@ takes. Add `--json` for the same answer as data.
 - **Done when.** `--done-when <check id>` picks one of the project's named checks. The default is
   the project's own check. The daemon runs it, and what an agent says about its own work never
   counts as passing.
+- **Priority.** `--priority urgent|high|medium|low|none` sets how soon the ticket should be served;
+  `dudes ticket edit <card> --priority high` changes it alone. `dudes ticket show` prints it.
 - **Note.** Optional. A one-line ticket is a normal ticket.
 
 Give the ticket to an agent hired into the same project:
