@@ -777,7 +777,7 @@ fn refusal_reason(response: &dudes_proto::rpc::Response) -> String {
         .and_then(|error| error.data.as_ref())
         .and_then(|data| data.get("reason"))
         .and_then(Value::as_str)
-        .expect("a ticket refusal names its reason")
+        .unwrap_or_else(|| panic!("a ticket refusal names its reason: {response:?}"))
         .to_owned()
 }
 
@@ -3270,7 +3270,7 @@ fn a_priority_change_is_an_edit_the_queue_follows() {
         );
     };
 
-    let seq = flow.card(working).seq;
+    let seq = flow.await_status(working, CardStatus::Doing).seq;
     let refused = flow.call(
         dudes_proto::rpc::Method::TicketEdit,
         json!({"card": working, "priority": "urgent", "expected_seq": seq}),
