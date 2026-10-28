@@ -547,6 +547,17 @@ fn hired_with_resolver(
     settings: duded::Settings,
     resolver: duded::classify::Resolver,
 ) -> Hired {
+    hired_on(fixture, ptys, settings, resolver, None)
+}
+
+/// [`hired_with_resolver`] with the agent hired on `model`, when one is named.
+fn hired_on(
+    fixture: &Fixture,
+    ptys: &SharedPtyHost,
+    settings: duded::Settings,
+    resolver: duded::classify::Resolver,
+    model: Option<&str>,
+) -> Hired {
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let children = duded::ChildEnds::new();
     host.bind_child_ends(Arc::clone(&children));
@@ -585,10 +596,12 @@ fn hired_with_resolver(
             .expect("a pre-agent connection is accepted");
         assert!(ping.error.is_none(), "{name} was not accepted: {ping:?}");
     }
+    let mut params = common::hire_params(fixture.state.path());
+    params.model = model.map(|name| dudes_types::ModelName::parse(name).expect("a model name"));
     let hire = owner
         .call_as_operator(
             Method::AgentHire,
-            Some(serde_json::to_value(common::hire_params(fixture.state.path())).unwrap()),
+            Some(serde_json::to_value(params).unwrap()),
             credential_of(&settings),
         )
         .expect("hire response");
@@ -1480,6 +1493,79 @@ fn gone_attachment_short_write_keeps_operator_diagnostics_available() {
     );
     running.stop(duded::ExitCause::Ended);
     assert_eq!(host.shutdowns(), 1);
+}
+
+/// The terminal opens on the model the agent works on: the one it was hired on, the one it was
+/// changed to later, and none at all when it is on the engine's default.
+fn assert_attach_model(
+    hired_on_model: Option<&str>,
+    changed_to: Option<&str>,
+    expected: Option<&str>,
+) {
+    {
+        let fixture = Fixture::new();
+        let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+        let settings = fixture.settings();
+        let mut hired = hired_on(
+            &fixture,
+            &ptys,
+            settings,
+            common::native_resolver(&ptys),
+            hired_on_model,
+        );
+        if let Some(name) = changed_to {
+            let changed = hired
+                .owner
+                .call_as_operator(
+                    Method::AgentModel,
+                    Some(
+                        serde_json::to_value(dudes_proto::rpc::agent::ModelParams {
+                            agent: hired.agent,
+                            model: Some(dudes_types::ModelName::parse(name).unwrap()),
+                        })
+                        .unwrap(),
+                    ),
+                    credential_of(&hired.settings),
+                )
+                .expect("model response");
+            assert!(changed.error.is_none(), "model change refused: {changed:?}");
+        }
+        let response = attach(&mut hired.owner, &hired.settings, hired.agent);
+        assert!(response.error.is_none(), "attach was refused: {response:?}");
+        let opens = ptys.opens();
+        let argv = &opens.first().expect("the attach opened a terminal").0.argv;
+        let flag = argv.iter().position(|part| part == "--model");
+        match expected {
+            Some(name) => {
+                let at = flag.expect("a named model is passed");
+                assert_eq!(
+                    argv.get(at + 1).map(std::ffi::OsString::as_os_str),
+                    Some(std::ffi::OsStr::new(name))
+                );
+                assert_eq!(argv.len(), at + 2, "the model ends the argv");
+            }
+            None => assert_eq!(flag, None, "the engine default names no model: {argv:?}"),
+        }
+        assert_eq!(
+            hired.running.stop(duded::ExitCause::Ended),
+            duded::ExitCause::Ended
+        );
+    }
+}
+
+#[test]
+fn an_attach_opens_on_the_model_the_agent_was_hired_on() {
+    assert_attach_model(Some("haiku"), None, Some("haiku"));
+}
+
+#[test]
+fn an_attach_opens_on_the_model_the_agent_was_changed_to() {
+    assert_attach_model(Some("haiku"), Some("sonnet"), Some("sonnet"));
+}
+
+#[test]
+fn an_attach_names_no_model_for_an_agent_on_the_default() {
+    assert_attach_model(None, None, None);
 }
 
 /// Invariant 7 on the attached launch: the PTY host is handed the program the daemon found on the

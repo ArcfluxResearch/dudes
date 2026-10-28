@@ -409,6 +409,10 @@ test('Claude Attach shows the workspace trust warning in a confirmation before o
   assert.match(dialog, /No, exit/);
   assert.ok(dialog.indexOf('trust this folder') < dialog.indexOf('>Attach<'));
   assert.match(dialog, /class="retire-cancel"[^>]*>Cancel</);
+  assert.match(dialog, /The terminal opens on Claude’s default model\./);
+  const named = renderToStaticMarkup(createElement(AttachConfirmation, { name: 'Ada', model: 'sonnet', onConfirm() {}, onCancel() {} }));
+  assert.match(named, /The terminal opens on sonnet\./);
+  assert.doesNotMatch(named, /default model/);
 });
 
 test('the panel offers Detach only while attached, and Close only once ended', () => {

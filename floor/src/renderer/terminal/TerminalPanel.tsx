@@ -20,6 +20,7 @@ import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from '../focus.ts';
 import { UnavailableControls } from '../settings/SettingsView.tsx';
 import { NOTE, ACTIONS, KICKER as KICKER_TEXT } from '../receipt.ts';
 import { RetireStrip, openConfirmation } from '../retire/RetirePanel.tsx';
+import { modelView } from '../model/model.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import type { Terminal } from './grid.ts';
 import {
@@ -60,8 +61,8 @@ const TRUST_WARNING = 'Claude Code may ask you to trust this folder. Check the f
   + 'No, exit may be selected when the prompt opens.';
 
 /** Claude Code's workspace trust prompt comes up inside the terminal, so it is read here first. */
-export function AttachConfirmation({ name, onConfirm, onCancel }: {
-  readonly name: string; readonly onConfirm: () => void; readonly onCancel: () => void;
+export function AttachConfirmation({ name, model = null, onConfirm, onCancel }: {
+  readonly name: string; readonly model?: string | null; readonly onConfirm: () => void; readonly onCancel: () => void;
 }) {
   return (
     <Dialog ref={openConfirmation} size="sm" className="retire-dialog" data-attach-dialog
@@ -69,6 +70,9 @@ export function AttachConfirmation({ name, onConfirm, onCancel }: {
       <div className="grid gap-4 p-6">
         <h2 id="attach-dialog-title" className="m-0 font-sans text-title font-semibold text-ink">{`Attach to ${name}?`}</h2>
         <p id="attach-dialog-text" className="m-0 text-body text-muted">{TRUST_WARNING}</p>
+        <p className="attach-model m-0 text-body text-muted" data-attach-model={model ?? ''}>
+          {model === null ? 'The terminal opens on Claude’s default model.' : `The terminal opens on ${model}.`}
+        </p>
         <div className={cn('retire-actions justify-end', ACTIONS)}>
           <Button className="retire-cancel" onClick={onCancel}>Cancel</Button>
           <Button variant="primary" className="terminal-attach-confirm"
@@ -101,13 +105,15 @@ export function TerminalAttachView({ floor, offer }: { readonly floor: FloorStat
   if (offer.kind === 'none') return <UnavailableControls floor={floor} control="terminal" />;
   const target = offer.kind === 'attach' ? offer.agent : null;
   const hint = offer.kind === 'attach' ? ATTACH_HINT : whyNoAttach(floor, offer);
-  const claudeTrust = target !== null && floor.agents.find((row) => row.id === target)?.provider === 'claude';
+  const targetRow = target === null ? undefined : floor.agents.find((row) => row.id === target);
+  const claudeTrust = targetRow?.provider === 'claude';
   return (
     <div className="agent-detail-terminal flex flex-wrap items-center gap-x-3 gap-y-1" data-terminal-offer={offer.kind}>
       <Button className="terminal-attach" title={hint} aria-describedby="terminal-hint" icon={<TerminalIcon {...ICON} />}
         aria-haspopup={claudeTrust ? 'dialog' : undefined} aria-disabled={target === null || undefined}
         onClick={() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }}>Open the real CLI</Button>
-      {confirming && target !== null && claudeTrust ? <AttachConfirmation name={nameOf(floor, target)}
+      {confirming && target !== null && targetRow !== undefined && claudeTrust ? <AttachConfirmation name={nameOf(floor, target)}
+        model={modelView(floor, targetRow).next}
         onCancel={() => setConfirming(false)}
         onConfirm={() => { setConfirming(false); attachTerminal(target, browserTerminalPorts()); }} /> : null}
       <span className={offer.kind === 'unavailable' && offer.reason === 'engine' ? 'agent-attach-note text-small text-muted' : 'sr-only'} id="terminal-hint">{hint}</span>

@@ -665,8 +665,13 @@ impl Adapter for ClaudeAdapter {
         }
     }
 
-    fn attached(&self, ctx: &AgentCtx<'_>, session: &TurnSession) -> Option<LaunchSpec> {
-        hooks::compose_attached(&self.config.command, ctx, session)
+    fn attached(
+        &self,
+        ctx: &AgentCtx<'_>,
+        session: &TurnSession,
+        model: &ModelSelection,
+    ) -> Option<LaunchSpec> {
+        hooks::compose_attached(&self.config.command, ctx, session, model)
     }
 
     fn install_hooks(&self, ctx: &AgentCtx<'_>, hook_command: &Path) -> HookInstall {
