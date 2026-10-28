@@ -39,14 +39,14 @@ impl Scratch {
         self.root.path().join(name)
     }
 
-    fn append(&self, kind: RecordKind) {
+    fn append(&self, kind: RecordKind) -> dudes_types::Lsn {
         let (mut writer, _) = open(&self.path("state/journal"), JournalOptions::default()).unwrap();
         writer
             .append(&Entry {
                 at: Timestamp::UNIX_EPOCH,
                 record: samples::record(kind),
             })
-            .unwrap();
+            .unwrap()
     }
 
     #[allow(
@@ -120,7 +120,7 @@ fn refuses(warm: bool) {
     if warm {
         scratch.boot_control();
     }
-    scratch.append(RecordKind::WorktreeLeasedWithIdentity);
+    let lease_lsn = scratch.append(RecordKind::WorktreeLeasedWithIdentity);
     let before = journal_bytes(&scratch.path("state/journal"));
     let floor_before = fs::metadata(scratch.path("state/floor-port"))
         .and_then(|meta| meta.modified())
@@ -144,7 +144,10 @@ fn refuses(warm: bool) {
     assert!(!status.success());
     let logs = scratch.logs();
     assert!(
-        logs.contains("112") && logs.contains("required") && logs.contains("journal"),
+        logs.contains("112")
+            && logs.contains("required")
+            && logs.contains("journal")
+            && logs.contains(&format!("at {lease_lsn}")),
         "{logs}"
     );
     assert!(!logs.contains("panicked"), "{logs}");

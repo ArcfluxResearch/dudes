@@ -602,17 +602,17 @@ fn a_genuine_partial_git_registration_is_cleaned_and_its_branch_is_retained() {
     let admin = repo.join(".git/worktrees").join(id.to_string());
     std::fs::create_dir_all(&admin).unwrap();
     let canonical_tree = std::fs::canonicalize(&tree).unwrap();
-    // Git creates these links and the initializing lock before checkout writes its index.
+    // The pre-HEAD crash prefix has linking files and the initializing lock, with no ref store or index.
     std::fs::write(
         admin.join("gitdir"),
         format!("{}\n", canonical_tree.join(".git").display()),
     )
     .unwrap();
     std::fs::write(admin.join("commondir"), "../..\n").unwrap();
-    std::fs::write(admin.join("HEAD"), format!("ref: refs/heads/{branch}\n")).unwrap();
     std::fs::write(admin.join("locked"), "initializing").unwrap();
     std::fs::write(tree.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
     run(&git, &repo, &["branch", &branch]);
+    assert!(!admin.join("HEAD").exists() && !admin.join("index").exists());
     cleanup_boot(&fixture, id);
     assert!(!tree.exists());
     assert!(!admin.exists());
@@ -1432,11 +1432,6 @@ impl PredicateRunner for PartialRegistrationFailure {
             )
             .unwrap();
             std::fs::write(admin.join("commondir"), "../..\n").unwrap();
-            std::fs::write(
-                admin.join("HEAD"),
-                format!("ref: refs/heads/{}\n", lease.branch),
-            )
-            .unwrap();
             std::fs::write(admin.join("locked"), "initializing").unwrap();
             std::fs::write(
                 lease.path.join(".git"),
@@ -1449,6 +1444,7 @@ impl PredicateRunner for PartialRegistrationFailure {
                 lease.origin,
                 &["branch", lease.branch, &lease.base.to_string()],
             );
+            assert!(!admin.join("HEAD").exists() && !admin.join("index").exists());
             if self.replace {
                 std::fs::rename(lease.path, lease.path.with_file_name("original-retained"))
                     .unwrap();
