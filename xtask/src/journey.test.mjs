@@ -7,11 +7,11 @@ import { Journey } from './journey.mjs';
 
 const PNG = Buffer.from('not really a picture').toString('base64');
 
-// A page that shows `screen` as its text and one copy-this-command row per entry in `blocks`.
-async function look(allowed, name, text, blocks = []) {
+// A page whose text, including its code elements, is `text`.
+async function look(allowed, name, text) {
   const run = { cdp: {
     session: 's',
-    evaluate: async () => ({ text, codeBlocks: blocks }),
+    evaluate: async () => text,
     send: async () => ({ data: PNG }),
   } };
   const journey = new Journey(run, allowed);
@@ -25,13 +25,12 @@ async function look(allowed, name, text, blocks = []) {
   return journey;
 }
 
-test('a screen that shows a command, a prompt or a copy block fails the journey and names the screen', async () => {
-  const journey = await look([], 'board', 'Tickets are off. Run dudes config set floor.board on, then restart.\n$ dudes stop', ['anything']);
+test('a screen that shows a command or a prompt fails the journey and names the screen', async () => {
+  const journey = await look([], 'board', 'Tickets are off. Run dudes config set floor.board on, then restart.\n$ dudes stop');
   assert.deepEqual(journey.findings, [
     'board: dudes command: dudes config set floor.board on, then restart.',
     'board: dudes command: dudes stop',
     'board: shell prompt: $ dudes stop',
-    'board: copy-this-command block: anything',
   ]);
   await assert.rejects(journey.finish(), /terminal command shown on board: dudes command: dudes config set floor\.board on/);
 });
