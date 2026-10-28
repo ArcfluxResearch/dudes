@@ -50,6 +50,57 @@ test('agent text still shows a link as its words followed by the address', () =>
   assert.doesNotMatch(out, /<a[\s>]|href=/);
 });
 
+test('hostile and odd links render as literal text, never as a link', () => {
+  const table = [
+    ['[x](JaVaScRiPt:alert(1))', '<p>x (JaVaScRiPt:alert(1))</p>'],
+    ['[x]( javascript:alert(1))', '<p>[x]( javascript:alert(1))</p>'],
+    ['[x](&#106;avascript:alert(1))', '<p>x (&amp;#106;avascript:alert(1))</p>'],
+    ['[a [b] c](https://example.com/x)', '<p>[a [b] c](https://example.com/x)</p>'],
+    ['[x](https://user:pw@host/p)', '<p>x (https://user:pw@host/p)</p>'],
+    ['[x](https://example.com "Title")', '<p>[x](https://example.com &quot;Title&quot;)</p>'],
+    ['<https://example.com/a>', '<p>&lt;https://example.com/a&gt;</p>'],
+    ['[x][r]\n\n[r]: https://example.com', '<p>[x][r]</p><p>[r]: https://example.com</p>'],
+  ];
+  for (const [source, html] of table) assert.equal(note(source), `<div>${html}</div>`, source);
+});
+
+test('an address is checked without throwing, with or without URL.canParse', () => {
+  const canParse = URL.canParse;
+  try {
+    for (const present of [true, false]) {
+      if (!present) Object.defineProperty(URL, 'canParse', { value: undefined, configurable: true, writable: true });
+      assert.equal(md.webAddress('https://example.com/a'), true);
+      assert.equal(md.webAddress('HTTP://example.com'), true);
+      assert.equal(md.webAddress('https://user@host'), false);
+      assert.equal(md.webAddress('https://user:pw@host'), false);
+      assert.equal(md.webAddress('javascript:alert(1)'), false);
+    }
+  } finally {
+    Object.defineProperty(URL, 'canParse', { value: canParse, configurable: true, writable: true });
+  }
+});
+
+test('ordinary text survives the editor as plain Markdown, with no entities', () => {
+  const paragraphOf = (text) => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
+  for (const [typed, saved] of [
+    ['Q&A', 'Q&A'],
+    ['a < b', 'a < b'],
+    ['List<T>', 'List\\<T>'],
+    ['snake_case', 'snake\\_case'],
+    ['2 * 3', '2 \\* 3'],
+  ]) {
+    const out = rich.serialize(paragraphOf(typed));
+    assert.equal(out, saved);
+    assert.doesNotMatch(out, /&(?:amp|lt|gt);/);
+    assert.equal(rich.reserialize(out), out, typed);
+  }
+});
+
+test('the editor is set not to link a pasted address on its own', () => {
+  const starter = rich.noteExtensions().find((extension) => extension.name === 'starterKit');
+  assert.equal(starter.options.link.linkOnPaste, false);
+});
+
 test('the note counts UTF-8 bytes, not characters, and sends line feeds only', () => {
   assert.equal(text.noteBytes('é'), 2);
   assert.equal(text.noteBytes('€'), 3);
@@ -106,7 +157,7 @@ test('an edited note is written only in syntax the renderer shows', () => {
     '~~struck~~ <u>underlined</u>', '', '---', '', '- [ ] task',
   ].join('\n');
   const out = rich.reserialize(everything);
-  assert.doesNotMatch(out, /~~|<u>|<\/u>|^---$|\[ \]|&nbsp;| /m, out);
+  assert.doesNotMatch(out, /~~|(?<!\\)<\/?u>|^---$|\[ \]|&nbsp;| /m, out);
   assert.match(out, /\*\*bold\*\*/);
   assert.match(out, /\[link\]\(https:\/\/example\.com\)/);
   const shown = note(out);

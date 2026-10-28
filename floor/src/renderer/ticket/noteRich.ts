@@ -21,6 +21,20 @@ const NoteParagraph = Paragraph.extend({
     ? helpers.renderChildren(node.content) : '',
 });
 
+// The stock text encoding turns `&`, `<` and `>` into entities, so typing "Q&A" would save `Q&amp;A`, which the note
+// renderer shows literally. A note is plain Markdown: text is backslash-escaped only where Markdown needs it, and `<` only
+// where it would start an HTML tag. The Markdown extension builds its own manager, so the method is replaced on the class.
+type Encoder = {
+  codeTypes: Set<string>;
+  escapeMarkdownSyntax(text: string): string;
+  encodeTextForMarkdown(text: string, node: { marks?: readonly (string | { type: string })[] }, parent?: { type?: string }): string;
+};
+(MarkdownManager.prototype as unknown as Encoder).encodeTextForMarkdown = function encodeText(this: Encoder, text, node, parent) {
+  const inCode = (parent?.type !== undefined && this.codeTypes.has(parent.type))
+    || (node.marks ?? []).some((mark) => this.codeTypes.has(typeof mark === 'string' ? mark : mark.type));
+  return inCode ? text : this.escapeMarkdownSyntax(text).replace(/<(?=[A-Za-z/!?])/g, '\\<');
+};
+
 export function noteExtensions(): AnyExtension[] {
   return [
     StarterKit.configure({
@@ -31,7 +45,7 @@ export function noteExtensions(): AnyExtension[] {
       dropcursor: false,
       gapcursor: false,
       trailingNode: false,
-      link: { openOnClick: false, autolink: true, linkOnPaste: true, defaultProtocol: 'https', isAllowedUri: webAddress },
+      link: { openOnClick: false, autolink: true, linkOnPaste: false, defaultProtocol: 'https', isAllowedUri: webAddress },
     }),
     NoteParagraph,
   ];

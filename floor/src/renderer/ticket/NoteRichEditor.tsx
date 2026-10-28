@@ -10,7 +10,7 @@ import type { Editor } from '@tiptap/react';
 import { useRef, useState } from 'react';
 
 import { Button, cn } from '../../ui/index.ts';
-import { noteExtensions } from './noteRich.ts';
+import { noteExtensions, noteShape } from './noteRich.ts';
 import { nextNote } from './noteText.ts';
 
 export { opensRich } from './noteRich.ts';
@@ -44,10 +44,12 @@ const TOOLS: readonly Tool[] = [
  * Edits `original`, a note that opens in the editor. `onNote` gets the original string for as long as the document is
  * unchanged, so saving a note nobody touched never rewrites it, and the editor's own Markdown once it is.
  */
-export function RichNoteEditor({ id, original, onNote }: {
+export function RichNoteEditor({ id, original, onNote, onUnfit }: {
   readonly id: string | undefined;
   readonly original: string;
   readonly onNote: (value: string) => void;
+  /** Called when the editor built a document that does not match the note, so the page can fall back to the text box. */
+  readonly onUnfit: () => void;
 }) {
   const baseline = useRef<string | null>(null);
   const [edited, setEdited] = useState(false);
@@ -58,9 +60,12 @@ export function RichNoteEditor({ id, original, onNote }: {
     contentType: 'markdown',
     injectCSS: false,
     editorProps: {
-      attributes: { id: id ?? '', role: 'textbox', 'aria-multiline': 'true', 'aria-label': 'Note', class: EDITOR },
+      attributes: { ...(id === undefined ? {} : { id }), role: 'textbox', 'aria-multiline': 'true', 'aria-label': 'Note', class: EDITOR },
     },
-    onCreate: ({ editor: created }) => { baseline.current = created.getMarkdown().trim(); },
+    onCreate: ({ editor: created }) => {
+      baseline.current = created.getMarkdown().trim();
+      if (noteShape(original) !== noteShape(baseline.current)) onUnfit();
+    },
     onUpdate: ({ editor: changed }) => {
       const markdown = changed.getMarkdown().trim();
       const different = markdown !== baseline.current;

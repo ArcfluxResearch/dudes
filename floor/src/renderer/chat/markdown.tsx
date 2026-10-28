@@ -181,9 +181,13 @@ function bracket(text: string, at: number, to: number, ends: ReadonlyMap<number,
   return urlEnd === undefined ? null : { close: k, urlEnd };
 }
 
-/** An address a note may link to: `http` or `https`, and one the browser parses as such. */
+/**
+ * An address a note may link to: `http` or `https`, with no username or password, and one the browser parses as such.
+ * It never throws: a browser without `URL.canParse` relies on the anchored pattern alone.
+ */
 export function webAddress(url: string): boolean {
-  return /^https?:\/\//i.test(url) && URL.canParse(url);
+  if (!/^https?:\/\/(?![^/?#]*@)/i.test(url)) return false;
+  return typeof URL.canParse !== 'function' || URL.canParse(url);
 }
 
 function inline(ctx: Context, text: string, from: number, to: number, allowLink: boolean): ReactNode[] {

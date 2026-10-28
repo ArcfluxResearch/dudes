@@ -19,6 +19,8 @@ export function NoteView({ text }: { readonly text: string }) {
   return <div className={cn('ticket-text md', MARKDOWN)}><AgentMarkdown text={text} links /></div>;
 }
 
+const UNFIT = 'This note uses Markdown the rich editor cannot keep as written, so it opens as text.';
+
 type Mode =
   | { readonly kind: 'loading' }
   | { readonly kind: 'rich'; readonly editor: Editor }
@@ -37,8 +39,7 @@ export function NoteField({ initial, value, onNote }: {
     let live = true;
     lazyChunk(() => import('./NoteRichEditor.tsx')).then((editor) => {
       if (!live) return;
-      setMode(editor.opensRich(initial) ? { kind: 'rich', editor }
-        : { kind: 'plain', why: 'This note uses Markdown the rich editor cannot keep as written, so it opens as text.' });
+      setMode(editor.opensRich(initial) ? { kind: 'rich', editor } : { kind: 'plain', why: UNFIT });
     }, () => {
       if (live) setMode({ kind: 'plain', why: 'The rich editor did not load, so the note opens as text.' });
     });
@@ -49,7 +50,7 @@ export function NoteField({ initial, value, onNote }: {
   const bytes = noteBytes(toLf(value));
   return <div className="flex flex-col gap-2">
     {mode.kind === 'loading' ? <p className="m-0 text-muted" role="status">Loading the editor…</p> : null}
-    {mode.kind === 'rich' ? mode.editor.richEditor({ id: field.id, original: initial, onNote }) : null}
+    {mode.kind === 'rich' ? mode.editor.richEditor({ id: field.id, original: initial, onNote, onUnfit: () => { setMode({ kind: 'plain', why: UNFIT }); } }) : null}
     {mode.kind === 'plain' ? <>
       {mode.why === null ? null : <p className="m-0 text-small text-muted" role="note">{mode.why}</p>}
       <TabList label="Note view">
