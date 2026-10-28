@@ -60,8 +60,9 @@ import {
 const TOP_BAR = 'top-bar relative z-(--layer-top-bar) flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-surface px-4 py-2 font-sans';
 const WORDMARK = 'wordmark m-0 text-title font-semibold tracking-[-0.01em] text-ink max-[801px]:order-1';
 const STAGE_ROW = 'row-[2/-1] min-h-0';
-/** Dialogs that keep the banner at their own top. A fixed banner would cover the top bar the dialog leaves in view. */
-const BANNER_IN_DIALOG = '.ticket-dialog, .project-dialog';
+/** Dialogs that carry the banner at their own top. A banner fixed to the window would cover the top bar the dialog leaves in view.
+ *  The command menu and the shortcut list are left out: they are short pop-ups that leave the banner in the page behind them. */
+const BANNER_IN_DIALOG = '.hire-dialog, .retire-dialog, .ticket-dialog, .overview-dialog, .project-dialog';
 
 function reloadPage(): void {
   window.location.reload();
@@ -209,12 +210,11 @@ function SignedInShell() {
       shell.style.setProperty('--notice-room', `${room === 0 ? 0 : room + 16}px`);
     };
     const update = () => {
-      const dialogs = shell.querySelectorAll<HTMLDialogElement>('.hire-dialog:modal, .retire-dialog:modal, .ticket-dialog:modal, .overview-dialog:modal, .project-dialog:modal');
-      const modal = dialogs.item(dialogs.length - 1);
+      const modal = [...shell.querySelectorAll<HTMLDialogElement>(BANNER_IN_DIALOG)].filter((dialog) => dialog.matches(':modal')).at(-1) ?? null;
       const host = modal ?? shell;
       if (noticeArea.parentElement !== host) host.append(noticeArea);
       const top = shell.querySelector('.top-region');
-      noticeBanner.dataset.host = modal === null ? 'top' : modal.matches(BANNER_IN_DIALOG) ? 'sticky' : 'fixed';
+      noticeBanner.dataset.host = modal === null ? 'top' : 'sticky';
       if (modal !== null) {
         if (noticeBanner.parentElement !== modal) modal.prepend(noticeBanner);
       } else if (top !== null && noticeBanner.parentElement !== top) top.append(noticeBanner);
