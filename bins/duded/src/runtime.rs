@@ -330,15 +330,15 @@ impl std::fmt::Display for KnownNoEffect {
 impl std::error::Error for KnownNoEffect {}
 
 #[derive(Debug)]
-struct WorktreeAuthorityRefusal(String);
+struct HireAuthorityRefusal(String);
 
-impl std::fmt::Display for WorktreeAuthorityRefusal {
+impl std::fmt::Display for HireAuthorityRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-impl std::error::Error for WorktreeAuthorityRefusal {}
+impl std::error::Error for HireAuthorityRefusal {}
 
 /// Why a browser action's pump stopped, for its route to name in its own outcome.
 enum PumpFailure {
@@ -360,6 +360,10 @@ pub enum OnboardingPausePoint {
     AfterHirePermit,
     /// After the hire frame fsync, before its fold.
     AfterHireFsync,
+    /// An operator hire reached its final pre-write authority checks.
+    BeforeSocketHireAppend,
+    /// A pending lease reached its final pre-write authority checks.
+    BeforeWorktreeLeaseAppend,
     /// After the hire fold and before the goal continuation is queued.
     BetweenEffects,
     /// Before the second append permit.
@@ -700,6 +704,13 @@ impl OnboardingPause {
                 Some(Point::AfterHirePermit),
                 Some(Point::AfterHireFsync),
             ),
+            Record::AgentHired {
+                browser_onboarding: None,
+                ..
+            } => (None, Some(Point::BeforeSocketHireAppend), None),
+            record if record.worktree_lease().is_some() => {
+                (None, Some(Point::BeforeWorktreeLeaseAppend), None)
+            }
             Record::GoalSet {
                 browser_onboarding: Some(_),
                 ..
@@ -2865,7 +2876,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             {
                 PumpFailure::Forbidden
             } else if error.downcast_ref::<KnownNoEffect>().is_some()
-                || error.downcast_ref::<WorktreeAuthorityRefusal>().is_some()
+                || error.downcast_ref::<HireAuthorityRefusal>().is_some()
             {
                 PumpFailure::NoEffect
             } else {
@@ -7714,17 +7725,32 @@ fn lease_view(
     }
 }
 
+fn verify_worktree_lease_preparation(record: &Record) -> Result<(), HireAuthorityRefusal> {
+    let Some(lease) = record.worktree_lease() else {
+        return Ok(());
+    };
+    crate::worktree::pending::verify_prepared(&crate::worktree::hire::LeaseView {
+        worktree: lease.worktree,
+        origin: lease.origin.to_path_buf(),
+        path: lease.path.to_path_buf(),
+        branch: lease.branch.to_owned(),
+        base: lease.base,
+        identity: lease.identity.cloned(),
+    })
+    .map_err(HireAuthorityRefusal)
+}
+
 fn verify_hire_worktree_authority(
     world: &dudes_supervisor::World,
     record: &Record,
-) -> Result<(), WorktreeAuthorityRefusal> {
+) -> Result<(), HireAuthorityRefusal> {
     use dudes_proto::repository_state::HireRepositoryRecord;
     let Some(hire) = record.hire() else {
         return Ok(());
     };
     let verify = |worktree, execution: &std::path::Path| {
         let refuse = |reason: &str| {
-            WorktreeAuthorityRefusal(format!(
+            HireAuthorityRefusal(format!(
                 "pending worktree {worktree} cannot be assigned because {reason}"
             ))
         };
@@ -7756,7 +7782,7 @@ fn verify_hire_worktree_authority(
                     || !crate::worktree::same_directory(&copy.origin.directory, &lease.origin)
                     || !crate::worktree::is_owned_repository(copy)
                 {
-                    return Err(WorktreeAuthorityRefusal(
+                    return Err(HireAuthorityRefusal(
                         "the scoped hire does not match its pending copy".into(),
                     ));
                 }
@@ -8656,8 +8682,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         publication: FloorPublication,
         recovery: Option<recovery::AppendSubject<'_>>,
     ) -> Result<CheckedAppend> {
-        if let Record::WorktreeLeased { origin, .. } = &entry.record {
-            self.require_current_hire(world, origin)?;
+        if let Some(lease) = entry.record.worktree_lease() {
+            self.require_current_hire(world, lease.origin)?;
         }
         if let Some(hire) = entry.record.hire() {
             self.require_hire_authority(world, hire)?;
@@ -8851,6 +8877,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one append boundary keeps permit, both authority checks and durability ordering visible"
+    )]
     fn append_checked(
         &mut self,
         world: &dudes_supervisor::World,
@@ -8869,6 +8899,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         #[cfg(debug_assertions)]
         self.inject_short_write(incidental);
         let pause = &self.onboarding_pause;
+        let current_hire = repository_admission::CurrentHireAdmission::new(
+            &self.enrollment,
+            &self.current_repositories,
+        );
+        let clock = &self.clock;
         let failure = &self.onboarding_failure;
         let grants = self.recovery_grants();
         let authority = self.recovery_authority.as_ref();
@@ -8911,6 +8946,17 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                             .map_err(anyhow::Error::new)?,
                     };
                     pause.at(&entry.record, AppendStage::AfterPermit);
+                    if let Some(lease) = entry.record.worktree_lease() {
+                        current_hire
+                            .require_current_hire(world, lease.origin, clock.now())
+                            .map_err(|error| HireAuthorityRefusal(error.to_string()))?;
+                    }
+                    if let Some(hire) = entry.record.hire() {
+                        current_hire
+                            .require_hire_authority(world, hire, clock.now())
+                            .map_err(|error| HireAuthorityRefusal(error.to_string()))?;
+                    }
+                    verify_worktree_lease_preparation(&entry.record)?;
                     verify_hire_worktree_authority(world, &entry.record)?;
                     Ok::<_, anyhow::Error>(permit)
                 },

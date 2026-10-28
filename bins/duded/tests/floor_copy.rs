@@ -1044,3 +1044,141 @@ fn a_replaced_copy_at_the_final_hire_permit_is_retained_without_assignment() {
         base.to_string()
     );
 }
+
+fn socket_hire(settings: &duded::Settings, params: HireParams) -> dudes_proto::rpc::Response {
+    let credential = OperatorCredential::new(
+        std::fs::read_to_string(
+            settings
+                .runtime_dir
+                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    Client::connect(settings.socket())
+        .unwrap()
+        .call_as_operator(
+            Method::AgentHire,
+            Some(serde_json::to_value(params).unwrap()),
+            credential,
+        )
+        .unwrap()
+}
+
+fn replace_current_git(fixture: &Fixture, floor: &Floor) -> PathBuf {
+    let saved = fixture.runtime.path().join("original-git");
+    std::fs::rename(floor.repo.join(".git"), &saved).unwrap();
+    std::fs::create_dir(floor.repo.join(".git")).unwrap();
+    std::fs::write(floor.repo.join(".git/sentinel"), "current replacement").unwrap();
+    saved
+}
+
+#[test]
+fn a_socket_hire_rechecks_current_repository_identity_at_the_final_permit() {
+    let fixture = Fixture::new();
+    let mut floor = floor(&fixture);
+    floor
+        .pause
+        .arm(duded::runtime::OnboardingPausePoint::BeforeSocketHireAppend);
+    let mut params = common::hire_params(&floor.repo);
+    params.trusted = false;
+    let settings = floor.settings.clone();
+    let owner = std::thread::spawn(move || socket_hire(&settings, params));
+    assert!(floor.pause.wait_reached(Duration::from_secs(3)));
+    let saved = replace_current_git(&fixture, &floor);
+    floor.pause.release();
+    let response = owner.join().unwrap();
+    floor.running.stop(duded::ExitCause::Ended);
+    assert!(response.error.is_some(), "{:?}", response.result);
+    assert_eq!(hired_agents(&fixture), 0);
+    assert_eq!(leases(&fixture), 0);
+    assert!(floor.host.spawned().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(floor.repo.join(".git/sentinel")).unwrap(),
+        "current replacement"
+    );
+    assert!(saved.join("HEAD").is_file());
+}
+
+#[test]
+fn an_identity_lease_rechecks_current_repository_identity_at_the_final_permit() {
+    let fixture = Fixture::new();
+    let mut floor = floor(&fixture);
+    floor
+        .pause
+        .arm(duded::runtime::OnboardingPausePoint::BeforeWorktreeLeaseAppend);
+    let mut params = common::hire_params(&floor.repo);
+    params.trusted = true;
+    params.checkout = Some(Checkout::Worktree);
+    let settings = floor.settings.clone();
+    let owner = std::thread::spawn(move || socket_hire(&settings, params));
+    assert!(floor.pause.wait_reached(Duration::from_secs(3)));
+    assert_eq!(leases(&fixture), 0);
+    assert_eq!(trees(&floor), 1);
+    let saved = replace_current_git(&fixture, &floor);
+    floor.pause.release();
+    let response = owner.join().unwrap();
+    floor.running.stop(duded::ExitCause::Ended);
+    assert!(response.error.is_some(), "{:?}", response.result);
+    assert_eq!(
+        leases(&fixture),
+        0,
+        "the refused lease cannot authorize Git or cleanup"
+    );
+    assert_eq!(hired_agents(&fixture), 0);
+    assert!(floor.host.spawned().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(floor.repo.join(".git/sentinel")).unwrap(),
+        "current replacement"
+    );
+    assert!(saved.join("HEAD").is_file());
+    assert!(
+        std::fs::read_dir(floor.settings.state_dir.join("worktrees"))
+            .unwrap()
+            .all(|entry| std::fs::read_dir(entry.unwrap().path())
+                .unwrap()
+                .next()
+                .is_none())
+    );
+}
+
+#[test]
+fn a_prepared_root_changed_before_lease_append_never_acquires_cleanup_authority() {
+    let fixture = Fixture::new();
+    let mut floor = floor(&fixture);
+    floor
+        .pause
+        .arm(duded::runtime::OnboardingPausePoint::BeforeWorktreeLeaseAppend);
+    let mut params = common::hire_params(&floor.repo);
+    params.trusted = true;
+    params.checkout = Some(Checkout::Worktree);
+    let settings = floor.settings.clone();
+    let owner = std::thread::spawn(move || socket_hire(&settings, params));
+    assert!(floor.pause.wait_reached(Duration::from_secs(3)));
+    assert_eq!(leases(&fixture), 0);
+    let root = std::fs::read_dir(floor.settings.state_dir.join("worktrees"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::write(root.join("sentinel"), "unrecorded data").unwrap();
+    floor.pause.release();
+    let response = owner.join().unwrap();
+    floor.running.stop(duded::ExitCause::Ended);
+    assert!(response.error.is_some());
+    assert_eq!(leases(&fixture), 0);
+    assert_eq!(hired_agents(&fixture), 0);
+    assert!(floor.host.spawned().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(root.join("sentinel")).unwrap(),
+        "unrecorded data"
+    );
+    assert_eq!(git(&floor.repo, &["branch", "--list", "dudes/*"]), "");
+    assert!(
+        !fixture
+            .records()
+            .iter()
+            .any(|record| matches!(record, Record::WorktreeRemoved { .. }))
+    );
+}
