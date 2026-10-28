@@ -20,6 +20,7 @@ import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
 import { DIGEST_CAVEAT, digestSentence } from './digest.ts';
 import { checkDisplayCurrent, currentDetail, editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
 import { RecoveredReview } from './RecoveredReview.tsx';
+import { TicketCopy } from './TicketCopy.tsx';
 import { History } from './TicketHistory.tsx';
 import { AskedQuestion } from './TicketQuestion.tsx';
 import { NoteField, NoteView } from './NoteField.tsx';
@@ -384,12 +385,14 @@ function EditForm({ floor, card, detail, onDone }: {
   </form>;
 }
 
-export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
+export function TicketPanel({ floor, card, onHire, onReviewRecovery, onOpenGit }: {
   readonly floor: FloorState;
   readonly card: CardRow;
   readonly onHire?: (opener: HTMLElement | null) => void;
   /** Open the recovery view in this agent's drawer. */
   readonly onReviewRecovery?: (agent: string) => void;
+  /** Open this agent's changed-files view in its drawer. */
+  readonly onOpenGit?: (agent: string) => void;
 }) {
   const [mode, setMode] = useState<Mode>('none');
   const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
@@ -455,6 +458,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
     data-ticket-status={card.status} data-mode={mode} ref={focusSheet} tabIndex={-1} data-focus-on-leave="view-board">
     <h3 id="card-detail-title" tabIndex={-1} className="m-0 text-page leading-normal font-semibold wrap-anywhere focus:outline-none">{card.title}</h3>
     <Facts floor={floor} card={card} />
+    <TicketCopy floor={floor} card={card} history={shown?.history ?? null} showChanges={Boolean(changesView)} onOpenGit={onOpenGit} />
     <StuckActions floor={floor} card={card} onReviewRecovery={onReviewRecovery} />
     {shown?.context == null ? null : <RecoveredReview context={shown.context} fresh={fresh} />}
     {shown?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={shown.instruction_review}

@@ -1209,7 +1209,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, the Projects page\'s Add project, Open board, ticket count and dialog buttons, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup and navigation, earlier acknowledged-review disclosure, the guide\'s navigation, '
-  + 'the note field\'s Write and Preview tabs and the note editor\'s formatting buttons, and checkout differences\' explicit show, refresh, hide, open and more-files controls', async () => {
+  + 'the note field\'s Write and Preview tabs and the note editor\'s formatting buttons, checkout differences\' explicit show, refresh, hide, open and more-files controls, and a ticket copy\'s two links', async () => {
   const buttons = [];
   const clicks = [];
   for (const path of await filesUnder(source, ['.ts', '.tsx', '.html'])) {
@@ -1241,6 +1241,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(3).fill(GOAL_PANEL),
     ...Array(2).fill('src/renderer/ticket/StuckActions.tsx'),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
+    ...Array(2).fill('src/renderer/ticket/TicketCopy.tsx'),
     ...Array(9).fill(TICKET_BOARD),
     ...Array(3).fill(BOARD_TOOLBAR),
     TICKET_LIST, COPY_LINK, TICKET_PAGE, SHORTCUT_HELP,
