@@ -343,6 +343,8 @@ test('Attach is offered for a Claude agent, and a Codex or Pi agent is told its 
 // --- what the views say ------------------------------------------------------------------
 
 let server;
+let nextModel;
+let decodeDaemonReport;
 let TerminalAttachView;
 let AttachConfirmation;
 let TerminalPanelView;
@@ -356,6 +358,8 @@ before(async () => {
     logLevel: 'silent',
   });
   ({ TerminalAttachView, TerminalPanelView, AttachConfirmation } = await server.ssrLoadModule('/src/renderer/terminal/TerminalPanel.tsx'));
+  ({ nextModel } = await server.ssrLoadModule('/src/renderer/model/model.ts'));
+  ({ decodeDaemonReport } = await server.ssrLoadModule('/src/renderer/setup/daemon.ts'));
 });
 
 after(async () => {
@@ -410,9 +414,26 @@ test('Claude Attach shows the workspace trust warning in a confirmation before o
   assert.ok(dialog.indexOf('trust this folder') < dialog.indexOf('>Attach<'));
   assert.match(dialog, /class="retire-cancel"[^>]*>Cancel</);
   assert.match(dialog, /The terminal opens on Claude’s default model\./);
-  const named = renderToStaticMarkup(createElement(AttachConfirmation, { name: 'Ada', model: 'sonnet', onConfirm() {}, onCancel() {} }));
+  const named = renderToStaticMarkup(createElement(AttachConfirmation, { name: 'Ada', model: { kind: 'named', name: 'sonnet' }, onConfirm() {}, onCancel() {} }));
   assert.match(named, /The terminal opens on sonnet\./);
   assert.doesNotMatch(named, /default model/);
+  const unnamed = renderToStaticMarkup(createElement(AttachConfirmation, { name: 'Ada', model: { kind: 'configured' }, onConfirm() {}, onCancel() {} }));
+  assert.match(unnamed, /opens on the model this agent’s configuration sets/);
+  assert.doesNotMatch(unnamed, /default model/);
+});
+
+test('the attach dialog says default only when the Floor knows the agent has no model, no configured model and no pin', () => {
+  const claude = (extra = {}) => ({ provider: 'claude', program: 'claude', found: true, ...extra });
+  const next = (rowFields, report) => nextModel(
+    floorOf([row({ provider: 'claude', ...rowFields })], { daemon: report === null ? null : decodeDaemonReport({ providers: [report] }) }),
+    row({ provider: 'claude', ...rowFields }));
+  assert.deepEqual(next({}, claude()), { kind: 'default' });
+  assert.deepEqual(next({ model: 'haiku' }, claude()), { kind: 'named', name: 'haiku' });
+  assert.deepEqual(next({}, claude({ configured_model: 'sonnet' })), { kind: 'named', name: 'sonnet' });
+  assert.deepEqual(next({ model: 'haiku' }, claude({ configured_model: 'opus', model_fixed: true })), { kind: 'named', name: 'opus' });
+  assert.deepEqual(next({}, claude({ model_unnamed: true })), { kind: 'configured' }, 'a configured model the page was not shown');
+  assert.deepEqual(next({ model: 'haiku' }, claude({ model_fixed: true, model_unnamed: true })), { kind: 'configured' }, 'a pin the page was not shown');
+  assert.deepEqual(next({}, null), { kind: 'configured' }, 'the report has not loaded');
 });
 
 test('the panel offers Detach only while attached, and Close only once ended', () => {

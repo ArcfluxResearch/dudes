@@ -547,16 +547,24 @@ fn hired_with_resolver(
     settings: duded::Settings,
     resolver: duded::classify::Resolver,
 ) -> Hired {
-    hired_on(fixture, ptys, settings, resolver, None)
+    hired_on(
+        fixture,
+        ptys,
+        settings,
+        resolver,
+        None,
+        dudes_providers::claude::config::ClaudeConfig::default(),
+    )
 }
 
-/// [`hired_with_resolver`] with the agent hired on `model`, when one is named.
+/// [`hired_with_resolver`] with the agent hired on `model`, when one is named, under `config`.
 fn hired_on(
     fixture: &Fixture,
     ptys: &SharedPtyHost,
     settings: duded::Settings,
     resolver: duded::classify::Resolver,
     model: Option<&str>,
+    config: dudes_providers::claude::config::ClaudeConfig,
 ) -> Hired {
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let children = duded::ChildEnds::new();
@@ -571,7 +579,7 @@ fn hired_on(
         resolver,
         adapters: dudes_providers::registry::Adapters::from_config(
             &dudes_providers::registry::ProvidersConfig {
-                claude: Some(dudes_providers::claude::config::ClaudeConfig::default()),
+                claude: Some(config),
             },
             &[],
         )
@@ -1512,6 +1520,7 @@ fn assert_attach_model(
             settings,
             common::native_resolver(&ptys),
             hired_on_model,
+            dudes_providers::claude::config::ClaudeConfig::default(),
         );
         if let Some(name) = changed_to {
             let changed = hired
@@ -1566,6 +1575,91 @@ fn an_attach_opens_on_the_model_the_agent_was_changed_to() {
 #[test]
 fn an_attach_names_no_model_for_an_agent_on_the_default() {
     assert_attach_model(None, None, None);
+}
+
+/// A pin added after the agent was hired on its own model: the hire is refused under a pin, so
+/// the daemon restarts with one, and the attach opens on the pin.
+#[test]
+fn an_attach_opens_on_the_configured_pin_over_the_agents_model() {
+    use duded::ports::{Answered, Ask};
+
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let Hired {
+        settings,
+        mut running,
+        agent,
+        owner,
+        sibling,
+        ..
+    } = hired_on(
+        &fixture,
+        &ptys,
+        fixture.settings(),
+        common::native_resolver(&ptys),
+        Some("haiku"),
+        dudes_providers::claude::config::ClaudeConfig::default(),
+    );
+    running.handle.ask(Ask::Pause(agent)).unwrap();
+    drop((owner, sibling));
+    assert_eq!(
+        running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut parts = common::seams(
+        &settings,
+        host,
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    parts.pty_host = Box::new(ptys.clone());
+    parts.resolver = common::native_resolver(&ptys);
+    parts.adapters = dudes_providers::registry::Adapters::from_config(
+        &dudes_providers::registry::ProvidersConfig {
+            claude: Some(dudes_providers::claude::config::ClaudeConfig {
+                extra_args: vec!["--model".into(), "opus".into()],
+                ..Default::default()
+            }),
+        },
+        &[],
+    )
+    .expect("a Claude adapter with a pinned model");
+    let mut running = common::start(duded::boot(&settings, parts).expect("replay the session"));
+    let Answered::Attached(_pty) = running
+        .handle
+        .ask(Ask::Attach {
+            agent,
+            by: Actor::System,
+            provenance: PeerProvenance::NoRecordedAgent,
+            cols: 101,
+            rows: 37,
+        })
+        .expect("the confirmed session attaches")
+    else {
+        panic!("the direct daemon command did not attach")
+    };
+    let opens = ptys.opens();
+    let argv = &opens.first().expect("the attach opened a terminal").0.argv;
+    let flag = argv.iter().position(|part| part == "--model");
+    let at = flag.expect("the pin is passed");
+    assert_eq!(
+        argv.get(at + 1).map(std::ffi::OsString::as_os_str),
+        Some(std::ffi::OsStr::new("opus")),
+        "the pin beats haiku: {argv:?}"
+    );
+    assert_eq!(
+        argv.iter().filter(|part| *part == "--model").count(),
+        1,
+        "the model is named once: {argv:?}"
+    );
+    assert_eq!(
+        running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
 }
 
 /// Invariant 7 on the attached launch: the PTY host is handed the program the daemon found on the

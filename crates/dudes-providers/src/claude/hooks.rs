@@ -44,8 +44,7 @@ pub(super) fn compose_attached(
         settings_path(ctx).into_os_string(),
     ]);
     if let Some(name) = model.selector() {
-        // A leading dash would read as a flag. Names are refused at their sources; this keeps
-        // the launch safe even if one slips through.
+        // A leading dash would read as a flag.
         if name.is_empty() || name.starts_with('-') {
             return None;
         }

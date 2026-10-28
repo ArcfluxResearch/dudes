@@ -362,6 +362,9 @@ pub enum ConfigError {
         /// The configured name.
         model: String,
     },
+    /// The model is set but empty, which an attached launch could not pass after `--model`.
+    #[error("the configured model is empty; leave `model` out to use the engine's own model")]
+    EmptyModel,
 }
 
 impl ClaudeConfig {
@@ -408,6 +411,9 @@ impl ClaudeConfig {
             .into_iter()
             .chain(pinned.as_deref().and_then(OsStr::to_str));
         for model in named {
+            if model.is_empty() {
+                return Err(ConfigError::EmptyModel);
+            }
             if model.starts_with('-') {
                 return Err(ConfigError::ModelLooksLikeFlag {
                     model: model.to_owned(),
@@ -793,22 +799,6 @@ mod tests {
         }
     }
 
-    /// a bare `--` in `extra_args` is refused, because appended it composes a
-    /// separator the adapter itself never emits. `argv` ties its own `--` to its own task
-    /// element, so it cannot push one the task does not follow; `extra_args` is appended after
-    /// that block, and in the stdin form the task is not in the argv at all — so an operator's
-    /// trailing `--` leaves the argv ending in a separator nothing follows.
-    ///
-    /// **The acceptance control runs first, deliberately.** A refusal assertion that fails
-    /// skips everything after it, so a control placed below the subject never executes on the
-    /// one run that most needs it — the mutation run. Put first, it shows on that same run
-    /// that `check()` still admits the escape hatch rather than having started refusing
-    /// everything.
-    ///
-    /// The refused table is literals rather than a loop over [`RESERVED_EXTRA_ARGS`], and that
-    /// is what makes this test the statement of the invariant: a loop over the const covers
-    /// `--` today and goes green again the moment the entry is removed, because it would
-    /// simply stop generating the case.
     #[test]
     fn a_configured_model_that_starts_with_a_dash_is_refused() {
         let refused = |config: ClaudeConfig| config.check(&[]).is_err();
@@ -828,6 +818,36 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn an_empty_configured_model_is_refused() {
+        let empty_key = ClaudeConfig {
+            model: Some(String::new()),
+            ..ClaudeConfig::default()
+        };
+        assert!(matches!(empty_key.check(&[]), Err(ConfigError::EmptyModel)));
+        let empty_pin = ClaudeConfig {
+            extra_args: ["--model", ""].map(OsString::from).to_vec(),
+            ..ClaudeConfig::default()
+        };
+        assert!(matches!(empty_pin.check(&[]), Err(ConfigError::EmptyModel)));
+    }
+
+    /// a bare `--` in `extra_args` is refused, because appended it composes a
+    /// separator the adapter itself never emits. `argv` ties its own `--` to its own task
+    /// element, so it cannot push one the task does not follow; `extra_args` is appended after
+    /// that block, and in the stdin form the task is not in the argv at all — so an operator's
+    /// trailing `--` leaves the argv ending in a separator nothing follows.
+    ///
+    /// **The acceptance control runs first, deliberately.** A refusal assertion that fails
+    /// skips everything after it, so a control placed below the subject never executes on the
+    /// one run that most needs it — the mutation run. Put first, it shows on that same run
+    /// that `check()` still admits the escape hatch rather than having started refusing
+    /// everything.
+    ///
+    /// The refused table is literals rather than a loop over [`RESERVED_EXTRA_ARGS`], and that
+    /// is what makes this test the statement of the invariant: a loop over the const covers
+    /// `--` today and goes green again the moment the entry is removed, because it would
+    /// simply stop generating the case.
     #[test]
     fn a_bare_separator_in_extra_args_is_refused() {
         // Control first. `--max-thinking-tokens 100` is the named arm; `---` and

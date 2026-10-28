@@ -43,6 +43,9 @@ pub(crate) struct Configured {
     pub(crate) model: Option<String>,
     /// Whether that model is fixed in a way a hire's own model cannot replace.
     pub(crate) model_fixed: bool,
+    /// Whether the configuration sets a model that the report leaves out because the page could
+    /// not show it.
+    pub(crate) model_unnamed: bool,
     /// Whether the engine is confirmed to continue a session under a changed model.
     pub(crate) model_change: bool,
 }
@@ -52,7 +55,7 @@ impl Configured {
     pub(crate) fn model_fields(
         selector: Option<&str>,
         fixed: Option<&std::ffi::OsStr>,
-    ) -> (Option<String>, bool) {
+    ) -> (Option<String>, bool, bool) {
         let shown = match fixed {
             Some(value) => value.to_str(),
             None => selector,
@@ -60,7 +63,8 @@ impl Configured {
         let shown = shown
             .filter(|name| dudes_types::ModelName::parse(name).is_ok())
             .map(str::to_owned);
-        (shown, fixed.is_some())
+        let unnamed = shown.is_none() && (fixed.is_some() || selector.is_some());
+        (shown, fixed.is_some(), unnamed)
     }
 }
 
@@ -368,6 +372,9 @@ impl Shared {
                     model_change_unsupported: self.providers.iter().any(|configured| {
                         configured.provider == found.provider && !configured.model_change
                     }),
+                    model_unnamed: self.providers.iter().any(|configured| {
+                        configured.provider == found.provider && configured.model_unnamed
+                    }),
                     configured_model: self
                         .providers
                         .iter()
@@ -403,6 +410,10 @@ struct DaemonView {
 }
 
 #[derive(Debug, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is its own optional key on the wire"
+)]
 struct ProviderView {
     provider: Provider,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -416,6 +427,8 @@ struct ProviderView {
     model_fixed: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     model_change_unsupported: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    model_unnamed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -815,26 +828,26 @@ mod tests {
         let fields = |selector: Option<&str>, fixed: Option<&str>| {
             Configured::model_fields(selector, fixed.map(OsStr::new))
         };
-        assert_eq!(fields(None, None), (None, false));
+        assert_eq!(fields(None, None), (None, false, false));
         assert_eq!(
             fields(Some("sonnet"), None),
-            (Some("sonnet".to_owned()), false)
+            (Some("sonnet".to_owned()), false, false)
         );
-        assert_eq!(fields(Some("--bad"), None), (None, false));
-        assert_eq!(fields(Some("a b"), None), (None, false));
+        assert_eq!(fields(Some("--bad"), None), (None, false, true));
+        assert_eq!(fields(Some("a b"), None), (None, false, true));
         assert_eq!(
             fields(Some("sonnet"), Some("haiku")),
-            (Some("haiku".to_owned()), true),
+            (Some("haiku".to_owned()), true, false),
             "a model fixed in the extra arguments wins over the model key"
         );
-        assert_eq!(fields(Some("sonnet"), Some("")), (None, true));
-        assert_eq!(fields(None, Some("-x y")), (None, true));
+        assert_eq!(fields(Some("sonnet"), Some("")), (None, true, true));
+        assert_eq!(fields(None, Some("-x y")), (None, true, true));
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStrExt as _;
             assert_eq!(
                 Configured::model_fields(None, Some(OsStr::from_bytes(b"\xff"))),
-                (None, true)
+                (None, true, true)
             );
         }
 
@@ -846,6 +859,7 @@ mod tests {
                 program: OsString::from("claude"),
                 model: Some("haiku".to_owned()),
                 model_fixed: true,
+                model_unnamed: false,
                 model_change: false,
             }],
             path: None,

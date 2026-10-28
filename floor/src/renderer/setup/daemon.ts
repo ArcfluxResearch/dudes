@@ -34,6 +34,8 @@ export interface ProviderRow {
   readonly modelFixed?: true;
   /** Present when the daemon has not confirmed that this engine continues a session under another model. */
   readonly modelChangeUnsupported?: true;
+  /** Present when the configuration sets a model that this page is not shown, such as an over-long name. */
+  readonly modelUnnamed?: true;
   /** What the engine offered, when the daemon holds a list. Never checked against the account behind the engine. */
   readonly models?: ModelListView;
 }
@@ -74,7 +76,7 @@ const CONTROL = /\p{Cc}/u;
 const UTF8 = new TextEncoder();
 const REPORT_KEYS = Object.freeze(['state_dir', 'providers']);
 const ROW_KEYS = Object.freeze(['provider', 'program', 'found', 'path', 'detail', 'sign_in', 'configured_model', 'model_fixed',
-  'model_change_unsupported', 'models']);
+  'model_change_unsupported', 'model_unnamed', 'models']);
 const MODEL_ID = /^[A-Za-z0-9._:/@[\]][A-Za-z0-9._:/@[\]-]{0,63}$/;
 const MAX_MODEL_ITEMS = 200;
 const ITEM_KINDS: readonly ModelItemKind[] = Object.freeze(['listed', 'alias', 'seen']);
@@ -126,13 +128,15 @@ function row(value: unknown): ProviderRow | null {
   }
   const configured = value.configured_model === undefined ? null : text(value.configured_model, MAX_MODEL_BYTES);
   if (configured === undefined || (value.model_fixed !== undefined && value.model_fixed !== true)
-    || (value.model_change_unsupported !== undefined && value.model_change_unsupported !== true)) return null;
+    || (value.model_change_unsupported !== undefined && value.model_change_unsupported !== true)
+    || (value.model_unnamed !== undefined && value.model_unnamed !== true)) return null;
   const models = value.models === undefined ? undefined : modelList(value.models);
   return Object.freeze({ provider, program, found: value.found, path, detail, signIn,
     ...(models === undefined ? {} : { models }),
     ...(configured === null ? {} : { configuredModel: configured }),
     ...(value.model_fixed === true ? { modelFixed: true as const } : {}),
-    ...(value.model_change_unsupported === true ? { modelChangeUnsupported: true as const } : {}) });
+    ...(value.model_change_unsupported === true ? { modelChangeUnsupported: true as const } : {}),
+    ...(value.model_unnamed === true ? { modelUnnamed: true as const } : {}) });
 }
 
 /**
