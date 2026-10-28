@@ -403,3 +403,14 @@ export function readDetailTab(storage: () => ViewStorage = browserStorage, fallb
 export function writeDetailTab(tab: DetailTab, storage: () => ViewStorage = browserStorage): void {
   try { storage().setItem(DETAIL_TAB_STORAGE_KEY, tab); } catch {}
 }
+
+const BOARD_VIEW_STORAGE_KEY = 'dudes.floor.board-view';
+
+/** The Board's remembered layout, grouping and filters as stored text, or `null`. The Board parses it. */
+export function readBoardViewText(storage: () => Pick<ViewStorage, 'getItem'> = browserStorage): string | null {
+  try { return storage().getItem(BOARD_VIEW_STORAGE_KEY); } catch { return null; }
+}
+
+export function writeBoardViewText(text: string, storage: () => ViewStorage = browserStorage): void {
+  try { storage().setItem(BOARD_VIEW_STORAGE_KEY, text); } catch {}
+}

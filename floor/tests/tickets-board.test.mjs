@@ -293,7 +293,7 @@ test('tickets-off guidance names only companion controls reported off', () => {
     [true, false, ' Also turn on Change tasks.'],
     [true, true, ''],
   ]) {
-    const floor = { ...store.getFloorState(), settings: { switches: { control, goal } } };
+    const floor = { ...store.getFloorState(), settings: { workspaces: [], switches: { control, goal } } };
     const html = renderToStaticMarkup(createElement(TicketBoard, { floor, selectedId: null, onSelect() {} }));
     assert.ok(html.includes('Turn on Make tickets under Floor switches in Settings.'));
     assert.equal(html.includes('Also turn on'), command !== '');
