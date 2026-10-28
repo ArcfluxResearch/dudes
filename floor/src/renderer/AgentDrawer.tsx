@@ -69,7 +69,7 @@ const DRAWER = cn('agent-drawer m-0 box-border flex min-w-0 flex-col overflow-hi
 const DOCKED = 'min-[801px]:relative min-[801px]:z-(--layer-panels) min-[801px]:w-[min(var(--side-width),45vw)] min-[801px]:flex-none min-[801px]:border-l min-[801px]:p-4';
 const IN_FOCUS = 'min-[801px]:relative min-[801px]:z-(--layer-panels) min-[801px]:w-auto min-[801px]:flex-none min-[801px]:rounded-[10px] min-[801px]:border min-[801px]:p-4';
 
-export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, leaveFocusTo, recoveryRequested, onRecoveryShown, onReadRecoveryReceipt, onOpenTicket }: {
+export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, leaveFocusTo, recoveryRequested, onRecoveryShown, changesRequested, onChangesShown, onReadRecoveryReceipt, onOpenTicket }: {
   readonly floor: FloorState;
   readonly row: AgentRow | null;
   readonly selectedId: string | null;
@@ -79,6 +79,8 @@ export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, 
   readonly leaveFocusTo: string;
   readonly recoveryRequested?: { readonly id: string } | null;
   readonly onRecoveryShown?: () => void;
+  readonly changesRequested?: { readonly id: string } | null;
+  readonly onChangesShown?: () => void;
   readonly onReadRecoveryReceipt?: (request: string) => void;
   readonly onOpenTicket?: (id: string) => void;
 }) {
@@ -100,6 +102,11 @@ export function AgentDrawer({ floor, row, selectedId, inFocus = false, onClose, 
     heading?.scrollIntoView({ block: 'start' });
     onRecoveryShown?.();
   }, [recoveryRequested, row?.id, detailTab, onRecoveryShown]);
+  useEffect(() => {
+    if (changesRequested?.id !== row?.id || row === null || !floor.git) return;
+    setDetailTab('git');
+    onChangesShown?.();
+  }, [changesRequested, row?.id]);
   const [fullOutput, setFullOutput] = useState(false);
   useEffect(() => { setFullOutput(false); }, [selectedId]);
   useEffect(() => {
