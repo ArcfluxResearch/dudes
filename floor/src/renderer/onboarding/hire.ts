@@ -291,8 +291,8 @@ export function agentsIn(agents: readonly AgentRow[], workspaceId: string): read
  * - `untrusted`: the operator has not trusted the project, so there is no box, only the way to
  *   allow it.
  * - `engine`: the project is trusted but only Claude can work in a copy.
- * - `available`: the box shows. It starts ticked, with its reason, when another agent already
- *   works in the project's folder and the person has not decided; their own choice wins after that.
+ * - `available`: the box shows. It starts ticked until the person decides, and carries a reason
+ *   when another agent already works in the project's folder; their own choice wins after that.
  */
 export type OwnCopy =
   | { readonly state: 'none' }
@@ -307,7 +307,7 @@ export function ownCopyOffer(
   if (!workspace.trusted) return { state: 'untrusted' };
   if (engine !== 'claude') return { state: 'engine' };
   const preselected = draft.ownCopy === undefined && sharing > 0;
-  return { state: 'available', checked: draft.ownCopy ?? preselected, preselected };
+  return { state: 'available', checked: draft.ownCopy ?? true, preselected };
 }
 
 /** Every problem with a draft, in section order. */
