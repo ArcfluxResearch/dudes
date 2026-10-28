@@ -810,20 +810,42 @@ mod tests {
 
     /// A hire that owns copies of two repositories.
     fn two_repositories() -> HireRepositories {
-        use dudes_proto::repository::{RepoId, RepositorySet};
+        use dudes_proto::record::{Hex32, TrustPin};
+        use dudes_proto::repository::{OwnedRepository, ScopedHireRepositories};
+        use dudes_proto::repository::{RepoId, RepositoryEntry, RepositorySet};
         let Record::AgentHiredWithRepositories(hire) =
             samples::record(RecordKind::AgentHiredWithRepositories)
         else {
             unreachable!("the sample is a repository hire");
         };
-        let mut scoped = hire.repositories;
-        let first = scoped.repositories.entries()[0].clone();
-        let mut second = first.clone();
-        second.repo_id = RepoId::parse("docs").unwrap();
-        second.value.worktree = WorktreeId::from_bytes([9; 16]);
-        scoped.repositories =
-            RepositorySet::new(first.repo_id.clone(), vec![first, second]).unwrap();
-        HireRepositories::Scoped(scoped)
+        let recorded = hire.repositories;
+        let pin = TrustPin {
+            claude_tree: None,
+            mcp_json: None,
+            attributes: Hex32::new([7; 32]),
+            config: Hex32::new([8; 32]),
+        };
+        // Only replay builds a hired copy, after validating its trust record, so decode one.
+        let hired = |repo_id, value: OwnedRepository| RepositoryEntry {
+            repo_id,
+            value: serde_json::from_value(
+                serde_json::json!({ "recorded": value, "original_pin": pin }),
+            )
+            .unwrap(),
+        };
+        let first = recorded.repositories.entries()[0].clone();
+        let mut second = first.value.clone();
+        second.worktree = WorktreeId::from_bytes([9; 16]);
+        let entries = vec![
+            hired(first.repo_id.clone(), first.value),
+            hired(RepoId::parse("docs").unwrap(), second),
+        ];
+        HireRepositories::Scoped(ScopedHireRepositories {
+            project: recorded.project,
+            catalog_lsn: recorded.catalog_lsn,
+            policy: recorded.policy,
+            repositories: RepositorySet::new(first.repo_id, entries).unwrap(),
+        })
     }
 
     fn card(n: u128) -> CardId {
@@ -969,7 +991,7 @@ mod tests {
                 repo_id: entry.repo_id.clone(),
                 value: CatalogRepository {
                     label: "repo".into(),
-                    origin: entry.value.origin.clone(),
+                    origin: entry.value.recorded.origin.clone(),
                 },
             })
             .collect();
