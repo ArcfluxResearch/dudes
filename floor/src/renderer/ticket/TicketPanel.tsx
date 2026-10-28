@@ -202,7 +202,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
       <Badge state={STATE_BADGE[card.status]}>{stateName(card.status)}</Badge>
       <p className="ticket-status m-0 min-w-0 flex-1 text-body text-ink">{statusSentence(card.status, words.agent, words.place)}</p>
     </div>
-    <Disclosure summary="Details" className="ticket-facts"><dl className="m-0 grid grid-cols-2 gap-x-6 gap-y-3 pb-2 max-[800px]:grid-cols-1">
+    <Disclosure summary="Details" className="ticket-facts"><dl className="m-0 grid grid-cols-2 gap-x-6 gap-y-3 pb-2 max-[801px]:grid-cols-1">
       <div><dt className={FACT_LABEL}>State</dt><dd className="m-0 mt-0.5">{stateName(card.status)}</dd></div>
       <div><dt className={FACT_LABEL}>Agent</dt><dd className="m-0 mt-0.5">{words.agent ?? 'Not given to an agent'}</dd></div>
       {shown === null ? null : <div><dt className={FACT_LABEL}>Done when</dt><dd className="m-0 mt-0.5">{shown.check.label}</dd></div>}
@@ -386,7 +386,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
 
   const actionButton = (action: TicketAction) => <Button key={action}
     variant={action === 'give' || action === 'accept' || action === 'try_again' ? 'primary' : 'secondary'}
-    className={cn('ticket-action', action === 'remove' || action === 'stop' ? 'text-danger' : 'flex-1 max-[800px]:h-11 max-[800px]:text-body')}
+    className={cn('ticket-action', action === 'remove' || action === 'stop' ? 'text-danger' : 'flex-1 max-[801px]:h-11 max-[801px]:text-body')}
     data-action={action}
     disabled={sending || (action === 'edit' && editable === null)
       || ((action === 'accept' || action === 'changes') && !reviewReady)}
@@ -413,7 +413,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   }
 
   return <section className={cn('card-detail ticket-panel group/panel flex flex-col gap-3 px-6 pt-6 pb-6 font-sans text-body leading-reading text-ink focus:outline-none',
-    'max-[800px]:px-4 max-[800px]:pt-4 max-[800px]:pb-0', SHEET_SECTIONS)} aria-labelledby="card-detail-title" data-selected-card-id={card.id}
+    'max-[801px]:px-4 max-[801px]:pt-4 max-[801px]:pb-0', SHEET_SECTIONS)} aria-labelledby="card-detail-title" data-selected-card-id={card.id}
     data-ticket-status={card.status} data-mode={mode} ref={focusSheet} tabIndex={-1} data-focus-on-leave="view-board">
     <h3 id="card-detail-title" tabIndex={-1} className="m-0 text-page leading-normal font-semibold wrap-anywhere focus:outline-none">{card.title}</h3>
     <Facts floor={floor} card={card} />
@@ -445,11 +445,11 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
       <p>{digest}</p><p className="ticket-digest-note text-small text-muted">{DIGEST_CAVEAT}</p></section>}
     {!floor.ticket ? <TicketOffHint floor={floor} /> : null}
     {actions.length === 0 ? null : <div className={cn('ticket-actions mt-2 flex flex-col gap-3 border-t border-line pt-4',
-      'max-[800px]:group-data-[mode=none]/panel:sticky max-[800px]:group-data-[mode=none]/panel:bottom-0 max-[800px]:group-data-[mode=none]/panel:z-10',
-      'max-[800px]:group-data-[mode=none]/panel:-mx-4 max-[800px]:group-data-[mode=none]/panel:bg-surface max-[800px]:group-data-[mode=none]/panel:px-4',
-      'max-[800px]:group-data-[mode=none]/panel:pt-3 max-[800px]:group-data-[mode=none]/panel:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]')}
+      'max-[801px]:group-data-[mode=none]/panel:sticky max-[801px]:group-data-[mode=none]/panel:bottom-0 max-[801px]:group-data-[mode=none]/panel:z-10',
+      'max-[801px]:group-data-[mode=none]/panel:-mx-4 max-[801px]:group-data-[mode=none]/panel:bg-surface max-[801px]:group-data-[mode=none]/panel:px-4',
+      'max-[801px]:group-data-[mode=none]/panel:pt-3 max-[801px]:group-data-[mode=none]/panel:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]')}
       role="group" aria-label="Ticket actions" aria-busy={sending}>
-      {ordinary.length === 0 ? null : <div className="ticket-action-pair flex flex-wrap gap-2 max-[800px]:group-data-[mode=none]/panel:grid max-[800px]:group-data-[mode=none]/panel:grid-cols-2">{ordinary.map(actionButton)}</div>}
+      {ordinary.length === 0 ? null : <div className="ticket-action-pair flex flex-wrap gap-2 max-[801px]:group-data-[mode=none]/panel:grid max-[801px]:group-data-[mode=none]/panel:grid-cols-2">{ordinary.map(actionButton)}</div>}
       {destructive.length === 0 ? null : <div className="ticket-destructive flex flex-wrap gap-2">{destructive.map(actionButton)}</div>}
       {sending ? <p className="ticket-sending m-0 text-muted" role="status">Sending…</p> : null}
     </div>}
