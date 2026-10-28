@@ -234,6 +234,7 @@ mod tests {
             done_when: check(),
             by: Actor::Peer { pid: 1, uid: None },
             request: None,
+            priority: None,
         }
     }
 
@@ -244,6 +245,7 @@ mod tests {
             by: Actor::Peer { pid: 1, uid: None },
             message: None,
             expected_seq: Seq(0),
+            priority: None,
         }
     }
 
@@ -430,6 +432,7 @@ mod tests {
             done_when: edited.clone(),
             by: Actor::System,
             expected_seq: Seq(1),
+            priority: None,
         });
         assert!(index.validate(&world, &start(honest_goal())).is_err());
         let declaration = CompletionCheckDeclaration::new(&edited.id, &edited.label).unwrap();
@@ -465,6 +468,7 @@ mod tests {
                     done_when: check(),
                     by: Actor::System,
                     expected_seq: Seq(0),
+                    priority: None,
                 },
                 Record::TicketAssigned {
                     card,
@@ -472,6 +476,7 @@ mod tests {
                     by: Actor::System,
                     message: None,
                     expected_seq: Seq(0),
+                    priority: None,
                 },
                 Record::TicketRemoved {
                     card,

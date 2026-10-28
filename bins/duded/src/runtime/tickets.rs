@@ -216,6 +216,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             done_when,
             by,
             request: retry,
+            priority: request.priority,
         })?;
         Ok(Answered::TicketCreated(TicketCreateResult { card }))
     }
@@ -230,7 +231,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if !matches!(view.status, CardStatus::Todo | CardStatus::Claimed) {
             return Err(refusal(TicketRefusal::WrongState, view.status));
         }
-        if request.title.is_none() && request.description.is_none() && request.done_when.is_none() {
+        if request.title.is_none()
+            && request.description.is_none()
+            && request.done_when.is_none()
+            && request.priority.is_none()
+        {
             return Err(invalid("there is nothing to change"));
         }
         if request.done_when.is_none() && request.done_when_revision.is_some() {
@@ -265,6 +270,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             done_when,
             by,
             expected_seq: request.expected_seq,
+            priority: Some(request.priority.unwrap_or(ticket.priority)),
         })?;
         Ok(Answered::Done)
     }
@@ -301,7 +307,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if waiting.iter().filter(|(card, _)| *card != view.id).count() >= MAX_QUEUE {
             return Err(refusal(TicketRefusal::QueueFull, view.status));
         }
+        let priority = request.priority.unwrap_or(ticket.priority);
         if let Some(watermark) = self.review_action(&view, &ticket, request.review_watermark)? {
+            if priority != ticket.priority {
+                return Err(invalid(
+                    "the priority cannot change while asking for changes after an instruction review",
+                ));
+            }
             let clear_goal = self
                 .with_ticket_facts(|facts| facts.goal_to_settle(&view, &ticket))?
                 .map(|(agent, goal)| dudes_proto::InstructionGoalClear { agent, goal });
@@ -324,6 +336,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 by,
                 message,
                 expected_seq: request.expected_seq,
+                priority: Some(priority),
             })?;
         }
         if let Err(failure) = self.ticket_reactions() {
@@ -701,12 +714,23 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             self.with_ticket_facts(|facts| (facts.wait_of(card.id), facts.tickets.to_vec()))?;
         let waiting = wait.map(|wait| self.waiting(wait, card.claimed_by, &tickets));
         let context = self.ticket_context(&card, &ticket);
+        let history = self
+            .ctx
+            .projections
+            .ticket_history(card.id)
+            .map_err(|failure| {
+                error(
+                    ErrorCode::InternalError,
+                    format!("could not read the ticket history: {failure}"),
+                )
+            })?;
         Ok(Answered::TicketRead(Box::new(TicketReadResult {
             context,
             card,
             ticket,
             position,
             waiting,
+            history,
         })))
     }
 }

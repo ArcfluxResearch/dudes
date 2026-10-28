@@ -517,7 +517,8 @@ mod tests {
             ticket.queue.unwrap(),
             dudes_proto::QueueKey {
                 class: dudes_proto::QueueClass::Rework,
-                lsn: Lsn(9)
+                lsn: Lsn(9),
+                rank: dudes_proto::Priority::High.rank(),
             }
         );
         assert_eq!(ticket.message.as_deref(), Some("Check the shared file."));

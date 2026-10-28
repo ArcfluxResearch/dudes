@@ -652,9 +652,12 @@ pub fn project_id(path: &Path, ids: &[String]) -> String {
     id
 }
 
+/// Most bytes in a project id.
+pub const MAX_PROJECT_ID_BYTES: usize = 128;
+
 /// The workspace id: 1–128 bytes of `[A-Za-z0-9_-]`.
 fn valid_id(id: &str) -> bool {
-    (1..=128).contains(&id.len())
+    (1..=MAX_PROJECT_ID_BYTES).contains(&id.len())
         && id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')

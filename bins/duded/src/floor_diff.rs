@@ -842,6 +842,7 @@ mod tests {
                 label: "passes".into(),
                 predicate: goal.predicate.clone(),
             },
+            priority: dudes_proto::Priority::Unset,
             goal: Some(goal.id),
             queue: None,
             message: None,

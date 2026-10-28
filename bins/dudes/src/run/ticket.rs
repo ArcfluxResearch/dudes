@@ -186,6 +186,7 @@ impl Session<'_> {
             card,
             agent,
             message,
+            priority: None,
             expected_seq,
             review_watermark,
         })?;
@@ -334,6 +335,7 @@ pub(super) fn command(
                 description: note.clone(),
                 done_when: done_when.clone(),
                 done_when_revision: None,
+                priority: None,
                 expected_seq: session.seq(*card, *expected_seq)?,
             })?;
             let result: Empty = typed(session.call(Method::TicketEdit, Some(params))?)?;

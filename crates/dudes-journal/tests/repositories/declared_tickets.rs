@@ -117,6 +117,7 @@ fn seed(journal: &std::path::Path) -> (RepositoryTicketStarted, RepositoryTicket
             by: Actor::System,
             message: None,
             expected_seq: Seq(1),
+            priority: None,
         },
     );
     let start = RepositoryTicketStarted {

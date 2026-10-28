@@ -112,6 +112,8 @@ pub struct TicketCreated<'a> {
     pub by: crate::Actor,
     /// Browser retry attribution.
     pub request: Option<&'a crate::record::TicketRequestAttribution>,
+    /// The priority chosen at creation. A scoped carrier names none.
+    pub priority: Option<crate::ticket::Priority>,
     /// Explicit immutable declaration and check target.
     pub repositories: Option<(
         &'a crate::repository::TicketDeclaration,
@@ -136,6 +138,8 @@ pub struct TicketEdited<'a> {
     pub expected_seq: dudes_types::Seq,
     /// Explicit target on the scoped edit carrier.
     pub check_repo: Option<&'a crate::repository::RepoId>,
+    /// The priority after the edit. A scoped carrier names none, and so keeps the current one.
+    pub priority: Option<crate::ticket::Priority>,
 }
 
 /// Common issue fields borrowed from the original source-specific carrier.
@@ -201,6 +205,7 @@ impl Record {
                 done_when,
                 by,
                 request,
+                priority,
             } => Some(TicketCreated {
                 source: self,
                 card: *card,
@@ -211,6 +216,7 @@ impl Record {
                 done_when,
                 by: *by,
                 request: request.as_ref(),
+                priority: *priority,
                 repositories: None,
             }),
             Self::TicketCreatedWithRepositories(created) => Some(TicketCreated {
@@ -223,6 +229,7 @@ impl Record {
                 done_when: &created.done_when,
                 by: created.by,
                 request: created.request.as_ref(),
+                priority: None,
                 repositories: Some((&created.declaration, &created.check_repo)),
             }),
             _ => None,
@@ -240,6 +247,7 @@ impl Record {
                 done_when,
                 by,
                 expected_seq,
+                priority,
             } => Some(TicketEdited {
                 card: *card,
                 title,
@@ -248,6 +256,7 @@ impl Record {
                 by: *by,
                 expected_seq: *expected_seq,
                 check_repo: None,
+                priority: *priority,
             }),
             Self::TicketEditedWithRepositories(edited) => Some(TicketEdited {
                 card: edited.card,
@@ -257,6 +266,7 @@ impl Record {
                 by: edited.by,
                 expected_seq: edited.expected_seq,
                 check_repo: Some(&edited.check_repo),
+                priority: None,
             }),
             _ => None,
         }

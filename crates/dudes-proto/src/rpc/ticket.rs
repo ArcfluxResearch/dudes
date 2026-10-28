@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use crate::instruction::InstructionReviewWatermark;
 use crate::projection::CardView;
 use crate::record::Hex32;
-use crate::ticket::{TicketReason, TicketRow, TicketWaiting};
+use crate::ticket::{Priority, TicketReason, TicketRow, TicketWaiting};
+use crate::ticket_history::TicketHistory;
 
 mod context;
 pub use context::*;
@@ -34,6 +35,9 @@ pub struct TicketCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
     pub done_when_revision: Option<Hex32>,
+    /// How soon the ticket should be served. Absent means none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
 }
 
 /// `ticket.create` result.
@@ -43,7 +47,7 @@ pub struct TicketCreateResult {
     pub card: CardId,
 }
 
-/// `ticket.edit` params. At least one of the three values changes. Valid while the ticket is in
+/// `ticket.edit` params. At least one of the four values is named. Valid while the ticket is in
 /// To do.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -63,6 +67,9 @@ pub struct TicketEditParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
     pub done_when_revision: Option<Hex32>,
+    /// The new priority; `none` clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
     /// The ticket's `seq` as last seen.
     pub expected_seq: Seq,
 }
@@ -78,6 +85,10 @@ pub struct TicketAssignParams {
     /// What to tell the agent when sending work back: at most 2,048 bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// The priority to give the ticket with the assignment. Absent keeps its current one. Not
+    /// accepted together with `review_watermark`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
     /// The ticket's `seq` as last seen.
     pub expected_seq: Seq,
     /// Exact instruction set reviewed by Ask for changes. Absent for ordinary assignment.
@@ -177,6 +188,9 @@ pub struct TicketReadResult {
     /// Why a ticket that was given to an agent has not started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<TicketWaiting>,
+    /// What happened to the ticket, newest events last.
+    #[serde(default, skip_serializing_if = "TicketHistory::is_empty")]
+    pub history: TicketHistory,
 }
 
 /// `ticket.stop` params: take a ticket that is Working or in Needs you back to To do.

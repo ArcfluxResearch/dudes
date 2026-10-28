@@ -1085,6 +1085,7 @@ fn seed_ticket(writer: &mut Writer, start: &dudes_proto::repository::RepositoryT
             by: Actor::System,
             message: None,
             expected_seq: Seq(1),
+            priority: None,
         },
     );
 }
@@ -1338,6 +1339,7 @@ fn stale_legacy_assignment_claim_and_transition_keep_the_same_scoped_start_facts
             by: Actor::System,
             message: None,
             expected_seq: Seq::ZERO,
+            priority: None,
         },
         Record::Claim {
             card: start.card,

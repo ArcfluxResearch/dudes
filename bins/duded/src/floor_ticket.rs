@@ -18,7 +18,7 @@ use dudes_proto::rpc::ticket::{
     TicketAcceptParams, TicketAssignParams, TicketCreateParams, TicketEditParams, TicketReadParams,
     TicketReadResult, TicketRemoveParams, TicketStopParams,
 };
-use dudes_proto::{TicketRefusal, TicketRow};
+use dudes_proto::{Priority, TicketRefusal, TicketRow};
 use dudes_types::{AgentId, CardId, Lsn, Seq};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -124,6 +124,7 @@ impl TicketRequest {
                     project: raw.project,
                     done_when: raw.done_when,
                     done_when_revision: raw.done_when_revision,
+                    priority: raw.priority,
                 };
                 named_check(
                     request.done_when.is_some(),
@@ -150,6 +151,7 @@ impl TicketRequest {
                     card: request.card,
                     agent: request.agent,
                     message: request.message,
+                    priority: request.priority,
                     expected_seq: request.expected_seq,
                     review_watermark: request.review_watermark,
                 })
@@ -205,6 +207,8 @@ struct FloorCreate {
     done_when: Option<String>,
     #[serde(default)]
     done_when_revision: Option<Hex32>,
+    #[serde(default)]
+    priority: Option<Priority>,
 }
 
 /// The digests that let a repeat of one creation be recognised: the request id as the page minted
@@ -221,6 +225,7 @@ fn create_attribution(
         ("project", request.project.as_deref()),
         ("done_when", request.done_when.as_deref()),
         ("done_when_revision", revision.as_deref()),
+        ("priority", request.priority.map(Priority::word)),
     ];
     let present: Vec<(&str, &str)> = fields
         .into_iter()
@@ -278,6 +283,8 @@ struct FloorAssign {
     agent: AgentId,
     #[serde(default)]
     message: Option<String>,
+    #[serde(default)]
+    priority: Option<Priority>,
     expected_seq: Seq,
     #[serde(default, deserialize_with = "http_watermark")]
     review_watermark: Option<InstructionReviewWatermark>,
@@ -553,6 +560,9 @@ pub fn read_body(read: &TicketReadResult) -> Value {
         if size <= MAX_TICKET_BODY_BYTES {
             return body;
         }
+        if trim_ticket_history(&mut body) {
+            continue;
+        }
         if trim_recovered_history(&mut body["ticket"]["context"]) {
             continue;
         }
@@ -592,6 +602,21 @@ enum TicketReadTruncation {
     Summary,
     InstructionEvidence,
     Ticket,
+}
+
+/// Drop the oldest history event, counting it as omitted. History goes before any other field, so
+/// it never costs one.
+fn trim_ticket_history(body: &mut Value) -> bool {
+    let Some(events) = body["ticket"]["history"].as_array_mut() else {
+        return false;
+    };
+    if events.is_empty() {
+        return false;
+    }
+    events.remove(0);
+    let omitted = body["ticket"]["history_omitted"].as_u64().unwrap_or(0);
+    body["ticket"]["history_omitted"] = json!(omitted + 1);
+    true
 }
 
 fn mark_truncated(body: &mut Value, field: TicketReadTruncation) {
@@ -690,11 +715,13 @@ fn read_value(read: &TicketReadResult) -> Value {
         ticket,
         position,
         waiting,
+        history,
     } = read;
     let TicketRow {
         description,
         repositories,
         done_when,
+        priority,
         round,
         reason,
         summary,
@@ -717,12 +744,15 @@ fn read_value(read: &TicketReadResult) -> Value {
             "note": description,
             "project": repositories.project(),
             "check": {"id": done_when.id, "label": done_when.label},
+            "priority": priority.word(),
             "round": round,
             "reason": reason,
             "summary": summary,
             "check_result": check,
             "position": position,
             "waiting": waiting,
+            "history": history.events,
+            "history_omitted": history.omitted(),
         },
     });
     if let Some(review) = instruction_review {
@@ -1065,6 +1095,7 @@ mod tests {
         assert!(TicketRequest::parse(TicketRoute::Accept, duplicate.as_bytes()).is_err());
     }
 
+    #[allow(clippy::too_many_lines, reason = "one fixture holds every large field")]
     fn instruction_read_fixture() -> TicketReadResult {
         use dudes_proto::instruction::{
             InstructionChangedPath, InstructionCoverageGap, InstructionGapKind,
@@ -1153,6 +1184,7 @@ mod tests {
                         timeout_s: 1,
                     },
                 },
+                priority: Priority::Unset,
                 goal: None,
                 queue: None,
                 message: None,
@@ -1166,6 +1198,7 @@ mod tests {
             },
             position: None,
             waiting: None,
+            history: dudes_proto::TicketHistory::default(),
         }
     }
 

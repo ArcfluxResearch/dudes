@@ -2060,6 +2060,7 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
                 project,
                 done_when,
                 done_when_revision: None,
+                priority: None,
             },
             give_to: agent,
         }),

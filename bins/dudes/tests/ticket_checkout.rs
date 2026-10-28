@@ -134,6 +134,7 @@ fn lease() -> Lease {
             },
             by: Actor::Peer { pid: 1, uid: None },
             request: None,
+            priority: None,
         },
         Record::TicketAssigned {
             card,
@@ -141,6 +142,7 @@ fn lease() -> Lease {
             by: Actor::Peer { pid: 1, uid: None },
             message: None,
             expected_seq: Seq::ZERO,
+            priority: None,
         },
     ];
     let settings = fixture.settings();

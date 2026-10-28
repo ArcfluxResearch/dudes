@@ -357,7 +357,7 @@ mod review_tests;
 mod tests {
     use dudes_proto::record::samples;
     use dudes_proto::{Actor, Entry, Goal, GoalBudget, Predicate, Record, RecordKind, TicketCheck};
-    use dudes_proto::{QueueClass, QueueKey};
+    use dudes_proto::{Priority, QueueClass, QueueKey};
     use dudes_types::{GoalId, Lsn, Timestamp};
 
     use super::*;
@@ -448,10 +448,12 @@ mod tests {
                         timeout_s: 1,
                     },
                 },
+                priority: Priority::Unset,
                 goal: None,
                 queue: queued_at.map(|lsn| QueueKey {
                     class: QueueClass::New,
                     lsn: Lsn(lsn),
+                    rank: 2,
                 }),
                 message: None,
                 round: 0,

@@ -188,6 +188,7 @@ fn an_issued_turn_is_reissued_unchanged_and_gains_no_baseline() {
                 by: dudes_proto::Actor::Peer { pid: 17, uid: None },
                 message: None,
                 expected_seq: Seq(0),
+                priority: None,
             },
         },
     );

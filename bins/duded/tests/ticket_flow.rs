@@ -1423,6 +1423,7 @@ fn given(project: &str, repo: &Path, budget: Option<AgentBudget>, card: CardId) 
             done_when: default_check(),
             by: operator(),
             request: None,
+            priority: None,
         },
         Record::TicketAssigned {
             card,
@@ -1430,6 +1431,7 @@ fn given(project: &str, repo: &Path, budget: Option<AgentBudget>, card: CardId) 
             by: operator(),
             message: None,
             expected_seq: Seq(0),
+            priority: None,
         },
     ]
 }
@@ -2113,6 +2115,7 @@ fn a_reworked_ticket_whose_start_is_refused_does_not_return_on_the_old_pass() {
             by: operator(),
             message: Some("again".into()),
             expected_seq: Seq(3),
+            priority: None,
         },
     ]);
     seed(&fixture, records);
@@ -2167,6 +2170,7 @@ fn a_failed_start_does_not_stall_the_other_projects() {
         done_when: default_check(),
         by: operator(),
         request: None,
+        priority: None,
     });
     records.push(Record::TicketAssigned {
         card: docs_card,
@@ -2174,6 +2178,7 @@ fn a_failed_start_does_not_stall_the_other_projects() {
         by: operator(),
         message: None,
         expected_seq: Seq(0),
+        priority: None,
     });
     seed(&fixture, records);
     let mut flow = Flow::boot_with(

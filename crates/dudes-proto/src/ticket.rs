@@ -59,6 +59,61 @@ pub struct TicketTurnEnd {
     pub step_digest: Option<crate::turn_report::StepDigest>,
 }
 
+/// How soon the operator wants a ticket served. The queue runs the lower [`Self::rank`] first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Priority {
+    /// None chosen. It is the wire word `none`, and queues like [`Self::Medium`].
+    #[default]
+    #[serde(rename = "none")]
+    Unset,
+    /// Served before everything else of its class.
+    Urgent,
+    /// Served after Urgent.
+    High,
+    /// Served after High.
+    Medium,
+    /// Served last.
+    Low,
+}
+
+impl Priority {
+    /// Where the queue places a ticket of this priority: the lower runs first. A ticket with no
+    /// priority ranks with Medium, so an operator who never sets one keeps the order of
+    /// assignment.
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Urgent => 0,
+            Self::High => 1,
+            Self::Medium | Self::Unset => 2,
+            Self::Low => 3,
+        }
+    }
+
+    /// The word the wire carries.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Unset => "none",
+            Self::Urgent => "urgent",
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+
+    /// Whether no priority was chosen.
+    #[must_use]
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's skip_serializing_if passes a reference"
+    )]
+    pub const fn is_unset(&self) -> bool {
+        matches!(self, Self::Unset)
+    }
+}
+
 /// What the board keeps of a ticket beyond what every card has.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TicketRow {
@@ -69,6 +124,9 @@ pub struct TicketRow {
     pub repositories: crate::repository::TicketRepositories,
     /// The check that finishes it.
     pub done_when: TicketCheck,
+    /// How soon the operator wants it served; kept through start, rework and Done.
+    #[serde(default, skip_serializing_if = "Priority::is_unset")]
+    pub priority: Priority,
     /// The goal the ticket's latest start installed. Kept as history after the work stops, and
     /// cleared when the ticket is given to an agent again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -116,13 +174,16 @@ pub enum QueueClass {
     New,
 }
 
-/// A ticket's place in its agent's queue: class first, then the position of the assignment.
+/// A ticket's place in its agent's queue: class first, then its priority rank, then the position
+/// of the assignment.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]
 pub struct QueueKey {
     /// The class.
     pub class: QueueClass,
+    /// The ticket's [`Priority::rank`].
+    pub rank: u8,
     /// The journal position of the `TicketAssigned` that queued it. Positions are unique, so keys
     /// never tie.
     pub lsn: Lsn,
@@ -453,6 +514,7 @@ mod tests {
             description: String::new(),
             repositories,
             done_when: record.ticket_created().unwrap().done_when.clone(),
+            priority: Priority::Unset,
             goal: None,
             queue: None,
             message: None,
@@ -581,12 +643,54 @@ mod tests {
     fn rework_sorts_before_new_whatever_the_position() {
         let early = QueueKey {
             class: QueueClass::New,
+            rank: 0,
             lsn: Lsn(1),
         };
         let late = QueueKey {
             class: QueueClass::Rework,
+            rank: 3,
             lsn: Lsn(9),
         };
         assert!(late < early);
+    }
+
+    #[test]
+    fn rank_orders_a_class_and_age_orders_a_rank() {
+        let key = |priority: Priority, lsn| QueueKey {
+            class: QueueClass::New,
+            rank: priority.rank(),
+            lsn: Lsn(lsn),
+        };
+        let mut keys = [
+            key(Priority::Low, 1),
+            key(Priority::Medium, 4),
+            key(Priority::Unset, 3),
+            key(Priority::High, 5),
+            key(Priority::Urgent, 6),
+            key(Priority::Unset, 2),
+        ];
+        keys.sort();
+        let order: Vec<u64> = keys.iter().map(|key| key.lsn.0).collect();
+        assert_eq!(order, [6, 5, 2, 3, 4, 1]);
+    }
+
+    #[test]
+    fn priority_uses_its_wire_words() {
+        let words = [
+            (Priority::Unset, "none"),
+            (Priority::Urgent, "urgent"),
+            (Priority::High, "high"),
+            (Priority::Medium, "medium"),
+            (Priority::Low, "low"),
+        ];
+        for (priority, word) in words {
+            assert_eq!(serde_json::to_value(priority).unwrap(), word);
+            assert_eq!(priority.word(), word);
+            assert_eq!(
+                serde_json::from_value::<Priority>(serde_json::json!(word)).unwrap(),
+                priority
+            );
+        }
+        assert!(serde_json::from_value::<Priority>(serde_json::json!("unset")).is_err());
     }
 }

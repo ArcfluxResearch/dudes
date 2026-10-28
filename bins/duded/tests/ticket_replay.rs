@@ -96,6 +96,7 @@ fn story(goal: Goal) -> Vec<Record> {
             done_when: check(),
             by: operator,
             request: None,
+            priority: None,
         },
         Record::TicketAssigned {
             card: card(),
@@ -103,6 +104,7 @@ fn story(goal: Goal) -> Vec<Record> {
             by: operator,
             message: None,
             expected_seq: Seq(0),
+            priority: None,
         },
         Record::TicketStarted {
             card: card(),

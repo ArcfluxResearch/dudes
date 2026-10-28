@@ -390,6 +390,12 @@ pub struct CardTicket {
     /// Bounded action/evidence summary. Paths and interval details come from `ticket.read`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction_review: Option<crate::instruction::InstructionReviewSummary>,
+    /// How soon the operator wants it served.
+    #[serde(default, skip_serializing_if = "crate::ticket::Priority::is_unset")]
+    pub priority: crate::ticket::Priority,
+    /// The ticket's fixed project id, so a reader can filter tickets no agent holds.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project: String,
 }
 
 /// Legacy mail projection shape retained for construction compatibility.
@@ -616,6 +622,8 @@ mod tests {
                 stopping: false,
                 last_turn_end: None,
                 instruction_review: None,
+                priority: crate::ticket::Priority::High,
+                project: "main".to_owned(),
             }),
         };
         let delta = FloorDelta {
