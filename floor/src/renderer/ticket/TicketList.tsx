@@ -10,6 +10,7 @@ import type { FloorState } from '../floor/store.ts';
 import { ageWords, groupRows, madeAt } from './browse.ts';
 import type { BrowseRow, GroupBy } from './browse.ts';
 import { STATE_BADGE } from './look.ts';
+import { PriorityMark } from './PriorityMark.tsx';
 import { agentRow, cardWords, plainColumnOf, stateWord } from './model.ts';
 
 export function TicketRow({ floor, row, selected, selectable, onSelect, now }: {
@@ -37,6 +38,7 @@ export function TicketRow({ floor, row, selected, selectable, onSelect, now }: {
       <span className="min-w-0 max-[801px]:order-3 max-[801px]:col-span-2">
         <span className="flex min-w-0 items-baseline gap-2">
           <strong className="truncate text-body font-medium">{card.title}</strong>
+          <PriorityMark priority={row.priority} />
           {words.place === null ? null : <span className="ticket-place shrink-0 text-small whitespace-nowrap text-muted">{words.place}</span>}
         </span>
         {card.status !== 'blocked' || words.note === null ? null

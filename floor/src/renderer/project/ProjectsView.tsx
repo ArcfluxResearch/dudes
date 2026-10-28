@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { Plus, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button, Card, Dialog, ICON, IconButton, Notice, cn } from '../../ui/index.ts';
 import type { FloorState } from '../floor/store.ts';
@@ -9,8 +9,6 @@ import { Code, Fact, Facts, HINT, Tag } from '../PageParts.tsx';
 import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import type { NeedState } from '../needs.ts';
 import { restoreFocusAfterDialog } from '../focus.ts';
-import { getPlaced, placeTickets, subscribeToPlaced } from '../ticket/placed.ts';
-import { ticketActionsOpen } from '../ticket/TicketBoard.tsx';
 import { resetAdd, resetCreate } from './add.ts';
 import { AddProject, projectAddOn } from './AddProject.tsx';
 import { TICKET_PLACES, projectRowsOf } from './projects.ts';
@@ -111,17 +109,11 @@ export function ProjectsView({ floor, onOpenBoard }: {
   /** Open the Board filtered to one project. */
   readonly onOpenBoard: (project: string) => void;
 }) {
-  const placed = useSyncExternalStore(subscribeToPlaced, getPlaced, getPlaced);
   const [adding, setAdding] = useState(false);
   const opener = useRef<HTMLElement | null>(null);
   const reported = floor.settings !== null || floor.onboarding !== null || floor.checks !== null;
   const state = snapshotReadState(floor, reported);
-  const rows = useMemo(() => projectRowsOf(floor, placed), [floor.settings, floor.onboarding, floor.checks, floor.agents, floor.cards, floor.stepLabels, placed]);
-  const unplaced = floor.cards.filter((card) => card.ticket !== null && card.claimed_by === null && !placed.has(card.id)).map((card) => card.id);
-  const open = ticketActionsOpen(floor);
-  useEffect(() => {
-    if (open && unplaced.length > 0) void placeTickets(unplaced);
-  }, [open, unplaced.join(',')]);
+  const rows = useMemo(() => projectRowsOf(floor), [floor.settings, floor.onboarding, floor.checks, floor.agents, floor.cards, floor.stepLabels]);
   function closeAdding(): void {
     setAdding(false);
     restoreFocusAfterDialog(opener.current, document.getElementById('add-project-open'));

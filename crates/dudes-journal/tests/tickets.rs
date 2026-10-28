@@ -59,6 +59,7 @@ fn created(card: CardId) -> Record {
         done_when: check(),
         by: operator(),
         request: None,
+        priority: None,
     }
 }
 
@@ -69,6 +70,7 @@ fn assigned(card: CardId, expected_seq: u64, message: Option<&str>) -> Record {
         by: operator(),
         message: message.map(str::to_owned),
         expected_seq: Seq(expected_seq),
+        priority: None,
     }
 }
 
@@ -176,6 +178,7 @@ fn an_edit_changes_the_words_and_keeps_the_queue_place() {
             },
             by: operator(),
             expected_seq: Seq(1),
+            priority: None,
         },
     ]);
     let (view, ticket) = projections.ticket(card()).unwrap().unwrap();
@@ -190,6 +193,7 @@ fn an_edit_changes_the_words_and_keeps_the_queue_place() {
         Some(QueueKey {
             class: QueueClass::New,
             lsn: Lsn(3),
+            rank: 2,
         })
     );
 }
@@ -269,6 +273,7 @@ fn moving_a_queued_rework_ticket_keeps_its_class_and_message() {
         by: operator(),
         message: Some("Cover the edge and the end.".into()),
         expected_seq: Seq(5),
+        priority: None,
     });
     let (holder, moved, message) = queue(&records);
     assert_eq!(holder, Some(other));
@@ -290,6 +295,7 @@ fn ticket_records_leave_a_plain_card_alone() {
             done_when: check(),
             by: operator(),
             expected_seq: Seq::ZERO,
+            priority: None,
         },
         assigned(plain, 0, Some("hi")),
         started(plain, GoalId::from_parts(8, 1), 0),

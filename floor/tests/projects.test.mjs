@@ -55,7 +55,7 @@ function snapshot(fields = {}) {
 }
 
 test('each project gets its agents, tickets by place, check, trust and limits, in label order', () => {
-  const rows = projectRowsOf(snapshot(), new Map([[ticketCard(6, 'todo').id, 'web']]));
+  const rows = projectRowsOf(snapshot({ cards: [...CARDS.slice(0, 5), ticketCard(6, 'todo', {}, { project: 'web' }), ticketCard(7, 'todo'), plainCard(8)] }));
   assert.deepEqual(rows.map(({ id, label }) => [id, label]), [['api', 'API'], ['web', 'Web']]);
   assert.deepEqual(rows[0], {
     id: 'api', label: 'API',
@@ -72,23 +72,24 @@ test('each project gets its agents, tickets by place, check, trust and limits, i
   });
 });
 
-test('a ticket no agent holds counts only once its project has been read, and a plain card never counts', () => {
-  const unread = projectRowsOf(snapshot(), new Map());
-  assert.deepEqual(unread.map((row) => row.tickets.todo), [1, 0]);
-  const read = projectRowsOf(snapshot(), new Map([[ticketCard(6, 'todo').id, 'api'], [ticketCard(7, 'todo').id, 'api']]));
-  assert.deepEqual(read.map((row) => row.tickets.todo), [3, 0]);
+test('a ticket no agent holds counts in the project its card names, and a plain card never counts', () => {
+  const unnamed = projectRowsOf(snapshot());
+  assert.deepEqual(unnamed.map((row) => row.tickets.todo), [1, 0]);
+  const named = projectRowsOf(snapshot({ cards: [...CARDS.slice(0, 5), ticketCard(6, 'todo', {}, { project: 'api' }),
+    ticketCard(7, 'todo', {}, { project: 'api' }), plainCard(8)] }));
+  assert.deepEqual(named.map((row) => row.tickets.todo), [3, 0]);
 });
 
 test('a fact the snapshot does not carry is null and an unset limit is an empty list', () => {
-  const [api] = projectRowsOf(snapshot({ settings: null, onboarding: null }), new Map());
+  const [api] = projectRowsOf(snapshot({ settings: null, onboarding: null }));
   assert.deepEqual([api.check, api.trusted, api.limits], ['cargo test', null, null]);
-  assert.deepEqual(projectRowsOf(snapshot({ settings: null }), new Map()).map((row) => row.limits), [[], []]);
+  assert.deepEqual(projectRowsOf(snapshot({ settings: null })).map((row) => row.limits), [[], []]);
 });
 
 test('with only the check list a project is named by its agents, else by its id', () => {
   const checks = decodeCheckCatalog({ workspaces: [
     { workspace_id: 'api', checks: [check('default', 'cargo test')] }, { workspace_id: 'zed', checks: [check('default', 'make')] }] });
-  const rows = projectRowsOf(snapshot({ settings: null, onboarding: null, checks }), new Map());
+  const rows = projectRowsOf(snapshot({ settings: null, onboarding: null, checks }));
   assert.deepEqual(rows.map(({ id, label, check: first }) => [id, label, first]), [['api', 'API', 'cargo test'], ['zed', 'zed', 'make']]);
 });
 

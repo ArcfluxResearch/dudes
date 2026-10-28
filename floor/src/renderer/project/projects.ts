@@ -72,14 +72,11 @@ function knownProjects(floor: FloorState): readonly { readonly id: string; reado
     .sort((a, b) => a.label.localeCompare(b.label) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-/**
- * One row for each enrolled project. `placed` is the project of each ticket no agent holds yet, as the
- * Board reads it, so the two pages count the same tickets.
- */
-export function projectRowsOf(floor: FloorState, placed: ReadonlyMap<string, string>): readonly ProjectRow[] {
+/** One row for each enrolled project, counting each ticket in the project its card names, as the Board does. */
+export function projectRowsOf(floor: FloorState): readonly ProjectRow[] {
   const projects = knownProjects(floor);
   const needs = needsOf(floor.agents, floor.cards, undefined, floor.stepLabels);
-  const rows = rowsOf(floor, { projects, placed }).filter((row) => row.card.ticket !== null);
+  const rows = rowsOf(floor, projects).filter((row) => row.card.ticket !== null);
   const workspaceOf = new Map(floor.agents.map((agent) => [agent.id, decodeWorkspace(agent.workspace)?.id ?? null]));
   return Object.freeze(projects.map(({ id, label }) => {
     const agents = needs.filter((need) => workspaceOf.get(need.id) === id).map((need) => Object.freeze({

@@ -46,6 +46,7 @@ impl PairedIssues {
                     done_when: created.done_when,
                     by: created.by,
                     request: created.request,
+                    priority: None,
                 },
                 Record::TicketEditedWithRepositories(edited) => Record::TicketEdited {
                     card: edited.card,
@@ -54,6 +55,7 @@ impl PairedIssues {
                     done_when: edited.done_when,
                     by: edited.by,
                     expected_seq: edited.expected_seq,
+                    priority: None,
                 },
                 Record::TicketStartedWithRepositories(start) => Record::TicketStarted {
                     card: start.card,

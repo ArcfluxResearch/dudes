@@ -59,6 +59,10 @@ The answer is immediate and says what happened:
 - `Needs you: ...` The ticket could not start for a reason only you can fix, and the sentence
   says what to do.
 
+Waiting tickets in a project start in this order: work you sent back first, then by priority
+(Urgent, High, Medium, Low; a ticket with no priority counts as Medium), then in the order they were
+given. A priority never stops work that has started.
+
 `--message "<text>"` adds a note for the agent. To make and give a ticket in one step, pass
 `--give-to <name or id>` to `dudes ticket add`. If the give is refused, the ticket still exists and
 the refusal is printed.

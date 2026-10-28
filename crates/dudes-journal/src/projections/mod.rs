@@ -28,6 +28,7 @@ mod question_history;
 pub mod recovery;
 mod repositories;
 mod retired;
+mod ticket_history;
 mod traces;
 pub mod turns;
 mod worktrees;
@@ -60,6 +61,14 @@ use crate::writer::Fsync;
 /// The projection schema this build writes. Bump when a row's meaning changes, **when a table
 /// is added**, or **when what a fold computes changes**; the store is then rebuilt from the
 /// journal.
+///
+/// `68`: a ticket's history gains `asked` and `answered` events. A v67 store carried forward would
+/// hold the history it already applied without them, so the bump forces the refold.
+///
+/// `67`: board rows rank a ticket's queue place by its priority, cards carry the priority and
+/// project, and `ticket_history` exists. A v66 store carried forward would keep every queue place
+/// without a rank and hold the new table empty for the history it already applied, so the bump
+/// forces the refold.
 ///
 /// `66`: one instruction attempt retains every hired repository, exact coverage qualification,
 /// and repository-keyed review evidence. Earlier caches must rebuild these immutable cells.
@@ -286,7 +295,7 @@ use crate::writer::Fsync;
 /// `2` was the previous bump: the rows became at-derived and `turns.status` gained
 /// a *reachable* `Killed`, so a v1 row saying `Ended` for a killed turn was wrong. Half-right is
 /// worse than rebuilt.
-pub const PROJECTION_VERSION: u64 = 66;
+pub const PROJECTION_VERSION: u64 = 68;
 /// Entries applied per write transaction during replay.
 pub const BATCH: usize = 1000;
 
@@ -299,6 +308,8 @@ const INSTRUCTIONS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("in
 const RECOVERY: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("recovery");
 const ACTIVITY: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("activity");
 const QUESTION_HISTORY: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("question_history");
+const TICKET_HISTORY: TableDefinition<'_, &[u8; 16], &[u8]> =
+    TableDefinition::new("ticket_history");
 const TRACES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("traces");
 const RETIRED_AGENTS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("retired_agents");
 const MESSAGES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("messages");
@@ -468,6 +479,7 @@ impl Projections {
         txn.open_table(ACTIVITY)?;
         txn.open_table(RETIRED_AGENTS)?;
         txn.open_table(QUESTION_HISTORY)?;
+        txn.open_table(TICKET_HISTORY)?;
         txn.open_table(TRACES)?;
         txn.open_table(BUDGET_BY_GOAL)?;
         txn.open_table(BUDGET_BY_DAY)?;
@@ -772,6 +784,12 @@ impl Projections {
     pub fn question_history(&self) -> Result<Vec<dudes_proto::AnsweredQuestionView>> {
         let txn = self.db.begin_read()?;
         question_history::read(&txn.open_table(QUESTION_HISTORY)?)
+    }
+
+    /// What happened to one ticket: its newest events and how many it has had in all.
+    pub fn ticket_history(&self, card: CardId) -> Result<dudes_proto::TicketHistory> {
+        let txn = self.db.begin_read()?;
+        ticket_history::read(&txn.open_table(TICKET_HISTORY)?, card)
     }
 
     /// Recent completed turns for current agents, with only Floor-permitted fields.
@@ -1122,6 +1140,7 @@ impl Projections {
                 hex(key.value().as_bytes())
             ));
         }
+        ticket_history::export(&mut lines, &txn.open_table(TICKET_HISTORY)?)?;
         for entry in txn.open_table(TRACES)?.iter()? {
             let (key, value) = entry?;
             let rows: serde_json::Value =
@@ -1202,6 +1221,7 @@ fn fold_batch<'a>(
         let mut activity = txn.open_table(ACTIVITY)?;
         let mut retired = txn.open_table(RETIRED_AGENTS)?;
         let mut history = txn.open_table(QUESTION_HISTORY)?;
+        let mut ticket_events = txn.open_table(TICKET_HISTORY)?;
         let mut traces = txn.open_table(TRACES)?;
         let mut by_goal = txn.open_table(BUDGET_BY_GOAL)?;
         let mut by_day = txn.open_table(BUDGET_BY_DAY)?;
@@ -1317,6 +1337,7 @@ fn fold_batch<'a>(
             } else {
                 None
             };
+            let started_round = repository_round.as_ref().map(|round| round.round);
             let repositories = if let Some(issue) = entry.record.turn_issue() {
                 let owner = get_row::<AgentRow>(&agents, &issue.agent.to_bytes())?;
                 let goal = issue
@@ -1375,6 +1396,19 @@ fn fold_batch<'a>(
                 agents::apply(&mut agents, &turns, &goals, lsn, &cleared)?;
                 goals::apply(&mut goals, &mut first_done, &agents, lsn, &cleared, None)?;
             }
+            let moved_cards =
+                instruction_fold.ticket_cards(instruction_state.state(), &entry.record);
+            let moved_from = ticket_history::seen(&board, &moved_cards)?;
+            ticket_history::capture(
+                &mut ticket_events,
+                &board,
+                lsn,
+                entry,
+                ticket_history::Folded {
+                    round: started_round,
+                    reviewed: instruction_fold.reviewed.as_ref(),
+                },
+            )?;
             board::apply(&mut board, &turns, lsn, entry)?;
             board::capture_recovery_change(&mut board, lsn, entry)?;
             if matches!(entry.record, dudes_proto::Record::AgentRetired { .. }) {
@@ -1387,6 +1421,7 @@ fn fold_batch<'a>(
                 instruction_state.state(),
                 &instruction_fold,
             )?;
+            ticket_history::capture_moves(&mut ticket_events, &board, lsn, entry, moved_from)?;
             worktrees::apply(&mut leases, lsn, entry)?;
             let ended = turns::apply(&mut turns, lsn, entry, repositories)?;
             traces::capture(&mut traces, &agents, &turns, entry, ended.is_some())?;
@@ -1452,6 +1487,7 @@ pub const EXPORTED_TABLES: &[&str] = &[
     "activity",
     "retired_agents",
     "question_history",
+    "ticket_history",
     "traces",
     "messages",
     "chat_notes",
@@ -2159,7 +2195,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_51_flat_native_receipt_rebuilds_its_spawn_key_from_the_journal() {
         use dudes_proto::instruction_state::InstructionBoundarySettlement;
-        assert_eq!(PROJECTION_VERSION, 66);
+        assert_eq!(PROJECTION_VERSION, 68);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let journal = dir.path().join("journal");
@@ -2623,7 +2659,7 @@ pub(crate) mod tests {
     /// cannot tell whether the constant was bumped when the rows changed meaning. This can.
     #[test]
     fn a_version_17_store_rebuilds_the_activity_window() {
-        assert_eq!(PROJECTION_VERSION, 66);
+        assert_eq!(PROJECTION_VERSION, 68);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let records = [
@@ -2657,7 +2693,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_24_store_rebuilds_the_current_live_kind() {
-        assert_eq!(PROJECTION_VERSION, 66);
+        assert_eq!(PROJECTION_VERSION, 68);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let entries = [
@@ -2695,7 +2731,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_25_store_rebuilds_retired_appearance() {
-        assert_eq!(PROJECTION_VERSION, 66);
+        assert_eq!(PROJECTION_VERSION, 68);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let mut hire = hired();
@@ -2807,7 +2843,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_8_store_is_rebuilt_for_per_turn_confirmation() {
         const LATCHED: u64 = 8;
-        assert_eq!(PROJECTION_VERSION, 66);
+        assert_eq!(PROJECTION_VERSION, 68);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2844,7 +2880,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_7_store_is_rebuilt_for_launch_refused_session_clear() {
         const LATCHED: u64 = 7;
-        assert_eq!(PROJECTION_VERSION, 66);
+        assert_eq!(PROJECTION_VERSION, 68);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2914,7 +2950,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 4;
         assert_eq!(
-            PROJECTION_VERSION, 66,
+            PROJECTION_VERSION, 68,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -3780,7 +3816,7 @@ pub(crate) mod tests {
     fn unread_mail_is_rebuilt_from_latest_mail_state() {
         const LATCHED: u64 = 10;
         assert_eq!(
-            PROJECTION_VERSION, 66,
+            PROJECTION_VERSION, 68,
             "this new table owns the 10 -> 11 bump; re-derive the latched store if the current \
              version moves"
         );
@@ -4247,7 +4283,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_11_budget_store_is_rebuilt_for_unknown_ends() {
-        assert_eq!(PROJECTION_VERSION, 66);
+        assert_eq!(PROJECTION_VERSION, 68);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let day = day_of(MIDNIGHT_MS);
@@ -4399,7 +4435,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 5;
         assert_eq!(
-            PROJECTION_VERSION, 66,
+            PROJECTION_VERSION, 68,
             "if this moves, re-derive LATCHED above it — a merge past another bump must move \
              both, or this test passes with this repair's own bump dropped"
         );
@@ -4496,6 +4532,10 @@ pub(crate) mod tests {
             message(MailId::from_parts(4, 99), 0),
             goal_set(agent(), goal_id()),
             card_created(),
+            stamped(
+                0,
+                dudes_proto::record::samples::record(dudes_proto::RecordKind::TicketCreated),
+            ),
             stamped(
                 0,
                 Record::WorktreeLeased {
@@ -5559,7 +5599,7 @@ pub(crate) mod tests {
     fn a_version_13_store_is_rebuilt_for_question_identity() {
         const LATCHED: u64 = 13;
         assert_eq!(
-            PROJECTION_VERSION, 66,
+            PROJECTION_VERSION, 68,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5596,7 +5636,7 @@ pub(crate) mod tests {
     fn a_version_55_store_is_rebuilt_for_the_last_ended_turn() {
         const LATCHED: u64 = 55;
         assert_eq!(
-            PROJECTION_VERSION, 66,
+            PROJECTION_VERSION, 68,
             "if this moves, move LATCHED above it, so a merge past another bump re-derives both"
         );
         let dir = tempfile::tempdir().unwrap();
@@ -5690,7 +5730,7 @@ pub(crate) mod tests {
     fn a_version_14_store_is_rebuilt_for_control_identity() {
         const LATCHED: u64 = 14;
         assert_eq!(
-            PROJECTION_VERSION, 66,
+            PROJECTION_VERSION, 68,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5797,7 +5837,7 @@ pub(crate) mod tests {
     fn a_version_15_store_counts_the_reset_unknown_end() {
         const LATCHED: u64 = 15;
         assert_eq!(
-            PROJECTION_VERSION, 66,
+            PROJECTION_VERSION, 68,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -6070,7 +6110,7 @@ pub(crate) mod tests {
 
         #[test]
         fn a_version_38_store_rebuilds_the_first_completion_facts() {
-            assert_eq!(PROJECTION_VERSION, 66);
+            assert_eq!(PROJECTION_VERSION, 68);
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.redb");
             let history = [

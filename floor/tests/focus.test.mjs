@@ -145,7 +145,7 @@ test('controls that leave when pressed name a surviving focus target', async () 
     ['control/PauseAllControl.tsx', 'onDismiss', 'leaveFocusTo'],
     ['answer/AnswerPanel.tsx',
       '() => { if (!answer.sending && floor.answering) void checkAnswerStatus(browserAnswerDeps); }',
-      'answer-status-title'],
+      'titleId'],
     ['control/ControlPanel.tsx',
       '() => { if (!control.sending && floor.control) void checkControlStatus(browserControlDeps); }',
       'control-status-title'],

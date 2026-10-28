@@ -49,6 +49,7 @@ pub mod rpc;
 pub mod schema;
 pub mod task;
 pub mod ticket;
+pub mod ticket_history;
 pub mod traces;
 pub mod turn_report;
 
@@ -138,8 +139,11 @@ pub use task::{
     valid_taught_decision,
 };
 pub use ticket::{
-    QueueClass, QueueKey, TicketCheck, TicketCheckResult, TicketReason, TicketRefusal, TicketRow,
-    TicketTurnEnd, TicketWait, TicketWaiting,
+    Priority, QueueClass, QueueKey, TicketCheck, TicketCheckResult, TicketReason, TicketRefusal,
+    TicketRow, TicketTurnEnd, TicketWait, TicketWaiting,
+};
+pub use ticket_history::{
+    HistoryBy, MAX_TICKET_HISTORY, TicketHistory, TicketHistoryEvent, TicketHistoryKind,
 };
 pub use traces::{
     MAX_AGENT_TRACE_BYTES, MAX_AGENT_TRACES, MAX_TRACE_BYTES, MAX_TRACES, TraceOutcome,

@@ -219,6 +219,7 @@ fn issued_ticket_with(
             by: dudes_proto::Actor::System,
             message: None,
             expected_seq: Seq(0),
+            priority: None,
         },
     );
     let mut started = samples::record(RecordKind::TicketStarted);

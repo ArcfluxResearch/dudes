@@ -240,6 +240,7 @@ impl ReviewFixture {
             by: Actor::Peer { pid: 77, uid: None },
             message: None,
             expected_seq: self.row(card).0.seq,
+            priority: None,
         });
     }
 

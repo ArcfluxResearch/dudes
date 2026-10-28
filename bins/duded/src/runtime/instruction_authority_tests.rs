@@ -120,6 +120,7 @@ fn establish_ticket(daemon: &mut TestDaemon, agent: AgentId) -> InstructionTicke
             done_when: check,
             by: Actor::System,
             request: None,
+            priority: None,
         },
     );
     let assignment_lsn = append(
@@ -130,6 +131,7 @@ fn establish_ticket(daemon: &mut TestDaemon, agent: AgentId) -> InstructionTicke
             by: Actor::System,
             message: None,
             expected_seq: Seq(0),
+            priority: None,
         },
     );
     append(

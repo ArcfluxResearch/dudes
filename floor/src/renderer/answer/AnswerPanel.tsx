@@ -27,22 +27,28 @@ import {
 } from './answer.ts';
 import type { AnswerAttempt, AnswerOutcome, AnswerState } from './answer.ts';
 
-export function AnswerForm({ floor, row, leaveFocusTo, compact = false }: {
+/** The heading the answer's status takes focus on: one page can draw the status twice, so a second place names its own. */
+const STATUS_TITLE = 'answer-status-title';
+
+export function AnswerForm({ floor, row, leaveFocusTo, compact = false, statusId = STATUS_TITLE }: {
   readonly floor: FloorState;
   readonly row: AgentRow;
   readonly leaveFocusTo: string;
   readonly compact?: boolean;
+  readonly statusId?: string;
 }) {
   const answer = useSyncExternalStore(subscribeToAnswer, getAnswerState, getAnswerState);
-  return <AnswerFormView answer={answer} floor={floor} row={row} leaveFocusTo={leaveFocusTo} compact={compact} />;
+  return <AnswerFormView answer={answer} floor={floor} row={row} leaveFocusTo={leaveFocusTo} compact={compact}
+    statusId={statusId} />;
 }
 
-export function AnswerFormView({ answer, floor, row, leaveFocusTo, compact = false }: {
+export function AnswerFormView({ answer, floor, row, leaveFocusTo, compact = false, statusId = STATUS_TITLE }: {
   readonly answer: AnswerState;
   readonly floor: FloorState;
   readonly row: AgentRow;
   readonly leaveFocusTo: string;
   readonly compact?: boolean;
+  readonly statusId?: string;
 }) {
   const field = useId();
   const gate = answerGate(floor, row);
@@ -51,7 +57,7 @@ export function AnswerFormView({ answer, floor, row, leaveFocusTo, compact = fal
   const problem = draft === '' ? null : problemWith(draft, gate.maxTextBytes);
   const blocked = blocksForm(answer, gate.agent, gate.questionLsn);
   const mine = answer.attempt !== null && answers(answer.attempt, gate.agent, gate.questionLsn);
-  const focusOnLeave = mine ? 'answer-status-title' : leaveFocusTo;
+  const focusOnLeave = mine ? statusId : leaveFocusTo;
   return (
     <div className="agent-detail-answer grid gap-2" data-answer-agent-id={gate.agent} data-answer-question-lsn={gate.questionLsn}>
       <label htmlFor={field} className="text-small font-medium text-ink">Your answer</label>
@@ -96,20 +102,28 @@ export function AnswerFormView({ answer, floor, row, leaveFocusTo, compact = fal
 }
 
 /** The one answer this page sent, whichever agent is selected. */
-export function AnswerStatus({ floor, leaveFocusTo }: { readonly floor: FloorState; readonly leaveFocusTo: string }) {
+export function AnswerStatus({ floor, leaveFocusTo, titleId = STATUS_TITLE, only }: {
+  readonly floor: FloorState;
+  readonly leaveFocusTo: string;
+  readonly titleId?: string;
+  /** Show the status only while the attempt is this agent's. */
+  readonly only?: string;
+}) {
   const answer = useSyncExternalStore(subscribeToAnswer, getAnswerState, getAnswerState);
   // Read on every render: the floor re-renders this on each snapshot, including
   // the one a newly pasted link's session brings.
+  if (only !== undefined && answer.attempt?.payload.agent !== only) return null;
   return <AnswerStatusView answer={answer} floor={floor} session={floorSessionGeneration()}
-    leaveFocusTo={leaveFocusTo} />;
+    leaveFocusTo={leaveFocusTo} titleId={titleId} />;
 }
 
-export function AnswerStatusView({ answer, floor, session, leaveFocusTo }: {
+export function AnswerStatusView({ answer, floor, session, leaveFocusTo, titleId = STATUS_TITLE }: {
   readonly answer: AnswerState;
   readonly floor: FloorState;
   /** Which session the page holds now: `floorSessionGeneration()`. */
   readonly session: number;
   readonly leaveFocusTo: string;
+  readonly titleId?: string;
 }) {
   const attempt = answer.attempt;
   if (attempt === null || answer.dismissedAttempt === attempt) return null;
@@ -119,10 +133,10 @@ export function AnswerStatusView({ answer, floor, session, leaveFocusTo }: {
   const outcome = answer.outcome;
   const asking = checkable(answer) || (answer.sending && outcome !== null);
   return (
-    <section className={cn('answer-status', RECEIPT)} aria-labelledby="answer-status-title" aria-live="polite"
+    <section className={cn('answer-status', RECEIPT)} aria-labelledby={titleId} aria-live="polite"
       data-answer-outcome={outcome?.kind ?? 'sending'} data-answer-agent-id={agent}
       data-answer-question-lsn={questionLsn}>
-      <h3 id="answer-status-title" tabIndex={-1} className={RECEIPT_TITLE}><span className={cn('agent-detail-kicker', KICKER_TEXT)}>Your answer</span> {name}</h3>
+      <h3 id={titleId} tabIndex={-1} className={RECEIPT_TITLE}><span className={cn('agent-detail-kicker', KICKER_TEXT)}>Your answer</span> {name}</h3>
       {outcome === null ? <p className={cn('answer-pending', MESSAGE_CLASS.pending)} role="status">Sending…</p>
         : <OutcomeBody outcome={outcome} attempt={attempt} answer={answer} floor={floor} session={session} />}
       {answer.problem === null ? null : <p className={cn('answer-problem', MESSAGE_CLASS.error)} role="alert">{answer.problem}</p>}
@@ -130,7 +144,7 @@ export function AnswerStatusView({ answer, floor, session, leaveFocusTo }: {
         {asking ? (
           <Button size="sm" aria-disabled={answer.sending || !floor.answering}
             title={answer.sending ? 'Wait for the current answer request to finish.' : !floor.answering ? 'Reconnect to Dudes with Answer questions turned on in Settings.' : undefined}
-            loading={answer.sending} ref={handFocusOnLeave} data-focus-on-leave="answer-status-title"
+            loading={answer.sending} ref={handFocusOnLeave} data-focus-on-leave={titleId}
             onClick={() => { if (!answer.sending && floor.answering) void checkAnswerStatus(browserAnswerDeps); }}>
             {answer.sending ? 'Checking…' : 'Check status'}
           </Button>

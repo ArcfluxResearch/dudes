@@ -275,6 +275,7 @@ fn ticket_prefix(worktree: Option<WorktreeId>) -> (Prefix, RecoveryBinding) {
         by: peer(),
         message: None,
         expected_seq: Seq::ZERO,
+        priority: None,
     });
     prefix.append(Record::TicketStarted {
         card: card(),

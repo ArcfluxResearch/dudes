@@ -22,6 +22,8 @@ import { validAppearance } from '../appearance.ts';
 import { decodeRetiredAgents } from '../archive.ts';
 import type { RetiredAgentRow } from '../archive.ts';
 import { decodeActivity } from '../activity.ts';
+import { decodeQuestionHistory, NO_QUESTIONS } from '../answer/history.ts';
+import type { AnsweredQuestion } from '../answer/history.ts';
 import type { ActivityRow } from '../activity.ts';
 import { decodeMailWindow, messageCut } from '../messages.ts';
 import type { MessageRow, ThreadRow } from '../messages.ts';
@@ -199,6 +201,8 @@ export interface FloorState {
   readonly cards: readonly CardRow[];
   readonly activity: readonly ActivityRow[];
   readonly retiredAgents: readonly RetiredAgentRow[];
+  /** The questions answered lately, newest last, with their words but not their answers. */
+  readonly questionHistory: readonly AnsweredQuestion[];
   readonly messages: readonly MessageRow[];
   readonly threads: readonly ThreadRow[];
   readonly messagesLsn: string | null;
@@ -323,6 +327,7 @@ const EMPTY: FloorState = Object.freeze({
   cards: Object.freeze([]),
   activity: Object.freeze([]),
   retiredAgents: Object.freeze([]),
+  questionHistory: NO_QUESTIONS,
   messages: Object.freeze([]),
   threads: Object.freeze([]),
   messagesLsn: null,
@@ -386,6 +391,7 @@ export function noteTransport(event: 'open' | 'close'): void {
     epoch: event === 'close' ? state.epoch + 1 : state.epoch,
     activity: event === 'close' ? Object.freeze([]) : state.activity,
     retiredAgents: event === 'close' ? Object.freeze([]) : state.retiredAgents,
+    questionHistory: event === 'close' ? NO_QUESTIONS : state.questionHistory,
     messages: event === 'close' ? Object.freeze([]) : state.messages,
     threads: event === 'close' ? Object.freeze([]) : state.threads,
     messagesLsn: event === 'close' ? null : state.messagesLsn,
@@ -484,6 +490,7 @@ export function invalidateFloorEpoch(): void {
     cards: Object.freeze([]),
     activity: Object.freeze([]),
     retiredAgents: Object.freeze([]),
+    questionHistory: NO_QUESTIONS,
     messages: Object.freeze([]),
   threads: Object.freeze([]),
     messagesLsn: null,
@@ -545,7 +552,7 @@ export function applyServerFrame(
     case 'disconnected':
       commit({ ...state, phase: 'closed', epoch: state.epoch + 1, activity: Object.freeze([]),
         chat: null, output: emptyOutput(state.output, 'unavailable'), stepLabels: EMPTY_LABELS,
-        retiredAgents: Object.freeze([]),
+        retiredAgents: Object.freeze([]), questionHistory: NO_QUESTIONS,
         messages: Object.freeze([]),
         threads: Object.freeze([]), messagesLsn: null, onboarding: null, checks: null, answering: null, control: false, recovery: false,
         goalChange: null, terminal: false, retire: false, git: false, diff: false, ticket: false, daemon: null, settings: null, journalStopped: null,
@@ -926,6 +933,7 @@ function fromSnapshot(message: ServerMessage): FloorState {
     cards: cards.rows,
     activity: activity.rows,
     retiredAgents: retired.rows,
+    questionHistory: decodeQuestionHistory(message.question_history),
     messages: messages.rows,
     threads: messages.threads,
     messagesLsn,
@@ -1017,6 +1025,8 @@ function fromDelta(delta: Record<string, unknown>, message: ServerMessage): Floo
     cards: Object.freeze([...nextCards.values()].sort((a, b) => a.id.localeCompare(b.id))),
     activity: activity.rows,
     retiredAgents: retired.rows,
+    questionHistory: message.question_history === undefined || state.snapshotEpoch !== state.epoch
+      ? state.questionHistory : decodeQuestionHistory(message.question_history),
     messages: messages.rows,
     threads: messages.threads,
     messagesLsn: messages.cut,
@@ -1079,6 +1089,7 @@ function unchanged(current: FloorState, next: FloorState): boolean {
     && current.messagesLsn === next.messagesLsn
     && current.activity === next.activity
     && current.retiredAgents === next.retiredAgents
+    && current.questionHistory === next.questionHistory
     && current.cards.length === next.cards.length
     && current.cards.every((row, at) => row === next.cards[at])
     && current.agents.every((row, at) => row === next.agents[at]);

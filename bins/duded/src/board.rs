@@ -142,6 +142,8 @@ pub(crate) fn largest_ticket() -> CardTicket {
             changed_paths: u32::MAX,
             gaps: u32::MAX,
         }),
+        priority: dudes_proto::Priority::Urgent,
+        project: "p".repeat(dudes_config::workspace::MAX_PROJECT_ID_BYTES),
     }
 }
 

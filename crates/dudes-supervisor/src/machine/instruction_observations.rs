@@ -2589,6 +2589,7 @@ mod tests {
                     by: dudes_proto::Actor::Peer { pid: 77, uid: None },
                     message: None,
                     expected_seq: dudes_types::Seq(8),
+                    priority: None,
                 },
             },
         );
