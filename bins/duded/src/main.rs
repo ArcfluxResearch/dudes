@@ -1233,6 +1233,7 @@ mod native_tests {
             floor_git_enabled: false,
             floor_diff_enabled: false,
             floor_project_enabled: false,
+            floor_create_parent: None,
             engine_login: None,
             condense_model_enabled: true,
             condense_model: None,
@@ -1694,6 +1695,7 @@ fn settings_from_environment() -> anyhow::Result<(
         floor_git_enabled: operator.git_enabled,
         floor_diff_enabled: operator.diff_enabled,
         floor_project_enabled: operator.project_enabled,
+        floor_create_parent: operator.create_parent,
         engine_login: Some(duded::settings::EngineLogin {
             host: || Box::new(MainPtyHost::new()),
             timeout: duded::settings::ENGINE_LOGIN_TIMEOUT,

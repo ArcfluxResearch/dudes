@@ -438,6 +438,10 @@ fn not_applied(
         ("providers.pi", running.providers.pi != file.providers.pi),
         ("mcp.servers", running.mcp_servers != file.mcp_servers),
         (
+            "floor.project.create_parent",
+            running.create_parent != file.create_parent,
+        ),
+        (
             "memory",
             running_memory != read.memory_config
                 || running.condense_model_enabled != file.condense_model_enabled

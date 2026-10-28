@@ -60,7 +60,10 @@ Dudes reads no engine's credentials or files.
    Floor, press Choose folder… to pick it in your system's folder window (the button shows when Dudes
    can open one), or type it into the "Folder on this computer" box. Look at what Dudes
    found, and press Add project. The folder must be a git repository, and it cannot be your home
-   folder, a hidden folder or one of Dudes' own. Or add it from a terminal, in its git repository:
+   folder, a hidden folder or one of Dudes' own. With `create_parent` set under `[floor.project]`
+   (see [Configuration](configuration.md)), the same dialog also has **Create a new project**:
+   name it, and Dudes makes the folder there and starts the git repository. Or add it from a
+   terminal, in its git repository:
 
    ```sh
    cd /absolute/path/to/repo

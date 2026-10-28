@@ -11998,6 +11998,7 @@ fn browser_settings_view_is_an_exact_read_only_allowlist() {
         frame["settings"],
         json!({
             "folder_picker": false,
+            "create_parent": null,
             "switches": { "answer": true, "hire": true, "control": true, "recovery": false, "goal": true, "renew": true, "retire": true, "terminal": true, "git": true, "board": false, "diff": false, "project": false },
             "budget": { "floor_usd_per_day_micros": "100000000", "per_turn_usd_micros": "1234", "per_turn_tokens": "9007199254740993" },
             "providers": ["claude"],

@@ -15,7 +15,8 @@ use sha2::Digest as _;
 use super::{Clock, Daemon, PredicateRunner, ProcessHost, Rng, predicate};
 use crate::floor_actions::Profile;
 use crate::floor_project::{
-    Added, Check, Preview, ProjectAnswer, ProjectRef, ProjectRequest, Reason, Refusal, Removed,
+    Added, Check, ConfigState, CreatePlan, Enroll, EnrollFailure, Preview, ProjectAnswer,
+    ProjectRef, ProjectRequest, Reason, Refusal, Removed,
 };
 
 /// Most projects the daemon runs.
@@ -41,6 +42,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             ProjectRequest::Remove(request) => self
                 .project_remove(session, &request.project_id)
                 .map(ProjectAnswer::Removed),
+            ProjectRequest::CreatePlan => self.project_create_plan().map(ProjectAnswer::Plan),
+            ProjectRequest::CreateEnroll(enroll) => Ok(ProjectAnswer::Enrolled(
+                self.project_create_enroll(session, enroll),
+            )),
         }
         .map_err(Refusal::Reason)
     }
@@ -147,7 +152,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             *sequence,
             std::slice::from_ref(&id),
             &[],
-        )?;
+        )
+        .map_err(|_| Reason::ConfigChanged)?;
         self.resync_floor();
         tracing::info!(
             session = %&crate::enrollment_reload::hex(&session.digest().bytes())[..16],
@@ -200,7 +206,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             *sequence,
             &[],
             std::slice::from_ref(&project_id),
-        )?;
+        )
+        .map_err(|_| Reason::ConfigChanged)?;
         self.resync_floor();
         tracing::info!(
             session = %&crate::enrollment_reload::hex(&session.digest().bytes())[..16],
@@ -254,8 +261,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         open.then_some(Reason::OpenTickets)
     }
 
-    /// Write `written`, then have the daemon adopt it. A reload the daemon declines puts the file
-    /// back as `previous`, unless something else has written it since.
+    /// Write `written`, then have the daemon adopt it. A write or reload that fails puts the file
+    /// back as `previous`, unless something else has written it since. Either way the answer says
+    /// what the file holds now, because a failed write may still have reached it.
     fn write_and_adopt(
         &mut self,
         path: &Path,
@@ -264,17 +272,110 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         seq: u64,
         added: &[String],
         removed: &[String],
-    ) -> Result<(), Reason> {
-        dudes_config::workspace::replace(path, written).map_err(|_| Reason::ConfigChanged)?;
-        if self.adopt(path, written, seq, added, removed) {
+    ) -> Result<(), ConfigState> {
+        let replaced = dudes_config::workspace::replace(path, written).is_ok();
+        if replaced && self.adopt(path, written, seq, added, removed) {
             return Ok(());
         }
-        let holds_ours = dudes_config::workspace::read_bytes(path)
-            .is_ok_and(|now| now.as_deref() == Some(written));
-        if holds_ours {
-            let _ = dudes_config::workspace::restore(path, previous);
+        Err(config_after_failure(path, previous, written))
+    }
+
+    /// What creating a project needs from the loop: the parent the operator's file names, and
+    /// the file's bytes, so the enrollment can tell the file moved.
+    fn project_create_plan(&self) -> Result<CreatePlan, Reason> {
+        let spelled = self.ctx.create_parent.as_deref().ok_or(Reason::NoParent)?;
+        if self.ctx.enrollment.profiles.len() >= MOST_PROJECTS {
+            return Err(Reason::Full);
         }
-        Err(Reason::ConfigChanged)
+        let parent = self.ctx.project_folders.create_parent(spelled)?;
+        let path = self
+            .ctx
+            .operator_config
+            .as_deref()
+            .ok_or(Reason::ConfigChanged)?;
+        let bytes = dudes_config::workspace::read_bytes(path).map_err(|_| Reason::ConfigChanged)?;
+        Ok(CreatePlan {
+            parent,
+            config_sha: file_digest(bytes.as_deref()),
+        })
+    }
+
+    /// Enroll a folder the caller just made, under the reload lock the caller still holds, with
+    /// the sequence number it took. Every check runs again here, before the file is touched. From
+    /// the write on, `replaced` is true and the caller never removes the folder.
+    fn project_create_enroll(
+        &mut self,
+        session: &crate::floor_session::SessionIdentity,
+        enroll: &Enroll,
+    ) -> Result<Added, EnrollFailure> {
+        let before = |reason| EnrollFailure {
+            reason,
+            replaced: false,
+            config: ConfigState::Unchanged,
+        };
+        if self.ctx.enrollment.profiles.len() >= MOST_PROJECTS {
+            return Err(before(Reason::Full));
+        }
+        let path = self
+            .ctx
+            .operator_config
+            .clone()
+            .ok_or_else(|| before(Reason::ConfigChanged))?;
+        let previous = dudes_config::workspace::read_bytes(&path)
+            .map_err(|_| before(Reason::ConfigChanged))?;
+        if file_digest(previous.as_deref()) != enroll.config_sha {
+            return Err(before(Reason::ConfigChanged));
+        }
+        let still_set =
+            crate::config::parse_operator_and_memory_with_options(&path, previous.as_deref())
+                .is_ok_and(|(startup, _)| startup.operator.create_parent == self.ctx.create_parent);
+        if !still_set || self.ctx.create_parent.is_none() {
+            return Err(before(Reason::ConfigChanged));
+        }
+        let mut ids = dudes_config::workspace::enrolled_in(&path, previous.as_deref())
+            .map_err(|_| before(Reason::ConfigChanged))?;
+        ids.extend(self.ctx.enrollment.profiles.iter().map(|p| p.id.clone()));
+        let id = dudes_config::workspace::project_id(&enroll.folder, &ids);
+        let new = NewWorkspace::with_defaults(
+            enroll.folder.clone(),
+            id.clone(),
+            enroll.label.clone(),
+            changed_check(),
+        );
+        let written = dudes_config::workspace::appended(&path, previous.as_deref(), &new).map_err(
+            |error| {
+                before(match error {
+                    WorkspaceError::NotARepository(_) => Reason::NotGit,
+                    _ => Reason::ConfigChanged,
+                })
+            },
+        )?;
+        let after = |config| EnrollFailure {
+            reason: Reason::ConfigChanged,
+            replaced: true,
+            config,
+        };
+        self.write_and_adopt(
+            &path,
+            previous.as_deref(),
+            &written,
+            enroll.seq,
+            std::slice::from_ref(&id),
+            &[],
+        )
+        .map_err(after)?;
+        self.resync_floor();
+        tracing::info!(
+            session = %&crate::enrollment_reload::hex(&session.digest().bytes())[..16],
+            project = %id,
+            "floor project create"
+        );
+        let profile = self
+            .ctx
+            .enrollment
+            .profile(&id)
+            .ok_or_else(|| after(ConfigState::Unknown))?;
+        Ok(self.added(profile))
     }
 
     /// The reload the CLI asks for after an edit: adopt exactly `written`, adding and removing the
@@ -353,6 +454,27 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 }
 
+/// What the operator's file holds after `written` could not be adopted, putting `previous` back
+/// when the file still holds `written`.
+fn config_after_failure(path: &Path, previous: Option<&[u8]>, written: &[u8]) -> ConfigState {
+    match dudes_config::workspace::read_bytes(path) {
+        Ok(now) if now.as_deref() == Some(written) => {
+            if dudes_config::workspace::restore(path, previous).is_ok() {
+                ConfigState::Restored
+            } else {
+                ConfigState::Failed
+            }
+        }
+        Ok(now) if now.as_deref() == previous => ConfigState::Unchanged,
+        _ => ConfigState::Conflict,
+    }
+}
+
+/// The SHA-256 of an operator file's bytes; a missing file digests as empty.
+fn file_digest(bytes: Option<&[u8]>) -> dudes_proto::record::Hex32 {
+    dudes_proto::record::Hex32::new(sha2::Sha256::digest(bytes.unwrap_or_default()).into())
+}
+
 fn project_ref(profile: &Profile) -> ProjectRef {
     ProjectRef {
         project_id: profile.id.clone(),
@@ -379,5 +501,47 @@ const fn uncapped_goal() -> GoalBudget {
     GoalBudget {
         usd: None,
         tokens: None,
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn the_file_is_reported_as_it_is_after_a_failed_adoption() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("config.toml");
+        let (old, new): (&[u8], &[u8]) = (b"old = 1\n", b"new = 2\n");
+
+        std::fs::write(&path, new).expect("ours");
+        assert_eq!(
+            config_after_failure(&path, Some(old), new),
+            ConfigState::Restored
+        );
+        assert_eq!(std::fs::read(&path).expect("file"), old);
+
+        assert_eq!(
+            config_after_failure(&path, Some(old), new),
+            ConfigState::Unchanged,
+            "never replaced"
+        );
+
+        std::fs::write(&path, b"someone = 3\n").expect("theirs");
+        assert_eq!(
+            config_after_failure(&path, Some(old), new),
+            ConfigState::Conflict
+        );
+        assert_eq!(std::fs::read(&path).expect("file"), b"someone = 3\n");
+
+        std::fs::write(&path, new).expect("ours again");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))
+            .expect("read-only folder");
+        let failed = config_after_failure(&path, Some(old), new);
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("writable folder");
+        assert_eq!(failed, ConfigState::Failed);
+        assert_eq!(std::fs::read(&path).expect("file"), new);
     }
 }

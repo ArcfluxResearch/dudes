@@ -126,6 +126,7 @@ const SETTINGS_PATH: &str = "/floor/settings";
 /// Routed only while `[floor.project]` is on; otherwise a POST here is any unrouted POST.
 const PROJECT_PREVIEW_PATH: &str = "/floor/project/preview";
 const PROJECT_ADD_PATH: &str = "/floor/project/add";
+const PROJECT_CREATE_PATH: &str = "/floor/project/create";
 const PROJECT_REMOVE_PATH: &str = "/floor/project/remove";
 const PROJECT_CHOOSE_PATH: &str = "/floor/project/choose";
 const TERMINAL_PATH: &str = "/floor/terminal";
@@ -1279,6 +1280,7 @@ impl ActionRoute {
             SETTINGS_PATH => Some(Self::Settings),
             PROJECT_PREVIEW_PATH if live.project => Some(Self::Project(ProjectVerb::Preview)),
             PROJECT_ADD_PATH if live.project => Some(Self::Project(ProjectVerb::Add)),
+            PROJECT_CREATE_PATH if live.project => Some(Self::Project(ProjectVerb::Create)),
             PROJECT_REMOVE_PATH if live.project => Some(Self::Project(ProjectVerb::Remove)),
             PROJECT_CHOOSE_PATH if live.project => Some(Self::ChooseFolder),
             GIT_PATH if catalog.git().is_some() => Some(Self::Git),
@@ -2593,6 +2595,7 @@ fn retire_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -
 enum ProjectVerb {
     Preview,
     Add,
+    Create,
     Remove,
 }
 
@@ -2661,6 +2664,7 @@ fn project_response<'a>(
                 };
             (ProjectRequest::Add(request), Some(reservation))
         }
+        ProjectVerb::Create => return create_project_response(&session, handle, body),
         ProjectVerb::Remove => {
             let Some(request) = crate::floor_project::parse_remove(body) else {
                 return error_response(400, "Bad Request");
@@ -2697,10 +2701,89 @@ fn project_response<'a>(
             "OK",
             &serde_json::to_value(removed).expect("a removed project is finite JSON"),
         ),
+        Ok(ProjectAnswer::Plan(_) | ProjectAnswer::Enrolled(_)) => {
+            error_response(503, "Service Unavailable")
+        }
         Err(ProjectRefusal::Reason(reason)) => refused(reason.code()),
         Err(ProjectRefusal::ActionOff) => refused(crate::floor_switches::ACTION_OFF),
         Err(ProjectRefusal::Forbidden) => error_response(403, "Forbidden"),
         Err(ProjectRefusal::Unavailable) => error_response(503, "Service Unavailable"),
+    }
+}
+
+/// The creation of a new project beneath the operator's folder for them. The attempt is kept while
+/// it runs, so a retry meets `pending`, and its answer is kept afterwards whenever it made a
+/// folder, so a retry after a lost answer is told what happened instead of finding the folder in
+/// its way.
+fn create_project_response<'a>(
+    session: &SessionIdentity,
+    handle: &Handle,
+    body: &[u8],
+) -> Response<'a> {
+    use crate::floor_project::CreateParse;
+    use crate::project_create::{Lookup, Outcome};
+    let request = match crate::floor_project::parse_create(body) {
+        Ok(request) => request,
+        Err(CreateParse::Malformed) => return error_response(400, "Bad Request"),
+        Err(CreateParse::BadName) => {
+            return action_json(
+                409,
+                "Conflict",
+                &serde_json::json!({ "state": "refused", "reason": "bad_name" }),
+            );
+        }
+    };
+    let _reservation =
+        match session.reserve(ActionKind::Project, request.attempt_id, request.digest) {
+            ReserveResult::Owner(reservation) => reservation,
+            ReserveResult::Pending => {
+                return action_json(
+                    202,
+                    "Accepted",
+                    &serde_json::json!({ "attempt_id": request.attempt_wire, "state": "pending" }),
+                );
+            }
+            ReserveResult::Conflict => return error_response(409, "Conflict"),
+            ReserveResult::Forbidden => return error_response(403, "Forbidden"),
+        };
+    let results = handle.create_results();
+    let outcome = match results.lookup(session, request.attempt_id, request.digest) {
+        Lookup::Hit(outcome) => outcome,
+        Lookup::Mismatch => return error_response(409, "Conflict"),
+        Lookup::Miss => {
+            let done = crate::project_create::run(handle, session, &request);
+            if done.made_folder {
+                results.remember(
+                    session,
+                    request.attempt_id,
+                    request.digest,
+                    done.outcome.clone(),
+                );
+            }
+            done.outcome
+        }
+    };
+    match outcome {
+        Outcome::Created(created) => {
+            let mut answer =
+                serde_json::to_value(created.added).expect("an added project is finite JSON");
+            answer["folder"] = created.folder.display().to_string().into();
+            action_json(200, "OK", &answer)
+        }
+        Outcome::Refused(refused) => {
+            let mut answer = serde_json::json!({ "state": "refused", "reason": refused.code });
+            if let Some(left) = refused.left_behind {
+                answer["left_behind"] = serde_json::json!({
+                    "path": left.path.display().to_string(), "verified": left.verified
+                });
+            }
+            if let Some(config) = refused.config {
+                answer["config"] = config.code().into();
+            }
+            action_json(409, "Conflict", &answer)
+        }
+        Outcome::Forbidden => error_response(403, "Forbidden"),
+        Outcome::Unavailable => error_response(503, "Service Unavailable"),
     }
 }
 

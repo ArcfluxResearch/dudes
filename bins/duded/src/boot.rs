@@ -689,6 +689,7 @@ where
             switches,
             operator_config: settings.operator_config.clone(),
             project_folders: project_folders(settings),
+            create_parent: settings.floor_create_parent.clone(),
             control_index,
             recovery_authority: None,
             #[cfg(test)]
