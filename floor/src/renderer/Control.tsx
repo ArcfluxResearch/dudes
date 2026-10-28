@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { X } from 'lucide-react';
+import { Maximize2, X } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { ArchivedAgents } from './ArchivedAgents.tsx';
 import type { RetiredAgentRow } from './archive.ts';
@@ -14,7 +14,11 @@ import type { FloorState } from './floor/store.ts';
 import { SetupView } from './setup/SetupView.tsx';
 import { SettingsView } from './settings/SettingsView.tsx';
 import { CardDetail } from './BoardPanel.tsx';
-import { NewTicketForm, TicketBoard, TicketNotice } from './ticket/TicketBoard.tsx';
+import { NewTicketForm, TicketBoard, TicketNotice, ticketActionsOpen } from './ticket/TicketBoard.tsx';
+import { CopyLink } from './ticket/CopyLink.tsx';
+import { useRequestedNewTicket } from './ticket/newTicketRequest.ts';
+import { TicketPage } from './ticket/TicketPage.tsx';
+import { readNewTicketDraft, writeNewTicketDraft } from './view.ts';
 import { viewConfirmed } from './ticket/model.ts';
 import { TicketOffHint } from './ticket/TicketGuidance.tsx';
 import { TicketPanel } from './ticket/TicketPanel.tsx';
@@ -37,7 +41,7 @@ export const CONTROL_VIEWS: readonly { readonly view: ControlView; readonly labe
 
 export const CONTROL_TITLE_ID = 'control-title';
 
-type BoardOverlay = { readonly kind: 'new' } | { readonly kind: 'card'; readonly id: string } | null;
+type BoardOverlay = { readonly kind: 'new' } | { readonly kind: 'card'; readonly id: string; readonly full: boolean } | null;
 
 export function toggledView(open: ControlView | null, pressed: ControlView, focused: boolean): ControlView | null {
   return open === pressed && !focused ? null : pressed;
@@ -126,19 +130,44 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
   const opener = useRef<HTMLElement | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const seenCard = useRef<string | null>(null);
-  const showing = view === 'board' && overlay !== null;
+  const open = view === 'board' && overlay !== null;
+  const full = open && overlay?.kind === 'card' && overlay.full;
+  const showing = open && !full;
+  const scrolled = useRef(0);
+  const wasFull = useRef(false);
 
-  function openCard(id: string, from?: HTMLElement): void {
+  function openCard(id: string, from?: HTMLElement, asPage = false): void {
     opener.current = from ?? document.querySelector<HTMLButtonElement>(`[data-card-id="${id}"]`);
     seenCard.current = null;
-    setOverlay({ kind: 'card', id });
+    setOverlay({ kind: 'card', id, full: asPage });
   }
 
-  function openNewTicket(from: HTMLElement): void {
+  function openNewTicket(from: HTMLElement | null): void {
     opener.current = from;
     seenCard.current = null;
     setOverlay({ kind: 'new' });
   }
+
+  function expandCard(): void {
+    if (overlay?.kind !== 'card') return;
+    scrolled.current = document.getElementById('control-panel')?.scrollTop ?? 0;
+    setOverlay({ kind: 'card', id: overlay.id, full: true });
+  }
+
+  useRequestedNewTicket(view === 'board' && ticketActionsOpen(floor), (title) => {
+    if (title !== '') writeNewTicketDraft({ ...readNewTicketDraft(), title });
+    openNewTicket(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  });
+
+  useLayoutEffect(() => {
+    const panel = document.getElementById('control-panel');
+    if (panel !== null && full !== wasFull.current) panel.scrollTop = full ? 0 : scrolled.current;
+    wasFull.current = full;
+  }, [full]);
+
+  useEffect(() => {
+    if (full) document.querySelector<HTMLElement>('.ticket-page .ticket-panel, .ticket-page #card-detail-title')?.focus();
+  }, [full]);
 
   function closeOverlay(): void {
     const replacement = selectedCardId === null ? null
@@ -163,9 +192,16 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
       : node?.querySelector<HTMLElement>('.ticket-panel') ?? node?.querySelector<HTMLElement>('#card-detail-title'))?.focus();
     return () => { node?.close(); };
   }, [showing]);
+  const ticketBody = selectedCard?.ticket != null ? <TicketPanel key={selectedCard.id} floor={floor} card={selectedCard} onHire={onHire}
+    onReviewRecovery={onReviewRecovery} />
+    : selectedCard !== null ? <CardDetail key={selectedCard.id} floor={floor} card={selectedCard} />
+      : <p role="status" className="m-0 p-6 text-base text-muted">Waiting for the board to confirm this ticket.</p>;
   const panels: Record<PanelView, ReactNode> = {
-    board: <TicketBoard floor={floor} selectedId={selectedCardId} onSelect={openCard}
-      forming={overlay?.kind === 'new'} onNewTicket={openNewTicket} />,
+    board: <>
+      <div className={cn(full && 'hidden')}><TicketBoard floor={floor} selectedId={selectedCardId} onSelect={openCard}
+        forming={overlay?.kind === 'new'} onNewTicket={openNewTicket} paused={full} /></div>
+      {full && selectedCardId !== null ? <TicketPage id={selectedCardId} onBack={closeOverlay}>{ticketBody}</TicketPage> : null}
+    </>,
     log: <LogPanel floor={floor} />,
     setup: <SetupView floor={floor} onGuide={onGuide} />,
     settings: <SettingsView floor={floor} onSetup={() => onView('setup')} />,
@@ -179,7 +215,7 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
           : 'col-[1/-1] row-2 gap-6 px-9 pb-8 pt-6 max-[800px]:m-2 max-[800px]:max-h-128 max-[800px]:rounded-[10px] max-[800px]:p-5', view === 'board' && 'has-[dialog[open]]:overflow-y-hidden')}
       data-page={page ? 'true' : undefined}
       ref={handFocusOnLeave} data-focus-on-leave={viewButtonId(view)}
-      onKeyDown={(event) => { if (closesPanel(event)) { event.stopPropagation(); onClose(); } }}>
+      onKeyDown={(event) => { if (closesPanel(event)) { event.stopPropagation(); if (full) closeOverlay(); else onClose(); } }}>
       <header className="control-panel-head flex flex-none items-center justify-between gap-2">
         <div className="control-heading-copy min-w-0">
           <h2 id={CONTROL_TITLE_ID} tabIndex={-1} ref={focusOnArrival}
@@ -191,27 +227,30 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
       </header>
       <div className={cn('control-view min-h-0 min-w-0 overflow-auto', page || view === 'board' ? 'flex-none overflow-visible' : 'flex-auto')}>{panels[view]}</div>
       {view === 'board' ? <TicketNotice floor={floor}
-        card={showing ? overlay?.kind === 'card' ? overlay.id : null : undefined} /> : null}
+        card={open ? overlay?.kind === 'card' ? overlay.id : null : undefined} /> : null}
       {view === 'board' ? <Dialog className="ticket-dialog focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-focus m-0 ml-auto h-dvh max-h-none w-[min(100vw,56rem,max(35rem,70vw))] max-w-[100vw] rounded-none rounded-l-xl border-y-0 border-r-0 data-[composer=true]:m-auto data-[composer=true]:h-fit data-[composer=true]:max-h-[calc(100dvh-4rem)] data-[composer=true]:w-[min(36rem,calc(100vw-2rem))] data-[composer=true]:rounded-xl data-[composer=true]:border max-[800px]:data-[composer=false]:w-screen max-[800px]:data-[composer=false]:rounded-none"
         id="selected-card-detail" ref={dialog}
         data-composer={overlay?.kind === 'new'}
         aria-label={overlay?.kind === 'new' ? 'New ticket' : 'Ticket detail'}
         onCancel={(event) => { event.preventDefault(); closeOverlay(); }}
         onKeyDown={(event) => { if (event.key === 'Escape') event.stopPropagation(); }}>
-        {showing ? <><header className={cn('ticket-dialog-head sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface px-6 py-2',
+        {showing ? <><header className={cn('ticket-dialog-head sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface px-6 py-2',
           overlay?.kind === 'new' && 'border-b-0 pb-0')}>
           <p className={cn('m-0 text-caption font-semibold tracking-label text-muted uppercase', overlay?.kind === 'new' && 'sr-only')}>{overlay?.kind === 'new' ? 'New ticket' : 'Ticket review'}</p>
-          <IconButton label="Close ticket dialog" icon={<X {...ICON} />} className="ticket-dialog-close ml-auto" onClick={closeOverlay} />
+          <div className="ml-auto flex items-center gap-2">
+            {overlay?.kind === 'card' ? <>
+              <CopyLink id={overlay.id} />
+              <Button size="sm" icon={<Maximize2 {...ICON} />} className="ticket-expand" onClick={expandCard}>Full page</Button>
+            </> : null}
+            <IconButton label="Close ticket dialog" icon={<X {...ICON} />} className="ticket-dialog-close" onClick={closeOverlay} />
+          </div>
         </header>
         {overlay?.kind === 'new' ? <div className="ticket-composer flex flex-col gap-2 px-6 pt-2 pb-6"><h3 className="m-0 text-page font-semibold">New ticket</h3>
           <p className="m-0 text-base text-muted">Tell an agent what you want to happen.</p>
           {floor.ticket ? null : <TicketOffHint floor={floor} />}
           <NewTicketForm floor={floor} onHire={onHire} onCancel={closeOverlay}
-            onCreated={(id) => { opener.current = null; seenCard.current = null; setOverlay({ kind: 'card', id }); }} />
-        </div> : selectedCard?.ticket != null ? <TicketPanel key={selectedCard.id} floor={floor} card={selectedCard} onHire={onHire}
-          onReviewRecovery={onReviewRecovery} />
-          : selectedCard !== null ? <CardDetail key={selectedCard.id} floor={floor} card={selectedCard} />
-            : <p role="status" className="m-0 p-6 text-base text-muted">Waiting for the board to confirm this ticket.</p>}
+            onCreated={(id) => { opener.current = null; seenCard.current = null; setOverlay({ kind: 'card', id, full: false }); }} />
+        </div> : ticketBody}
         </> : null}
       </Dialog> : null}
     </section>
