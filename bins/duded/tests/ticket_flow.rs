@@ -3852,3 +3852,125 @@ fn a_stopped_tickets_question_is_answered_into_the_agents_next_work() {
     );
     flow.stop();
 }
+
+/// A hire into its own copy of the project: the lease, then the agent living in the tree.
+fn copy_hire(n: u128, repo: &Path, copy: Option<&Path>) -> Vec<Record> {
+    let mut records = Vec::new();
+    let mut hired = seeded_hire("service", repo, None);
+    let Record::AgentHired {
+        id,
+        name,
+        worktree,
+        cwd,
+        ..
+    } = &mut hired
+    else {
+        unreachable!("the sample is a hire");
+    };
+    (*id, *name) = (AgentId::from_parts(9, n), format!("Agent {n}"));
+    if let Some(copy) = copy {
+        std::fs::create_dir_all(copy).unwrap();
+        let admin = repo.join(".git/worktrees").join(format!("copy-{n}"));
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(copy.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        let mut leased = samples::record(RecordKind::WorktreeLeased);
+        let Record::WorktreeLeased {
+            worktree: lease,
+            origin,
+            path,
+            ..
+        } = &mut leased
+        else {
+            unreachable!("the sample is a lease");
+        };
+        *lease = dudes_types::WorktreeId::from_bytes((0x7700_u128 << 100 | n).to_be_bytes());
+        *origin = repo.to_path_buf();
+        *path = copy.to_path_buf();
+        *worktree = Some(*lease);
+        *cwd = copy.to_path_buf();
+        records.push(leased);
+    }
+    records.push(hired);
+    records
+}
+
+fn give(card: u128, agent: u128) -> Vec<Record> {
+    let card = CardId::from_parts(4, card);
+    vec![
+        Record::TicketCreated {
+            card,
+            title: format!("Ticket {card}"),
+            description: String::new(),
+            department: "engineering".into(),
+            project: "service".into(),
+            done_when: default_check(),
+            by: operator(),
+            request: None,
+            priority: None,
+        },
+        Record::TicketAssigned {
+            card,
+            agent: AgentId::from_parts(9, agent),
+            by: operator(),
+            message: None,
+            expected_seq: Seq(0),
+            priority: None,
+        },
+    ]
+}
+
+/// Five agents hired into their own copies of one project each start their ticket at once, from
+/// one evaluation.
+#[test]
+fn five_agents_in_their_own_copies_run_five_tickets_at_once() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut records = Vec::new();
+    for n in 1..=5 {
+        let copy = fixture.state.path().join(format!("copy-{n}"));
+        records.extend(copy_hire(n, &repo, Some(&copy)));
+        records.extend(give(n, n));
+    }
+    seed(&fixture, records);
+    let mut flow = Flow::boot(&fixture, settings.clone(), repo.clone(), [common::fails()]);
+    for n in 1..=5 {
+        flow.await_status(CardId::from_parts(4, n), CardStatus::Doing);
+    }
+    assert_eq!(started_goals(&fixture.records()).len(), 5);
+    flow.stop();
+
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    flow.create("A later ticket");
+    flow.stop();
+    assert_eq!(
+        started_goals(&fixture.records()).len(),
+        5,
+        "a restart starts nothing twice"
+    );
+}
+
+/// Two agents that share the project folder still take turns, and the one that waits names the
+/// ticket that holds the folder.
+#[test]
+fn two_agents_sharing_the_folder_still_take_turns() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut records = Vec::new();
+    for n in 1..=2 {
+        records.extend(copy_hire(n, &repo, None));
+        records.extend(give(n, n));
+    }
+    seed(&fixture, records);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    flow.await_status(CardId::from_parts(4, 1), CardStatus::Doing);
+    let second = CardId::from_parts(4, 2);
+    assert_eq!(flow.card(second).status, CardStatus::Claimed);
+    assert_eq!(
+        flow.read(second).waiting.unwrap().wait,
+        TicketWait::Ticket {
+            card: CardId::from_parts(4, 1)
+        }
+    );
+    assert_eq!(started_goals(&fixture.records()).len(), 1);
+    flow.stop();
+}

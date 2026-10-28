@@ -224,6 +224,37 @@ test('a ticket waits for the one that holds its project', () => {
   assert.equal(model.cardWords(floor, floor.cards[1]).note, 'Waiting for Ticket 1 to be finished, accepted or sent back.');
 });
 
+test('a ticket names the holder of its own working tree, not of its project', () => {
+  const copy = (branch) => ({ branch, state: 'active' });
+  const AVA = '01HZX3NDEKTSV4RRFFQ69G5FAV';
+  subscribe(store, {
+    agents: [
+      agent(ADA, 'Ada', { worktree: copy('dudes/aaaaaaaaaaaa') }), agent(GRACE, 'Grace', { worktree: copy('dudes/bbbbbbbbbbbb') }),
+      agent(AVA, 'Ava'),
+    ],
+    cards: [
+      ticketCard(1, 'review', { claimed_by: ADA }),
+      ticketCard(2, 'claimed', { claimed_by: ADA }, { position: 1 }),
+      ticketCard(3, 'claimed', { claimed_by: GRACE }, { position: 1 }),
+      ticketCard(4, 'claimed', { claimed_by: AVA }, { position: 1 }),
+    ],
+  });
+  const floor = store.getFloorState();
+  const note = (n) => model.cardWords(floor, floor.cards[n - 1]).note;
+  assert.equal(note(2), 'Waiting for Ticket 1 to be finished, accepted or sent back.');
+  assert.equal(model.holdingTicket(floor, ADA)?.title, 'Ticket 1');
+});
+
+test('a card names the project holder when no ticket holds its own tree, as in a multi-repo project', () => {
+  const copy = (branch) => ({ branch, state: 'active' });
+  subscribe(store, {
+    agents: [agent(ADA, 'Ada', { worktree: copy('dudes/aaaaaaaaaaaa') }), agent(GRACE, 'Grace', { worktree: copy('dudes/bbbbbbbbbbbb') })],
+    cards: [ticketCard(1, 'doing', { claimed_by: ADA }), ticketCard(2, 'claimed', { claimed_by: GRACE }, { position: 1 })],
+  });
+  const floor = store.getFloorState();
+  assert.equal(model.cardWords(floor, floor.cards[1]).note, 'Waiting for Ticket 1 to be finished, accepted or sent back.');
+});
+
 test('every state has its actions, so none is a dead end', () => {
   const expected = {
     todo: ['give', 'edit', 'remove'],

@@ -9,7 +9,7 @@ use dudes_proto::{
     Predicate, Record, RecordKind, TicketRow, TicketWait,
 };
 use dudes_supervisor::world::World;
-use dudes_types::{AgentId, CardId, CardStatus, GoalId, Lsn, Timestamp, TurnId};
+use dudes_types::{AgentId, CardId, CardStatus, GoalId, Lsn, Timestamp, TurnId, WorktreeId};
 
 use super::Facts;
 
@@ -222,6 +222,21 @@ impl ReviewFixture {
         self.hires.insert(agent, project.into());
     }
 
+    fn hire_in_copy(&mut self, agent: AgentId, project: &str, lease: WorktreeId) {
+        let mut leased = samples::record(RecordKind::WorktreeLeased);
+        if let Record::WorktreeLeased { worktree, .. } = &mut leased {
+            *worktree = lease;
+        }
+        self.append(leased);
+        let mut hired = samples::record(RecordKind::AgentHired);
+        if let Record::AgentHired { id, worktree, .. } = &mut hired {
+            *id = agent;
+            *worktree = Some(lease);
+        }
+        self.append(hired);
+        self.hires.insert(agent, project.into());
+    }
+
     fn create_and_assign(&mut self, card: CardId, agent: AgentId, project: &str) {
         let mut created = samples::record(RecordKind::TicketCreated);
         if let Record::TicketCreated {
@@ -277,16 +292,36 @@ fn completed_instruction_review_keeps_project_reserved() {
     fixture.read(|facts| {
         assert_eq!(facts.agent_wait(second, PROJECT), None);
         assert_eq!(
-            facts.project_wait(PROJECT),
+            facts.tree_wait(PROJECT, None),
             Some(TicketWait::Ticket {
                 card: fixture.card()
             })
         );
-        assert_eq!(facts.next_ticket(PROJECT), None);
+        assert!(facts.next_tickets(PROJECT).is_empty());
         assert!(facts.owed_ticket_moves().is_empty());
         let (view, ticket) = fixture.row(fixture.card());
         assert!(!facts.holds_unfinished_goal(&view, &ticket));
         assert_eq!(facts.goal_to_settle(&view, &ticket), None);
+    });
+}
+
+#[test]
+fn a_pending_instruction_review_holds_only_its_own_tree() {
+    let mut fixture = ReviewFixture::completed();
+    let copy_agent = AgentId::from_parts(1, 2);
+    let lease = WorktreeId::from_bytes(21_u128.to_be_bytes());
+    let waiting = CardId::from_parts(4, 2);
+    fixture.hire_in_copy(copy_agent, PROJECT, lease);
+    fixture.create_and_assign(waiting, copy_agent, PROJECT);
+    fixture.read(|facts| {
+        assert_eq!(
+            facts.tree_wait(PROJECT, None),
+            Some(TicketWait::Ticket {
+                card: fixture.card()
+            })
+        );
+        assert_eq!(facts.tree_wait(PROJECT, Some(lease)), None);
+        assert_eq!(facts.next_tickets(PROJECT), [waiting]);
     });
 }
 
@@ -381,8 +416,8 @@ fn another_project_and_owner_can_start_while_instruction_review_waits() {
     fixture.create_and_assign(waiting, other, OTHER_PROJECT);
     fixture.read(|facts| {
         assert_eq!(facts.agent_wait(other, OTHER_PROJECT), None);
-        assert_eq!(facts.project_wait(OTHER_PROJECT), None);
-        assert_eq!(facts.next_ticket(OTHER_PROJECT), Some(waiting));
+        assert_eq!(facts.tree_wait(OTHER_PROJECT, None), None);
+        assert_eq!(facts.next_tickets(OTHER_PROJECT), [waiting]);
     });
 }
 
@@ -401,8 +436,8 @@ fn exact_accept_releases_completed_review_project_and_owner_reservations() {
     assert!(!fixture.world.instructions.pending_for_goal(fixture.goal()));
     fixture.read(|facts| {
         assert_eq!(facts.agent_wait(fixture.agent(), PROJECT), None);
-        assert_eq!(facts.project_wait(PROJECT), None);
-        assert_eq!(facts.next_ticket(PROJECT), Some(waiting));
+        assert_eq!(facts.tree_wait(PROJECT, None), None);
+        assert_eq!(facts.next_tickets(PROJECT), [waiting]);
     });
     assert!(
         fixture
@@ -432,8 +467,8 @@ fn exact_changes_requested_releases_review_and_keeps_rework_first() {
     assert!(!fixture.world.goals[&fixture.goal()].cleared);
     fixture.read(|facts| {
         assert_eq!(facts.agent_wait(fixture.agent(), PROJECT), None);
-        assert_eq!(facts.project_wait(PROJECT), None);
-        assert_eq!(facts.next_ticket(PROJECT), Some(fixture.card()));
+        assert_eq!(facts.tree_wait(PROJECT, None), None);
+        assert_eq!(facts.next_tickets(PROJECT), [fixture.card()]);
         assert_eq!(
             facts.queue(PROJECT).get(1).map(|(card, _, _)| *card),
             Some(waiting)
@@ -456,7 +491,7 @@ fn outstanding_ending_comparison_keeps_reservations_and_refuses_accept() {
             Some(TicketWait::AgentBusy)
         );
         assert_eq!(
-            facts.project_wait(PROJECT),
+            facts.tree_wait(PROJECT, None),
             Some(TicketWait::Ticket {
                 card: fixture.card()
             })
