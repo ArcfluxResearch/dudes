@@ -148,21 +148,46 @@ fn create_origin(root: &Path, name: &str) -> RepositoryEntry<CatalogRepository> 
     }
 }
 
+#[derive(Clone, Copy)]
+enum LeaseCarrier {
+    Legacy,
+    WithIdentity,
+}
+
+fn cleanup_identity(path: &Path) -> dudes_proto::record::WorktreeDirectoryIdentity {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).unwrap();
+    let born = meta
+        .created()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    dudes_proto::record::WorktreeDirectoryIdentity {
+        device: meta.dev(),
+        inode: meta.ino(),
+        created_secs: born.as_secs(),
+        created_nanos: born.subsec_nanos(),
+    }
+}
+
 fn create_copy(
     writer: &mut Writer,
     entry: &RepositoryEntry<CatalogRepository>,
     state: &Path,
     index: usize,
     trust_lsn: Lsn,
+    carrier: LeaseCarrier,
 ) -> OwnedRepository {
     let worktree = WorktreeId::from_bytes([u8::try_from(index + 1).unwrap(); 16]);
     let path = state.join("worktrees").join(worktree.to_string());
     let origin = &entry.value.origin;
-    let branch = format!("dudes/{}-{worktree}", entry.repo_id.as_str());
+    let branch = match carrier {
+        LeaseCarrier::Legacy => format!("dudes/{}-{worktree}", entry.repo_id.as_str()),
+        LeaseCarrier::WithIdentity => format!("dudes/{}", worktree.short()),
+    };
     let base = GitCommit::parse(&git(&origin.directory, &["rev-parse", "HEAD"])).unwrap();
-    append(
-        writer,
-        Record::WorktreeLeased {
+    let lease = match carrier {
+        LeaseCarrier::Legacy => Record::WorktreeLeased {
             worktree,
             origin: origin.directory.clone(),
             path: path.clone(),
@@ -170,7 +195,38 @@ fn create_copy(
             base,
             from: None,
         },
-    );
+        LeaseCarrier::WithIdentity => {
+            use std::os::unix::fs::DirBuilderExt;
+            let parent = path.parent().unwrap();
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .unwrap();
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&path)
+                .unwrap();
+            std::fs::File::open(&path).unwrap().sync_all().unwrap();
+            std::fs::File::open(parent).unwrap().sync_all().unwrap();
+            let authority = dudes_proto::record::WorktreeDirectoryAuthority {
+                origin: cleanup_identity(&origin.directory),
+                common: cleanup_identity(&origin.common_dir),
+                root: cleanup_identity(&path),
+                parent: cleanup_identity(parent),
+            };
+            Record::WorktreeLeasedWithIdentity {
+                worktree,
+                origin: origin.directory.clone(),
+                path: path.clone(),
+                branch: branch.clone(),
+                base,
+                from: None,
+                identity: authority,
+            }
+        }
+    };
+    append(writer, lease);
     git(
         &origin.directory,
         &[
@@ -245,7 +301,14 @@ impl Story {
         for (index, entry) in lease_order.into_iter().enumerate() {
             copies.insert(
                 entry.repo_id.clone(),
-                create_copy(&mut writer, entry, &state, index, grants[&entry.repo_id]),
+                create_copy(
+                    &mut writer,
+                    entry,
+                    &state,
+                    index,
+                    grants[&entry.repo_id],
+                    LeaseCarrier::Legacy,
+                ),
             );
         }
         let repositories = RepositorySet::new(
@@ -516,6 +579,7 @@ fn crash_before_the_atomic_hire_discards_every_pending_copy() {
             &state,
             index,
             grants[&entry.repo_id],
+            LeaseCarrier::WithIdentity,
         ));
     }
     drop(writer);
@@ -931,7 +995,14 @@ fn fresh_hire(fixture: &Fixture, writer: &mut Writer, story: &Story) -> Reposito
         };
         copies.insert(
             entry.repo_id.clone(),
-            create_copy(writer, &catalog, &state, index + 10, entry.value.trust_lsn),
+            create_copy(
+                writer,
+                &catalog,
+                &state,
+                index + 10,
+                entry.value.trust_lsn,
+                LeaseCarrier::Legacy,
+            ),
         );
     }
     hire.repositories.repositories = RepositorySet::new(

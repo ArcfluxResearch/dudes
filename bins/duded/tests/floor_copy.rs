@@ -189,6 +189,8 @@ struct Floor {
     addr: SocketAddr,
     repo: PathBuf,
     clock: Arc<TestClock>,
+    pause: duded::runtime::OnboardingPause,
+    host: SharedHost,
 }
 
 fn floor(fixture: &Fixture) -> Floor {
@@ -208,9 +210,10 @@ fn floor_with(fixture: &Fixture, claude: ClaudeConfig) -> Floor {
     settings.enrollment = load_operator(&config).expect("valid file").enrollment;
     settings.operator_config = Some(config);
     let clock = Arc::new(TestClock::new());
+    let host = SharedHost::new();
     let mut seams = common::seams(
         &settings,
-        SharedHost::new(),
+        host.clone(),
         Arc::new(Real(OneShot::new())),
         clock.clone(),
         Witness::default(),
@@ -218,12 +221,15 @@ fn floor_with(fixture: &Fixture, claude: ClaudeConfig) -> Floor {
     seams.adapters = Adapters::new([Box::new(ClaudeAdapter::new(claude)) as Box<dyn Adapter>]);
     let daemon = duded::boot(&settings, seams).expect("boot");
     let addr = daemon.floor_addr().expect("the Floor listener");
+    let pause = daemon.onboarding_pause();
     Floor {
         running: common::start(daemon),
         settings,
         addr,
         repo,
         clock,
+        pause,
+        host,
     }
 }
 
@@ -980,5 +986,61 @@ fn a_revoke_between_the_copy_and_the_hire_removes_the_copy_and_hires_nobody() {
             }
         )),
         "its lease ended"
+    );
+}
+
+#[test]
+fn a_replaced_copy_at_the_final_hire_permit_is_retained_without_assignment() {
+    let fixture = Fixture::new();
+    let mut floor = floor(&fixture);
+    set_trust(&floor, true).unwrap();
+    floor
+        .pause
+        .arm(duded::runtime::OnboardingPausePoint::AfterHirePermit);
+    let owner = {
+        let page = session(&floor);
+        std::thread::spawn(move || post_copy(&page, 'A'))
+    };
+    assert!(floor.pause.wait_reached(Duration::from_secs(3)));
+    let (worktree, path, branch, base) = fixture
+        .records()
+        .iter()
+        .find_map(|record| {
+            record.worktree_lease().map(|lease| {
+                (
+                    lease.worktree,
+                    lease.path.to_path_buf(),
+                    lease.branch.to_owned(),
+                    lease.base,
+                )
+            })
+        })
+        .unwrap();
+    let saved = fixture.runtime.path().join("original-copy");
+    std::fs::rename(&path, &saved).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    std::fs::copy(saved.join(".git"), path.join(".git")).unwrap();
+    std::fs::write(path.join("sentinel"), "replacement data").unwrap();
+    floor.pause.release();
+    let reply = owner.join().unwrap();
+    floor.running.stop(duded::ExitCause::Ended);
+    assert_ne!(reply.0, 200, "{reply:?}");
+    assert_eq!(hired_agents(&fixture), 0);
+    assert!(floor.host.spawned().is_empty());
+    assert!(fixture.records().iter().all(
+        |record| record.turn_issue().is_none() && !matches!(record, Record::TurnSpawned { .. })
+    ));
+    assert!(!fixture.records().iter().any(|record| matches!(record, Record::WorktreeRemoved { worktree: removed, .. } if *removed == worktree)));
+    assert_eq!(
+        std::fs::read_to_string(path.join("sentinel")).unwrap(),
+        "replacement data"
+    );
+    assert!(saved.join("tracked.txt").is_file());
+    assert_eq!(
+        git(
+            &floor.repo,
+            &["rev-parse", "--verify", &format!("refs/heads/{branch}")]
+        ),
+        base.to_string()
     );
 }

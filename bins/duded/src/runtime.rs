@@ -329,6 +329,17 @@ impl std::fmt::Display for KnownNoEffect {
 
 impl std::error::Error for KnownNoEffect {}
 
+#[derive(Debug)]
+struct WorktreeAuthorityRefusal(String);
+
+impl std::fmt::Display for WorktreeAuthorityRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for WorktreeAuthorityRefusal {}
+
 /// Why a browser action's pump stopped, for its route to name in its own outcome.
 enum PumpFailure {
     /// The admitting session's append permit was refused: nothing was appended.
@@ -2853,7 +2864,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 .is_some()
             {
                 PumpFailure::Forbidden
-            } else if error.downcast_ref::<KnownNoEffect>().is_some() {
+            } else if error.downcast_ref::<KnownNoEffect>().is_some()
+                || error.downcast_ref::<WorktreeAuthorityRefusal>().is_some()
+            {
                 PumpFailure::NoEffect
             } else {
                 PumpFailure::Uncertain
@@ -7701,6 +7714,59 @@ fn lease_view(
     }
 }
 
+fn verify_hire_worktree_authority(
+    world: &dudes_supervisor::World,
+    record: &Record,
+) -> Result<(), WorktreeAuthorityRefusal> {
+    use dudes_proto::repository_state::HireRepositoryRecord;
+    let Some(hire) = record.hire() else {
+        return Ok(());
+    };
+    let verify = |worktree, execution: &std::path::Path| {
+        let refuse = |reason: &str| {
+            WorktreeAuthorityRefusal(format!(
+                "pending worktree {worktree} cannot be assigned because {reason}"
+            ))
+        };
+        let row = world
+            .worktrees
+            .get(&worktree)
+            .ok_or_else(|| refuse("its lease is absent"))?;
+        if world.worktree_state(worktree) != Some(dudes_supervisor::WorktreeState::Pending) {
+            return Err(refuse("its lease is not pending"));
+        }
+        if !crate::worktree::same_directory(execution, &row.path) {
+            return Err(refuse("the hire names another execution directory"));
+        }
+        crate::worktree::pending::verify(&lease_view(worktree, row))
+            .map_err(|reason| refuse(&reason))
+    };
+    match hire.repositories {
+        HireRepositoryRecord::Legacy {
+            cwd,
+            worktree: Some(worktree),
+            ..
+        } => verify(worktree, cwd),
+        HireRepositoryRecord::Scoped(scope) => {
+            for entry in scope.repositories.entries() {
+                let copy = &entry.value;
+                verify(copy.worktree, &copy.execution.directory)?;
+                let lease = &world.worktrees[&copy.worktree];
+                if copy.base != lease.base
+                    || !crate::worktree::same_directory(&copy.origin.directory, &lease.origin)
+                    || !crate::worktree::is_owned_repository(copy)
+                {
+                    return Err(WorktreeAuthorityRefusal(
+                        "the scoped hire does not match its pending copy".into(),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        HireRepositoryRecord::Legacy { worktree: None, .. } => Ok(()),
+    }
+}
+
 /// The refusal a hire gets when its directory overlaps a live worktree.
 fn worktree_overlap_refusal(worktree: dudes_types::WorktreeId) -> RpcError {
     RpcError {
@@ -8637,7 +8703,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             self.fence_journal();
             return Err(error.context("invalid live goal replacement"));
         }
-        let committed = self.append_checked(entry, recovery)?;
+        let committed = self.append_checked(world, entry, recovery)?;
         if let Record::AgentRetired { id, .. } = &entry.record {
             crate::floor_chat_file::remove_for(&self.agents_root, *id);
         }
@@ -8787,6 +8853,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
 
     fn append_checked(
         &mut self,
+        world: &dudes_supervisor::World,
         entry: &Entry,
         recovery: Option<recovery::AppendSubject<'_>>,
     ) -> Result<CheckedAppend> {
@@ -8844,6 +8911,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                             .map_err(anyhow::Error::new)?,
                     };
                     pause.at(&entry.record, AppendStage::AfterPermit);
+                    verify_hire_worktree_authority(world, &entry.record)?;
                     Ok::<_, anyhow::Error>(permit)
                 },
                 || {
