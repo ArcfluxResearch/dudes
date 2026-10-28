@@ -341,7 +341,7 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
       <Button variant="secondary" size="sm" className="ticket-more" onClick={() => setDoneShown(doneShown + DONE_SHOWN)}>Show more</Button></p> : null;
   return <div ref={root} className="board-view ticket-board flex flex-col gap-6 font-sans text-base text-ink">
     {floor.ticket ? <section className="ticket-new" aria-label="New ticket">
-      <Button ref={newButton} variant="primary" icon={<Plus {...ICON} />} className="ticket-new-toggle absolute top-8 right-20 max-[800px]:top-6 max-[800px]:right-14"
+      <Button ref={newButton} variant="primary" icon={<Plus {...ICON} />} className="ticket-new-toggle absolute top-8 right-20 max-[801px]:top-6 max-[801px]:right-14"
         aria-expanded={forming} disabled={!ticketActionsOpen(floor)}
         title={ticketActionsOpen(floor) ? undefined : 'Reconnect to Dudes before creating a ticket.'}
         aria-haspopup="dialog" aria-keyshortcuts="c" onClick={(event) => onNewTicket(event.currentTarget)}>New ticket</Button>
@@ -357,14 +357,14 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
         <Button variant="secondary" size="sm" className="ticket-show-hidden" onClick={clear}>Show {hiddenNeeds === 1 ? 'it' : 'them'}</Button></p>}
       {needsYou.length === 0 ? null : list
         ? <ul className="m-0 flex list-none flex-col overflow-hidden rounded-lg border border-b-0 border-line p-0">{arranged!.needs.map(drawRow)}</ul>
-        : <ul className="m-0 grid list-none grid-cols-2 gap-3 p-0 max-[800px]:grid-cols-1">{needsYou.map(draw)}</ul>}
+        : <ul className="m-0 grid list-none grid-cols-2 gap-3 p-0 max-[801px]:grid-cols-1">{needsYou.map(draw)}</ul>}
     </section>}
     {arranged !== null ? <>
       <TicketList rows={arranged.rest} group={view.group} drawRow={drawRow} />
       {arranged.needs.length === 0 && arranged.rest.length === 0 ? <p className="ticket-empty m-0 rounded-md border border-dashed border-line-strong px-3 py-4 text-small text-muted">
         {filtered ? 'No tickets match the search or filters.' : floor.ticket ? 'No tickets yet. Choose New ticket to make one.' : 'No cards on the Board yet.'}</p> : null}
       {showMore}
-    </> : <div className="grid grid-cols-[repeat(4,minmax(14rem,1fr))] items-stretch gap-4 overflow-x-auto pb-2 max-[1199px]:gap-3 max-[800px]:grid-cols-[minmax(0,1fr)]">
+    </> : <div className="grid grid-cols-[repeat(4,minmax(14rem,1fr))] items-stretch gap-4 overflow-x-auto pb-2 max-[1200px]:gap-3 max-[801px]:grid-cols-[minmax(0,1fr)]">
       {TICKET_COLUMNS.map((column) => {
         const inColumn = columns[column.key];
         return <section className="flex min-w-0 flex-col gap-3 rounded-lg bg-surface-2 p-3" key={column.key} data-column={COLUMN_TONE[column.key]}

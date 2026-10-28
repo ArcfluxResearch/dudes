@@ -22,7 +22,7 @@ export const FILE_ROW = 'flex items-baseline gap-3 py-1';
 export const PATH = 'git-path data font-mono text-small wrap-anywhere';
 
 /** The plain card sheet, for a board card that is not a ticket. */
-export const CARD_DETAIL = 'card-detail flex flex-col gap-4 p-6 font-sans text-body text-ink wrap-anywhere max-[800px]:px-4 max-[800px]:pt-4';
+export const CARD_DETAIL = 'card-detail flex flex-col gap-4 p-6 font-sans text-body text-ink wrap-anywhere max-[801px]:px-4 max-[801px]:pt-4';
 export const CARD_HEADING = 'm-0 text-page font-semibold focus:outline-none';
 export const CARD_FACTS = 'm-0 grid gap-3 [&_dd]:m-0 [&_dd]:mt-0.5 [&_dt]:text-caption [&_dt]:font-semibold [&_dt]:tracking-label [&_dt]:text-muted [&_dt]:uppercase';
 

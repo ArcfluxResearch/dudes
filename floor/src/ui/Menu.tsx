@@ -116,7 +116,7 @@ export function MenuItem({ onSelect, danger = false, icon, checked, children, cl
       dismiss();
       onSelect();
     }}
-    className={cn('box-border flex h-8 w-full max-[800px]:min-h-11 cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-2 text-left font-sans text-base',
+    className={cn('box-border flex h-8 w-full max-[801px]:min-h-11 cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-2 text-left font-sans text-base',
       'transition-[color,background-color,border-color,opacity] hover:bg-surface-2 focus-visible:bg-surface-2 waiting:cursor-not-allowed waiting:opacity-50',
       danger ? 'text-danger' : 'text-ink', RING_INSET, className)}>
     {icon}{children}{checked === true ? <Check {...ICON} aria-hidden="true" className="ml-auto text-accent" /> : null}

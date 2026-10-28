@@ -244,8 +244,9 @@ export class Journey {
       { name: 'setup', selector: '#view-setup', ready: `location.hash === '#/setup' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'setup'` },
       { name: 'settings', selector: '#view-settings', ready: `location.hash === '#/settings' && document.querySelector('.control-panel[data-page]')?.dataset.view === 'settings'` },
     ];
+    const sizes = [[1440, 900], [800, 500], [801, 500], [390, 844]];
     try {
-      for (const [width, height] of [[1440, 900], [390, 844]]) {
+      for (const [width, height] of sizes) {
         await this.run.cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, this.run.cdp.session);
         for (const view of views) {
           await this.layoutOffice();
@@ -260,7 +261,7 @@ export class Journey {
             `viewport ${width}x${height} ${view.name} crew=${crewSize}: scrollHeight=${actual.scrollHeight}, innerWidth=${actual.windowWidth}, innerHeight=${actual.windowHeight}`);
         }
       }
-      console.log(`PASS viewport heights: 10 views, crew=${crewSize}`);
+      console.log(`PASS viewport heights: ${sizes.length * views.length} views, crew=${crewSize}`);
     } finally {
       await this.run.cdp.send('Emulation.setDeviceMetricsOverride', { width: saved.width, height: saved.height, deviceScaleFactor: 1, mobile: false }, this.run.cdp.session);
       await this.layoutOffice();

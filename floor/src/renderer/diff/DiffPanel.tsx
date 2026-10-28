@@ -131,7 +131,7 @@ function Compare({ content, entry }: { readonly content: DiffContent; readonly e
   return <div className="diff-compare col-span-full flex min-w-0 flex-col gap-2">
     {file === undefined ? null : <>
       {file.old_path === null ? null : <p className={NOTE}>Renamed from <span className="diff-path font-mono wrap-anywhere">{file.old_path}</span></p>}
-      <div className="diff-sides grid grid-cols-2 divide-line overflow-hidden rounded-lg border border-line min-[801px]:divide-x max-[800px]:grid-cols-1 max-[800px]:divide-y">
+      <div className="diff-sides grid grid-cols-2 divide-line overflow-hidden rounded-lg border border-line min-[801px]:divide-x max-[801px]:grid-cols-1 max-[801px]:divide-y">
         <SourceLines label="Old" text={file.old} absent={ABSENT_SIDE[file.kind].old} changes={changes?.removed ?? null} />
         <SourceLines label="Current" text={file.current} absent={ABSENT_SIDE[file.kind].current} changes={changes?.added ?? null} />
       </div>
@@ -166,11 +166,11 @@ export function DiffReview({ review, loading, onOpen, onPage }: {
     {entries.length === 0 ? <p className="m-0">No file differs from where this attempt began.</p> : <ul className="diff-selection m-0 flex list-none flex-col overflow-hidden rounded-lg border border-line p-0">
       {entries.map((entry, index) => {
         const isOpen = entry.entry_id !== null && opened === entry.entry_id;
-        return <li key={index} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-b border-line px-3 py-2 last:border-b-0 max-[800px]:grid-cols-[minmax(0,1fr)]">
+        return <li key={index} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-b border-line px-3 py-2 last:border-b-0 max-[801px]:grid-cols-[minmax(0,1fr)]">
           <div className="diff-row-name flex min-w-0 items-baseline gap-3"><span className="diff-kind w-24 shrink-0 text-caption font-medium text-muted">{KINDS[entry.kind]}</span>{' '}<span className="diff-path font-mono text-small wrap-anywhere" id={`${id}-${index}`}>{entry.path}</span></div>
           {entry.availability.state === 'unavailable' || entry.entry_id === null
             ? <p className={cn(NOTE, 'col-span-full')}>{entry.availability.state === 'unavailable' ? (entry.kind === 'nested_repository' ? NESTED_OMISSION : OMISSIONS[entry.availability.reason]) : ''}</p>
-            : <Button variant={isOpen ? 'secondary' : 'ghost'} size="sm" className="max-[800px]:justify-self-start" aria-describedby={`${id}-${index}`} aria-pressed={isOpen} disabled={loading}
+            : <Button variant={isOpen ? 'secondary' : 'ghost'} size="sm" className="max-[801px]:justify-self-start" aria-describedby={`${id}-${index}`} aria-pressed={isOpen} disabled={loading}
               onClick={() => { onOpen(entry); }}>{isOpen ? 'Close file' : 'Open side by side'}</Button>}
           {isOpen && content !== null ? <Compare content={content} entry={entry} /> : null}
         </li>;

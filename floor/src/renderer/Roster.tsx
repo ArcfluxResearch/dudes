@@ -18,13 +18,13 @@ import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
 
 export const GROUP_FROM = 30;
 
-/** Below 800 pixels the side roster is a bottom sheet that opens from its heading. */
+/** Up to 800 pixels wide the side roster is a bottom sheet that opens from its heading. */
 const SHEET = cn(
-  'max-[800px]:fixed max-[800px]:inset-x-0 max-[800px]:top-auto max-[800px]:bottom-0 max-[800px]:z-[var(--layer-top-bar)]',
-  'max-[800px]:m-0 max-[800px]:grid max-[800px]:max-h-[70vh] max-[800px]:w-auto max-[800px]:max-w-none',
-  'max-[800px]:grid-cols-[minmax(0,1fr)_auto] max-[800px]:content-start max-[800px]:items-center max-[800px]:gap-2',
-  'max-[800px]:rounded-t-xl max-[800px]:border-x-0 max-[800px]:border-b-0 max-[800px]:border-t max-[800px]:bg-surface',
-  'max-[800px]:p-3 max-[800px]:shadow-sheet',
+  'max-[801px]:fixed max-[801px]:inset-x-0 max-[801px]:top-auto max-[801px]:bottom-0 max-[801px]:z-[var(--layer-top-bar)]',
+  'max-[801px]:m-0 max-[801px]:grid max-[801px]:max-h-[70vh] max-[801px]:w-auto max-[801px]:max-w-none',
+  'max-[801px]:grid-cols-[minmax(0,1fr)_auto] max-[801px]:content-start max-[801px]:items-center max-[801px]:gap-2',
+  'max-[801px]:rounded-t-xl max-[801px]:border-x-0 max-[801px]:border-b-0 max-[801px]:border-t max-[801px]:bg-surface',
+  'max-[801px]:p-3 max-[801px]:shadow-sheet',
 );
 
 const ROWS = 'crew-rows m-0 grid list-none gap-1 p-0';
@@ -86,7 +86,7 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
   readonly base?: string;
   /** Whose own order the rows follow within a state: this browser keeps one per place the roster appears. */
   readonly order?: AgentOrderView;
-  /** Below 800 pixels the side roster is a bottom sheet that opens from its heading. */
+  /** Up to 800 pixels wide the side roster is a bottom sheet that opens from its heading. */
   readonly sheet?: boolean;
   /** Leaves the roster mounted but out of the page, while a Control view takes the stage. */
   readonly hidden?: boolean;
@@ -166,10 +166,10 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
           </span>
         </button>
         <span className={cn('roster-acts flex gap-1', stacked ? 'order-last basis-full pb-2 pl-[3.25rem]' : 'flex-col')}>
-          <Button size="sm" variant={row.action.kind === 'agent' ? 'secondary' : 'primary'} className={cn('roster-act', 'max-[800px]:h-11')}
+          <Button size="sm" variant={row.action.kind === 'agent' ? 'secondary' : 'primary'} className={cn('roster-act', 'max-[801px]:h-11')}
             data-primary={row.action.kind !== 'agent'} disabled={!selectable}
             aria-label={`${row.action.label}, ${crew.name}`} onClick={() => act(row.action, row.id)}>{row.action.label}</Button>
-          {row.second === null ? null : <Button size="sm" variant="primary" className={cn('roster-act', 'max-[800px]:h-11')}
+          {row.second === null ? null : <Button size="sm" variant="primary" className={cn('roster-act', 'max-[801px]:h-11')}
             data-primary="true" disabled={!selectable}
             aria-label={`${row.second.label}, ${crew.name}`} onClick={() => { if (row.second !== null) act(row.second, row.id); }}>
             {row.second.label}</Button>}
@@ -187,14 +187,14 @@ export function Roster({ agents, cards = [], stepLabels = {}, selectedId, select
   const waiting = rows.some((row) => row.state === 'needs-you' || row.state === 'ready');
   const sheeted = sheet && !open;
   return (
-    <section className={cn('crew-list roster font-sans text-ink', hidden ? 'hidden' : sheet ? [STAGE_FRAME, SHEET] : 'flex flex-col gap-2 max-[800px]:m-2')}
+    <section className={cn('crew-list roster font-sans text-ink', hidden ? 'hidden' : sheet ? [STAGE_FRAME, SHEET] : 'flex flex-col gap-2 max-[801px]:m-2')}
     id={`${base}-list`} aria-labelledby={title} data-stale={stale ? 'true' : 'false'}
     data-sheet={sheet ? (open ? 'open' : 'closed') : undefined} data-waiting={waiting}>
       <h2 id={title} className={cn('roster-title m-0 text-body font-semibold', !waiting && 'text-muted')}>
         {agents.length === 0 ? 'No agents yet' : waitingHeading(rows)}</h2>
-      {sheet ? <Button size="md" className="roster-sheet-toggle hidden max-[800px]:inline-flex max-[800px]:h-11" aria-expanded={open} aria-controls={list}
+      {sheet ? <Button size="md" className="roster-sheet-toggle hidden max-[801px]:inline-flex max-[801px]:h-11" aria-expanded={open} aria-controls={list}
         onClick={() => setOpen((current) => !current)}>{open ? 'Hide agents' : `Show ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}`}</Button> : null}
-      <div className={cn('roster-body flex flex-col gap-2', sheet && 'max-[800px]:col-span-full', sheeted && 'max-[800px]:hidden')} id={list} ref={attach}>
+      <div className={cn('roster-body flex flex-col gap-2', sheet && 'max-[801px]:col-span-full', sheeted && 'max-[801px]:hidden')} id={list} ref={attach}>
         {agents.length === 0 ? <p className="crew-empty m-0 px-1 text-base text-muted">No current agents.</p>
           : grouped ? groups.map(([state, members]) => <section key={state} className="roster-group" aria-labelledby={`${base}-group-${state}`}>
             <h3 id={`${base}-group-${state}`} className="m-0 mt-2 mb-1 px-1 text-caption font-semibold tracking-label text-muted uppercase">

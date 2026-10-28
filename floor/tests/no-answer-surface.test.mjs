@@ -539,7 +539,7 @@ const ADMITTED_HANDLERS = [
   { file: ARCHIVED_AGENTS, tag: 'details', handler: 'onToggle',
     expression: '(event) => setOpen(event.currentTarget.open)' },
   { file: FLOOR_SHELL, tag: 'div', className: null, handler: 'onKeyDown', expression: CLOSE_DRAWER_ON_ESCAPE },
-  { file: FLOOR_SHELL, tag: 'main', className: null, handler: 'onKeyDown', expression: CLOSE_PAGE_ON_ESCAPE },
+  { file: FLOOR_SHELL, tag: 'main', className: 'shell', handler: 'onKeyDown', expression: CLOSE_PAGE_ON_ESCAPE },
   { file: CONTROL_VIEW, tag: 'section', className: null, handler: 'onKeyDown', expression: CLOSE_ON_ESCAPE },
   { file: CONTROL_VIEW, tag: 'dialog', className: 'ticket-dialog', handler: 'onCancel',
     expression: '(event) => { event.preventDefault(); closeOverlay(); }' },

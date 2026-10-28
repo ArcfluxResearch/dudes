@@ -208,8 +208,8 @@ test('a running agent whose ticket needs recovery needs you instead of appearing
 test('on a phone the roster is a bottom sheet that hides only its rows while closed', async () => {
   const source = await readFile(resolve(root, 'src/renderer/Roster.tsx'), 'utf8');
   const sheet = /const SHEET = cn\(([\s\S]*?)\n\);/.exec(source)?.[1] ?? '';
-  assert.match(sheet, /max-\[800px\]:fixed/);
-  assert.match(sheet, /max-\[800px\]:inset-x-0/);
-  assert.match(sheet, /max-\[800px\]:bottom-0/);
-  assert.match(source, /sheeted && 'max-\[800px\]:hidden'/, 'a closed sheet hides its rows and nothing else');
+  assert.match(sheet, /max-\[801px\]:fixed/);
+  assert.match(sheet, /max-\[801px\]:inset-x-0/);
+  assert.match(sheet, /max-\[801px\]:bottom-0/);
+  assert.match(source, /sheeted && 'max-\[801px\]:hidden'/, 'a closed sheet hides its rows and nothing else');
 });
