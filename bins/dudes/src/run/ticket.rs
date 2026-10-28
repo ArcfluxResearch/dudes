@@ -248,7 +248,22 @@ impl Session<'_> {
                 Err(other) => return Err(other),
             }
         }
+        sort_unassigned_by_priority(&mut tickets);
         Ok(tickets)
+    }
+}
+
+/// Puts the unassigned To do tickets in the order the Board shows them (priority rank, then
+/// oldest first) inside the slots they already occupy. Every other ticket stays where the board
+/// listed it, in id order.
+fn sort_unassigned_by_priority(tickets: &mut [TicketReadResult]) {
+    let slots: Vec<usize> = (0..tickets.len())
+        .filter(|&at| tickets[at].card.status == CardStatus::Todo)
+        .collect();
+    let mut waiting: Vec<TicketReadResult> = slots.iter().map(|&at| tickets[at].clone()).collect();
+    waiting.sort_by_key(|read| read.ticket.priority.rank());
+    for (slot, read) in slots.into_iter().zip(waiting) {
+        tickets[slot] = read;
     }
 }
 

@@ -507,6 +507,40 @@ fn priority_is_set_on_add_changed_alone_on_edit_and_a_bad_value_is_refused() {
 }
 
 #[test]
+fn list_puts_unassigned_tickets_in_board_order() {
+    let world = world();
+    for (title, priority) in [
+        ("first low", "low"),
+        ("second none", "none"),
+        ("third urgent", "urgent"),
+        ("fourth high", "high"),
+        ("fifth medium", "medium"),
+        ("sixth urgent", "urgent"),
+    ] {
+        let added = world.dudes(["ticket", "add", "--title", title, "--priority", priority]);
+        assert_eq!(added.code(), 0, "{}", added.output());
+    }
+    let listed = world.dudes(["ticket", "list"]);
+    assert_eq!(listed.code(), 0, "{}", listed.output());
+    let titles: Vec<&str> = listed
+        .stdout
+        .lines()
+        .map(|line| line.rsplit("  ").next().unwrap())
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            "third urgent",
+            "sixth urgent",
+            "fourth high",
+            "second none",
+            "fifth medium",
+            "first low"
+        ]
+    );
+}
+
+#[test]
 fn give_answers_at_once_in_json_and_carries_the_message() {
     let world = world();
     let cody = world.hire("Cody", &world.repo);
