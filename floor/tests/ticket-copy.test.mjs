@@ -71,9 +71,9 @@ test('the Git link needs the changed-files switch and a handler', () => {
 });
 
 test('no folder path appears on the line', () => {
-  const html = page(show([agent(ADA, 'Ada', { ...own('active'), cwd: '/home/ada/secret', path: '/var/copy' })]));
+  const html = page(show([agent(ADA, 'Ada', { ...own('active'), cwd: '/srv/ada/secret', path: '/var/copy' })]));
   const text = html.replace(/<[^>]*>/g, ' ');
-  assert.doesNotMatch(text, /\/home|\/var|secret|\\/);
+  assert.doesNotMatch(text, /\/srv|\/var|secret|\\/);
 });
 
 test('a reassigned ticket says the earlier round stays in the earlier agent’s copy', () => {
