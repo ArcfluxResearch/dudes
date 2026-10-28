@@ -177,6 +177,8 @@ pub(crate) fn cards(projections: &Projections) -> Result<Vec<CardView>> {
                 .instruction_review
                 .as_ref()
                 .map(dudes_proto::InstructionPendingReview::summary),
+            priority: ticket.priority,
+            project: ticket.repositories.project().to_owned(),
         });
     }
     Ok(cards)

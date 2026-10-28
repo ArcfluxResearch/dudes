@@ -1,7 +1,8 @@
 use dudes_proto::goal::Evidence;
 use dudes_proto::ticket::summary_text;
 use dudes_proto::{
-    Actor, CardView, Entry, QueueClass, QueueKey, Record, TicketCheck, TicketCheckResult, TicketRow,
+    Actor, CardView, Entry, Priority, QueueClass, QueueKey, Record, TicketCheck, TicketCheckResult,
+    TicketRow,
 };
 use dudes_types::{AgentId, CardId, CardStatus, GoalId, Lsn, Mode, Seq};
 use redb::ReadableTable;
@@ -237,6 +238,7 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
             description: created.description.to_owned(),
             repositories,
             done_when: created.done_when.clone(),
+            priority: created.priority.unwrap_or_default(),
             goal: None,
             queue: None,
             message: None,
@@ -266,6 +268,7 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
                 edited.title,
                 edited.description,
                 edited.done_when,
+                edited.priority,
                 edited.expected_seq,
             );
             if let Some(ticket) = row.ticket.as_mut()
@@ -282,8 +285,15 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
             by,
             message,
             expected_seq,
+            priority,
         } => update_ticket(table, lsn, *card, |row| {
-            queue_ticket(row, lsn, (*agent, *by), message.as_deref(), *expected_seq);
+            queue_ticket(
+                row,
+                lsn,
+                (*agent, *by),
+                (message.as_deref(), *priority),
+                *expected_seq,
+            );
         }),
         Record::TicketRemoved { card, .. } => remove_ticket(table, lsn, *card),
         _ => Ok(()),
@@ -377,6 +387,8 @@ pub(super) fn apply_instruction(
                     .instruction_review
                     .as_ref()
                     .map(dudes_proto::InstructionPendingReview::summary),
+                priority: ticket.priority,
+                project: ticket.repositories.project().to_owned(),
             });
         }
         put_row(table, &card.to_bytes(), &row)?;
@@ -393,7 +405,13 @@ fn review_ticket(
 ) {
     match action {
         dudes_proto::InstructionReviewAction::ChangesRequested { agent, message, .. } => {
-            queue_ticket(row, lsn, (*agent, by), message.as_deref(), expected_seq);
+            queue_ticket(
+                row,
+                lsn,
+                (*agent, by),
+                (message.as_deref(), None),
+                expected_seq,
+            );
         }
         dudes_proto::InstructionReviewAction::Accept { completion } => {
             row.view.seq = expected_seq.next();
@@ -426,12 +444,14 @@ fn review_ticket(
     }
 }
 
-/// An edit replaces the words and the check, and leaves the status, holder and queue place alone.
+/// An edit replaces the words and the check, and leaves the status and holder alone. A new
+/// priority moves a queued ticket within its class and keeps the position of its assignment.
 fn edit_ticket(
     row: &mut BoardRow,
     title: &str,
     description: &str,
     done_when: &TicketCheck,
+    priority: Option<Priority>,
     expected_seq: Seq,
 ) {
     title.clone_into(&mut row.view.title);
@@ -439,20 +459,27 @@ fn edit_ticket(
     if let Some(ticket) = &mut row.ticket {
         description.clone_into(&mut ticket.description);
         ticket.done_when = done_when.clone();
+        if let Some(priority) = priority {
+            ticket.priority = priority;
+            if let Some(key) = &mut ticket.queue {
+                key.rank = priority.rank();
+            }
+        }
     }
 }
 
 /// An assignment queues the ticket with `holder` (the agent, then who assigned it). A ticket
 /// that is already queued keeps its class, so work sent back stays ahead of new work wherever it
-/// is moved, and it keeps its message unless the assignment carries a new one.
+/// is moved, and it keeps its message and priority unless the assignment carries new ones.
 fn queue_ticket(
     row: &mut BoardRow,
     lsn: Lsn,
     holder: (AgentId, Actor),
-    message: Option<&str>,
+    change: (Option<&str>, Option<Priority>),
     expected_seq: Seq,
 ) {
     let (agent, by) = holder;
+    let (message, priority) = change;
     let kept = row.ticket.as_ref().and_then(|ticket| ticket.queue);
     let class = match (row.view.status, kept) {
         (CardStatus::Claimed, Some(key)) => key.class,
@@ -468,7 +495,14 @@ fn queue_ticket(
         // The previous round's goal, and its Done, belong to that round: only the next start
         // names the goal that can bring the ticket back to Ready for you.
         ticket.goal = None;
-        ticket.queue = Some(QueueKey { class, lsn });
+        if let Some(priority) = priority {
+            ticket.priority = priority;
+        }
+        ticket.queue = Some(QueueKey {
+            class,
+            rank: ticket.priority.rank(),
+            lsn,
+        });
         if let Some(message) = message {
             ticket.message = Some(message.to_owned());
         }

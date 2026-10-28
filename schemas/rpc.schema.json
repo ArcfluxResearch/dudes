@@ -1768,6 +1768,14 @@
             "null"
           ]
         },
+        "priority": {
+          "$ref": "#/$defs/Priority",
+          "description": "How soon the operator wants it served."
+        },
+        "project": {
+          "description": "The ticket's fixed project id, so a reader can filter tickets no agent holds.",
+          "type": "string"
+        },
         "reason": {
           "anyOf": [
             {
@@ -8172,6 +8180,17 @@
               "$ref": "#/$defs/TicketCheck",
               "description": "The check that finishes it, resolved at creation."
             },
+            "priority": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Priority"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The priority the operator chose; absent means none was chosen."
+            },
             "project": {
               "description": "The enrolled project the ticket runs in.",
               "type": "string"
@@ -8231,6 +8250,17 @@
               "$ref": "#/$defs/Seq",
               "description": "The card's `seq` the editor decided against."
             },
+            "priority": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Priority"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The ticket's priority after the edit. A build that writes this record always names it;\na record without it keeps the current priority."
+            },
             "t": {
               "const": "ticket_edited",
               "type": "string"
@@ -8276,6 +8306,17 @@
                 "string",
                 "null"
               ]
+            },
+            "priority": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Priority"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The ticket's priority after the assignment. A build that writes this record always\nnames it; a record without it keeps the current priority."
             },
             "t": {
               "const": "ticket_assigned",
@@ -11209,6 +11250,26 @@
         "agent"
       ],
       "type": "object"
+    },
+    "HistoryBy": {
+      "description": "Who caused an event.",
+      "oneOf": [
+        {
+          "const": "operator",
+          "description": "The operator, from the command line or the Floor.",
+          "type": "string"
+        },
+        {
+          "const": "daemon",
+          "description": "The daemon itself.",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "An agent.",
+          "type": "string"
+        }
+      ]
     },
     "HoldReason": {
       "description": "Why the loop issued nothing (gates 1 and 2).",
@@ -17772,6 +17833,36 @@
         }
       ]
     },
+    "Priority": {
+      "description": "How soon the operator wants a ticket served. The queue runs the lower [`Self::rank`] first.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "None chosen. It is the wire word `none`, and queues like [`Self::Medium`].",
+          "type": "string"
+        },
+        {
+          "const": "urgent",
+          "description": "Served before everything else of its class.",
+          "type": "string"
+        },
+        {
+          "const": "high",
+          "description": "Served after Urgent.",
+          "type": "string"
+        },
+        {
+          "const": "medium",
+          "description": "Served after High.",
+          "type": "string"
+        },
+        {
+          "const": "low",
+          "description": "Served last.",
+          "type": "string"
+        }
+      ]
+    },
     "Provenance": {
       "description": "Provenance of an event or a predicate result.\n\nOrdered: `Observed > Inferred`. `Done` requires an `Observed` predicate result; an `Inferred`\nevent may raise a breaker rung but may never be the sole cause of `Stop` or `Done`\n(invariant 3).",
       "oneOf": [
@@ -18189,7 +18280,7 @@
       ]
     },
     "QueueKey": {
-      "description": "A ticket's place in its agent's queue: class first, then the position of the assignment.",
+      "description": "A ticket's place in its agent's queue: class first, then its priority rank, then the position\nof the assignment.",
       "properties": {
         "class": {
           "$ref": "#/$defs/QueueClass",
@@ -18198,6 +18289,14 @@
         "lsn": {
           "$ref": "#/$defs/Lsn",
           "description": "The journal position of the `TicketAssigned` that queued it. Positions are unique, so keys\nnever tie."
+        },
+        "rank": {
+          "default": 2,
+          "description": "The ticket's [`Priority::rank`]. A key from a daemon that predates priority ranks like an\nunset one.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
@@ -21364,6 +21463,17 @@
             "null"
           ]
         },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Priority"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The priority to give the ticket with the assignment. Absent keeps its current one. With\n`review_watermark` it must equal the current priority."
+        },
         "review_watermark": {
           "anyOf": [
             {
@@ -21652,6 +21762,17 @@
             "null"
           ]
         },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Priority"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How soon the ticket should be served. Absent means none."
+        },
         "project": {
           "description": "The enrolled project. Absent means the only enrolled project.",
           "type": [
@@ -21708,7 +21829,7 @@
     },
     "TicketEditParams": {
       "additionalProperties": false,
-      "description": "`ticket.edit` params. At least one of the three values changes. Valid while the ticket is in\nTo do.",
+      "description": "`ticket.edit` params. At least one of the four values is named. Valid while the ticket is in\nTo do.",
       "properties": {
         "card": {
           "$ref": "#/$defs/CardId",
@@ -21739,6 +21860,17 @@
           "$ref": "#/$defs/Seq",
           "description": "The ticket's `seq` as last seen."
         },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Priority"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The new priority; `none` clears it."
+        },
         "title": {
           "description": "The new title.",
           "type": [
@@ -21767,6 +21899,250 @@
           "type": "string"
         }
       ]
+    },
+    "TicketHistory": {
+      "description": "A ticket's newest events, oldest first, and how many it has had in all.",
+      "properties": {
+        "events": {
+          "description": "The newest [`MAX_TICKET_HISTORY`] events at most.",
+          "items": {
+            "$ref": "#/$defs/TicketHistoryEvent"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "Every event the ticket has had, kept or not.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "total",
+        "events"
+      ],
+      "type": "object"
+    },
+    "TicketHistoryEvent": {
+      "description": "One event. Its position is decimal text to preserve every `u64` in browsers.",
+      "oneOf": [
+        {
+          "description": "The ticket was made.",
+          "properties": {
+            "kind": {
+              "const": "created",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Its title, note or check changed.",
+          "properties": {
+            "kind": {
+              "const": "edited",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It joined an agent's queue.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The agent."
+            },
+            "kind": {
+              "const": "assigned",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "agent"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Finished or stopped work went back to an agent.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The agent."
+            },
+            "kind": {
+              "const": "sent_back",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "agent"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Work started.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The agent."
+            },
+            "kind": {
+              "const": "started",
+              "type": "string"
+            },
+            "round": {
+              "description": "Which start this was, counting from 1.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "round"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The daemon moved it into Needs you.",
+          "properties": {
+            "kind": {
+              "const": "moved",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/TicketReason",
+              "description": "Why."
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The check passed.",
+          "properties": {
+            "exit": {
+              "description": "The check's exit code, when it ran to one.",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "check_passed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The check failed.",
+          "properties": {
+            "exit": {
+              "description": "The check's exit code, when it ran to one.",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "check_failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The priority changed.",
+          "properties": {
+            "kind": {
+              "const": "priority_set",
+              "type": "string"
+            },
+            "priority": {
+              "$ref": "#/$defs/Priority",
+              "description": "The new priority."
+            }
+          },
+          "required": [
+            "kind",
+            "priority"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The operator accepted the work.",
+          "properties": {
+            "kind": {
+              "const": "accepted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Its agent was retired, so it went back to To do.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The retired agent."
+            },
+            "kind": {
+              "const": "returned",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "agent"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "The journal entry's recorded time."
+        },
+        "by": {
+          "$ref": "#/$defs/HistoryBy",
+          "description": "Who caused it."
+        },
+        "lsn": {
+          "description": "Canonical decimal journal position of the record that caused it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "lsn",
+        "at",
+        "by"
+      ],
+      "type": "object"
     },
     "TicketHistoryState": {
       "description": "Completeness of a bounded history read.",
@@ -21981,6 +22357,10 @@
             }
           },
           "description": "Derived recovery and check display facts at this read's cut."
+        },
+        "history": {
+          "$ref": "#/$defs/TicketHistory",
+          "description": "What happened to the ticket, newest events last."
         },
         "position": {
           "description": "Its place in its holder's queue, counting from 1, while it waits there.",
@@ -22374,6 +22754,10 @@
             "string",
             "null"
           ]
+        },
+        "priority": {
+          "$ref": "#/$defs/Priority",
+          "description": "How soon the operator wants it served; kept through start, rework and Done."
         },
         "project": {
           "type": "string"

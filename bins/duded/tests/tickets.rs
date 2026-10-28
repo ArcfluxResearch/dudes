@@ -278,6 +278,7 @@ fn ticket_created(card: CardId, title: &str) -> Record {
         done_when: ticket_check(),
         by: operator(),
         request: None,
+        priority: None,
     }
 }
 
@@ -288,6 +289,7 @@ fn ticket_assigned(card: CardId, agent: AgentId, expected_seq: u64) -> Record {
         by: operator(),
         message: None,
         expected_seq: Seq(expected_seq),
+        priority: None,
     }
 }
 

@@ -25,8 +25,8 @@ use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::ticket::{TicketAssignOutcome, TicketAssignResult, TicketReadResult};
 use dudes_proto::{
     Actor, AgentBudget, AgentView, CardView, CheckBaseline, Entry, ExitStatus, Goal, GoalBudget,
-    LoopDecision, Predicate, Record, RecordKind, TicketCheck, TicketReason, TicketRefusal,
-    TicketWait, TurnOutcome,
+    LoopDecision, Predicate, Priority, Record, RecordKind, TicketCheck, TicketHistoryKind,
+    TicketReason, TicketRefusal, TicketWait, TurnOutcome,
 };
 use dudes_providers::adapter::{HookInstall, ManagedInstall};
 use dudes_providers::launch::LaunchSpec;
@@ -1423,6 +1423,7 @@ fn given(project: &str, repo: &Path, budget: Option<AgentBudget>, card: CardId) 
             done_when: default_check(),
             by: operator(),
             request: None,
+            priority: None,
         },
         Record::TicketAssigned {
             card,
@@ -1430,6 +1431,7 @@ fn given(project: &str, repo: &Path, budget: Option<AgentBudget>, card: CardId) 
             by: operator(),
             message: None,
             expected_seq: Seq(0),
+            priority: None,
         },
     ]
 }
@@ -2113,6 +2115,7 @@ fn a_reworked_ticket_whose_start_is_refused_does_not_return_on_the_old_pass() {
             by: operator(),
             message: Some("again".into()),
             expected_seq: Seq(3),
+            priority: None,
         },
     ]);
     seed(&fixture, records);
@@ -2167,6 +2170,7 @@ fn a_failed_start_does_not_stall_the_other_projects() {
         done_when: default_check(),
         by: operator(),
         request: None,
+        priority: None,
     });
     records.push(Record::TicketAssigned {
         card: docs_card,
@@ -2174,6 +2178,7 @@ fn a_failed_start_does_not_stall_the_other_projects() {
         by: operator(),
         message: None,
         expected_seq: Seq(0),
+        priority: None,
     });
     seed(&fixture, records);
     let mut flow = Flow::boot_with(
@@ -3124,5 +3129,318 @@ fn the_summary_and_the_check_result_follow_the_ticket() {
     flow.give_ok(card, cody, Some("again"));
     let fresh = flow.read(card).ticket;
     assert_eq!((fresh.summary, fresh.check), (None, None));
+    flow.stop();
+}
+
+fn titled(flow: &mut Flow, title: &str, priority: &str) -> CardId {
+    flow.create_with(json!({"title": title, "priority": priority}))
+}
+
+/// Where the ticket read and the Floor's card list, rebuilt from the journal, place each waiting
+/// ticket in its agent's queue.
+fn places(flow: &mut Flow, fixture: &Fixture, cards: &[CardId]) -> Vec<(Option<u32>, Option<u32>)> {
+    let mut replayed = dudes_journal::Projections::in_memory().unwrap();
+    for (lsn, entry) in fixture.entries() {
+        replayed.apply(lsn, 0, &entry).unwrap();
+    }
+    let floor = duded::floor::snapshot(&mut replayed, Timestamp::from_unix_millis(1_000))
+        .unwrap()
+        .cards;
+    cards
+        .iter()
+        .map(|card| {
+            let listed = floor
+                .iter()
+                .find(|view| view.id == *card)
+                .and_then(|view| view.ticket.as_ref())
+                .and_then(|ticket| ticket.position);
+            (flow.read(*card).position, listed)
+        })
+        .collect()
+}
+
+/// One project, two agents, one ticket holding it. Urgent tickets given after Low ones are served
+/// first, both for the busy agent that holds the project and for the free one, and nothing else
+/// starts while the project is held. When the holder is accepted the queue runs in priority order
+/// across agents, then by age, and a ticket with no priority runs ahead of a Low one given earlier.
+#[test]
+fn priority_orders_the_projects_queue_for_a_busy_and_a_free_agent() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    let cody = flow.hire("Cody");
+    let dana = flow.hire("Dana");
+    let hold = flow.create("Hold the project");
+    let low_cody = titled(&mut flow, "Low for Cody", "low");
+    let low_dana = titled(&mut flow, "Low for Dana", "low");
+    let urgent_cody = titled(&mut flow, "Urgent for Cody", "urgent");
+    let urgent_dana = titled(&mut flow, "Urgent for Dana", "urgent");
+    let plain_dana = flow.create("Plain for Dana");
+    assert_eq!(flow.read(urgent_cody).ticket.priority, Priority::Urgent);
+    assert_eq!(flow.read(plain_dana).ticket.priority, Priority::Unset);
+
+    assert_eq!(flow.give_ok(hold, cody, None), TicketAssignOutcome::Started);
+    for (card, agent) in [
+        (low_cody, cody),
+        (low_dana, dana),
+        (urgent_cody, cody),
+        (urgent_dana, dana),
+        (plain_dana, dana),
+    ] {
+        flow.give_ok(card, agent, None);
+    }
+    let waiting = [low_cody, low_dana, urgent_cody, urgent_dana, plain_dana];
+    assert_eq!(
+        places(&mut flow, &fixture, &waiting),
+        [
+            (Some(2), Some(2)),
+            (Some(3), Some(3)),
+            (Some(1), Some(1)),
+            (Some(1), Some(1)),
+            (Some(2), Some(2)),
+        ]
+    );
+    let behind_hold = TicketWait::Ticket { card: hold };
+    for (card, wait) in [
+        (low_cody, TicketWait::AgentBusy),
+        (low_dana, behind_hold),
+        (urgent_cody, TicketWait::AgentBusy),
+        (urgent_dana, behind_hold),
+        (plain_dana, behind_hold),
+    ] {
+        assert_eq!(flow.card(card).status, CardStatus::Claimed);
+        assert_eq!(flow.read(card).waiting.unwrap().wait, wait);
+    }
+    Flow::await_turn_number(&fixture, 1);
+    assert_eq!(Flow::turns(&fixture).len(), 1, "only the holder is running");
+
+    for (round, (finished, next, who)) in [
+        (hold, urgent_cody, cody),
+        (urgent_cody, urgent_dana, dana),
+        (urgent_dana, plain_dana, dana),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (turn, ..) = Flow::await_turn_number(&fixture, round + 1);
+        flow.end_turn(&fixture, turn, None);
+        flow.await_completed_review(finished);
+        assert!(flow.accept(finished).error.is_none());
+        assert_eq!(flow.card(next).status, CardStatus::Doing, "round {round}");
+        let (_, started_for, ..) = Flow::await_turn_number(&fixture, round + 2);
+        assert_eq!(started_for, who, "round {round}");
+        assert_eq!(Flow::turns(&fixture).len(), round + 2);
+        assert_eq!(flow.card(low_cody).status, CardStatus::Claimed);
+    }
+    flow.stop();
+}
+
+/// A priority change is an edit: the queue follows it, a Working ticket refuses it, a stale
+/// sequence is refused, and a request that names nothing is refused. The journal records the
+/// priority the ticket has after the edit.
+#[test]
+#[allow(clippy::too_many_lines, reason = "one journey over one live queue")]
+fn a_priority_change_is_an_edit_the_queue_follows() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    let cody = flow.hire("Cody");
+    let (working, a, b, c) = (
+        flow.create("Working"),
+        flow.create("A"),
+        flow.create("B"),
+        flow.create("C"),
+    );
+    assert_eq!(
+        flow.give_ok(working, cody, None),
+        TicketAssignOutcome::Started
+    );
+    for card in [a, b, c] {
+        flow.give_ok(card, cody, None);
+    }
+    let queue = [a, b, c];
+    let edit = |flow: &mut Flow, card: CardId, priority: &str| {
+        let seq = flow.card(card).seq;
+        flow.ok::<Value>(
+            dudes_proto::rpc::Method::TicketEdit,
+            json!({"card": card, "priority": priority, "expected_seq": seq}),
+        );
+    };
+
+    let seq = flow.card(working).seq;
+    let refused = flow.call(
+        dudes_proto::rpc::Method::TicketEdit,
+        json!({"card": working, "priority": "urgent", "expected_seq": seq}),
+    );
+    assert_eq!(refusal_reason(&refused), TicketRefusal::WrongState.code());
+    assert_eq!(flow.read(working).ticket.priority, Priority::Unset);
+
+    let seq = flow.card(a).seq;
+    let empty = flow.call(
+        dudes_proto::rpc::Method::TicketEdit,
+        json!({"card": a, "expected_seq": seq}),
+    );
+    assert_eq!(
+        empty.error.unwrap().code,
+        dudes_proto::rpc::ErrorCode::InvalidParams.code()
+    );
+    let stale = flow.call(
+        dudes_proto::rpc::Method::TicketEdit,
+        json!({"card": a, "priority": "high", "expected_seq": seq.0 + 7}),
+    );
+    assert_eq!(
+        stale.error.unwrap().code,
+        dudes_proto::rpc::ErrorCode::Conflict.code()
+    );
+    assert_eq!(flow.read(a).ticket.priority, Priority::Unset);
+
+    let seq = flow.card(c).seq;
+    edit(&mut flow, c, "high");
+    let after = flow.read(c);
+    assert_eq!(after.ticket.priority, Priority::High);
+    assert_eq!(
+        after.card.seq,
+        seq.next(),
+        "an edit advances the sequence once"
+    );
+    assert_eq!(after.card.title, "C");
+    assert_eq!(
+        places(&mut flow, &fixture, &[c, a, b]),
+        [(Some(1), Some(1)), (Some(2), Some(2)), (Some(3), Some(3))]
+    );
+
+    edit(&mut flow, c, "high");
+    edit(&mut flow, c, "none");
+    assert_eq!(
+        places(&mut flow, &fixture, &queue),
+        [(Some(1), Some(1)), (Some(2), Some(2)), (Some(3), Some(3))],
+        "clearing the priority returns the ticket to its place by age"
+    );
+    edit(&mut flow, b, "low");
+    edit(&mut flow, a, "low");
+    assert_eq!(
+        places(&mut flow, &fixture, &[c, a, b]),
+        [(Some(1), Some(1)), (Some(2), Some(2)), (Some(3), Some(3))],
+        "within Low the earlier assignment goes first"
+    );
+
+    let edits: Vec<_> = fixture
+        .records()
+        .into_iter()
+        .filter_map(|record| match record {
+            Record::TicketEdited { card, priority, .. } if card == c => Some(priority),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        edits,
+        [
+            Some(Priority::High),
+            Some(Priority::High),
+            Some(Priority::Unset)
+        ]
+    );
+    let kinds: Vec<_> = flow
+        .read(c)
+        .history
+        .events
+        .into_iter()
+        .map(|event| event.kind)
+        .collect();
+    let agent = cody;
+    assert_eq!(
+        kinds,
+        [
+            TicketHistoryKind::Created,
+            TicketHistoryKind::Assigned { agent },
+            TicketHistoryKind::PrioritySet {
+                priority: Priority::High
+            },
+            TicketHistoryKind::PrioritySet {
+                priority: Priority::Unset
+            },
+        ]
+    );
+    flow.stop();
+}
+
+/// An assignment can carry the priority, and a ticket sent back keeps the one it had.
+#[test]
+fn an_assignment_can_set_the_priority_and_sent_back_work_keeps_it() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    let cody = flow.hire("Cody");
+    let (one, two) = (flow.create("One"), flow.create("Two"));
+    let seq = flow.card(one).seq;
+    let started: TicketAssignResult = flow.ok(
+        dudes_proto::rpc::Method::TicketAssign,
+        json!({"card": one, "agent": cody, "priority": "low", "expected_seq": seq}),
+    );
+    assert_eq!(started.outcome, TicketAssignOutcome::Started);
+    assert_eq!(flow.read(one).ticket.priority, Priority::Low);
+    flow.give_ok(two, cody, None);
+
+    let (turn, ..) = Flow::await_turn_number(&fixture, 1);
+    flow.end_turn(&fixture, turn, None);
+    let review = flow.await_completed_review(one);
+    let sent_back = |flow: &mut Flow, priority: &str| {
+        let detail = flow.current_review_detail(one);
+        let watermark = detail.ticket.instruction_review.unwrap().watermark;
+        flow.call(
+            dudes_proto::rpc::Method::TicketAssign,
+            json!({
+                "card": one, "agent": cody, "message": "again", "priority": priority,
+                "expected_seq": detail.card.seq, "review_watermark": watermark,
+            }),
+        )
+    };
+    let appended = fixture.records().len();
+    let refused = sent_back(&mut flow, "urgent");
+    assert_eq!(
+        refused.error.unwrap().message,
+        "the priority cannot change while asking for changes after an instruction review"
+    );
+    assert_eq!(
+        fixture.records().len(),
+        appended,
+        "a refusal appends nothing"
+    );
+    let unchanged = flow.read(one);
+    assert_eq!(unchanged.ticket.priority, Priority::Low);
+    assert_eq!(unchanged.card.seq, review.seq);
+    let same = sent_back(&mut flow, "low");
+    assert!(same.error.is_none(), "{:?}", same.error);
+    let read = flow.read(one);
+    assert_eq!(read.ticket.priority, Priority::Low);
+    let kinds: Vec<_> = read
+        .history
+        .events
+        .iter()
+        .map(|event| &event.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            &TicketHistoryKind::Created,
+            &TicketHistoryKind::PrioritySet {
+                priority: Priority::Low
+            },
+            &TicketHistoryKind::Assigned { agent: cody },
+            &TicketHistoryKind::Started {
+                agent: cody,
+                round: 1
+            },
+            &TicketHistoryKind::Moved {
+                reason: TicketReason::SharedInstructionsUnknown
+            },
+            &TicketHistoryKind::CheckPassed { exit: Some(0) },
+            &TicketHistoryKind::SentBack { agent: cody },
+            &TicketHistoryKind::Started {
+                agent: cody,
+                round: 2
+            },
+        ]
+    );
     flow.stop();
 }

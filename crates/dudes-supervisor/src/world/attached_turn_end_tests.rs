@@ -82,6 +82,7 @@ fn prefix() -> Vec<(Lsn, Entry)> {
             },
             by: Actor::System,
             request: None,
+            priority: None,
         },
         Record::TicketAssigned {
             card: card(),
@@ -89,6 +90,7 @@ fn prefix() -> Vec<(Lsn, Entry)> {
             by: Actor::System,
             message: None,
             expected_seq: Seq(0),
+            priority: None,
         },
         Record::TicketStarted {
             card: card(),
@@ -247,6 +249,7 @@ fn other_ticket(world: &mut World) -> InstructionTicketAssociation {
             },
             by: Actor::System,
             request: None,
+            priority: None,
         },
     );
     apply(
@@ -258,6 +261,7 @@ fn other_ticket(world: &mut World) -> InstructionTicketAssociation {
             by: Actor::System,
             message: None,
             expected_seq: Seq(0),
+            priority: None,
         },
     );
     apply(
@@ -497,6 +501,7 @@ fn a_stale_recorded_ticket_start_is_not_a_current_end_association() {
             by: Actor::System,
             message: None,
             expected_seq: Seq(2),
+            priority: None,
         },
     );
     assert_eq!(

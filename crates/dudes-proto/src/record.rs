@@ -26,7 +26,7 @@ use crate::instruction::{
     InstructionSnapshot, InstructionTicketAssociation,
 };
 use crate::projection::LiveActivityKind;
-use crate::ticket::{TicketCheck, TicketReason};
+use crate::ticket::{Priority, TicketCheck, TicketReason};
 
 /// The journal frame payload: a [`Record`] stamped with the time it entered the machine.
 ///
@@ -1995,6 +1995,9 @@ pub enum Record {
         /// The page's retry identity; absent for a ticket made from the command line.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request: Option<TicketRequestAttribution>,
+        /// The priority the operator chose; absent means none was chosen.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        priority: Option<Priority>,
     },
     /// `ticket.edit`: the complete new values, so replay needs no merge. Conditional on
     /// `expected_seq`.
@@ -2011,6 +2014,10 @@ pub enum Record {
         by: Actor,
         /// The card's `seq` the editor decided against.
         expected_seq: Seq,
+        /// The ticket's priority after the edit. A build that writes this record always names it;
+        /// a record without it keeps the current priority.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        priority: Option<Priority>,
     },
     /// `ticket.assign`: the ticket joins an agent's queue. Conditional on `expected_seq`.
     TicketAssigned {
@@ -2024,6 +2031,10 @@ pub enum Record {
         message: Option<String>,
         /// The card's `seq` the assigner decided against.
         expected_seq: Seq,
+        /// The ticket's priority after the assignment. A build that writes this record always
+        /// names it; a record without it keeps the current priority.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        priority: Option<Priority>,
     },
     /// A ticket's work starts: installs the goal and moves the card to Doing in one record, so a
     /// crash cannot leave a Doing card with no goal or a goal with no card. Conditional on
@@ -3523,7 +3534,7 @@ pub mod samples {
                 Record::TurnIssuedWithRepositories(Box::new(crate::repository::RepositoryTurnIssued { grant, payload }))
             }
             RecordKind::TicketCreatedWithRepositories => {
-                let Record::TicketCreated { card, title, description, department, project, done_when, by, request } = record(RecordKind::TicketCreated) else { unreachable!() };
+                let Record::TicketCreated { card, title, description, department, project, done_when, by, request, .. } = record(RecordKind::TicketCreated) else { unreachable!() };
                 let catalog = repository_catalog();
                 Record::TicketCreatedWithRepositories(Box::new(crate::repository::RepositoryTicketCreated {
                     card, title, description, department, done_when, by, request,
@@ -3535,7 +3546,7 @@ pub mod samples {
                 }))
             }
             RecordKind::TicketEditedWithRepositories => {
-                let Record::TicketEdited { card, title, description, done_when, by, expected_seq } = record(RecordKind::TicketEdited) else { unreachable!() };
+                let Record::TicketEdited { card, title, description, done_when, by, expected_seq, .. } = record(RecordKind::TicketEdited) else { unreachable!() };
                 Record::TicketEditedWithRepositories(Box::new(crate::repository::RepositoryTicketEdited { card, title, description, done_when, by, expected_seq, check_repo: repository_catalog().primary_id().clone() }))
             }
             RecordKind::TicketStartedWithRepositories => {
@@ -3973,6 +3984,7 @@ pub mod samples {
                     uid: Some(501),
                 },
                 request: None,
+                priority: None,
             },
             RecordKind::TicketEdited => Record::TicketEdited {
                 card: card(),
@@ -3984,6 +3996,7 @@ pub mod samples {
                     uid: Some(501),
                 },
                 expected_seq: Seq(0),
+                priority: Some(Priority::High),
             },
             RecordKind::TicketAssigned => Record::TicketAssigned {
                 card: card(),
@@ -3994,6 +4007,7 @@ pub mod samples {
                 },
                 message: Some("Please cover the empty input too.".into()),
                 expected_seq: Seq(1),
+                priority: Some(Priority::High),
             },
             RecordKind::TicketStarted => Record::TicketStarted {
                 card: card(),
@@ -6464,7 +6478,7 @@ mod tests {
         for (kind, _) in TICKET_KINDS {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys().filter(|key| *key != "t") {
-                if key == "message" {
+                if key == "message" || key == "priority" {
                     continue;
                 }
                 let mut missing = value.clone();

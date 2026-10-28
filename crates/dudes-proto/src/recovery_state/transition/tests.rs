@@ -1509,6 +1509,7 @@ fn ticket_authorization() -> (Fixture, RecoveryAuthorized, RecoveryClaimRef) {
             },
             message: None,
             expected_seq: dudes_types::Seq::ZERO,
+            priority: None,
         },
         RecoveryWitnessContext::default(),
     );
@@ -1604,6 +1605,7 @@ fn same_agent_ticket_assignment_supplies_the_original_binding_invalidation() {
                 },
                 message: None,
                 expected_seq,
+                priority: None,
             },
             RecoveryWitnessContext::default(),
         );
