@@ -30,6 +30,7 @@ import { arrange, choicesOf, filterRows, isFiltered, liveView, rowsOf, withoutFi
 import type { BrowseRow } from './browse.ts';
 import { getBrowse, setBrowse, subscribeToBrowse } from './browseState.ts';
 import { PriorityMark } from './PriorityMark.tsx';
+import { BranchChip } from './TicketCopy.tsx';
 import { PRIORITY_OPTIONS, priorityOf } from './priority.ts';
 import type { Priority } from './priority.ts';
 import { TicketList, TicketRow } from './TicketList.tsx';
@@ -282,6 +283,7 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
       onClick={(event) => onSelect(card.id, event.currentTarget)}>
       <span className="ticket-card-meta flex items-center justify-between gap-2">
         <Badge state={STATE_BADGE[card.status]} className="ticket-card-state">{stateWord(card)}</Badge>
+        <BranchChip floor={floor} card={card} />
         <PriorityMark priority={card.ticket?.priority ?? 'none'} />
       </span>
       <strong className="text-body leading-normal font-semibold">{card.title}</strong>

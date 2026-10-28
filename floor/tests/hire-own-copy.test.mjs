@@ -41,9 +41,9 @@ test('the catalog reads whether a project is trusted and takes a daemon that doe
   assert.equal(catalog({ trusted: 'yes' }), null);
 });
 
-test('the box shows only for a trusted project and a Claude hire, and is off unless someone shares the folder', () => {
+test('the box shows only for a trusted project and a Claude hire, and starts ticked', () => {
   choose();
-  assert.deepEqual(offer(floor()), { state: 'available', checked: false, preselected: false });
+  assert.deepEqual(offer(floor()), { state: 'available', checked: true, preselected: false });
   assert.deepEqual(offer(floor({ onboarding: catalog({ trusted: false }) })), { state: 'untrusted' });
   assert.deepEqual(offer(floor(), 'codex'), { state: 'engine' });
   assert.deepEqual(offer(floor(), null), { state: 'none' });
@@ -63,21 +63,30 @@ test('own_copy is sent only when the box is ticked, and never for an untrusted p
   const sent = [];
   choose();
   await hire.submitHire(floor(), deps(sent));
-  assert.equal('own_copy' in sent[0], false);
+  assert.equal(sent[0].own_copy, true);
+  hire.resetHire();
+  choose();
+  hire.editDraft({ ownCopy: false });
+  await hire.submitHire(floor(), deps(sent));
+  assert.equal('own_copy' in sent[1], false);
   hire.resetHire();
   choose();
   hire.editDraft({ ownCopy: true });
   await hire.submitHire(floor(), deps(sent));
-  assert.equal(sent[1].own_copy, true);
+  assert.equal(sent[2].own_copy, true);
   hire.resetHire();
   choose();
   hire.editDraft({ ownCopy: true });
   await hire.submitHire(floor({ onboarding: catalog({ trusted: false }) }), deps(sent));
-  assert.equal('own_copy' in sent[2], false);
+  assert.equal('own_copy' in sent[3], false);
   hire.resetHire();
   choose();
   await hire.submitHire(floor({ agents: working }), deps(sent));
-  assert.equal(sent[3].own_copy, true);
+  assert.equal(sent[4].own_copy, true);
+  hire.resetHire();
+  hire.editDraft({ name: 'Kim', workspaceId: 'parser', engine: 'codex' });
+  await hire.submitHire(floor(), deps(sent));
+  assert.equal('own_copy' in sent[5], false);
 });
 
 test('an own-copy refusal reads as a refusal with its sentence', () => {
@@ -118,4 +127,18 @@ test('the App step explains the copy, or says what trusting the project allows, 
 
     assert.doesNotMatch(untrusted, /dudes hire/);
   } finally { await server.close(); }
+});
+
+test('a trust that no longer matches refuses the hire with its reason and sends no second hire without a copy', async () => {
+  const note = 'This project\u2019s folder or settings changed since you trusted it. Nobody was hired.';
+  const sent = [];
+  const refusing = { ...deps(sent), fetch: async (_url, request) => {
+    sent.push(JSON.parse(request.body));
+    return { status: 409, text: async () => JSON.stringify({ attempt_id: ATTEMPT, state: 'refused', reason: 'own_copy', note }) };
+  } };
+  choose();
+  await hire.submitHire(floor(), refusing);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].own_copy, true);
+  assert.deepEqual(hire.getHireState().outcome, { kind: 'refused', note });
 });

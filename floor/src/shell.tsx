@@ -173,6 +173,7 @@ function SignedInShell() {
   const view = page ?? panel;
   const [answerAsked, setAnswerAsked] = useState<{ readonly id: string } | null>(null);
   const [recoveryAsked, setRecoveryAsked] = useState<{ readonly id: string } | null>(null);
+  const [changesAsked, setChangesAsked] = useState<{ readonly id: string } | null>(null);
   const [recoveryReceiptAsked, setRecoveryReceiptAsked] = useState<string | null>(null);
   const [commandsOpen, setCommandsOpen] = useState(false);
   const [crewOpen, setCrewOpen] = useState(true);
@@ -363,6 +364,12 @@ function SignedInShell() {
     setRecoveryAsked({ id });
   }
 
+  function openAgentChanges(id: string): void {
+    if (!selectAgent(id)) return;
+    closeView();
+    setChangesAsked({ id });
+  }
+
   function readRecoveryReceipt(id: string): void {
     clearSelection();
     closeView();
@@ -524,6 +531,7 @@ function SignedInShell() {
     onPointerCancel={endResize} onKeyDown={keyResize} onDoubleClick={resetSidebar} />;
   const drawer = <AgentDrawer floor={floor} row={displayRow} inFocus={focused} selectedId={currentSelectedId} onClose={clearSelection}
     leaveFocusTo={leaveDrawerTo} recoveryRequested={recoveryAsked} onRecoveryShown={() => setRecoveryAsked(null)}
+    changesRequested={changesAsked} onChangesShown={() => setChangesAsked(null)}
     onReadRecoveryReceipt={readRecoveryReceipt} onOpenTicket={openCard} />;
 
   const banner = (
@@ -603,7 +611,7 @@ function SignedInShell() {
             : <HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
         {view === null || view === 'overview' || focused ? null : <Control key={view} floor={floor} view={view}
           onClose={closeView} onView={openView}
-          onReviewRecovery={reviewRecovery} onHire={openHire}
+          onReviewRecovery={reviewRecovery} onOpenGit={openAgentChanges} onHire={openHire}
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className={cn('office-slot col-[3/-1] flex min-w-0 flex-col', STAGE_ROW, 'max-[801px]:order-first max-[801px]:min-h-80 max-[801px]:flex-1',
           drawerOpen && !focused && 'col-[3/4]', (focused || fullPanel) && 'hidden')}>

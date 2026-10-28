@@ -116,13 +116,14 @@ export function ControlNav({ floor, view, onToggle }: {
   );
 }
 
-export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire, onGuide }: {
+export function Control({ floor, view, onClose, onView, onReviewRecovery, onOpenGit, onHire, onGuide }: {
   readonly floor: FloorState;
   readonly view: PanelView;
   readonly onClose: () => void;
   readonly onView: (view: ControlView) => void;
   /** Close the ticket and open the agent's drawer on its recovery view. */
   readonly onReviewRecovery?: (agent: string) => void;
+  readonly onOpenGit?: (agent: string) => void;
   /** Open the Hire form, from the new-ticket form when no agent is hired. */
   readonly onHire?: (opener: HTMLElement | null) => void;
   readonly onGuide?: () => void;
@@ -196,7 +197,7 @@ export function Control({ floor, view, onClose, onView, onReviewRecovery, onHire
     return () => { node?.close(); };
   }, [showing]);
   const ticketBody = selectedCard?.ticket != null ? <TicketPanel key={selectedCard.id} floor={floor} card={selectedCard} onHire={onHire}
-    onReviewRecovery={onReviewRecovery} />
+    onReviewRecovery={onReviewRecovery} onOpenGit={onOpenGit} />
     : selectedCard !== null ? <CardDetail key={selectedCard.id} floor={floor} card={selectedCard} />
       : <p role="status" className="m-0 p-6 text-base text-muted">Waiting for the board to confirm this ticket.</p>;
   const panels: Record<PanelView, ReactNode> = {
