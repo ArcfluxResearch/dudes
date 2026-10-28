@@ -187,6 +187,9 @@ where
         "Project: {}",
         Escaped(read.ticket.repositories.project())
     )?;
+    if !read.ticket.priority.is_unset() {
+        writeln!(out, "Priority: {}", read.ticket.priority.word())?;
+    }
     writeln!(out, "Done when: {}", Escaped(&read.ticket.done_when.label))?;
     writeln!(out, "Round: {}", read.ticket.round)?;
     if !read.ticket.description.is_empty() {

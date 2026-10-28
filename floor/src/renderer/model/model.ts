@@ -82,6 +82,19 @@ export interface ModelView {
   /** The open turn runs under a model other than the one the next turn will use. */
   readonly differs: boolean;
 }
+/**
+ * What the next turn's model is, as far as this page can tell: a name, none at all (the engine's own), or a
+ * model the configuration sets that the page cannot name.
+ */
+export type NextModel = { readonly kind: 'named'; readonly name: string } | { readonly kind: 'default' }
+  | { readonly kind: 'configured' };
+export function nextModel(floor: FloorState, row: AgentRow): NextModel {
+  const next = modelView(floor, row).next;
+  if (next !== null) return { kind: 'named', name: next };
+  const configured = typeof row.provider === 'string' ? rowFor(floor.daemon, row.provider) : null;
+  if (configured === null || configured.modelFixed === true || configured.modelUnnamed === true) return { kind: 'configured' };
+  return { kind: 'default' };
+}
 export const ENGINE_OWN = 'the engine’s own model';
 export function modelView(floor: FloorState, row: AgentRow): ModelView {
   const configured = typeof row.provider === 'string' ? rowFor(floor.daemon, row.provider) : null;

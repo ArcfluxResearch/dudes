@@ -118,7 +118,8 @@ use crate::launch::EnvVar;
 /// `claude -pv` reaches `-p` while [`reserved`] matches `-p` by equality or `-p=`;
 /// `--allow-dangerously-skip-permissions`, a separate option this adapter never composes; and a
 /// flag that is not composed at all but contradicts a recorded fact, of which `--model` is the
-/// live one (the turn's model goes in the settings file, not the argv).
+/// live one (a managed turn's model goes in the settings file, not the argv; only an attached
+/// launch passes `--model`, with the model the agent works on).
 pub const RESERVED_EXTRA_ARGS: &[&str] = &[
     "--bare",
     "--setting-sources",
@@ -354,6 +355,16 @@ pub enum ConfigError {
         API_KEY_VAR
     )]
     BareWithoutApiKey,
+    /// A configured model name that starts with `-`, which an attached launch would pass right
+    /// after `--model` and the vendor could read as a flag.
+    #[error("the configured model `{model}` starts with `-`; expected a model name")]
+    ModelLooksLikeFlag {
+        /// The configured name.
+        model: String,
+    },
+    /// The model is set but empty, which an attached launch could not pass after `--model`.
+    #[error("the configured model is empty; leave `model` out to use the engine's own model")]
+    EmptyModel,
 }
 
 impl ClaudeConfig {
@@ -392,6 +403,22 @@ impl ClaudeConfig {
         }
         if self.isolation == IsolationMode::Bare && !carries_api_key(daemon_env) {
             return Err(ConfigError::BareWithoutApiKey);
+        }
+        let pinned = self.extra_args_model();
+        let named = self
+            .model
+            .as_deref()
+            .into_iter()
+            .chain(pinned.as_deref().and_then(OsStr::to_str));
+        for model in named {
+            if model.is_empty() {
+                return Err(ConfigError::EmptyModel);
+            }
+            if model.starts_with('-') {
+                return Err(ConfigError::ModelLooksLikeFlag {
+                    model: model.to_owned(),
+                });
+            }
         }
         Ok(())
     }
@@ -751,8 +778,8 @@ mod tests {
             vec!["--max-thinking-tokens", "100"],
             vec!["--add-dir", "/tmp/other"],
             vec!["--settings-file"],
-            // `--model` is a real vendor flag the adapter **never composes** — a pinned model
-            // travels in `managed-settings.json` — so it stays admissible, and
+            // `--model` is a real vendor flag the managed launch **never composes** — a pinned
+            // model travels in `managed-settings.json` — so it stays admissible, and
             // that it does is a decision rather than an oversight. The residual risk is
             // that an operator writing it here would pin a model the journal does not record.
             vec!["--model", "haiku"],
@@ -770,6 +797,39 @@ mod tests {
                 .check(&[])
                 .unwrap_or_else(|err| panic!("{allowed:?} must still pass: {err}"));
         }
+    }
+
+    #[test]
+    fn a_configured_model_that_starts_with_a_dash_is_refused() {
+        let refused = |config: ClaudeConfig| config.check(&[]).is_err();
+        assert!(refused(ClaudeConfig {
+            model: Some("-x".into()),
+            ..ClaudeConfig::default()
+        }));
+        for args in [vec!["--model", "-x"], vec!["--model=-x"]] {
+            assert!(refused(ClaudeConfig {
+                extra_args: args.into_iter().map(OsString::from).collect(),
+                ..ClaudeConfig::default()
+            }));
+        }
+        assert!(!refused(ClaudeConfig {
+            model: Some("haiku".into()),
+            ..ClaudeConfig::default()
+        }));
+    }
+
+    #[test]
+    fn an_empty_configured_model_is_refused() {
+        let empty_key = ClaudeConfig {
+            model: Some(String::new()),
+            ..ClaudeConfig::default()
+        };
+        assert!(matches!(empty_key.check(&[]), Err(ConfigError::EmptyModel)));
+        let empty_pin = ClaudeConfig {
+            extra_args: ["--model", ""].map(OsString::from).to_vec(),
+            ..ClaudeConfig::default()
+        };
+        assert!(matches!(empty_pin.check(&[]), Err(ConfigError::EmptyModel)));
     }
 
     /// a bare `--` in `extra_args` is refused, because appended it composes a

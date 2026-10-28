@@ -327,7 +327,17 @@ pub trait Adapter: Send + Sync {
     /// Only [`TurnSession::Resume`] is vendor-confirmed and therefore attachable. The default
     /// keeps a provider managed-only. No task or message body is an input to this method
     /// (invariant 6), and the returned argv remains typed parts (invariant 7).
-    fn attached(&self, _ctx: &AgentCtx<'_>, _session: &TurnSession) -> Option<LaunchSpec> {
+    ///
+    /// `model` is the selection the supervisor resolves for the agent with the same precedence a
+    /// managed turn uses. A named selector is passed to the vendor so the terminal opens on the
+    /// model the agent works on; the provider default names none. It is a parameter and not an
+    /// [`AgentCtx`] field because only this method reads it.
+    fn attached(
+        &self,
+        _ctx: &AgentCtx<'_>,
+        _session: &TurnSession,
+        _model: &ModelSelection,
+    ) -> Option<LaunchSpec> {
         None
     }
     /// The provider-owned hook settings for the host to write under `ctx.agent_dir`.

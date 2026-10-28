@@ -358,7 +358,7 @@ test('unavailable project choices do not imply missing agents or missing enrollm
   const settings = {
     folder_picker: false, create_parent: null, switches: { answer: false, control: true, recovery: false, goal: true, retire: false, terminal: false, hire: true, git: false, renew: false, board: false, diff: false, project: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
-    providers: ['claude'], about: { daemon_version: '0.85.0', browser_wire_version: 9 },
+    providers: ['claude'], about: { daemon_version: '0.85.0', browser_wire_version: 10 },
     workspaces: [{ workspace_id: 'service', label: 'Service', agent_usd_per_day_micros: null,
       agent_tokens_per_day: null, goal_usd_micros: null, goal_tokens: null }],
   };
