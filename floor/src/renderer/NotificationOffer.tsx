@@ -14,7 +14,7 @@ export function NotificationOffer({ onBoard, leaveFocusTo }: { readonly onBoard:
     if (!onBoard) desktopNotificationPreference.hideOffer();
   }, [onBoard, visible]);
   if (!onBoard || !visible) return null;
-  return <section className={noticeCard('info', 'notification-offer grid gap-3')} aria-label="Desktop notifications" ref={handFocusAfterLeave}
+  return <section className={noticeCard('info', 'notification-offer grid gap-3 in-[dialog]:hidden')} aria-label="Desktop notifications" ref={handFocusAfterLeave}
     data-focus-on-leave={leaveFocusTo}>
     <p className="m-0"><NoticeIcon />Show a desktop notification when a ticket is ready or an agent asks something? This browser, while this tab is open.</p>
     <div className="flex flex-wrap gap-2">
