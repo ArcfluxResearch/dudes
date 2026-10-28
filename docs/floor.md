@@ -220,6 +220,15 @@ Set a spending limit when your account bills per use.
 - **The board.** To do, Working, Ready for you and Done, and a Needs you row for tickets that are
   stuck. Done shows the newest 20. A card shows the title, the agent, its place in the queue or why
   it waits, and in Needs you the sentence that names the next step.
+- **List, search and filters.** The Board and List buttons above the columns switch between the columns and
+  one row per ticket. The List shows the title, project, agent, status and age, in the order the queue
+  runs: Ready for you, then Working, then To do in queue order, then Done, newest first. Search matches
+  words in a ticket's title, its agent's name and its project's name. The project, agent and status
+  filters combine, and the List can group by project, agent or status. Both views follow the filters. A
+  ticket in Needs you is never hidden without saying so. Which view, filters and grouping you chose is
+  remembered in this browser, and a search is not. A ticket takes its project from its agent. For one no
+  agent holds yet, the Floor reads the project from the ticket once. Opening `#/board/<project>` in the
+  Floor's address shows the Board filtered to that project.
 - **A ticket.** Open a card to read its note, what the agent says it did, the check result and the
   files that changed. The agent's words are shown as plain text. The files come from the Git tab,
   so they need `floor.git` on.
