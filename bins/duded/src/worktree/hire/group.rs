@@ -122,6 +122,7 @@ impl WorktreeHires {
     ) -> Result<(), RpcError> {
         for entry in plan.repositories.entries() {
             let origin = &entry.value.origin.directory;
+            self.refuse_configured_hooks(origin)?;
             let current = self
                 .git
                 .commit(origin, "HEAD")

@@ -1067,3 +1067,32 @@ fn an_aliased_state_parent_creates_canonical_copies_and_keeps_historical_paths()
     let daemon = setup.boot(false);
     assert_eq!(daemon.world().worktrees[&legacy].path, historical_path);
 }
+
+#[test]
+fn a_hook_configured_nonprimary_origin_refuses_the_group_before_any_lease() {
+    let setup = Setup::new();
+    let origin = setup.roots.path().canonicalize().unwrap().join("web");
+    command(
+        &setup.git,
+        &origin,
+        &["config", "hook.checkout-probe.command", "true"],
+    );
+    command(
+        &setup.git,
+        &origin,
+        &["config", "hook.checkout-probe.event", "post-checkout"],
+    );
+    let (mut running, hires, params) = setup.start(true);
+    assert!(setup.fixture.records().iter().any(|record| matches!(record,
+        Record::RepositoryTrustSet { repo_id: member, pin: Some(_), .. } if *member == repo_id("web")
+    )));
+    let result = hires.hire(params);
+    running.stop(ExitCause::Ended);
+    let error = result.expect_err("configured hooks are refused even when the grant pins them");
+    assert!(
+        error.message.contains("configuration has `hook.*` keys"),
+        "{error:?}"
+    );
+    assert_eq!(setup.runner.adds.load(Ordering::SeqCst), 0);
+    setup.assert_cleaned(0);
+}

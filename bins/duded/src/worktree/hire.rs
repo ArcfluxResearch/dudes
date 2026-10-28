@@ -13,7 +13,7 @@
 //! A failure after step 3 asks the loop whether the lease is still pending, and only a pending
 //! lease is cleaned up: a tree an agent was hired into is never touched.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dudes_proto::rpc::RpcError;
@@ -216,16 +216,7 @@ impl WorktreeHires {
                 origin: origin.clone(),
             })
             .map_err(refuse)?;
-        if self
-            .git
-            .has_hook_config(&origin)
-            .map_err(|error| git_failed(&error))?
-        {
-            return Err(refuse(super::unavailable(
-                "the repository's configuration has `hook.*` keys, which git runs as hooks whatever \
-                 core.hooksPath says; remove them or hire without a worktree",
-            )));
-        }
+        self.refuse_configured_hooks(&origin).map_err(refuse)?;
         if let Some(lease) = &from
             && !super::same_directory(&lease.origin, &origin)
         {
@@ -271,6 +262,20 @@ impl WorktreeHires {
             return Err(refuse(error));
         }
         Ok(lease)
+    }
+
+    fn refuse_configured_hooks(&self, origin: &Path) -> Result<(), RpcError> {
+        if self
+            .git
+            .has_hook_config(origin)
+            .map_err(|error| from_git(&error))?
+        {
+            return Err(super::unavailable(
+                "the repository's configuration has `hook.*` keys, which git runs as hooks whatever \
+                 core.hooksPath says; remove them or hire without a worktree",
+            ));
+        }
+        Ok(())
     }
 
     fn add_copy(&self, lease: &LeaseView) -> Result<(), RpcError> {
