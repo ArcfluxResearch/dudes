@@ -307,6 +307,7 @@ fn validate_subjects(subjects: &[ReviewSubject]) -> Result<(), DiffRefusal> {
 }
 
 /// Validated borrowed inputs whose measured metadata allowance cannot be supplied by the caller.
+#[derive(Clone, Copy)]
 pub struct ReviewBatch<'a> {
     subjects: &'a [ReviewSubject],
     context: BatchContext<'a>,
