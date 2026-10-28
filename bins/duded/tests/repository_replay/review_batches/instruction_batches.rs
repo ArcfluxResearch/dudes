@@ -596,7 +596,7 @@ fn a_prospective_unticketed_observation_cannot_be_reused_by_a_new_ticket_issue()
     let issue = Record::TurnIssuedWithRepositories(Box::new(RepositoryTurnIssued {
         grant: RepositoryTurnGrant::select(
             log.story.hired_lsn,
-            &log.story.hire.repositories,
+            scoped_hire(&log.world, log.story.hire.id),
             log.world.ticket_repository_round(log.goal),
         )
         .unwrap(),

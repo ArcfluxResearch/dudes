@@ -71,16 +71,7 @@ impl WorktreeRow {
 
 pub(super) fn apply(table: &mut RowTable<'_>, lsn: Lsn, entry: &Entry) -> Result<()> {
     if let Some(hire) = entry.record.hire() {
-        let dudes_proto::repository_state::RepositoryFold::Hire(repositories) =
-            dudes_proto::repository_state::fold(
-                lsn,
-                &entry.record,
-                dudes_proto::repository_state::RepositoryFacts::default(),
-            )
-        else {
-            return Ok(());
-        };
-        for worktree in repositories.worktrees() {
+        for worktree in hire.repositories.worktrees() {
             if let Some(mut row) = get_row::<WorktreeRow>(table, &worktree.to_bytes())?
                 && row.agent.is_none()
             {

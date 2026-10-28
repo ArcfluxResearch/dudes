@@ -3270,6 +3270,8 @@ fn a_priority_change_is_an_edit_the_queue_follows() {
         );
     };
 
+    // The startup instruction baseline advances the sequence before the turn is issued.
+    Flow::await_turn_number(&fixture, 1);
     let seq = flow.await_status(working, CardStatus::Doing).seq;
     let refused = flow.call(
         dudes_proto::rpc::Method::TicketEdit,
