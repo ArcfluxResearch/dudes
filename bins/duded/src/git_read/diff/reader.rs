@@ -9,7 +9,10 @@ use super::{CandidateManifest, SampledPair};
 use super::{files::Budget, shadow::ContentShadow};
 #[cfg(unix)]
 use crate::predicate::PredicateCaptured;
+use dudes_proto::RepositoryReadSelection;
+use dudes_proto::diff_stamp::StampPayload;
 use dudes_proto::repository::RepoId;
+use dudes_proto::repository_review::RepositoryReviewBinding;
 use dudes_proto::{
     DiffAvailability, DiffBinding, DiffEntry, DiffFile, DiffFreshness, DiffKind,
     DiffOmissionReason, DiffRefusal, MAX_DIFF_CANDIDATES, MAX_DIFF_SIDE_BYTES,
@@ -241,8 +244,132 @@ pub struct ReviewSubject {
     pub repo_id: Option<RepoId>,
     /// Exact hired execution copy.
     pub tree: super::super::Tree,
-    /// Exact recorded baseline member.
-    pub baseline: BaselineCapture,
+    /// Exact recorded baseline, absent when this expected member has no comparable sample.
+    pub baseline: Option<BaselineCapture>,
+    /// Prior recorded review sample retained by the caller.
+    pub stamp: Option<StampPayload>,
+}
+
+const MANIFEST_ENVELOPE_BYTES: usize = 4096;
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(untagged)]
+enum BatchContext<'a> {
+    Manifest {
+        binding: &'a DiffBinding,
+        selection: Option<&'a RepositoryReadSelection>,
+    },
+    Evidence {
+        binding: &'a RepositoryReviewBinding,
+    },
+}
+
+#[derive(Serialize)]
+struct BatchMetadata<'a> {
+    #[serde(flatten)]
+    context: BatchContext<'a>,
+    repositories: &'a [ReviewSubject],
+}
+
+#[derive(Default)]
+struct MetadataCount(usize);
+
+impl std::io::Write for MetadataCount {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(bytes.len())
+            .filter(|total| {
+                *total <= dudes_proto::MAX_DIFF_MANIFEST_BYTES - MANIFEST_ENVELOPE_BYTES
+            })
+            .ok_or(std::io::ErrorKind::InvalidData)?;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn validate_subjects(subjects: &[ReviewSubject]) -> Result<(), DiffRefusal> {
+    if !(1..=8).contains(&subjects.len()) {
+        return Err(DiffRefusal::InvalidRequest);
+    }
+    for (index, subject) in subjects.iter().enumerate() {
+        if (subject.repo_id.is_none() && subjects.len() != 1)
+            || subjects[..index]
+                .iter()
+                .any(|earlier| earlier.repo_id == subject.repo_id)
+        {
+            return Err(DiffRefusal::InvalidRequest);
+        }
+    }
+    Ok(())
+}
+
+/// Validated borrowed inputs whose measured metadata allowance cannot be supplied by the caller.
+pub struct ReviewBatch<'a> {
+    subjects: &'a [ReviewSubject],
+    context: BatchContext<'a>,
+    subject_bytes: usize,
+    capacity_bytes: usize,
+}
+
+impl<'a> ReviewBatch<'a> {
+    /// Bound a Floor selection and every retained member before sampling or cloning its binding.
+    pub fn for_manifest(
+        subjects: &'a [ReviewSubject],
+        binding: &'a DiffBinding,
+        selection: Option<&'a RepositoryReadSelection>,
+    ) -> Result<Self, DiffRefusal> {
+        Self::new(subjects, BatchContext::Manifest { binding, selection })
+    }
+
+    /// Bound a recorded declaration in its supplied order, without creating browser identities.
+    pub fn for_evidence(
+        subjects: &'a [ReviewSubject],
+        binding: &'a RepositoryReviewBinding,
+    ) -> Result<Self, DiffRefusal> {
+        Self::new(subjects, BatchContext::Evidence { binding })
+    }
+
+    fn new(subjects: &'a [ReviewSubject], context: BatchContext<'a>) -> Result<Self, DiffRefusal> {
+        validate_subjects(subjects)?;
+        match context {
+            BatchContext::Manifest { binding, .. }
+                if !subjects
+                    .iter()
+                    .map(|subject| &subject.repo_id)
+                    .eq(binding.repositories.iter().map(|member| &member.repo_id)) =>
+            {
+                return Err(DiffRefusal::InvalidRequest);
+            }
+            BatchContext::Evidence { .. }
+                if subjects.iter().any(|subject| subject.repo_id.is_none()) =>
+            {
+                return Err(DiffRefusal::InvalidRequest);
+            }
+            _ => {}
+        }
+        let mut count = MetadataCount::default();
+        serde_json::to_writer(
+            &mut count,
+            &BatchMetadata {
+                context,
+                repositories: subjects,
+            },
+        )
+        .map_err(|_| DiffRefusal::InvalidRequest)?;
+        let subject_bytes = count.0;
+        if let BatchContext::Manifest { binding, .. } = context {
+            serde_json::to_writer(&mut count, binding).map_err(|_| DiffRefusal::InvalidRequest)?;
+        }
+        Ok(Self {
+            subjects,
+            context,
+            subject_bytes,
+            capacity_bytes: count.0,
+        })
+    }
 }
 
 /// A single-budget observation, retaining an explicit outcome for every requested member.
@@ -250,6 +377,7 @@ pub struct ReviewBatchCapture {
     /// Members in the caller's recorded order, including finite failures.
     pub members: Vec<(Option<RepoId>, Result<ReviewCapture, DiffRefusal>)>,
     subject_bytes: usize,
+    manifest_binding: Option<DiffBinding>,
 }
 
 struct Capacity {
@@ -262,12 +390,11 @@ impl Capacity {
         Self {
             slots: MAX_DIFF_CANDIDATES,
             bytes: dudes_proto::MAX_DIFF_MANIFEST_BYTES
-                .saturating_sub(subject_bytes.saturating_add(4096)),
+                .saturating_sub(subject_bytes.saturating_add(MANIFEST_ENVELOPE_BYTES)),
         }
     }
 
     fn take(&mut self, candidate: &Candidate) -> bool {
-        // Reserve the minted token, cursor, and the longest finite omission envelope as well.
         let bytes = serde_json::to_vec(candidate)
             .map_or(usize::MAX, |value| value.len().saturating_add(192));
         if self.slots == 0 || bytes > self.bytes {
@@ -283,10 +410,10 @@ impl ReviewBatchCapture {
     /// Mint one manifest for the entire recorded selection under the aggregate metadata cap.
     pub fn into_manifest(
         self,
-        binding: DiffBinding,
         now: dudes_types::Timestamp,
         freshness: DiffFreshness,
     ) -> Result<CandidateManifest, DiffRefusal> {
+        let mut binding = self.manifest_binding.ok_or(DiffRefusal::InvalidRequest)?;
         let sampler = if binding
             .repositories
             .iter()
@@ -337,6 +464,13 @@ impl ReviewBatchCapture {
                 untracked_cut |= capture.untracked_lower_bound;
                 complete &= capture.complete;
             } else {
+                if let Some(member) = binding
+                    .repositories
+                    .iter_mut()
+                    .find(|member| member.repo_id == repo)
+                {
+                    member.unavailable = outcome.err();
+                }
                 complete = false;
                 cut = true;
             }
@@ -546,12 +680,10 @@ impl DiffReader {
         }
     }
 
-    /// Sample every recorded member with one deadline and one remaining count/metadata budget.
-    /// `subject_bytes` includes the retained authority and response binding envelopes.
+    /// Sample a validated set with one deadline and one remaining count and metadata allowance.
     pub fn capture_review_batch(
         &self,
-        subjects: &[ReviewSubject],
-        subject_bytes: usize,
+        input: ReviewBatch<'_>,
         cancelled: Arc<AtomicBool>,
     ) -> ReviewBatchCapture {
         #[cfg(unix)]
@@ -559,19 +691,26 @@ impl DiffReader {
         #[cfg(not(unix))]
         let _ = cancelled;
         #[cfg(unix)]
-        let mut capacity = Capacity::new(subject_bytes);
-        let members = subjects
+        let mut capacity = Capacity::new(input.capacity_bytes);
+        let manifest_binding = match input.context {
+            BatchContext::Manifest { binding, .. } => Some(binding.clone()),
+            BatchContext::Evidence { .. } => None,
+        };
+        let members = input
+            .subjects
             .iter()
             .map(|subject| {
                 #[cfg(unix)]
                 let outcome = (|| {
-                    budget.check()?;
-                    let shadow =
-                        self.shadow(&subject.tree, Some(subject.baseline.root), &budget)?;
+                    let shadow = self.subject_shadow(subject, &budget)?;
+                    let baseline = subject
+                        .baseline
+                        .as_ref()
+                        .ok_or(DiffRefusal::BaselineUnavailable)?;
                     self.observe(
                         &subject.tree,
                         &shadow,
-                        &subject.baseline,
+                        baseline,
                         subject.repo_id.as_ref(),
                         &budget,
                         &mut capacity,
@@ -584,8 +723,25 @@ impl DiffReader {
             .collect();
         ReviewBatchCapture {
             members,
-            subject_bytes,
+            subject_bytes: input.subject_bytes,
+            manifest_binding,
         }
+    }
+
+    #[cfg(unix)]
+    fn subject_shadow(
+        &self,
+        subject: &ReviewSubject,
+        budget: &Budget,
+    ) -> Result<ContentShadow, DiffRefusal> {
+        if subject.baseline.is_none() && !matches!(subject.tree, super::super::Tree::Recorded(_)) {
+            return Err(DiffRefusal::BaselineUnavailable);
+        }
+        self.shadow(
+            &subject.tree,
+            subject.baseline.as_ref().map(|baseline| baseline.root),
+            budget,
+        )
     }
 
     /// Read selected current sides at content time and return only complete admitted JSON bytes.
@@ -627,13 +783,21 @@ impl DiffReader {
         ids: &[String],
         cancelled: Arc<AtomicBool>,
     ) -> Result<super::EncodedResponse, DiffRefusal> {
+        validate_subjects(subjects)?;
+        if !manifest.matches_repositories(subjects.iter().map(|subject| &subject.repo_id)) {
+            return Err(DiffRefusal::StaleManifest);
+        }
         let selected = manifest.select(ids)?;
         #[cfg(unix)]
         {
             let budget = self.budget(cancelled);
             let mut pairs = Vec::new();
             for subject in subjects {
-                let shadow = self.shadow(&subject.tree, Some(subject.baseline.root), &budget)?;
+                let shadow = self.subject_shadow(subject, &budget)?;
+                if subject.baseline.is_none() {
+                    shadow.verify(&budget)?;
+                    continue;
+                }
                 if manifest.metadata_digest(subject.repo_id.as_ref())
                     != Some(metadata_digest(&shadow).as_str())
                 {

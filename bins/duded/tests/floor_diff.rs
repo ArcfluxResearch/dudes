@@ -1308,7 +1308,9 @@ fn declare_pair(first: &Lab, second: &Lab) {
 }
 
 fn record_pair_sample(first: &Lab) {
-    use duded::git_read::diff::{REPOSITORY_SAMPLER_VERSION, ReviewSubject, TEXT_POLICY_VERSION};
+    use duded::git_read::diff::{
+        REPOSITORY_SAMPLER_VERSION, ReviewBatch, ReviewSubject, TEXT_POLICY_VERSION,
+    };
     use dudes_proto::diff_stamp::DigestHex;
     let recorded = first.recorded();
     let subjects = recorded
@@ -1328,12 +1330,13 @@ fn record_pair_sample(first: &Lab) {
             ReviewSubject {
                 repo_id: member.repo_id.clone(),
                 tree: member.tree.clone(),
-                baseline: duded::git_read::diff::BaselineCapture {
+                baseline: Some(duded::git_read::diff::BaselineCapture {
                     root: duded::git_read::diff::RootIdentity { device, inode },
                     head,
                     preexisting_tracked,
                     preexisting_untracked,
-                },
+                }),
+                stamp: None,
             }
         })
         .collect::<Vec<_>>();
@@ -1342,7 +1345,13 @@ fn record_pair_sample(first: &Lab) {
         std::env::var_os("PATH"),
         &first.root.path().join("batch-scratch"),
     );
-    let sample = reader.capture_review_batch(&subjects, 4096, cancel());
+    let review_binding = dudes_proto::repository_review::RepositoryReviewBinding {
+        ticket: binding(),
+        start_lsn: Lsn(2),
+        hired_lsn: Lsn(1),
+    };
+    let input = ReviewBatch::for_evidence(&subjects, &review_binding).unwrap();
+    let sample = reader.capture_review_batch(input, cancel());
     first.edit(|recorded| {
         for member in &mut recorded.repositories {
             let capture = sample
@@ -1480,5 +1489,200 @@ fn a_declared_set_shares_one_candidate_budget_across_repositories() {
     assert!(
         all.iter()
             .any(|entry| entry.repo_id.as_ref().unwrap().as_str() == "api")
+    );
+}
+
+fn leased_unknown_member(lab: &Lab) -> (RecordedRepository, PathBuf) {
+    use dudes_proto::record::{FileIdentity, TrustedRepository};
+    use dudes_proto::repository::{ExecutionRepository, OwnedRepository, RepoId};
+    use dudes_types::{GitCommit, WorktreeId};
+    use std::os::unix::fs::MetadataExt as _;
+    let identity = |path: &std::path::Path| {
+        let metadata = std::fs::metadata(path).unwrap();
+        FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    };
+    let origin = std::fs::canonicalize(lab.repo()).unwrap();
+    let worktree = WorktreeId::from_bytes([19; 16]);
+    let path = std::fs::canonicalize(lab.root.path())
+        .unwrap()
+        .join(worktree.to_string());
+    lab.git(&[
+        "worktree",
+        "add",
+        "--quiet",
+        "--detach",
+        path.to_str().unwrap(),
+    ]);
+    let common = origin.join(".git");
+    let git_dir = common.join("worktrees").join(worktree.to_string());
+    let copy = OwnedRepository {
+        origin: TrustedRepository {
+            directory: origin.clone(),
+            directory_identity: identity(&origin),
+            common_dir: common.clone(),
+            common_identity: identity(&common),
+        },
+        execution: ExecutionRepository {
+            directory: path.clone(),
+            directory_identity: identity(&path),
+            git_dir: git_dir.clone(),
+            git_identity: identity(&git_dir),
+        },
+        worktree,
+        base: GitCommit::parse(lab.git(&["rev-parse", "HEAD"]).trim()).unwrap(),
+        trust_lsn: Lsn(1),
+    };
+    (
+        RecordedRepository {
+            repo_id: Some(RepoId::parse("api").unwrap()),
+            tree: Tree::Recorded(Box::new(copy)),
+            baseline: None,
+            stamp: None,
+        },
+        path,
+    )
+}
+
+#[test]
+fn an_unknown_baseline_member_is_revalidated_before_returning_another_members_content() {
+    let first = Lab::new();
+    let second = Lab::new();
+    declare_pair(&first, &second);
+    let (member, path) = leased_unknown_member(&second);
+    first.edit(|recorded| recorded.repositories[1] = member);
+    first.write("a.txt", "web change\n");
+    let DiffResponse::Manifest(page) = first.respond(1, &declared_request()) else {
+        panic!("manifest")
+    };
+    assert_eq!(page.freshness, DiffFreshness::Unknown);
+    assert!(page.binding.repositories[1].unavailable.is_some());
+    let entry = page
+        .entries
+        .iter()
+        .find(|entry| entry.path == "a.txt")
+        .unwrap()
+        .entry_id
+        .as_deref()
+        .unwrap();
+    let stable = first.content(1, &page, &[entry]);
+    assert_eq!(stable.files[0].current, "web change\n");
+    let held = path.with_extension("held");
+    std::fs::rename(&path, held).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert_eq!(
+        first.respond(
+            1,
+            &json!({"mode":"content", "manifest_id":page.manifest_id, "entries":[entry]})
+        ),
+        DiffResponse::Refused {
+            reason: DiffRefusal::RootMismatch
+        }
+    );
+}
+
+#[test]
+fn a_capture_batch_rejects_excess_members_and_measures_subject_metadata() {
+    use duded::git_read::diff::{BaselineCapture, ReviewBatch, ReviewSubject, RootIdentity};
+    use dudes_proto::diff_stamp::BaselineOutcome;
+    use dudes_proto::repository::RepoId;
+    let lab = Lab::new();
+    lab.start_round();
+    let BaselineOutcome::Captured {
+        device,
+        inode,
+        head,
+        preexisting_tracked,
+        preexisting_untracked,
+    } = lab.recorded().repositories[0].baseline.unwrap().outcome
+    else {
+        unreachable!()
+    };
+    let baseline = BaselineCapture {
+        root: RootIdentity { device, inode },
+        head,
+        preexisting_tracked,
+        preexisting_untracked,
+    };
+    let subjects = (0..9)
+        .map(|index| ReviewSubject {
+            repo_id: Some(RepoId::parse(&format!("repo{index}")).unwrap()),
+            tree: lab.tree(),
+            baseline: Some(baseline.clone()),
+            stamp: None,
+        })
+        .collect::<Vec<_>>();
+    let review_binding = dudes_proto::repository_review::RepositoryReviewBinding {
+        ticket: binding(),
+        start_lsn: Lsn(2),
+        hired_lsn: Lsn(1),
+    };
+    let count_error = ReviewBatch::for_evidence(&subjects, &review_binding).err();
+    assert!(ReviewBatch::for_evidence(&subjects[..8], &review_binding).is_ok());
+    let repeated = vec![subjects[0].clone(), subjects[0].clone()];
+    assert_eq!(
+        ReviewBatch::for_evidence(&repeated, &review_binding).err(),
+        Some(DiffRefusal::InvalidRequest)
+    );
+    let huge = vec![ReviewSubject {
+        repo_id: Some(RepoId::parse("web").unwrap()),
+        tree: Tree::Checkout(PathBuf::from(format!(
+            "/{}",
+            "x".repeat(dudes_proto::MAX_DIFF_MANIFEST_BYTES)
+        ))),
+        baseline: Some(baseline),
+        stamp: None,
+    }];
+    let bytes_error = ReviewBatch::for_evidence(&huge, &review_binding).err();
+    assert_eq!(
+        (count_error, bytes_error),
+        (
+            Some(DiffRefusal::InvalidRequest),
+            Some(DiffRefusal::InvalidRequest)
+        )
+    );
+}
+
+#[test]
+fn a_manifest_capture_counts_escaped_binding_bytes_before_work() {
+    use duded::git_read::diff::{ReviewBatch, ReviewSubject};
+    let subjects = [ReviewSubject {
+        repo_id: None,
+        tree: Tree::Checkout(PathBuf::from("/not-read")),
+        baseline: None,
+        stamp: None,
+    }];
+    let mut binding = DiffBinding {
+        hired_lsn: None,
+        start_lsn: Some(Lsn(2)),
+        check_repo: None,
+        repositories: vec![dudes_proto::DiffRepositoryBinding {
+            repo_id: None,
+            baseline_id: "a".repeat(64),
+            target_id: "b".repeat(64),
+            unavailable: None,
+            preexisting_tracked: false,
+            preexisting_untracked: false,
+        }],
+        card: CARD,
+        seq: Seq(3),
+        round: 1,
+        goal: GOAL,
+        claimant: AGENT,
+        check_lsn: None,
+        baseline_id: "a".repeat(64),
+        target_id: "b".repeat(64),
+        sampler_version: 2,
+        policy_version: 2,
+        preexisting_tracked: false,
+        preexisting_untracked: false,
+    };
+    assert!(ReviewBatch::for_manifest(&subjects, &binding, None).is_ok());
+    binding.baseline_id = "\"".repeat(dudes_proto::MAX_DIFF_MANIFEST_BYTES / 3);
+    assert_eq!(
+        ReviewBatch::for_manifest(&subjects, &binding, None).err(),
+        Some(DiffRefusal::InvalidRequest)
     );
 }

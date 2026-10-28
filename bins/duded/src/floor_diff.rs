@@ -46,8 +46,8 @@ use crate::diff_capture::ReadSlot;
 use crate::floor_git::{Finish, GitTarget, Worker};
 use crate::git_read::Tree;
 use crate::git_read::diff::{
-    BaselineCapture, CandidateManifest, DiffReader, REPOSITORY_SAMPLER_VERSION, ReviewCapture,
-    ReviewSubject, RootIdentity, SAMPLER_VERSION, TEXT_POLICY_VERSION,
+    BaselineCapture, CandidateManifest, DiffReader, REPOSITORY_SAMPLER_VERSION, ReviewBatch,
+    ReviewCapture, ReviewSubject, RootIdentity, SAMPLER_VERSION, TEXT_POLICY_VERSION,
 };
 
 /// Most bytes one request body may carry, checked before a byte of it is read.
@@ -473,16 +473,8 @@ fn retired(world: &World, agent: AgentId) -> bool {
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 struct Subject {
     binding: DiffBinding,
-    repositories: Vec<SubjectRepository>,
+    repositories: Vec<ReviewSubject>,
     selection: Option<RepositoryReadSelection>,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-struct SubjectRepository {
-    repo_id: Option<RepoId>,
-    tree: Tree,
-    baseline: Option<BaselineCapture>,
-    stamp: Option<StampPayload>,
 }
 
 /// One manifest the session holds, with the subject it was made for.
@@ -725,7 +717,7 @@ impl DiffReads {
         member: &RecordedRepository,
         baseline_lsn: Option<Lsn>,
         authority: &[u8],
-    ) -> Result<(DiffRepositoryBinding, SubjectRepository), DiffRefusal> {
+    ) -> Result<(DiffRepositoryBinding, ReviewSubject), DiffRefusal> {
         let baseline = member.baseline.and_then(|payload| match payload.outcome {
             BaselineOutcome::Captured {
                 device,
@@ -774,7 +766,7 @@ impl DiffReads {
                 .as_ref()
                 .is_some_and(|base| base.preexisting_untracked),
         };
-        let repository = SubjectRepository {
+        let repository = ReviewSubject {
             repo_id: member.repo_id.clone(),
             tree: member.tree.clone(),
             baseline,
@@ -1042,31 +1034,20 @@ fn run(
 ) -> Result<Built, DiffRefusal> {
     let _slot = slot.floor()?;
     match work {
-        Work::Manifest(mut subject) => {
-            let subjects = read_subjects(&subject);
-            let subject_bytes = serde_json::to_vec(&subject)
-                .map_err(|_| DiffRefusal::Unreadable)?
-                .len();
-            let capture = reader.capture_review_batch(&subjects, subject_bytes, cancelled);
+        Work::Manifest(subject) => {
+            let input = ReviewBatch::for_manifest(
+                &subject.repositories,
+                &subject.binding,
+                subject.selection.as_ref(),
+            )?;
+            let capture = reader.capture_review_batch(input, cancelled);
             if subject.binding.hired_lsn.is_none()
                 && let Some((_, Err(reason))) = capture.members.first()
             {
                 return Err(*reason);
             }
             let mut fresh = DiffFreshness::MatchesReviewSample;
-            if subjects.len() != subject.repositories.len() {
-                fresh = DiffFreshness::Unknown;
-            }
             for (repo_id, outcome) in &capture.members {
-                if let Err(reason) = outcome
-                    && let Some(binding) = subject
-                        .binding
-                        .repositories
-                        .iter_mut()
-                        .find(|member| member.repo_id == *repo_id)
-                {
-                    binding.unavailable = Some(*reason);
-                }
                 let member = subject
                     .repositories
                     .iter()
@@ -1088,7 +1069,7 @@ fn run(
                     _ => DiffFreshness::MatchesReviewSample,
                 };
             }
-            let manifest = capture.into_manifest(subject.binding, now, fresh)?;
+            let manifest = capture.into_manifest(now, fresh)?;
             let bytes = manifest.page(None)?.bytes().to_vec();
             Ok(Built {
                 bytes,
@@ -1097,7 +1078,7 @@ fn run(
         }
         Work::Content(stored, entries) => {
             let encoded = reader.read_content_batch(
-                &read_subjects(&stored.subject),
+                &stored.subject.repositories,
                 &stored.manifest,
                 &entries,
                 cancelled,
@@ -1108,20 +1089,6 @@ fn run(
             })
         }
     }
-}
-
-fn read_subjects(subject: &Subject) -> Vec<ReviewSubject> {
-    subject
-        .repositories
-        .iter()
-        .filter_map(|member| {
-            member.baseline.as_ref().map(|baseline| ReviewSubject {
-                repo_id: member.repo_id.clone(),
-                tree: member.tree.clone(),
-                baseline: baseline.clone(),
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]
