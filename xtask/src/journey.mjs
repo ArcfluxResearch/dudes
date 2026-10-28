@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { oldProjectWords } from '../../floor/tests/helpers/project-word.mjs';
-import { findTerminalCommands } from '../../floor/tests/helpers/terminal-commands.mjs';
+import { terminalCommandsOnScreen } from '../../floor/tests/helpers/terminal-commands.mjs';
 
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
@@ -87,14 +87,17 @@ export class Journey {
 
   /** Look at the screen now: save a picture and record any terminal command it shows. */
   async screen(name) {
-    const text = await this.evaluate(`document.body.innerText + '\\n' + [...document.querySelectorAll('code')].map((el) => el.textContent).join('\\n')`);
+    const { text, codeBlocks } = await this.evaluate(`({
+      text: document.body.innerText + '\\n' + [...document.querySelectorAll('code')].map((el) => el.textContent).join('\\n'),
+      codeBlocks: [...document.querySelectorAll('.guide-command')].map((el) => el.textContent),
+    })`);
     const shot = await this.run.cdp.send('Page.captureScreenshot', { format: 'png' }, this.run.cdp.session);
     const file = join(this.pictures, `${String(this.screens.length + 1).padStart(2, '0')}-${name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.png`);
     await writeFile(file, Buffer.from(shot.data, 'base64'));
     this.screens.push(name);
     for (const context of oldProjectWords(text)) this.oldWords.push(`${name}: ${context}`);
     const seen = new Set();
-    for (const found of findTerminalCommands(text)) {
+    for (const found of terminalCommandsOnScreen({ text, codeBlocks })) {
       if (seen.has(found.text)) continue;
       seen.add(found.text);
       const exit = this.allowed.find((entry) => entry.screen === name && entry.text.test(found.text));
