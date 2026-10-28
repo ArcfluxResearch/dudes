@@ -194,7 +194,7 @@ test('the roster chip and the top bar say a ticket is ready for you, not done', 
 
 test('a ticket that needs you after a create stays said, and a stopped queue names its holder', async () => {
   subscribe(store, { agents: [agent(), agent(GRACE, 'Grace')], cards: [ticketCard(9, 'doing', { claimed_by: GRACE })] });
-  const form = { title: 'x', note: '', project: null, check: null, agent: ADA };
+  const form = { title: 'x', note: '', project: null, check: null, agent: ADA, priority: 'none' };
   let { deps } = daemon((url) => url === '/floor/ticket' ? done('created', NEW, { seq: 0 })
     : done('assigned', NEW, { start: { state: 'needs_you', reason: 'reserve_missing' } }));
   await ticket.createTicket(form, deps);
@@ -222,4 +222,18 @@ test('text a person or an agent wrote loses its mirroring controls', () => {
     note: mirrored, project: 'service', check: { id: 'default', label: 'c' }, round: 0, summary: mirrored } }, NEW);
   assert.equal(decoded.note, 'safegnp.exex');
   assert.equal(decoded.summary, 'safegnp.exex');
+});
+
+test('the Give form offers a priority for a To do ticket, starting at the ticket\'s own, and Ask for changes offers none', () => {
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'todo', {}, { priority: 'high' })] });
+  const html = giveForm('service');
+  assert.match(html, /data-field="priority"[^>]*>[\s\S]*?High/);
+  assert.match(html, /<label[^>]*>Priority<\/label>/);
+  store.resetFloorStore();
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'review', { claimed_by: ADA }, { priority: 'high' })] });
+  const floor = store.getFloorState();
+  const changes = renderToStaticMarkup(createElement(panels.GiveForm, { floor, card: floor.cards[0], project: 'service', pending: null, mode: 'changes', onDone() {} }));
+  assert.doesNotMatch(changes, /Priority/);
+  const retry = renderToStaticMarkup(createElement(panels.GiveForm, { floor, card: floor.cards[0], project: 'service', pending: null, mode: 'give', onDone() {} }));
+  assert.doesNotMatch(retry, /Priority/, 'a ticket an agent has keeps its priority');
 });

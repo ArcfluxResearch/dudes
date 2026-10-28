@@ -12,7 +12,7 @@ import { renderToStaticMarkup as renderRaw } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { plainMarkup } from './helpers/markup.mjs';
-import { ADA, GRACE, agent, cardId, daemon, json, plainCard, subscribe, ticketCard } from './helpers/tickets.mjs';
+import { ADA, GRACE, agent, plainCard, subscribe, ticketCard } from './helpers/tickets.mjs';
 
 const renderToStaticMarkup = (...args) => plainMarkup(renderRaw(...args));
 const root = resolve(import.meta.dirname, '..');
@@ -21,7 +21,6 @@ let server;
 let store;
 let browse;
 let state;
-let placed;
 let navigation;
 let TicketBoard;
 let ticketState;
@@ -32,7 +31,6 @@ before(async () => {
   store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   browse = await server.ssrLoadModule('/src/renderer/ticket/browse.ts');
   state = await server.ssrLoadModule('/src/renderer/ticket/browseState.ts');
-  placed = await server.ssrLoadModule('/src/renderer/ticket/placed.ts');
   navigation = await server.ssrLoadModule('/src/navigation.ts');
   ({ TicketBoard } = await server.ssrLoadModule('/src/renderer/ticket/TicketBoard.tsx'));
   ticketState = await server.ssrLoadModule('/src/renderer/ticket/ticket.ts');
@@ -42,7 +40,6 @@ beforeEach(() => {
   store.resetFloorStore();
   ticketState.resetTicket();
   state.resetBrowse();
-  placed.resetPlaced();
 });
 
 /** Ada works in `service`, Grace in `website`. Ticket 1 and the plain card 7 have no agent. */
@@ -62,27 +59,30 @@ function seed() {
   return store.getFloorState();
 }
 
-const NO_PLACES = { projects: [], placed: new Map() };
 const titlesOf = (rows) => rows.map((row) => row.card.title);
 const view = (patch) => ({ ...browse.DEFAULT_VIEW, ...patch });
 
 test('the remembered view parses field by field and never restores a search', () => {
   assert.deepEqual(browse.parseRemembered(JSON.stringify({
-    layout: 'list', group: 'agent', project: 'service', agent: ADA, status: 'ready', search: 'login',
-  })), { layout: 'list', group: 'agent', project: 'service', agent: ADA, status: 'ready', search: '' });
-  assert.deepEqual(browse.parseRemembered(JSON.stringify({ layout: 'list', group: 'bogus', project: 'a b', agent: 'x', status: 'nope' })),
+    layout: 'list', group: 'agent', project: 'service', agent: ADA, status: 'ready', priority: 'high', search: 'login',
+  })), { layout: 'list', group: 'agent', project: 'service', agent: ADA, status: 'ready', priority: 'high', search: '' });
+  assert.deepEqual(browse.parseRemembered(JSON.stringify({ layout: 'list', group: 'bogus', project: 'a b', agent: 'x', status: 'nope', priority: 'soon' })),
     { ...browse.DEFAULT_VIEW, layout: 'list' }, 'a bad field falls back alone');
+  assert.deepEqual(browse.parseRemembered(JSON.stringify({ group: 'priority', priority: 'none' })),
+    { ...browse.DEFAULT_VIEW, group: 'priority', priority: 'none' });
+  assert.deepEqual(browse.parseRemembered(JSON.stringify({ layout: 'list', project: 'service' })),
+    { ...browse.DEFAULT_VIEW, layout: 'list', project: 'service' }, 'a view saved before priority existed still reads');
   assert.deepEqual(browse.parseRemembered(JSON.stringify({ project: browse.NONE, agent: browse.NONE })),
     { ...browse.DEFAULT_VIEW, project: '~none', agent: '~none' });
   for (const raw of [null, '', 'not json', '[]', '7', 'null', '{'.repeat(10), JSON.stringify({ project: 'x'.repeat(3000) })]) {
     assert.deepEqual(browse.parseRemembered(raw), browse.DEFAULT_VIEW, String(raw).slice(0, 12));
   }
-  assert.equal(browse.serializeRemembered(view({ layout: 'list', group: 'project', project: 'service', search: 'x' })),
-    '{"layout":"list","group":"project","project":"service","agent":"","status":""}');
+  assert.equal(browse.serializeRemembered(view({ layout: 'list', group: 'project', project: 'service', priority: 'urgent', search: 'x' })),
+    '{"layout":"list","group":"project","project":"service","agent":"","status":"","priority":"urgent"}');
 });
 
 test('filters combine, a search needs every word, and "none" matches tickets with no project or agent', () => {
-  const rows = browse.rowsOf(seed(), NO_PLACES);
+  const rows = browse.rowsOf(seed(), []);
   assert.deepEqual(titlesOf(browse.filterRows(rows, browse.DEFAULT_VIEW)), [
     'Write docs', 'Fix login bug', 'Refactor billing', 'Add landing page', 'Migrate database', 'Ship footer', 'Plain seven']);
   const by = (patch) => titlesOf(browse.filterRows(rows, view(patch)));
@@ -103,7 +103,7 @@ test('filters combine, a search needs every word, and "none" matches tickets wit
 });
 
 test('the queue order puts Needs you apart, then Ready for you, Working, To do in the daemon\'s order, then Done', () => {
-  const rows = browse.rowsOf(seed(), NO_PLACES);
+  const rows = browse.rowsOf(seed(), []);
   const { needs, rest, doneHidden } = browse.arrange(rows);
   assert.deepEqual(titlesOf(needs), ['Migrate database']);
   assert.deepEqual(titlesOf(rest), ['Add landing page', 'Refactor billing', 'Write docs', 'Plain seven', 'Fix login bug', 'Ship footer']);
@@ -114,14 +114,14 @@ test('the queue order puts Needs you apart, then Ready for you, Working, To do i
 
 test('a card that no column fits comes last and groups as Other cards', () => {
   subscribe(store, { cards: [plainCard(1, 'todo'), plainCard(2, 'review')] });
-  const rows = browse.rowsOf(store.getFloorState(), NO_PLACES);
+  const rows = browse.rowsOf(store.getFloorState(), []);
   assert.deepEqual(titlesOf(browse.arrange(rows).rest), ['Plain 1', 'Plain 2']);
   assert.deepEqual(browse.groupRows(browse.arrange(rows).rest, 'status').map((g) => [g.label, titlesOf(g.rows)]),
     [['To do', ['Plain 1']], ['Other cards', ['Plain 2']]]);
 });
 
 test('groups sort by name with "none" last, keep the queue order inside, and status groups follow the queue', () => {
-  const rest = browse.arrange(browse.rowsOf(seed(), NO_PLACES)).rest;
+  const rest = browse.arrange(browse.rowsOf(seed(), [])).rest;
   const show = (by) => browse.groupRows(rest, by).map((g) => [g.label, titlesOf(g.rows)]);
   assert.deepEqual(show('project'), [
     ['Service', ['Refactor billing', 'Fix login bug']],
@@ -144,7 +144,7 @@ test('groups sort by name with "none" last, keep the queue order inside, and sta
 
 test('the choices list every project and agent, add "none" only when a ticket has none, and drop what no longer exists', () => {
   const floor = seed();
-  const rows = browse.rowsOf(floor, NO_PLACES);
+  const rows = browse.rowsOf(floor, []);
   const choices = browse.choicesOf(rows, [{ id: 'service', label: 'Service' }, { id: 'docs', label: 'Docs' }],
     [{ id: GRACE, name: 'Grace' }, { id: ADA, name: 'Ada' }]);
   assert.deepEqual(choices.projects, [
@@ -152,7 +152,7 @@ test('the choices list every project and agent, add "none" only when a ticket ha
     { value: '~none', label: 'No project' }]);
   assert.deepEqual(choices.agents, [
     { value: ADA, label: 'Ada' }, { value: GRACE, label: 'Grace' }, { value: '~none', label: 'Unassigned' }]);
-  const given = browse.rowsOf({ ...floor, cards: floor.cards.filter((card) => card.claimed_by !== null) }, NO_PLACES);
+  const given = browse.rowsOf({ ...floor, cards: floor.cards.filter((card) => card.claimed_by !== null) }, []);
   assert.deepEqual(browse.choicesOf(given, [], []).projects.map((c) => c.value), ['service', 'website']);
   assert.deepEqual(browse.liveView(view({ project: 'gone', agent: GRACE }), choices), view({ agent: GRACE }));
   const same = view({ project: 'docs' });
@@ -178,7 +178,7 @@ test('the layout, grouping and filters are remembered in the browser, and a sear
     state.resetBrowse();
     assert.deepEqual(state.getBrowse(), browse.DEFAULT_VIEW);
     state.setBrowse({ layout: 'list', group: 'agent', project: 'service', search: 'login' });
-    assert.equal(saved.get('dudes.floor.board-view'), '{"layout":"list","group":"agent","project":"service","agent":"","status":""}');
+    assert.equal(saved.get('dudes.floor.board-view'), '{"layout":"list","group":"agent","project":"service","agent":"","status":"","priority":""}');
     state.setBrowse({ search: 'other' });
     state.resetBrowse();
     assert.deepEqual(state.getBrowse(), view({ layout: 'list', group: 'agent', project: 'service' }), 'a reload reads storage and drops the search');
@@ -297,60 +297,86 @@ test('an empty list tells the operator how to start', () => {
   assert.match(board(), /No tickets yet\. Choose New ticket to make one\./);
 });
 
-/** A read reply in the shape the daemon sends it, with `project` for the card asked about. */
-const readReply = (projects) => (url, body) => url === '/floor/ticket/read' && projects[body.card] !== undefined
-  ? json(200, { state: 'ok', card: { id: body.card, seq: 1 }, ticket: { project: projects[body.card] } }) : json(503, {});
-
-test('the project of a ticket no agent holds is read once, one read at a time, and a failed read waits to be retried', async () => {
-  const [one, two, three] = [cardId(1), cardId(2), cardId(3)];
-  let flying = 0;
-  let most = 0;
-  const projects = { [one]: 'service', [two]: 'website' };
-  const answer = readReply(projects);
-  const { deps, seen } = daemon(async (url, body) => {
-    flying += 1;
-    most = Math.max(most, flying);
-    await new Promise((resolve) => setTimeout(resolve, 1));
-    flying -= 1;
-    return answer(url, body);
+test('a ticket no agent holds is filtered, grouped and searched by the project its card names', () => {
+  subscribe(store, {
+    agents: [agent(ADA, 'Ada'), agent(GRACE, 'Grace', { workspace: { id: 'website', label: 'Website' } })],
+    cards: [
+      ticketCard(1, 'todo', { title: 'Write docs' }, { project: 'service' }),
+      ticketCard(2, 'todo', { title: 'Plan launch' }, { project: 'website' }),
+      ticketCard(3, 'todo', { title: 'Older daemon, unassigned' }),
+      ticketCard(4, 'doing', { title: 'Older daemon, held', claimed_by: GRACE }),
+    ],
   });
-  let clock = 1_000;
-  await placed.placeTickets([one, two, three], deps, () => clock);
-  assert.deepEqual([...placed.getPlaced()], [[one, 'service'], [two, 'website']]);
-  assert.equal(most, 1, 'reads do not overlap');
-  assert.deepEqual(seen.map((request) => request.body.card), [one, two, three]);
-
-  await placed.placeTickets([one, two, three], deps, () => clock);
-  assert.equal(seen.length, 3, 'a placed ticket is not read again, and a failed one waits');
-  clock += placed.RETRY_MS - 1;
-  await placed.placeTickets([three], deps, () => clock);
-  assert.equal(seen.length, 3);
-  projects[three] = 'service';
-  clock += 1;
-  await placed.placeTickets([three], deps, () => clock);
-  assert.equal(seen.length, 4);
-  assert.equal(placed.getPlaced().get(three), 'service');
+  const projects = [{ id: 'service', label: 'Service' }, { id: 'website', label: 'Website' }];
+  const rows = browse.rowsOf(store.getFloorState(), projects);
+  assert.deepEqual(titlesOf(browse.filterRows(rows, view({ project: 'service' }))), ['Write docs']);
+  assert.deepEqual(titlesOf(browse.filterRows(rows, view({ project: 'website' }))), ['Plan launch', 'Older daemon, held'],
+    'a card without a project falls back to its agent\'s');
+  assert.deepEqual(titlesOf(browse.filterRows(rows, view({ project: browse.NONE }))), ['Older daemon, unassigned']);
+  assert.deepEqual(titlesOf(browse.filterRows(rows, view({ search: 'website' }))), ['Plan launch', 'Older daemon, held']);
+  assert.deepEqual(browse.groupRows(rows, 'project').map((g) => [g.label, g.rows.length]), [['Service', 1], ['Website', 2], ['No project', 1]]);
 });
 
-test('a read reply that names another ticket or a project that cannot be one places nothing', async () => {
-  const [one, two] = [cardId(1), cardId(2)];
-  const { deps } = daemon(async (url, body) => body.card === one
-    ? json(200, { state: 'ok', card: { id: two, seq: 1 }, ticket: { project: 'service' } })
-    : json(200, { state: 'ok', card: { id: two, seq: 1 }, ticket: { project: 'a b/c' } }));
-  await placed.placeTickets([one, two], deps);
-  assert.equal(placed.getPlaced().size, 0);
+function seedPriorities() {
+  subscribe(store, {
+    agents: [agent(ADA, 'Ada')],
+    cards: [
+      ticketCard(1, 'todo', { title: 'Plain one' }),
+      ticketCard(2, 'todo', { title: 'Low two' }, { priority: 'low' }),
+      ticketCard(3, 'claimed', { title: 'Urgent three', claimed_by: ADA }, { priority: 'urgent', position: 1 }),
+      ticketCard(4, 'doing', { title: 'High four', claimed_by: ADA }, { priority: 'high' }),
+      ticketCard(5, 'todo', { title: 'Medium five' }, { priority: 'medium' }),
+      ticketCard(6, 'todo', { title: 'Urgent six' }, { priority: 'urgent' }),
+      plainCard(7),
+    ],
+  });
+  return browse.rowsOf(store.getFloorState(), []);
+}
+
+test('the priority filter keeps one priority, and "none" keeps the tickets with no priority', () => {
+  const rows = seedPriorities();
+  const by = (priority) => titlesOf(browse.filterRows(rows, view({ priority })));
+  assert.deepEqual(by('urgent'), ['Urgent three', 'Urgent six']);
+  assert.deepEqual(by('high'), ['High four']);
+  assert.deepEqual(by('low'), ['Low two']);
+  assert.deepEqual(by('none'), ['Plain one', 'Plain 7']);
+  assert.deepEqual(titlesOf(browse.filterRows(rows, view({ priority: 'high', status: 'working' }))), ['High four'], 'filters are an AND');
+  assert.deepEqual(titlesOf(browse.filterRows(rows, view({ priority: 'high', status: 'todo' }))), []);
+  assert.equal(browse.isFiltered(view({ priority: 'none' })), true);
+  assert.deepEqual(browse.withoutFilters(view({ priority: 'high', layout: 'list' })), view({ layout: 'list' }));
 });
 
-test('a ticket no agent holds is filtered and grouped by the project it was read to be in', async () => {
-  seed();
-  const unassigned = cardId(1);
-  const { deps } = daemon(readReply({ [unassigned]: 'service' }));
-  await placed.placeTickets([unassigned], deps);
-  const floor = store.getFloorState();
-  const places = { projects: [{ id: 'service', label: 'Service' }], placed: placed.getPlaced() };
-  const rows = browse.rowsOf(floor, places);
-  assert.deepEqual(titlesOf(browse.filterRows(rows, view({ project: 'service' }))), ['Write docs', 'Fix login bug', 'Refactor billing', 'Migrate database']);
-  assert.deepEqual(titlesOf(browse.filterRows(rows, view({ project: browse.NONE }))), ['Plain seven']);
-  assert.deepEqual(titlesOf(browse.filterRows(rows, view({ search: 'service' }))), ['Write docs', 'Fix login bug', 'Refactor billing', 'Migrate database']);
-  assert.deepEqual(browse.groupRows(rows, 'project').map((g) => [g.label, g.rows.length]), [['Service', 4], ['Website', 2], ['No project', 1]]);
+test('grouping by priority lists Urgent to Low, then tickets with no priority, keeping the queue order inside', () => {
+  const rows = seedPriorities();
+  const groups = browse.groupRows(rows, 'priority').map((g) => [g.label, titlesOf(g.rows)]);
+  assert.deepEqual(groups, [
+    ['Urgent', ['Urgent three', 'Urgent six']], ['High', ['High four']], ['Medium', ['Medium five']],
+    ['Low', ['Low two']], ['No priority', ['Plain one', 'Plain 7']],
+  ]);
+  assert.deepEqual(browse.PRIORITY_CHOICES.map((c) => [c.value, c.label]), [
+    ['urgent', 'Urgent'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low'], ['none', 'No priority']]);
+});
+
+test('a card shows a priority mark except when it has no priority, in the Board and in the List', () => {
+  seedPriorities();
+  const columns = board();
+  assert.equal((columns.match(/data-priority=/g) ?? []).length, 5, 'the five tickets with a priority, and not the two without');
+  state.setBrowse({ layout: 'list' });
+  const list = board();
+  assert.equal((list.match(/data-priority=/g) ?? []).length, 5);
+  const row = list.match(/<button[^>]*data-card-id="01JBQ8XK2M3N4P5Q6R7S8T0003"[\s\S]*?<\/button>/)[0];
+  assert.match(row, /data-priority="urgent"/);
+  assert.match(row, /Urgent<\/span>/);
+  const plain = list.match(/<button[^>]*data-card-id="01JBQ8XK2M3N4P5Q6R7S8T0001"[\s\S]*?<\/button>/)[0];
+  assert.doesNotMatch(plain, /data-priority/);
+});
+
+test('the toolbar filters by priority, and the List offers to group by it', () => {
+  seedPriorities();
+  state.setBrowse({ layout: 'list', priority: 'urgent' });
+  const html = board();
+  assert.match(html, /aria-label="Priority"/);
+  assert.deepEqual(rowTitles(html), ['Urgent six', 'Urgent three'], 'the queue order holds inside the filter');
+  assert.match(html, /2 of 7 match/);
+  assert.match(html, /data-value="priority"[^>]*>[\s\S]*?Group by priority/);
 });

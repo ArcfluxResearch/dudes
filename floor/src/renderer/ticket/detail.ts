@@ -17,6 +17,10 @@ import type { Wait } from './words.ts';
 import { decodeCoverageNote, decodeInstructionReview, sameInstructionWatermark } from './instructions.ts';
 import type { CoverageNote, InstructionReview, InstructionWatermark } from './instructions.ts';
 import { decodeTicketContext } from './context.ts';
+import { decodeHistory } from './history.ts';
+import type { TicketHistory } from './history.ts';
+import { priorityOf } from './priority.ts';
+import type { Priority } from './priority.ts';
 import type { TicketContext } from './context.ts';
 import { getFloorState } from '../floor/store.ts';
 import type { FloorState } from '../floor/store.ts';
@@ -42,6 +46,10 @@ export interface TicketDetail {
   readonly truncated: readonly TruncatedTicketField[];
   readonly note: string;
   readonly project: string;
+  /** `null` when the daemon sent none, as an older daemon does. */
+  readonly priority: Priority | null;
+  /** `null` when the daemon sent none, as an older daemon does. */
+  readonly history: TicketHistory | null;
   readonly check: { readonly id: string; readonly label: string };
   readonly round: number;
   readonly reason: TicketReason | null;
@@ -91,6 +99,9 @@ export function decodeDetail(body: Record<string, unknown>, card: string): Ticke
       || !(WAITS as readonly string[]).includes(waiting.wait.kind) || !text(waiting.note, 600)) return null;
     wait = Object.freeze({ wait: waiting.wait.kind as Wait, note: waiting.note as string });
   }
+  const priority = ticket.priority === undefined ? null : priorityOf(ticket.priority);
+  if (ticket.priority !== undefined && priority === null) return null;
+  const history = decodeHistory(ticket.history, ticket.history_omitted);
   const truncated = ticket.truncated ?? [];
   if (!Array.isArray(truncated) || !truncated.every((field) => (TRUNCATED_FIELDS as readonly unknown[]).includes(field))
     || new Set(truncated).size !== truncated.length) return null;
@@ -104,7 +115,7 @@ export function decodeDetail(body: Record<string, unknown>, card: string): Ticke
       || (shown.claimed_by !== undefined && context.binding.claimant !== shown.claimed_by))))) return null;
   return Object.freeze({
     context,
-    instruction_review: review, coverage, truncated: Object.freeze([...truncated]) as readonly TruncatedTicketField[], note: readable(note), project, check: Object.freeze({ id: check.id, label: check.label }), round, reason: why as TicketReason | null,
+    instruction_review: review, coverage, truncated: Object.freeze([...truncated]) as readonly TruncatedTicketField[], note: readable(note), project, priority, history: history ?? null, check: Object.freeze({ id: check.id, label: check.label }), round, reason: why as TicketReason | null,
     summary: words === null ? null : readable(words), result: outcome, position: place, waiting: wait,
   });
 }

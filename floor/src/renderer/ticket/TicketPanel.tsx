@@ -20,6 +20,9 @@ import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
 import { DIGEST_CAVEAT, digestSentence } from './digest.ts';
 import { checkDisplayCurrent, currentDetail, editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
 import { RecoveredReview } from './RecoveredReview.tsx';
+import { History } from './TicketHistory.tsx';
+import { PRIORITY_OPTIONS, PRIORITY_WORDS, priorityOf } from './priority.ts';
+import type { Priority } from './priority.ts';
 import type { TicketDetail, TruncatedTicketField } from './detail.ts';
 import { ACTION_LABEL, actionsOf, agentChoiceSentence, agentRow, cardWords, noProjects, projectOf, requiresInstructionReview } from './model.ts';
 import type { TicketAction } from './model.ts';
@@ -186,6 +189,21 @@ function InstructionEvidence({ floor, review, reviewing }: {
   </section>;
 }
 
+/** The ticket's priority: a choice while it is in To do, and the word alone once an agent has it. */
+function PriorityRow({ floor, card, shown }: { readonly floor: FloorState; readonly card: CardRow; readonly shown: TicketDetail | null }) {
+  const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
+  const priority = card.ticket?.priority ?? 'none';
+  if (card.ticket === null || shown?.priority === null) return null;
+  const settable = (card.status === 'todo' || card.status === 'claimed') && ticketActionsOpen(floor) && shown !== null;
+  return <div className="ticket-priority-row flex flex-wrap items-center gap-3">
+    <span className={FACT_LABEL}>Priority</span>
+    {settable ? <Select aria-label="Priority" name="ticket-priority" className="w-40" value={priority} disabled={sending}
+      onValueChange={(value) => { void changeTicket(card, { verb: 'priority', priority: priorityOf(value) ?? 'none' }); }}
+      options={PRIORITY_OPTIONS} />
+      : <span className="ticket-priority-word">{PRIORITY_WORDS[priority]}</span>}
+  </div>;
+}
+
 function Facts({ floor, card }: { readonly floor: FloorState; readonly card: CardRow }) {
   const detail = useSyncExternalStore(subscribeToDetail, getDetailState, getDetailState);
   const mine = detail.card === card.id ? detail : null;
@@ -202,6 +220,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
       <Badge state={STATE_BADGE[card.status]}>{stateName(card.status)}</Badge>
       <p className="ticket-status m-0 min-w-0 flex-1 text-body text-ink">{statusSentence(card.status, words.agent, words.place)}</p>
     </div>
+    <PriorityRow floor={floor} card={card} shown={shown} />
     <Disclosure summary="Details" className="ticket-facts"><dl className="m-0 grid grid-cols-2 gap-x-6 gap-y-3 pb-2 max-[801px]:grid-cols-1">
       <div><dt className={FACT_LABEL}>State</dt><dd className="m-0 mt-0.5">{stateName(card.status)}</dd></div>
       <div><dt className={FACT_LABEL}>Agent</dt><dd className="m-0 mt-0.5">{words.agent ?? 'Not given to an agent'}</dd></div>
@@ -253,6 +272,9 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
   const [message, setMessage] = useState(() => mode === 'changes' ? readTicketChangesDraft(card.id) : '');
   const currentMessage = useRef(message);
   currentMessage.current = message;
+  const held = card.ticket?.priority ?? 'none';
+  const [priority, setPriority] = useState<Priority>(held);
+  const choosesPriority = mode === 'give' && (card.status === 'todo' || card.status === 'claimed');
   const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
   const evidence = useSyncExternalStore(subscribeToDetail, getDetailState, getDetailState);
   const reviewReady = !requiresInstructionReview(card) || reviewedWatermark(evidence, card) !== null;
@@ -273,7 +295,8 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
     if (chosen === null || sending || !reviewReady || !ticketActionsOpen(floor)
       || (mode === 'changes' ? !allowed.includes('changes') : !allowed.includes('give') && !allowed.includes('try_again'))) return;
     const sent = message;
-    if (await changeTicket(card, { verb: 'assign', agent: chosen, message: mode === 'changes' ? sent : '' })) {
+    if (await changeTicket(card, { verb: 'assign', agent: chosen, message: mode === 'changes' ? sent : '',
+      ...(choosesPriority && priority !== held ? { priority } : {}) })) {
       if (mode === 'changes') clearTicketChangesDraft(card.id, sent);
       if (currentMessage.current === sent) onDone();
     }
@@ -286,6 +309,10 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
         options={usable.map((row) => ({ value: row.id, label: row.name }))} />
     </Field>
     {unrecorded.map((row) => <p key={row.id} className={HINT}>{agentWithoutProjectSentence(row.name)}</p>)}
+    {choosesPriority ? <Field label="Priority" id={`${ids}-priority`}>
+      <Select id={`${ids}-priority`} name="priority" value={priority} options={PRIORITY_OPTIONS}
+        onValueChange={(value) => setPriority(priorityOf(value) ?? 'none')} />
+    </Field> : null}
     {mode === 'changes' ? <Field label="What should change?" id={`${ids}-message`}>
       <Textarea rows={3} maxLength={2048} value={message}
         onChange={(event) => { writeTicketChangesDraft(card.id, event.target.value); setMessage(event.target.value); }} />
@@ -311,6 +338,7 @@ function EditForm({ floor, card, detail, onDone }: {
   const [text, setText] = useState(detail.note);
   const checks = checksFor(floor.checks, detail.project) ?? [];
   const [checkId, setCheckId] = useState(checks.find((entry) => entry.id === detail.check.id)?.id ?? checks[0]?.id ?? '');
+  const [priority, setPriority] = useState<Priority>(card.ticket?.priority ?? 'none');
   const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
   const check = checks.find((entry) => entry.id === checkId) ?? null;
 
@@ -319,7 +347,7 @@ function EditForm({ floor, card, detail, onDone }: {
     if (sending || title.trim() === '' || !ticketActionsOpen(floor) || !actionsOf(card).includes('edit')
       || editableDetail(getDetailState(), card) === null) return;
     const saved = await changeTicket(card, {
-      verb: 'edit', title, note: text, check: check === null ? null : { id: check.id, revision: check.revision },
+      verb: 'edit', title, note: text, check: check === null ? null : { id: check.id, revision: check.revision }, priority,
     });
     if (saved) onDone();
   }
@@ -335,6 +363,10 @@ function EditForm({ floor, card, detail, onDone }: {
       <Select id={`${ids}-check`} value={checkId} onValueChange={setCheckId}
         options={checks.map((entry) => ({ value: entry.id, label: choiceLabel(entry) }))} />
     </Field> : null}
+    <Field label="Priority" id={`${ids}-priority`}>
+      <Select id={`${ids}-priority`} name="priority" value={priority} options={PRIORITY_OPTIONS}
+        onValueChange={(value) => setPriority(priorityOf(value) ?? 'none')} />
+    </Field>
     <div className={FORM_ACTIONS}>
       <Button type="submit" variant="primary" disabled={sending || title.trim() === '' || !ticketActionsOpen(floor)
         || editableDetail(getDetailState(), card) === null}
@@ -443,6 +475,7 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
     </section>}
     {digest === null ? null : <section className="ticket-digest" aria-label="Steps the engine reported"><h4>Engine-reported steps</h4>
       <p>{digest}</p><p className="ticket-digest-note text-small text-muted">{DIGEST_CAVEAT}</p></section>}
+    {shown?.history == null ? null : <History floor={floor} history={shown.history} />}
     {!floor.ticket ? <TicketOffHint floor={floor} /> : null}
     {actions.length === 0 ? null : <div className={cn('ticket-actions mt-2 flex flex-col gap-3 border-t border-line pt-4',
       'max-[801px]:group-data-[mode=none]/panel:sticky max-[801px]:group-data-[mode=none]/panel:bottom-0 max-[801px]:group-data-[mode=none]/panel:z-10',

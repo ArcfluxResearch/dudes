@@ -4,7 +4,7 @@ import { Columns3, Keyboard, List, Search, X } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
 
 import { Button, ICON, IconButton, Input, Select } from '../../ui/index.ts';
-import { GROUP_NAMES, STATUS_CHOICES, isFiltered } from './browse.ts';
+import { GROUP_NAMES, PRIORITY_CHOICES, STATUS_CHOICES, isFiltered } from './browse.ts';
 import type { BoardLayout, BrowseView, Choices, GroupBy } from './browse.ts';
 
 const LAYOUTS: readonly { readonly key: BoardLayout; readonly label: string; readonly icon: ReactNode; readonly shortcut: string }[] = Object.freeze([
@@ -51,6 +51,9 @@ export function BoardToolbar({ view, choices, total, shown, onChange, onClear, o
     <Select aria-label="Status" name="board-status" className={FILTER} value={view.status}
       onValueChange={(status) => onChange({ status: status as BrowseView['status'] })}
       options={[{ value: '', label: 'All statuses' }, ...STATUS_CHOICES]} />
+    <Select aria-label="Priority" name="board-priority" className={FILTER} value={view.priority}
+      onValueChange={(priority) => onChange({ priority: priority as BrowseView['priority'] })}
+      options={[{ value: '', label: 'All priorities' }, ...PRIORITY_CHOICES]} />
     {view.layout === 'list' ? <Select aria-label="Group by" name="board-group" className={FILTER} value={view.group}
       onValueChange={(group) => onChange({ group: group as GroupBy })}
       options={(Object.keys(GROUP_NAMES) as GroupBy[]).map((key) => ({ value: key, label: key === 'none' ? GROUP_NAMES[key] : `Group by ${GROUP_NAMES[key].toLowerCase()}` }))} /> : null}

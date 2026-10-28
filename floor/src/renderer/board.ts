@@ -2,8 +2,11 @@
 
 import { decodeInstructionSummary } from './ticket/instructions.ts';
 import type { InstructionReviewSummary } from './ticket/instructions.ts';
+import { priorityOf } from './ticket/priority.ts';
+import type { Priority } from './ticket/priority.ts';
 
 const CARD_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+export const PROJECT_ID = /^[a-zA-Z0-9_-]{1,128}$/;
 export type CardStatus = 'todo' | 'claimed' | 'doing' | 'review' | 'blocked' | 'done';
 export type CardActor = { readonly kind: 'peer'; readonly pid: number }
   | { readonly kind: 'agent'; readonly agent: string }
@@ -43,6 +46,10 @@ export interface CardTicketRow {
   readonly position: number | null;
   readonly round: number;
   readonly reason: TicketReason | null;
+  /** `none` when the operator chose no priority, and when an older daemon sends none. */
+  readonly priority: Priority;
+  /** The ticket's fixed project, or `null` when the daemon names none. */
+  readonly project: string | null;
   /** The ticket was stopped and its agent is still finishing its current step. */
   readonly stopping: boolean;
   readonly instruction_review?: InstructionReviewSummary;
@@ -103,6 +110,10 @@ function ticketOf(value: unknown): CardTicketRow | null | undefined {
   if (why !== null && !(typeof why === 'string' && (TICKET_REASONS as readonly string[]).includes(why))) return undefined;
   const stop = stopping ?? false;
   if (typeof stop !== 'boolean') return undefined;
+  const priority = ticket.priority === undefined ? 'none' : priorityOf(ticket.priority);
+  if (priority === null) return undefined;
+  const project = ticket.project ?? null;
+  if (project !== null && !(typeof project === 'string' && PROJECT_ID.test(project))) return undefined;
   const review = ticket.instruction_review === undefined || ticket.instruction_review === null
     ? null : decodeInstructionSummary(ticket.instruction_review);
   if (ticket.instruction_review != null && review === null) return undefined;
@@ -126,7 +137,7 @@ function ticketOf(value: unknown): CardTicketRow | null | undefined {
     lastTurnEnd = Object.freeze({ exit: Object.freeze({ code, signal }), at: ended.at,
       ...(digest === null ? {} : { step_digest: digest }) });
   }
-  return Object.freeze({ position: place, round: rounds, reason: why as TicketReason | null, stopping: stop,
+  return Object.freeze({ position: place, round: rounds, reason: why as TicketReason | null, stopping: stop, priority, project,
     ...(goal === null ? {} : { goal }),
     ...(review === null ? {} : { instruction_review: review }),
     ...(lastTurnEnd === null ? {} : { last_turn_end: lastTurnEnd }) });

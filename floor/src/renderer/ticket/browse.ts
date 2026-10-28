@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 // Reading the board as a list: which tickets match the search and filters, the order the queue runs
-// them in, and how a list is grouped. All of it comes from the snapshot's cards and agents. A card
-// does not carry its project, so a ticket's project is its agent's, and the project of a ticket no
-// agent holds is the one read from the ticket (see `placed.ts`).
+// them in, and how a list is grouped. All of it comes from the snapshot's cards and agents. A ticket's
+// project is the one its card names, or its agent's when an older daemon names none.
 
+import { PROJECT_ID } from '../board.ts';
 import type { CardRow } from '../board.ts';
 import type { FloorState } from '../floor/store.ts';
 import { decodeWorkspace } from '../workspace.ts';
 import { agentName, agentRow, boardColumns, columnOf, DONE_SHOWN, otherCards, plainColumnOf } from './model.ts';
 import type { TicketColumn } from './model.ts';
+import { PRIORITIES, PRIORITY_WORDS } from './priority.ts';
+import type { Priority } from './priority.ts';
 
 export type BoardLayout = 'board' | 'list';
-export type GroupBy = 'none' | 'project' | 'agent' | 'status';
+export type GroupBy = 'none' | 'project' | 'agent' | 'status' | 'priority';
 /** The five places a ticket can be: the four columns and the Needs you lane. */
 export type StatusKey = 'needs' | TicketColumn;
 
@@ -25,11 +27,13 @@ export interface BrowseView {
   readonly project: string;
   readonly agent: string;
   readonly status: StatusKey | '';
+  /** `none` keeps the tickets with no priority. */
+  readonly priority: Priority | '';
   readonly search: string;
 }
 
 export const DEFAULT_VIEW: BrowseView = Object.freeze({
-  layout: 'board', group: 'none', project: '', agent: '', status: '', search: '',
+  layout: 'board', group: 'none', project: '', agent: '', status: '', priority: '', search: '',
 });
 
 export const STATUS_NAMES: Readonly<Record<StatusKey, string>> = Object.freeze({
@@ -39,7 +43,6 @@ export const STATUS_NAMES: Readonly<Record<StatusKey, string>> = Object.freeze({
 /** The order the queue runs in: what waits on the operator, then what is under way, then what is next. */
 const STATUS_ORDER: readonly StatusKey[] = Object.freeze(['needs', 'ready', 'working', 'todo', 'done']);
 
-const PROJECT_ID = /^[a-zA-Z0-9_-]{1,128}$/;
 const AGENT_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const MAX_STORED = 2048;
 
@@ -54,25 +57,26 @@ export function parseRemembered(raw: string | null): BrowseView {
     typeof field === 'string' && allowed(field) ? field : fallback;
   return Object.freeze({
     layout: text(row.layout, (v) => v === 'board' || v === 'list', DEFAULT_VIEW.layout) as BoardLayout,
-    group: text(row.group, (v) => v === 'none' || v === 'project' || v === 'agent' || v === 'status', DEFAULT_VIEW.group) as GroupBy,
+    group: text(row.group, (v) => v === 'none' || v === 'project' || v === 'agent' || v === 'status' || v === 'priority', DEFAULT_VIEW.group) as GroupBy,
     project: text(row.project, (v) => v === '' || v === NONE || PROJECT_ID.test(v), ''),
     agent: text(row.agent, (v) => v === '' || v === NONE || AGENT_ID.test(v), ''),
     status: text(row.status, (v) => v === '' || (STATUS_ORDER as readonly string[]).includes(v), '') as StatusKey | '',
+    priority: text(row.priority, (v) => v === '' || (PRIORITIES as readonly string[]).includes(v), '') as Priority | '',
     search: '',
   });
 }
 
 export function serializeRemembered(view: BrowseView): string {
-  return JSON.stringify({ layout: view.layout, group: view.group, project: view.project, agent: view.agent, status: view.status });
+  return JSON.stringify({ layout: view.layout, group: view.group, project: view.project, agent: view.agent, status: view.status, priority: view.priority });
 }
 
 export function isFiltered(view: BrowseView): boolean {
-  return view.project !== '' || view.agent !== '' || view.status !== '' || view.search.trim() !== '';
+  return view.project !== '' || view.agent !== '' || view.status !== '' || view.priority !== '' || view.search.trim() !== '';
 }
 
 /** The view with every filter and the search cleared; the layout and grouping stay. */
 export function withoutFilters(view: BrowseView): BrowseView {
-  return Object.freeze({ ...view, project: '', agent: '', status: '', search: '' });
+  return Object.freeze({ ...view, project: '', agent: '', status: '', priority: '', search: '' });
 }
 
 /** One card with what the filters read, worked out once. */
@@ -84,6 +88,7 @@ export interface BrowseRow {
   readonly projectLabel: string | null;
   readonly agent: string | null;
   readonly agentName: string | null;
+  readonly priority: Priority;
   /** Lower case, for the search. */
   readonly text: string;
 }
@@ -93,23 +98,18 @@ function statusOf(card: CardRow): StatusKey | null {
   return card.status === 'blocked' ? 'needs' : columnOf(card);
 }
 
-export interface Places {
-  /** Every project the page knows, to name the ones a ticket was read to be in. */
-  readonly projects: readonly { readonly id: string; readonly label: string }[];
-  /** The project of each ticket no agent held, once read: ticket id to project id. */
-  readonly placed: ReadonlyMap<string, string>;
-}
-
-export function rowsOf(floor: FloorState, places: Places): readonly BrowseRow[] {
-  const labels = new Map(places.projects.map((project) => [project.id, project.label]));
+/** `projects` names the projects the page knows, for the ones a card names. */
+export function rowsOf(floor: FloorState, projects: readonly { readonly id: string; readonly label: string }[]): readonly BrowseRow[] {
+  const labels = new Map(projects.map((project) => [project.id, project.label]));
   return floor.cards.map((card) => {
     const workspace = decodeWorkspace(agentRow(floor, card.claimed_by)?.workspace);
-    const placed = places.placed.get(card.id) ?? null;
-    const project = workspace?.id ?? placed;
-    const label = workspace?.label ?? (placed === null ? null : labels.get(placed) ?? placed);
+    const named = card.ticket?.project ?? null;
+    const project = named ?? workspace?.id ?? null;
+    const label = project === null ? null : labels.get(project) ?? (workspace?.id === project ? workspace.label : project);
     const name = card.claimed_by === null ? null : agentName(floor, card.claimed_by);
     return Object.freeze({
       card, status: statusOf(card), project, projectLabel: label, agent: card.claimed_by, agentName: name,
+      priority: card.ticket?.priority ?? 'none',
       text: [card.title, name ?? '', label ?? ''].join('\n').toLowerCase(),
     });
   });
@@ -156,6 +156,7 @@ function matches(row: BrowseRow, view: BrowseView, terms: readonly string[]): bo
   if (view.project !== '' && (view.project === NONE ? row.project !== null : row.project !== view.project)) return false;
   if (view.agent !== '' && (view.agent === NONE ? row.agent !== null : row.agent !== view.agent)) return false;
   if (view.status !== '' && row.status !== view.status) return false;
+  if (view.priority !== '' && row.priority !== view.priority) return false;
   return terms.every((term) => row.text.includes(term));
 }
 
@@ -203,7 +204,8 @@ export function groupRows(rows: readonly BrowseRow[], by: GroupBy): readonly Row
   for (const row of rows) {
     const [key, label] = by === 'project' ? [row.project ?? NONE, row.projectLabel ?? 'No project']
       : by === 'agent' ? [row.agent ?? NONE, row.agentName ?? 'Unassigned']
-        : [row.status ?? OTHER, row.status === null ? 'Other cards' : STATUS_NAMES[row.status]];
+        : by === 'priority' ? [row.priority, PRIORITY_WORDS[row.priority]]
+          : [row.status ?? OTHER, row.status === null ? 'Other cards' : STATUS_NAMES[row.status]];
     const group = groups.get(key) ?? { label, rows: [] };
     group.rows.push(row);
     groups.set(key, group);
@@ -211,16 +213,19 @@ export function groupRows(rows: readonly BrowseRow[], by: GroupBy): readonly Row
   const rank = (key: string) => { const at = STATUS_ORDER.indexOf(key as StatusKey); return at === -1 ? STATUS_ORDER.length : at; };
   return [...groups].sort(([aKey, a], [bKey, b]) => {
     if (by === 'status') return rank(aKey) - rank(bKey);
+    if (by === 'priority') return PRIORITIES.indexOf(aKey as Priority) - PRIORITIES.indexOf(bKey as Priority);
     if (aKey === NONE || bKey === NONE) return aKey === bKey ? 0 : aKey === NONE ? 1 : -1;
     return a.label.localeCompare(b.label) || aKey.localeCompare(bKey);
   }).map(([key, group]) => ({ key, label: group.label, rows: group.rows }));
 }
 
 export const GROUP_NAMES: Readonly<Record<GroupBy, string>> = Object.freeze({
-  none: 'No grouping', project: 'Project', agent: 'Agent', status: 'Status',
+  none: 'No grouping', project: 'Project', agent: 'Agent', status: 'Status', priority: 'Priority',
 });
 
 export const STATUS_CHOICES: readonly Choice[] = Object.freeze(STATUS_ORDER.map((key) => ({ value: key, label: STATUS_NAMES[key] })));
+
+export const PRIORITY_CHOICES: readonly Choice[] = Object.freeze(PRIORITIES.map((key) => ({ value: key, label: PRIORITY_WORDS[key] })));
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
