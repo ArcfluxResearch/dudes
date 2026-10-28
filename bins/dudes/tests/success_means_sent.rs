@@ -189,6 +189,14 @@ fn argv_producing(mistake: &ArgError) -> Vec<OsString> {
         // A quickstart option that only means something beside another one.
         ArgError::Requires(..) => argv(&["quickstart", "--goal-usd", "1"]),
         ArgError::Conflicting(..) => argv(&["mcp", AN_AGENT, "--clear", "--mcp", "memory"]),
+        ArgError::NoteFile(_) => argv(&[
+            "ticket",
+            "add",
+            "--title",
+            "t",
+            "--note-file",
+            "/nonexistent/note",
+        ]),
         ArgError::HelpRequested => argv(&["hire", "--help"]),
     }
 }
@@ -224,6 +232,7 @@ fn every_mistake() -> Vec<ArgError> {
         ArgError::TextOnly(""),
         ArgError::Requires("", ""),
         ArgError::Conflicting("", ""),
+        ArgError::NoteFile(String::new()),
         ArgError::HelpRequested,
     ]
 }
@@ -231,7 +240,7 @@ fn every_mistake() -> Vec<ArgError> {
 /// The count [`every_mistake`] is expected to have, so shrinking the list is red.
 ///
 /// Every variant `src/args.rs` declares.
-const EVERY_MISTAKE_COUNT: usize = 16;
+const EVERY_MISTAKE_COUNT: usize = 17;
 
 /// **The hand-written list has not lost an entry.**
 ///

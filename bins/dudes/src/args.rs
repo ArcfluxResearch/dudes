@@ -554,6 +554,9 @@ pub enum ArgError {
     /// Two explicitly exclusive flags were given together.
     #[error("`{0}` cannot be combined with `{1}`")]
     Conflicting(&'static str, &'static str),
+    /// `--note-file` could not supply a note.
+    #[error("`--note-file`: {0}")]
+    NoteFile(String),
     /// **Not a mistake**: `--help` or `-h` in a flag position.
     ///
     /// It travels as an `Err` because it is the one outcome that produces no [`Invocation`], and
@@ -1061,10 +1064,10 @@ USAGE
 
 const TICKET_HELP: &str = "\
 USAGE
-    dudes ticket add --title <text> [--note <text>] [--project <id>] [--done-when <check id>]
+    dudes ticket add --title <text> [--note <text> | --note-file <path>] [--project <id>] [--done-when <check id>]
                [--give-to <agent>]
 
-    dudes ticket edit <card> [--title <text>] [--note <text>] [--done-when <check id>]
+    dudes ticket edit <card> [--title <text>] [--note <text> | --note-file <path>] [--done-when <check id>]
                 [--expected-seq <n>]
 
     dudes ticket give <card> --agent <name or id> [--message <text>] [--expected-seq <n>]
@@ -1093,7 +1096,9 @@ USAGE
         or Needs you ticket back to To do and frees the agent; a turn already running
         finishes on its own. Give also retries a Needs you ticket.
         Edit and remove work on a ticket nobody is working on; an empty --note clears
-        the note. Every change reads the ticket's current sequence just before the
+        the note. --note-file reads the note from a file, or from standard input when
+        the path is -; it takes at most 8192 bytes of UTF-8 and cannot join --note.
+        Every change reads the ticket's current sequence just before the
         call, so --expected-seq is only for a script that wants a stale one refused.
         A ticket with an instruction review is the exception: Accept and Changes
         refuse until you read it with Show, which ends with the exact command for
@@ -1946,11 +1951,13 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
     let (mut agent, mut message, mut status, mut seq) = (None, None, None, None);
     let mut print = false;
     let mut editor = None;
+    let mut note_file = None;
     while let Some(arg) = flags.next() {
         match (subcommand.as_ref(), arg.to_string_lossy().as_ref()) {
             (_, "--help" | "-h") => return Err(ArgError::HelpRequested),
             ("add" | "edit", "--title") => title = Some(flags.value("--title")?),
             ("add" | "edit", "--note") => note = Some(flags.value("--note")?),
+            ("add" | "edit", "--note-file") => note_file = Some(flags.path("--note-file")?),
             ("add", "--project") => project = Some(flags.value("--project")?),
             ("add" | "edit", "--done-when") => done_when = Some(flags.value("--done-when")?),
             ("add", "--give-to") => agent = Some(flags.value("--give-to")?.into()),
@@ -1976,6 +1983,16 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
             }
             (_, other) => return Err(ArgError::UnknownFlag(other.to_owned())),
         }
+    }
+    if let Some(path) = &note_file {
+        if note.is_some() {
+            return Err(ArgError::Conflicting("--note", "--note-file"));
+        }
+        let text = read_note_file(path, stdin_file)?;
+        if text.is_empty() && subcommand == "add" {
+            return Err(ArgError::NoteFile("the note is empty".to_owned()));
+        }
+        note = Some(text);
     }
     if takes_card {
         let card = required(card, "<card>")?;
@@ -2014,7 +2031,7 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
                 if title.is_none() && note.is_none() && done_when.is_none() {
                     return Err(ArgError::Requires(
                         "ticket edit",
-                        "at least one of --title, --note or --done-when",
+                        "at least one of --title, --note, --note-file or --done-when",
                     ));
                 }
                 Ok(TicketCommand::Edit {
@@ -2066,6 +2083,50 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
         }),
         _ => Ok(TicketCommand::List { status }),
     }
+}
+
+/// A second handle on standard input. `main` already holds the standard library's stdin lock, so
+/// `std::io::stdin().lock()` here would wait on itself forever.
+#[cfg(unix)]
+fn stdin_file() -> std::io::Result<std::fs::File> {
+    use std::os::fd::AsFd as _;
+    Ok(std::fs::File::from(
+        std::io::stdin().as_fd().try_clone_to_owned()?,
+    ))
+}
+
+/// See the Unix form.
+#[cfg(windows)]
+fn stdin_file() -> std::io::Result<std::fs::File> {
+    use std::os::windows::io::AsHandle as _;
+    Ok(std::fs::File::from(
+        std::io::stdin().as_handle().try_clone_to_owned()?,
+    ))
+}
+
+/// A note read from `path`, or from `stdin` when the path is `-`: at most the note limit, UTF-8,
+/// with CRLF turned into LF because the daemon refuses a carriage return.
+fn read_note_file<R: std::io::Read>(
+    path: &std::path::Path,
+    stdin: impl FnOnce() -> std::io::Result<R>,
+) -> Result<String, ArgError> {
+    use std::io::Read as _;
+    const LIMIT: usize = dudes_proto::ticket::MAX_NOTE_BYTES;
+    let fail = |what: String| ArgError::NoteFile(what);
+    let mut bytes = Vec::new();
+    let cap = LIMIT as u64 + 1;
+    let read = if path == std::path::Path::new("-") {
+        stdin().and_then(|input| input.take(cap).read_to_end(&mut bytes))
+    } else {
+        std::fs::File::open(path).and_then(|file| file.take(cap).read_to_end(&mut bytes))
+    };
+    read.map_err(|error| fail(format!("cannot read {}: {error}", path.display())))?;
+    if bytes.len() > LIMIT {
+        return Err(fail(format!("the note is over {LIMIT} bytes")));
+    }
+    let text =
+        String::from_utf8(bytes).map_err(|_| fail("the note is not valid UTF-8".to_owned()))?;
+    Ok(text.replace("\r\n", "\n"))
 }
 
 fn ticket_status(flags: &mut Flags<'_>) -> Result<TicketStatus, ArgError> {
@@ -4882,5 +4943,96 @@ mod devices_tests {
         ] {
             assert!(command(bad).is_err(), "{bad:?}");
         }
+    }
+
+    fn note_from(subcommand: &str, note_args: &[&str]) -> Result<Option<String>, ArgError> {
+        let mut argv = vec!["ticket", subcommand];
+        if subcommand == "add" {
+            argv.extend(["--title", "T"]);
+        } else {
+            argv.push("01ARZ3NDEKTSV4RRFFQ69G5FAV");
+        }
+        argv.extend(note_args);
+        match parse(&argv.iter().map(OsString::from).collect::<Vec<_>>())?.command {
+            Command::Ticket(TicketCommand::Add { params, .. }) => Ok(params.description),
+            Command::Ticket(TicketCommand::Edit { note, .. }) => Ok(note),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn note_path(dir: &tempfile::TempDir, bytes: &[u8]) -> String {
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, bytes).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_note_file_is_read_with_crlf_turned_into_lf() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = note_path(&dir, b"one\r\ntwo\r\n");
+        let note = note_from("add", &["--note-file", &path]).unwrap();
+        assert_eq!(note.as_deref(), Some("one\ntwo\n"));
+    }
+
+    #[test]
+    fn a_note_file_refuses_oversize_non_utf8_and_a_competing_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let limit = dudes_proto::ticket::MAX_NOTE_BYTES;
+        let exact = note_path(&dir, &vec![b'a'; limit]);
+        assert!(note_from("add", &["--note-file", &exact]).is_ok());
+        let over = note_path(&dir, &vec![b'a'; limit + 1]);
+        assert!(matches!(
+            note_from("add", &["--note-file", &over]),
+            Err(ArgError::NoteFile(_))
+        ));
+        let bad = note_path(&dir, &[0xff, 0xfe]);
+        assert!(matches!(
+            note_from("edit", &["--note-file", &bad]),
+            Err(ArgError::NoteFile(_))
+        ));
+        let fine = note_path(&dir, b"x");
+        assert_eq!(
+            note_from("edit", &["--note", "y", "--note-file", &fine]),
+            Err(ArgError::Conflicting("--note", "--note-file"))
+        );
+        assert!(matches!(
+            note_from("add", &["--note-file", "/nonexistent/note.md"]),
+            Err(ArgError::NoteFile(_))
+        ));
+    }
+
+    #[test]
+    fn an_empty_note_file_is_refused_on_add_and_clears_on_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = note_path(&dir, b"");
+        assert!(matches!(
+            note_from("add", &["--note-file", &empty]),
+            Err(ArgError::NoteFile(_))
+        ));
+        assert_eq!(
+            note_from("edit", &["--note-file", &empty])
+                .unwrap()
+                .as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn standard_input_is_capped_like_a_file() {
+        let limit = dudes_proto::ticket::MAX_NOTE_BYTES;
+        let path = std::path::Path::new("-");
+        let text = read_note_file(path, || Ok(&b"a\r\nb"[..])).unwrap();
+        assert_eq!(text, "a\nb");
+        let endless = std::io::repeat(b'a');
+        assert!(matches!(
+            read_note_file(path, || Ok(endless)),
+            Err(ArgError::NoteFile(_))
+        ));
+        assert_eq!(
+            read_note_file(path, || Ok(std::io::Cursor::new(vec![b'a'; limit])))
+                .unwrap()
+                .len(),
+            limit
+        );
     }
 }
