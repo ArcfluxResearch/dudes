@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Building2, ChevronDown, LogOut, Maximize2, Minimize2, Moon, Sun, Users } from 'lucide-react';
-import { boardLinkFromAddress, currentAddress, currentPage, isPageView, openPage, subscribeToPage } from './navigation.ts';
+import { boardLinkFromAddress, currentAddress, currentPage, isPageView, openPage, subscribeToPage, ticketFromAddress } from './navigation.ts';
 
 import { DeviceNotices } from './renderer/devices/DeviceNotices';
 import { getDevicesState, loadDevices, subscribeToDevices } from './renderer/devices/devices';
@@ -41,7 +41,11 @@ import { TicketBanner } from './renderer/ticket/TicketBanner';
 import { TicketNotice, TicketNoticeHost } from './renderer/ticket/TicketBoard.tsx';
 import { useDesktopNotifications } from './renderer/useDesktopNotifications';
 import { requestCardSelection } from './renderer/BoardPanel';
-import { showProject } from './renderer/ticket/browseState.ts';
+import { setBrowse, showProject } from './renderer/ticket/browseState.ts';
+import { QuickMenu } from './renderer/commands/QuickMenu';
+import type { MenuRow } from './renderer/commands/commands.ts';
+import { requestNewTicket } from './renderer/ticket/newTicketRequest.ts';
+import { isMac, opensCommandMenu } from './renderer/ticket/shortcuts.ts';
 import { OpenCommand, SignInExpired } from './renderer/SignInExpired';
 import { StreamNotice } from './renderer/StreamNotice';
 import { NoticeStack } from './renderer/notices/NoticeStack';
@@ -167,6 +171,7 @@ function SignedInShell() {
   const [answerAsked, setAnswerAsked] = useState<{ readonly id: string } | null>(null);
   const [recoveryAsked, setRecoveryAsked] = useState<{ readonly id: string } | null>(null);
   const [recoveryReceiptAsked, setRecoveryReceiptAsked] = useState<string | null>(null);
+  const [commandsOpen, setCommandsOpen] = useState(false);
   const [crewOpen, setCrewOpen] = useState(true);
   const [focused, setFocused] = useState(false);
   const [preferences, setPreferences] = useState(readViewPreferences);
@@ -242,10 +247,23 @@ function SignedInShell() {
 
   useEffect(() => {
     const link = boardLinkFromAddress(address);
-    if (link === null) return;
-    if (link.project !== null) showProject(link.project);
+    const ticket = ticketFromAddress(address);
+    if (link === null && ticket === null) return;
+    if (link?.project != null) showProject(link.project);
+    if (ticket !== null) requestCardSelection(ticket, true);
     openView('board');
   }, [address]);
+
+  useEffect(() => {
+    const onMenuKey = (event: KeyboardEvent) => {
+      if (!opensCommandMenu(event, isMac())) return;
+      if (document.querySelector('dialog:modal:not([data-command-menu])') !== null) return;
+      event.preventDefault();
+      setCommandsOpen((open) => !open);
+    };
+    document.addEventListener('keydown', onMenuKey);
+    return () => document.removeEventListener('keydown', onMenuKey);
+  }, []);
 
   useEffect(() => {
     if (page === null) return;
@@ -381,6 +399,17 @@ function SignedInShell() {
       setCrewOpen(true);
     } else {
       setCrewOpen((open) => !open);
+    }
+  }
+
+  function runCommand(entry: MenuRow): void {
+    setCommandsOpen(false);
+    setGuide('closed');
+    switch (entry.kind) {
+      case 'new': requestNewTicket(entry.title); openView('board'); break;
+      case 'board':
+      case 'list': setBrowse({ layout: entry.kind }); openView('board'); break;
+      case 'ticket': openCard(entry.id); break;
     }
   }
 
@@ -617,6 +646,7 @@ function SignedInShell() {
       {noticeArea === null ? null : createPortal(notices, noticeArea)}
       {noticeBanner === null ? null : createPortal(banner, noticeBanner)}
       <RetireDialog floor={floor} />
+      {commandsOpen ? <QuickMenu floor={floor} onRun={runCommand} onClose={() => setCommandsOpen(false)} /> : null}
       {hiring ? <Dialog size="lg" className="hire-dialog max-[800px]:h-dvh" ref={hireDialog}
         aria-labelledby="hire-title" onCancel={(event) => { event.preventDefault(); closeHire(); }}
         onPointerDown={(event) => {

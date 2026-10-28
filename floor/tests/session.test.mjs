@@ -159,6 +159,16 @@ test('a page address reload keeps the stored key and address without granting a 
   }
 });
 
+test('a reload on a Board or ticket address keeps the stored key, so the shell can read the address', async () => {
+  const { signer, key } = await enrolledSigner();
+  const noRequests = async () => { throw new Error('an address reload sent a sign-in request'); };
+  for (const address of ['#/board', '#/board/service', '#/ticket/01JBQ8XK2M3N4P5Q6R7S8T9V0W']) {
+    const session = await establishFloorSessionWith({ hash: address, pathname: '/floor/', search: '' }, KEEP,
+      { signer, plain: noRequests, signed: noRequests });
+    assert.deepEqual(session, { device: key.device }, address);
+  }
+});
+
 test('a link that is not a bootstrap does not read the stored key', async () => {
   const { signer } = await enrolledSigner();
   const session = await establishFloorSessionWith(

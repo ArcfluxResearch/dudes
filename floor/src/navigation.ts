@@ -50,6 +50,31 @@ export function boardLinkFromAddress(address: string): { readonly project: strin
   return match === null ? null : { project: match[1] ?? null };
 }
 
+const TICKET_LINK = /^#\/ticket\/([a-zA-Z0-9_-]{1,128})$/;
+
+/** The address that opens the Board on one ticket: `#/ticket/` and the ticket's id. */
+export function ticketLink(id: string): string {
+  return `#/ticket/${id}`;
+}
+
+/**
+ * The ticket a `#/ticket/<id>` address names. Like a Board address it is read once by the shell and cleared, so it
+ * never stays in the bar to be reloaded into a ticket the operator has since left.
+ */
+export function ticketFromAddress(address: string): string | null {
+  return TICKET_LINK.exec(address)?.[1] ?? null;
+}
+
+/** The address to copy for a ticket. It is built from the origin and path alone, never from the sign-in fragment. */
+export function ticketAddress(place: { readonly origin: string; readonly pathname: string }, id: string): string {
+  return `${place.origin}${place.pathname}${ticketLink(id)}`;
+}
+
+/** Whether a signed-in tab may keep this address on load: a page, or a Board or ticket address the shell reads once. */
+export function isOpenableAddress(address: string): boolean {
+  return pageFromHash(address) !== null || boardLinkFromAddress(address) !== null || ticketFromAddress(address) !== null;
+}
+
 export function currentAddress(): string {
   return typeof window === 'undefined' ? '' : window.location.hash;
 }
