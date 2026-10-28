@@ -8365,8 +8365,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         };
         let (instruction_owner, instruction_started) =
             self.start_attached_boundary(sup, agent, &spec.cwd, queue, waiting)?;
-        self.pending_attached_calls
-            .insert(instruction_started, instruction_owner);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(mailbox) = &mut self.mailbox {
             mailbox.begin_subject_context(
@@ -8378,6 +8376,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         self.children
             .redactor()
             .hold_env(dudes_supervisor::Holder::Pty(agent), &spec.env);
+        if !self.repository_allowed(sup.world(), agent) {
+            return self.record_failed_pty_open(
+                agent,
+                instruction_started,
+                PtyOpenFailure::Failed(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "current project repositories refuse this attachment",
+                )),
+                queue,
+                report,
+            );
+        }
+        self.pending_attached_calls
+            .insert(instruction_started, instruction_owner);
         match self.pty_host.open(spec, cols, rows) {
             Ok((pty, key)) => {
                 self.remember_attached_boundary(

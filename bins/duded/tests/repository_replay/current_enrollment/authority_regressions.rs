@@ -49,6 +49,84 @@ fn hired(response: dudes_proto::rpc::Response) -> AgentId {
 }
 
 #[test]
+fn an_unassigned_hire_cannot_resume_after_its_folder_becomes_an_explicit_member() {
+    let fixture = Fixture::new();
+    let roots = tempfile::tempdir().unwrap();
+    let root = roots.path().canonicalize().unwrap();
+    let origins: Vec<_> = ["web", "api", "docs"]
+        .iter()
+        .map(|name| create_origin(&root, name))
+        .collect();
+    let unrelated = create_origin(&root, "unrelated");
+    let (mut settings, _) = configured(&fixture, &origins);
+    settings.enrollment.profiles.clear();
+    let host = SharedHost::new();
+    let mut running = common::start(open(&settings, &host));
+    let covered = hired(plain_hire(&settings, &origins[0].value.origin.directory));
+    let outside = hired(plain_hire(&settings, &unrelated.value.origin.directory));
+    let ancestor = hired(plain_hire(&settings, &root));
+    for agent in [covered, outside, ancestor] {
+        running.handle.ask(duded::ports::Ask::Pause(agent)).unwrap();
+    }
+    let checked = call(&settings, Method::FloorEnrollmentReload, json!({}))
+        .result
+        .unwrap();
+    let applied = call(
+        &settings,
+        Method::FloorEnrollmentReload,
+        json!({"apply": {
+            "sha256": checked["sha256"], "added": ["service"],
+            "removed": [], "changed": [],
+        }}),
+    );
+    assert!(applied.error.is_none(), "{:?}", applied.error);
+    assert_eq!(applied.result.unwrap()["applied"], true);
+    for agent in [outside, ancestor] {
+        assert!(running.handle.ask(duded::ports::Ask::Resume(agent)).is_ok());
+    }
+    let before = fixture.entries();
+    assert!(
+        plain_hire(&settings, &origins[0].value.origin.directory)
+            .error
+            .is_some()
+    );
+    assert_eq!(fixture.entries(), before);
+    assert!(
+        running
+            .handle
+            .ask(duded::ports::Ask::Resume(covered))
+            .is_err(),
+        "an unassigned hire resumed inside an explicit member"
+    );
+    assert_eq!(fixture.entries(), before);
+    assert!(host.spawned().is_empty());
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    settings.enrollment = duded::config::load_operator(settings.operator_config.as_ref().unwrap())
+        .unwrap()
+        .enrollment;
+    let daemon = open(&settings, &host);
+    for agent in [covered, outside, ancestor] {
+        assert!(
+            daemon.world().agents[&agent]
+                .repositories
+                .workspace()
+                .is_none()
+        );
+    }
+    assert_eq!(
+        daemon.world().agents[&covered]
+            .repositories
+            .singleton()
+            .unwrap()
+            .cwd(),
+        origins[0].value.origin.directory
+    );
+    assert!(daemon.world().agents[&covered].paused);
+    let mut running = common::start(daemon);
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+#[test]
 fn a_plain_operator_hire_cannot_bypass_a_nonprimary_member_or_its_descendant() {
     let fixture = Fixture::new();
     let roots = tempfile::tempdir().unwrap();

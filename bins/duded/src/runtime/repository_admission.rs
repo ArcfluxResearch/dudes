@@ -124,10 +124,11 @@ fn catalog(
 }
 
 fn directory_overlaps(left: &Path, right: &Path) -> bool {
-    left.starts_with(right)
-        || right.starts_with(left)
-        || crate::worktree::contains(left, right)
-        || crate::worktree::contains(right, left)
+    directory_contains(left, right) || directory_contains(right, left)
+}
+
+fn directory_contains(ancestor: &Path, path: &Path) -> bool {
+    path.starts_with(ancestor) || crate::worktree::contains(ancestor, path)
 }
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
@@ -233,7 +234,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             return false;
         }
         let Some(project) = repository.workspace() else {
-            return true;
+            let origin = repository
+                .worktree()
+                .and_then(|id| world.worktrees.get(&id))
+                .map_or(repository.cwd(), |lease| lease.origin.as_path());
+            return !self.explicit_repository_roots(world).any(|root| {
+                directory_contains(root, repository.cwd()) || directory_contains(root, origin)
+            });
         };
         if self.current_repositories.invalid {
             return false;
@@ -294,18 +301,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     }
 
     pub(super) fn explicit_project_at(&self, world: &World, cwd: &Path) -> bool {
+        self.explicit_repository_roots(world)
+            .any(|root| directory_overlaps(root, cwd))
+    }
+
+    fn explicit_repository_roots<'a>(&'a self, world: &'a World) -> impl Iterator<Item = &'a Path> {
         self.enrollment
             .profiles
             .iter()
             .filter_map(|profile| profile.repositories.as_ref())
             .flat_map(RepositorySet::entries)
-            .any(|entry| directory_overlaps(&entry.value.path, cwd))
-            || world.agents.values().any(|row| {
-                matches!(&row.repositories, HireRepositories::Scoped(scope)
-                if scope.repositories.entries().iter().any(|entry| {
-                    directory_overlaps(&entry.value.recorded.execution.directory, cwd)
-                }))
-            })
+            .map(|entry| entry.value.path.as_path())
+            .chain(
+                world
+                    .agents
+                    .values()
+                    .filter_map(|row| match &row.repositories {
+                        HireRepositories::Scoped(scope) => Some(scope),
+                        HireRepositories::Legacy(_) => None,
+                    })
+                    .flat_map(|scope| scope.repositories.entries())
+                    .map(|entry| entry.value.recorded.execution.directory.as_path()),
+            )
     }
 }
 

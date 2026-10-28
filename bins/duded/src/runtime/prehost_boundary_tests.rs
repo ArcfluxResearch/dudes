@@ -18,6 +18,7 @@ type TestDaemon =
 struct CountingHost {
     inner: common::SharedHost,
     calls: Arc<AtomicUsize>,
+    replace_after_hooks: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl CountingHost {
@@ -25,6 +26,7 @@ impl CountingHost {
         Self {
             inner: common::SharedHost::new(),
             calls: Arc::new(AtomicUsize::new(0)),
+            replace_after_hooks: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -35,6 +37,7 @@ impl CountingHost {
                 ..dudes_supervisor::testing::FakeHost::wall_clock_anchored()
             }),
             calls: Arc::new(AtomicUsize::new(0)),
+            replace_after_hooks: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -66,7 +69,47 @@ impl ProcessHost for CountingHost {
     }
 
     fn write_hooks(&mut self, install: &HookInstall) -> io::Result<()> {
-        self.inner.write_hooks(install)
+        self.inner.write_hooks(install)?;
+        if let Some(root) = self.replace_after_hooks.lock().unwrap().take() {
+            std::fs::rename(&root, root.with_extension("preserved"))?;
+            std::fs::create_dir(&root)?;
+            std::fs::create_dir(root.join(".git"))?;
+        }
+        Ok(())
+    }
+}
+
+struct CountingPtyHost(Arc<AtomicUsize>);
+
+impl crate::ports::PtyHostPort for CountingPtyHost {
+    fn open(
+        &mut self,
+        spec: LaunchSpec,
+        cols: u16,
+        rows: u16,
+    ) -> Result<crate::ports::OpenedPty, PtyOpenFailure> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        crate::ports::ClosedPtyHost.open(spec, cols, rows)
+    }
+
+    fn write(&mut self, pty: PtyId, data: &[u8]) -> io::Result<usize> {
+        crate::ports::ClosedPtyHost.write(pty, data)
+    }
+
+    fn resize(&mut self, pty: PtyId, cols: u16, rows: u16) -> io::Result<()> {
+        crate::ports::ClosedPtyHost.resize(pty, cols, rows)
+    }
+
+    fn subscribe(&mut self, pty: PtyId) -> Option<crate::pty_output::OutputSubscription> {
+        crate::ports::ClosedPtyHost.subscribe(pty)
+    }
+
+    fn close(&mut self, pty: PtyId) -> PtyCloseOutcome {
+        crate::ports::ClosedPtyHost.close(pty)
+    }
+
+    fn shutdown(&mut self) -> io::Result<()> {
+        crate::ports::ClosedPtyHost.shutdown()
     }
 }
 
@@ -258,6 +301,110 @@ fn legacy_enrollment(root: PathBuf) -> crate::floor_actions::Enrollment {
             mark: None,
         }],
     }
+}
+
+#[test]
+fn an_attached_open_rechecks_a_known_origin_after_hook_preparation() {
+    let fixture = common::Fixture::new();
+    let host = CountingHost::new();
+    let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+    let root = fixture.state.path().join("origin");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    let root = root.canonicalize().unwrap();
+    daemon.ctx.enrollment = legacy_enrollment(root.clone());
+    daemon.observe_repository_enrollment().unwrap();
+    let Answered::Hired(hired) = daemon
+        .ask(Ask::Hire(Box::new(common::hire_params(&root))))
+        .unwrap()
+    else {
+        panic!("the real hire must precede the parked attachment");
+    };
+    let agent = hired.agent;
+    let original = daemon.sup.world().agents[&agent].repositories.clone();
+    let entry = Entry {
+        at: daemon.ctx.clock.now(),
+        record: Record::Attached {
+            agent,
+            by: dudes_proto::Actor::System,
+            hook_port: None,
+            provenance: None,
+        },
+    };
+    let committed = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let (main, checkpoint) = committed.into_parts();
+    for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
+        daemon
+            .sup
+            .handle(
+                Input::Replayed { lsn, entry },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .unwrap();
+    }
+    daemon
+        .sup
+        .observe_repository_admission(daemon.ctx.repository_observation(daemon.sup.world()));
+    assert!(daemon.sup.repository_admitted(agent));
+    let effect = Effect::OpenPty {
+        agent,
+        spec: LaunchSpec {
+            argv: vec![common::true_program().into()],
+            env: Vec::new(),
+            cwd: root.clone(),
+            stdin: dudes_providers::launch::LaunchInput::Null,
+        },
+        install: HookInstall::default(),
+        cols: 80,
+        rows: 24,
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    daemon.ctx.pty_host = crate::classify::PtyBarrier::new(
+        Box::new(CountingPtyHost(Arc::clone(&calls))),
+        daemon.ctx.resolver.clone(),
+    );
+    *host.replace_after_hooks.lock().unwrap() = Some(root.clone());
+    let mut queue = VecDeque::new();
+    let mut report = PumpReport::attach(agent);
+    daemon
+        .ctx
+        .execute(
+            &effect,
+            &mut queue,
+            &mut report,
+            &mut daemon.sup,
+            &mut daemon.closing,
+        )
+        .unwrap();
+    assert!(root.with_extension("preserved").is_dir());
+    assert!(!daemon.ctx.repository_allowed(daemon.sup.world(), agent));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "the PTY host opened a replaced origin"
+    );
+    daemon
+        .pump_inputs(&mut report, PumpOrigin::Ordinary, queue, &[], |_, _| {
+            Ok(Handled::default())
+        })
+        .unwrap();
+    assert!(!daemon.sup.world().agents[&agent].attached);
+    assert_eq!(daemon.sup.world().agents[&agent].repositories, original);
+    assert_eq!(host.spawn_calls(), 0);
+    assert!(daemon.ctx.pending_attached_calls.is_empty());
+    assert!(fixture.records().iter().any(|record| matches!(
+        record,
+        Record::InstructionObservationFinished {
+            settlement: InstructionSettlement::Unknown {
+                reason: InstructionUnknownReason::UnrecordedLaunchBoundary,
+                ..
+            },
+            ..
+        }
+    )));
+    assert!(!fixture.records().iter().any(|record| matches!(
+        record,
+        Record::PtySpawned { .. } | Record::TurnSpawned { .. }
+    )));
 }
 
 #[test]

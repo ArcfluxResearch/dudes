@@ -640,7 +640,7 @@ pub enum Input {
         /// The not-appended browser dispatch intent being refused, when applicable.
         dispatch_token: Option<PersistToken>,
     },
-    /// The exact Attached port call failed after its starting observation was durable.
+    /// An Attached opening attempt failed after its starting observation was durable.
     InstructionAttachedOpenFailed {
         /// Captured physical starting observation, unaffected by a successor attachment.
         started_lsn: Lsn,
