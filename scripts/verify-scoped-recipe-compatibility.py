@@ -35,6 +35,8 @@ OUTER_NETWORK_GUARD = '(version 1)(allow default)(deny network-outbound)(allow n
 DUMMY_CREDENTIAL = "local-only-dummy"
 CODEX_TOOL_TYPES = {"exec_command": "function", "write_stdin": "function", "request_user_input": "function", "apply_patch": "custom", "view_image": "function"}
 NATIVE_GOAL_TOOLS = {"get_goal", "create_goal", "update_goal"}
+MAX_HTTP_REQUESTS = 12
+MAX_GET_REQUESTS = 10
 
 
 def digest(value):
@@ -45,69 +47,148 @@ def closed_codex_tools(tools):
     return len(tools) == len(CODEX_TOOL_TYPES) and {tool.get("name"): tool.get("type") for tool in tools} == CODEX_TOOL_TYPES
 
 
+def model_observation_checks(model, expected_posts):
+    return {
+        "model_server_error_free": not model.errors,
+        "accepted_model_posts_exact": len(model.requests) == expected_posts,
+        "attempted_model_posts_exact": model.post_attempts == expected_posts,
+        "http_request_budget": model.http_total <= MAX_HTTP_REQUESTS and model.get_attempts <= MAX_GET_REQUESTS and model.http_overflow == 0,
+    }
+
+
 class LocalModel:
     def __init__(self, provider, target, action, unavailable):
         self.provider, self.target, self.action = provider, target, action
         self.requests, self.other, self.errors, self.credentials = [], [], [], []
+        self.expected_posts = 2 if provider == "claude" or action == "declared-read" else 1
+        self.http_attempts, self.http_total, self.get_attempts, self.post_attempts, self.http_overflow = [], 0, 0, 0, 0
+        self.lock = threading.RLock()
         model = self
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_):
                 pass
 
+            def setup(self):
+                super().setup()
+                self.connection.settimeout(2)
+
+            def handle_one_request(self):
+                self.recorded = False
+                super().handle_one_request()
+
+            def observe(self):
+                if getattr(self, "recorded", False):
+                    return self.budget_allowed
+                self.recorded = True
+                self.budget_allowed = model.record_http(getattr(self, "command", None), getattr(self, "path", None), self.headers.get("Upgrade") if hasattr(self, "headers") else None)
+                return self.budget_allowed
+
+            def begin(self):
+                if not self.observe():
+                    self.send_error(429)
+                    return False
+                return True
+
+            def send_error(self, code, message=None, explain=None):
+                allowed = self.observe()
+                model.fail("local HTTP error " + str(code))
+                super().send_error(code, message, explain)
+                if not allowed:
+                    self.server.shutdown()
+
+            def log_error(self, *_):
+                self.observe()
+                model.fail("local HTTP parser/transport error")
+
             def do_GET(self):
-                model.other.append({"method": "GET", "path": self.path, "upgrade": self.headers.get("Upgrade")})
+                if not self.begin():
+                    return
                 if self.path == "/v1/local-health":
                     self.send_response(200)
                     self.end_headers()
                     self.wfile.write(b"local-model-ready")
                     return
-                self.send_response(426 if self.headers.get("Upgrade") else 404)
+                if provider != "codex" or self.path != "/v1/responses" or self.headers.get("Upgrade", "").lower() != "websocket":
+                    self.send_error(404)
+                    return
+                self.send_response(426)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(b'{"error":{"message":"loopback stand-in accepts SSE only"}}')
 
             def do_POST(self):
+                if not self.begin():
+                    return
+                response_started = False
                 try:
                     observed = [value for name, value in self.headers.items() if name.lower() in {"authorization", "x-api-key"}]
                     expected = {DUMMY_CREDENTIAL, "Bearer " + DUMMY_CREDENTIAL}
                     accepted = all(value in expected for value in observed)
                     model.credentials.append({"credential_headers_present": bool(observed), "all_present_credentials_are_explicit_dummy": accepted})
                     if not accepted:
-                        model.errors.append("local endpoint refused unexpected credential selection")
-                        self.send_response(401)
-                        self.send_header("Content-Length", "0")
-                        self.end_headers()
+                        model.fail("local endpoint refused unexpected credential selection")
+                        self.send_error(401)
                         return
                     length = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < length <= 8 * 1024 * 1024 or len(model.credentials) > 12:
+                    if not 0 < length <= 8 * 1024 * 1024:
                         raise ValueError("local model bound exceeded")
-                    body = json.loads(self.rfile.read(length))
-                    model.requests.append({"path": self.path, "body": body})
                     route = "/v1/messages" if provider == "claude" else "/v1/responses"
                     if self.path.split("?", 1)[0] != route:
-                        raise ValueError("unexpected loopback model route")
+                        self.send_error(404)
+                        return
+                    body = json.loads(self.rfile.read(length))
+                    model.requests.append({"path": self.path, "body": body})
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.end_headers()
+                    response_started = True
                     model.respond(self, body)
                 except Exception as error:
-                    model.errors.append(repr(error))
+                    model.fail(type(error).__name__ + " while serving local model response")
+                    if not response_started:
+                        self.send_error(400)
+
+        class ModelServer(ThreadingHTTPServer):
+            def handle_error(self, *_):
+                model.fail("local HTTP handler exception")
 
         if platform.system() == "Darwin" and unavailable:
-            class LoopbackServer(ThreadingHTTPServer):
+            class LoopbackServer(ModelServer):
                 address_family = socket.AF_INET6
             self.server = LoopbackServer(("::1", 0), Handler)
             host = "localhost"
             if not all(ipaddress.ip_address(item[4][0]).is_loopback for item in socket.getaddrinfo(host, self.server.server_port)):
                 raise ValueError("localhost resolution is not loopback-only")
         else:
-            self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            self.server = ModelServer(("127.0.0.1", 0), Handler)
             host = "127.0.0.1"
-        self.server.daemon_threads = True
+        self.server.daemon_threads = False
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.endpoint = "http://" + host + ":" + str(self.server.server_port) + "/v1"
+
+    def fail(self, message):
+        with self.lock:
+            if message not in self.errors:
+                self.errors.append(message)
+
+    def record_http(self, method, path, upgrade):
+        with self.lock:
+            self.http_total += 1
+            self.get_attempts += method == "GET"
+            self.post_attempts += method == "POST"
+            attempt = {"method": method, "path": path, "upgrade": upgrade}
+            if len(self.http_attempts) <= MAX_HTTP_REQUESTS:
+                self.http_attempts.append(attempt)
+                if method == "GET":
+                    self.other.append(attempt)
+            else:
+                self.http_overflow += 1
+            allowed = self.http_total <= MAX_HTTP_REQUESTS and self.get_attempts <= MAX_GET_REQUESTS and self.post_attempts <= self.expected_posts
+            if not allowed:
+                self.fail("local HTTP/GET/POST request limit exceeded")
+            return allowed
 
     @staticmethod
     def event(handler, kind, value):
@@ -325,7 +406,12 @@ def run_case(args, case):
         if process is not None:
             stop(process)
         model.close()
-    result.update({"scratch": str(root), "seconds": time.monotonic() - started, "local_model_requests": len(model.requests), "local_post_attempts": len(model.credentials), "other_local_requests": model.other, "credential_observations": model.credentials, "model_errors": model.errors, "paid_model_calls": 0, "production_admission": "unarmed", "cleanup_observation": {"direct_child_exited": process.poll() is not None if process else result.get("direct_child_exited"), "model_accept_thread_stopped": not model.thread.is_alive(), "model_listener_closed": model.server.socket.fileno() == -1, "descendant_cleanup_verified": False}})
+    observations = model_observation_checks(model, 2 if provider == "claude" or action == "declared-read" else 1)
+    result["checks"].update(observations)
+    if not all(observations.values()):
+        failed = ", ".join(name for name, passed in observations.items() if not passed)
+        result["error"] = "; ".join(filter(None, [result["error"], "local model observations failed: " + failed]))
+    result.update({"scratch": str(root), "seconds": time.monotonic() - started, "local_model_requests": len(model.requests), "local_post_attempts": model.post_attempts, "local_http_attempts": model.http_total, "local_get_attempts": model.get_attempts, "http_attempt_log": model.http_attempts, "http_attempt_log_overflow": model.http_overflow, "http_limits": {"total": MAX_HTTP_REQUESTS, "get": MAX_GET_REQUESTS, "post": model.expected_posts}, "other_local_requests": model.other, "credential_observations": model.credentials, "model_errors": model.errors, "paid_model_calls": 0, "production_admission": "unarmed", "cleanup_observation": {"direct_child_exited": process.poll() is not None if process else result.get("direct_child_exited"), "model_accept_thread_stopped": not model.thread.is_alive(), "model_listener_closed": model.server.socket.fileno() == -1, "descendant_cleanup_verified": False}})
     result["egress_isolation"] = ("unavailable-control outer Seatbelt; prevents nested command sandboxing" if args.macos_sandbox_unavailable else "engine's own sandbox and explicit local dummy-provider controls; no outer loopback-egress isolation") if platform.system() == "Darwin" else "loopback-only ephemeral network namespace; no host sandbox settings altered"
     (root / "model-requests.json").write_text(json.dumps(model.requests, indent=2) + "\n")
     (root / "receipt.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -359,9 +445,13 @@ def run_codex(args, root, argv, env, value, policy, model):
     checks = {"catalog_profile_before_task": False, "thread_model_provider_exact": False, "rust_reader_accepted_native_posture": False, "task_completed": False, "closed_tool_inventory": False, "native_goal_tools_absent": False}
     result = {"checks": checks, "error": None}
     responses, emitted, catalog = [], 0, None
+    expected_response, task_sent = 1, False
     deadline = time.monotonic() + 40
     try:
-        send(policy["protocol_actions"][0]["message"])
+        initial = policy["protocol_actions"][0]
+        if initial["kind"] != "write" or initial["task"] or initial["message"].get("method") != "initialize":
+            raise RuntimeError("startup requires a non-task initialize action")
+        send(initial["message"])
         emitted = 1
         while time.monotonic() < deadline:
             try:
@@ -372,8 +462,12 @@ def run_codex(args, root, argv, env, value, policy, model):
                 raise RuntimeError("Codex exited before the compatibility turn finished")
             if frame.get("error"):
                 raise RuntimeError("native protocol refusal: " + json.dumps(frame["error"]))
+            if frame.get("id") is not None:
+                if frame.get("method") is not None or frame["id"] != expected_response:
+                    raise RuntimeError("unexpected native response phase; expected " + str(expected_response))
             if frame.get("id") == 1:
                 responses.append(frame)
+                expected_response = 90
                 send({"method": "initialized"})
                 send({"id": 90, "method": "model/list", "params": {}})
                 continue
@@ -385,6 +479,7 @@ def run_codex(args, root, argv, env, value, policy, model):
                 checks["catalog_profile_before_task"] = catalog is not None
                 if catalog is None:
                     raise RuntimeError("endpoint override did not expose the recognized GPT-5.5 catalog profile")
+                expected_response = 2
             elif frame.get("id") in [2, 3]:
                 responses.append(frame)
                 if frame.get("id") == 2:
@@ -393,7 +488,12 @@ def run_codex(args, root, argv, env, value, policy, model):
                     checks["thread_model_provider_exact"] = body.get("model") == "gpt-5.5" and body.get("modelProvider") == "openai"
                     if not checks["thread_model_provider_exact"]:
                         raise RuntimeError("native thread changed the requested built-in provider/model")
+                    expected_response = 3
+                else:
+                    expected_response = None
             elif frame.get("method") == "turn/completed":
+                if not task_sent or expected_response is not None:
+                    raise RuntimeError("native completion arrived before admitted task startup")
                 checks["task_completed"] = frame.get("params", {}).get("turn", {}).get("status") == "completed"
                 break
             else:
@@ -408,8 +508,13 @@ def run_codex(args, root, argv, env, value, policy, model):
                     raise RuntimeError("unchanged Rust reader refused the native startup/posture")
                 if action["kind"] == "write":
                     message = action["message"]
+                    if bool(action["task"]) != (message.get("method") == "turn/start"):
+                        raise RuntimeError("generated task marker disagrees with protocol method")
                     if message.get("method") != "initialized":
                         if action["task"]:
+                            if catalog is None or not checks["catalog_profile_before_task"] or expected_response != 3 or task_sent:
+                                raise RuntimeError("task dispatch requires admitted catalog and thread response")
+                            task_sent = True
                             checks["rust_reader_accepted_native_posture"] = True
                         send(message)
             emitted = len(actions)
