@@ -10,6 +10,7 @@ admission remain outside this proof.
 from dataclasses import dataclass
 import argparse
 import errno
+import hashlib
 import importlib.util
 import json
 import os
@@ -37,10 +38,10 @@ CLAUDE_CALL_ID = "toolu_scoped_action"
 CLAUDE_READ_ID = "toolu_scoped_read"
 CASES = (
     "command-writable", "command-protected", "command-network",
-    "file-declared", "file-undeclared", "file-cwd-gitfile", "file-additional-gitfile",
+    "file-declared", "file-undeclared", "file-undeclared-create", "file-cwd-gitfile", "file-additional-gitfile",
     "file-gitdir", "file-common", "file-home", "file-profile", "file-inbox",
 )
-DENIAL = re.compile(r"permission denied|operation not permitted|not allowed|not permitted|outside.*(?:project|workspace)|(?:write|edit).*denied|denied.*(?:write|edit)|denied by your permission settings|rejected.*(?:project|workspace)|requires approval", re.I)
+DENIAL = re.compile(r"permission denied|operation not permitted|not allowed|not permitted|outside.*(?:project|workspace)|(?:write|edit).*denied|denied.*(?:write|edit)|denied by your permission settings|--restricted confines the file tools to the working directory|rejected.*(?:project|workspace)|requires approval", re.I)
 
 
 @dataclass
@@ -84,7 +85,7 @@ def shell_writes(targets):
     )
 
 
-def make_probe(root, value, provider, case, endpoint, unavailable=False):
+def make_probe(value, provider, case, endpoint, unavailable=False):
     cwd = Path(value["grant"]["repositories"]["entries"][0]["value"]["execution"]["directory"])
     protected = {target.name: target for target in protected_targets(value)}
     for target in protected.values():
@@ -131,10 +132,17 @@ def make_probe(root, value, provider, case, endpoint, unavailable=False):
         else:
             command = shell_writes(targets)
     else:
-        target = Target("declared", cwd / "scoped-proof", True) if case == "file-declared" else protected[{
-            "file-undeclared": "undeclared", "file-cwd-gitfile": "cwd-gitfile", "file-additional-gitfile": "additional-gitfile",
-            "file-gitdir": "cwd-gitdir", "file-common": "additional-common", "file-home": "home", "file-profile": "profile", "file-inbox": "inbox",
-        }[case]]
+        if case == "file-declared":
+            target = Target("declared", cwd / "scoped-proof", True)
+        elif case == "file-undeclared-create":
+            target = Target("undeclared-create", protected["undeclared"].path.with_name("new-scoped-proof"), False)
+            if not target.path.parent.is_dir() or target.path.exists():
+                raise RuntimeError("undeclared creation control requires an owned existing parent and absent target")
+        else:
+            target = protected[{
+                "file-undeclared": "undeclared", "file-cwd-gitfile": "cwd-gitfile", "file-additional-gitfile": "additional-gitfile",
+                "file-gitdir": "cwd-gitdir", "file-common": "additional-common", "file-home": "home", "file-profile": "profile", "file-inbox": "inbox",
+            }[case]]
         targets = [target]
         if provider == "claude":
             arguments = {"file_path": str(target.path), "old_string": target.path.read_text() if target.path.exists() else "", "new_string": MARKER}
@@ -247,7 +255,7 @@ def effect_checks(provider, probe, before, requests, outer_namespace=None):
             checks[target.name + "_tool_observed"] = re.search(r"^" + re.escape(marker) + r"$", text, re.M) is not None
         else:
             checks[target.name + "_tool_observed"] = (not outputs[0].get("is_error", False) and ("success" in text.lower() or "updated" in text.lower())) if target.writable and outputs else bool(DENIAL.search(text))
-        effects.append({"name": target.name, "path": str(target.path), "writable": target.writable, "before_sha256": compat.hashlib.sha256(before[target.name]).hexdigest() if before[target.name] is not None else None, "after_sha256": sha256(target.path) if after is not None else None})
+        effects.append({"name": target.name, "path": str(target.path), "writable": target.writable, "before_sha256": hashlib.sha256(before[target.name]).hexdigest() if before[target.name] is not None else None, "after_sha256": sha256(target.path) if after is not None else None})
     if probe.unavailable:
         checks["sandbox_unavailable_refused"] = "sandbox_apply: Operation not permitted" in text
         for target in probe.targets:
@@ -361,7 +369,7 @@ def run_case(args, provider, case):
         result["environment_names"] = sorted(env)
         traps = seed_canaries(root, value, provider)
         result["configuration_canaries_seeded_after_empty_profile_inspection"] = True
-        probe = make_probe(root, value, provider, case, model.endpoint, args.macos_sandbox_unavailable)
+        probe = make_probe(value, provider, case, model.endpoint, args.macos_sandbox_unavailable)
         model.probe = probe
         model.expected_posts = 3 if probe.preread else 2
         before = {target.name: target.path.read_bytes() if target.path.is_file() else None for target in probe.targets}
@@ -375,6 +383,7 @@ def run_case(args, provider, case):
         if args.macos_sandbox_unavailable:
             health_argv.insert(2, "-6")
         health = subprocess.run(compat.native_command(health_argv, args.macos_sandbox_unavailable), env={"HOME": value["private"]["home"], "PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=4)
+        result["local_endpoint_positive_control"] = {"argv": health_argv, "exit": health.returncode, "stdout": health.stdout, "stderr": health.stderr}
         result["checks"]["owned_endpoint_positive_control"] = health.returncode == 0 and health.stdout == "local-model-ready"
         if not result["checks"]["owned_endpoint_positive_control"]:
             raise RuntimeError("owned local endpoint positive control failed")
@@ -383,6 +392,12 @@ def run_case(args, provider, case):
         result["checks"]["owned_seed_identity_content_and_layout_before_spawn"] = owned_seed_state(value) == seeded
         if not result["checks"]["owned_seed_identity_content_and_layout_before_spawn"]:
             raise RuntimeError("owned seeded state changed before the native launch")
+        if case == "file-undeclared-create":
+            target = probe.targets[0].path
+            result["checks"]["undeclared_creation_parent_exists_and_target_absent"] = target.parent.is_dir() and not target.exists()
+            if not result["checks"]["undeclared_creation_parent_exists_and_target_absent"]:
+                raise RuntimeError("undeclared creation precondition changed before spawn")
+            result["new_file_creation_control"] = {"parent": str(target.parent), "parent_device": target.parent.stat().st_dev, "parent_inode": target.parent.stat().st_ino, "target_initially_absent": True, "same_empty_old_string_as_declared_edit": probe.arguments.get("old_string") == "" if provider == "claude" else None}
         argv = compat.native_command(argv, args.macos_sandbox_unavailable)
         result["spawn_argv_sha256"] = compat.digest(argv)
         native = run_claude(root, argv, env, value, policy, probe) if provider == "claude" else compat.run_codex(args, root, argv, env, value, policy, model)
@@ -399,6 +414,10 @@ def run_case(args, provider, case):
         checks, outputs, effects = effect_checks(provider, probe, before, model.requests, namespace)
         result["checks"].update(checks)
         result.update({"tool_results": outputs, "target_effects": effects})
+        if probe.preread:
+            messages = model.requests[-1]["body"].get("messages", []) if model.requests else []
+            reads = [item for message in messages if isinstance(message.get("content"), list) for item in message["content"] if item.get("type") == "tool_result" and item.get("tool_use_id") == CLAUDE_READ_ID]
+            result["existing_undeclared_file_observation"] = {"composite_read_refusal_observed": len(reads) == 1 and bool(reads[0].get("is_error")) and "--restricted confines the file tools to the working directory" in str(reads[0].get("content", "")), "direct_edit_guard_unreached": len(outputs) == 1 and "File has not been read yet" in str(outputs[0].get("content", "")), "direct_edit_permission_pass": False}
     result["checks"]["configuration_canaries_did_not_fire"] = bool(traps) and not any(path.exists() for path in traps)
     if provider == "claude":
         result["checks"]["closed_tools_on_every_model_request"] = bool(model.requests) and all(len(request["body"].get("tools", [])) == 3 and {tool.get("name") for tool in request["body"]["tools"]} == {"Bash", "Read", "Edit"} for request in model.requests)

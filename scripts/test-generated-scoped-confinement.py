@@ -154,8 +154,14 @@ class Fixtures(unittest.TestCase):
             root = Path(directory)
             value = proof.compat.fixture_input(root, "codex", Path("/fake-engine"), "http://127.0.0.1:1/v1")
             traps = proof.seed_canaries(root, value, "codex")
-            probe = proof.make_probe(root, value, "codex", "file-undeclared", "http://127.0.0.1:1/v1")
+            probe = proof.make_probe(value, "codex", "file-undeclared", "http://127.0.0.1:1/v1")
             self.assertTrue(probe.targets[0].path.is_file())
+            creation = proof.make_probe(value, "claude", "file-undeclared-create", "http://127.0.0.1:1/v1")
+            declared = proof.make_probe(value, "claude", "file-declared", "http://127.0.0.1:1/v1")
+            self.assertTrue(creation.targets[0].path.parent.is_dir())
+            self.assertFalse(creation.targets[0].path.exists())
+            self.assertEqual(creation.arguments["old_string"], declared.arguments["old_string"])
+            self.assertEqual(creation.arguments["new_string"], declared.arguments["new_string"])
             self.assertFalse(any(path.exists() for path in traps))
             state = proof.owned_seed_state(value)
             self.assertEqual(state, proof.owned_seed_state(value))
@@ -165,13 +171,13 @@ class Fixtures(unittest.TestCase):
 
     def test_successful_native_return_cannot_mask_failed_transport_or_missing_action(self):
         original_run = subprocess.run
-        for failure in [None, "handler error", "extra attempt", "missing action"]:
+        for failure in [None, "handler error", "extra attempt", "missing action", "health refused"]:
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 binary, fixture = root / "fake-engine", root / "fake-fixture"
                 binary.write_bytes(b"fake engine, never launched")
                 fixture.write_bytes(b"fake fixture, never launched")
-                model = types.SimpleNamespace(requests=[], errors=[], post_attempts=2, get_attempts=1, http_total=3, http_attempts=[], http_overflow=0, credentials=[], endpoint="http://127.0.0.1:1/v1", close=lambda: None, thread=types.SimpleNamespace(is_alive=lambda: False), server=types.SimpleNamespace(server_port=1, socket=types.SimpleNamespace(fileno=lambda: -1)))
+                model = types.SimpleNamespace(requests=[], errors=[], post_attempts=0, get_attempts=1, http_total=1, http_attempts=[], http_overflow=0, credentials=[], endpoint="http://127.0.0.1:1/v1", close=lambda: None, thread=types.SimpleNamespace(is_alive=lambda: False), server=types.SimpleNamespace(server_port=1, socket=types.SimpleNamespace(fileno=lambda: -1)))
                 args = types.SimpleNamespace(output=root, fixture=fixture, codex=str(binary), macos_sandbox_unavailable=False)
                 def fake_project(_, __, value):
                     cwd = value["grant"]["repositories"]["entries"][0]["value"]["execution"]["directory"]
@@ -179,11 +185,15 @@ class Fixtures(unittest.TestCase):
                 def fake_run(argv, **kwargs):
                     if argv[0] == "/usr/bin/git":
                         return original_run(argv, **kwargs)
+                    if argv[0] == "/usr/bin/curl" and failure == "health refused":
+                        return subprocess.CompletedProcess(argv, 7, "", "local connection failed")
                     return subprocess.CompletedProcess(argv, 0, "codex-cli 0.164.0-alpha.11.1" if argv[-1] == "--version" else "local-model-ready", "")
                 def fake_native(*call_args):
                     probe = call_args[-1].probe
                     probe.targets[0].path.write_text(proof.MARKER)
                     model.requests = requests_for("codex", probe, "Success. Updated", call=failure != "missing action")
+                    model.post_attempts = 2
+                    model.http_total = 3
                     if failure == "handler error":
                         model.errors.append("owned handler failed")
                     if failure == "extra attempt":
@@ -200,7 +210,11 @@ class Fixtures(unittest.TestCase):
                      mock.patch("builtins.print"):
                     result = proof.run_case(args, "codex", "file-declared")
                 self.assertEqual(result["passed"], failure is None)
-                self.assertEqual(result["local_post_attempts"], 3 if failure == "extra attempt" else 2)
+                self.assertEqual(result["local_post_attempts"], 0 if failure == "health refused" else 3 if failure == "extra attempt" else 2)
+                if failure == "health refused":
+                    self.assertEqual(result["local_endpoint_positive_control"]["exit"], 7)
+                    self.assertFalse(result["checks"]["owned_endpoint_positive_control"])
+                    self.assertIsNone(result["cleanup_observation"]["direct_child_exited"])
                 self.assertTrue(Path(result["scratch"], "receipt.json").is_file())
 
 
