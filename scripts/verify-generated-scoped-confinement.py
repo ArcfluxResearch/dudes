@@ -21,9 +21,11 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 
@@ -37,11 +39,14 @@ MARKER = "generated confinement marker\n"
 CALL_ID = "call_scoped_action"
 CLAUDE_CALL_ID = "toolu_scoped_action"
 CLAUDE_READ_ID = "toolu_scoped_read"
+SETUP_CALL_ID = "call_scoped_setup"
+CLAUDE_SETUP_ID = "toolu_scoped_setup"
 CASES = (
-    "command-writable", "command-protected", "command-network",
+    "command-writable", "command-protected", "command-network", "command-unix",
     "file-declared", "file-undeclared", "file-undeclared-create", "file-cwd-gitfile", "file-additional-gitfile",
-    "file-gitdir", "file-common", "file-home", "file-profile", "file-inbox",
+    "file-gitdir", "file-common", "file-home", "file-profile", "file-inbox", "file-symlink",
 )
+CODEX_ONLY_CASES = ("closed-tool",)
 DENIAL = re.compile(r"permission denied|operation not permitted|not allowed|not permitted|outside.*(?:project|workspace)|(?:write|edit).*denied|denied.*(?:write|edit)|denied by your permission settings|--restricted confines the file tools to the working directory|rejected.*(?:project|workspace)|requires approval", re.I)
 
 
@@ -61,6 +66,8 @@ class Probe:
     unavailable: bool = False
     network: bool = False
     preread: bool = False
+    setup: dict = None
+    alias: Path = None
 
 
 @dataclass
@@ -68,6 +75,49 @@ class ClaudeAction:
     id: str
     tool: str
     arguments: dict
+
+
+class UnixCanary:
+    def __init__(self):
+        self.root = Path(tempfile.mkdtemp(prefix="du-", dir="/tmp")).resolve()
+        self.path = self.root / "owned.sock"
+        self.connections, self.errors = [], []
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(str(self.path))
+        self.listener.listen(2)
+        self.listener.settimeout(0.05)
+        self.finished = threading.Event()
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def serve(self):
+        while not self.finished.is_set():
+            try:
+                connection, _ = self.listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            with connection:
+                connection.settimeout(1)
+                try:
+                    body = connection.recv(128)
+                    self.connections.append(body.decode("ascii"))
+                    connection.sendall(b"owned-unix-ready")
+                except Exception as error:
+                    self.errors.append(type(error).__name__)
+
+    def positive(self):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(1)
+            connection.connect(str(self.path))
+            connection.sendall(b"outside-positive-control")
+            return connection.recv(128) == b"owned-unix-ready" and self.connections == ["outside-positive-control"] and not self.errors
+
+    def close(self):
+        self.finished.set()
+        self.listener.close()
+        self.thread.join(timeout=1)
 
 
 def protected_targets(value):
@@ -109,13 +159,35 @@ def write_probe_command(path, targets):
     return shlex.join([sys.executable, str(path)])
 
 
-def make_probe(value, provider, case, endpoint, unavailable=False):
+def make_probe(value, provider, case, endpoint, unavailable=False, unix_socket=None):
     cwd = Path(value["grant"]["repositories"]["entries"][0]["value"]["execution"]["directory"])
     protected = {target.name: target for target in protected_targets(value)}
     for target in protected.values():
         if not target.path.exists():
             target.path.write_text("owned existing confinement target\n")
-    if case == "command-network":
+    if case == "closed-tool":
+        if provider != "codex":
+            raise ValueError("the unavailable native goal tool control is Codex-only")
+        return Probe(case, "get_goal", {}, [])
+    if case == "command-unix":
+        if unix_socket is None:
+            raise ValueError("Unix route requires the owned listener's positive control")
+        script = Path(value["private"]["work"]) / "unix-probe.py"
+        script.write_text(
+            "import socket, sys\n"
+            "print('SCOPED_UNIX_ATTEMPTS=1')\n"
+            "with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:\n"
+            "    connection.settimeout(1)\n"
+            "    try:\n"
+            "        connection.connect(sys.argv[1])\n"
+            "        connection.sendall(b'native-probe')\n"
+            "        print('SCOPED_UNIX_CONNECTED')\n"
+            "    except OSError as error:\n"
+            "        print('SCOPED_UNIX_ERRNO=' + str(error.errno))\n"
+            "        print(str(error))\n"
+        )
+        command, targets = shlex.join([sys.executable, str(script), str(unix_socket)]), []
+    elif case == "command-network":
         script = Path(value["private"]["work"]) / "network-probe.py"
         script.write_text(
             "import os, socket, sys\n"
@@ -144,27 +216,37 @@ def make_probe(value, provider, case, endpoint, unavailable=False):
         else:
             command = shell_writes(targets)
     else:
+        setup, alias = None, None
         if case == "file-declared":
             target = Target("declared", cwd / "scoped-proof", True)
         elif case == "file-undeclared-create":
             target = Target("undeclared-create", protected["undeclared"].path.with_name("new-scoped-proof"), False)
             if not target.path.parent.is_dir() or target.path.exists():
                 raise RuntimeError("undeclared creation control requires an owned existing parent and absent target")
+        elif case == "file-symlink":
+            parent = Path(value["grant"]["repositories"]["entries"][1]["value"]["origin"]["common_dir"])
+            target = Target("symlink-protected-new-file", parent / "scoped-alias-new", False)
+            alias = cwd / "metadata-alias"
+            if alias.exists() or alias.is_symlink() or target.path.exists():
+                raise RuntimeError("same-turn symlink control requires an absent alias and protected target")
+            command = "/bin/ln -s " + shlex.quote(str(parent)) + " " + shlex.quote(str(alias)) + " && printf 'SCOPED_ALIAS_CREATED\\n'"
+            setup = {"tool": "Bash" if provider == "claude" else "exec_command", "arguments": {"command": command, "description": "Create one owned symbolic link", "timeout": 5000} if provider == "claude" else {"cmd": command, "workdir": str(cwd), "login": False, "yield_time_ms": 1000, "max_output_tokens": 128}}
         else:
             target = protected[{
                 "file-undeclared": "undeclared", "file-cwd-gitfile": "cwd-gitfile", "file-additional-gitfile": "additional-gitfile",
                 "file-gitdir": "cwd-gitdir", "file-common": "additional-common", "file-home": "home", "file-profile": "profile", "file-inbox": "inbox",
             }[case]]
         targets = [target]
+        access_path = alias / target.path.name if alias is not None else target.path
         if provider == "claude":
-            arguments = {"file_path": str(target.path), "old_string": target.path.read_text() if target.path.exists() else "", "new_string": MARKER}
-            return Probe(case, "Edit", arguments, targets, preread=case == "file-undeclared")
-        path = os.path.relpath(target.path, cwd)
+            arguments = {"file_path": str(access_path), "old_string": target.path.read_text() if target.path.exists() else "", "new_string": MARKER}
+            return Probe(case, "Edit", arguments, targets, preread=case == "file-undeclared", setup=setup, alias=alias)
+        path = os.path.relpath(access_path, cwd)
         if target.path.exists():
             patch = "*** Update File: " + path + "\n@@\n" + "".join("-" + line + "\n" for line in target.path.read_text().splitlines()) + "+" + MARKER
         else:
             patch = "*** Add File: " + path + "\n+" + MARKER
-        return Probe(case, "apply_patch", "*** Begin Patch\n" + patch + "*** End Patch", targets)
+        return Probe(case, "apply_patch", "*** Begin Patch\n" + patch + "*** End Patch", targets, setup=setup, alias=alias)
     arguments = {"command": command, "description": "Local generated confinement check", "timeout": 5000} if provider == "claude" else {"cmd": command, "workdir": str(cwd), "login": False, "yield_time_ms": 1000, "max_output_tokens": 3000}
     return Probe(case, "Bash" if provider == "claude" else "exec_command", arguments, targets, unavailable, case == "command-network")
 
@@ -202,8 +284,9 @@ class ActionModel(compat.LocalModel):
                     arguments = action.arguments
                 else:
                     read = probe.preread and number == 1
-                    block = {"type": "tool_use", "id": CLAUDE_READ_ID if read else CLAUDE_CALL_ID, "name": "Read" if read else probe.tool, "input": {}}
-                    arguments = {"file_path": str(probe.targets[0].path)} if read else probe.arguments
+                    setup = probe.setup if number == 1 else None
+                    block = {"type": "tool_use", "id": CLAUDE_SETUP_ID if setup else CLAUDE_READ_ID if read else CLAUDE_CALL_ID, "name": setup["tool"] if setup else "Read" if read else probe.tool, "input": {}}
+                    arguments = setup["arguments"] if setup else {"file_path": str(probe.targets[0].path)} if read else probe.arguments
                 delta = {"type": "input_json_delta", "partial_json": json.dumps(arguments)}
             else:
                 block, delta = {"type": "text", "text": ""}, {"type": "text_delta", "text": "finished"}
@@ -215,13 +298,17 @@ class ActionModel(compat.LocalModel):
         else:
             response = {"id": "resp_scoped_" + str(number), "object": "response", "created_at": 0, "status": "in_progress", "model": body["model"], "output": []}
             emit("response.created", {"type": "response.created", "response": response})
-            if number == 1 and probe.tool == "apply_patch":
-                item = {"type": "custom_tool_call", "id": "ctc_scoped", "call_id": CALL_ID, "name": probe.tool, "input": probe.arguments, "status": "completed"}
-            elif number == 1:
-                schema = next(tool for tool in tools if tool["name"] == "exec_command").get("parameters", {})
-                if schema.get("required") != ["cmd"] or not {"cmd", "workdir", "login"} <= schema.get("properties", {}).keys():
-                    raise ValueError("advertised exec_command schema changed")
-                item = {"type": "function_call", "id": "fc_scoped", "call_id": CALL_ID, "name": probe.tool, "arguments": json.dumps(probe.arguments), "status": "completed"}
+            if number < self.expected_posts:
+                setup = probe.setup if number == 1 else None
+                tool, arguments, identity = (setup["tool"], setup["arguments"], SETUP_CALL_ID) if setup else (probe.tool, probe.arguments, CALL_ID)
+                if tool == "apply_patch":
+                    item = {"type": "custom_tool_call", "id": "ctc_scoped", "call_id": identity, "name": tool, "input": arguments, "status": "completed"}
+                else:
+                    if tool == "exec_command":
+                        schema = next(tool for tool in tools if tool["name"] == "exec_command").get("parameters", {})
+                        if schema.get("required") != ["cmd"] or not {"cmd", "workdir", "login"} <= schema.get("properties", {}).keys():
+                            raise ValueError("advertised exec_command schema changed")
+                    item = {"type": "function_call", "id": "fc_scoped_" + str(number), "call_id": identity, "name": tool, "arguments": json.dumps(arguments), "status": "completed"}
             else:
                 item = {"type": "message", "id": "msg_scoped_final", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "finished", "annotations": []}]}
             emit("response.output_item.added", {"type": "response.output_item.added", "output_index": 0, "item": item})
@@ -281,6 +368,22 @@ def effect_checks(provider, probe, before, requests, outer_namespace=None):
             except json.JSONDecodeError:
                 pass
     checks["one_exact_native_tool_call_observed"] = exact
+    if probe.name == "closed-tool":
+        checks["unavailable_native_tool_refused"] = re.search(r"unknown tool|unsupported.*(?:function|tool)|unrecognized.*(?:function|tool)|(?:function|tool).*not (?:found|available|supported)", text, re.I) is not None
+    if probe.setup:
+        last = requests[-1]["body"] if requests else {}
+        if provider == "claude":
+            calls = [item for message in last.get("messages", []) if message.get("role") == "assistant" and isinstance(message.get("content"), list) for item in message["content"] if item.get("type") == "tool_use" and item.get("id") == CLAUDE_SETUP_ID]
+            results = [item for message in last.get("messages", []) if message.get("role") == "user" and isinstance(message.get("content"), list) for item in message["content"] if item.get("type") == "tool_result" and item.get("tool_use_id") == CLAUDE_SETUP_ID]
+            exact_setup = len(calls) == 1 and calls[0].get("name") == probe.setup["tool"] and calls[0].get("input") == probe.setup["arguments"]
+        else:
+            calls = [item for item in last.get("input", []) if item.get("type") == "function_call" and item.get("call_id") == SETUP_CALL_ID]
+            results = [item for item in last.get("input", []) if item.get("type") == "function_call_output" and item.get("call_id") == SETUP_CALL_ID]
+            exact_setup = len(calls) == 1 and calls[0].get("name") == probe.setup["tool"] and json.loads(calls[0].get("arguments", "null")) == probe.setup["arguments"]
+        setup_text = str(results[0].get("content" if provider == "claude" else "output", "")) if len(results) == 1 else ""
+        checks["same_turn_symlink_setup_call_and_success_observed"] = exact_setup and len(results) == 1 and not results[0].get("is_error", False) and "SCOPED_ALIAS_CREATED" in setup_text
+        checks["same_turn_alias_targets_the_owned_protected_directory"] = probe.alias.is_symlink() and probe.alias.resolve(strict=True) == probe.targets[0].path.parent
+        checks["symlink_new_file_requires_no_read_prerequisite"] = all(value is None for value in before.values()) and "File has not been read yet" not in text
     read_observation = None
     if probe.preread:
         read_observation = read_then_edit_observation(probe, before, requests, outputs)
@@ -310,6 +413,10 @@ def effect_checks(provider, probe, before, requests, outer_namespace=None):
         if platform.system() == "Linux" and code is not None and int(code.group(1)) == errno.ECONNREFUSED:
             denied = namespace is not None and outer_namespace is not None and namespace.group(1) != outer_namespace
         checks["native_tool_network_refused"] = denied and "SCOPED_NETWORK_CONNECTED" not in text
+    if probe.name == "command-unix":
+        code = re.search(r"SCOPED_UNIX_ERRNO=(\d+)", text)
+        checks["native_unix_connection_attempt_exactly_once"] = re.findall(r"SCOPED_UNIX_ATTEMPTS=(\d+)", text) == ["1"]
+        checks["native_unix_connection_refused"] = code is not None and int(code.group(1)) in {errno.EPERM, errno.EACCES} and "SCOPED_UNIX_CONNECTED" not in text
     return checks, outputs, effects
 
 
@@ -411,7 +518,7 @@ def run_claude(root, argv, env, value, policy, probe, expected_ids=None):
         "native_permission_mode_exact": len(initializations) == 1 and initializations[0].get("permissionMode") == "dontAsk",
         "closed_tool_inventory": len(initializations) == 1 and len(initializations[0].get("tools", [])) == 3 and set(initializations[0]["tools"]) == {"Bash", "Read", "Edit"},
         "native_mcp_absent": len(initializations) == 1 and initializations[0].get("mcp_servers") == [],
-        "expected_native_tool_actions": [action.get("id") for action in actions] == (expected_ids if expected_ids is not None else [CLAUDE_READ_ID, CLAUDE_CALL_ID] if probe.preread else [CLAUDE_CALL_ID]),
+        "expected_native_tool_actions": [action.get("id") for action in actions] == (expected_ids if expected_ids is not None else [CLAUDE_SETUP_ID, CLAUDE_CALL_ID] if probe.setup else [CLAUDE_READ_ID, CLAUDE_CALL_ID] if probe.preread else [CLAUDE_CALL_ID]),
         "task_completed": len(results) == 1 and results[0].get("subtype") == "success" and not results[0].get("is_error") and results[0].get("result") == "finished",
         "request_model_exact": len(initializations) == 1 and initializations[0].get("model") == value["model"],
     }
@@ -623,7 +730,7 @@ def run_case(args, provider, case):
     if sha256(binary) != compat.PINS.get((platform.system(), platform.machine(), provider)):
         raise RuntimeError("native binary does not match the exact pinned build")
     model = ActionModel(provider, args.macos_sandbox_unavailable)
-    blocked_model = None
+    blocked_model, unix = None, None
     started = time.monotonic()
     result = {"provider": provider, "case": case, "checks": {}, "error": None, "binary_sha256": sha256(binary), "fixture_sha256": sha256(args.fixture), "script_sha256": sha256(Path(__file__)), "compatibility_script_sha256": sha256(Path(compat.__file__)), "platform": platform.platform(), "production_admission": "unarmed", "session_scope": "first process only; continuation unproved", "execution_mode": "sandbox-unavailable-control" if args.macos_sandbox_unavailable else "normal"}
     probe, before, traps = None, {}, []
@@ -663,13 +770,19 @@ def run_case(args, provider, case):
             result["dummy_profile_before"] = compat.materialize_codex_profile(value, catalog_source)
         traps = seed_canaries(execution_root, value, provider)
         result["configuration_canaries"] = "repository and isolated HOME only; active-profile poison is covered by separate production Rust preparation tests" if provider == "codex" else "repository, isolated HOME and active profile"
-        probe = make_probe(value, provider, case, model.endpoint, args.macos_sandbox_unavailable)
+        if case == "command-unix":
+            unix = UnixCanary()
+            result["checks"]["outside_unix_listener_positive_control"] = unix.positive()
+            result["checks"]["unix_listener_outside_every_generated_writable_root"] = all(not unix.path.is_relative_to(Path(item["path"])) for item in policy["inventory"]["writable"])
+            if not all(result["checks"].values()):
+                raise RuntimeError("owned Unix endpoint prerequisites failed before native launch")
+        probe = make_probe(value, provider, case, model.endpoint, args.macos_sandbox_unavailable, unix.path if unix else None)
         model.probe = probe
-        model.expected_posts = 3 if probe.preread else 2
+        model.expected_posts = 3 if probe.preread or probe.setup else 2
         before = {target.name: target.path.read_bytes() if target.path.is_file() else None for target in probe.targets}
         seeded = owned_seed_state(value)
         result["owned_seed_files_and_layout"] = seeded
-        result["probe"] = {"name": probe.name, "tool": probe.tool, "arguments": probe.arguments, "explicit_prerequisite_read": probe.preread, "exact_model_posts": model.expected_posts}
+        result["probe"] = {"name": probe.name, "tool": probe.tool, "arguments": probe.arguments, "explicit_prerequisite_read": probe.preread, "predeclared_same_turn_setup": probe.setup, "exact_model_posts": model.expected_posts}
         result["preflight"] = inspect_writable_roots([Path(item["path"]) for item in policy["inventory"]["writable"]])
         if not result["preflight"]["accepted"]:
             raise RuntimeError("generated writable-root metadata preflight refused")
@@ -694,6 +807,10 @@ def run_case(args, provider, case):
         result["checks"]["owned_seed_identity_content_and_layout_before_spawn"] = owned_seed_state(value) == seeded
         if not result["checks"]["owned_seed_identity_content_and_layout_before_spawn"]:
             raise RuntimeError("owned seeded state changed before the native launch")
+        if probe.setup:
+            result["checks"]["alias_and_new_protected_target_absent_before_task"] = not probe.alias.exists() and not probe.alias.is_symlink() and not probe.targets[0].path.exists()
+            if not result["checks"]["alias_and_new_protected_target_absent_before_task"]:
+                raise RuntimeError("same-turn symbolic link precondition changed")
         if case == "file-undeclared-create":
             target = probe.targets[0].path
             result["checks"]["undeclared_creation_parent_exists_and_target_absent"] = target.parent.is_dir() and not target.exists()
@@ -725,6 +842,10 @@ def run_case(args, provider, case):
             blocked_model.close()
             result["blocked_owned_listener"] = {"http_attempts": blocked_model.http_attempts, "http_total": blocked_model.http_total, "errors": blocked_model.errors, "closed": blocked_model.server.socket.fileno() == -1, "thread_stopped": not blocked_model.thread.is_alive()}
             result["checks"]["blocked_owned_listener_unused"] = blocked_model.http_total == 0 and not blocked_model.errors
+        if unix is not None:
+            unix.close()
+            result["unix_listener"] = {"path": str(unix.path), "accepted_connections": unix.connections, "errors": unix.errors, "listener_closed": unix.listener.fileno() == -1, "thread_stopped": not unix.thread.is_alive(), "native_connect_attempt_budget": 1}
+            result["checks"]["unix_listener_received_only_the_outside_positive_control"] = unix.connections == ["outside-positive-control"] and not unix.errors and not unix.thread.is_alive() and unix.listener.fileno() == -1
     result["checks"].update(compat.model_observation_checks(model, model.expected_posts))
     if probe is not None:
         checks, outputs, effects = effect_checks(provider, probe, before, model.requests, namespace)
@@ -753,10 +874,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--codex-catalog", type=Path, help="private native bundled export for the pinned macOS executable; Linux exports its own offline")
     parser.add_argument("--provider", choices=["claude", "codex", "all"], default="all")
-    parser.add_argument("--case", choices=[*CASES, "all"], default="all")
+    parser.add_argument("--case", choices=[*CASES, *CODEX_ONLY_CASES, "all"], default="all")
     parser.add_argument("--macos-sandbox-unavailable", action="store_true")
     parser.add_argument("--claude-resume-narrowing", action="store_true")
     args = parser.parse_args()
+    if args.case in CODEX_ONLY_CASES and args.provider != "codex":
+        parser.error("the unavailable native goal tool case requires --provider codex")
     if args.claude_resume_narrowing and (args.provider != "claude" or args.macos_sandbox_unavailable or args.case != "all"):
         parser.error("the explicit resume proof requires --provider claude, normal sandbox and no individual First case")
     if args.macos_sandbox_unavailable and (platform.system() != "Darwin" or args.case != "command-writable"):
@@ -769,7 +892,7 @@ def main():
         (args.output / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
         return results[0]["passed"]
     for provider in ["claude", "codex"] if args.provider == "all" else [args.provider]:
-        for case in CASES if args.case == "all" else [args.case]:
+        for case in (*CASES, *(CODEX_ONLY_CASES if provider == "codex" else ())) if args.case == "all" else [args.case]:
             results.append(run_case(args, provider, case))
             (args.output / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
     return all(result["passed"] for result in results)

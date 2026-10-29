@@ -25,7 +25,7 @@ def requests_for(provider, probe, text, *, call=True, output=True, tool_type=Non
         if call:
             messages.append({"role": "assistant", "content": [{"type": "tool_use", "id": proof.CLAUDE_CALL_ID, "name": probe.tool, "input": probe.arguments}]})
         if output:
-            messages.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": proof.CLAUDE_CALL_ID, "content": text, "is_error": not probe.targets[0].writable}]})
+            messages.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": proof.CLAUDE_CALL_ID, "content": text, "is_error": not probe.targets[0].writable if probe.targets else False}]})
         body = {"messages": messages}
     else:
         items = []
@@ -187,6 +187,58 @@ class Transport(unittest.TestCase):
 
 
 class Fixtures(unittest.TestCase):
+    def test_owned_unix_listener_and_actual_errno_are_both_required(self):
+        endpoint = proof.UnixCanary()
+        try:
+            self.assertTrue(endpoint.positive())
+            self.assertEqual(endpoint.connections, ["outside-positive-control"])
+            for provider, tool in [("claude", "Bash"), ("codex", "exec_command")]:
+                probe = proof.Probe("command-unix", tool, {"cmd": "owned fake command"}, [])
+                for text, expected in [("SCOPED_UNIX_ATTEMPTS=1\nSCOPED_UNIX_ERRNO=13", True), ("SCOPED_UNIX_ATTEMPTS=1\nSCOPED_UNIX_ERRNO=111", False), ("SCOPED_UNIX_ERRNO=13", False), ("SCOPED_UNIX_ATTEMPTS=1\nSCOPED_UNIX_ERRNO=13\nSCOPED_UNIX_CONNECTED", False)]:
+                    checks, _, _ = proof.effect_checks(provider, probe, {}, requests_for(provider, probe, text))
+                    self.assertEqual(all(checks.values()), expected)
+        finally:
+            endpoint.close()
+        self.assertFalse(endpoint.thread.is_alive())
+
+    def test_same_turn_alias_requires_setup_success_direct_denial_and_absent_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            value = proof.compat.fixture_input(root, "claude", Path("/fake"), "http://127.0.0.1:1/v1")
+            for provider in ["claude", "codex"]:
+                probe = proof.make_probe(value, provider, "file-symlink", "http://127.0.0.1:1/v1")
+                self.assertFalse(probe.alias.exists())
+                self.assertFalse(probe.targets[0].path.exists())
+                probe.alias.symlink_to(probe.targets[0].path.parent)
+                requests = requests_for(provider, probe, "Permission denied")
+                if provider == "claude":
+                    requests[-1]["body"]["messages"][:0] = [{"role": "assistant", "content": [{"type": "tool_use", "id": proof.CLAUDE_SETUP_ID, "name": "Bash", "input": probe.setup["arguments"]}]}, {"role": "user", "content": [{"type": "tool_result", "tool_use_id": proof.CLAUDE_SETUP_ID, "content": "SCOPED_ALIAS_CREATED", "is_error": False}]}]
+                else:
+                    requests[-1]["body"]["input"][:0] = [{"type": "function_call", "call_id": proof.SETUP_CALL_ID, "name": "exec_command", "arguments": json.dumps(probe.setup["arguments"])}, {"type": "function_call_output", "call_id": proof.SETUP_CALL_ID, "output": "SCOPED_ALIAS_CREATED"}]
+                before = {probe.targets[0].name: None}
+                checks, _, _ = proof.effect_checks(provider, probe, before, requests)
+                self.assertTrue(all(checks.values()))
+                requests[-1] = requests_for(provider, probe, "File has not been read yet")[-1]
+                checks, _, _ = proof.effect_checks(provider, probe, before, requests)
+                self.assertFalse(all(checks.values()))
+                probe.alias.unlink()
+
+    def test_codex_alias_response_plan_declares_two_actions_and_one_final(self):
+        model = object.__new__(proof.ActionModel)
+        model.provider, model.plan, model.expected_posts, model.requests = "codex", None, 3, []
+        model.probe = proof.Probe("file-symlink", "apply_patch", "owned patch", [], setup={"tool": "exec_command", "arguments": {"cmd": "owned setup"}})
+        tools = [{"name": name, "type": kind} for name, kind in proof.compat.CODEX_TOOL_TYPES.items()]
+        next(tool for tool in tools if tool["name"] == "exec_command")["parameters"] = {"required": ["cmd"], "properties": {key: {} for key in ["cmd", "workdir", "login"]}}
+        handler = types.SimpleNamespace(wfile=io.BytesIO())
+        body = {"model": "gpt-5.5", "tools": tools}
+        for _ in range(3):
+            model.requests.append({"body": body})
+            model.respond(handler, body)
+        frames = [json.loads(line[6:]) for line in handler.wfile.getvalue().decode().splitlines() if line.startswith("data: ")]
+        items = [frame["item"] for frame in frames if frame.get("type") == "response.output_item.done"]
+        self.assertEqual([item.get("call_id") for item in items], [proof.SETUP_CALL_ID, proof.CALL_ID, None])
+        self.assertEqual([item["type"] for item in items], ["function_call", "custom_tool_call", "message"])
+
     def test_existing_negative_targets_and_seed_identity_are_rechecked(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
