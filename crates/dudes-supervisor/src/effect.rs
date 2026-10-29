@@ -32,6 +32,15 @@ use dudes_types::{AgentId, GoalId, Lsn, ModelSelection, TurnId};
 use crate::host::AdoptionKey;
 use crate::input::{ClientId, HookId, InstructionRequest, MailWakeRequest, PersistToken};
 
+/// Immutable authority for one declared ticket observation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepositoryCapture {
+    /// Exact ticket start and hire positions.
+    pub binding: dudes_proto::repository_review::RepositoryReviewBinding,
+    /// The declaration and owned copies selected by that start.
+    pub grant: dudes_proto::repository::RepositoryTurnGrant,
+}
+
 /// Immutable inputs for one managed physical launch.
 #[derive(Clone)]
 pub enum ManagedSpawn {
@@ -201,7 +210,7 @@ pub enum Effect {
         goal: GoalId,
         /// The agent under judgment.
         agent: AgentId,
-        /// The agent's working directory.
+        /// The selected check directory.
         cwd: PathBuf,
         /// What to run.
         predicate: Predicate,
@@ -241,6 +250,22 @@ pub enum Effect {
         /// That baseline.
         baseline: dudes_proto::diff_stamp::BaselinePayload,
         /// Position of the predicate result this sample follows.
+        check_lsn: Lsn,
+    },
+    /// Observe every declared copy before the first scoped issue, using the existing capture worker.
+    CaptureRepositoryBaseline {
+        /// Exact authority retained until the answer is persisted.
+        capture: Box<RepositoryCapture>,
+    },
+    /// Sample every declared copy after one qualifying command result.
+    CaptureRepositoryStamp {
+        /// Exact authority retained with the parked continuation.
+        capture: Box<RepositoryCapture>,
+        /// Position of the complete pre-issue batch.
+        baseline_lsn: Lsn,
+        /// Complete baseline in declared order.
+        baseline: Box<dudes_proto::repository_review::RepositoryBaselineBatch>,
+        /// Position of the qualifying command result.
         check_lsn: Lsn,
     },
     /// Answer a hook call.
@@ -416,6 +441,21 @@ impl fmt::Debug for Effect {
                 .field("baseline_lsn", baseline_lsn)
                 .field("check_lsn", check_lsn)
                 .finish_non_exhaustive(),
+            Self::CaptureRepositoryBaseline { capture } => f
+                .debug_struct("CaptureRepositoryBaseline")
+                .field("binding", &capture.binding)
+                .finish_non_exhaustive(),
+            Self::CaptureRepositoryStamp {
+                capture,
+                baseline_lsn,
+                check_lsn,
+                ..
+            } => f
+                .debug_struct("CaptureRepositoryStamp")
+                .field("binding", &capture.binding)
+                .field("baseline_lsn", baseline_lsn)
+                .field("check_lsn", check_lsn)
+                .finish_non_exhaustive(),
             Self::Kill { agent, turn, key } => f
                 .debug_struct("Kill")
                 .field("agent", agent)
@@ -517,6 +557,8 @@ impl Effect {
             Self::RunPredicate { .. } => "RunPredicate",
             Self::CaptureBaseline { .. } => "CaptureBaseline",
             Self::CaptureStamp { .. } => "CaptureStamp",
+            Self::CaptureRepositoryBaseline { .. } => "CaptureRepositoryBaseline",
+            Self::CaptureRepositoryStamp { .. } => "CaptureRepositoryStamp",
             Self::Reply { .. } => "Reply",
             Self::Notify { .. } => "Notify",
             Self::OpenPty { .. } => "OpenPty",

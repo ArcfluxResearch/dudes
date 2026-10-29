@@ -1145,11 +1145,8 @@ fn retired_repository_class_survives_warm_reopen_and_empty_rebuild() {
 
 fn ticket_start(story: &Story) -> dudes_proto::repository::RepositoryTicketStarted {
     use dudes_proto::repository::{TicketDeclaration, TicketStartRepositories};
-    use dudes_proto::{
-        CheckBaseline, CompletionCheckRef, Goal, GoalBudget, Predicate, TicketCheck,
-    };
+    use dudes_proto::{CheckBaseline, Goal, GoalBudget, Predicate, TicketCheck};
     use dudes_types::{CardId, GoalId, Seq};
-    use sha2::{Digest as _, Sha256};
     let copies = story.hire.repositories.repositories.entries();
     let check = TicketCheck {
         id: "verify".into(),
@@ -1159,23 +1156,6 @@ fn ticket_start(story: &Story) -> dudes_proto::repository::RepositoryTicketStart
             timeout_s: 30,
         },
     };
-    let fields = [
-        ("check_id", "verify"),
-        ("label", "verification passes"),
-        ("kind", "command"),
-        ("argc", "1"),
-        ("argv_0", "/usr/bin/true"),
-        ("timeout_s", "30"),
-        ("may_already_pass", "true"),
-    ];
-    let mut hash = Sha256::new();
-    hash.update(b"dudes.goal-check.v2\0");
-    for (name, value) in fields {
-        hash.update(u16::try_from(name.len()).unwrap().to_be_bytes());
-        hash.update(name.as_bytes());
-        hash.update(u32::try_from(value.len()).unwrap().to_be_bytes());
-        hash.update(value.as_bytes());
-    }
     dudes_proto::repository::RepositoryTicketStarted {
         card: CardId::from_parts(7, 1),
         agent: story.hire.id,
@@ -1185,11 +1165,11 @@ fn ticket_start(story: &Story) -> dudes_proto::repository::RepositoryTicketStart
             id: GoalId::from_parts(8, 1),
             text: "Repair the web and API".into(),
             predicate: check.predicate.clone(),
-            completion_check: Some(CompletionCheckRef {
-                id: check.id.clone(),
-                label: check.label.clone(),
-                revision: dudes_proto::record::Hex32::new(hash.finalize().into()),
-            }),
+            completion_check: duded::scoped_ticket_goal_check(
+                &check,
+                "service",
+                &copies[1].repo_id,
+            ),
             baseline: Some(CheckBaseline::MayAlreadyPass),
             budget: GoalBudget {
                 usd: None,

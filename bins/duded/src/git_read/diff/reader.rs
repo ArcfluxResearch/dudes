@@ -633,22 +633,51 @@ impl DiffReader {
         #[cfg(unix)]
         {
             let budget = self.budget(cancelled);
-            let shadow = self.shadow(tree, None, &budget)?;
-            let mut baseline = BaselineCapture {
-                root: shadow.root().identity(),
-                head: shadow.head(),
-                preexisting_tracked: false,
-                preexisting_untracked: false,
-            };
-            baseline.preexisting_tracked = self.metadata_dirty(tree, &shadow, &budget)?;
-            baseline.preexisting_untracked = self.new_file_listing(tree, &shadow, &budget)?.any();
-            Ok(baseline)
+            self.baseline_with_budget(tree, &budget)
         }
         #[cfg(not(unix))]
         {
             let _ = (tree, cancelled);
             Err(DiffRefusal::UnsupportedPlatform)
         }
+    }
+
+    /// Capture all declared starts under the same whole-read deadline.
+    pub fn capture_baseline_batch(
+        &self,
+        input: ReviewBatch<'_>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Vec<(Option<RepoId>, Result<BaselineCapture, DiffRefusal>)> {
+        #[cfg(unix)]
+        let budget = self.budget(cancelled);
+        #[cfg(not(unix))]
+        let _ = cancelled;
+        input
+            .subjects
+            .iter()
+            .map(|subject| {
+                #[cfg(unix)]
+                let outcome = self.baseline_with_budget(&subject.tree, &budget);
+                #[cfg(not(unix))]
+                let outcome = Err(DiffRefusal::UnsupportedPlatform);
+                (subject.repo_id.clone(), outcome)
+            })
+            .collect()
+    }
+
+    #[cfg(unix)]
+    fn baseline_with_budget(
+        &self,
+        tree: &super::super::Tree,
+        budget: &Budget,
+    ) -> Result<BaselineCapture, DiffRefusal> {
+        let shadow = self.shadow(tree, None, budget)?;
+        Ok(BaselineCapture {
+            root: shadow.root().identity(),
+            head: shadow.head(),
+            preexisting_tracked: self.metadata_dirty(tree, &shadow, budget)?,
+            preexisting_untracked: self.new_file_listing(tree, &shadow, budget)?.any(),
+        })
     }
 
     /// Sample the bounded eligible scope without reading any browser-selected pathname.

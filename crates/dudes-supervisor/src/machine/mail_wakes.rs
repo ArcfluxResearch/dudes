@@ -87,6 +87,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     pub(super) fn request_mail_refresh(&mut self, agent: AgentId, phase: MailRefreshPhase) {
+        if self.world.agents.get(&agent).is_some_and(|row| {
+            matches!(
+                row.repositories,
+                dudes_proto::repository::HireRepositories::Scoped(_)
+            )
+        }) && self.hold_for_issue_baseline(agent)
+        {
+            return;
+        }
         if !self.mail_wake_can_reconcile(agent)
             || self.mail_refreshes.contains_key(&agent)
             || self.ledger.values().any(|parked| match &parked.then {

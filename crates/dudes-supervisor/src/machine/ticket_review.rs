@@ -7,17 +7,127 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::effect::RepositoryCapture;
 use dudes_proto::diff_stamp::{BaselinePayload, StampPayload};
+use dudes_proto::repository::{HireRepositories, RepositoryTurnGrant};
+use dudes_proto::repository_review::{RepositoryBaselineBatch, RepositoryStampBatch};
 
 use super::{AgentId, Clock, Effect, GoalId, Lsn, Record, Rng, Supervisor, Then};
 
 #[derive(Debug, Default)]
 pub(super) struct State {
     baselines_requested: BTreeSet<GoalId>,
-    stamps_parked: BTreeMap<GoalId, (Lsn, Box<Then>)>,
+    repository_baselines: BTreeMap<GoalId, RepositoryCapture>,
+    stamps_parked: BTreeMap<GoalId, StampWait>,
+}
+
+#[derive(Debug)]
+enum StampWait {
+    Legacy(Lsn, Box<Then>),
+    Repositories(Box<RepositoryCapture>, Lsn, Box<Then>),
 }
 
 impl<C: Clock, R: Rng> Supervisor<C, R> {
+    fn repository_capture(&self, agent: AgentId) -> Option<RepositoryCapture> {
+        let row = self.world.agents.get(&agent).filter(|row| !row.retired)?;
+        let HireRepositories::Scoped(hire) = &row.repositories else {
+            return None;
+        };
+        let round = self.world.active_repository_round(agent).ok()??;
+        let review = self.world.repository_review(round.goal)?;
+        Some(RepositoryCapture {
+            binding: review.binding,
+            grant: RepositoryTurnGrant::select(row.mcp.hire_lsn, hire, Some(round)).ok()?,
+        })
+    }
+
+    pub(super) fn hold_for_repository_baseline(&mut self, agent: AgentId) -> bool {
+        let round = match self.world.active_repository_round(agent) {
+            Ok(Some(round)) => round,
+            Ok(None) => return false,
+            Err(_) => return true,
+        };
+        let goal = round.goal;
+        let Some(review) = self.world.repository_review(goal) else {
+            return true;
+        };
+        if review
+            .baseline
+            .as_ref()
+            .is_some_and(|(_, batch)| batch.complete())
+        {
+            return false;
+        }
+        if review.first_issue_lsn.is_some()
+            || self.ticket_review.repository_baselines.contains_key(&goal)
+        {
+            return true;
+        }
+        if let Some(capture) = self.repository_capture(agent) {
+            self.ticket_review
+                .repository_baselines
+                .insert(goal, capture.clone());
+            self.pending.push(Effect::CaptureRepositoryBaseline {
+                capture: Box::new(capture),
+            });
+        }
+        true
+    }
+
+    pub(super) fn repository_stamp_waiting(&self, agent: AgentId) -> bool {
+        self.world
+            .active_repository_round(agent)
+            .ok()
+            .flatten()
+            .and_then(|round| self.world.repository_review(round.goal))
+            .is_some_and(|review| {
+                review.check.is_some_and(|check| {
+                    review
+                        .stamp
+                        .as_ref()
+                        .is_none_or(|(_, stamp)| stamp.check_lsn != check.lsn || !stamp.complete())
+                })
+            })
+    }
+
+    pub(super) fn on_repository_baseline_captured(
+        &mut self,
+        capture: &RepositoryCapture,
+        baseline: RepositoryBaselineBatch,
+    ) {
+        let goal = capture.binding.ticket.goal;
+        if self.ticket_review.repository_baselines.get(&goal) != Some(capture) {
+            return;
+        }
+        let agent = capture.binding.ticket.claimant;
+        if !self.repository_admitted(agent)
+            || self.repository_capture(agent).as_ref() != Some(capture)
+        {
+            self.ticket_review.repository_baselines.remove(&goal);
+            return;
+        }
+        if baseline.binding != capture.binding {
+            return;
+        }
+        let complete = baseline.complete();
+        let entry = super::Entry {
+            at: self.clock.now(),
+            record: Record::TicketBaselineBatchRecorded(baseline),
+        };
+        if self.world.validate_review_record(&entry).is_ok() {
+            self.ticket_review.repository_baselines.remove(&goal);
+            self.persist_at(
+                entry.at,
+                entry.record,
+                if complete {
+                    Then::ClearedCause { agent }
+                } else {
+                    Then::Fold
+                },
+            );
+        }
+    }
+
     /// Whether the round's first turn must wait for its baseline. Asks for the observation once.
     ///
     /// Only a ticket goal that has neither a recorded baseline nor ever had a turn is owed one:
@@ -90,7 +200,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     /// Route a predicate result's continuation through the sample when the goal has a baseline.
     pub(super) fn after_predicate_result(&self, goal: GoalId, then: Then) -> Then {
-        if self.world.ticket_review(goal).is_some() {
+        if self.world.ticket_review(goal).is_some() || self.world.repository_review(goal).is_some()
+        {
             Then::TicketStamp {
                 goal,
                 then: Box::new(then),
@@ -107,6 +218,29 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         check_lsn: Lsn,
         operation: &crate::RecoveryOperation<'_>,
     ) -> Option<crate::input::RecoveryUpdate> {
+        if let Some(review) = self.world.repository_review(goal) {
+            let capture = self.repository_capture(review.binding.ticket.claimant)?;
+            if capture.binding != review.binding {
+                return None;
+            }
+            let Some((baseline_lsn, baseline)) = &review.baseline else {
+                return None;
+            };
+            if !baseline.complete() || review.check.is_none_or(|check| check.lsn != check_lsn) {
+                return None;
+            }
+            self.pending.push(Effect::CaptureRepositoryStamp {
+                capture: Box::new(capture.clone()),
+                baseline_lsn: *baseline_lsn,
+                baseline: Box::new(baseline.clone()),
+                check_lsn,
+            });
+            self.ticket_review.stamps_parked.insert(
+                goal,
+                StampWait::Repositories(Box::new(capture), check_lsn, Box::new(then)),
+            );
+            return None;
+        }
         let request = self.world.ticket_goal(goal).and_then(|(card, round)| {
             let agent = self
                 .world
@@ -129,7 +263,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Some(effect) => {
                 self.ticket_review
                     .stamps_parked
-                    .insert(goal, (check_lsn, Box::new(then)));
+                    .insert(goal, StampWait::Legacy(check_lsn, Box::new(then)));
                 self.pending.push(effect);
                 None
             }
@@ -144,11 +278,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         stamp: StampPayload,
         operation: &crate::RecoveryOperation<'_>,
     ) -> Option<crate::input::RecoveryUpdate> {
-        let (parked_lsn, then) = self.ticket_review.stamps_parked.remove(&goal)?;
+        let parked = self.ticket_review.stamps_parked.remove(&goal)?;
+        let StampWait::Legacy(parked_lsn, then) = parked else {
+            self.ticket_review.stamps_parked.insert(goal, parked);
+            return None;
+        };
         if parked_lsn != check_lsn {
             self.ticket_review
                 .stamps_parked
-                .insert(goal, (parked_lsn, then));
+                .insert(goal, StampWait::Legacy(parked_lsn, then));
             return None;
         }
         let record = self.world.ticket_goal(goal).and_then(|(card, _)| {
@@ -165,5 +303,51 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             }
             None => self.resume_after(*then, check_lsn, operation),
         }
+    }
+
+    pub(super) fn on_repository_stamp_captured(
+        &mut self,
+        capture: &RepositoryCapture,
+        stamp: RepositoryStampBatch,
+    ) {
+        let goal = capture.binding.ticket.goal;
+        let Some(StampWait::Repositories(expected, check_lsn, _)) =
+            self.ticket_review.stamps_parked.get(&goal)
+        else {
+            return;
+        };
+        if expected.as_ref() != capture
+            || *check_lsn != stamp.check_lsn
+            || stamp.binding != capture.binding
+        {
+            return;
+        }
+        if !self.repository_admitted(capture.binding.ticket.claimant)
+            || self
+                .repository_capture(capture.binding.ticket.claimant)
+                .as_ref()
+                != Some(capture)
+        {
+            self.ticket_review.stamps_parked.remove(&goal);
+            return;
+        }
+        let complete = stamp.complete();
+        let entry = super::Entry {
+            at: self.clock.now(),
+            record: Record::TicketReviewBatchStamped(stamp),
+        };
+        if self.world.validate_review_record(&entry).is_err() {
+            return;
+        }
+        let Some(StampWait::Repositories(_, _, then)) =
+            self.ticket_review.stamps_parked.remove(&goal)
+        else {
+            return;
+        };
+        self.persist_at(
+            entry.at,
+            entry.record,
+            if complete { *then } else { Then::Fold },
+        );
     }
 }

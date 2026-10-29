@@ -174,3 +174,16 @@ pub fn ticket_goal_check(
 ) -> Option<dudes_proto::CompletionCheckRef> {
     ticket_index::goal_check(check)
 }
+
+/// The frozen scoped check reference, for tests that build a declared ticket start.
+#[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
+#[must_use]
+pub fn scoped_ticket_goal_check(
+    check: &dudes_proto::TicketCheck,
+    project: &str,
+    repo: &dudes_proto::repository::RepoId,
+) -> Option<dudes_proto::CompletionCheckRef> {
+    ticket_index::goal_check(check)
+        .map(|reference| ticket_index::scoped_check_reference(project, repo, reference))
+}
