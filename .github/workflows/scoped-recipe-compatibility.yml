@@ -5,6 +5,7 @@ on:
     paths:
       - crates/dudes-providers/**
       - scripts/verify-scoped-recipe-compatibility.py
+      - scripts/test-scoped-recipe-compatibility.py
       - scripts/_engine_confinement.py
       - scripts/fetch-confinement-engines.py
       - .github/workflows/scoped-recipe-compatibility.yml
@@ -24,6 +25,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Check proof admission and dispatch controls
+        run: python3 scripts/test-scoped-recipe-compatibility.py
       - name: Install sandbox prerequisites
         run: |
           sudo apt-get update -qq
