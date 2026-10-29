@@ -26,6 +26,8 @@ use serde_json::json;
 mod common;
 #[path = "repository_replay/current_enrollment.rs"]
 mod current_enrollment;
+#[path = "repository_replay/previous_reader.rs"]
+mod previous_reader;
 use common::{Fixture, SharedHost, TestClock};
 
 struct RealRunner(OneShot);
@@ -338,6 +340,7 @@ impl Story {
             max_turns: None,
             max_budget: None,
             model: None,
+            browser_onboarding: None,
             repositories: ScopedRepositories {
                 project: RecordedWorkspace {
                     id: "service".into(),

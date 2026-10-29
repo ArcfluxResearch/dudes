@@ -349,7 +349,17 @@ function HireForm({ hire, floor, onClose, onSettings }: {
               {catalog === null || !projectAddOn(floor) ? null : <Disclosure data-hire-add-project="true" summary="Add another project">
                 <div className="pt-2"><AddProject floor={floor} /></div>
               </Disclosure>}
-              {workspace === null ? null : <SharedProjectNote names={sharing} copy={copy} />}
+              {workspace === null || workspace.repositoryGroup !== undefined ? null : <SharedProjectNote names={sharing} copy={copy} />}
+              {workspace?.repositoryGroup === undefined ? null : <div data-hire-repository-group="true" className="flex flex-col gap-3">
+                <p className={NOTE}>This agent needs its own copy of every repository below. All repositories share one project queue.</p>
+                <dl className={FACTS}>
+                  {workspace.repositoryGroup.repositories.map((repo) => <Fact key={repo.repo_id} name={repo.label}>
+                    <code className={CODE}>{repo.repo_id}</code>{repo.repo_id === workspace.repositoryGroup!.project.primary_repo ? ' (primary)' : ''}
+                  </Fact>)}
+                </dl>
+                {workspace.repositoryGroup.providers.filter((offer) => !offer.enabled).map((offer) =>
+                  <p key={offer.provider} className={NOTE}>{HIRE_ENGINES[offer.provider]}: {offer.refusal}</p>)}
+              </div>}
             </>
           )}
           {hire.section !== 'engine' ? null : (
@@ -359,15 +369,19 @@ function HireForm({ hire, floor, onClose, onSettings }: {
                   <legend className={LEGEND}>Which engine should do the work?</legend>
                   {workspace.engines.map((name) => (
                     <Choice key={name} type="radio" name="engine" value={name} checked={engine === name} disabled={frozen}
-                      onChange={() => editDraft({ engine: name })} label={HIRE_ENGINES[name]} note={ENGINE_REACH[name]} />
+                      onChange={() => editDraft({ engine: name })} label={HIRE_ENGINES[name]}
+                      note={workspace.repositoryGroup === undefined ? ENGINE_REACH[name]
+                        : "Writes are limited to this project's copies and private work folders. The task's completion check runs with your account's full access."} />
                   ))}
                 </fieldset>
               )}
-              {engine === null ? null : <ModelChoice engine={engine} items={modelItems(floor, engine)} draft={hire.draft} frozen={frozen}
-                configured={row?.configuredModel ?? null} fixed={row?.modelFixed === true} invalid={invalid('model')} />}
-              {workspace === null ? null
+              {engine === null ? null : workspace?.repositoryGroup === undefined
+                ? <ModelChoice engine={engine} items={modelItems(floor, engine)} draft={hire.draft} frozen={frozen}
+                  configured={row?.configuredModel ?? null} fixed={row?.modelFixed === true} invalid={invalid('model')} />
+                : <p className={NOTE}>This project uses {workspace.repositoryGroup.providers.find((offer) => offer.provider === engine)?.model} for multi-repository work.</p>}
+              {workspace === null || workspace.repositoryGroup !== undefined ? null
                 : <OwnCopyChoice copy={copy} workspace={workspace} names={sharing} frozen={frozen} />}
-              {withdrawn ? <p className={NOTE}>An engine missing here may be turned off, or this project may need a spending limit to use it. Check Settings.</p>
+              {withdrawn && workspace?.repositoryGroup === undefined ? <p className={NOTE}>An engine missing here may be turned off, or this project may need a spending limit to use it. Check Settings.</p>
                 : null}
               {engine === null || row === null ? null : <p className={NOTE} data-engine-found={row.found}>
                 {row.found ? `Dudes found ${HIRE_ENGINES[engine]}’s command on this computer.`
@@ -565,6 +579,9 @@ function AnswerBody({ outcome, hire, floor }: {
           )}
           {ticketsOff(floor) ? <TicketsOffNote floor={floor} /> : null}
           <dl className={FACTS}>
+            {hire.attempt?.payload.project === undefined ? null : <Fact name="Works in">
+              <span data-hire-repository-group-complete="true">Own copies of all {hire.attempt.payload.project.repo_ids.length} repositories</span>
+            </Fact>}
             {hire.attempt?.payload.own_copy === true ? (
               <Fact name="Works in"><span data-hire-own-copy="true">Its own copy of the project, on its own branch</span></Fact>
             ) : null}
@@ -617,7 +634,7 @@ function AnswerBody({ outcome, hire, floor }: {
           </Notice>
         );
       }
-      const workspace = hire.attempt?.payload.workspace_id ?? '';
+      const workspace = hire.attempt?.payload.project?.project_id ?? hire.attempt?.payload.workspace_id ?? '';
       const offered = floor.onboarding?.workspaces.some((space) => space.workspaceId === workspace) ?? false;
       return (
         <><Notice tone="danger" role="alert" data-hire-session={session}>
