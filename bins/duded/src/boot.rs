@@ -479,7 +479,7 @@ where
             .collect(),
         &settings.daemon_env,
         settings.state_dir.clone(),
-        codex_profile,
+        codex_profile.clone(),
         Some(engine_models.clone()),
     )
     .context("starting the provider check thread")?;
@@ -564,11 +564,14 @@ where
     let retire_index = crate::floor_retire::RetireIndex::replay(&Reader::new(&journal_dir))
         .context("replaying browser retirements")?;
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let mailbox =
+    let mut mailbox =
         crate::mailbox::Mailbox::replay(settings.state_dir.clone(), &Reader::new(&journal_dir))
             .context("replaying mailbox items")?;
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let mailbox = crate::mailbox::Mailbox::unavailable();
+    let mut mailbox = crate::mailbox::Mailbox::unavailable();
+    if let Some(profile) = &codex_profile {
+        mailbox.coordinate_private_roots(profile.private_roots());
+    }
     let mailbox_report = mailbox.report();
     // Publish the cursor replay established before the door can answer. Starting this at zero
     // would pair replay-derived supervisor health with an empty-journal ping until the next append.
@@ -691,6 +694,8 @@ where
             provider_check: provider_check.clone(),
             browser_launches,
             resolved_browser_turn: None,
+            scoped_launches: BTreeMap::new(),
+            scoped_generation: 0,
             switches,
             operator_config: settings.operator_config.clone(),
             project_folders: project_folders(settings),

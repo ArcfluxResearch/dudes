@@ -327,6 +327,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             });
             return Ok(());
         }
+        if row
+            .repositories
+            .as_ref()
+            .is_some_and(|authority| authority.grant().is_some())
+        {
+            self.prepare_scoped_turn(turn, spec, mcp_grant, queue, sup);
+            return Ok(());
+        }
         self.spawn_owned(turn, spec, install, mcp_grant, queue, sup)
     }
 
@@ -511,10 +519,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         })
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the final authority check and actual host-call outcome stay in one visible boundary"
-    )]
     fn spawn_owned<R: Rng>(
         &mut self,
         turn: dudes_types::TurnId,
@@ -552,6 +556,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 ));
             }
         }
+        self.launch_prepared_host(turn, prepared, install, mcp_grant, queue, sup)
+    }
+
+    pub(super) fn launch_prepared_host<R: Rng>(
+        &mut self,
+        turn: dudes_types::TurnId,
+        prepared: std::io::Result<dudes_providers::launch::LaunchSpec>,
+        install: &dudes_providers::adapter::ManagedInstall,
+        mcp_grant: Option<dudes_types::Lsn>,
+        queue: &mut std::collections::VecDeque<Input>,
+        sup: &mut Supervisor<super::Shared<C>, R>,
+    ) -> Result<()> {
         let cwd = prepared.as_ref().ok().map(|spec| spec.cwd.clone());
         let actual_host_call = prepared.is_ok();
         match match prepared {
@@ -561,7 +577,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 if let Some(mailbox) = &mut self.mailbox
                     && let Some(row) = sup.world().turns.get(&turn)
                 {
-                    mailbox.begin_subject_context(row.agent, holder, self.children.redactor());
+                    if matches!(&spec.stdin, dudes_providers::launch::LaunchInput::Protocol(startup) if startup.scoped_roots().is_some())
+                    {
+                        mailbox.begin_prepared_subject_context(
+                            row.agent,
+                            holder,
+                            self.children.redactor(),
+                        );
+                    } else {
+                        mailbox.begin_subject_context(row.agent, holder, self.children.redactor());
+                    }
                 }
                 self.children.redactor().hold_env(holder, &spec.env);
                 self.host.spawn(&spec, install)
@@ -595,9 +620,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 });
             }
             super::SpawnResult::NotLaunched { reason } => {
-                if !actual_host_call {
-                    self.children.discard_unlaunched();
-                }
+                self.children.discard_unlaunched();
                 self.children
                     .redactor()
                     .release(dudes_supervisor::Holder::Turn(turn));

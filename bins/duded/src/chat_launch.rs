@@ -15,7 +15,35 @@ const CAPACITY: usize = 128;
 struct Preparation {
     turn: TurnId,
     generation: u64,
-    spec: LaunchSpec,
+    payload: Payload,
+}
+
+enum Payload {
+    Program(Box<LaunchSpec>),
+    Scoped(Box<ScopedPreparation>),
+}
+
+pub(crate) struct ScopedPreparation {
+    pub(crate) attempt: crate::codex_profile::scoped::Attempt,
+    pub(crate) launch: dudes_providers::scoped::ScopedManagedLaunch,
+    pub(crate) profile: Arc<crate::codex_profile::CodexProfile>,
+    pub(crate) outbox: Arc<crate::mailbox::OutboxGrant>,
+}
+
+/// A daemon-local completion retaining one physical attempt's private preparation.
+#[doc(hidden)]
+pub struct ScopedCompletion {
+    pub(crate) attempt: crate::codex_profile::scoped::Attempt,
+    pub(crate) prepared: Result<crate::codex_profile::scoped::PreparedScopedLaunch, String>,
+    pub(crate) outbox: Arc<crate::mailbox::OutboxGrant>,
+}
+
+impl std::fmt::Debug for ScopedCompletion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScopedCompletion")
+            .field("attempt", &self.attempt)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Default)]
@@ -162,6 +190,18 @@ impl LaunchPreparations {
     }
 
     pub(crate) fn prepare(&self, turn: TurnId, generation: u64, spec: LaunchSpec) -> bool {
+        self.enqueue(turn, generation, Payload::Program(Box::new(spec)))
+    }
+
+    pub(crate) fn prepare_scoped(&self, preparation: ScopedPreparation) -> bool {
+        self.enqueue(
+            preparation.attempt.turn,
+            preparation.attempt.generation,
+            Payload::Scoped(Box::new(preparation)),
+        )
+    }
+
+    fn enqueue(&self, turn: TurnId, generation: u64, payload: Payload) -> bool {
         let mut queue = self.queue.0.lock().unwrap_or_else(PoisonError::into_inner);
         if queue.stopping || queue.turns.len() >= CAPACITY || !queue.turns.insert(turn) {
             return false;
@@ -169,7 +209,7 @@ impl LaunchPreparations {
         queue.pending.push_back(Preparation {
             turn,
             generation,
-            spec,
+            payload,
         });
         self.queue.1.notify_one();
         true
@@ -209,17 +249,44 @@ fn resolve(queue: &Arc<(Mutex<Queue>, Condvar)>, pause: &BrowserLaunchPause, han
             }
             state.pending.pop_front().expect("pending preparation")
         };
-        let prepared = crate::program::resolve_launch(preparation.spec)
-            .map(Box::new)
-            .map_err(|reason| format!("managed program preparation failed ({:?})", reason.kind()));
+        let completed = match preparation.payload {
+            Payload::Program(spec) => Ok(crate::program::resolve_launch(*spec)
+                .map(Box::new)
+                .map_err(|reason| {
+                    format!("managed program preparation failed ({:?})", reason.kind())
+                })),
+            Payload::Scoped(mut request) => {
+                let attempt = request.attempt;
+                let outbox = Arc::clone(&request.outbox);
+                let prepared = crate::program::resolve_launch(request.launch.spec.clone())
+                    .and_then(|spec| {
+                        request.launch.spec = spec;
+                        request.outbox.check()?;
+                        request
+                            .profile
+                            .prepare_scoped(request.launch, request.attempt)
+                    })
+                    .map_err(|reason| {
+                        format!("scoped launch preparation failed ({:?})", reason.kind())
+                    });
+                Err(ScopedCompletion {
+                    attempt,
+                    prepared,
+                    outbox,
+                })
+            }
+        };
         let post = pause.hold();
         let mut state = queue.0.lock().unwrap_or_else(PoisonError::into_inner);
         if post && !state.stopping {
-            handle.input(Input::BrowserLaunchReady {
-                turn: preparation.turn,
-                generation: preparation.generation,
-                prepared,
-            });
+            match completed {
+                Ok(prepared) => handle.input(Input::BrowserLaunchReady {
+                    turn: preparation.turn,
+                    generation: preparation.generation,
+                    prepared,
+                }),
+                Err(completion) => handle.scoped_launch_prepared(completion),
+            }
             pause.returned();
         }
         state.turns.remove(&preparation.turn);

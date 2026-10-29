@@ -63,6 +63,7 @@ pub struct ChildEnds {
     next_reader: Mutex<Option<Box<dyn TurnReader>>>,
     next_startup: Mutex<Option<CodexStartup>>,
     next_outbox: Mutex<Option<Arc<crate::mailbox::OutboxGrant>>>,
+    next_scoped: Mutex<Option<Arc<crate::codex_profile::scoped::ScopedBinding>>>,
     next_mcp_grant: Mutex<Option<Lsn>>,
     codex_profile: OnceLock<Arc<crate::codex_profile::CodexProfile>>,
     protocols: Mutex<BTreeMap<ActivityKey, bool>>,
@@ -123,6 +124,7 @@ impl ChildEnds {
             next_reader: Mutex::default(),
             next_startup: Mutex::default(),
             next_outbox: Mutex::default(),
+            next_scoped: Mutex::default(),
             next_mcp_grant: Mutex::default(),
             codex_profile: OnceLock::new(),
             protocols: Mutex::default(),
@@ -155,6 +157,38 @@ impl ChildEnds {
 
     pub(crate) fn configure_codex_profile(&self, profile: Arc<crate::codex_profile::CodexProfile>) {
         let _ = self.codex_profile.set(profile);
+    }
+
+    pub(crate) fn codex_profile(&self) -> Option<Arc<crate::codex_profile::CodexProfile>> {
+        self.codex_profile.get().cloned()
+    }
+
+    pub(crate) fn prepare_scoped_launch(
+        &self,
+        prepared: &crate::codex_profile::scoped::PreparedScopedLaunch,
+        outbox: Arc<crate::mailbox::OutboxGrant>,
+    ) -> std::io::Result<()> {
+        let LaunchInput::Protocol(startup) = &prepared.launch.spec.stdin else {
+            return Err(std::io::Error::other(
+                "scoped protocol startup is unavailable",
+            ));
+        };
+        if outbox.path() != prepared.launch.inventory.private.outbox {
+            return Err(std::io::Error::other(
+                "scoped outbox differs from its frozen inventory",
+            ));
+        }
+        outbox.check()?;
+        prepared.binding.before_task(startup)?;
+        *self
+            .next_scoped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&prepared.binding));
+        *self
+            .next_outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(outbox);
+        Ok(())
     }
 
     pub(crate) fn prepare_launch(
@@ -220,6 +254,10 @@ impl ChildEnds {
     }
 
     pub(crate) fn discard_unlaunched(&self) {
+        *self
+            .next_scoped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         self.read_next_with(None);
         *self
             .next_mcp_grant
@@ -419,6 +457,11 @@ impl ChildEnds {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
+        child.scoped = self
+            .next_scoped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
         child.mcp_grant = self
             .next_mcp_grant
             .lock()
@@ -441,6 +484,7 @@ impl ChildEnds {
             reader,
             startup: None,
             outbox: None,
+            scoped: None,
             input: None,
             failed: false,
             mcp_grant: None,
@@ -729,6 +773,7 @@ pub struct ChildTurn {
     reader: Box<dyn TurnReader>,
     startup: Option<CodexStartup>,
     outbox: Option<Arc<crate::mailbox::OutboxGrant>>,
+    scoped: Option<Arc<crate::codex_profile::scoped::ScopedBinding>>,
     input: Option<Box<dyn ChildInput>>,
     failed: bool,
     mcp_grant: Option<Lsn>,
@@ -770,11 +815,20 @@ impl ChildTurn {
             };
             let admitted = match &action {
                 ProtocolAction::Write(frame) if frame.is_task() => {
-                    let profile_admitted = self
-                        .startup
-                        .as_ref()
-                        .zip(self.ends.codex_profile.get())
-                        .is_some_and(|(startup, profile)| profile.before_task(startup).is_ok());
+                    let profile_admitted = self.startup.as_ref().is_some_and(|startup| {
+                        if startup.scoped_roots().is_some() {
+                            self.scoped
+                                .as_ref()
+                                .is_some_and(|binding| binding.before_task(startup).is_ok())
+                        } else {
+                            self.scoped.is_none()
+                                && self
+                                    .ends
+                                    .codex_profile
+                                    .get()
+                                    .is_some_and(|profile| profile.before_task(startup).is_ok())
+                        }
+                    });
                     #[cfg(any(target_os = "macos", target_os = "linux"))]
                     let outbox_admitted = self
                         .outbox

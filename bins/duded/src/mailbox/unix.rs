@@ -302,12 +302,39 @@ impl Mailbox {
         holder: dudes_supervisor::Holder,
         redactor: dudes_supervisor::Redactor,
     ) {
+        let roots = Arc::clone(&self.private_roots);
+        let Ok(_mutation) = roots.mutate() else {
+            return;
+        };
+        self.subject_context(agent, holder, redactor, true);
+    }
+
+    pub(crate) fn begin_prepared_subject_context(
+        &mut self,
+        agent: AgentId,
+        holder: dudes_supervisor::Holder,
+        redactor: dudes_supervisor::Redactor,
+    ) {
+        self.subject_context(agent, holder, redactor, false);
+    }
+
+    fn subject_context(
+        &mut self,
+        agent: AgentId,
+        holder: dudes_supervisor::Holder,
+        redactor: dudes_supervisor::Redactor,
+        create: bool,
+    ) {
         self.subject_contexts.remove(&agent);
         if !self.live_agents.contains(&agent) {
             return;
         }
         let admitted = (|| -> io::Result<_> {
-            let tree = Tree::open(&self.root, agent, self.opening(&Rc::default(), agent, true))?;
+            let tree = Tree::open(
+                &self.root,
+                agent,
+                self.opening(&Rc::default(), agent, create),
+            )?;
             let outbox = tree.outbox_grant()?;
             if !snapshot(&tree.outbox, OUTBOX_SCAN)?.is_some_and(|names| names.is_empty()) {
                 return Err(io::Error::other("outbox predates this child context"));

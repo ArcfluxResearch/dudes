@@ -304,6 +304,105 @@ fn legacy_enrollment(root: PathBuf) -> crate::floor_actions::Enrollment {
 }
 
 #[test]
+fn scoped_preparation_failure_keeps_the_issue_and_enters_the_existing_visible_hold() {
+    let fixture = common::Fixture::new();
+    let host = CountingHost::new();
+    let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+    let issued = prepared(&mut daemon, &fixture, Provider::Claude);
+    let attempt = crate::codex_profile::scoped::Attempt {
+        turn: issued.turn,
+        generation: 9,
+        started: issued.started,
+        owner: issued.owner,
+    };
+    daemon.ctx.scoped_launches.insert(issued.turn, attempt);
+    let goals = fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::GoalSet { .. }))
+        .count();
+    let issues = fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::TurnIssued { .. }))
+        .count();
+    let outbox =
+        crate::mailbox::outbox_fixture(&fixture.state.path().join("callback"), issued.agent);
+    daemon
+        .complete_scoped_launch(crate::chat_launch::ScopedCompletion {
+            attempt,
+            prepared: Err("scoped preparation refused".into()),
+            outbox,
+        })
+        .unwrap();
+    assert_eq!(host.spawn_calls(), 0);
+    assert_eq!(daemon.sup.world().turns[&issued.turn].task, issued.task);
+    assert!(
+        daemon.sup.world().agents[&issued.agent]
+            .automatic_hold
+            .is_some()
+    );
+    let records = fixture.records();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::GoalSet { .. }))
+            .count(),
+        goals
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::TurnIssued { .. }))
+            .count(),
+        issues
+    );
+    assert!(!records.iter().any(|record| matches!(
+        record,
+        Record::Pause { .. } | Record::Resume { .. } | Record::TurnSpawned { .. }
+    )));
+}
+
+#[test]
+fn stale_scoped_completion_cannot_hold_a_different_physical_attempt() {
+    for stale_generation in [false, true] {
+        let fixture = common::Fixture::new();
+        let host = CountingHost::new();
+        let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+        let issued = prepared(&mut daemon, &fixture, Provider::Claude);
+        let attempt = crate::codex_profile::scoped::Attempt {
+            turn: issued.turn,
+            generation: 9,
+            started: issued.started,
+            owner: issued.owner,
+        };
+        daemon.ctx.scoped_launches.insert(issued.turn, attempt);
+        let mut stale = attempt;
+        if stale_generation {
+            stale.generation += 1;
+        } else {
+            stale.started = issued.issue;
+        }
+        if !stale_generation {
+            daemon.ctx.scoped_launches.insert(issued.turn, stale);
+        }
+        let before = fixture.records();
+        let outbox =
+            crate::mailbox::outbox_fixture(&fixture.state.path().join("callback"), issued.agent);
+        daemon
+            .complete_scoped_launch(crate::chat_launch::ScopedCompletion {
+                attempt: stale,
+                prepared: Err("stale completion".into()),
+                outbox,
+            })
+            .unwrap();
+        assert_eq!(host.spawn_calls(), 0);
+        assert_eq!(fixture.records(), before);
+        assert_eq!(daemon.sup.world().turns[&issued.turn].task, issued.task);
+    }
+}
+
+#[test]
 fn an_attached_open_rechecks_a_known_origin_after_hook_preparation() {
     let fixture = common::Fixture::new();
     let host = CountingHost::new();

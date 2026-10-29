@@ -76,6 +76,18 @@ impl CodexStartup {
         self.scoped_roots.is_some()
     }
 
+    /// The exact ordered additional roots of an unarmed scoped recipe.
+    #[must_use]
+    pub fn scoped_roots(&self) -> Option<&[PathBuf]> {
+        self.scoped_roots.as_deref()
+    }
+
+    /// Session inputs captured for this exact issued task.
+    #[must_use]
+    pub fn session(&self) -> &TurnSession {
+        &self.session
+    }
+
     /// Working directory captured with this task.
     #[must_use]
     pub fn cwd(&self) -> &Path {

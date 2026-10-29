@@ -119,6 +119,7 @@ mod instruction_authority_tests;
 mod instruction_plan;
 pub(crate) mod instruction_sampling;
 mod native_boundaries;
+mod scoped_launch;
 pub(crate) use native_boundaries::InheritedNativeBoundaries;
 #[cfg(all(test, unix))]
 mod native_boundaries_tests;
@@ -981,6 +982,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) running_mcp: dudes_providers::mcp::DeclaredServers,
     pub(crate) browser_launches: crate::chat_launch::LaunchPreparations,
     pub(crate) resolved_browser_turn: Option<(TurnId, u64)>,
+    pub(crate) scoped_launches: BTreeMap<TurnId, crate::codex_profile::scoped::Attempt>,
+    pub(crate) scoped_generation: u64,
     /// The operator file the Settings page edits and a reload reads; `None` without one.
     pub(crate) operator_config: Option<PathBuf>,
     /// The folders the Floor's project add will not take.
@@ -1730,6 +1733,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Job::Stop(cause) => return Ok(cause),
                 Job::ProtocolFailed(key) => {
                     let _ = self.ctx.host.kill(&key);
+                }
+                Job::ScopedLaunchPrepared(completion) => {
+                    self.complete_scoped_launch(*completion)?;
                 }
                 Job::Input(input) => {
                     if !self.ctx.journal_writes_stopped() && self.ctx.closing_failed_after.is_none()
@@ -7102,6 +7108,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 }
                 Job::ProtocolFailed(key) => {
                     let _ = self.ctx.host.kill(&key);
+                }
+                Job::ScopedLaunchPrepared(completion) => {
+                    self.ctx.scoped_launches.remove(&completion.attempt.turn);
                 }
                 Job::Input(input) => {
                     if let Err(error) = self.pump_runtime_input(*input) {

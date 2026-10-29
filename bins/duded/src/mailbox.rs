@@ -136,6 +136,7 @@ pub(crate) fn outbox_fixture(root: &Path, agent: AgentId) -> Arc<OutboxGrant> {
 }
 
 pub(crate) struct Mailbox {
+    private_roots: Arc<crate::codex_profile::scoped::PrivateRoots>,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     root: PathBuf,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -180,9 +181,23 @@ pub(crate) struct Mailbox {
 }
 
 impl Mailbox {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn coordinate_private_roots(
+        &mut self,
+        roots: Arc<crate::codex_profile::scoped::PrivateRoots>,
+    ) {
+        self.private_roots = roots;
+    }
     pub(crate) fn admit_outbox(&self, agent: AgentId) -> std::io::Result<Arc<OutboxGrant>> {
-        self.unix_admit_outbox(agent)
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            let _mutation = self.private_roots.mutate()?;
+            self.unix_admit_outbox(agent)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let _ = agent;
+            Err(std::io::ErrorKind::Unsupported.into())
+        }
     }
     pub(crate) fn is_fenced(&self) -> bool {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -236,6 +251,7 @@ impl Mailbox {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) fn replay(root: PathBuf, reader: &Reader) -> dudes_journal::Result<Self> {
         let mut mailbox = Self {
+            private_roots: Arc::default(),
             root,
             rows: BTreeMap::new(),
             mail_index: index::MailIndex::default(),
@@ -269,6 +285,7 @@ impl Mailbox {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     pub(crate) fn unavailable() -> Self {
         Self {
+            private_roots: Arc::default(),
             report: Arc::new(Mutex::new(MailboxReport {
                 available: false,
                 detail: cfg!(windows).then(|| "mail is not yet available on Windows".to_owned()),
@@ -486,6 +503,10 @@ impl Mailbox {
         if self.fenced {
             return;
         }
+        let roots = Arc::clone(&self.private_roots);
+        let Ok(_mutation) = roots.mutate() else {
+            return;
+        };
         *self.observation.borrow_mut() = self
             .report
             .lock()
@@ -521,6 +542,7 @@ mod wake_tests {
         let agent = AgentId::from_parts(1, 1);
         let id = MailId::from_parts(1, 2);
         let mut mailbox = Mailbox {
+            private_roots: Arc::default(),
             root: PathBuf::new(),
             rows: BTreeMap::new(),
             mail_index: index::MailIndex::default(),
