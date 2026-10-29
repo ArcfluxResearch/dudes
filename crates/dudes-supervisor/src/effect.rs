@@ -88,6 +88,8 @@ pub enum Effect {
         install: ManagedInstall,
         /// The daemon-selected durable permission for this physical attempt.
         mcp_grant: Option<Lsn>,
+        /// Exact in-run browser preparation, absent for ordinary managed work.
+        browser_generation: Option<u64>,
     },
     /// Signal the child's process group. Emitted only for a turn the machine believes is
     /// `Alive`; when its liveness is `Unknown` a `Persist{KillDeferred}` goes out instead.
@@ -311,6 +313,7 @@ impl fmt::Debug for Effect {
                 spec,
                 install,
                 mcp_grant,
+                ..
             } => f
                 .debug_struct("Spawn")
                 .field("turn", turn)

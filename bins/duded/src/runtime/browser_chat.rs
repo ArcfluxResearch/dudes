@@ -27,18 +27,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 
     pub(super) fn pump_runtime_input(&mut self, input: Input) -> Result<()> {
-        self.ctx.resolved_browser_turn = match &input {
-            Input::BrowserLaunchReady {
-                turn,
-                generation,
-                prepared: Ok(_),
-                ..
-            } => Some((*turn, *generation)),
-            _ => None,
-        };
-        let result = self.pump(input);
-        self.ctx.resolved_browser_turn = None;
-        result
+        self.pump(input)
     }
 
     /// The folder a chat file for `agent` goes under. An Attached agent's engine is not launched by
@@ -302,7 +291,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         turn: dudes_types::TurnId,
         spec: &dudes_providers::launch::LaunchSpec,
         install: &dudes_providers::adapter::ManagedInstall,
-        mcp_grant: Option<dudes_types::Lsn>,
+        dispatch: (Option<dudes_types::Lsn>, Option<u64>),
         queue: &mut std::collections::VecDeque<Input>,
         sup: &mut Supervisor<super::Shared<C>, R>,
     ) -> Result<()> {
@@ -338,7 +327,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             });
             return Ok(());
         }
-        self.spawn_owned(turn, spec, install, mcp_grant, queue, sup)
+        self.spawn_owned(turn, spec, install, dispatch, queue, sup)
     }
 
     pub(super) fn dispatch_browser_intent<R: Rng>(
@@ -426,6 +415,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     spec,
                     install,
                     mcp_grant,
+                    browser_generation,
                 } => {
                     anyhow::ensure!(
                         !spawned && *issued == *turn,
@@ -434,7 +424,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     spawned = true;
                     self.tokens
                         .publish_completed_folds(|| sup.world().token_hash_owners());
-                    self.spawn_owned(*issued, spec, install, *mcp_grant, queue, sup)?;
+                    self.spawn_owned(*issued, spec, install, (*mcp_grant, *browser_generation), queue, sup)?;
                 }
                 dudes_supervisor::Effect::Persist { entry, .. }
                     if matches!(entry.record, dudes_proto::Record::RecoveryInvalidated(_)) =>
@@ -531,10 +521,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         turn: dudes_types::TurnId,
         spec: &dudes_providers::launch::LaunchSpec,
         install: &dudes_providers::adapter::ManagedInstall,
-        mcp_grant: Option<dudes_types::Lsn>,
+        dispatch: (Option<dudes_types::Lsn>, Option<u64>),
         queue: &mut std::collections::VecDeque<Input>,
         sup: &mut Supervisor<super::Shared<C>, R>,
     ) -> Result<()> {
+        let (mcp_grant, generation) = dispatch;
         if !self.repository_turn_allowed(sup.world(), turn) {
             if let Some(claim) = sup.prepare_host_dispatch(turn) {
                 queue.push_back(Input::RepositoryLaunchDeferred { claim });
@@ -544,10 +535,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         if !self.recovery_dispatch_allowed(sup, turn) {
             return Ok(());
         }
-        let generation = self
-            .resolved_browser_turn
-            .filter(|(prepared, _)| *prepared == turn)
-            .map(|(_, generation)| generation);
         if !self.with_recovery_facts(sup, &[], |sup, operation| {
             sup.claim_browser_dispatch(turn, generation, operation)
         }) {

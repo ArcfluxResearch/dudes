@@ -116,6 +116,7 @@ pub(super) struct RepositoryDeferred {
     issue: Lsn,
     started: Lsn,
     request: Option<InstructionRequest>,
+    browser: Option<super::browser_notes::NoHostBrowserDispatch>,
     owner: InstructionObservationOwner,
     ticket: Option<InstructionTicketAssociation>,
     repositories: Option<dudes_proto::repository::TurnRepositories>,
@@ -1208,25 +1209,25 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return;
         }
-        let Some(owner) = self.world.agents.get(&issued.agent) else {
-            return;
-        };
+        let Some(owner) = self.world.agents.get(&issued.agent) else { return; };
+        let (agent, hire, issue, repositories, captured_owner, ticket) = (
+            issued.agent, owner.mcp.hire_lsn, issued.issue_lsn, issued.repositories.clone(), attempt.owner, attempt.ticket,
+        );
+        let browser = if self.world.browser_issue(turn).is_some() {
+            let Some(current) = self.hold_no_host_browser_dispatch(turn) else { return; };
+            Some(current)
+        } else { None };
         let deferred = RepositoryDeferred {
-            agent: issued.agent,
-            hire: owner.mcp.hire_lsn,
-            turn,
-            issue: issued.issue_lsn,
+            agent, hire, turn, issue,
             started,
             request: None,
-            owner: attempt.owner,
-            ticket: attempt.ticket,
-            repositories: issued.repositories.clone(),
+            browser,
+            owner: captured_owner, ticket, repositories,
         };
         self.instructions.repository_deferred.insert(turn, deferred);
-        self.instructions.pending_agents.remove(&issued.agent);
-        self.repository_admission
-            .refuse(issued.agent, owner.mcp.hire_lsn);
-        self.repository_recoveries.remove(&issued.agent);
+        self.instructions.pending_agents.remove(&agent);
+        self.repository_admission.refuse(agent, hire);
+        self.repository_recoveries.remove(&agent);
         self.spawning.remove(&turn);
         self.host_dispatches.remove(&turn);
         self.mcp_attempts.remove(&turn);
@@ -1270,6 +1271,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             .get(&deferred.turn)
             .is_some_and(|(_, _, entered)| *entered)
             && self.instructions.repository_deferred.get(&deferred.turn) == Some(deferred)
+            && deferred.browser.is_none_or(|current| self.no_host_browser_dispatch_current(deferred.turn, current))
             && self
                 .world
                 .agents
@@ -1565,6 +1567,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if !self.repository_deferred_current(deferred) {
             return;
         }
+        if !self.ledger.is_empty() {
+            self.spawning.remove(&deferred.turn);
+            self.repository_admission.refuse(deferred.agent, deferred.hire);
+            self.repository_recoveries.remove(&deferred.agent);
+            if let Some(current) = self.instructions.repository_deferred.get_mut(&deferred.turn) {
+                current.request = None;
+            }
+            return;
+        }
         let original = self
             .world
             .instructions
@@ -1586,7 +1597,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .refuse(deferred.agent, deferred.hire);
             return;
         }
-        self.spawn_prepared(deferred.agent, deferred.turn, launch, operation);
+        if let Some(current) = deferred.browser {
+            if !self.resume_no_host_browser_dispatch(deferred.turn, current, launch, operation) {
+                self.spawning.remove(&deferred.turn);
+            }
+        } else {
+            self.spawn_prepared(deferred.agent, deferred.turn, launch, operation);
+        }
     }
 
     pub(super) fn repository_instructions_sampled(

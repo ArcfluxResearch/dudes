@@ -2124,6 +2124,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     return None;
                 }
                 if let Some(turn) = turn {
+                    self.instructions.repository_deferred.remove(&turn);
+                    self.owned_launches.remove(&turn);
+                    self.host_dispatches.remove(&turn);
                     self.mcp_attempts.remove(&turn);
                     if !self.retain_failed_browser_replay(turn) {
                         self.browser_launches.remove(&turn);
@@ -2605,12 +2608,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return;
         }
-        self.pending.push(Effect::Spawn {
-            turn,
-            spec,
-            install,
-            mcp_grant,
-        });
+        if let Some(original) = self.owned_launches.get_mut(&turn) {
+            original.spec = spec.clone();
+            original.install = install.clone();
+        }
+        let browser_generation = match self.browser_launches.get(&turn) {
+            Some(BrowserLaunchPhase::DispatchReady { generation, .. }) => Some(*generation),
+            _ => None,
+        };
+        self.pending.push(Effect::Spawn { turn, spec, install, mcp_grant, browser_generation });
     }
 
     /// **The only constructor of [`Effect::OpenPty`] in this crate**, re-entered by
@@ -3464,6 +3470,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if self.browser_turn_cancelled(turn) {
             return;
         }
+        self.instructions.repository_deferred.remove(&turn);
+        self.owned_launches.remove(&turn);
+        self.host_dispatches.remove(&turn);
         if self.retain_failed_browser_replay(turn) {
             self.mcp_attempts.remove(&turn);
             return;

@@ -966,7 +966,6 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// The `[mcp.servers]` table this run loaded, for a reload to compare.
     pub(crate) running_mcp: dudes_providers::mcp::DeclaredServers,
     pub(crate) browser_launches: crate::chat_launch::LaunchPreparations,
-    pub(crate) resolved_browser_turn: Option<(TurnId, u64)>,
     /// The operator file the Settings page edits and a reload reads; `None` without one.
     pub(crate) operator_config: Option<PathBuf>,
     /// The folders the Floor's project add will not take.
@@ -8385,7 +8384,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 spec,
                 install,
                 mcp_grant,
-            } => self.spawn_turn(*turn, spec, install, *mcp_grant, queue, sup)?,
+                browser_generation,
+            } => self.spawn_turn(*turn, spec, install, (*mcp_grant, *browser_generation), queue, sup)?,
             Effect::Kill { turn, key, .. } => match self.host.kill(key) {
                 KillOutcome::Signalled => {}
                 // A refusal is the reaper's finding by a second route. The host routes

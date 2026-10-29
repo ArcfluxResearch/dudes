@@ -1,6 +1,6 @@
 use super::{
     AgentId, BrowserNoteCancelDisposition, Clock, Effect, GoalId, LaunchSpec, LoopDecision, Lsn,
-    ManagedInstall, Record, Rng, Supervisor, Then, TurnId, budget_refusal_values,
+    ManagedInstall, PreparedLaunch, Record, Rng, Supervisor, Then, TurnId, budget_refusal_values,
 };
 
 use crate::world::BrowserNoteState;
@@ -8,6 +8,14 @@ use dudes_policy::{
     BrowserNoteInput, BudgetState, Ceilings, CompletedNoteInput, CompletedNoteState, Control,
 };
 use dudes_proto::{BrowserNoteAttribution, BrowserNoteDestination, ChatReason, NoteAdmission};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct NoHostBrowserDispatch {
+    pub(super) intent: Lsn,
+    generation: u64,
+    prior_intent: Option<Lsn>,
+    mcp_grant: Option<Lsn>,
+}
 
 pub(super) enum BrowserLaunchPhase {
     Preparing {
@@ -28,7 +36,11 @@ pub(super) enum BrowserLaunchPhase {
         prior_intent: Option<Lsn>,
     },
     DispatchClaimed {
+        generation: u64,
         prior_intent: Option<Lsn>,
+    },
+    NoHost {
+        current: NoHostBrowserDispatch,
     },
     ReplayRefused {
         prior_intent: Lsn,
@@ -120,7 +132,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 }
                 if matches!(
                     self.browser_launches.get(&turn),
-                    Some(BrowserLaunchPhase::DispatchClaimed { .. })
+                    Some(BrowserLaunchPhase::DispatchClaimed { .. } | BrowserLaunchPhase::NoHost { .. })
                 ) {
                     return refused(ChatReason::DeliveryStarted);
                 }
@@ -268,6 +280,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         prepared: Result<Box<LaunchSpec>, String>,
         operation: &crate::RecoveryOperation<'_>,
     ) {
+        if !matches!(self.browser_launches.get(&turn), Some(BrowserLaunchPhase::Preparing { generation: current, .. }) if *current == generation)
+        {
+            return;
+        }
         let Some(row) = self.world.turns.get(&turn) else {
             return;
         };
@@ -283,10 +299,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.reissued.remove(&turn);
                 self.browser_launches.remove(&turn);
             }
-            return;
-        }
-        if !matches!(self.browser_launches.get(&turn), Some(BrowserLaunchPhase::Preparing { generation: current, .. }) if *current == generation)
-        {
             return;
         }
         let spec = match prepared {
@@ -492,13 +504,58 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return false;
         }
-        let Some(BrowserLaunchPhase::DispatchReady { prior_intent, .. }) =
+        let Some(BrowserLaunchPhase::DispatchReady { generation, prior_intent }) =
             self.browser_launches.remove(&turn)
         else {
             return false;
         };
         self.browser_launches
-            .insert(turn, BrowserLaunchPhase::DispatchClaimed { prior_intent });
+            .insert(turn, BrowserLaunchPhase::DispatchClaimed { generation, prior_intent });
+        true
+    }
+
+    pub(super) fn hold_no_host_browser_dispatch(&mut self, turn: TurnId) -> Option<NoHostBrowserDispatch> {
+        let issue = self.world.browser_issue(turn)?;
+        let intent = *issue.dispatch_intents.last()?;
+        if issue.uncertain_dispatches.contains(&intent) { return None; }
+        let (generation, prior_intent) = match self.browser_launches.get(&turn)? {
+            BrowserLaunchPhase::DispatchReady { generation, prior_intent }
+            | BrowserLaunchPhase::DispatchClaimed { generation, prior_intent } => (*generation, *prior_intent),
+            _ => return None,
+        };
+        let current = NoHostBrowserDispatch {
+            intent, generation, prior_intent,
+            mcp_grant: self.mcp_attempts.get(&turn)?.grant,
+        };
+        self.browser_launches.insert(turn, BrowserLaunchPhase::NoHost { current });
+        Some(current)
+    }
+
+    pub(super) fn no_host_browser_dispatch_current(&self, turn: TurnId, expected: NoHostBrowserDispatch) -> bool {
+        matches!(self.browser_launches.get(&turn), Some(BrowserLaunchPhase::NoHost { current }) if *current == expected)
+            && self.world.browser_issue(turn).is_some_and(|issue| {
+                issue.dispatch_intents.last() == Some(&expected.intent)
+                    && !issue.uncertain_dispatches.contains(&expected.intent)
+                    && issue.spawn_lsn.is_none() && issue.end_lsn.is_none() && issue.cancellation.is_none()
+            })
+    }
+
+    pub(super) fn resume_no_host_browser_dispatch(
+        &mut self, turn: TurnId, current: NoHostBrowserDispatch,
+        launch: Box<super::PreparedLaunch>, operation: &crate::RecoveryOperation<'_>,
+    ) -> bool {
+        let Some(row) = self.world.turns.get(&turn) else { return false; };
+        let agent = row.agent;
+        if !self.no_host_browser_dispatch_current(turn, current)
+            || !self.browser_launch_allowed(agent, turn, operation)
+            || !self.recovery_launch_context_allowed(agent, turn, &launch.session, operation)
+            || self.world.agents.get(&agent).is_none_or(|row| row.mcp.revision != launch.policy_lsn)
+        { return false; }
+        self.begin_mcp_attempt(turn, current.mcp_grant);
+        self.browser_launches.insert(turn, BrowserLaunchPhase::DispatchReady {
+            generation: current.generation, prior_intent: current.prior_intent,
+        });
+        self.emit_spawn(turn, launch.spec, launch.install, current.mcp_grant);
         true
     }
 
@@ -514,8 +571,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 BrowserLaunchPhase::Preparing { prior_intent, .. }
                 | BrowserLaunchPhase::IntentPending { prior_intent, .. }
                 | BrowserLaunchPhase::DispatchReady { prior_intent, .. }
-                | BrowserLaunchPhase::DispatchClaimed { prior_intent },
+                | BrowserLaunchPhase::DispatchClaimed { prior_intent, .. },
             ) => *prior_intent,
+            Some(BrowserLaunchPhase::NoHost { current }) => current.prior_intent,
             Some(BrowserLaunchPhase::ReplayRefused { prior_intent }) => Some(*prior_intent),
             _ => self
                 .world

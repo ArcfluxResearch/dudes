@@ -565,6 +565,7 @@ impl Seen {
                 spec,
                 install,
                 mcp_grant,
+                ..
             } => Self::Spawn {
                 turn: *turn,
                 spec: spec.clone(),
