@@ -44,6 +44,10 @@ class Observations(unittest.TestCase):
             policy = {"argv": [str(binary)], "env": [], "inventory": {"writable": []}, "unarmed": {"candidate_version": "fake"}}
             with mock.patch.dict(proof.PINS, {(platform.system(), platform.machine(), "codex"): proof.sha256(binary)}), \
                  mock.patch.object(proof, "LocalModel", return_value=model), \
+                 mock.patch.object(proof, "obtain_codex_catalog", return_value=(root / "catalog", {"sha256": "0" * 64})), \
+                 mock.patch.object(proof, "materialize_codex_profile", return_value={}), \
+                 mock.patch.object(proof, "codex_profile_snapshot", return_value={}), \
+                 mock.patch.object(proof, "codex_machine_preconditions", return_value={}), \
                  mock.patch.object(proof, "fixture_input", return_value=value), \
                  mock.patch.object(proof, "project", return_value=policy), \
                  mock.patch.object(proof, "inspect_writable_roots", return_value={"accepted": True}), \
@@ -127,19 +131,68 @@ class FakeProcess:
         return self.returncode
 
 
+class PrivateProfile(unittest.TestCase):
+    def test_fixture_input_requires_a_catalog_for_codex_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                proof.fixture_input(Path(directory), "codex", Path("/fake"), "http://127.0.0.1:1/v1")
+            value = proof.fixture_input(Path(directory), "claude", Path("/fake"), "http://127.0.0.1:1/v1")
+            self.assertNotIn("codex_catalog", value)
+
+    def test_dummy_auth_and_content_addressed_catalog_are_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / "private-catalog.json"
+            source.write_text('{"models":[]}\n')
+            profile = root / "profile"
+            profile.mkdir(mode=0o700)
+            value = {"private": {"profile": str(profile)}, "codex_catalog": str(profile / "catalogs" / (proof.sha256(source) + ".json"))}
+            before = proof.materialize_codex_profile(value, source)
+            self.assertEqual(before, proof.codex_profile_snapshot(value))
+            self.assertEqual(json.loads((profile / "auth.json").read_bytes()), {"auth_mode": "apikey", "OPENAI_API_KEY": proof.CODEX_DUMMY_CREDENTIAL})
+            for name in ["config.toml", ".env", "rules", "profiles", "hooks.json"]:
+                path = profile / name
+                path.write_text("owned invalid-profile fixture\n")
+                with self.assertRaises(ValueError):
+                    proof.codex_profile_snapshot(value)
+                path.unlink()
+            (profile / "auth.json").write_text('{"auth_mode":"chatgpt","tokens":{"access_token":"owned-dummy"}}')
+            with self.assertRaises(ValueError):
+                proof.codex_profile_snapshot(value)
+
+    def test_private_catalog_alias_or_changed_bytes_are_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, profile = root / "source", root / "profile"
+            source.write_bytes(b"owned catalog bytes\n")
+            profile.mkdir(mode=0o700)
+            target = profile / "catalogs" / (proof.sha256(source) + ".json")
+            value = {"private": {"profile": str(profile)}, "codex_catalog": str(target)}
+            proof.materialize_codex_profile(value, source)
+            target.write_bytes(b"changed\n")
+            with self.assertRaises(ValueError):
+                proof.codex_profile_snapshot(value)
+            target.unlink()
+            target.symlink_to(source)
+            with self.assertRaises(ValueError):
+                proof.codex_profile_snapshot(value)
+
+
 class Dispatch(unittest.TestCase):
-    def run_frames(self, ids, initial_task=False, premature_task=False):
+    def run_frames(self, ids, initial_task=False, premature_task=False, account=None):
         initial = {"kind": "write", "task": initial_task, "message": {"id": 1, "method": "initialize"}}
+        account_request = {"kind": "write", "task": False, "message": {"id": 91, "method": "account/read", "params": {"refreshToken": False}}}
         opened = {"kind": "write", "task": False, "message": {"id": 2, "method": "thread/start"}}
         task = {"kind": "write", "task": True, "message": {"id": 3, "method": "turn/start"}}
         policy = {"cwd": "/synthetic", "protocol_actions": [initial]}
         responses = {
             1: {"id": 1, "result": {}},
+            91: {"id": 91, "result": account if account is not None else {"account": {"type": "apiKey"}, "requiresOpenaiAuth": True}},
             90: {"id": 90, "result": {"data": [{"model": "gpt-5.5"}]}},
             2: {"id": 2, "result": {"model": "gpt-5.5", "modelProvider": "openai"}},
             3: {"id": 3, "result": {"turn": {"id": "turn"}}},
         }
-        frames = [responses[identity] for identity in ids] + [
+        frames = [identity if isinstance(identity, dict) else responses[identity] for identity in ids] + [
             {"method": "turn/started", "params": {"turn": {"id": "turn"}}},
             {"method": "item/completed", "params": {"item": {"type": "agentMessage", "text": "finished"}}},
             {"method": "turn/completed", "params": {"turn": {"id": "turn", "status": "completed"}}},
@@ -150,7 +203,9 @@ class Dispatch(unittest.TestCase):
             seen = {frame["id"] for frame in value["vendor_responses"]}
             actions = [initial]
             if 1 in seen:
-                actions.extend([{"kind": "write", "task": False, "message": {"method": "initialized"}}, opened])
+                actions.extend([{"kind": "write", "task": False, "message": {"method": "initialized"}}, account_request])
+            if 91 in seen:
+                actions.append(opened)
             if 2 in seen:
                 actions.append(task)
             if 3 in seen:
@@ -168,28 +223,57 @@ class Dispatch(unittest.TestCase):
         return result, sent
 
     def test_thread_response_before_catalog_cannot_forward_task(self):
-        result, sent = self.run_frames([1, 2, 90, 3])
+        result, sent = self.run_frames([1, 91, 2, 90, 3])
         self.assertIsNotNone(result["error"])
         self.assertFalse(any(frame.get("method") == "turn/start" for frame in sent))
 
     def test_catalog_response_before_initialize_is_refused(self):
-        result, sent = self.run_frames([90, 1, 2, 3])
+        result, sent = self.run_frames([90, 1, 91, 2, 3])
         self.assertIsNotNone(result["error"])
         self.assertFalse(any(frame.get("method") == "turn/start" for frame in sent))
 
     def test_normal_response_order_submits_one_task(self):
-        result, sent = self.run_frames([1, 90, 2, 3])
+        result, sent = self.run_frames([1, 91, 90, 2, 3])
         self.assertIsNone(result["error"])
         self.assertTrue(all(result["checks"].values()))
         self.assertEqual(sum(frame.get("method") == "turn/start" for frame in sent), 1)
 
     def test_task_marked_initial_action_is_not_forwarded(self):
-        result, sent = self.run_frames([1, 90, 2, 3], initial_task=True)
+        result, sent = self.run_frames([1, 91, 90, 2, 3], initial_task=True)
         self.assertIsNotNone(result["error"])
         self.assertEqual(sent, [])
 
     def test_generated_task_before_thread_admission_is_not_forwarded(self):
-        result, sent = self.run_frames([1, 90, 2, 3], premature_task=True)
+        result, sent = self.run_frames([1, 91, 90, 2, 3], premature_task=True)
+        self.assertIsNotNone(result["error"])
+        self.assertFalse(any(frame.get("method") == "turn/start" for frame in sent))
+
+    def test_account_catalog_and_task_order_is_exact(self):
+        result, sent = self.run_frames([1, 91, 90, 2, 3])
+        self.assertIsNone(result["error"])
+        self.assertEqual([frame.get("id") for frame in sent], [1, None, 91, 90, 2, 3])
+        self.assertEqual(sent[2]["params"], {"refreshToken": False})
+        for ids in [[1, 90, 91, 2, 3], [1, 91, 91, 90, 2, 3], [1, 91, 2, 3]]:
+            result, sent = self.run_frames(ids)
+            self.assertIsNotNone(result["error"])
+            self.assertFalse(any(frame.get("method") == "turn/start" for frame in sent))
+
+    def test_signed_out_oauth_routing_and_non_api_accounts_are_refused(self):
+        for account in [{"account": None, "requiresOpenaiAuth": True}, {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True}, {"account": {"type": "apiKey"}, "requiresOpenaiAuth": False}, {"account": {"type": "apiKey"}, "requiresOpenaiAuth": True, "workspaceRouting": {"id": "owned"}}]:
+            result, sent = self.run_frames([1, 91, 90, 2, 3], account=account)
+            self.assertIsNotNone(result["error"])
+            self.assertFalse(any(frame.get("method") in {"thread/start", "turn/start", "model/list"} for frame in sent))
+
+    def test_only_bounded_notifications_can_be_ignored(self):
+        valid = {"method": "remoteControl/status/changed", "params": {"status": "disabled"}}
+        result, _ = self.run_frames([1, valid, 91, 90, 2, 3])
+        self.assertIsNone(result["error"])
+        for invalid in [{**valid, "id": None}, {**valid, "id": 500}, {**valid, "result": {}}, {**valid, "error": None}, {**valid, "params": []}]:
+            result, sent = self.run_frames([1, invalid, 91, 90, 2, 3])
+            self.assertIsNotNone(result["error"])
+            self.assertFalse(any(frame.get("method") == "turn/start" for frame in sent))
+        with mock.patch.object(proof, "MAX_NATIVE_FRAMES", 3):
+            result, sent = self.run_frames([1, valid, valid, valid, 91, 90, 2, 3])
         self.assertIsNotNone(result["error"])
         self.assertFalse(any(frame.get("method") == "turn/start" for frame in sent))
 

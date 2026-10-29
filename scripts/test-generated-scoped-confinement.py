@@ -190,7 +190,7 @@ class Fixtures(unittest.TestCase):
     def test_existing_negative_targets_and_seed_identity_are_rechecked(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            value = proof.compat.fixture_input(root, "codex", Path("/fake-engine"), "http://127.0.0.1:1/v1")
+            value = proof.compat.fixture_input(root, "codex", Path("/fake-engine"), "http://127.0.0.1:1/v1", "0" * 64)
             traps = proof.seed_canaries(root, value, "codex")
             probe = proof.make_probe(value, "codex", "file-undeclared", "http://127.0.0.1:1/v1")
             self.assertTrue(probe.targets[0].path.is_file())
@@ -203,7 +203,8 @@ class Fixtures(unittest.TestCase):
             self.assertFalse(any(path.exists() for path in traps))
             state = proof.owned_seed_state(value)
             self.assertEqual(state, proof.owned_seed_state(value))
-            config = Path(value["private"]["profile"]) / "config.toml"
+            self.assertFalse((Path(value["private"]["profile"]) / "config.toml").exists())
+            config = Path(value["private"]["home"]) / ".codex" / "config.toml"
             config.write_text(config.read_text() + "\n# changed\n")
             self.assertNotEqual(state, proof.owned_seed_state(value))
 
@@ -239,6 +240,10 @@ class Fixtures(unittest.TestCase):
                     return {"checks": {"fake_native_completed": True}, "error": None, "direct_child_exited": True}
                 with mock.patch.dict(proof.compat.PINS, {(platform.system(), platform.machine(), "codex"): proof.sha256(binary)}), \
                      mock.patch.object(proof, "ActionModel", return_value=model), \
+                     mock.patch.object(proof.compat, "obtain_codex_catalog", return_value=(root / "catalog", {"sha256": "0" * 64})), \
+                     mock.patch.object(proof.compat, "materialize_codex_profile", return_value={}), \
+                     mock.patch.object(proof.compat, "codex_profile_snapshot", return_value={}), \
+                     mock.patch.object(proof.compat, "codex_machine_preconditions", return_value={}), \
                      mock.patch.object(proof.compat, "project", side_effect=fake_project), \
                      mock.patch.object(proof.compat, "inspect_selection", return_value={"profile_initially_empty": True}), \
                      mock.patch.object(proof.compat, "native_command", side_effect=lambda argv, _: argv), \

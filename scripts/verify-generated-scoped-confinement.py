@@ -318,9 +318,9 @@ def seed_canaries(root, value, provider):
     entries = value["grant"]["repositories"]["entries"]
     fixture = types.SimpleNamespace(root=root, traps=traps, paths={"A": Path(entries[0]["value"]["execution"]["directory"]), "B": Path(entries[1]["value"]["execution"]["directory"]), "H": Path(value["private"]["home"])})
     Fixture.seed_configuration(fixture)
-    source = fixture.paths["H"] / (".claude" if provider == "claude" else ".codex")
-    for path in source.iterdir():
-        shutil.copyfile(path, Path(value["private"]["profile"]) / path.name)
+    if provider == "claude":
+        for path in (fixture.paths["H"] / ".claude").iterdir():
+            shutil.copyfile(path, Path(value["private"]["profile"]) / path.name)
     return traps
 
 
@@ -539,6 +539,7 @@ def resume_stage(args, root, value, model, actions, prepare):
 
 def run_claude_resume(args):
     root = Path(tempfile.mkdtemp(prefix="claude-resume-", dir=args.output)).resolve()
+    execution_root = Path(tempfile.mkdtemp(prefix="dp-", dir="/tmp")).resolve() if platform.system() == "Linux" else root
     binary = Path(args.claude).resolve(strict=True)
     if sha256(binary) != compat.PINS.get((platform.system(), platform.machine(), "claude")):
         raise RuntimeError("resume proof requires the exact pinned Claude binary")
@@ -546,7 +547,8 @@ def run_claude_resume(args):
     first_model = ActionModel("claude", False)
     models = [first_model]
     try:
-        first = compat.fixture_input(root, "claude", binary, first_model.endpoint)
+        result["execution_root"] = str(execution_root)
+        first = compat.fixture_input(execution_root, "claude", binary, first_model.endpoint)
         first["task"] = "Read the owned existing file and finish."
         a = Path(first["legacy_cwd"]) / "resume-existing"
         a.write_text("owned retained session input\n")
@@ -555,7 +557,7 @@ def run_claude_resume(args):
         frozen = {}
         def prepare_first(policy, env):
             selection = compat.inspect_selection("claude", binary, list(policy["argv"]), env, policy, first, first_model)
-            traps = seed_canaries(root, first, "claude")
+            traps = seed_canaries(execution_root, first, "claude")
             make_probe(first, "claude", "command-writable", first_model.endpoint)
             frozen.update({"seed": owned_seed_state(first), "traps": traps})
             return {"first_generated_session_flag_exact": policy["argv"].count("--session-id") == 1 and policy["argv"][policy["argv"].index("--session-id") + 1] == first["session_id"], "owned_seed_rechecked": owned_seed_state(first) == frozen["seed"]}, {"pre_seed_empty_selection": selection, "owned_seed": frozen["seed"]}
@@ -616,6 +618,7 @@ def run_claude_resume(args):
 
 def run_case(args, provider, case):
     root = Path(tempfile.mkdtemp(prefix=provider + "-" + case + "-", dir=args.output)).resolve()
+    execution_root = Path(tempfile.mkdtemp(prefix="dp-", dir="/tmp")).resolve() if platform.system() == "Linux" else root
     binary = Path(getattr(args, provider)).resolve(strict=True)
     if sha256(binary) != compat.PINS.get((platform.system(), platform.machine(), provider)):
         raise RuntimeError("native binary does not match the exact pinned build")
@@ -633,14 +636,16 @@ def run_case(args, provider, case):
         version_home = root / "version-home"
         version_home.mkdir(mode=0o700)
         (version_home / "tmp").mkdir(mode=0o700)
-        version_env = {"HOME": str(version_home), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR": str(version_home / "tmp"), "TMP": str(version_home / "tmp"), "TEMP": str(version_home / "tmp"), "CODEX_HOME": str(version_home / ".codex"), "CLAUDE_CONFIG_DIR": str(version_home / ".claude"), "ANTHROPIC_API_KEY": compat.DUMMY_CREDENTIAL, "CODEX_API_KEY": compat.DUMMY_CREDENTIAL, "OPENAI_API_KEY": compat.DUMMY_CREDENTIAL}
+        version_env = {"HOME": str(version_home), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR": str(version_home / "tmp"), "TMP": str(version_home / "tmp"), "TEMP": str(version_home / "tmp"), "CODEX_HOME": str(version_home / ".codex"), "CLAUDE_CONFIG_DIR": str(version_home / ".claude")}
         version = subprocess.run([str(binary), "--version"], env=version_env, cwd=version_home, capture_output=True, text=True, timeout=5)
         result["version"] = version.stdout.strip()
         result["version_process_uses_separate_scratch_state"] = True
         result["checks"]["expected_version"] = version.returncode == 0 and result["version"] == ("2.1.311 (Claude Code)" if provider == "claude" else "codex-cli 0.164.0-alpha.11.1")
         if not result["checks"]["expected_version"]:
             raise RuntimeError("pinned engine version output differs")
-        value = compat.fixture_input(root, provider, binary, model.endpoint)
+        result["execution_root"] = str(execution_root)
+        catalog_source, catalog_metadata = compat.obtain_codex_catalog(args, root, binary) if provider == "codex" else (None, None)
+        value = compat.fixture_input(execution_root, provider, binary, model.endpoint, catalog_metadata["sha256"]) if provider == "codex" else compat.fixture_input(execution_root, provider, binary, model.endpoint)
         value["task"] = "Carry out the single local confinement check and finish."
         policy = compat.project(args.fixture, root, value)
         (root / "generated-policy.json").write_text(json.dumps(policy, indent=2) + "\n")
@@ -653,8 +658,11 @@ def run_case(args, provider, case):
         result["diagnostic_argv"] = argv
         result["materialized_environment_sha256"] = compat.digest(env)
         result["environment_names"] = sorted(env)
-        traps = seed_canaries(root, value, provider)
-        result["configuration_canaries_seeded_after_empty_profile_inspection"] = True
+        if provider == "codex":
+            result["catalog_provenance"] = catalog_metadata
+            result["dummy_profile_before"] = compat.materialize_codex_profile(value, catalog_source)
+        traps = seed_canaries(execution_root, value, provider)
+        result["configuration_canaries"] = "repository and isolated HOME only; active-profile poison is covered by separate production Rust preparation tests" if provider == "codex" else "repository, isolated HOME and active profile"
         probe = make_probe(value, provider, case, model.endpoint, args.macos_sandbox_unavailable)
         model.probe = probe
         model.expected_posts = 3 if probe.preread else 2
@@ -692,11 +700,21 @@ def run_case(args, provider, case):
             if not result["checks"]["undeclared_creation_parent_exists_and_target_absent"]:
                 raise RuntimeError("undeclared creation precondition changed before spawn")
             result["new_file_creation_control"] = {"parent": str(target.parent), "parent_device": target.parent.stat().st_dev, "parent_inode": target.parent.stat().st_ino, "target_initially_absent": True, "same_empty_old_string_as_declared_edit": probe.arguments.get("old_string") == "" if provider == "claude" else None}
+        if provider == "codex":
+            result["known_profile_preconditions_after_seed"] = compat.codex_profile_snapshot(value)
+            result["checks"]["owned_dummy_profile_unchanged_before_spawn"] = result["known_profile_preconditions_after_seed"] == result["dummy_profile_before"]
+            result["machine_preconditions"] = compat.codex_machine_preconditions(value, env)
+            if not result["checks"]["owned_dummy_profile_unchanged_before_spawn"] or sha256(binary) != result["binary_sha256"]:
+                raise RuntimeError("dummy profile or pinned binary changed before native spawn")
         argv = ["/usr/bin/sandbox-exec", "-p", guard, *argv] if args.macos_sandbox_unavailable else compat.native_command(argv, False)
         result["spawn_argv_sha256"] = compat.digest(argv)
         native = run_claude(root, argv, env, value, policy, probe) if provider == "claude" else compat.run_codex(args, root, argv, env, value, policy, model)
         result["checks"].update(native.pop("checks"))
         result.update(native)
+        if provider == "codex":
+            result["dummy_profile_after"] = compat.codex_profile_snapshot(value)
+            result["checks"]["owned_dummy_auth_catalog_bytes_identity_unchanged"] = result["dummy_profile_after"] == result["dummy_profile_before"]
+            result["checks"]["pinned_binary_unchanged"] = sha256(binary) == result["binary_sha256"]
     except Exception as error:
         result["error"] = str(error)
     finally:
@@ -733,6 +751,7 @@ def main():
     parser.add_argument("--claude", required=True)
     parser.add_argument("--codex", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--codex-catalog", type=Path, help="private native bundled export for the pinned macOS executable; Linux exports its own offline")
     parser.add_argument("--provider", choices=["claude", "codex", "all"], default="all")
     parser.add_argument("--case", choices=[*CASES, "all"], default="all")
     parser.add_argument("--macos-sandbox-unavailable", action="store_true")

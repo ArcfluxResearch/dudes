@@ -15,7 +15,9 @@ import json
 import os
 import platform
 import queue
+import selectors
 import socket
+import stat
 import subprocess
 import tempfile
 import threading
@@ -33,6 +35,13 @@ PINS = {
 }
 OUTER_NETWORK_GUARD = '(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))(allow network-outbound (remote unix-socket))'
 DUMMY_CREDENTIAL = "local-only-dummy"
+CODEX_DUMMY_CREDENTIAL = "dudes-scoped-dummy"
+MAC_CATALOG_SHA256 = "69af12f94a39dabd1a1ded8f5257b4884d2118902ea2b5b9cffbf4a1925dfa65"
+MAC_CATALOG_BYTES = 658607
+MAX_CATALOG_BYTES = 720896
+MAX_NATIVE_FRAMES = 512
+MAX_NATIVE_FRAME_BYTES = 1024 * 1024
+MAX_NATIVE_STDOUT_BYTES = 8 * 1024 * 1024
 CODEX_TOOL_TYPES = {"exec_command": "function", "write_stdin": "function", "request_user_input": "function", "apply_patch": "custom", "view_image": "function"}
 NATIVE_GOAL_TOOLS = {"get_goal", "create_goal", "update_goal"}
 MAX_HTTP_REQUESTS = 12
@@ -123,7 +132,8 @@ class LocalModel:
                 response_started = False
                 try:
                     observed = [value for name, value in self.headers.items() if name.lower() in {"authorization", "x-api-key"}]
-                    expected = {DUMMY_CREDENTIAL, "Bearer " + DUMMY_CREDENTIAL}
+                    dummy = CODEX_DUMMY_CREDENTIAL if provider == "codex" else DUMMY_CREDENTIAL
+                    expected = {dummy, "Bearer " + dummy}
                     accepted = all(value in expected for value in observed)
                     model.credentials.append({"credential_headers_present": bool(observed), "all_present_credentials_are_explicit_dummy": accepted})
                     if not accepted:
@@ -232,7 +242,9 @@ class LocalModel:
         self.thread.join(timeout=2)
 
 
-def fixture_input(root, provider, binary, endpoint):
+def fixture_input(root, provider, binary, endpoint, catalog_sha256=None):
+    if provider == "codex" and (not isinstance(catalog_sha256, str) or len(catalog_sha256) != 64 or any(char not in "0123456789abcdef" for char in catalog_sha256)):
+        raise ValueError("Codex fixture requires its private bundled catalog digest")
     paths = {name: root / name for name in ["agent", "home", "profile", "copies", "origins"]}
     for path in paths.values():
         path.mkdir(mode=0o700)
@@ -262,7 +274,137 @@ def fixture_input(root, provider, binary, endpoint):
     values = [("PATH", env["PATH"]), ("LANG", "en_US.UTF-8"), ("ANTHROPIC_API_KEY", DUMMY_CREDENTIAL), ("ANTHROPIC_BASE_URL", endpoint.removesuffix("/v1")), ("OPENAI_API_KEY", DUMMY_CREDENTIAL), ("CODEX_API_KEY", DUMMY_CREDENTIAL)]
     for index, value in enumerate([*private.values(), str(paths["home"] / ".config"), str(paths["home"] / ".cache"), str(paths["home"] / ".state"), "/bin/bash", "1", "0", "dumb"]):
         values.append(("SYNTHETIC_VALUE_" + str(index), value))
-    return {"provider": provider, "config": {"command": str(binary), **({"permission_mode": "default"} if provider == "claude" else {"streaming": True})}, "private": private, "hired": hired, "grant": grant, "origin_git_dirs": git, "mode": "managed", "platform": "macos_arm64" if platform.system() == "Darwin" else "linux_x86_64", "legacy_cwd": str(paths["copies"] / "a"), "agent_dir": str(paths["agent"]), "session_kind": "first" if provider == "claude" else "assigned", "session_id": str(uuid.uuid4()), "model": "claude-sonnet-4-6" if provider == "claude" else "gpt-5.5", "task": "Complete the benign declared-root compatibility task.", "env": values}
+    value = {"provider": provider, "config": {"command": str(binary), **({"permission_mode": "default"} if provider == "claude" else {"streaming": True})}, "private": private, "hired": hired, "grant": grant, "origin_git_dirs": git, "mode": "managed", "platform": "macos_arm64" if platform.system() == "Darwin" else "linux_x86_64", "legacy_cwd": str(paths["copies"] / "a"), "agent_dir": str(paths["agent"]), "session_kind": "first" if provider == "claude" else "assigned", "session_id": str(uuid.uuid4()), "model": "claude-sonnet-4-6" if provider == "claude" else "gpt-5.5", "task": "Complete the benign declared-root compatibility task.", "env": values}
+    if provider == "codex":
+        value["codex_catalog"] = str(paths["profile"] / "catalogs" / (catalog_sha256 + ".json"))
+    return value
+
+
+def bounded_capture(argv, env, cwd, stdout_cap, timeout=2):
+    process = subprocess.Popen(argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    data = {"stdout": bytearray(), "stderr": bytearray()}
+    deadline = time.monotonic() + timeout
+    selector = selectors.DefaultSelector()
+    try:
+        for name, stream in [("stdout", process.stdout), ("stderr", process.stderr)]:
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, name)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("bounded metadata capture timed out")
+            for key, _ in selector.select(min(remaining, 0.05)):
+                chunk = os.read(key.fileobj.fileno(), 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                if len(data[key.data]) + len(chunk) > (stdout_cap if key.data == "stdout" else 8192):
+                    raise RuntimeError("bounded metadata capture exceeded its byte cap")
+                data[key.data].extend(chunk)
+        process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        if process.returncode or data["stderr"]:
+            raise RuntimeError("bounded metadata command did not exit cleanly")
+        return bytes(data["stdout"])
+    finally:
+        stop(process)
+        selector.close()
+        process.stdout.close()
+        process.stderr.close()
+
+
+def obtain_codex_catalog(args, root, binary):
+    if sha256(binary) != PINS[(platform.system(), platform.machine(), "codex")]:
+        raise ValueError("catalog export requires the exact pinned native executable")
+    if platform.system() == "Darwin":
+        source = getattr(args, "codex_catalog", None)
+        if source is None:
+            raise ValueError("macOS Codex proof requires the retained private native bundled catalog")
+        source = Path(source).resolve(strict=True)
+        if source.stat().st_size != MAC_CATALOG_BYTES or sha256(source) != MAC_CATALOG_SHA256:
+            raise ValueError("private native bundled catalog differs from the pinned macOS receipt")
+        provenance = "retained native bundled export; exact macOS digest and byte length"
+    else:
+        if getattr(args, "codex_catalog", None) is not None:
+            raise ValueError("Linux proof must export its catalog from the pinned native binary")
+        scratch = root / "catalog-export"
+        scratch.mkdir(mode=0o700)
+        paths = {name: scratch / name for name in ["home", "profile", "temp", "work"]}
+        for path in paths.values():
+            path.mkdir(mode=0o700)
+        env = {"HOME": str(paths["home"]), "CODEX_HOME": str(paths["profile"]), "TMPDIR": str(paths["temp"]), "TMP": str(paths["temp"]), "TEMP": str(paths["temp"]), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "SHELL": "/bin/bash", "TERM": "dumb", "LANG": "C", "LC_ALL": "C"}
+        data = bounded_capture(native_command([str(binary), "debug", "models", "--bundled"], False), env, paths["work"], MAX_CATALOG_BYTES)
+        if sha256(binary) != PINS[(platform.system(), platform.machine(), "codex")]:
+            raise ValueError("pinned executable changed during the offline catalog export")
+        source = scratch / "catalog.json"
+        source.write_bytes(data)
+        source.chmod(0o600)
+        provenance = "fresh pinned native debug models --bundled; isolated loopback-only namespace; runtime qualification pending"
+    if not 0 < source.stat().st_size <= MAX_CATALOG_BYTES:
+        raise ValueError("private catalog exceeds the native export bound")
+    catalog = json.loads(source.read_bytes())
+    models = catalog.get("models", [])
+    matches = [item for item in models if item.get("slug") == "gpt-5.5"]
+    if len(matches) != 1 or not models or matches[0].get("shell_type") != "unified_exec" or matches[0].get("apply_patch_tool_type") != "freeform":
+        raise ValueError("native bundled catalog lacks the proved tool metadata")
+    metadata = {"sha256": sha256(source), "bytes": source.stat().st_size, "models": len(models), "binary_sha256": sha256(binary), "provenance": provenance, "catalog_text_published": False}
+    (root / "catalog-provenance.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    return source, metadata
+
+
+def materialize_codex_profile(value, source):
+    profile = Path(value["private"]["profile"])
+    if any(profile.iterdir()):
+        raise ValueError("synthetic Codex profile must start empty")
+    catalog = Path(value["codex_catalog"])
+    catalog.parent.mkdir(mode=0o700)
+    with catalog.open("xb") as target:
+        target.write(Path(source).read_bytes())
+    catalog.chmod(0o600)
+    auth = profile / "auth.json"
+    with auth.open("x") as target:
+        target.write(json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": CODEX_DUMMY_CREDENTIAL}) + "\n")
+    auth.chmod(0o600)
+    return codex_profile_snapshot(value)
+
+
+def codex_profile_snapshot(value):
+    profile = Path(value["private"]["profile"])
+    for name in ["config.toml", ".env", "rules", "profiles", "hooks.json"]:
+        if (profile / name).exists() or (profile / name).is_symlink():
+            raise ValueError("active scoped profile has forbidden configuration")
+    def snapshot(path):
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022 or path.resolve(strict=True) != path:
+            raise ValueError("synthetic profile file is not private, owned and unaliased")
+        return {"device": metadata.st_dev, "inode": metadata.st_ino, "owner": metadata.st_uid, "mode": stat.S_IMODE(metadata.st_mode), "links": metadata.st_nlink, "bytes": metadata.st_size, "mtime_ns": metadata.st_mtime_ns, "ctime_ns": metadata.st_ctime_ns, "sha256": sha256(path)}
+    auth = profile / "auth.json"
+    auth_state = snapshot(auth)
+    if json.loads(auth.read_bytes()) != {"auth_mode": "apikey", "OPENAI_API_KEY": CODEX_DUMMY_CREDENTIAL}:
+        raise ValueError("auth file differs from the sole owned dummy API-key fixture")
+    catalog = Path(value["codex_catalog"])
+    catalog_state = snapshot(catalog)
+    if catalog.parent != profile / "catalogs" or catalog.name != catalog_state["sha256"] + ".json":
+        raise ValueError("catalog differs from its private content-addressed path")
+    return {"auth": auth_state, "catalog": catalog_state, "profile": {"device": profile.stat().st_dev, "inode": profile.stat().st_ino}, "observation": "owned dummy fixtures only; Python metadata precondition, not the production guard"}
+
+
+def codex_machine_preconditions(value, env):
+    for name in ["config.toml", "requirements.toml", "managed_config.toml"]:
+        path = Path("/etc/codex") / name
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        raise ValueError("system Codex configuration is present or unproven")
+    result = {"system_configuration_absent": True, "prototype_metadata_only": True}
+    if platform.system() == "Darwin":
+        script = 'ObjC.import("CoreFoundation"); function run() { const d = $("com.openai.codex"); return JSON.stringify({synchronized:Boolean($.CFPreferencesAppSynchronize(d)),config:Boolean($.CFPreferencesAppValueIsForced($("config_toml_base64"),d)),requirements:Boolean($.CFPreferencesAppValueIsForced($("requirements_toml_base64"),d))}); }'
+        data = bounded_capture(["/usr/bin/osascript", "-l", "JavaScript", "-e", script], env, value["private"]["work"], 256)
+        flags = json.loads(data)
+        if flags != {"synchronized": True, "config": False, "requirements": False}:
+            raise ValueError("forced Codex preferences are present or unproven")
+        result["forced_preference_flags"] = flags
+    return result
 
 
 def project(fixture, root, value):
@@ -286,7 +428,7 @@ def native_command(argv, unavailable):
 
 def inspect_selection(provider, binary, argv, env, policy, value, model):
     common = {"HOME", "PATH", "LANG", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP"}
-    extra = {"CODEX_HOME", "CODEX_API_KEY", "OPENAI_API_KEY"} if provider == "codex" else {
+    extra = {"CODEX_HOME"} if provider == "codex" else {
         "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
         "CLAUDE_CODE_TMPDIR", "CLAUDE_CODE_SHELL", "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
         "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL", "CLAUDE_CODE_DISABLE_POLICY_SKILLS", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
@@ -295,7 +437,7 @@ def inspect_selection(provider, binary, argv, env, policy, value, model):
     if set(env) != common | extra:
         raise ValueError("materialized environment is outside the closed synthetic allowlist")
     names = {name for name in env if name.endswith("_API_KEY")}
-    required = {"CODEX_API_KEY", "OPENAI_API_KEY"} if provider == "codex" else {"ANTHROPIC_API_KEY"}
+    required = set() if provider == "codex" else {"ANTHROPIC_API_KEY"}
     if names != required or any(env[name] != DUMMY_CREDENTIAL for name in names):
         raise ValueError("the materialized provider credentials are not exclusively explicit dummy values")
     private = value["private"]
@@ -314,6 +456,10 @@ def inspect_selection(provider, binary, argv, env, policy, value, model):
         if env["ANTHROPIC_BASE_URL"] != model.endpoint.removesuffix("/v1"):
             raise ValueError("Claude endpoint selection differs from the owned listener")
     else:
+        options = [argv[index + 1] for index, item in enumerate(argv[:-1]) if item == "-c"]
+        catalog_option = "model_catalog_json=" + json.dumps(value["codex_catalog"])
+        if options.count('forced_login_method="api"') != 1 or options.count('cli_auth_credentials_store="file"') != 1 or [option for option in options if option.startswith("model_catalog_json=")] != [catalog_option]:
+            raise ValueError("generated scoped API/file/catalog settings differ from the owned fixture")
         expected.extend(["-c", "openai_base_url=" + json.dumps(model.endpoint)])
     if argv != expected or argv[0] != str(binary) or sha256(binary) != PINS[(platform.system(), platform.machine(), provider)]:
         raise ValueError("effective program/argv differs from the pinned recipe and endpoint diagnostic")
@@ -332,7 +478,8 @@ def run_case(args, case):
     started = time.monotonic()
     result = {"provider": provider, "case": case, "execution_mode": "sandbox-unavailable-control" if args.macos_sandbox_unavailable else "normal", "binary": str(binary), "binary_sha256": sha256(binary), "script_sha256": sha256(Path(__file__)), "platform": platform.platform(), "checks": {}, "error": None}
     try:
-        value = fixture_input(root, provider, binary, model.endpoint)
+        catalog_source, catalog_metadata = obtain_codex_catalog(args, root, binary) if provider == "codex" else (None, None)
+        value = fixture_input(root, provider, binary, model.endpoint, catalog_metadata["sha256"]) if provider == "codex" else fixture_input(root, provider, binary, model.endpoint)
         policy = project(args.fixture, root, value)
         (root / "generated-policy.json").write_text(json.dumps(policy, indent=2) + "\n")
         result["policy_sha256"] = digest(policy)
@@ -356,6 +503,10 @@ def run_case(args, case):
         result["environment_names"] = sorted(env)
         result["materialized_environment_sha256"] = digest(env)
         result["pre_launch_selection"] = inspect_selection(provider, binary, argv, env, policy, value, model)
+        if provider == "codex":
+            result["catalog_provenance"] = catalog_metadata
+            result["dummy_profile_before"] = materialize_codex_profile(value, catalog_source)
+            result["machine_preconditions"] = codex_machine_preconditions(value, env)
         if platform.system() == "Darwin" and args.macos_sandbox_unavailable:
             result["outer_network_guard_sha256"] = digest(OUTER_NETWORK_GUARD)
             (root / "outer-network-guard.sb").write_text(OUTER_NETWORK_GUARD + "\n")
@@ -400,6 +551,9 @@ def run_case(args, case):
             result["checks"] = {"exit_zero": process.returncode == 0, "recorded_session_exact": sessions == {value["session_id"]}, "closed_tool_inventory": any(set(item["tools"] or []) == {"Bash", "Read", "Edit"} for item in result["native_initializations"]), "declared_edit_observed": model.target.exists() and model.target.read_text() == "declared compatibility marker\n", "persistent_session_artifact": any(item["recorded_user_task"] for item in artifacts), "two_bounded_local_requests": len(model.requests) == 2 and not model.errors}
         else:
             result.update(run_codex(args, root, argv, env, value, policy, model))
+            result["dummy_profile_after"] = codex_profile_snapshot(value)
+            result["checks"]["owned_dummy_auth_and_catalog_bytes_identity_unchanged"] = result["dummy_profile_before"] == result["dummy_profile_after"]
+            result["checks"]["pinned_binary_unchanged"] = sha256(binary) == result["binary_sha256"]
     except Exception as error:
         result["error"] = str(error)
     finally:
@@ -424,15 +578,27 @@ def run_codex(args, root, argv, env, value, policy, model):
     process = subprocess.Popen(argv, env=env, cwd=policy["cwd"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, start_new_session=True, bufsize=1)
     frames, received, sent = [], queue.Queue(), []
 
+    reader_errors = []
     def reader():
-        for line in process.stdout:
-            try:
+        total = 0
+        try:
+            while True:
+                line = process.stdout.readline(MAX_NATIVE_FRAME_BYTES + 1)
+                if not line:
+                    break
+                total += len(line.encode())
+                if len(line.encode()) > MAX_NATIVE_FRAME_BYTES or total > MAX_NATIVE_STDOUT_BYTES or len(frames) >= MAX_NATIVE_FRAMES or not line.endswith("\n"):
+                    raise ValueError("native protocol output exceeded its frame/byte bound or was truncated")
                 frame = json.loads(line)
+                if not isinstance(frame, dict):
+                    raise ValueError("native protocol frame is not an object")
                 frames.append(frame)
                 received.put(frame)
-            except json.JSONDecodeError:
-                pass
-        received.put(None)
+        except Exception as error:
+            reader_errors.append(type(error).__name__ + ": " + str(error))
+            received.put(RuntimeError(reader_errors[-1]))
+        finally:
+            received.put(None)
 
     thread = threading.Thread(target=reader, daemon=True)
     thread.start()
@@ -442,15 +608,16 @@ def run_codex(args, root, argv, env, value, policy, model):
         process.stdin.flush()
         sent.append(message)
 
-    checks = {"catalog_profile_before_task": False, "thread_model_provider_exact": False, "rust_reader_accepted_native_posture": False, "task_completed": False, "closed_tool_inventory": False, "native_goal_tools_absent": False}
+    checks = {"catalog_profile_before_task": False, "native_api_key_account_before_catalog": False, "thread_model_provider_exact": False, "rust_reader_accepted_native_posture": False, "task_completed": False, "closed_tool_inventory": False, "native_goal_tools_absent": False}
     result = {"checks": checks, "error": None}
     responses, emitted, catalog = [], 0, None
-    expected_response, task_sent = 1, False
+    expected_response, task_sent, pending_thread = 1, False, None
+    previous_actions = policy["protocol_actions"]
     deadline = time.monotonic() + 40
     try:
-        initial = policy["protocol_actions"][0]
-        if initial["kind"] != "write" or initial["task"] or initial["message"].get("method") != "initialize":
-            raise RuntimeError("startup requires a non-task initialize action")
+        initial = previous_actions[0]
+        if len(previous_actions) != 1 or initial["kind"] != "write" or initial["task"] or initial["message"].get("method") != "initialize" or initial["message"].get("id") != 1:
+            raise RuntimeError("startup requires one non-task initialize action")
         send(initial["message"])
         emitted = 1
         while time.monotonic() < deadline:
@@ -458,66 +625,101 @@ def run_codex(args, root, argv, env, value, policy, model):
                 frame = received.get(timeout=1)
             except queue.Empty:
                 continue
+            if isinstance(frame, Exception):
+                raise frame
             if frame is None:
                 raise RuntimeError("Codex exited before the compatibility turn finished")
-            if frame.get("error"):
-                raise RuntimeError("native protocol refusal: " + json.dumps(frame["error"]))
-            if frame.get("id") is not None:
-                if frame.get("method") is not None or frame["id"] != expected_response:
-                    raise RuntimeError("unexpected native response phase; expected " + str(expected_response))
-            if frame.get("id") == 1:
-                responses.append(frame)
-                expected_response = 90
-                send({"method": "initialized"})
-                send({"id": 90, "method": "model/list", "params": {}})
+            if "method" in frame:
+                if any(key in frame for key in ["id", "result", "error"]) or not isinstance(frame["method"], str) or not frame["method"] or not isinstance(frame.get("params"), dict) or set(frame) - {"jsonrpc", "method", "params"} or frame.get("jsonrpc", "2.0") != "2.0":
+                    raise RuntimeError("native request/response or malformed notification cannot be ignored")
+                if frame["method"] == "error":
+                    raise RuntimeError("native error notification is fatal")
+                if frame["method"] in {"turn/started", "turn/completed"} and not task_sent:
+                    raise RuntimeError("native turn notification arrived before the sole task")
+                if frame["method"] == "turn/completed":
+                    if expected_response is not None:
+                        raise RuntimeError("native completion arrived before admitted task startup")
+                    checks["task_completed"] = frame["params"].get("turn", {}).get("status") == "completed"
+                    break
                 continue
-            if frame.get("id") == 90:
-                models = frame.get("result", {}).get("data", [])
-                catalog = next((entry for entry in models if entry.get("model", entry.get("id")) == "gpt-5.5"), None)
+            if set(frame) - {"jsonrpc", "id", "result"} or type(frame.get("id")) is not int or frame["id"] != expected_response or not isinstance(frame.get("result"), dict):
+                raise RuntimeError("unexpected native response phase or shape; expected " + str(expected_response))
+            identity = frame["id"]
+            if identity == 90:
+                models = frame["result"].get("data", [])
+                matches = [entry for entry in models if entry.get("model", entry.get("id")) == "gpt-5.5"]
+                catalog = matches[0] if len(matches) == 1 else None
                 result["catalog_ids"] = [entry.get("model", entry.get("id")) for entry in models]
                 result["catalog_profile"] = catalog
                 checks["catalog_profile_before_task"] = catalog is not None
-                if catalog is None:
-                    raise RuntimeError("endpoint override did not expose the recognized GPT-5.5 catalog profile")
+                if catalog is None or pending_thread is None:
+                    raise RuntimeError("the API account and native static catalog must admit the generated thread")
                 expected_response = 2
-            elif frame.get("id") in [2, 3]:
-                responses.append(frame)
-                if frame.get("id") == 2:
-                    body = frame.get("result", {})
-                    result["native_thread_posture"] = body
-                    checks["thread_model_provider_exact"] = body.get("model") == "gpt-5.5" and body.get("modelProvider") == "openai"
-                    if not checks["thread_model_provider_exact"]:
-                        raise RuntimeError("native thread changed the requested built-in provider/model")
-                    expected_response = 3
-                else:
-                    expected_response = None
-            elif frame.get("method") == "turn/completed":
-                if not task_sent or expected_response is not None:
-                    raise RuntimeError("native completion arrived before admitted task startup")
-                checks["task_completed"] = frame.get("params", {}).get("turn", {}).get("status") == "completed"
-                break
-            else:
+                send(pending_thread)
+                pending_thread = None
                 continue
+            responses.append(frame)
+            if identity == 1:
+                expected_response = 91
+            elif identity == 91:
+                body = frame["result"]
+                checks["native_api_key_account_before_catalog"] = isinstance(body.get("account"), dict) and body["account"].get("type") == "apiKey" and body.get("requiresOpenaiAuth") is True and body.get("workspaceRouting") is None
+                result["native_account_posture"] = body
+                if not checks["native_api_key_account_before_catalog"]:
+                    raise RuntimeError("native account is outside the qualified API-key cohort")
+                expected_response = 90
+            elif identity == 2:
+                body = frame["result"]
+                result["native_thread_posture"] = body
+                checks["thread_model_provider_exact"] = body.get("model") == "gpt-5.5" and body.get("modelProvider") == "openai"
+                if not checks["thread_model_provider_exact"]:
+                    raise RuntimeError("native thread changed the requested built-in provider/model")
+                expected_response = 3
+            else:
+                expected_response = None
             replay = {**value, "vendor_responses": responses}
             generated = project(args.fixture, root, replay)
             if {key: item for key, item in generated.items() if key != "protocol_actions"} != {key: item for key, item in policy.items() if key != "protocol_actions"}:
                 raise RuntimeError("replaying native responses changed the generated policy")
             actions = generated["protocol_actions"]
+            if actions[:emitted] != previous_actions:
+                raise RuntimeError("native response replay changed a previously generated action")
             for action in actions[emitted:]:
                 if action["kind"] == "fail":
                     raise RuntimeError("unchanged Rust reader refused the native startup/posture")
-                if action["kind"] == "write":
-                    message = action["message"]
-                    if bool(action["task"]) != (message.get("method") == "turn/start"):
-                        raise RuntimeError("generated task marker disagrees with protocol method")
-                    if message.get("method") != "initialized":
-                        if action["task"]:
-                            if catalog is None or not checks["catalog_profile_before_task"] or expected_response != 3 or task_sent:
-                                raise RuntimeError("task dispatch requires admitted catalog and thread response")
-                            task_sent = True
-                            checks["rust_reader_accepted_native_posture"] = True
-                        send(message)
-            emitted = len(actions)
+                if action["kind"] != "write":
+                    if action["kind"] != "started" or expected_response is not None or not task_sent:
+                        raise RuntimeError("unexpected generated protocol control action")
+                    continue
+                message = action["message"]
+                method = message.get("method")
+                if bool(action["task"]) != (method == "turn/start"):
+                    raise RuntimeError("generated task marker disagrees with protocol method")
+                if method in {"thread/start", "thread/resume"}:
+                    if expected_response != 90 or message.get("id") != 2 or pending_thread is not None:
+                        raise RuntimeError("generated thread precedes the native account gate")
+                    pending_thread = message
+                elif method == "turn/start":
+                    if catalog is None or expected_response != 3 or task_sent:
+                        raise RuntimeError("task dispatch requires admitted account, catalog and thread response")
+                    task_sent = True
+                    checks["rust_reader_accepted_native_posture"] = True
+                    send(message)
+                elif method == "initialized":
+                    if identity != 1 or "id" in message:
+                        raise RuntimeError("generated initialized notification is out of order")
+                    send(message)
+                elif method == "account/read":
+                    if identity != 1 or message != {"id": 91, "method": "account/read", "params": {"refreshToken": False}}:
+                        raise RuntimeError("generated account request differs from the scoped gate")
+                    send(message)
+                else:
+                    raise RuntimeError("generated startup contains an unexpected protocol write")
+            emitted, previous_actions = len(actions), actions
+            if identity == 91:
+                if pending_thread is None:
+                    raise RuntimeError("Rust reader did not admit the API-key account")
+                send({"id": 90, "method": "model/list", "params": {}})
         else:
             raise RuntimeError("bounded Codex compatibility timed out")
         if model.requests:
@@ -538,6 +740,11 @@ def run_codex(args, root, argv, env, value, policy, model):
         stop(process)
         thread.join(timeout=2)
         stderr.close()
+    if reader_errors:
+        result["error"] = "; ".join(filter(None, [result["error"], *reader_errors]))
+    result["response_ids"] = [frame["id"] for frame in frames if "method" not in frame and "id" in frame]
+    checks["native_response_order_exact"] = result["response_ids"] == [1, 91, 90, 2, 3]
+    result["notification_count"] = sum("method" in frame and "id" not in frame for frame in frames)
     result["direct_child_exited"] = process.poll() is not None
     result["stdout_reader_thread_stopped"] = not thread.is_alive()
     result["task_frames_sent"] = sum(message.get("method") == "turn/start" for message in sent)
@@ -564,6 +771,7 @@ def main():
     parser.add_argument("--claude", required=True)
     parser.add_argument("--codex", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--codex-catalog", type=Path, help="private native bundled export for the pinned macOS executable; Linux exports its own offline")
     parser.add_argument("--case", choices=["claude", "codex", "codex-declared-read", "all"], default="all")
     parser.add_argument("--macos-sandbox-unavailable", action="store_true", help="separate negative control; never the normal macOS recipe path")
     args = parser.parse_args()
