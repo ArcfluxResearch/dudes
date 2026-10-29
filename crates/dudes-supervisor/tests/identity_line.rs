@@ -72,6 +72,37 @@ fn a_chat_turn_is_the_line_a_blank_line_and_the_note_as_typed() {
 }
 
 #[test]
+fn legacy_loop_and_closing_digests_retain_their_canonical_bytes() {
+    let mut harness = Harness::new();
+    let (agent, goal) = harness.hire_with_goal(&["true"]);
+    let input = harness
+        .supervisor
+        .world()
+        .loop_input(
+            agent,
+            SpendView::default(),
+            WorkInput::default(),
+            None,
+            Spend::DEFAULT_PER_TURN_FLOOR,
+        )
+        .unwrap();
+    assert!(
+        !serde_json::to_string(&input)
+            .unwrap()
+            .contains("command_set")
+    );
+    assert_eq!(
+        input_digest(&input).unwrap(),
+        "9af5c43e87f949616b806c025d7c8a1d730959b41ddfc79cf43f09dac1fda437"
+    );
+    let closing = dudes_policy::closing_input(dudes_types::Lsn(92), agent, goal, input);
+    assert_eq!(
+        dudes_supervisor::host::closing_input_digest(&closing).unwrap(),
+        "1d2ea416fb4f0b3c427c30d3f5a21b07e2c149401cbcb80fde4de4c0d721bc77"
+    );
+}
+
+#[test]
 fn a_teammates_status_moves_neither_the_digest_nor_the_task() {
     let mut harness = Harness::new();
     let (first, _) = harness.hire_with_goal(&["npm", "test"]);
