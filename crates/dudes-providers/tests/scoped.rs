@@ -925,3 +925,64 @@ fn environment_is_selected_and_legacy_launch_and_install_bytes_stay_unchanged() 
     );
     assert_eq!(install, adapter.managed_install(&ctx, &model));
 }
+
+#[test]
+fn file_mail_transport_comes_from_the_owned_agent_context() {
+    let f = Fixture::new(&["b"]);
+    let ambient = [
+        EnvVar::new("PATH", "/synthetic/bin"),
+        EnvVar::new("LANG", "C"),
+        EnvVar::new("ANTHROPIC_API_KEY", "synthetic-anthropic-key"),
+        EnvVar::new("ANTHROPIC_BASE_URL", "https://synthetic.invalid"),
+        EnvVar::new("OPENAI_API_KEY", "synthetic-openai-key"),
+        EnvVar::new("CODEX_API_KEY", "synthetic-codex-key"),
+        EnvVar::new("DUDES_MAILBOX", "/untrusted/mailbox"),
+        EnvVar::new("DUDES_COMMAND_TRANSPORT", "socket"),
+        EnvVar::new("DUDES_TOKEN", "synthetic-token"),
+        EnvVar::new("DUDES_SOCK", "/untrusted/socket"),
+        EnvVar::new("DUDES_RUNTIME_DIR", "/untrusted/runtime"),
+        EnvVar::new("DUDES_STATE_DIR", "/untrusted/state"),
+        EnvVar::new("DUDES_CONFIG_DIR", "/untrusted/config"),
+        EnvVar::new("DUDES_CONFIG", "/untrusted/operator.toml"),
+    ];
+    let ctx = f.ctx(&ambient);
+    let claude = claude()
+        .managed_scoped(
+            &ctx,
+            &f.scope(),
+            "task",
+            &first(),
+            &ModelSelection::named("claude-sonnet-4-6"),
+        )
+        .unwrap();
+    let codex = codex()
+        .managed_scoped(
+            &ctx,
+            &f.scope(),
+            "task",
+            &TurnSession::Assigned,
+            &ModelSelection::named("gpt-5.5"),
+        )
+        .unwrap();
+    for recipe in [&claude, &codex] {
+        let env = &recipe.spec.env;
+        assert!(env.contains(&EnvVar::new("DUDES_MAILBOX", ctx.agent_dir)));
+        assert!(env.contains(&EnvVar::new("DUDES_COMMAND_TRANSPORT", "file-mail")));
+        assert_eq!(
+            env.iter()
+                .filter(|var| var.name().to_string_lossy().starts_with("DUDES_"))
+                .count(),
+            2
+        );
+        assert!(env.contains(&ambient[0]));
+        assert!(env.contains(&ambient[1]));
+    }
+    assert!(claude.spec.env.contains(&ambient[2]));
+    assert!(claude.spec.env.contains(&ambient[3]));
+    assert!(!claude.spec.env.contains(&ambient[4]));
+    assert!(!claude.spec.env.contains(&ambient[5]));
+    assert!(codex.spec.env.contains(&ambient[4]));
+    assert!(codex.spec.env.contains(&ambient[5]));
+    assert!(!codex.spec.env.contains(&ambient[2]));
+    assert!(!codex.spec.env.contains(&ambient[3]));
+}

@@ -17,8 +17,8 @@
 //! have written a third copy of each method's `Requirement`, and would answer differently from the daemon the day the
 //! daemon changed.
 //!
-//! So the only local refusals are the ones that are genuinely local: arguments this parser cannot
-//! read, and a socket nothing is listening on.
+//! Scoped file-mail launches refuse unavailable commands after parsing. Their environment marker
+//! selects the CLI transport; the daemon independently enforces scoped socket restrictions.
 
 use std::ffi::OsString;
 use std::io::{BufRead, Read as _, Write};
@@ -139,6 +139,17 @@ pub fn run(
             return exit::USAGE;
         }
     };
+    if env.scoped_file_mail()
+        && let Some(label) = unavailable_scoped_command(&invocation.command, argv)
+    {
+        let failure = Failure::Refused(RpcError {
+            code: dudes_proto::rpc::ErrorCode::Refused.code(),
+            message: format!("{label} is not yet available in a multi-repo ticket"),
+            data: None,
+        });
+        let _ = failure.render(invocation.json, err);
+        return failure.code();
+    }
     let dispatched = match &invocation.command {
         Command::Quickstart(plan) => quickstart(
             invocation.json,
@@ -175,6 +186,39 @@ pub fn run(
             failure.code()
         }
     }
+}
+
+fn unavailable_scoped_command(command: &Command, argv: &[OsString]) -> Option<String> {
+    use args::{DevicesCommand, MailCommand};
+
+    let words = match command {
+        Command::Mail(MailCommand::Send(_) | MailCommand::Read | MailCommand::List) => return None,
+        Command::Workspace(
+            WorkspaceCommand::CheckAdd(_) | WorkspaceCommand::CheckRemove { .. },
+        ) => 3,
+        Command::Mail(MailCommand::Done(_))
+        | Command::Memory(_)
+        | Command::Recovery(_)
+        | Command::GoalReplace(_)
+        | Command::ClosingAck { .. }
+        | Command::FloorOpen
+        | Command::Workspace(_)
+        | Command::Board(_)
+        | Command::Ticket(_)
+        | Command::Worktree(_)
+        | Command::Config(ConfigCommand::Edit(_))
+        | Command::Devices(DevicesCommand::Remove { .. } | DevicesCommand::Keep { .. }) => 2,
+        Command::Devices(DevicesCommand::List) => {
+            usize::from(argv.iter().any(|word| word == "list")) + 1
+        }
+        _ => 1,
+    };
+    let mut label = String::from("dudes");
+    for word in argv.iter().filter(|word| *word != "--json").take(words) {
+        label.push(' ');
+        label.push_str(&word.to_string_lossy());
+    }
+    Some(label)
 }
 
 /// `dudes uninstall`, with the daemon reached through the operator door.

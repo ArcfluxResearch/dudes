@@ -284,7 +284,7 @@ fn start_mail_pair(
     [sender, recipient]
 }
 
-fn round_trip(body: &str) {
+fn round_trip(body: &str, scoped_file_mail: bool) {
     let fixture = Fixture::new();
     let mut settings = fixture.settings();
     settings.journal.checkpoint_every = 0;
@@ -301,7 +301,15 @@ fn round_trip(body: &str) {
         .join("agents")
         .join(recipient.to_string());
     wait(|| source.join("outbox").is_dir() && destination.join("inbox/.done").is_dir());
-    let sent = offline(&source)
+    let cli = |path: &Path| {
+        let cli = offline(path);
+        if scoped_file_mail {
+            cli.env("DUDES_COMMAND_TRANSPORT", "file-mail")
+        } else {
+            cli
+        }
+    };
+    let sent = cli(&source)
         .args([
             "mail",
             "send",
@@ -343,8 +351,34 @@ fn round_trip(body: &str) {
             }
             _ => None,
         });
-    read_delivered(&destination, id, body);
-    let reply = offline(&destination)
+    if scoped_file_mail {
+        let marker = destination.join("inbox").join(format!("{id}.json"));
+        wait(|| marker.exists());
+        let before = fs::read(&marker).unwrap();
+        let journal_before = fixture.entries();
+        let read = cli(&destination).args(["mail", "read"]).run();
+        assert_eq!(read.code(), exit::SUCCESS, "{}", read.output());
+        assert!(read.stdout.contains(body));
+        assert!(!read.stdout.contains("dudes team"));
+        assert!(
+            read.stdout
+                .contains(&format!("dudes mail send --reply-to {id}"))
+        );
+        let list = cli(&destination).args(["mail", "list"]).run();
+        assert_eq!(list.code(), exit::SUCCESS, "{}", list.output());
+        assert!(list.stdout.contains(&format!("mail {id}")));
+        assert_eq!(fs::read(&marker).unwrap(), before);
+        assert_eq!(fixture.entries(), journal_before);
+        assert_eq!(
+            fs::read_dir(destination.join("inbox/.done"))
+                .unwrap()
+                .count(),
+            0
+        );
+    } else {
+        read_delivered(&destination, id, body);
+    }
+    let reply = cli(&destination)
         .args([
             "mail",
             "send",
@@ -377,7 +411,22 @@ fn round_trip(body: &str) {
         }
         _ => None,
     });
-    acknowledge_once(&fixture, &destination, id);
+    if scoped_file_mail {
+        let before = fixture.entries();
+        let done = cli(&destination)
+            .args(["mail", "done", &id.to_string()])
+            .run();
+        assert_eq!(done.code(), exit::REFUSED, "{}", done.output());
+        assert!(
+            destination
+                .join("inbox")
+                .join(format!("{id}.json"))
+                .exists()
+        );
+        assert_eq!(fixture.entries(), before);
+    } else {
+        acknowledge_once(&fixture, &destination, id);
+    }
     assert!(
         !fixture.records().iter().any(|record| {
             matches!(record, Record::TurnEnded { agent, .. } if [sender, recipient].contains(agent))
@@ -427,12 +476,17 @@ fn acknowledge_once(fixture: &Fixture, destination: &Path, id: MailId) {
 
 #[test]
 fn inline_boundary_cli_round_trip_replies_and_acks_once() {
-    round_trip(&"x".repeat(4_096));
+    round_trip(&"x".repeat(4_096), false);
 }
 
 #[test]
 fn referenced_boundary_cli_round_trip_replies_and_acks_once() {
-    round_trip(&"x".repeat(4_097));
+    round_trip(&"x".repeat(4_097), false);
+}
+
+#[test]
+fn scoped_file_mail_journey_preserves_structural_sender_and_never_acknowledges() {
+    round_trip("Read the request and reply through the owned outbox.", true);
 }
 
 #[test]
