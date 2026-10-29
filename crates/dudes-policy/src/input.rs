@@ -17,6 +17,9 @@ use crate::budget::{BudgetState, Ceilings};
 /// Everything one decision for one agent depends on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct LoopInput {
+    /// Commands selected from the agent's recorded hire before task composition and hashing.
+    #[serde(skip_serializing_if = "dudes_proto::TaskCommandSet::is_legacy")]
+    pub command_set: dudes_proto::TaskCommandSet,
     /// Standing control flags (gate 1).
     pub control: Control,
     /// Provenance of the last `TurnEnded`; `None` before any turn (gate 2).

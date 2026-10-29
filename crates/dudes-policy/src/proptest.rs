@@ -239,6 +239,7 @@ fn any_input() -> impl Strategy<Value = LoopInput> {
                 per_turn_floor,
                 work,
             )| LoopInput {
+                command_set: dudes_proto::TaskCommandSet::Legacy,
                 control,
                 last_turn_end,
                 open_question,
