@@ -568,6 +568,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         queue: &mut std::collections::VecDeque<Input>,
         sup: &mut Supervisor<super::Shared<C>, R>,
     ) -> Result<()> {
+        let mut scoped = false;
+        let prepared = prepared.and_then(|spec| {
+            scoped = self.children.check_scoped_host(&spec)?;
+            Ok(spec)
+        });
         let cwd = prepared.as_ref().ok().map(|spec| spec.cwd.clone());
         let actual_host_call = prepared.is_ok();
         match match prepared {
@@ -577,8 +582,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 if let Some(mailbox) = &mut self.mailbox
                     && let Some(row) = sup.world().turns.get(&turn)
                 {
-                    if matches!(&spec.stdin, dudes_providers::launch::LaunchInput::Protocol(startup) if startup.scoped_roots().is_some())
-                    {
+                    if scoped {
                         mailbox.begin_prepared_subject_context(
                             row.agent,
                             holder,

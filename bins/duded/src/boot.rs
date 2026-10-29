@@ -569,9 +569,7 @@ where
             .context("replaying mailbox items")?;
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let mut mailbox = crate::mailbox::Mailbox::unavailable();
-    if let Some(profile) = &codex_profile {
-        mailbox.coordinate_private_roots(profile.private_roots());
-    }
+    mailbox.coordinate_private_roots(children.private_roots());
     let mailbox_report = mailbox.report();
     // Publish the cursor replay established before the door can answer. Starting this at zero
     // would pair replay-derived supervisor health with an empty-journal ping until the next append.

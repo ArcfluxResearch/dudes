@@ -31,7 +31,7 @@ enum WorkerCompletion {
 pub(crate) struct ScopedPreparation {
     pub(crate) attempt: crate::codex_profile::scoped::Attempt,
     pub(crate) launch: dudes_providers::scoped::ScopedManagedLaunch,
-    pub(crate) profile: Arc<crate::codex_profile::CodexProfile>,
+    pub(crate) profile: crate::codex_profile::scoped::ScopedProfile,
     pub(crate) outbox: Arc<crate::mailbox::OutboxGrant>,
 }
 

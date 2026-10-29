@@ -405,9 +405,9 @@ impl Mailbox {
             .join(agent.to_string())
             .join("outbox");
         let admitted = (|| {
-            if !self.live_agents.contains(&agent) || !self.codex_agents.contains(&agent) {
+            if !self.live_agents.contains(&agent) || !self.outbox_agents.contains(&agent) {
                 return Err(io::Error::other(
-                    "outbox does not belong to a live Codex hire",
+                    "outbox does not belong to an admitted live hire",
                 ));
             }
             if let Some(grant) = self.outboxes.borrow().get(&agent).cloned() {
@@ -433,7 +433,7 @@ impl Mailbox {
     }
 
     fn remember_outbox(&self, tree: &Tree) -> io::Result<()> {
-        if !self.codex_agents.contains(&tree.id) || self.outboxes.borrow().contains_key(&tree.id) {
+        if !self.outbox_agents.contains(&tree.id) || self.outboxes.borrow().contains_key(&tree.id) {
             return Ok(());
         }
         self.outboxes
@@ -1685,7 +1685,7 @@ mod tests {
         let agent = Harness::id(1);
         std::fs::remove_dir_all(h.root.path().join("agents").join(agent.to_string())).unwrap();
         let mut mailbox = h.mailbox;
-        mailbox.codex_agents.insert(agent);
+        mailbox.outbox_agents.insert(agent);
         let grant = mailbox.admit_outbox(agent).unwrap();
         assert_eq!(
             grant.path(),
@@ -1714,7 +1714,7 @@ mod tests {
         for change in ["missing", "replaced", "inbox", "other"] {
             let mut h = Harness::new(2);
             let agent = Harness::id(1);
-            h.mailbox.codex_agents.insert(agent);
+            h.mailbox.outbox_agents.insert(agent);
             let grant = h.mailbox.admit_outbox(agent).unwrap();
             let path = grant.path().to_owned();
             std::fs::rename(&path, h.root.path().join("retained-outbox")).unwrap();
@@ -1774,7 +1774,7 @@ mod tests {
         symlink(&original_parent, &alias).unwrap();
         h.mailbox.root = alias.join("state");
         let agent = Harness::id(1);
-        h.mailbox.codex_agents.insert(agent);
+        h.mailbox.outbox_agents.insert(agent);
         let grant = h.mailbox.admit_outbox(agent).unwrap();
         grant.check().unwrap();
 
@@ -1805,7 +1805,7 @@ mod tests {
         use std::os::unix::fs::{PermissionsExt as _, symlink};
         let mut h = Harness::new(2);
         let agent = Harness::id(1);
-        h.mailbox.codex_agents.insert(agent);
+        h.mailbox.outbox_agents.insert(agent);
         let outbox = h
             .root
             .path()
