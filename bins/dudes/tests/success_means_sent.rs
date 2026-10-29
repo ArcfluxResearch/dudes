@@ -63,7 +63,7 @@ use std::os::unix::ffi::OsStringExt as _;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 
-use dudes::args::{self, ArgError};
+use dudes::args::{self, ArgError, Command, TicketCommand};
 use dudes::{Environment, exit};
 
 /// An agent id the parser accepts, so a line's outcome is about the token under test.
@@ -237,6 +237,41 @@ fn every_mistake() -> Vec<ArgError> {
     ]
 }
 
+#[test]
+fn missing_ticket_notes_exit_usage_at_materialization_without_connecting() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("door.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let missing = root.path().join("absent-note.md");
+    let env = Environment::resolve(|name| match name {
+        "DUDES_SOCK" => Some(socket.as_os_str().to_owned()),
+        "DUDES_RUNTIME_DIR" => Some(root.path().as_os_str().to_owned()),
+        _ => None,
+    });
+    for mut line in [
+        argv(&["ticket", "add", "--title", "Title"]),
+        argv(&["ticket", "edit", AN_AGENT]),
+    ] {
+        line.extend([
+            OsString::from("--note-file"),
+            missing.as_os_str().to_owned(),
+        ]);
+        args::parse(&line).expect("syntax is valid before note materialization");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(
+            dudes::run(&line, &env, None, &mut out, &mut err),
+            exit::USAGE
+        );
+        assert!(String::from_utf8(err).unwrap().contains("--note-file"));
+        assert!(out.is_empty());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
 /// The count [`every_mistake`] is expected to have, so shrinking the list is red.
 ///
 /// Every variant `src/args.rs` declares.
@@ -256,7 +291,7 @@ fn the_list_of_mistakes_has_not_shrunk() {
     );
 }
 
-/// **Every parse outcome that sends nothing exits `USAGE` or `OTHER`.**
+/// **Every local argument outcome that sends nothing exits `USAGE` or `OTHER`.**
 ///
 /// `HelpRequested` is in that set and is the reason this test exists: it is *not a mistake* — the
 /// operator asked a question and got an answer — but it is still a run in which the daemon ran no
@@ -272,12 +307,20 @@ fn every_parse_outcome_that_sends_nothing_exits_usage_or_other() {
         // The mapping is asserted rather than assumed. An argv that drifted into producing a
         // *different* variant would otherwise leave its own variant unchecked while this list still
         // looked complete — which is the failure mode the whole enumeration exists to prevent.
-        let produced = args::parse(&line).expect_err("this line is not a valid call");
-        assert_eq!(
-            discriminant(&produced),
-            discriminant(&mistake),
-            "{line:?} produces {produced:?}, not the {mistake:?} it is listed under"
-        );
+        if matches!(mistake, ArgError::NoteFile(_)) {
+            let invocation = args::parse(&line).expect("note I/O follows transport admission");
+            let Command::Ticket(TicketCommand::Add { note_file, .. }) = invocation.command else {
+                panic!("the missing note must reach ticket materialization");
+            };
+            assert_eq!(note_file.as_deref(), Some(Path::new("/nonexistent/note")));
+        } else {
+            let produced = args::parse(&line).expect_err("this line is not a valid call");
+            assert_eq!(
+                discriminant(&produced),
+                discriminant(&mistake),
+                "{line:?} produces {produced:?}, not the {mistake:?} it is listed under"
+            );
+        }
         assert!(
             named.insert(discriminant(&mistake)),
             "{mistake:?} is listed twice, which is what a copy-paste that dropped another \
@@ -293,7 +336,7 @@ fn every_parse_outcome_that_sends_nothing_exits_usage_or_other() {
         );
     }
 
-    // Positive control. Every assertion above is about a line the parser refused, and a binary that
+    // Positive control. Every assertion above is about a locally refused line, and a binary that
     // refused *every* line would satisfy all of them — so one well-formed call has to get past the
     // parser and reach the socket under the same harness.
     assert_eq!(
