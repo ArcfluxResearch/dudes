@@ -10,7 +10,7 @@ use dudes_proto::record::{BrowserOnboardingHire, Hex32, RecordedWorkspace};
 use dudes_proto::repository::{RepoId, RepositorySet};
 use dudes_proto::rpc::floor::{CheckView, ChecksView, WorkspaceChecks};
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, ENROLLED_CHECK_ID};
-use dudes_proto::{AgentBudget, CompletionCheckRef, GoalBudget, Predicate, Record};
+use dudes_proto::{AgentBudget, CompletionCheckRef, GoalBudget, Predicate, Record, TicketCheck};
 use dudes_types::{AgentId, IsolationMode, Lsn, Provider, Timestamp, Tokens, Usd};
 use serde::Deserialize;
 use serde::Serialize;
@@ -100,6 +100,37 @@ impl EnrolledCheck {
     }
 }
 
+pub(crate) enum ResolvedProjectCheck {
+    Legacy {
+        check: TicketCheck,
+        reference: CompletionCheckRef,
+    },
+    Scoped {
+        check: TicketCheck,
+        reference: CompletionCheckRef,
+        repo: RepoId,
+    },
+}
+
+impl ResolvedProjectCheck {
+    pub(crate) fn check(&self) -> &TicketCheck {
+        match self {
+            Self::Legacy { check, .. } | Self::Scoped { check, .. } => check,
+        }
+    }
+    pub(crate) fn reference(&self) -> &CompletionCheckRef {
+        match self {
+            Self::Legacy { reference, .. } | Self::Scoped { reference, .. } => reference,
+        }
+    }
+    pub(crate) fn repo(&self) -> Option<&RepoId> {
+        match self {
+            Self::Legacy { .. } => None,
+            Self::Scoped { repo, .. } => Some(repo),
+        }
+    }
+}
+
 /// What an applied reload did to one entry, shown beside it in the Hire wizard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReloadMark {
@@ -130,6 +161,40 @@ impl Profile {
     /// The enrolled check with `id`.
     pub(crate) fn check(&self, id: &str) -> Option<&EnrolledCheck> {
         self.checks.iter().find(|check| check.id == id)
+    }
+
+    pub(crate) fn resolve_check(&self, id: Option<&str>) -> Option<ResolvedProjectCheck> {
+        let enrolled = id.map_or_else(|| Some(self.first_check()), |id| self.check(id))?;
+        let mut reference = enrolled.reference()?;
+        let check = TicketCheck {
+            id: enrolled.id.clone(),
+            label: enrolled.label.clone(),
+            predicate: enrolled.predicate.clone(),
+        };
+        match &self.repositories {
+            None => Some(ResolvedProjectCheck::Legacy { check, reference }),
+            Some(repositories) => {
+                let repo = enrolled
+                    .check_repo
+                    .as_ref()
+                    .unwrap_or_else(|| repositories.primary_id())
+                    .clone();
+                repositories.get(&repo)?;
+                reference.revision = crate::goal_replacement::digest(
+                    b"dudes.scoped-project-check.v1\0",
+                    [
+                        ("project".into(), self.id.clone()),
+                        ("repo".into(), repo.as_str().to_owned()),
+                        ("definition".into(), reference.revision.to_hex()),
+                    ],
+                );
+                Some(ResolvedProjectCheck::Scoped {
+                    check,
+                    reference,
+                    repo,
+                })
+            }
+        }
     }
 
     /// The revision a browser hire of this workspace must present; 0 while it has no mark.
@@ -338,12 +403,14 @@ impl Enrollment {
                         .checks
                         .iter()
                         .filter_map(|check| {
-                            check.reference().map(|named| CheckView {
-                                id: named.id,
-                                label: named.label,
-                                revision: named.revision,
-                                may_already_pass: check.may_already_pass,
-                            })
+                            profile
+                                .resolve_check(Some(&check.id))
+                                .map(|resolved| CheckView {
+                                    id: resolved.reference().id.clone(),
+                                    label: resolved.reference().label.clone(),
+                                    revision: resolved.reference().revision,
+                                    may_already_pass: check.may_already_pass,
+                                })
                         })
                         .collect(),
                 })

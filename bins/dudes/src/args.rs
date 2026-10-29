@@ -366,6 +366,8 @@ pub enum TicketCommand {
         note: Option<String>,
         /// The id of the project's check to finish it by.
         done_when: Option<String>,
+        /// Expected repository id of the configured completion check.
+        check_repo: Option<RepoId>,
         /// The new priority; `none` clears it.
         priority: Option<Priority>,
         /// The sequence the operator observed; the ticket's current one when absent.
@@ -1091,9 +1093,11 @@ USAGE
 const TICKET_HELP: &str = "\
 USAGE
     dudes ticket add --title <text> [--note <text> | --note-file <path>] [--project <id>] [--done-when <check id>]
+               [--repo <id> ...] [--check-repo <id>]
                [--priority urgent|high|medium|low|none] [--give-to <agent>]
 
     dudes ticket edit <card> [--title <text>] [--note <text> | --note-file <path>] [--done-when <check id>]
+                [--check-repo <id>]
                 [--priority urgent|high|medium|low|none] [--expected-seq <n>]
 
     dudes ticket give <card> --agent <name or id> [--message <text>] [--expected-seq <n>]
@@ -1950,6 +1954,15 @@ fn board(tail: &[OsString]) -> Result<BoardCommand, ArgError> {
     }
 }
 
+fn ticket_repo(flags: &mut Flags<'_>, flag: &'static str) -> Result<RepoId, ArgError> {
+    let value = flags.value(flag)?;
+    RepoId::parse(&value).map_err(|_| ArgError::BadValue {
+        flag,
+        value,
+        what: "a repository id",
+    })
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one parser reads every ticket subcommand's flags, and each subcommand adds its arm"
@@ -1984,6 +1997,8 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
     let mut flags = Flags::new(rest);
     let mut card = None;
     let (mut title, mut note, mut project, mut done_when) = (None, None, None, None);
+    let mut repos = Vec::new();
+    let mut check_repo = None;
     let mut priority = None;
     let (mut agent, mut message, mut status, mut seq) = (None, None, None, None);
     let mut print = false;
@@ -1997,6 +2012,10 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
             ("add" | "edit", "--note-file") => note_file = Some(flags.path("--note-file")?),
             ("add", "--project") => project = Some(flags.value("--project")?),
             ("add" | "edit", "--done-when") => done_when = Some(flags.value("--done-when")?),
+            ("add", "--repo") => repos.push(ticket_repo(&mut flags, "--repo")?),
+            ("add" | "edit", "--check-repo") => {
+                check_repo = Some(ticket_repo(&mut flags, "--check-repo")?);
+            }
             ("add" | "edit", "--priority") => priority = Some(ticket_priority(&mut flags)?),
             ("add", "--give-to") => agent = Some(flags.value("--give-to")?.into()),
             ("give" | "changes", "--agent") => agent = Some(flags.value("--agent")?.into()),
@@ -2088,6 +2107,7 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
                     title,
                     note,
                     done_when,
+                    check_repo,
                     priority,
                     expected_seq: seq,
                 })
@@ -2125,6 +2145,8 @@ fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
                 title: required(title, "--title")?,
                 description: note,
                 project,
+                repos: (!repos.is_empty()).then_some(repos),
+                check_repo,
                 done_when,
                 done_when_revision: None,
                 priority,
@@ -5238,5 +5260,79 @@ mod devices_tests {
                 .len(),
             limit
         );
+    }
+}
+
+#[cfg(test)]
+mod ticket_repository_tests {
+    use super::*;
+
+    fn command(parts: &[&str]) -> Result<Command, ArgError> {
+        parse(&parts.iter().map(OsString::from).collect::<Vec<_>>()).map(|parsed| parsed.command)
+    }
+
+    #[test]
+    fn ticket_add_sends_typed_ids_and_edit_only_a_configured_check_expectation() {
+        let Command::Ticket(TicketCommand::Add { params, .. }) = command(&[
+            "ticket",
+            "add",
+            "--title",
+            "Two repositories",
+            "--repo",
+            "api",
+            "--repo",
+            "web",
+            "--check-repo",
+            "api",
+        ])
+        .unwrap() else {
+            panic!("ticket add");
+        };
+        assert_eq!(
+            params
+                .repos
+                .unwrap()
+                .iter()
+                .map(RepoId::as_str)
+                .collect::<Vec<_>>(),
+            ["api", "web"]
+        );
+        assert_eq!(params.check_repo.unwrap().as_str(), "api");
+        let Command::Ticket(TicketCommand::Edit { check_repo, .. }) = command(&[
+            "ticket",
+            "edit",
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "--done-when",
+            "strict",
+            "--check-repo",
+            "web",
+        ])
+        .unwrap() else {
+            panic!("ticket edit");
+        };
+        assert_eq!(check_repo.unwrap().as_str(), "web");
+    }
+
+    #[test]
+    fn ticket_repository_flags_reject_paths_and_cannot_edit_the_declaration() {
+        for args in [
+            vec!["ticket", "add", "--title", "T", "--repo", "/tmp/repo"],
+            vec!["ticket", "add", "--title", "T", "--check-repo", "../repo"],
+            vec![
+                "ticket",
+                "edit",
+                "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "--repo",
+                "web",
+            ],
+        ] {
+            assert!(command(&args).is_err(), "{args:?}");
+        }
+        let Command::Ticket(TicketCommand::Add { params, .. }) =
+            command(&["ticket", "add", "--title", "Legacy"]).unwrap()
+        else {
+            panic!("ticket add");
+        };
+        assert_eq!((params.repos, params.check_repo), (None, None));
     }
 }

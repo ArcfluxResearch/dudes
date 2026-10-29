@@ -16,13 +16,17 @@ use dudes_proto::ticket::{
 };
 use dudes_proto::{
     Actor, CardView, InstructionAcceptCompletion, InstructionReviewAction,
-    InstructionReviewWatermark, Record, TicketCheck, TicketRefusal, TicketRow, TicketWait,
+    InstructionReviewWatermark, Record, TicketRefusal, TicketRow, TicketWait,
 };
 use dudes_types::{AgentId, CardId, CardStatus, Seq};
 
 use crate::floor_actions::Profile;
 
 mod context;
+mod repositories;
+
+use super::repository_admission::CurrentHireAdmission;
+use dudes_proto::repository::{RepoId, RepositoryTicketCreated, RepositoryTicketEdited};
 
 /// The refusal for `kind`. `state` is the ticket's state when the sentence names it.
 pub(super) fn refusal(kind: TicketRefusal, state: CardStatus) -> RpcError {
@@ -75,6 +79,13 @@ pub(super) fn require_legacy_producer(ticket: &TicketRow) -> Result<(), RpcError
     Ok(())
 }
 
+fn error_refusal(failure: &anyhow::Error) -> RpcError {
+    error(
+        ErrorCode::Refused,
+        format!("ticket repository admission refused: {failure}"),
+    )
+}
+
 fn title_of(text: &str) -> Result<String, RpcError> {
     let title = trim(text);
     if title.is_empty() || !clean_title(title, MAX_TITLE_BYTES) {
@@ -101,24 +112,23 @@ fn check_of(
     profile: &Profile,
     id: Option<&str>,
     revision: Option<dudes_proto::record::Hex32>,
-) -> Result<TicketCheck, RpcError> {
-    let check = match id {
+    expected_repo: Option<&RepoId>,
+) -> Result<crate::floor_actions::ResolvedProjectCheck, RpcError> {
+    let enrolled = match id {
         Some(id) => profile
             .check(id)
             .ok_or_else(|| invalid("the project has no check with that id"))?,
         None => profile.first_check(),
     };
-    let reference = check
-        .reference()
+    let resolved = profile
+        .resolve_check(Some(&enrolled.id))
         .ok_or_else(|| invalid("the project's check has no usable name"))?;
-    if revision.is_some_and(|seen| seen != reference.revision) {
+    if revision.is_some_and(|seen| seen != resolved.reference().revision)
+        || expected_repo.is_some_and(|seen| resolved.repo() != Some(seen))
+    {
         return Err(refusal(TicketRefusal::DoneWhenChanged, CardStatus::Todo));
     }
-    Ok(TicketCheck {
-        id: check.id.clone(),
-        label: check.label.clone(),
-        predicate: check.predicate.clone(),
-    })
+    Ok(resolved)
 }
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<H, P, C, R> {
@@ -178,10 +188,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             },
         }
         .ok_or_else(|| refusal(TicketRefusal::ProjectUnavailable, CardStatus::Todo))?;
-        if profile.repositories.is_some()
-            || !self
-                .ctx
-                .project_repositories_current(self.sup.world(), profile)
+        if !self
+            .ctx
+            .project_repositories_current(self.sup.world(), profile)
         {
             return Err(refusal(TicketRefusal::ProjectUnavailable, CardStatus::Todo));
         }
@@ -189,6 +198,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             profile,
             request.done_when.as_deref(),
             request.done_when_revision,
+            request.check_repo.as_ref(),
+        )?;
+        let declaration = repositories::declaration_of(
+            &CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories),
+            self.sup.world(),
+            profile,
+            request,
+            &done_when,
         )?;
         let (project, department) = (profile.id.clone(), profile.department.clone());
         let open = self
@@ -214,24 +231,47 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             deps: Vec::new(),
             ticket: Some(crate::board::largest_ticket()),
         })?;
-        self.board_append(Record::TicketCreated {
-            card,
-            title,
-            description,
-            department,
-            project,
-            done_when,
-            by,
-            request: retry,
-            priority: request.priority,
-        })?;
+        let record = match declaration {
+            Some(declaration) => {
+                Record::TicketCreatedWithRepositories(Box::new(RepositoryTicketCreated {
+                    card,
+                    title,
+                    description,
+                    department,
+                    declaration,
+                    done_when: done_when.check().clone(),
+                    check_repo: done_when.repo().expect("scoped configured check").clone(),
+                    by,
+                    request: retry,
+                }))
+            }
+            None => Record::TicketCreated {
+                card,
+                title,
+                description,
+                department,
+                project,
+                done_when: done_when.check().clone(),
+                by,
+                request: retry,
+                priority: request.priority,
+            },
+        };
+        self.board_append(record)?;
         Ok(Answered::TicketCreated(TicketCreateResult { card }))
     }
 
     fn ticket_edit(&mut self, request: &TicketEditParams, by: Actor) -> Result<Answered, RpcError> {
         operator(by)?;
         let (view, ticket) = self.ticket_row(request.card)?;
-        require_legacy_producer(&ticket)?;
+        if let Some(scope) = ticket.repositories.declared() {
+            if request.priority.is_some() {
+                return Err(invalid("scoped ticket edits do not support priority yet"));
+            }
+            CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories)
+                .current_ticket_declaration(self.sup.world(), &scope.declaration)
+                .map_err(|error| error_refusal(&error))?;
+        }
         if view.seq != request.expected_seq {
             return Err(stale(&view));
         }
@@ -245,7 +285,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         {
             return Err(invalid("there is nothing to change"));
         }
-        if request.done_when.is_none() && request.done_when_revision.is_some() {
+        if request.done_when.is_none()
+            && (request.done_when_revision.is_some() || request.check_repo.is_some())
+        {
             return Err(invalid("a check revision needs the check it belongs to"));
         }
         let title = match &request.title {
@@ -256,25 +298,54 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             Some(text) => note_of(text)?,
             None => ticket.description.clone(),
         };
-        let done_when = if request.done_when.is_some() {
+        let replacement = if request.done_when.is_some() {
             let profile = self
                 .ctx
                 .enrollment
                 .profile(ticket.repositories.project())
                 .ok_or_else(|| refusal(TicketRefusal::ProjectUnavailable, view.status))?;
-            check_of(
+            Some(check_of(
                 profile,
                 request.done_when.as_deref(),
                 request.done_when_revision,
-            )?
+                request.check_repo.as_ref(),
+            )?)
         } else {
-            ticket.done_when.clone()
+            None
         };
+        let done_when = replacement.as_ref().map_or(
+            &ticket.done_when,
+            crate::floor_actions::ResolvedProjectCheck::check,
+        );
+        if let Some(scope) = ticket.repositories.declared() {
+            let repo = replacement
+                .as_ref()
+                .map_or(
+                    Some(&scope.check_repo),
+                    crate::floor_actions::ResolvedProjectCheck::repo,
+                )
+                .filter(|repo| scope.declaration.repositories.get(repo).is_some())
+                .ok_or_else(|| {
+                    invalid("the configured check repository is outside the immutable declaration")
+                })?;
+            self.board_append(Record::TicketEditedWithRepositories(Box::new(
+                RepositoryTicketEdited {
+                    card: view.id,
+                    title,
+                    description,
+                    done_when: done_when.clone(),
+                    check_repo: repo.clone(),
+                    by,
+                    expected_seq: request.expected_seq,
+                },
+            )))?;
+            return Ok(Answered::Done);
+        }
         self.board_append(Record::TicketEdited {
             card: view.id,
             title,
             description,
-            done_when,
+            done_when: done_when.clone(),
             by,
             expected_seq: request.expected_seq,
             priority: Some(request.priority.unwrap_or(ticket.priority)),
@@ -289,7 +360,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     ) -> Result<Answered, RpcError> {
         operator(by)?;
         let (view, ticket) = self.ticket_row(request.card)?;
-        require_legacy_producer(&ticket)?;
         if view.seq != request.expected_seq {
             return Err(stale(&view));
         }
@@ -508,6 +578,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     /// The agent must be live and hired into the ticket's project.
     fn require_ticket_agent(&self, agent: AgentId, ticket: &TicketRow) -> Result<(), RpcError> {
+        if let Some(scope) = ticket.repositories.declared() {
+            return CurrentHireAdmission::new(&self.ctx.enrollment, &self.ctx.current_repositories)
+                .current_ticket_hire(self.sup.world(), agent, &scope.declaration)
+                .map_err(|error| error_refusal(&error));
+        }
         let unavailable = || refusal(TicketRefusal::AgentUnavailable, CardStatus::Todo);
         if self
             .sup

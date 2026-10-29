@@ -21887,6 +21887,17 @@
       "additionalProperties": false,
       "description": "`ticket.create` params. Only the title is required.",
       "properties": {
+        "check_repo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RepoId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Expected configured check target. It never selects a repository by path."
+        },
         "description": {
           "description": "The note: at most 8,192 bytes after trimming. Absent means none.",
           "type": [
@@ -21923,6 +21934,16 @@
           "description": "The enrolled project. Absent means the only enrolled project.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "repos": {
+          "description": "Repository ids to declare once; absence selects all configured members.",
+          "items": {
+            "$ref": "#/$defs/RepoId"
+          },
+          "type": [
+            "array",
             "null"
           ]
         },
@@ -21980,6 +22001,17 @@
         "card": {
           "$ref": "#/$defs/CardId",
           "description": "The ticket."
+        },
+        "check_repo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RepoId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Expected repository of the selected configured check."
         },
         "description": {
           "description": "The new note; an empty note clears it.",
