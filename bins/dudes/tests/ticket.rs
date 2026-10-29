@@ -1157,3 +1157,56 @@ fn a_note_comes_from_standard_input_with_its_line_endings_made_lf() {
         "# Plan\n- one\n"
     );
 }
+
+#[test]
+fn repository_flags_reach_the_writer_without_changing_legacy_ticket_authority() {
+    let world = world();
+    let card = world.add("Legacy selection");
+    let before = world.fixture.records();
+    let selected = world.dudes([
+        "--json",
+        "ticket",
+        "add",
+        "--title",
+        "Scoped request",
+        "--repo",
+        "api",
+    ]);
+    assert_eq!(
+        selected.json_error().code,
+        dudes_proto::rpc::ErrorCode::InvalidParams.code()
+    );
+    assert_eq!(
+        selected.json_error().message,
+        "repository selection requires an explicitly configured project"
+    );
+    let expected = world.dudes([
+        "--json",
+        "ticket",
+        "add",
+        "--title",
+        "Check expectation",
+        "--check-repo",
+        "api",
+    ]);
+    assert_eq!(
+        expected.json_error().message,
+        dudes_proto::TicketRefusal::DoneWhenChanged.sentence(CardStatus::Todo)
+    );
+    let edit = world.dudes([
+        "--json",
+        "ticket",
+        "edit",
+        &card,
+        "--done-when",
+        "default",
+        "--check-repo",
+        "api",
+    ]);
+    assert_eq!(
+        edit.json_error().message,
+        dudes_proto::TicketRefusal::DoneWhenChanged.sentence(CardStatus::Todo)
+    );
+    assert_eq!(world.fixture.records(), before);
+    assert_eq!(world.host.children(), 0);
+}

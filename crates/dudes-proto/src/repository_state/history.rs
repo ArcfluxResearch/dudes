@@ -708,9 +708,21 @@ fn validate_current_hire(
         .last_key_value()
         .map(|(_, catalog)| catalog)
         .ok_or(RepositoryStateError::Catalog)?;
-    for entry in latest.entries() {
-        if before
-            .trust
+    validate_execution_hire(agent, hired_lsn, hire, latest, before.trust, before.leases)
+}
+
+/// Validate an existing hire against an explicitly selected current catalog and equivalent pins.
+/// Grant positions may advance while their original identity and pin remain unchanged.
+pub fn validate_execution_hire(
+    agent: AgentId,
+    hired_lsn: Lsn,
+    hire: &ScopedHireRepositories,
+    current: &RepositorySet<CatalogRepository>,
+    trust: &[RepositoryTrust],
+    leases: &[RepositoryLease<'_>],
+) -> Result<(), RepositoryStateError> {
+    for entry in current.entries() {
+        if trust
             .iter()
             .find(|trust| trust.project == hire.project.id && trust.repo_id == entry.repo_id)
             .is_none_or(|trust| trust.pin.is_none() || trust.origin != entry.value.origin)
@@ -720,8 +732,7 @@ fn validate_current_hire(
     }
     for entry in hire.repositories.entries() {
         let repo = &entry.value.recorded;
-        if before
-            .leases
+        if leases
             .iter()
             .find(|lease| lease.worktree == repo.worktree)
             .is_none_or(|lease| {
@@ -735,11 +746,10 @@ fn validate_current_hire(
         {
             return Err(RepositoryStateError::Lease);
         }
-        if latest
+        if current
             .get(&entry.repo_id)
             .is_none_or(|current| current.origin != repo.origin)
-            || before
-                .trust
+            || trust
                 .iter()
                 .find(|trust| trust.project == hire.project.id && trust.repo_id == entry.repo_id)
                 .is_none_or(|trust| {

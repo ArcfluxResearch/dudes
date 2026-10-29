@@ -1264,19 +1264,21 @@ mod tests {
     }
 
     #[test]
-    fn absent_check_repository_keeps_legacy_revisions_and_floor_bytes() {
+    fn absent_check_repository_keeps_legacy_hashes_and_binds_scoped_primary() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         let path = root.join("config.toml");
         for explicit in [false, true] {
-            for (may_already_pass, revision) in [
+            for (may_already_pass, legacy_revision, scoped_revision) in [
                 (
                     false,
                     "30cb5bd902911e394eeda618c73db6d5b3ba842e1eb87da891cbd3ffc413060d",
+                    "19ce24d978cd5728199653725249aab865bbb59d5d1b7dd6ec19fc530b50feb2",
                 ),
                 (
                     true,
                     "f44785bc561e2eed66778aeebde107197ba6075deb7618022c7d707f20fa4260",
+                    "afd544df85f79e87a503075ee4ec6e3c0e4a13510e1831c27d752ff79cb63b5d",
                 ),
             ] {
                 let text = format!(
@@ -1291,6 +1293,19 @@ mod tests {
                         .iter()
                         .all(|check| check.check_repo.is_none())
                 );
+                assert_eq!(
+                    loaded.enrollment.profiles[0].checks[1]
+                        .reference()
+                        .unwrap()
+                        .revision
+                        .to_hex(),
+                    legacy_revision
+                );
+                let revision = if explicit {
+                    scoped_revision
+                } else {
+                    legacy_revision
+                };
                 assert_eq!(
                     serde_json::to_string(&loaded.enrollment.checks_view().workspaces[0].checks[1])
                         .unwrap(),
@@ -1315,10 +1330,15 @@ mod tests {
             before.enrollment.profiles[0].changed_fields(&after.enrollment.profiles[0]),
             ["checks"]
         );
-        assert_eq!(
-            serde_json::to_vec(&before.enrollment.checks_view()).unwrap(),
-            serde_json::to_vec(&after.enrollment.checks_view()).unwrap()
+        let before = serde_json::to_value(before.enrollment.checks_view()).unwrap();
+        let mut after = serde_json::to_value(after.enrollment.checks_view()).unwrap();
+        assert_ne!(
+            before["workspaces"][0]["checks"][1]["revision"],
+            after["workspaces"][0]["checks"][1]["revision"]
         );
+        after["workspaces"][0]["checks"][1]["revision"] =
+            before["workspaces"][0]["checks"][1]["revision"].clone();
+        assert_eq!(after, before);
     }
 
     #[test]

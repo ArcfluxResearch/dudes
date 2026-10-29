@@ -707,7 +707,11 @@ impl OnboardingPause {
         changed.notify_all();
     }
 
-    /// Hit the pause point, if any, that this browser record reaches at this stage of its append.
+    /// Hit the pause point, if any, that this record reaches at this stage of its append.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one matcher keeps each record's three append cuts together"
+    )]
     fn at(&self, record: &Record, stage: AppendStage) {
         use OnboardingPausePoint as Point;
         let points = match record {
@@ -793,11 +797,21 @@ impl OnboardingPause {
                 Some(Point::AfterRetirePermit),
                 None,
             ),
-            record if browser_chat::ticket_session(record).is_some() => (
-                Some(Point::BeforeTicketPermit),
-                Some(Point::AfterTicketPermit),
-                None,
-            ),
+            record
+                if browser_chat::ticket_session(record).is_some()
+                    || matches!(
+                        record,
+                        Record::TicketCreatedWithRepositories(_)
+                            | Record::TicketEditedWithRepositories(_)
+                            | Record::TicketAssigned { .. }
+                    ) =>
+            {
+                (
+                    Some(Point::BeforeTicketPermit),
+                    Some(Point::AfterTicketPermit),
+                    None,
+                )
+            }
             _ => return,
         };
         let point = match stage {
@@ -8962,6 +8976,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             &self.enrollment,
             &self.current_repositories,
         );
+        let ticket_id = match &entry.record {
+            Record::TicketEditedWithRepositories(edited) => Some(edited.card),
+            Record::TicketAssigned { card, .. } => Some(*card),
+            _ => None,
+        };
+        let ticket = ticket_id
+            .map(|card| self.projections.ticket(card))
+            .transpose()?
+            .flatten()
+            .map(|(_, ticket)| ticket);
         let clock = &self.clock;
         let failure = &self.onboarding_failure;
         let grants = self.recovery_grants();
@@ -9021,6 +9045,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                             .require_hire_authority(world, hire, clock.now())
                             .map_err(|error| HireAuthorityRefusal(error.to_string()))?;
                     }
+                    current_hire
+                        .require_ticket_append(world, &entry.record, ticket.as_ref())
+                        .map_err(|error| HireAuthorityRefusal(error.to_string()))?;
                     verify_worktree_lease_preparation(&entry.record)?;
                     verify_hire_worktree_authority(world, &entry.record)?;
                     Ok::<_, anyhow::Error>(permit)

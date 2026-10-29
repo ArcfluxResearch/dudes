@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::instruction::InstructionReviewWatermark;
 use crate::projection::CardView;
 use crate::record::Hex32;
+use crate::repository::RepoId;
 use crate::ticket::{Priority, TicketReason, TicketRow, TicketWaiting};
 use crate::ticket_history::TicketHistory;
 
@@ -28,6 +29,12 @@ pub struct TicketCreateParams {
     /// The enrolled project. Absent means the only enrolled project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// Repository ids to declare once; absence selects all configured members.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repos: Option<Vec<RepoId>>,
+    /// Expected configured check target. It never selects a repository by path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_repo: Option<RepoId>,
     /// The id of one of the project's enrolled checks. Absent means the project's own check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done_when: Option<String>,
@@ -67,6 +74,9 @@ pub struct TicketEditParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
     pub done_when_revision: Option<Hex32>,
+    /// Expected repository of the selected configured check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_repo: Option<RepoId>,
     /// The new priority; `none` clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<Priority>,
@@ -231,4 +241,50 @@ pub struct TicketAcceptResult {
 pub enum TicketAcceptOutcome {
     /// The named instruction review was acknowledged; the ticket is still work in progress.
     InstructionsAcknowledged,
+}
+
+#[cfg(test)]
+mod repository_selection_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_ticket_request_shape_remains_exact_with_absent_selection_fields() {
+        let create = json!({"title": "Legacy"});
+        let parsed: TicketCreateParams = serde_json::from_value(create.clone()).unwrap();
+        assert_eq!(
+            (parsed.repos.as_ref(), parsed.check_repo.as_ref()),
+            (None, None)
+        );
+        assert_eq!(serde_json::to_value(parsed).unwrap(), create);
+        let edit =
+            json!({"card": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "title": "Edited", "expected_seq": 7});
+        let parsed: TicketEditParams = serde_json::from_value(edit.clone()).unwrap();
+        assert!(parsed.check_repo.is_none());
+        assert_eq!(serde_json::to_value(parsed).unwrap(), edit);
+    }
+
+    #[test]
+    fn ticket_repository_selectors_are_ids_and_edit_cannot_replace_the_declaration() {
+        let create = json!({"title": "Scoped", "repos": ["api", "web"], "check_repo": "api"});
+        let parsed: TicketCreateParams = serde_json::from_value(create.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), create);
+        for fields in [
+            json!({"repos": ["/tmp/repo"]}),
+            json!({"check_repo": "../repo"}),
+        ] {
+            let mut value = json!({"title": "Invalid"});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            assert!(serde_json::from_value::<TicketCreateParams>(value).is_err());
+        }
+        assert!(
+            serde_json::from_value::<TicketEditParams>(
+                json!({"card": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "expected_seq": 1, "repos": ["web"]})
+            )
+            .is_err()
+        );
+    }
 }

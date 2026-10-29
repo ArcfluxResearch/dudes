@@ -122,6 +122,8 @@ impl TicketRequest {
                     title: raw.title,
                     description: raw.description,
                     project: raw.project,
+                    repos: None,
+                    check_repo: None,
                     done_when: raw.done_when,
                     done_when_revision: raw.done_when_revision,
                     priority: raw.priority,

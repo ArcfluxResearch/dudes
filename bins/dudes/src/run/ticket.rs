@@ -342,6 +342,7 @@ pub(super) fn command(
             title,
             note,
             done_when,
+            check_repo,
             priority,
             expected_seq,
         } => {
@@ -351,6 +352,7 @@ pub(super) fn command(
                 description: note.clone(),
                 done_when: done_when.clone(),
                 done_when_revision: None,
+                check_repo: check_repo.clone(),
                 priority: *priority,
                 expected_seq: session.seq(*card, *expected_seq)?,
             })?;
