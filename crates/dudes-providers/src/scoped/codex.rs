@@ -64,6 +64,8 @@ pub(crate) fn compose(
         .join(",");
     for option in [
         "features.multi_agent=false".to_owned(),
+        // Only the daemon admits another task; native goals can start idle turns.
+        "features.goals=false".to_owned(),
         "web_search=\"disabled\"".to_owned(),
         "mcp_servers={}".to_owned(),
         format!("projects={{{projects}}}"),
