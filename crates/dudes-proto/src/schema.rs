@@ -554,7 +554,12 @@ mod tests {
         })
         .unwrap();
         let mut extended = known.clone();
-        extended["browser_onboarding"] = serde_json::json!({"attempt": "future"});
+        extended["future_browser_field"] = serde_json::json!({"attempt": "future"});
+        let mut browser = known.clone();
+        browser["browser_onboarding"] = serde_json::json!({
+            "attempt_id": "01".repeat(32), "request_digest": "02".repeat(32),
+            "profile_id": "service", "session_digest": "03".repeat(32),
+        });
         let mut legacy = serde_json::to_value(Entry {
             at: dudes_types::Timestamp::UNIX_EPOCH,
             record: crate::record::samples::record(crate::RecordKind::AgentHired),
@@ -571,6 +576,10 @@ mod tests {
             };
             let validator = jsonschema::validator_for(&schema).unwrap();
             assert!(validator.is_valid(&known), "{file}: valid stamped hire");
+            assert!(
+                validator.is_valid(&browser),
+                "{file}: valid browser association"
+            );
             assert!(!validator.is_valid(&extended), "{file}: unknown hire field");
             assert!(
                 validator.is_valid(&legacy),
