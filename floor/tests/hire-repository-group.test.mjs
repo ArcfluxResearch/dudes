@@ -20,8 +20,8 @@ const offer = () => ({ floor_usd_per_day_micros: null, workspaces: [{
   repository_group: { project: structuredClone(PROJECT),
     repositories: [{ repo_id: 'web', label: 'Website' }, { repo_id: 'api', label: 'API' }, { repo_id: 'docs', label: 'Documentation' }],
     providers: [{ provider: 'claude', enabled: true, model: 'claude-sonnet-4-6', refusal: null },
-      { provider: 'codex', enabled: false, model: null, refusal: 'This engine is not qualified yet.' },
-      { provider: 'pi', enabled: false, model: null, refusal: 'This engine is not qualified yet.' }] },
+      { provider: 'codex', enabled: false, model: null, refusal: 'Multi-repository projects are not available for this engine yet.' },
+      { provider: 'pi', enabled: false, model: null, refusal: 'Multi-repository projects are not available for this engine yet.' }] },
 }] });
 const floor = () => ({ ...getFloorState(), phase: 'live', stale: false, epoch: 1, snapshotEpoch: 1,
   onboarding: decodeOnboardingCatalog(offer()), agents: [], ticket: true });

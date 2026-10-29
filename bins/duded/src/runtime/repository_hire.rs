@@ -224,7 +224,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 let refusal = if admission.require_repository_capability().is_err() {
                     Some("Multi-repository hiring is not enabled yet.")
                 } else if provider != Provider::Claude {
-                    Some("This engine has no qualified multi-repository policy yet.")
+                    Some("Multi-repository projects are not available for this engine yet.")
                 } else if super::scoped_launch::native_platform()
                     == dudes_providers::scoped::ScopedPlatform::Unsupported
                 {
