@@ -55,7 +55,7 @@ impl PrivateRoots {
         Ok(Arc::clone(agents.entry(canonical).or_default()))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn qualify_claude_fixture(&self, bytes: &[u8]) {
         *self.claude_test_sha.lock().unwrap() = Some(digest(bytes));
     }
