@@ -832,6 +832,8 @@ pub enum FloorRecoveryReadError {
 /// One unit of work for the loop thread.
 #[derive(Debug)]
 pub enum Job {
+    /// Completion from the bounded daemon launch workers, without a supervisor proof token.
+    ScopedLaunchPrepared(Box<crate::chat_launch::ScopedCompletion>),
     /// Inspect recovery under one authenticated browser session.
     InspectRecoveryFromFloor {
         /// Registry-derived reader.
@@ -2009,6 +2011,12 @@ impl Handle {
     /// produced would be journaled anyway.
     pub fn input(&self, input: dudes_supervisor::Input) {
         let _ = self.jobs.send(Job::Input(Box::new(input)));
+    }
+
+    pub(crate) fn scoped_launch_prepared(&self, completion: crate::chat_launch::ScopedCompletion) {
+        let _ = self
+            .jobs
+            .send(Job::ScopedLaunchPrepared(Box::new(completion)));
     }
 
     /// Report that one predicate run ended. Silently dropped once the loop has stopped, as

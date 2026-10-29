@@ -96,6 +96,7 @@ struct Directory {
     label: String,
     cap: usize,
     budget: Rc<Budget>,
+    epoch: Option<Arc<crate::codex_profile::scoped::AgentRoots>>,
 }
 
 impl AsFd for Directory {
@@ -111,6 +112,7 @@ impl Directory {
             label: label.to_owned(),
             cap: self.cap,
             budget: Rc::clone(&self.budget),
+            epoch: self.epoch.clone(),
         }
     }
 
@@ -120,6 +122,10 @@ impl Directory {
 
     fn sync(&self) -> io::Result<()> {
         self.budget.sync(&self.file)
+    }
+
+    fn mutation(&self) -> io::Result<Option<std::sync::MutexGuard<'_, u64>>> {
+        self.epoch.as_ref().map(|epoch| epoch.mutate()).transpose()
     }
 }
 
@@ -131,6 +137,7 @@ struct Opening {
     create: bool,
     /// How many times this run has visited the recipient.
     turn: usize,
+    epoch: io::Result<Arc<crate::codex_profile::scoped::AgentRoots>>,
 }
 
 #[cfg(test)]
@@ -141,6 +148,7 @@ impl Default for Opening {
             cap: SCAN_CAP,
             create: true,
             turn: 0,
+            epoch: Ok(Arc::default()),
         }
     }
 }
@@ -190,6 +198,7 @@ fn directory(parent: &Directory, name: &str, create: bool) -> io::Result<Directo
     if !create {
         return Err(io::Error::from(io::ErrorKind::NotFound));
     }
+    let _mutation = parent.mutation()?;
     rustix::fs::mkdirat(parent, name, Mode::RWXU)?;
     parent.sync()?;
     existing_directory(parent, name)
@@ -269,6 +278,7 @@ fn grant_opening() -> Opening {
         cap: SCAN_CAP,
         create: false,
         turn: 0,
+        epoch: Ok(Arc::default()),
     }
 }
 
@@ -302,12 +312,35 @@ impl Mailbox {
         holder: dudes_supervisor::Holder,
         redactor: dudes_supervisor::Redactor,
     ) {
+        self.subject_context(agent, holder, redactor, true);
+    }
+
+    pub(crate) fn begin_prepared_subject_context(
+        &mut self,
+        agent: AgentId,
+        holder: dudes_supervisor::Holder,
+        redactor: dudes_supervisor::Redactor,
+    ) {
+        self.subject_context(agent, holder, redactor, false);
+    }
+
+    fn subject_context(
+        &mut self,
+        agent: AgentId,
+        holder: dudes_supervisor::Holder,
+        redactor: dudes_supervisor::Redactor,
+        create: bool,
+    ) {
         self.subject_contexts.remove(&agent);
         if !self.live_agents.contains(&agent) {
             return;
         }
         let admitted = (|| -> io::Result<_> {
-            let tree = Tree::open(&self.root, agent, self.opening(&Rc::default(), agent, true))?;
+            let tree = Tree::open(
+                &self.root,
+                agent,
+                self.opening(&Rc::default(), agent, create),
+            )?;
             let outbox = tree.outbox_grant()?;
             if !snapshot(&tree.outbox, OUTBOX_SCAN)?.is_some_and(|names| names.is_empty()) {
                 return Err(io::Error::other("outbox predates this child context"));
@@ -383,14 +416,7 @@ impl Mailbox {
             }
             crate::codex_profile::normalized_absolute(&self.root)?;
             crate::codex_profile::protected_ancestors(&named)?;
-            let tree = Tree::open(
-                &self.root,
-                agent,
-                Opening {
-                    create: true,
-                    ..grant_opening()
-                },
-            )?;
+            let tree = Tree::open(&self.root, agent, self.opening(&Rc::default(), agent, true))?;
             self.remember_outbox(&tree)?;
             self.outboxes
                 .borrow()
@@ -425,12 +451,14 @@ impl Tree {
             label: ".".to_owned(),
             cap: opening.cap,
             budget: Rc::clone(&opening.budget),
+            epoch: None,
         };
         let agents = directory(&root, "agents", opening.create)?;
-        let agent = directory(&agents, &id.to_string(), opening.create)?;
+        let mut agent = directory(&agents, &id.to_string(), opening.create)?;
         let inbox = directory(&agent, "inbox", opening.create)?;
         let done = directory(&inbox, ".done", opening.create)?;
         let staging = directory(&inbox, ".staging", opening.create)?;
+        agent.epoch = Some(opening.epoch?);
         let outbox = directory(&agent, "outbox", opening.create)?;
         Ok(Self {
             root,
@@ -717,6 +745,8 @@ fn remove(
     validate: fn(&Directory, &OsStr, &File) -> io::Result<()>,
 ) -> io::Result<()> {
     validate(directory, name, file)?;
+    let _mutation = directory.mutation()?;
+    validate(directory, name, file)?;
     rustix::fs::unlinkat(directory, name, AtFlags::empty())?;
     directory.sync()
 }
@@ -738,13 +768,30 @@ fn verify_named_bytes(
 }
 
 fn stage(tree: &Tree, name: &str, bytes: &[u8]) -> io::Result<File> {
+    let create = !named_canonical(&tree.staging, OsStr::new(name))?;
+    let _mutation = if create {
+        tree.staging.mutation()?
+    } else {
+        None
+    };
     let file = match open(
         &tree.staging,
         name,
-        OFlags::RDWR | OFlags::CREATE | OFlags::EXCL,
+        if create {
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL
+        } else {
+            OFlags::RDONLY
+        },
     ) {
-        Ok(mut file) => {
+        Ok(mut file) if create => {
             file.write_all(bytes)?;
+            file
+        }
+        Ok(file) => {
+            let (_, found) = read_file(&tree.staging, OsStr::new(name), OUTBOX_BYTES)?;
+            if found != bytes {
+                return Err(io::Error::other("staging collision"));
+            }
             file
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -797,6 +844,7 @@ fn publish_with(
     }
     tree.validate()?;
     verify_named_bytes(&tree.staging, &staged_name, &file, bytes)?;
+    let _mutation = tree.inbox.mutation()?;
     rustix::fs::renameat_with(
         &tree.staging,
         staged_name.as_str(),
@@ -1071,6 +1119,9 @@ impl Mailbox {
                 + self.bodies.get(&recipient).copied().unwrap_or(0),
             create,
             turn: self.visits.get(&recipient).copied().unwrap_or(0),
+            epoch: self
+                .private_roots
+                .agent(&self.root.join("agents").join(recipient.to_string())),
         }
     }
 

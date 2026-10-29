@@ -136,6 +136,7 @@ pub(crate) fn outbox_fixture(root: &Path, agent: AgentId) -> Arc<OutboxGrant> {
 }
 
 pub(crate) struct Mailbox {
+    private_roots: Arc<crate::codex_profile::scoped::PrivateRoots>,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     root: PathBuf,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -180,9 +181,29 @@ pub(crate) struct Mailbox {
 }
 
 impl Mailbox {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn coordinate_private_roots(
+        &mut self,
+        roots: Arc<crate::codex_profile::scoped::PrivateRoots>,
+    ) {
+        self.private_roots = roots;
+    }
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux")),
+        expect(
+            clippy::unused_self,
+            reason = "unsupported platforms share the mailbox refusal method"
+        )
+    )]
     pub(crate) fn admit_outbox(&self, agent: AgentId) -> std::io::Result<Arc<OutboxGrant>> {
-        self.unix_admit_outbox(agent)
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            self.unix_admit_outbox(agent)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let _ = agent;
+            Err(std::io::ErrorKind::Unsupported.into())
+        }
     }
     pub(crate) fn is_fenced(&self) -> bool {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -236,6 +257,7 @@ impl Mailbox {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) fn replay(root: PathBuf, reader: &Reader) -> dudes_journal::Result<Self> {
         let mut mailbox = Self {
+            private_roots: Arc::default(),
             root,
             rows: BTreeMap::new(),
             mail_index: index::MailIndex::default(),
@@ -269,6 +291,7 @@ impl Mailbox {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     pub(crate) fn unavailable() -> Self {
         Self {
+            private_roots: Arc::default(),
             report: Arc::new(Mutex::new(MailboxReport {
                 available: false,
                 detail: cfg!(windows).then(|| "mail is not yet available on Windows".to_owned()),
@@ -521,6 +544,7 @@ mod wake_tests {
         let agent = AgentId::from_parts(1, 1);
         let id = MailId::from_parts(1, 2);
         let mut mailbox = Mailbox {
+            private_roots: Arc::default(),
             root: PathBuf::new(),
             rows: BTreeMap::new(),
             mail_index: index::MailIndex::default(),
@@ -570,6 +594,24 @@ mod wake_tests {
                 target_count: count + 1,
             },
         )
+    }
+
+    #[test]
+    fn a_scoped_inspection_defers_private_mutations_without_waiting_for_the_worker() {
+        let (mut mailbox, agent, _) = fixture(0);
+        let root = tempfile::tempdir().unwrap();
+        mailbox.root = root.path().canonicalize().unwrap();
+        mailbox.codex_agents.insert(agent);
+        let path = mailbox.root.join("agents").join(agent.to_string());
+        let roots = mailbox.private_roots.agent(&path).unwrap();
+        let inspection = roots.inspect().unwrap();
+        assert!(mailbox.admit_outbox(agent).is_err());
+        assert!(!path.join("outbox").exists());
+        assert_eq!(*inspection, 0);
+        drop(inspection);
+        mailbox.admit_outbox(agent).unwrap();
+        assert!(path.join("outbox").is_dir());
+        assert!(*roots.inspect().unwrap() > 0);
     }
 
     #[test]

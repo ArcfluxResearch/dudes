@@ -14,6 +14,8 @@ use serde::Deserialize;
 
 use crate::predicate::{PredicateOutcome, PredicateRunner};
 
+pub(crate) mod scoped;
+
 const PROBE_LIMIT: usize = 256;
 const PROBE_DEADLINE: Duration = Duration::from_secs(2);
 const FORBIDDEN_HOME_ENTRIES: &[&str] = &["config.toml", "rules", "profiles", "hooks.json"];
@@ -34,6 +36,10 @@ pub(crate) struct CodexProfile {
     home: PathBuf,
     env: Vec<EnvVar>,
     runner: Arc<dyn PredicateRunner>,
+    mutations: Arc<scoped::PrivateRoots>,
+    catalogs: std::sync::Mutex<()>,
+    #[cfg(test)]
+    scoped_test_qualification: Option<(String, String, usize)>,
 }
 
 impl fmt::Debug for CodexProfile {
@@ -54,6 +60,10 @@ impl CodexProfile {
             home: state_dir.join("providers/codex"),
             env: env.to_vec(),
             runner,
+            mutations: Arc::default(),
+            catalogs: std::sync::Mutex::default(),
+            #[cfg(test)]
+            scoped_test_qualification: None,
         })
     }
 
@@ -91,6 +101,13 @@ impl CodexProfile {
         spec: &mut LaunchSpec,
         startup: &CodexStartup,
     ) -> io::Result<CodexStartup> {
+        if startup.scoped_roots().is_some() {
+            return Err(refusal(
+                "scoped Codex launch requires its retained preparation owner",
+            ));
+        }
+        let roots = self.mutations.agent(startup.agent_dir())?;
+        let _mutation = roots.mutate()?;
         let program = spec
             .argv
             .first()
@@ -163,6 +180,8 @@ impl CodexProfile {
     }
 
     pub(crate) fn before_task(&self, startup: &CodexStartup) -> io::Result<()> {
+        let roots = self.mutations.agent(startup.agent_dir())?;
+        let _inspection = roots.inspect()?;
         self.machine_policy()?;
         if self.check_home(false)? != startup.home() {
             return Err(refusal("Codex profile path changed during startup"));
