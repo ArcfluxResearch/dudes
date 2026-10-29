@@ -252,31 +252,7 @@ impl RecoveryCurrent<'_> {
                 {
                     return Err(RecoveryStateError::Binding);
                 }
-                for copy in hire.repositories.entries() {
-                    let repo = &copy.value.recorded;
-                    let lease = self
-                        .leases
-                        .iter()
-                        .find(|lease| lease.worktree == repo.worktree)
-                        .ok_or(RecoveryStateError::Binding)?;
-                    if lease.agent != Some(requested.work.agent)
-                        || lease.removed
-                        || lease.leased_lsn >= requested.hired_lsn
-                        || lease.origin != repo.origin.directory
-                        || lease.path != repo.execution.directory
-                        || lease.base != repo.base
-                    {
-                        return Err(RecoveryStateError::Binding);
-                    }
-                    let witness = history
-                        .at(lease.leased_lsn)
-                        .map_err(|_| RecoveryStateError::Binding)?;
-                    if witness.reference().owner != RecoveryWitnessOwner::Worktree(repo.worktree)
-                        || !matches!(witness.evidence(), RecoveryEvidence::Lease { .. })
-                    {
-                        return Err(RecoveryStateError::Binding);
-                    }
-                }
+                self.validate_scoped_leases(requested, hire, history)?;
                 if let Some(round) = &grant.ticket {
                     let start = history
                         .at(round.start_lsn)
@@ -307,6 +283,40 @@ impl RecoveryCurrent<'_> {
             }
             _ => Err(RecoveryStateError::Binding),
         }
+    }
+
+    fn validate_scoped_leases(
+        &self,
+        requested: &RecoveryBinding,
+        hire: &ScopedHireRepositories,
+        history: &RecoveryHistory,
+    ) -> Result<(), RecoveryStateError> {
+        for copy in hire.repositories.entries() {
+            let repo = &copy.value.recorded;
+            let lease = self
+                .leases
+                .iter()
+                .find(|lease| lease.worktree == repo.worktree)
+                .ok_or(RecoveryStateError::Binding)?;
+            if lease.agent != Some(requested.work.agent)
+                || lease.removed
+                || lease.leased_lsn >= requested.hired_lsn
+                || lease.origin != repo.origin.directory
+                || lease.path != repo.execution.directory
+                || lease.base != repo.base
+            {
+                return Err(RecoveryStateError::Binding);
+            }
+            let witness = history
+                .at(lease.leased_lsn)
+                .map_err(|_| RecoveryStateError::Binding)?;
+            if witness.reference().owner != RecoveryWitnessOwner::Worktree(repo.worktree)
+                || !matches!(witness.evidence(), RecoveryEvidence::Lease { .. })
+            {
+                return Err(RecoveryStateError::Binding);
+            }
+        }
+        Ok(())
     }
 
     fn validate_goal(

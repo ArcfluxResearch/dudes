@@ -695,7 +695,7 @@ where
         .collect();
     let current = RecoveryCurrent {
         through,
-        agent: current_agent(&agent)?,
+        agent: current_agent(&agent),
         goal: RecoveryGoalCurrent {
             goal: goal.id,
             agent: goal.agent,
@@ -853,10 +853,8 @@ fn standing_control(agent: &super::AgentRow) -> RecoveryStandingControl {
     }
 }
 
-fn current_agent(
-    agent: &super::AgentRow,
-) -> std::result::Result<RecoveryAgentCurrent, RecoveryStateError> {
-    Ok(RecoveryAgentCurrent {
+fn current_agent(agent: &super::AgentRow) -> RecoveryAgentCurrent {
+    RecoveryAgentCurrent {
         agent: agent.id,
         hired_lsn: agent.hired_lsn,
         provider: agent.provider,
@@ -868,7 +866,7 @@ fn current_agent(
         control_lsn: agent.control_lsn,
         session: agent.session.clone(),
         session_lsn: agent.session_lsn,
-    })
+    }
 }
 
 fn current_ticket(

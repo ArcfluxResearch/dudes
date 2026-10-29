@@ -1373,7 +1373,7 @@ impl Discovery {
                 }
             }
             Record::RecoveryInvalidated(invalidated) => {
-                if let Ok(receipt) = state.claim_receipt(invalidated.claim) {
+                if state.claim_receipt(invalidated.claim).is_ok() {
                     self.retire(invalidated.claim.authorization_lsn);
                 }
             }

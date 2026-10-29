@@ -14,77 +14,8 @@ struct ScopedFixture {
 impl ScopedFixture {
     fn new() -> Self {
         let mut legacy = Fixture::new();
-        let Record::AgentHiredWithRepositories(mut hire) =
-            samples::record(RecordKind::AgentHiredWithRepositories)
-        else {
-            unreachable!()
-        };
-        hire.id = legacy.binding.work.agent;
-        hire.provider = legacy.binding.provider;
-        hire.repositories.catalog_lsn = Lsn(1);
-        let copies: Vec<_> = (0..3u8)
-            .map(|index| {
-                let mut copy = hire.repositories.repositories.entries()[0].clone();
-                copy.repo_id = RepoId::parse(&format!("copy{index}")).unwrap();
-                copy.value.worktree = WorktreeId::from_bytes([index + 1; 16]);
-                copy.value.execution.directory.push(format!("copy{index}"));
-                copy.value.execution.git_dir.push(format!("copy{index}"));
-                copy.value.origin.directory.push(format!("copy{index}"));
-                copy.value.origin.common_dir.push(format!("copy{index}"));
-                copy.value.trust_lsn = Lsn(5 + u64::from(index));
-                copy
-            })
-            .collect();
-        hire.repositories.repositories =
-            RepositorySet::new(copies[0].repo_id.clone(), copies.clone()).unwrap();
-        let Record::WorkspaceTrustSet { pin: Some(pin), .. } =
-            samples::record(RecordKind::WorkspaceTrustSet)
-        else {
-            unreachable!()
-        };
-        let normalized = ScopedHireRepositories {
-            project: hire.repositories.project.clone(),
-            catalog_lsn: hire.repositories.catalog_lsn,
-            policy: hire.repositories.policy,
-            repositories: RepositorySet::new(
-                copies[0].repo_id.clone(),
-                copies
-                    .iter()
-                    .map(|copy| RepositoryEntry {
-                        repo_id: copy.repo_id.clone(),
-                        value: HiredRepository::new(copy.value.clone(), pin.clone()),
-                    })
-                    .collect(),
-            )
-            .unwrap(),
-        };
-        let Record::TicketStartedWithRepositories(mut start) =
-            samples::record(RecordKind::TicketStartedWithRepositories)
-        else {
-            unreachable!()
-        };
-        start.agent = legacy.binding.work.agent;
-        start.goal = legacy.goal.clone();
-        start.repositories.hired_lsn = legacy.binding.hired_lsn;
-        start
-            .repositories
-            .declaration
-            .project
-            .clone_from(&normalized.project.id);
-        start.repositories.declaration.catalog_lsn = normalized.catalog_lsn;
-        start.repositories.declaration.repositories = RepositorySet::new(
-            copies[1].repo_id.clone(),
-            copies[1..]
-                .iter()
-                .map(|copy| RepositoryEntry {
-                    repo_id: copy.repo_id.clone(),
-                    value: copy.value.origin.clone(),
-                })
-                .collect(),
-        )
-        .unwrap();
-        start.repositories.check_repo = copies[1].repo_id.clone();
-        start.repositories.check_root = copies[1].value.execution.clone();
+        let (hire, copies, normalized) = scoped_hire(&legacy);
+        let start = ticket_start(&legacy, &normalized, &copies);
         let ticket = TicketBinding {
             card: start.card,
             goal: start.goal.id,
@@ -106,25 +37,7 @@ impl ScopedFixture {
         };
         let grant = RepositoryTurnGrant::select(Lsn(10), &normalized, Some(&round)).unwrap();
         let repositories = TurnRepositories::scoped(&HireRepositories::Scoped(normalized), &grant);
-        let payload = Record::TurnIssued {
-            agent: legacy.binding.work.agent,
-            turn: legacy.binding.work.turn,
-            goal: legacy.binding.work.goal,
-            mode: Mode::Managed,
-            lsn_of_decision: Lsn(25),
-            task: "exact scoped task".into(),
-            session: Some(SessionId::new("original-session")),
-            model_selection: legacy.binding.model_selection.clone(),
-            answers: vec![Lsn(15), Lsn(16)],
-        }
-        .issue_payload()
-        .unwrap()
-        .to_owned();
-        let issue =
-            Record::TurnIssuedWithRepositories(Box::new(crate::repository::RepositoryTurnIssued {
-                grant,
-                payload,
-            }));
+        let issue = issued(&legacy, grant);
         legacy.history = RecoveryHistory::default();
         for (index, copy) in copies.iter().enumerate() {
             legacy
@@ -182,7 +95,7 @@ impl ScopedFixture {
                 .unwrap();
         }
         legacy.binding.ticket = Some(ticket);
-        legacy.binding.worktree = Some(copies[0].value.worktree);
+        legacy.binding.worktree = Some(copies[1].value.worktree);
         legacy.issue = legacy.history.at(Lsn(30)).unwrap().issue().unwrap();
         Self {
             legacy,
@@ -213,6 +126,95 @@ impl ScopedFixture {
             .collect();
         current
     }
+}
+
+fn scoped_hire(
+    legacy: &Fixture,
+) -> (
+    Box<crate::repository::RepositoryHire>,
+    Vec<RepositoryEntry<OwnedRepository>>,
+    ScopedHireRepositories,
+) {
+    let Record::AgentHiredWithRepositories(mut hire) =
+        samples::record(RecordKind::AgentHiredWithRepositories)
+    else {
+        unreachable!()
+    };
+    hire.id = legacy.binding.work.agent;
+    hire.provider = legacy.binding.provider;
+    hire.repositories.catalog_lsn = Lsn(1);
+    let copies: Vec<_> = (0..3u8)
+        .map(|index| {
+            let mut copy = hire.repositories.repositories.entries()[0].clone();
+            copy.repo_id = RepoId::parse(&format!("copy{index}")).unwrap();
+            copy.value.worktree = WorktreeId::from_bytes([index + 1; 16]);
+            copy.value.execution.directory.push(format!("copy{index}"));
+            copy.value.execution.git_dir.push(format!("copy{index}"));
+            copy.value.origin.directory.push(format!("copy{index}"));
+            copy.value.origin.common_dir.push(format!("copy{index}"));
+            copy.value.trust_lsn = Lsn(5 + u64::from(index));
+            copy
+        })
+        .collect();
+    hire.repositories.repositories =
+        RepositorySet::new(copies[1].repo_id.clone(), copies.clone()).unwrap();
+    let Record::WorkspaceTrustSet { pin: Some(pin), .. } =
+        samples::record(RecordKind::WorkspaceTrustSet)
+    else {
+        unreachable!()
+    };
+    let normalized = ScopedHireRepositories {
+        project: hire.repositories.project.clone(),
+        catalog_lsn: hire.repositories.catalog_lsn,
+        policy: hire.repositories.policy,
+        repositories: RepositorySet::new(
+            copies[1].repo_id.clone(),
+            copies
+                .iter()
+                .map(|copy| RepositoryEntry {
+                    repo_id: copy.repo_id.clone(),
+                    value: HiredRepository::new(copy.value.clone(), pin.clone()),
+                })
+                .collect(),
+        )
+        .unwrap(),
+    };
+    (hire, copies, normalized)
+}
+
+fn ticket_start(
+    legacy: &Fixture,
+    normalized: &ScopedHireRepositories,
+    copies: &[RepositoryEntry<OwnedRepository>],
+) -> Box<crate::repository::RepositoryTicketStarted> {
+    let Record::TicketStartedWithRepositories(mut start) =
+        samples::record(RecordKind::TicketStartedWithRepositories)
+    else {
+        unreachable!()
+    };
+    start.agent = legacy.binding.work.agent;
+    start.goal = legacy.goal.clone();
+    start.repositories.hired_lsn = legacy.binding.hired_lsn;
+    start
+        .repositories
+        .declaration
+        .project
+        .clone_from(&normalized.project.id);
+    start.repositories.declaration.catalog_lsn = normalized.catalog_lsn;
+    start.repositories.declaration.repositories = RepositorySet::new(
+        copies[0].repo_id.clone(),
+        copies[..2]
+            .iter()
+            .map(|copy| RepositoryEntry {
+                repo_id: copy.repo_id.clone(),
+                value: copy.value.origin.clone(),
+            })
+            .collect(),
+    )
+    .unwrap();
+    start.repositories.check_repo = copies[0].repo_id.clone();
+    start.repositories.check_root = copies[0].value.execution.clone();
+    start
 }
 
 #[test]
@@ -251,12 +253,12 @@ fn recovery_refuses_an_undeclared_lease_change_and_substituted_authority() {
         let mut current = fixture.current();
         match change {
             0 => {
-                current.leases.remove(0);
+                current.leases.remove(2);
             }
-            1 => current.leases[0].removed = true,
-            2 => current.leases[0].path = current.leases[1].path,
-            3 => current.leases[0].origin = current.leases[1].origin,
-            4 => current.leases[0].agent = None,
+            1 => current.leases[2].removed = true,
+            2 => current.leases[2].path = current.leases[1].path,
+            3 => current.leases[2].origin = current.leases[1].origin,
+            4 => current.leases[2].agent = None,
             5 => current.repositories = &fixture.legacy.repositories,
             _ => unreachable!(),
         }
@@ -268,7 +270,7 @@ fn recovery_refuses_an_undeclared_lease_change_and_substituted_authority() {
             "change {change}"
         );
     }
-    for lease in [None, Some(fixture.copies[1].value.worktree)] {
+    for lease in [None, Some(fixture.copies[0].value.worktree)] {
         let mut binding = fixture.legacy.binding.clone();
         binding.worktree = lease;
         assert!(
@@ -286,4 +288,25 @@ fn recovery_refuses_an_undeclared_lease_change_and_substituted_authority() {
             .bind(&fixture.legacy.binding, &history)
             .is_err()
     );
+}
+
+fn issued(legacy: &Fixture, grant: RepositoryTurnGrant) -> Record {
+    let payload = Record::TurnIssued {
+        agent: legacy.binding.work.agent,
+        turn: legacy.binding.work.turn,
+        goal: legacy.binding.work.goal,
+        mode: Mode::Managed,
+        lsn_of_decision: Lsn(25),
+        task: "exact scoped task".into(),
+        session: Some(SessionId::new("original-session")),
+        model_selection: legacy.binding.model_selection.clone(),
+        answers: vec![Lsn(15), Lsn(16)],
+    }
+    .issue_payload()
+    .unwrap()
+    .to_owned();
+    Record::TurnIssuedWithRepositories(Box::new(crate::repository::RepositoryTurnIssued {
+        grant,
+        payload,
+    }))
 }

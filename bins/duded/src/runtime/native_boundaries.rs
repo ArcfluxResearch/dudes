@@ -168,7 +168,13 @@ impl InheritedNativeBoundaries {
                 || attempt.owner != captured.owner
                 || attempt.spawn_lsn != Some(captured.spawn_lsn)
                 || attempt.boundary_settled.is_some()
-                || !same_prior_run_scope(host, &captured.key, attempt.legacy_snapshot())
+                || !attempt.snapshot.as_ref().is_some_and(|evidence| {
+                    let mut samples = evidence.samples().peekable();
+                    samples.peek().is_some()
+                        && samples.all(|(_, snapshot)| {
+                            same_prior_run_scope(host, &captured.key, Some(snapshot))
+                        })
+                })
             {
                 continue;
             }
@@ -263,8 +269,12 @@ pub(super) fn owed_retry_observation(
         && attempt.spawn_lsn.is_none()
         && matches!(attempt.baseline, dudes_proto::InstructionBaselineRef::Started { lsn }
             if lsn == started)
-        && attempt.legacy_snapshot().is_some_and(|snapshot| {
-            snapshot.source == dudes_proto::InstructionSnapshotSource::Fresh
+        && attempt.snapshot.as_ref().is_some_and(|evidence| {
+            let mut samples = evidence.samples().peekable();
+            samples.peek().is_some()
+                && samples.all(|(_, snapshot)| {
+                    snapshot.source == dudes_proto::InstructionSnapshotSource::Fresh
+                })
         }))
     .then_some((started, owner))
 }
