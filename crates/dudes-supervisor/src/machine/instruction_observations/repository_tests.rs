@@ -1163,3 +1163,362 @@ fn fresh_scoped_mail_issue_keeps_the_prepared_task_and_frozen_grant() {
     );
     assert!(harness.host.spawned.is_empty());
 }
+
+#[test]
+fn consent_repeat_uses_the_recorded_scoped_task_model_answers_and_grant() {
+    let (mut harness, agent, goal, grant) = fixture();
+    for text in ["first ordered answer", "second ordered answer"] {
+        append(
+            &mut harness,
+            Record::HumanQuestion {
+                agent,
+                text: "Which output?".into(),
+            },
+        );
+        append(
+            &mut harness,
+            Record::HumanAnswer {
+                agent,
+                text: text.into(),
+                provenance: None,
+                browser_answer: None,
+            },
+        );
+    }
+    let issue = start_scoped(&mut harness, agent);
+    assert_eq!(issue.grant, grant);
+    let record = issue.payload.as_ref().to_owned().into_legacy_record();
+    let view = record.turn_issue().unwrap();
+    let turn = view.turn;
+    let original = harness.supervisor.world().turns[&turn].clone();
+    let hops = harness.supervisor.world().goals[&goal].turns_on_goal;
+    assert_eq!(original.answers.len(), 2);
+    assert!(original.answers.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(harness.host.spawned.is_empty());
+    prove_scoped_prehost_refusal(&mut harness, agent, turn);
+    let mut restarted = restart_scoped(harness.journal, agent, &grant);
+    assert!(!has_scoped_spawn(&restarted));
+    let expected = restarted
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    let handled = restarted.recover(repeat_command(expected, 71));
+    assert_eq!(handled.recovery().unwrap().refusal, None);
+    assert_same_owed_issue(&restarted, turn, &original, goal, hops);
+    let launch = restarted
+        .trace
+        .iter()
+        .find_map(|seen| match seen {
+            Seen::ScopedSpawn {
+                launch:
+                    crate::ManagedSpawn::Scoped {
+                        task,
+                        session,
+                        selection,
+                        ..
+                    },
+                ..
+            } => Some((task, session, selection)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(launch.0, &original.task);
+    assert_eq!(Some(launch.2), original.model_selection.as_ref());
+    assert_ne!(launch.1.id(), original.announced.as_ref());
+    let work = expected.work;
+    let claim = restarted
+        .supervisor
+        .world()
+        .recovery_projection()
+        .unwrap()
+        .0
+        .work_claim(work)
+        .unwrap()
+        .unwrap();
+    let mut crashed = restart_scoped(restarted.journal, agent, &grant);
+    assert!(!has_scoped_spawn(&crashed));
+    let fresh = crashed
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    assert_ne!(fresh.episode, Some(claim.episode));
+    let state = crashed.supervisor.world().recovery_projection().unwrap().0;
+    assert!(
+        matches!(state.claim_receipt(claim).unwrap().state, dudes_proto::recovery_state::RecoveryClaimState::Superseded { issue, .. } if issue.issued.work == work && issue.lsn == original.issue_lsn)
+    );
+    assert!(state.current(work).unwrap().authorization_lsn.is_none());
+    let stale = crashed.recover(repeat_command(expected, 73));
+    assert!(stale.recovery().unwrap().refusal.is_some());
+    assert!(!has_scoped_spawn(&crashed));
+    assert_same_owed_issue(&crashed, turn, &original, goal, hops);
+}
+
+#[test]
+fn an_unknown_scoped_interval_cannot_be_accepted_or_repeated() {
+    let (mut harness, agent, goal, grant) = fixture();
+    let issue = start_scoped(&mut harness, agent);
+    let record = issue.payload.as_ref().to_owned().into_legacy_record();
+    let turn = record.turn_issue().unwrap().turn;
+    let original = harness.supervisor.world().turns[&turn].clone();
+    let hops = harness.supervisor.world().goals[&goal].turns_on_goal;
+    let mut restarted = restart_scoped(harness.journal, agent, &grant);
+    let card = grant.ticket.as_ref().unwrap().card;
+    let watermark = restarted
+        .supervisor
+        .world()
+        .instructions
+        .watermark(card, |bytes| Hex32::new(*blake3::hash(bytes).as_bytes()))
+        .unwrap()
+        .unwrap();
+    let before = restarted
+        .supervisor
+        .world()
+        .recovery_projection()
+        .unwrap()
+        .0
+        .clone();
+    let next = Lsn(restarted.supervisor.world().last_applied_lsn.unwrap().0 + 1);
+    let review = Entry {
+        at: Timestamp::UNIX_EPOCH,
+        record: Record::TicketInstructionReviewed {
+            card,
+            by: Actor::Peer { pid: 17, uid: None },
+            expected_seq: Seq(2),
+            watermark,
+            action: dudes_proto::InstructionReviewAction::Accept {
+                completion: dudes_proto::InstructionAcceptCompletion::Continue,
+            },
+        },
+    };
+    assert_eq!(
+        restarted.supervisor.world.apply_checked(next, &review),
+        Err(dudes_proto::recovery_state::RecoveryStateError::Binding)
+    );
+    assert_eq!(
+        restarted
+            .supervisor
+            .world()
+            .recovery_projection()
+            .unwrap()
+            .0,
+        &before
+    );
+    let expected = restarted
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    restarted.recover(repeat_command(expected, 75));
+    assert!(!has_scoped_spawn(&restarted));
+    assert_same_owed_issue(&restarted, turn, &original, goal, hops);
+}
+
+fn start_scoped(harness: &mut Harness, agent: AgentId) -> RepositoryTurnIssued {
+    harness.drive(Input::Spend {
+        agent,
+        view: crate::SpendView::default(),
+    });
+    harness.drive(Input::Started);
+    latest_scoped_issue(harness)
+}
+
+fn restart_scoped(prefix: Vec<Entry>, agent: AgentId, grant: &RepositoryTurnGrant) -> Harness {
+    let mut harness = Harness::from_prefix(prefix);
+    harness
+        .supervisor
+        .observe_repository_admission(crate::RepositoryAdmission::new([(
+            agent,
+            grant.hired_lsn,
+            true,
+        )]));
+    harness.drive(Input::Spend {
+        agent,
+        view: crate::SpendView::default(),
+    });
+    harness.drive(Input::Started);
+    harness
+}
+
+fn repeat_command(
+    expected: crate::input::RecoveryExpected,
+    request: u8,
+) -> crate::input::RecoveryCommand {
+    crate::input::RecoveryCommand {
+        request_id: Hex32::new([request; 32]),
+        digest: Hex32::new([request + 1; 32]),
+        expected,
+        choice: crate::input::RecoveryChoice::RepeatIssuedFresh,
+        attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+            pid: 17,
+            uid: None,
+        },
+    }
+}
+
+fn has_scoped_spawn(harness: &Harness) -> bool {
+    harness
+        .trace
+        .iter()
+        .any(|seen| matches!(seen, Seen::ScopedSpawn { .. }))
+}
+
+fn assert_same_owed_issue(
+    harness: &Harness,
+    turn: TurnId,
+    original: &crate::world::TurnRow,
+    goal: GoalId,
+    hops: u32,
+) {
+    let repeated = &harness.supervisor.world().turns[&turn];
+    assert_eq!(
+        (
+            &repeated.task,
+            &repeated.model_selection,
+            &repeated.answers,
+            repeated.issue_lsn,
+            &repeated.repositories
+        ),
+        (
+            &original.task,
+            &original.model_selection,
+            &original.answers,
+            original.issue_lsn,
+            &original.repositories
+        )
+    );
+    assert_eq!(harness.supervisor.world().goals[&goal].turns_on_goal, hops);
+    assert_eq!(
+        harness
+            .journal
+            .iter()
+            .filter(|entry| entry.record.turn_issue().is_some())
+            .count(),
+        1
+    );
+    assert!(!harness.journal.iter().any(|entry| matches!(
+        entry.record,
+        Record::TurnSpawned { .. } | Record::TurnEnded { .. }
+    )));
+    assert!(harness.host.spawned.is_empty());
+}
+
+fn prove_scoped_prehost_refusal(harness: &mut Harness, agent: AgentId, turn: TurnId) {
+    let (started, attempt) = harness
+        .supervisor
+        .world()
+        .instructions
+        .current_for_turn(turn)
+        .unwrap();
+    let owner = attempt.owner;
+    let baseline = attempt.baseline;
+    let batch = attempt
+        .snapshot
+        .as_ref()
+        .unwrap()
+        .repositories()
+        .unwrap()
+        .clone();
+    assert!(harness.host.spawned.is_empty());
+    harness.drive(Input::LaunchAdmissionRefused {
+        agent,
+        turn: Some(turn),
+        dispatch_token: None,
+        refusal: crate::SharedFolderRefusal::PeerLivenessUnknown {
+            agent: AgentId::from_parts(99, 1),
+        },
+    });
+    let proof = harness
+        .journal
+        .iter()
+        .enumerate()
+        .find_map(|(index, entry)| {
+            matches!(entry.record, Record::AgentHeld { agent: held, .. } if held == agent)
+                .then_some(Lsn(index as u64 + 1))
+        })
+        .unwrap();
+    let finished = harness
+        .journal
+        .iter()
+        .find_map(|entry| match &entry.record {
+            Record::InstructionObservationBatchFinished(batch) => Some(batch),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(finished.owner, owner);
+    assert_eq!(finished.baseline, baseline);
+    assert_eq!(baseline, InstructionBaselineRef::Started { lsn: started });
+    assert_eq!(finished.binding, batch.binding);
+    assert!(
+        finished
+            .members
+            .iter()
+            .map(|member| &member.repo_id)
+            .eq(batch.members.iter().map(|member| &member.repo_id))
+    );
+    assert!(finished.members.iter().all(|member| matches!(member.settlement, InstructionSettlement::NoProcess { proof_lsn, proof: dudes_proto::InstructionNoProcessProof::NoHostCall } if proof_lsn == proof)));
+    assert!(
+        harness
+            .supervisor
+            .world()
+            .instructions
+            .repository_turn_covered(turn)
+    );
+    assert!(harness.host.spawned.is_empty());
+}
+
+#[test]
+fn scoped_recovery_facts_keep_full_witnesses_on_cold_world_replay() {
+    let (mut harness, agent, goal, grant) = fixture();
+    harness.drive(Input::Spend {
+        agent,
+        view: crate::SpendView::default(),
+    });
+    harness.drive(Input::Started);
+    let issued = latest_scoped_issue(&harness);
+    let record = issued.payload.as_ref().to_owned().into_legacy_record();
+    let issue = record.turn_issue().unwrap();
+    let world = harness.supervisor.world();
+    let turn = &world.turns[&issue.turn];
+    let binding = dudes_proto::recovery::RecoveryBinding {
+        work: dudes_proto::recovery::RecoveryWork {
+            agent,
+            goal,
+            turn: issue.turn,
+        },
+        issue_lsn: turn.issue_lsn,
+        hired_lsn: grant.hired_lsn,
+        worktree: world.agents[&agent].repositories.primary_worktree(),
+        provider: world.agents[&agent].provider,
+        model_selection: turn.model_selection.clone(),
+        ticket: grant
+            .ticket
+            .as_ref()
+            .map(|round| dudes_proto::diff_stamp::TicketBinding {
+                card: round.card,
+                round: round.round,
+                goal: round.goal,
+                claimant: agent,
+            }),
+    };
+    let facts = world.recovery_facts(&binding).unwrap();
+    let dudes_proto::recovery_state::admission::RecoveryAuthority::Scoped {
+        hire,
+        grant: selected,
+    } = &facts.authority
+    else {
+        panic!("scoped authority")
+    };
+    let HireRepositories::Scoped(original) = &world.agents[&agent].repositories else {
+        unreachable!()
+    };
+    assert_eq!(hire.as_ref(), original);
+    assert_eq!(selected.as_ref(), &grant);
+    let cold = Harness::from_prefix(harness.journal);
+    assert_eq!(
+        facts,
+        cold.supervisor.world().recovery_facts(&binding).unwrap()
+    );
+    assert!(cold.trace.is_empty());
+}
