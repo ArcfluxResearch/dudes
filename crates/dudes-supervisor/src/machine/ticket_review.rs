@@ -74,20 +74,81 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         true
     }
 
-    pub(super) fn repository_stamp_waiting(&self, agent: AgentId) -> bool {
-        self.world
+    pub(super) fn hold_for_repository_stamp(&mut self, agent: AgentId) -> bool {
+        let waiting = self
+            .world
             .active_repository_round(agent)
             .ok()
             .flatten()
-            .and_then(|round| self.world.repository_review(round.goal))
-            .is_some_and(|review| {
-                review.check.is_some_and(|check| {
-                    review
-                        .stamp
-                        .as_ref()
-                        .is_none_or(|(_, stamp)| stamp.check_lsn != check.lsn || !stamp.complete())
-                })
-            })
+            .and_then(|round| {
+                let review = self.world.repository_review(round.goal)?;
+                let check = review.check?;
+                review
+                    .stamp
+                    .as_ref()
+                    .is_none_or(|(_, stamp)| stamp.check_lsn != check.lsn || !stamp.complete())
+                    .then_some((round.goal, check.lsn, review.stamp.is_none()))
+            });
+        let Some((goal, check_lsn, missing)) = waiting else {
+            return false;
+        };
+        if missing && self.repository_admitted(agent) {
+            let _ = self.request_repository_stamp(goal, check_lsn, Then::Decide { agent });
+        }
+        true
+    }
+
+    fn request_repository_stamp(
+        &mut self,
+        goal: GoalId,
+        check_lsn: Lsn,
+        then: Then,
+    ) -> Option<Then> {
+        let request = self.world.repository_review(goal).and_then(|review| {
+            let capture = self.repository_capture(review.binding.ticket.claimant)?;
+            let (baseline_lsn, baseline) = review.baseline.as_ref()?;
+            (capture.binding == review.binding
+                && baseline.complete()
+                && review.check.is_some_and(|check| check.lsn == check_lsn))
+            .then(|| (capture, *baseline_lsn, baseline.clone()))
+        });
+        let Some((capture, baseline_lsn, baseline)) = request else {
+            return Some(then);
+        };
+        if let Some(StampWait::Repositories(current, current_lsn, current_then)) =
+            self.ticket_review.stamps_parked.get_mut(&goal)
+            && current.as_ref() == &capture
+            && *current_lsn == check_lsn
+        {
+            if matches!(then, Then::InstructionRecoveryContinue) {
+                **current_then = then;
+            }
+            return None;
+        }
+        self.pending.push(Effect::CaptureRepositoryStamp {
+            capture: Box::new(capture.clone()),
+            baseline_lsn,
+            baseline: Box::new(baseline),
+            check_lsn,
+        });
+        self.ticket_review.stamps_parked.insert(
+            goal,
+            StampWait::Repositories(Box::new(capture), check_lsn, Box::new(then)),
+        );
+        None
+    }
+
+    fn settle_repository_hold(
+        &mut self,
+        then: Then,
+        check_lsn: Lsn,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> Option<crate::input::RecoveryUpdate> {
+        if matches!(then, Then::InstructionRecoveryContinue) {
+            self.resume_after(then, check_lsn, operation)
+        } else {
+            None
+        }
     }
 
     pub(super) fn on_repository_baseline_captured(
@@ -218,29 +279,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         check_lsn: Lsn,
         operation: &crate::RecoveryOperation<'_>,
     ) -> Option<crate::input::RecoveryUpdate> {
-        if let Some(review) = self.world.repository_review(goal) {
-            let capture = self.repository_capture(review.binding.ticket.claimant)?;
-            if capture.binding != review.binding {
-                return None;
-            }
-            let Some((baseline_lsn, baseline)) = &review.baseline else {
-                return None;
-            };
-            if !baseline.complete() || review.check.is_none_or(|check| check.lsn != check_lsn) {
-                return None;
-            }
-            self.pending.push(Effect::CaptureRepositoryStamp {
-                capture: Box::new(capture.clone()),
-                baseline_lsn: *baseline_lsn,
-                baseline: Box::new(baseline.clone()),
-                check_lsn,
-            });
-            self.ticket_review.stamps_parked.insert(
-                goal,
-                StampWait::Repositories(Box::new(capture), check_lsn, Box::new(then)),
-            );
-            return None;
+        if self.world.repository_review(goal).is_some() {
+            return self
+                .request_repository_stamp(goal, check_lsn, then)
+                .and_then(|held| self.settle_repository_hold(held, check_lsn, operation));
         }
+
         let request = self.world.ticket_goal(goal).and_then(|(card, round)| {
             let agent = self
                 .world
@@ -309,18 +353,19 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         &mut self,
         capture: &RepositoryCapture,
         stamp: RepositoryStampBatch,
-    ) {
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> Option<crate::input::RecoveryUpdate> {
         let goal = capture.binding.ticket.goal;
         let Some(StampWait::Repositories(expected, check_lsn, _)) =
             self.ticket_review.stamps_parked.get(&goal)
         else {
-            return;
+            return None;
         };
         if expected.as_ref() != capture
             || *check_lsn != stamp.check_lsn
             || stamp.binding != capture.binding
         {
-            return;
+            return None;
         }
         if !self.repository_admitted(capture.binding.ticket.claimant)
             || self
@@ -328,8 +373,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .as_ref()
                 != Some(capture)
         {
-            self.ticket_review.stamps_parked.remove(&goal);
-            return;
+            let StampWait::Repositories(_, check_lsn, then) =
+                self.ticket_review.stamps_parked.remove(&goal)?
+            else {
+                return None;
+            };
+            return self.settle_repository_hold(*then, check_lsn, operation);
         }
         let complete = stamp.complete();
         let entry = super::Entry {
@@ -337,17 +386,22 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             record: Record::TicketReviewBatchStamped(stamp),
         };
         if self.world.validate_review_record(&entry).is_err() {
-            return;
+            return None;
         }
         let Some(StampWait::Repositories(_, _, then)) =
             self.ticket_review.stamps_parked.remove(&goal)
         else {
-            return;
+            return None;
         };
         self.persist_at(
             entry.at,
             entry.record,
-            if complete { *then } else { Then::Fold },
+            if complete || matches!(*then, Then::InstructionRecoveryContinue) {
+                *then
+            } else {
+                Then::Fold
+            },
         );
+        None
     }
 }

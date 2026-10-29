@@ -1356,7 +1356,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.on_repository_baseline_captured(&capture, baseline);
             }
             Input::RepositoryStampCaptured { capture, stamp } => {
-                self.on_repository_stamp_captured(&capture, stamp);
+                let update = self.on_repository_stamp_captured(&capture, stamp, operation);
+                return Ok(Handled::default().with_recovery(update));
             }
             Input::StampCaptured {
                 goal,
@@ -2854,7 +2855,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if self.protection_pending(agent) {
             return;
         }
-        if self.hold_for_issue_baseline(agent) || self.repository_stamp_waiting(agent) {
+        if self.hold_for_issue_baseline(agent) || self.hold_for_repository_stamp(agent) {
             return;
         }
         if self
@@ -3914,6 +3915,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     )
                 }) && !self.repository_admitted(judged_agent)
                 {
+                    self.predicate_ended_without_verdict(goal, operation);
                     return;
                 }
                 if matches!(predicate, Predicate::BoardState { .. }) {
@@ -3925,6 +3927,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     cwd,
                     predicate,
                 });
+            }
+            _ if self.awaiting_recovered_predicate(goal) => {
+                self.predicate_ended_without_verdict(goal, operation);
             }
             _ => self.decide(agent, operation),
         }

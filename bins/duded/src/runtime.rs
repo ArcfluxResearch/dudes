@@ -9255,6 +9255,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             && (!self.repository_allowed(sup.world(), agent)
                 || sup.world().predicate_directory(goal) != Some(cwd))
         {
+            queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
             return;
         }
         let repositories = sup.world().agents.get(&agent).map_or_else(
@@ -9269,11 +9270,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 unreachable!()
             };
             let Ok(round) = sup.world().active_repository_round(agent) else {
+                queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
                 return;
             };
             let Ok(grant) =
                 dudes_proto::repository::RepositoryTurnGrant::select(row.mcp.hire_lsn, hire, round)
             else {
+                queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
                 return;
             };
             Some(
@@ -9342,6 +9345,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let Some(resolved) = shared_folder::canonical_folder(cwd) else {
             if queries.is_some() {
                 tracing::warn!(?goal, "declared change check directory is unavailable");
+                queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
                 return;
             }
             let failure = predicate::spec_for(

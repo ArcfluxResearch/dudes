@@ -16,6 +16,9 @@ use dudes_proto::{
 };
 use dudes_types::{CardId, CardStatus, GitCommit, Seq, Timestamp};
 
+#[path = "repository_tests/restart.rs"]
+mod restart;
+
 fn append(harness: &mut Harness, record: Record) -> Lsn {
     harness.append_replayed(Entry {
         at: Timestamp::UNIX_EPOCH,
