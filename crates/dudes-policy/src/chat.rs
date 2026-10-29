@@ -79,6 +79,8 @@ pub struct CompletedNoteState {
 /// Complete separately hashed input for one completed-goal note admission.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CompletedNoteInput {
+    #[serde(skip_serializing_if = "dudes_proto::TaskCommandSet::is_legacy")]
+    command_set: dudes_proto::TaskCommandSet,
     completion: CompletedGoalProof,
     note: BrowserNoteInput,
     identity: dudes_proto::IdentityLine,
@@ -104,6 +106,7 @@ impl CompletedNoteInput {
             return None;
         }
         Some(Self {
+            command_set: identity.command_set(),
             completion: CompletedGoalProof {
                 goal: current_goal,
                 done_lsn: completion_lsn,
@@ -155,6 +158,9 @@ pub struct NoteDecided {
 /// Pure admission state for one finite goal-free message.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ConversationInput {
+    /// Commands selected from the immutable recorded hire before hashing this input.
+    #[serde(skip_serializing_if = "dudes_proto::TaskCommandSet::is_legacy")]
+    pub command_set: dudes_proto::TaskCommandSet,
     /// Exact accepted input identity.
     pub note_lsn: Lsn,
     /// Immutable captured context generation.
@@ -598,6 +604,42 @@ mod tests {
     }
 
     #[test]
+    fn scoped_work_reserves_whole_note_teaching_identity_and_the_first_answer() {
+        let mut input = idle();
+        input.command_set = dudes_proto::TaskCommandSet::ScopedFileMail;
+        input.work.identity = Some(dudes_proto::IdentityLine::for_commands(
+            dudes_types::AgentId::NIL,
+            &"n".repeat(128),
+            &"r".repeat(160),
+            input.command_set,
+        ));
+        input.goal.text = "goal".repeat(20_000);
+        input.answers = vec![AnswerInput {
+            lsn: Lsn(80),
+            question: "which?".into(),
+            text: "é".repeat(65_536),
+        }];
+        let text = "é".repeat(2_048);
+        let Decided {
+            decision: LoopDecision::Continue { task },
+            answers,
+            ..
+        } = decide_with_browser_note(&input, &note(&text))
+        else {
+            panic!("scoped work admitted")
+        };
+        assert!(task.len() <= crate::r#loop::NEXT_WORK_TASK_MAX_BYTES);
+        assert!(task.len() >= crate::r#loop::NEXT_WORK_TASK_MAX_BYTES - 2);
+        assert_eq!(answers, [Lsn(80)]);
+        assert!(task.contains(input.work.identity.as_ref().unwrap().as_str()));
+        assert!(task.contains(dudes_proto::SCOPED_MAIL_INSTRUCTION));
+        assert!(task.ends_with(&format!("\n\n[browser note]\n{text}\n[end browser note]")));
+        assert!(!task.contains("dudes memory"));
+        assert!(!task.contains("dudes team"));
+        assert!(!task.contains("dudes mail done"));
+    }
+
+    #[test]
     fn ordinary_browser_note_keeps_answer_order_and_complete_small_goal() {
         let mut input = idle();
         input.goal.text = "ship".into();
@@ -657,6 +699,7 @@ mod conversation_tests {
 
     fn input() -> ConversationInput {
         ConversationInput {
+            command_set: dudes_proto::TaskCommandSet::Legacy,
             note_lsn: Lsn(2),
             context_lsn: Lsn(1),
             text: "Hello".into(),

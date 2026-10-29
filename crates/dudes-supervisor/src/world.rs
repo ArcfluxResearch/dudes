@@ -198,11 +198,22 @@ pub struct AgentRow {
 }
 
 impl AgentRow {
+    /// Commands selected solely from the repository authority recorded at hire.
+    #[must_use]
+    pub const fn task_command_set(&self) -> dudes_proto::TaskCommandSet {
+        dudes_proto::TaskCommandSet::for_hire(&self.repositories)
+    }
+
     /// The identity line a task for this agent opens with, from the name and role the row holds
     /// now.
     #[must_use]
     pub fn identity_line(&self, agent: AgentId) -> dudes_proto::IdentityLine {
-        dudes_proto::IdentityLine::new(agent, &self.name, &self.role)
+        dudes_proto::IdentityLine::for_commands(
+            agent,
+            &self.name,
+            &self.role,
+            self.task_command_set(),
+        )
     }
 }
 
@@ -2789,6 +2800,7 @@ impl World {
             return None;
         }
         Some(LoopInput {
+            command_set: row.task_command_set(),
             control: Control {
                 halted: row.halted,
                 paused: row.paused,

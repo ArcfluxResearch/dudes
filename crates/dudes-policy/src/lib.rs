@@ -38,6 +38,7 @@ pub use chat::{
 };
 pub use closing::{
     ClosingDecided, ClosingLoopInput, ClosingWorkChoice, ClosingWorkDeferral, closing_notice,
+    closing_notice_for_commands,
 };
 pub use input::{
     AgentInput, AnswerInput, CardInput, Control, Decided, DepartmentPeer, FloorInput, GoalInput,
@@ -46,6 +47,7 @@ pub use input::{
 pub use r#loop::{
     admit_completed_note, admit_conversation, admit_mail_wake, closing_input, decide,
     decide_closing, decide_with_browser_note, decision, supplemental_context,
+    supplemental_context_for_commands,
 };
 pub use mail::{MailWakeDecided, MailWakeFacts, MailWakeInput, MailWakeWork};
 pub use predicate::judge;

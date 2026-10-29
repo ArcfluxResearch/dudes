@@ -79,6 +79,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         )?;
         let spend = self.spend.get(&agent)?;
         Some(ConversationInput {
+            command_set: row.task_command_set(),
             note_lsn,
             context_lsn: row.context_lsn,
             text: note.task.as_ref().unwrap_or(&note.text).clone(),
