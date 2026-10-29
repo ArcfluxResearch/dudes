@@ -55,6 +55,8 @@ pub struct ScopedLaunchInputs<'a> {
     pub origin_git_dirs: &'a [RepositoryEntry<PathBuf>],
     /// Daemon-selected private paths.
     pub private: ScopedPrivatePaths,
+    /// Unarmed Codex catalog path plan. Its bytes and identity belong to daemon admission.
+    pub codex_catalog: Option<PathBuf>,
     /// Attached execution has no scoped recipe.
     pub mode: Mode,
     /// Proposed native platform profile.
@@ -389,7 +391,7 @@ fn environment(
 ) -> Result<Vec<EnvVar>, ScopedError> {
     let selected: &[&str] = match provider {
         Provider::Claude => &["PATH", "LANG", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
-        Provider::Codex => &["PATH", "LANG", "OPENAI_API_KEY", "CODEX_API_KEY"],
+        Provider::Codex => &["PATH", "LANG"],
         _ => return Err(ScopedError::Provider),
     };
     let mut env = Vec::new();

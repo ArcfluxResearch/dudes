@@ -17,6 +17,8 @@ use crate::predicate::PredicateCaptured;
 
 mod inspection;
 use inspection::Inspection;
+mod auth;
+use auth::AuthBinding;
 
 const CATALOG_LIMIT: usize = 720_896;
 const CATALOG_LENGTH: usize = 658_607;
@@ -92,6 +94,7 @@ pub(crate) struct ScopedBinding {
     inspection: Inspection,
     binary: PinnedFile,
     catalog: PinnedFile,
+    auth: AuthBinding,
 }
 
 impl std::fmt::Debug for ScopedBinding {
@@ -108,11 +111,13 @@ impl ScopedBinding {
         if *generation != self.generation || startup != &self.startup {
             return Err(refusal("scoped launch preparation changed during startup"));
         }
-        self.profile.scoped_policy(false)?;
         let deadline = Instant::now() + PROBE_DEADLINE;
+        self.auth.check(deadline)?;
+        self.profile.scoped_policy(false)?;
         self.binary.check_identity()?;
         self.catalog.check(deadline)?;
-        self.inspection.check_roots()
+        self.inspection.check_roots()?;
+        self.auth.check(deadline)
     }
 }
 
@@ -123,6 +128,17 @@ impl CodexProfile {
 
     pub(crate) fn scoped_home(&self) -> &Path {
         &self.home
+    }
+
+    pub(crate) fn scoped_catalog_path(&self) -> PathBuf {
+        #[cfg(test)]
+        let sha = self
+            .scoped_test_qualification
+            .as_ref()
+            .map_or(CATALOG_SHA, |(_, sha, _)| sha);
+        #[cfg(not(test))]
+        let sha = CATALOG_SHA;
+        self.home.join("catalogs").join(format!("{sha}.json"))
     }
 
     pub(crate) fn prepare_scoped(
@@ -147,8 +163,11 @@ impl CodexProfile {
         }
         let roots = self.mutations.agent(startup.agent_dir())?;
         let generation = roots.mutate()?;
-        self.scoped_policy(true)?;
         let deadline = Instant::now() + PROBE_DEADLINE;
+        self.check_home(false)?;
+        let auth = AuthBinding::capture(&self.home, deadline)?;
+        self.scoped_policy(true)?;
+        auth.check(deadline)?;
         #[cfg(not(test))]
         let qualification = Qualification::current(launch.inventory.platform)?;
         #[cfg(test)]
@@ -173,6 +192,7 @@ impl CodexProfile {
         let catalog = self.bundled_catalog(&binary, &qualification, deadline)?;
         Self::configure_scoped(&mut launch, &catalog.path)?;
         let inspection = Inspection::capture(&launch.inventory, deadline)?;
+        auth.check(deadline)?;
         let LaunchInput::Protocol(startup) = &launch.spec.stdin else {
             return Err(refusal("scoped Codex startup is unavailable"));
         };
@@ -184,6 +204,7 @@ impl CodexProfile {
             inspection,
             binary,
             catalog,
+            auth,
         });
         Ok(PreparedScopedLaunch {
             launch,
@@ -250,6 +271,9 @@ impl CodexProfile {
             .collect::<io::Result<Vec<_>>>()?
             .join(",");
         let mut options = std::collections::BTreeMap::from([
+            ("forced_login_method", "\"api\"".to_owned()),
+            ("cli_auth_credentials_store", "\"file\"".to_owned()),
+            ("model_catalog_json", quoted(catalog)?),
             ("features.multi_agent", "false".to_owned()),
             ("features.goals", "false".to_owned()),
             ("web_search", "\"disabled\"".to_owned()),
@@ -292,10 +316,6 @@ impl CodexProfile {
         if !options.is_empty() {
             return Err(refusal("scoped configuration is incomplete"));
         }
-        launch.spec.argv.extend([
-            "-c".into(),
-            format!("model_catalog_json={}", quoted(catalog)?).into(),
-        ]);
         launch.spec.stdin = LaunchInput::Protocol(startup.resolved_paths(
             inventory.private.profile.clone(),
             startup.agent_dir().to_owned(),
@@ -404,7 +424,7 @@ fn validate_environment(launch: &ScopedManagedLaunch) -> io::Result<()> {
             if var.expose_value() != value {
                 return Err(refusal("scoped private environment changed"));
             }
-        } else if !matches!(name, "PATH" | "LANG" | "OPENAI_API_KEY" | "CODEX_API_KEY") {
+        } else if !matches!(name, "PATH" | "LANG") {
             return Err(refusal("scoped environment contains an unowned setting"));
         }
     }

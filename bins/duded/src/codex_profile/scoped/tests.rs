@@ -145,6 +145,12 @@ impl Fixture {
             .join("state/agents")
             .join(AgentId::from_parts(1, 1).to_string());
         let outbox = crate::mailbox::outbox_fixture(&path.join("state"), AgentId::from_parts(1, 1));
+        owner_directory(&profile.home).unwrap();
+        std::fs::write(
+            profile.home.join("auth.json"),
+            br#"{"auth_mode":"apikey","OPENAI_API_KEY":"dudes-scoped-dummy"}"#,
+        )
+        .unwrap();
         let private = ScopedPrivatePaths {
             home: agent_dir.join("home"),
             profile: profile.home.clone(),
@@ -186,6 +192,7 @@ impl Fixture {
                     hired: &hired,
                     origin_git_dirs: &git,
                     private,
+                    codex_catalog: Some(profile.scoped_catalog_path()),
                     mode: Mode::Managed,
                     platform: ScopedPlatform::MacOsArm64,
                 },
@@ -225,6 +232,112 @@ impl Fixture {
         self.profile
             .prepare_scoped(self.launch.clone(), Self::attempt())
     }
+}
+
+#[test]
+fn unqualified_auth_refuses_before_any_metadata_or_catalog_probe() {
+    for bytes in [
+        None,
+        Some(&br#"{"auth_mode":"chatgpt","tokens":{"access_token":"dudes-auth-secret-marker"}}"#[..]),
+        Some(&br#"{"OPENAI_API_KEY":"dudes-auth-secret-marker"}"#[..]),
+        Some(&br#"{"auth_mode":"apikey","OPENAI_API_KEY":"dudes-auth-secret-marker","tokens":{"access_token":"dudes-auth-secret-marker"}}"#[..]),
+        Some(&br#"{"auth_mode":"apikey","OPENAI_API_KEY":null}"#[..]),
+        Some(&br#"{"auth_mode":"apikey","OPENAI_API_KEY":""}"#[..]),
+        Some(&br#"{"auth_mode":"apikey","auth_mode":"apikey","OPENAI_API_KEY":"dudes-auth-secret-marker"}"#[..]),
+        Some(&br#"{"auth_mode":"apikey","OPENAI_API_KEY":"dudes-auth-secret-marker","personal_access_token":"dudes-auth-secret-marker"}"#[..]),
+        Some(&b"dudes-auth-secret-marker"[..]),
+    ] {
+        let f = Fixture::new(false);
+        let path = f.profile.home.join("auth.json");
+        if let Some(bytes) = bytes {
+            std::fs::write(&path, bytes).unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let error = f.prepare().err().expect("unqualified auth must be refused");
+        assert!(!format!("{error:?} {error}").contains("dudes-auth-secret-marker"));
+        assert!(f.runner.calls.lock().unwrap().is_empty());
+        assert!(!f.launch.inventory.private.work.exists());
+    }
+}
+
+#[test]
+fn qualified_api_metadata_keeps_only_non_secret_projection_and_identity() {
+    let f = Fixture::new(false);
+    let path = f.profile.home.join("auth.json");
+    let bytes = br#"{"auth_mode":"apikey","OPENAI_API_KEY":"dudes-auth-secret-marker","tokens":null,"last_refresh":null,"agent_identity":null,"personal_access_token":null,"bedrock_api_key":null,"bedrock_access_keys":null,"future_metadata":{"value":"ignored"}}"#;
+    std::fs::write(&path, bytes).unwrap();
+    let before = std::fs::metadata(&path).unwrap();
+    let prepared = f.prepare().unwrap();
+    let LaunchInput::Protocol(startup) = &prepared.launch.spec.stdin else {
+        panic!("protocol");
+    };
+    prepared.binding.before_task(startup).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(inspection::same(
+        &before,
+        &std::fs::metadata(&path).unwrap()
+    ));
+    assert!(
+        !format!("{:?} {:?}", prepared.binding, prepared.binding.auth)
+            .contains("dudes-auth-secret-marker")
+    );
+    let calls = f.runner.calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .all(|spec| !format!("{spec:?}").contains("dudes-auth-secret-marker"))
+    );
+}
+
+#[test]
+fn changed_auth_refuses_before_another_probe_or_task() {
+    for change in 0..4 {
+        let f = Fixture::new(true);
+        let prepared = f.prepare().unwrap();
+        let LaunchInput::Protocol(startup) = &prepared.launch.spec.stdin else {
+            panic!("protocol");
+        };
+        f.runner.calls.lock().unwrap().clear();
+        let path = f.profile.home.join("auth.json");
+        match change {
+            0 => std::fs::write(
+                &path,
+                br#"{"auth_mode":"chatgpt","tokens":{"access_token":"dudes-auth-secret-marker"}}"#,
+            )
+            .unwrap(),
+            1 => std::fs::remove_file(&path).unwrap(),
+            2 => {
+                std::fs::rename(&path, f.root.join("retained-auth")).unwrap();
+                std::fs::write(
+                    &path,
+                    br#"{"auth_mode":"apikey","OPENAI_API_KEY":"dudes-scoped-dummy"}"#,
+                )
+                .unwrap();
+            }
+            _ => std::fs::write(
+                &path,
+                br#"{"auth_mode":"apikey","OPENAI_API_KEY":"dudes-auth-secret-marker"}"#,
+            )
+            .unwrap(),
+        }
+        let error = prepared.binding.before_task(startup).unwrap_err();
+        assert!(!format!("{error:?} {error}").contains("dudes-auth-secret-marker"));
+        assert!(f.runner.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn auth_inspection_is_bounded_and_refuses_file_aliases() {
+    let f = Fixture::new(false);
+    let path = f.profile.home.join("auth.json");
+    assert!(AuthBinding::capture(&f.profile.home, Instant::now()).is_err());
+    std::fs::hard_link(&path, f.root.join("auth-alias")).unwrap();
+    assert!(f.prepare().is_err());
+    std::fs::remove_file(f.root.join("auth-alias")).unwrap();
+    std::fs::write(&path, vec![b' '; 20 * 1024]).unwrap();
+    assert!(f.prepare().is_err());
+    assert!(f.runner.calls.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -309,6 +422,7 @@ fn assigned_and_resume_keep_the_exact_narrowed_roots_and_one_catalog() {
         assert_eq!(prepared.attempt, Fixture::attempt());
         assert_eq!(prepared.launch.inventory, f.launch.inventory);
         assert_eq!(prepared.launch.install, f.launch.install);
+        assert_eq!(prepared.launch.spec.argv, f.launch.spec.argv);
         let LaunchInput::Protocol(startup) = &prepared.launch.spec.stdin else {
             panic!("protocol");
         };
@@ -393,7 +507,8 @@ fn poisoned_private_environment_refuses_before_any_probe_or_install() {
             .is_err()
     );
     assert!(f.runner.calls.lock().unwrap().is_empty());
-    assert!(!f.profile.home.exists());
+    assert!(!f.profile.home.join("catalogs").exists());
+    assert!(!f.launch.inventory.private.work.exists());
 }
 
 #[test]
@@ -407,7 +522,7 @@ fn the_owned_child_checks_the_same_binding_before_enqueuing_its_one_task() {
             Ok(())
         }
     }
-    for change in 0..6 {
+    for change in 0..7 {
         let f = Fixture::new(false);
         let prepared = f.prepare().unwrap();
         let LaunchInput::Protocol(startup) = &prepared.launch.spec.stdin else {
@@ -435,6 +550,7 @@ fn the_owned_child_checks_the_same_binding_before_enqueuing_its_one_task() {
         };
         let mut child = ends.watch_protocol(&key, Box::new(Input(Arc::clone(&captured))));
         child.line(&serde_json::json!({"id":1,"result":{"userAgent":"dudes/0.164.0-alpha.11.1 (test)","codexHome":startup.home()}}).to_string());
+        child.line(&serde_json::json!({"id":91,"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}}).to_string());
         match change {
             1 => mailbox_during_startup(&f, MailboxActivity::Incoming),
             2 => {
@@ -446,6 +562,9 @@ fn the_owned_child_checks_the_same_binding_before_enqueuing_its_one_task() {
                 let outbox = &f.launch.inventory.private.outbox;
                 std::fs::rename(outbox, f.root.join("retained-outbox")).unwrap();
                 owner_directory(outbox).unwrap();
+            }
+            6 => {
+                std::fs::remove_file(f.profile.home.join("auth.json")).unwrap();
             }
             _ => {}
         }
