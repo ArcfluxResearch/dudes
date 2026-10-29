@@ -89,10 +89,12 @@ impl Session<'_> {
     fn create(
         &mut self,
         params: &TicketCreateParams,
+        give_to: Option<&AgentRef>,
         machine: bool,
-    ) -> Result<TicketCreateResult, Failure> {
+        out: &mut dyn Write,
+    ) -> Result<(), Failure> {
         let result = self.call(Method::TicketCreate, Some(encode(params)?));
-        typed(result.map_err(|failure| {
+        let created: TicketCreateResult = typed(result.map_err(|failure| {
             if !machine && let Failure::Refused(mut error) = failure {
                 if error
                     .data
@@ -108,7 +110,13 @@ impl Session<'_> {
             } else {
                 failure
             }
-        })?)
+        })?)?;
+        render::ticket::added(out, machine, &created).map_err(local)?;
+        if let Some(agent) = give_to {
+            let (result, name) = self.give(created.card, agent, None, None)?;
+            render::ticket::given(out, machine, &name, result).map_err(local)?;
+        }
+        Ok(())
     }
 
     fn read(&mut self, card: CardId) -> Result<TicketReadResult, Failure> {
@@ -329,13 +337,10 @@ pub(super) fn command(
         TicketCommand::Open { card, selection } => {
             session.open(*card, selection, machine, out)?;
         }
-        TicketCommand::Add { params, give_to } => {
-            let created = session.create(params, machine)?;
-            render::ticket::added(out, machine, &created).map_err(local)?;
-            if let Some(agent) = give_to {
-                let (result, name) = session.give(created.card, agent, None, None)?;
-                render::ticket::given(out, machine, &name, result).map_err(local)?;
-            }
+        TicketCommand::Add {
+            params, give_to, ..
+        } => {
+            session.create(params, give_to.as_ref(), machine, out)?;
         }
         TicketCommand::Edit {
             card,
@@ -345,6 +350,7 @@ pub(super) fn command(
             check_repo,
             priority,
             expected_seq,
+            ..
         } => {
             let params = encode(&TicketEditParams {
                 card: *card,

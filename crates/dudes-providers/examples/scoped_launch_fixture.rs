@@ -74,6 +74,36 @@ fn adapter(input: &Value, profile: &Path) -> Result<Box<dyn Adapter>, Box<dyn Er
     }
 }
 
+fn environment_projection(
+    env: &[EnvVar],
+    values: &[(String, String)],
+    agent_dir: &Path,
+) -> Result<Vec<Value>, Box<dyn Error>> {
+    env.iter()
+        .map(|var| {
+            let name = var
+                .name()
+                .to_str()
+                .ok_or("non-text fixture environment name")?;
+            let expected = match name {
+                "DUDES_MAILBOX" => Some(agent_dir.as_os_str()),
+                "DUDES_COMMAND_TRANSPORT" => Some(std::ffi::OsStr::new("file-mail")),
+                _ => None,
+            };
+            if expected.is_some_and(|value| var.expose_value() != value) {
+                return Err(
+                    "a generated mail environment value differs from its owned input".into(),
+                );
+            }
+            let source = values
+                .iter()
+                .position(|(_, value)| var.expose_value() == value.as_str())
+                .ok_or("a generated environment value has no synthetic input reference")?;
+            Ok(json!({"name": name, "source": source}))
+        })
+        .collect()
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args_os().collect();
     if args.len() != 3 {
@@ -134,10 +164,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let selection = ModelSelection::named(field("model")?);
     let candidate = adapter.managed_scoped(&ctx, &scope, field("task")?, &session, &selection)?;
-    let environment:Vec<_>=candidate.spec.env.iter().map(|var| {
-        let source=values.iter().position(|(_,value)|var.expose_value()==value.as_str()).ok_or("a generated environment value has no synthetic input reference")?;
-        Ok(json!({"name":var.name().to_str().ok_or("non-text fixture environment name")?,"source":source}))
-    }).collect::<Result<_,Box<dyn Error>>>()?;
+    let environment = environment_projection(&candidate.spec.env, &values, ctx.agent_dir)?;
     let stdin = match &candidate.spec.stdin {
         LaunchInput::WriteThenClose(bytes) if bytes == field("task")?.as_bytes() => {
             json!({"kind":"write_then_close","source":"task"})
@@ -152,4 +179,39 @@ fn main() -> Result<(), Box<dyn Error>> {
     let output = json!({"argv":candidate.spec.argv.iter().map(|arg|arg.to_str().ok_or("non-text fixture argument")).collect::<Result<Vec<_>,_>>()?,"env":environment,"cwd":candidate.spec.cwd,"stdin":stdin,"protocol_start":protocol_start,"protocol_actions":protocol_actions,"directories":candidate.install.directories,"files":candidate.install.files,"inventory":candidate.inventory,"unarmed":candidate.unarmed});
     std::fs::write(&args[2], serde_json::to_vec_pretty(&output)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derived_mail_values_still_require_exact_synthetic_references() {
+        let agent = Path::new("/synthetic/agent");
+        let values = vec![
+            ("SYNTHETIC_MAILBOX".into(), "/synthetic/agent".into()),
+            ("SYNTHETIC_TRANSPORT".into(), "file-mail".into()),
+            ("AMBIENT_MAILBOX".into(), "/ambient/agent".into()),
+            ("AMBIENT_TRANSPORT".into(), "socket".into()),
+        ];
+        let env = [
+            EnvVar::new("DUDES_MAILBOX", agent),
+            EnvVar::new("DUDES_COMMAND_TRANSPORT", "file-mail"),
+        ];
+        assert_eq!(
+            environment_projection(&env, &values, agent).unwrap(),
+            vec![
+                json!({"name":"DUDES_MAILBOX","source":0}),
+                json!({"name":"DUDES_COMMAND_TRANSPORT","source":1})
+            ]
+        );
+        assert!(environment_projection(&env, &[], agent).is_err());
+        for var in [
+            EnvVar::new("DUDES_MAILBOX", "/ambient/agent"),
+            EnvVar::new("DUDES_COMMAND_TRANSPORT", "socket"),
+            EnvVar::new("UNKNOWN", "not-a-synthetic-value"),
+        ] {
+            assert!(environment_projection(&[var], &values, agent).is_err());
+        }
+    }
 }
