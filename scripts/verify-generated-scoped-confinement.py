@@ -564,6 +564,7 @@ def run_claude_resume(args):
         result["checks"]["first_stage_completed_exactly"] = native["passed"]
         first_read = native["tool_results"].get(read.id, {})
         result["checks"]["owned_existing_A_read_succeeded"] = bool(first_read) and not first_read.get("is_error", False) and original.decode().strip() in str(first_read.get("content", "")) and a.read_bytes() == original
+        result["checks"]["first_stage_configuration_canaries_absent"] = not any(path.exists() for path in frozen.get("traps", [])) and bool(frozen.get("traps"))
         result["prior_owned_group"] = owned_group_absence(native)
         result["checks"]["first_leader_reaped_and_owned_group_absent"] = result["prior_owned_group"]["absent"]
         if not all(result["checks"].values()):

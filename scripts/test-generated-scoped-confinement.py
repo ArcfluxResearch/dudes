@@ -287,7 +287,7 @@ class Resume(unittest.TestCase):
         return {"private": private, "env": list(env.items()), "hired": {"repositories": {"primary": "a", "entries": entries}}, "grant": {"repositories": {"primary": "b", "entries": [entries[1], entries[0]]}}, "legacy_cwd": entries[0]["value"]["execution"]["directory"], "agent_dir": str(root / "agent"), "session_id": "owned-session", "session_kind": "first", "model": "claude-sonnet-4-6", "task": "synthetic"}
 
     def test_actual_two_stage_checker_requires_identity_grant_actions_and_exact_counts(self):
-        for failure in [None, "group present", "wide grant", "wrong session", "extra attempt", "wrong action", "unread file"]:
+        for failure in [None, "group present", "first canary", "wide grant", "wrong session", "extra attempt", "wrong action", "unread file"]:
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 binary, fixture = root / "fake-engine", root / "fake-fixture"
@@ -340,6 +340,8 @@ class Resume(unittest.TestCase):
                         for message in messages[len(prior_messages):]:
                             output.write(json.dumps({"sessionId": value["session_id"], "message": message}) + "\n")
                     prior_messages[:] = messages
+                    if failure == "first canary" and value["session_kind"] == "first":
+                        (stage_root.parent / "hook-ran").touch()
                     return {"checks": {"task_completed": True, "recorded_session_exact": not (failure == "wrong session" and value["session_kind"] == "resume")}, "error": None, "native_initializations": [{"claude_code_version": "2.1.311"}], "leader_reaped": True, "owned_process_group": 123, "native_leader_pid": 123, "direct_child_exited": True}
                 args = types.SimpleNamespace(output=root, claude=str(binary), fixture=fixture)
                 with mock.patch.dict(proof.compat.PINS, {(platform.system(), platform.machine(), "claude"): proof.sha256(binary)}), \
@@ -353,7 +355,7 @@ class Resume(unittest.TestCase):
                      mock.patch("builtins.print"):
                     result = proof.run_claude_resume(args)
                 self.assertEqual(result["passed"], failure is None, {"error": result["error"], "checks": result["checks"]})
-                self.assertEqual(calls, ["first"] if failure in {"group present", "wide grant"} else ["first", "resume"])
+                self.assertEqual(calls, ["first"] if failure in {"group present", "first canary", "wide grant"} else ["first", "resume"])
                 if failure is None:
                     self.assertEqual([stage["local_post_attempts"] for stage in result["stages"]], [2, 4])
                     self.assertFalse(result["stages"][1]["pre_launch_observations"]["initial_empty_claim_used"])
