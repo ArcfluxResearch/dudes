@@ -6,6 +6,7 @@ mod common;
 use std::fs;
 use std::io;
 use std::os::unix::net::UnixListener;
+use std::time::Duration;
 
 use common::Cli;
 use dudes::exit;
@@ -110,4 +111,106 @@ fn scoped_parse_help_version_and_refusal_rendering_keep_their_exit_codes() {
         "dudes team is not yet available in a multi-repo ticket"
     );
     assert_eq!(Cli::bare().args(["team"]).run().code(), exit::OTHER);
+}
+
+#[test]
+fn scoped_ticket_notes_refuse_while_standard_input_is_still_open() {
+    for args in [
+        vec!["ticket", "add", "--title", "Title", "--note-file", "-"],
+        vec![
+            "ticket",
+            "edit",
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "--note-file",
+            "-",
+        ],
+    ] {
+        let run = finish_with_open_input(
+            Cli::bare()
+                .env("DUDES_COMMAND_TRANSPORT", "file-mail")
+                .args(args),
+        );
+        assert_eq!(run.code(), exit::REFUSED, "{}", run.output());
+        assert!(
+            run.stderr
+                .contains("not yet available in a multi-repo ticket")
+        );
+        assert!(!run.stderr.contains("Reading the note"));
+    }
+}
+
+#[test]
+fn scoped_ticket_notes_refuse_missing_files_after_validating_syntax() {
+    let root = tempfile::tempdir().unwrap();
+    let missing = root.path().join("absent-note.md");
+    let path = missing.to_str().unwrap();
+    for (args, label) in [
+        (
+            vec!["ticket", "add", "--title", "Title", "--note-file", path],
+            "dudes ticket add",
+        ),
+        (
+            vec![
+                "ticket",
+                "edit",
+                "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "--note-file",
+                path,
+            ],
+            "dudes ticket edit",
+        ),
+    ] {
+        let run = Cli::bare()
+            .env("DUDES_COMMAND_TRANSPORT", "file-mail")
+            .args(&args)
+            .run();
+        assert_eq!(run.code(), exit::REFUSED, "{}", run.output());
+        assert!(run.stderr.contains(&format!(
+            "{label} is not yet available in a multi-repo ticket"
+        )));
+        let legacy = Cli::bare().args(args).run();
+        assert_eq!(legacy.code(), exit::USAGE, "{}", legacy.output());
+        assert!(legacy.stderr.contains("--note-file"));
+    }
+    for args in [
+        vec!["ticket", "add", "--note-file", "-"],
+        vec!["ticket", "edit", "invalid-card", "--note-file", "-"],
+        vec![
+            "ticket",
+            "add",
+            "--title",
+            "Title",
+            "--note",
+            "inline",
+            "--note-file",
+            "-",
+        ],
+        vec![
+            "ticket",
+            "edit",
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "--note-file",
+            "-",
+            "--help",
+        ],
+    ] {
+        let run = finish_with_open_input(
+            Cli::bare()
+                .env("DUDES_COMMAND_TRANSPORT", "file-mail")
+                .args(args),
+        );
+        assert_eq!(run.code(), exit::USAGE, "{}", run.output());
+        assert!(!run.stderr.contains("multi-repo ticket"));
+    }
+}
+
+fn finish_with_open_input(cli: Cli) -> common::Run {
+    let piped = cli.spawn_with_piped_stdin();
+    let finished = piped.result.recv_timeout(Duration::from_secs(2));
+    drop(piped.stdin);
+    if finished.is_err() {
+        let _ = piped.result.recv_timeout(Duration::from_secs(1));
+    }
+    piped.worker.join().unwrap();
+    finished.expect("CLI must finish while note input is still open")
 }

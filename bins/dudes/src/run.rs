@@ -102,7 +102,7 @@ pub fn run(
             return exit::SUCCESS;
         }
     }
-    let invocation = match args::parse(argv) {
+    let mut invocation = match args::parse(argv) {
         Ok(invocation) => invocation,
         // **Help is a parse outcome, never a pre-scan.** It reaches here only from a flag position
         // the parser was standing in — after the `--` split and after every value-taking flag has
@@ -149,6 +149,13 @@ pub fn run(
         });
         let _ = failure.render(invocation.json, err);
         return failure.code();
+    }
+    if let Command::Ticket(command) = &mut invocation.command
+        && let Err(error) = command.materialize_note_file()
+    {
+        let _ = render::local_error(err, &error.to_string());
+        let _ = writeln!(err, "{}", args::HINT);
+        return exit::USAGE;
     }
     let dispatched = match &invocation.command {
         Command::Quickstart(plan) => quickstart(
