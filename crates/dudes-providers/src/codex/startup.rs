@@ -15,7 +15,7 @@ pub struct CodexStartup {
     pub(crate) agent_dir: PathBuf,
     pub(crate) cwd: PathBuf,
     canonical_cwd: Option<PathBuf>,
-    scoped_roots: Option<Vec<PathBuf>>,
+    scoped_roots: Option<Box<[PathBuf]>>,
     pub(crate) task: String,
     pub(crate) session: TurnSession,
     pub(crate) selection: ModelSelection,
@@ -58,7 +58,7 @@ impl CodexStartup {
 
     pub(crate) fn writable_roots(&self) -> Vec<PathBuf> {
         if let Some(roots) = &self.scoped_roots {
-            return roots.clone();
+            return roots.to_vec();
         }
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let roots = vec![self.agent_dir.join("tmp"), self.agent_dir.join("outbox")];
@@ -68,7 +68,7 @@ impl CodexStartup {
     }
 
     pub(crate) fn with_scoped_roots(mut self, roots: Vec<PathBuf>) -> Self {
-        self.scoped_roots = Some(roots);
+        self.scoped_roots = Some(roots.into_boxed_slice());
         self
     }
 
