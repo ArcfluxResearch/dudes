@@ -1,0 +1,49 @@
+name: engine confinement
+
+on:
+  pull_request:
+    paths:
+      - scripts/_engine_confinement.py
+      - scripts/verify-claude-confinement.py
+      - scripts/verify-codex-confinement.py
+      - scripts/verify-engine-confinement.py
+      - scripts/verify-engine-preflight.py
+      - scripts/fetch-confinement-engines.py
+      - .github/workflows/engine-confinement.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install sandbox prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y bubblewrap socat
+      - name: Download pinned native engines
+        run: python3 scripts/fetch-confinement-engines.py --output "$RUNNER_TEMP/engine-binaries"
+      - name: Probe real engines without an external network route
+        run: |
+          sudo unshare --net /bin/sh -c '
+            set -e
+            ip link set lo up
+            exec runuser -u runner -- "$@"
+          ' probe python3 scripts/verify-engine-confinement.py --binaries "$RUNNER_TEMP/engine-binaries" --output "$RUNNER_TEMP/engine-proof"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: engine-confinement-linux
+          path: |
+            ${{ runner.temp }}/engine-proof/**/receipt.json
+            ${{ runner.temp }}/engine-proof/**/stdout.jsonl
+            ${{ runner.temp }}/engine-proof/**/stderr.txt
+            ${{ runner.temp }}/engine-proof/suite.json
+            ${{ runner.temp }}/engine-binaries/downloads.json
+          retention-days: 7
