@@ -204,7 +204,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// instead, so it leaves the queue and does not hold the project.
     fn start_ticket(&mut self, card: CardId) -> Result<(), RpcError> {
         let (view, ticket) = self.ticket_row(card)?;
-        super::tickets::require_legacy_producer(&ticket)?;
         let Some(agent) = view.claimed_by else {
             return Ok(());
         };
@@ -212,6 +211,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             Ok(allowance) => allowance,
             Err(reason) => return self.refuse_start(&view, reason),
         };
+        let repositories = match self.ticket_start_scope(agent, &ticket) {
+            Ok(repositories) => repositories,
+            Err(reason) => return self.refuse_start(&view, reason),
+        };
+        let completion_check =
+            crate::ticket_index::goal_check(&ticket.done_when).map(|reference| {
+                repositories.as_ref().map_or(reference.clone(), |scope| {
+                    crate::ticket_index::scoped_check_reference(
+                        &scope.repositories.declaration.project,
+                        &scope.repositories.check_repo,
+                        reference,
+                    )
+                })
+            });
         let text = goal_text(&view.title, &ticket.description, ticket.message.as_deref());
         self.pump_or_refuse(Input::Command(Command::TicketStart {
             card,
@@ -220,9 +233,76 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             predicate: ticket.done_when.predicate.clone(),
             budget: admitted.budget,
             hop_cap: admitted.hop_cap,
-            completion_check: crate::ticket_index::goal_check(&ticket.done_when),
+            completion_check,
             expected_seq: view.seq,
+            repositories,
         }))
+    }
+
+    fn ticket_start_scope(
+        &self,
+        agent: AgentId,
+        ticket: &TicketRow,
+    ) -> Result<Option<Box<dudes_supervisor::input::TicketStartScope>>, TicketReason> {
+        let Some(scope) = ticket.repositories.declared() else {
+            return Ok(None);
+        };
+        super::repository_admission::CurrentHireAdmission::new(
+            &self.ctx.enrollment,
+            &self.ctx.current_repositories,
+        )
+        .current_ticket_hire(self.sup.world(), agent, &scope.declaration)
+        .map_err(|_| TicketReason::ProjectUnavailable)?;
+        let configured = self
+            .ctx
+            .enrollment
+            .profile(&scope.declaration.project)
+            .and_then(|profile| profile.resolve_check(Some(&ticket.done_when.id)))
+            .filter(|check| {
+                check.check() == &ticket.done_when && check.repo() == Some(&scope.check_repo)
+            })
+            .ok_or(TicketReason::CheckCannotRun)?;
+        let check_repo = configured.repo().ok_or(TicketReason::CheckCannotRun)?;
+        let row = self
+            .sup
+            .world()
+            .agents
+            .get(&agent)
+            .ok_or(TicketReason::ProjectUnavailable)?;
+        let dudes_proto::repository::HireRepositories::Scoped(hire) = &row.repositories else {
+            return Err(TicketReason::ProjectUnavailable);
+        };
+        let check_root = hire
+            .repositories
+            .get(check_repo)
+            .ok_or(TicketReason::CheckCannotRun)?
+            .recorded
+            .execution
+            .clone();
+        let dudes_proto::Predicate::Command { argv, .. } = &configured.check().predicate else {
+            return Err(TicketReason::CheckCannotRun);
+        };
+        crate::predicate::spec_for_repositories(
+            argv,
+            &check_root.directory,
+            &self.ctx.predicate_env,
+            self.ctx.predicate_path.as_deref(),
+            &row.repositories.check_program_roots(),
+        )
+        .map_err(|_| TicketReason::CheckCannotRun)?;
+        Ok(Some(Box::new(dudes_supervisor::input::TicketStartScope {
+            round: ticket
+                .round
+                .checked_add(1)
+                .ok_or(TicketReason::ProjectUnavailable)?,
+            repositories: dudes_proto::repository::TicketStartRepositories {
+                hired_lsn: row.mcp.hire_lsn,
+                declaration: scope.declaration.clone(),
+                check: configured.check().clone(),
+                check_repo: check_repo.clone(),
+                check_root,
+            },
+        })))
     }
 
     /// The admission `goal.set` applies, less the work-beside test the queue already guarantees:
@@ -234,15 +314,19 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .enrollment
             .profile(ticket.repositories.project())
             .ok_or(TicketReason::ProjectUnavailable)?;
-        if profile.repositories.is_some() || !self.ctx.repository_allowed(self.sup.world(), agent) {
+        if profile.repositories.is_some() != ticket.repositories.declared().is_some()
+            || !self.ctx.repository_allowed(self.sup.world(), agent)
+        {
             return Err(TicketReason::ProjectUnavailable);
         }
         let allowance = Allowance::of(profile);
         if self.goal_wants_a_ceiling(agent, &allowance.budget) {
             return Err(TicketReason::CeilingRequired);
         }
-        self.check_can_run(agent, &ticket.done_when.predicate)
-            .map_err(|_| TicketReason::CheckCannotRun)?;
+        if ticket.repositories.declared().is_none() {
+            self.check_can_run(agent, &ticket.done_when.predicate)
+                .map_err(|_| TicketReason::CheckCannotRun)?;
+        }
         self.require_reserve(crate::reserve::Candidate::Goal(&allowance.budget))
             .map_err(|_| TicketReason::ReserveMissing)?;
         Ok(allowance)

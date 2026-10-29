@@ -1,6 +1,6 @@
 use super::{
     AgentId, BrowserNoteCancelDisposition, Clock, Effect, GoalId, LaunchSpec, LoopDecision, Lsn,
-    ManagedInstall, Record, Rng, Supervisor, Then, TurnId, budget_refusal_values,
+    ManagedSpawn, Record, Rng, Supervisor, Then, TurnId, budget_refusal_values,
 };
 
 use crate::world::BrowserNoteState;
@@ -13,14 +13,13 @@ pub(super) enum BrowserLaunchPhase {
     Preparing {
         generation: u64,
         prior_intent: Option<Lsn>,
-        install: ManagedInstall,
+        launch: ManagedSpawn,
         mcp_grant: Option<Lsn>,
     },
     IntentPending {
         generation: u64,
         prior_intent: Option<Lsn>,
-        spec: Box<LaunchSpec>,
-        install: ManagedInstall,
+        launch: Box<ManagedSpawn>,
         mcp_grant: Option<Lsn>,
     },
     DispatchReady {
@@ -233,8 +232,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     pub(super) fn prepare_browser_launch(
         &mut self,
         turn: TurnId,
-        spec: LaunchSpec,
-        install: ManagedInstall,
+        launch: ManagedSpawn,
         mcp_grant: Option<Lsn>,
     ) {
         let Some(generation) = self.browser_generation.checked_add(1) else {
@@ -250,14 +248,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             BrowserLaunchPhase::Preparing {
                 generation,
                 prior_intent,
-                install,
+                launch: launch.clone(),
                 mcp_grant,
             },
         );
         self.pending.push(Effect::PrepareBrowserLaunch {
             turn,
             generation,
-            spec,
+            launch,
         });
     }
 
@@ -265,7 +263,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         &mut self,
         turn: TurnId,
         generation: u64,
-        prepared: Result<Box<LaunchSpec>, String>,
+        prepared: Result<Option<Box<LaunchSpec>>, String>,
         operation: &crate::RecoveryOperation<'_>,
     ) {
         let Some(row) = self.world.turns.get(&turn) else {
@@ -289,29 +287,36 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return;
         }
-        let spec = match prepared {
-            Ok(spec)
+        let Some(BrowserLaunchPhase::Preparing { launch, .. }) = self.browser_launches.get(&turn)
+        else {
+            return;
+        };
+        let launch = match (launch, prepared) {
+            (ManagedSpawn::Composed { install, .. }, Ok(Some(spec)))
                 if spec
                     .argv
                     .first()
                     .is_some_and(|program| std::path::Path::new(program).is_absolute()) =>
             {
-                spec
+                ManagedSpawn::Composed {
+                    spec,
+                    install: install.clone(),
+                }
             }
-            Ok(_) => {
+            (launch @ ManagedSpawn::Scoped { .. }, Ok(None)) => launch.clone(),
+            (_, Ok(_)) => {
                 self.on_spawn_failed(
                     turn,
                     "managed program preparation did not resolve an absolute program".to_owned(),
                 );
                 return;
             }
-            Err(reason) => {
+            (_, Err(reason)) => {
                 self.on_spawn_failed(turn, reason);
                 return;
             }
         };
         let Some(BrowserLaunchPhase::Preparing {
-            install,
             prior_intent,
             mcp_grant,
             ..
@@ -324,8 +329,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             BrowserLaunchPhase::IntentPending {
                 generation,
                 prior_intent,
-                spec,
-                install,
+                launch: Box::new(launch),
                 mcp_grant,
             },
         );
@@ -383,12 +387,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     /// The exact launch authorized by a still-parked, not-appended dispatch intent.
     #[must_use]
-    pub fn browser_dispatch_spec(
+    pub fn browser_dispatch_launch(
         &self,
         token: crate::PersistToken,
         turn: TurnId,
         operation: &crate::RecoveryOperation<'_>,
-    ) -> Option<&LaunchSpec> {
+    ) -> Option<&ManagedSpawn> {
         let parked = self.ledger.get(&token)?;
         let Then::BrowserDispatch {
             turn: issued,
@@ -404,7 +408,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
         let BrowserLaunchPhase::IntentPending {
             generation: prepared,
-            spec,
+            launch,
             ..
         } = self.browser_launches.get(&turn)?
         else {
@@ -412,7 +416,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         };
         let agent = self.world.turns.get(&turn)?.agent;
         (generation == *prepared && self.browser_launch_allowed(agent, turn, operation))
-            .then_some(spec.as_ref())
+            .then_some(launch.as_ref())
     }
 
     pub(super) fn retry_browser_dispatch_admission(
@@ -421,7 +425,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         turn: TurnId,
         operation: &crate::RecoveryOperation<'_>,
     ) {
-        if self.browser_dispatch_spec(token, turn, operation).is_some() {
+        if self
+            .browser_dispatch_launch(token, turn, operation)
+            .is_some()
+        {
             let entry = self.ledger[&token].entry.clone();
             self.pending.push(Effect::Persist { token, entry });
         }
@@ -456,8 +463,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(BrowserLaunchPhase::IntentPending {
             generation,
             prior_intent,
-            spec,
-            install,
+            launch,
             mcp_grant,
         }) = self.browser_launches.remove(&turn)
         else {
@@ -470,7 +476,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 prior_intent,
             },
         );
-        self.emit_spawn(turn, *spec, install, mcp_grant);
+        self.emit_spawn(turn, *launch, mcp_grant);
     }
 
     /// Claim actual host entry on the serialized executor, immediately before its host call.
