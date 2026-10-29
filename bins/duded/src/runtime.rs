@@ -804,6 +804,7 @@ impl OnboardingPause {
                         record,
                         Record::TicketCreatedWithRepositories(_)
                             | Record::TicketEditedWithRepositories(_)
+                            | Record::TicketStartedWithRepositories(_)
                             | Record::TicketAssigned { .. }
                     ) =>
             {
@@ -8386,30 +8387,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             Effect::PrepareBrowserLaunch {
                 turn,
                 generation,
-                spec,
-            } => {
-                if !self
-                    .browser_launches
-                    .prepare(*turn, *generation, spec.clone())
-                {
-                    queue.push_back(Input::BrowserLaunchReady {
-                        turn: *turn,
-                        generation: *generation,
-                        prepared: Err(
-                            "managed launch preparation capacity is unavailable".to_owned()
-                        ),
-                    });
-                }
-            }
+                launch,
+            } => self.prepare_browser_turn(*turn, *generation, launch, queue),
             Effect::Persist { token, entry } => {
                 self.persist_effect(*token, entry, queue, sup, report)?;
             }
             Effect::Spawn {
                 turn,
-                spec,
-                install,
+                launch,
                 mcp_grant,
-            } => self.spawn_turn(*turn, spec, install, *mcp_grant, queue, sup)?,
+            } => self.spawn_turn(*turn, launch, *mcp_grant, queue, sup)?,
             Effect::Kill { turn, key, .. } => match self.host.kill(key) {
                 KillOutcome::Signalled => {}
                 // A refusal is the reaper's finding by a second route. The host routes
@@ -8989,6 +8976,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let ticket_id = match &entry.record {
             Record::TicketEditedWithRepositories(edited) => Some(edited.card),
             Record::TicketAssigned { card, .. } => Some(*card),
+            Record::TicketStartedWithRepositories(start) => Some(start.card),
             _ => None,
         };
         let ticket = ticket_id

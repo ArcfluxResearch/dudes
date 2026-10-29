@@ -1424,23 +1424,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .insert(request, Awaiting::Start(starting));
             return;
         }
-        let current = if issued.is_some() {
-            issue_grant == Some(grant.as_ref())
-        } else {
-            row.and_then(|row| match &row.repositories {
-                dudes_proto::repository::HireRepositories::Scoped(hire) => {
-                    Some((row.mcp.hire_lsn, hire))
-                }
-                dudes_proto::repository::HireRepositories::Legacy(_) => None,
-            })
-            .is_some_and(|(hired_lsn, hire)| {
-                self.world
-                    .active_repository_round(agent)
-                    .is_ok_and(|round| {
-                        RepositoryTurnGrant::select(hired_lsn, hire, round).as_ref()
-                            == Ok(grant.as_ref())
-                    })
-            })
+        let current = match &starting.action {
+            StartAction::Issue { entry, .. } => self.issue_repositories_current(agent, entry),
+            StartAction::Retry { launch } => {
+                self.issued_repositories(agent, turn.expect("managed retry has a turn"))
+                    .as_ref()
+                    == Some(&launch.repositories)
+            }
         };
         if !current {
             self.cancel_repository_start(&starting);
@@ -1653,7 +1643,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                             && !row.attached
                             && row.automatic_hold.is_none()
                             && row.open_turn.is_none()
-                            && row.goal == entry.record.turn_issue().and_then(|issue| issue.goal)
+                            && entry.record.turn_issue().is_some_and(|issue| {
+                                row.goal == issue.goal
+                                    || (issue.goal.is_none() && issue.repositories.is_some())
+                            })
                     })
                     && starting
                         .goal
@@ -1702,7 +1695,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         closing: Option<Lsn>,
         operation: &crate::RecoveryOperation<'_>,
     ) -> bool {
-        if matches!(entry.record, Record::TurnIssuedWithRepositories(_)) {
+        if !self.issue_repositories_current(agent, entry) {
             return false;
         }
         let Some(payload) = entry.record.issue_payload() else {

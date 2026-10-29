@@ -4,8 +4,31 @@ use super::{
 };
 use crate::floor_chat::{ChatAction, ChatOutcome, ChatRefusal, ChatRequest};
 use dudes_proto::{BrowserNoteAttribution, BrowserNoteDestination, ChatReason};
+use dudes_supervisor::ManagedSpawn;
 use dudes_supervisor::machine::BrowserNoteCancelDisposition;
 use dudes_supervisor::world::BrowserNoteState;
+
+fn managed_launch_cwd<'a>(
+    world: &'a dudes_supervisor::World,
+    turn: dudes_types::TurnId,
+    launch: &'a ManagedSpawn,
+) -> std::io::Result<&'a std::path::Path> {
+    let authority = world
+        .turns
+        .get(&turn)
+        .and_then(|issued| issued.repositories.as_ref())
+        .ok_or_else(|| std::io::Error::other("managed repository authority is unavailable"))?;
+    match launch {
+        ManagedSpawn::Composed { spec, .. } if authority.singleton().is_some() => Ok(&spec.cwd),
+        ManagedSpawn::Scoped { .. } => authority
+            .grant()
+            .map(|grant| grant.repositories.primary().execution.directory.as_path())
+            .ok_or_else(|| std::io::Error::other("scoped repository authority is unavailable")),
+        ManagedSpawn::Composed { .. } => Err(std::io::Error::other(
+            "managed launch authority differs from its issue",
+        )),
+    }
+}
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<H, P, C, R> {
     /// The owned preparation control used by real daemon boundary tests.
@@ -22,7 +45,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 generation,
                 prepared: Ok(_),
                 ..
-            } => Some((*turn, *generation)),
+            }
+            | Input::BrowserScopedLaunchReady { turn, generation } => Some((*turn, *generation)),
             _ => None,
         };
         let result = self.pump(input);
@@ -286,11 +310,37 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 }
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
+    pub(super) fn prepare_browser_turn(
+        &mut self,
+        turn: dudes_types::TurnId,
+        generation: u64,
+        launch: &ManagedSpawn,
+        queue: &mut std::collections::VecDeque<Input>,
+    ) {
+        match launch {
+            ManagedSpawn::Composed { spec, .. } => {
+                if !self
+                    .browser_launches
+                    .prepare(turn, generation, spec.as_ref().clone())
+                {
+                    queue.push_back(Input::BrowserLaunchReady {
+                        turn,
+                        generation,
+                        prepared: Err("managed launch preparation capacity is unavailable".into()),
+                    });
+                }
+            }
+            ManagedSpawn::Scoped { .. } => {
+                self.handle
+                    .input(Input::BrowserScopedLaunchReady { turn, generation });
+            }
+        }
+    }
+
     pub(super) fn spawn_turn<R: Rng>(
         &mut self,
         turn: dudes_types::TurnId,
-        spec: &dudes_providers::launch::LaunchSpec,
-        install: &dudes_providers::adapter::ManagedInstall,
+        launch: &ManagedSpawn,
         mcp_grant: Option<dudes_types::Lsn>,
         queue: &mut std::collections::VecDeque<Input>,
         sup: &mut Supervisor<super::Shared<C>, R>,
@@ -306,6 +356,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .agents
             .get(&agent)
             .ok_or_else(|| anyhow::anyhow!("managed launch owner is unavailable"))?;
+        let cwd = managed_launch_cwd(sup.world(), turn, launch)?;
         if let Err(refusal) = self
             .admit_prior_attempt(sup, agent, Some(turn))
             .and_then(|()| {
@@ -315,7 +366,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     owner.provider,
                     owner.mcp.isolation,
                     dudes_types::Mode::Managed,
-                    &spec.cwd,
+                    cwd,
                 )
             })
         {
@@ -327,15 +378,23 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             });
             return Ok(());
         }
-        if row
-            .repositories
-            .as_ref()
-            .is_some_and(|authority| authority.grant().is_some())
-        {
-            self.prepare_scoped_turn(turn, spec, mcp_grant, queue, sup);
-            return Ok(());
+        match launch {
+            ManagedSpawn::Scoped { .. } => {
+                let generation = self
+                    .resolved_browser_turn
+                    .filter(|(prepared, _)| *prepared == turn)
+                    .map(|(_, generation)| generation);
+                if self.with_recovery_facts(sup, &[], |sup, operation| {
+                    sup.claim_browser_dispatch(turn, generation, operation)
+                }) {
+                    self.prepare_scoped_turn(turn, launch, mcp_grant, queue, sup);
+                }
+                Ok(())
+            }
+            ManagedSpawn::Composed { spec, install } => {
+                self.spawn_owned(turn, spec, install, mcp_grant, queue, sup)
+            }
         }
-        self.spawn_owned(turn, spec, install, mcp_grant, queue, sup)
     }
 
     pub(super) fn dispatch_browser_intent<R: Rng>(
@@ -367,10 +426,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         if !self.recovery_dispatch_allowed(sup, *turn) {
             return Ok(());
         }
-        let spec = self.with_recovery_facts(sup, &[], |sup, operation| {
-            sup.browser_dispatch_spec(*token, *turn, operation).cloned()
+        let launch = self.with_recovery_facts(sup, &[], |sup, operation| {
+            sup.browser_dispatch_launch(*token, *turn, operation)
+                .cloned()
         });
-        let Some(spec) = spec else { return Ok(()) };
+        let Some(launch) = launch else { return Ok(()) };
+        let cwd = managed_launch_cwd(sup.world(), *turn, &launch)?;
         let owner = sup
             .world()
             .agents
@@ -385,7 +446,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     owner.provider,
                     owner.mcp.isolation,
                     dudes_types::Mode::Managed,
-                    &spec.cwd,
+                    cwd,
                 )
             })
         {
@@ -420,8 +481,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             match effect {
                 dudes_supervisor::Effect::Spawn {
                     turn: issued,
-                    spec,
-                    install,
+                    launch,
                     mcp_grant,
                 } => {
                     anyhow::ensure!(
@@ -431,7 +491,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     spawned = true;
                     self.tokens
                         .publish_completed_folds(|| sup.world().token_hash_owners());
-                    self.spawn_owned(*issued, spec, install, *mcp_grant, queue, sup)?;
+                    self.spawn_turn(*issued, launch, *mcp_grant, queue, sup)?;
                 }
                 dudes_supervisor::Effect::Persist { entry, .. }
                     if matches!(entry.record, dudes_proto::Record::RecoveryInvalidated(_)) =>
