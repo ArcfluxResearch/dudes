@@ -120,6 +120,20 @@ class Observations(unittest.TestCase):
         finally:
             model.close()
 
+    def test_expected_websocket_rejection_has_a_valid_http11_envelope(self):
+        model = proof.LocalModel("codex", Path("/synthetic/marker"), "text", False)
+        connection = http.client.HTTPConnection("127.0.0.1", model.server.server_port, timeout=2)
+        try:
+            connection.request("GET", "/v1/responses", headers={"Upgrade": "websocket"})
+            response = connection.getresponse()
+            self.assertEqual((response.version, response.status), (11, 426))
+            response.read()
+            self.assertEqual((model.http_total, model.get_attempts, model.post_attempts), (1, 1, 0))
+            self.assertEqual(model.errors, [])
+        finally:
+            connection.close()
+            model.close()
+
 
 class FakeProcess:
     def __init__(self, frames):
@@ -265,10 +279,10 @@ class Dispatch(unittest.TestCase):
             self.assertFalse(any(frame.get("method") in {"thread/start", "turn/start", "model/list"} for frame in sent))
 
     def test_only_bounded_notifications_can_be_ignored(self):
-        valid = {"method": "remoteControl/status/changed", "params": {"status": "disabled"}}
+        valid = {"method": "remoteControl/status/changed", "params": {"status": "disabled"}, "emittedAtMs": 1793303703845}
         result, _ = self.run_frames([1, valid, 91, 90, 2, 3])
         self.assertIsNone(result["error"])
-        for invalid in [{**valid, "id": None}, {**valid, "id": 500}, {**valid, "result": {}}, {**valid, "error": None}, {**valid, "params": []}]:
+        for invalid in [{**valid, "id": None}, {**valid, "id": 500}, {**valid, "result": {}}, {**valid, "error": None}, {**valid, "params": []}, {**valid, "emittedAtMs": True}, {**valid, "emittedAtMs": 2 ** 63}, {**valid, "emittedAtMs": "1"}, {**valid, "jsonrpc": "other"}]:
             result, sent = self.run_frames([1, invalid, 91, 90, 2, 3])
             self.assertIsNotNone(result["error"])
             self.assertFalse(any(frame.get("method") == "turn/start" for frame in sent))

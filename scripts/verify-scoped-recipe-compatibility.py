@@ -56,6 +56,17 @@ def closed_codex_tools(tools):
     return len(tools) == len(CODEX_TOOL_TYPES) and {tool.get("name"): tool.get("type") for tool in tools} == CODEX_TOOL_TYPES
 
 
+def valid_codex_notification(frame):
+    timestamp = frame.get("emittedAtMs")
+    return (
+        not set(frame) - {"jsonrpc", "method", "params", "emittedAtMs"}
+        and isinstance(frame.get("method"), str) and bool(frame["method"])
+        and isinstance(frame.get("params"), dict)
+        and frame.get("jsonrpc", "2.0") == "2.0"
+        and (timestamp is None or type(timestamp) is int and -(2 ** 63) <= timestamp < 2 ** 63)
+    )
+
+
 def model_observation_checks(model, expected_posts):
     return {
         "model_server_error_free": not model.errors,
@@ -75,6 +86,8 @@ class LocalModel:
         model = self
 
         class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
             def log_message(self, *_):
                 pass
 
@@ -94,6 +107,7 @@ class LocalModel:
                 return self.budget_allowed
 
             def begin(self):
+                self.close_connection = True
                 if not self.observe():
                     self.send_error(429)
                     return False
@@ -115,6 +129,7 @@ class LocalModel:
                     return
                 if self.path == "/v1/local-health":
                     self.send_response(200)
+                    self.send_header("Connection", "close")
                     self.end_headers()
                     self.wfile.write(b"local-model-ready")
                     return
@@ -123,6 +138,7 @@ class LocalModel:
                     return
                 self.send_response(426)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Connection", "close")
                 self.end_headers()
                 self.wfile.write(b'{"error":{"message":"loopback stand-in accepts SSE only"}}')
 
@@ -151,6 +167,7 @@ class LocalModel:
                     model.requests.append({"path": self.path, "body": body})
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Connection", "close")
                     self.end_headers()
                     response_started = True
                     model.respond(self, body)
@@ -630,7 +647,7 @@ def run_codex(args, root, argv, env, value, policy, model):
             if frame is None:
                 raise RuntimeError("Codex exited before the compatibility turn finished")
             if "method" in frame:
-                if any(key in frame for key in ["id", "result", "error"]) or not isinstance(frame["method"], str) or not frame["method"] or not isinstance(frame.get("params"), dict) or set(frame) - {"jsonrpc", "method", "params"} or frame.get("jsonrpc", "2.0") != "2.0":
+                if not valid_codex_notification(frame):
                     raise RuntimeError("native request/response or malformed notification cannot be ignored")
                 if frame["method"] == "error":
                     raise RuntimeError("native error notification is fatal")
