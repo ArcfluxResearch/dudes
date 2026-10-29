@@ -117,6 +117,44 @@ class Observations(unittest.TestCase):
             model.close()
 
 
+class EnvironmentSelection(unittest.TestCase):
+    def test_exact_derived_mail_values_are_required_by_the_closed_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "engine"
+            binary.write_bytes(b"offline fixture only")
+            for name in ["home", "profile", "temp"]:
+                (root / name).mkdir()
+            private = {name: str(root / name) for name in ["home", "profile", "temp"]}
+            value = {"private": private, "agent_dir": str(root / "agent")}
+            env = {"HOME": private["home"], "CODEX_HOME": private["profile"],
+                   "TMPDIR": private["temp"], "TMP": private["temp"], "TEMP": private["temp"],
+                   "PATH": "/usr/bin:/bin", "LANG": "C", "SHELL": "/bin/bash", "TERM": "dumb",
+                   "OPENAI_API_KEY": proof.DUMMY_CREDENTIAL, "CODEX_API_KEY": proof.DUMMY_CREDENTIAL,
+                   "DUDES_MAILBOX": value["agent_dir"], "DUDES_COMMAND_TRANSPORT": "file-mail"}
+            policy = {"argv": [str(binary)]}
+            model = types.SimpleNamespace(endpoint="http://127.0.0.1:1/v1", server=types.SimpleNamespace(server_port=1))
+            argv = [*policy["argv"], "-c", "openai_base_url=" + json.dumps(model.endpoint)]
+            with mock.patch.dict(proof.PINS, {(platform.system(), platform.machine(), "codex"): proof.sha256(binary)}):
+                accepted = proof.inspect_selection("codex", binary, argv, env, policy, value, model)
+                self.assertTrue(accepted["environment_closed"])
+                for name, wrong in [("DUDES_MAILBOX", str(root / "ambient")), ("DUDES_COMMAND_TRANSPORT", "socket")]:
+                    with self.subTest(name=name):
+                        with self.assertRaisesRegex(ValueError, "mail transport"):
+                            proof.inspect_selection("codex", binary, argv, {**env, name: wrong}, policy, value, model)
+                        missing = {key: val for key, val in env.items() if key != name}
+                        with self.assertRaisesRegex(ValueError, "closed synthetic allowlist"):
+                            proof.inspect_selection("codex", binary, argv, missing, policy, value, model)
+                with self.assertRaisesRegex(ValueError, "closed synthetic allowlist"):
+                    proof.inspect_selection("codex", binary, argv, {**env, "DUDES_TOKEN": "ambient"}, policy, value, model)
+
+    def test_fixture_supplies_references_for_only_the_two_derived_mail_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value = proof.fixture_input(Path(directory), "codex", Path("/synthetic/engine"), "http://127.0.0.1:1/v1")
+            self.assertEqual([text for _, text in value["env"][-2:]], [value["agent_dir"], "file-mail"])
+            self.assertFalse(any(name.startswith("DUDES_") for name, _ in value["env"]))
+
+
 class FakeProcess:
     def __init__(self, frames):
         self.stdin = io.StringIO()

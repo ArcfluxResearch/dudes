@@ -381,6 +381,9 @@ impl CodexProfile {
 
 fn validate_environment(launch: &ScopedManagedLaunch) -> io::Result<()> {
     use std::ffi::OsStr;
+    let LaunchInput::Protocol(startup) = &launch.spec.stdin else {
+        return Err(refusal("scoped protocol startup is unavailable"));
+    };
     let p = &launch.inventory.private;
     let mut expected = std::collections::BTreeMap::from([
         ("HOME", p.home.as_os_str()),
@@ -390,6 +393,8 @@ fn validate_environment(launch: &ScopedManagedLaunch) -> io::Result<()> {
         ("TEMP", p.temp.as_os_str()),
         ("SHELL", OsStr::new("/bin/bash")),
         ("TERM", OsStr::new("dumb")),
+        ("DUDES_MAILBOX", startup.agent_dir().as_os_str()),
+        ("DUDES_COMMAND_TRANSPORT", OsStr::new("file-mail")),
     ]);
     let mut seen = BTreeSet::new();
     for var in &launch.spec.env {
