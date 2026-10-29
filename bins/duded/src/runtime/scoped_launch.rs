@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::io;
+use std::sync::Arc;
 
 use dudes_proto::instruction::InstructionObservationOwner;
 use dudes_proto::repository::{HireRepositories, RepositoryEntry};
@@ -10,14 +11,41 @@ use dudes_types::{Lsn, Mode, Provider, TurnId};
 
 use super::{Ctx, Daemon, PredicateRunner, Shared};
 use crate::chat_launch::{ScopedCompletion, ScopedPreparation};
-use crate::codex_profile::scoped::{Attempt, ScopedProfile};
+use crate::codex_profile::scoped::{Attempt, PreparedScopedLaunch, ScopedProfile};
+
+pub(crate) enum ScopedReservation {
+    Preparing {
+        attempt: Attempt,
+        browser_generation: Option<u64>,
+    },
+    Ready {
+        browser_generation: u64,
+        prepared: Box<PreparedScopedLaunch>,
+        outbox: Arc<crate::mailbox::OutboxGrant>,
+    },
+    Dispatching {
+        attempt: Attempt,
+        browser_generation: Option<u64>,
+    },
+}
+
+#[cfg(test)]
+impl From<Attempt> for ScopedReservation {
+    fn from(attempt: Attempt) -> Self {
+        Self::Preparing {
+            attempt,
+            browser_generation: None,
+        }
+    }
+}
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<H, P, C, R> {
     pub(super) fn complete_scoped_launch(
         &mut self,
         completion: ScopedCompletion,
     ) -> anyhow::Result<()> {
-        self.ctx.browser_launches.finish_scoped(completion.attempt);
+        let attempt = completion.attempt;
+        self.ctx.browser_launches.finish_scoped(attempt);
         if self.ctx.journal_writes_stopped() || self.ctx.closing_failed_after.is_some() {
             self.ctx.scoped_launches.remove(&completion.attempt.turn);
             return Ok(());
@@ -53,7 +81,24 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.ctx
             .finish_scoped_launch(completion, &mut inputs, &mut self.sup)?;
         for input in inputs {
-            self.pump(input)?;
+            self.pump_runtime_input(input)?;
+        }
+        if matches!(self.ctx.scoped_launches.get(&attempt.turn), Some(ScopedReservation::Ready { prepared, .. }) if prepared.attempt == attempt)
+        {
+            if current_attempt(self.sup.world(), attempt)
+                && !self.sup.world().browser_issue_cancelled(attempt.turn)
+            {
+                self.pump(Input::LaunchPreparationFailed {
+                    turn: attempt.turn,
+                    started_lsn: attempt.started,
+                    reason: "scoped browser preparation no longer admits dispatch".into(),
+                })?;
+            }
+            if !current_attempt(self.sup.world(), attempt)
+                || self.sup.world().browser_issue_cancelled(attempt.turn)
+            {
+                self.ctx.scoped_launches.remove(&attempt.turn);
+            }
         }
         Ok(())
     }
@@ -63,6 +108,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     pub(super) fn prepare_scoped_turn<R: Rng>(
         &mut self,
         turn: TurnId,
+        browser_generation: Option<u64>,
         launch: &ManagedSpawn,
         mcp_grant: Option<Lsn>,
         queue: &mut VecDeque<Input>,
@@ -98,6 +144,17 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             started,
             owner: physical.owner,
         };
+        if let Some(row) = sup.world().turns.get(&turn)
+            && let Err(refusal) = self.admit_prior_attempt(sup, row.agent, Some(turn))
+        {
+            queue.push_back(Input::LaunchAdmissionRefused {
+                agent: row.agent,
+                turn: Some(turn),
+                refusal,
+                dispatch_token: None,
+            });
+            return;
+        }
         if !self.repository_turn_allowed(sup.world(), turn) {
             preparation_failed(queue, attempt, "scoped repository admission is unavailable");
             return;
@@ -113,7 +170,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let prepared = self.scoped_request(attempt, launch, mcp_grant, sup);
         match prepared {
             Ok(request) => {
-                self.scoped_launches.insert(turn, attempt);
+                self.scoped_launches.insert(
+                    turn,
+                    ScopedReservation::Preparing {
+                        attempt,
+                        browser_generation,
+                    },
+                );
                 if !self.browser_launches.prepare_scoped(request) {
                     self.scoped_launches.remove(&turn);
                     preparation_failed(
@@ -243,19 +306,27 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         sup: &mut Supervisor<Shared<C>, R>,
     ) -> anyhow::Result<()> {
         let attempt = completion.attempt;
-        if self.scoped_launches.get(&attempt.turn) != Some(&attempt) {
+        let Some(ScopedReservation::Preparing {
+            attempt: reserved,
+            browser_generation,
+        }) = self.scoped_launches.get(&attempt.turn)
+        else {
+            return Ok(());
+        };
+        if *reserved != attempt {
             return Ok(());
         }
-        self.scoped_launches.remove(&attempt.turn);
+        let browser_generation = *browser_generation;
         if !current_attempt(sup.world(), attempt)
             || self.journal_writes_stopped()
             || self.closing_failed_after.is_some()
-            || !self.recovery_dispatch_allowed(sup, attempt.turn)
         {
+            self.scoped_launches.remove(&attempt.turn);
             return Ok(());
         }
         let agent = sup.world().turns[&attempt.turn].agent;
         if let Err(refusal) = self.admit_prior_attempt(sup, agent, Some(attempt.turn)) {
+            self.scoped_launches.remove(&attempt.turn);
             queue.push_back(Input::LaunchAdmissionRefused {
                 agent,
                 turn: Some(attempt.turn),
@@ -264,22 +335,25 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             });
             return Ok(());
         }
+        if !self.recovery_dispatch_allowed(sup, attempt.turn) {
+            self.scoped_launches.remove(&attempt.turn);
+            preparation_failed(
+                queue,
+                attempt,
+                "scoped preparation no longer has execution permission",
+            );
+            return Ok(());
+        }
         let prepared = match completion.prepared {
             Ok(prepared) => prepared,
             Err(reason) => {
+                self.scoped_launches.remove(&attempt.turn);
                 preparation_failed(queue, attempt, &reason);
                 return Ok(());
             }
         };
-        let row = &sup.world().turns[&attempt.turn];
-        let admitted = prepared.attempt == attempt
-            && self.repository_turn_allowed(sup.world(), attempt.turn)
-            && row.repositories.as_ref().is_some_and(|authority| {
-                authority.grant() == Some(&prepared.launch.inventory.grant)
-                    && matches!(authority.hire(), HireRepositories::Scoped(hire) if hire.recorded() == prepared.launch.inventory.hired)
-            })
-            && self.admit_prior_attempt(sup, row.agent, Some(attempt.turn)).is_ok();
-        if !admitted {
+        if prepared.attempt != attempt || !self.scoped_prepared_current(sup, &prepared) {
+            self.scoped_launches.remove(&attempt.turn);
             preparation_failed(
                 queue,
                 attempt,
@@ -287,10 +361,105 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             );
             return Ok(());
         }
+        if let Some(generation) = browser_generation {
+            self.scoped_launches.insert(
+                attempt.turn,
+                ScopedReservation::Ready {
+                    browser_generation: generation,
+                    prepared: Box::new(prepared),
+                    outbox: completion.outbox,
+                },
+            );
+            queue.push_back(Input::BrowserScopedLaunchReady {
+                turn: attempt.turn,
+                generation,
+            });
+            return Ok(());
+        }
+        self.dispatch_scoped_prepared(&prepared, completion.outbox, None, queue, sup)
+    }
+
+    pub(super) fn dispatch_scoped_turn<R: Rng>(
+        &mut self,
+        turn: TurnId,
+        queue: &mut VecDeque<Input>,
+        sup: &mut Supervisor<Shared<C>, R>,
+    ) -> anyhow::Result<()> {
+        let Some(reservation) = self.scoped_launches.remove(&turn) else {
+            return Ok(());
+        };
+        let ScopedReservation::Ready {
+            browser_generation,
+            prepared,
+            outbox,
+        } = reservation
+        else {
+            self.scoped_launches.insert(turn, reservation);
+            return Ok(());
+        };
+        self.dispatch_scoped_prepared(&prepared, outbox, Some(browser_generation), queue, sup)
+    }
+
+    fn scoped_prepared_current<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        prepared: &PreparedScopedLaunch,
+    ) -> bool {
+        sup.world().turns.get(&prepared.attempt.turn).is_some_and(|row| {
+            current_attempt(sup.world(), prepared.attempt)
+                && self.repository_turn_allowed(sup.world(), prepared.attempt.turn)
+                && row.repositories.as_ref().is_some_and(|authority| {
+                    authority.grant() == Some(&prepared.launch.inventory.grant)
+                        && matches!(authority.hire(), HireRepositories::Scoped(hire) if hire.recorded() == prepared.launch.inventory.hired)
+                })
+        })
+    }
+
+    fn dispatch_scoped_prepared<R: Rng>(
+        &mut self,
+        prepared: &PreparedScopedLaunch,
+        outbox: Arc<crate::mailbox::OutboxGrant>,
+        browser_generation: Option<u64>,
+        queue: &mut VecDeque<Input>,
+        sup: &mut Supervisor<Shared<C>, R>,
+    ) -> anyhow::Result<()> {
+        let attempt = prepared.attempt;
+        if !current_attempt(sup.world(), attempt) {
+            return Ok(());
+        }
+        let agent = sup.world().turns[&attempt.turn].agent;
+        if let Err(refusal) = self.admit_prior_attempt(sup, agent, Some(attempt.turn)) {
+            self.scoped_launches.remove(&attempt.turn);
+            queue.push_back(Input::LaunchAdmissionRefused {
+                agent,
+                turn: Some(attempt.turn),
+                refusal,
+                dispatch_token: None,
+            });
+            return Ok(());
+        }
+        if !self.recovery_dispatch_allowed(sup, attempt.turn)
+            || !self.scoped_prepared_current(sup, prepared)
+        {
+            self.scoped_launches.remove(&attempt.turn);
+            preparation_failed(
+                queue,
+                attempt,
+                "scoped launch authority changed before dispatch",
+            );
+            return Ok(());
+        }
+        self.scoped_launches.insert(
+            attempt.turn,
+            ScopedReservation::Dispatching {
+                attempt,
+                browser_generation,
+            },
+        );
         let spec = prepared.launch.spec.clone();
         let checked = self
             .children
-            .prepare_scoped_launch(&prepared, completion.outbox)
+            .prepare_scoped_launch(prepared, outbox)
             .map(|()| {
                 self.children.read_next_for(
                     super::turn_reader(sup, attempt.turn, &spec),
@@ -307,6 +476,39 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             queue,
             sup,
         )
+    }
+
+    pub(super) fn discard_scoped_dispatch(&mut self, turn: TurnId) {
+        if matches!(
+            self.scoped_launches.get(&turn),
+            Some(ScopedReservation::Dispatching { .. })
+        ) {
+            self.scoped_launches.remove(&turn);
+        }
+    }
+
+    pub(super) fn claim_scoped_dispatch<R: Rng>(
+        &mut self,
+        turn: TurnId,
+        scoped: bool,
+        sup: &mut Supervisor<Shared<C>, R>,
+    ) -> bool {
+        let Some(reservation) = self.scoped_launches.remove(&turn) else {
+            return !scoped;
+        };
+        let ScopedReservation::Dispatching {
+            attempt,
+            browser_generation,
+        } = reservation
+        else {
+            self.scoped_launches.insert(turn, reservation);
+            return false;
+        };
+        current_attempt(sup.world(), attempt)
+            && self.recovery_dispatch_allowed(sup, turn)
+            && self.with_recovery_facts(sup, &[], |sup, operation| {
+                sup.claim_browser_dispatch(turn, browser_generation, operation)
+            })
     }
 }
 

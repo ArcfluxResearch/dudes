@@ -310,12 +310,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 }
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
-    pub(super) fn prepare_browser_turn(
+    pub(super) fn prepare_browser_turn<R: Rng>(
         &mut self,
         turn: dudes_types::TurnId,
         generation: u64,
         launch: &ManagedSpawn,
         queue: &mut std::collections::VecDeque<Input>,
+        sup: &Supervisor<super::Shared<C>, R>,
     ) {
         match launch {
             ManagedSpawn::Composed { spec, .. } => {
@@ -331,8 +332,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 }
             }
             ManagedSpawn::Scoped { .. } => {
-                self.handle
-                    .input(Input::BrowserScopedLaunchReady { turn, generation });
+                self.prepare_scoped_turn(turn, Some(generation), launch, None, queue, sup);
             }
         }
     }
@@ -380,16 +380,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
         match launch {
             ManagedSpawn::Scoped { .. } => {
-                let generation = self
-                    .resolved_browser_turn
-                    .filter(|(prepared, _)| *prepared == turn)
-                    .map(|(_, generation)| generation);
-                if self.with_recovery_facts(sup, &[], |sup, operation| {
-                    sup.claim_browser_dispatch(turn, generation, operation)
-                }) {
-                    self.prepare_scoped_turn(turn, launch, mcp_grant, queue, sup);
+                if sup.world().browser_issue(turn).is_some() {
+                    self.dispatch_scoped_turn(turn, queue, sup)
+                } else {
+                    self.prepare_scoped_turn(turn, None, launch, mcp_grant, queue, sup);
+                    Ok(())
                 }
-                Ok(())
             }
             ManagedSpawn::Composed { spec, install } => {
                 self.spawn_owned(turn, spec, install, mcp_grant, queue, sup)
@@ -629,10 +625,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         sup: &mut Supervisor<super::Shared<C>, R>,
     ) -> Result<()> {
         let mut scoped = false;
-        let prepared = prepared.and_then(|spec| {
-            scoped = self.children.check_scoped_host(&spec)?;
-            Ok(spec)
-        });
+        let prepared = prepared
+            .and_then(|spec| {
+                scoped = self.children.check_scoped_host(&spec)?;
+                if !self.claim_scoped_dispatch(turn, scoped, sup) {
+                    return Err(std::io::Error::other("scoped dispatch permission changed"));
+                }
+                Ok(spec)
+            })
+            .inspect_err(|_| self.discard_scoped_dispatch(turn));
         let cwd = prepared.as_ref().ok().map(|spec| spec.cwd.clone());
         let actual_host_call = prepared.is_ok();
         match match prepared {

@@ -305,14 +305,17 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             }
             (launch @ ManagedSpawn::Scoped { .. }, Ok(None)) => launch.clone(),
             (_, Ok(_)) => {
-                self.on_spawn_failed(
+                let attempt = self.no_host_attempt(agent, Some(turn));
+                self.finish_spawn_failure(
                     turn,
                     "managed program preparation did not resolve an absolute program".to_owned(),
+                    attempt,
                 );
                 return;
             }
             (_, Err(reason)) => {
-                self.on_spawn_failed(turn, reason);
+                let attempt = self.no_host_attempt(agent, Some(turn));
+                self.finish_spawn_failure(turn, reason, attempt);
                 return;
             }
         };

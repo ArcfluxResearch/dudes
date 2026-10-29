@@ -149,8 +149,9 @@ pub enum Effect {
         /// The stamped record.
         entry: Entry,
     },
-    /// Write `install`'s files if they differ, launch `spec`, and report the adoption key as
-    /// [`Input::Spawned`](crate::Input::Spawned).
+    /// Prepare and launch the managed payload, then report the adoption key as
+    /// [`Input::Spawned`](crate::Input::Spawned). Scoped inputs require runtime validation and
+    /// strict composition before host entry.
     Spawn {
         /// The turn the child serves.
         turn: TurnId,
