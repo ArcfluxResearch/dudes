@@ -543,6 +543,91 @@ fn current_expansion_holds_an_owed_legacy_launch_before_host_and_resume_cannot_o
     assert_eq!(host.spawn_calls(), 0);
 }
 
+fn late_repository_loss_recovers(before_preparation: bool) {
+    let fixture = common::Fixture::new();
+    let host = CountingHost::new();
+    let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+    let root = fixture.state.path().join("project");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    let root = root.canonicalize().unwrap();
+    daemon.ctx.enrollment = legacy_enrollment(root.clone());
+    daemon.observe_repository_enrollment().unwrap();
+    let attempt = prepared(&mut daemon, &fixture, Provider::Claude);
+    let original_issue = fixture
+        .entries()
+        .into_iter()
+        .find(|(lsn, _)| *lsn == attempt.issue)
+        .unwrap();
+    let repositories = daemon.sup.world().turns[&attempt.turn].repositories.clone();
+    let preserved = root.with_file_name("preserved-project");
+    if before_preparation {
+        std::fs::rename(&root, &preserved).unwrap();
+    } else {
+        let root = root.clone();
+        let preserved = preserved.clone();
+        daemon.ctx.before_recovery_dispatch = Some(Box::new(move || {
+            std::fs::rename(root, preserved).unwrap();
+        }));
+    }
+    let mut queue = VecDeque::new();
+    execute(&mut daemon, &attempt.spawn, &mut queue);
+    while let Some(input) = queue.pop_front() {
+        daemon.pump(input).unwrap();
+    }
+    assert_eq!(host.spawn_calls(), 0);
+    assert!(
+        daemon.sup.world().agents[&attempt.agent]
+            .automatic_hold
+            .is_none(),
+        "repository-only loss became an independent automatic hold"
+    );
+    assert!(daemon.sup.world().turns[&attempt.turn].is_issued_not_spawned());
+    std::fs::rename(preserved, root).unwrap();
+    daemon.pump(Input::Tick).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while host.spawn_calls() == 0 && std::time::Instant::now() < deadline {
+        if let Ok(Job::Input(input)) = daemon.jobs.recv_timeout(Duration::from_millis(20)) {
+            daemon.pump(*input).unwrap();
+        }
+    }
+    assert_eq!(
+        host.spawn_calls(),
+        1,
+        "restoring the repository never dispatched the owed turn"
+    );
+    daemon.pump(Input::Tick).unwrap();
+    assert_eq!(host.spawn_calls(), 1, "a recovered turn dispatched twice");
+    assert_eq!(daemon.sup.world().turns[&attempt.turn].task, attempt.task);
+    assert_eq!(
+        daemon.sup.world().turns[&attempt.turn].repositories,
+        repositories
+    );
+    assert!(fixture.entries().contains(&original_issue));
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter_map(Record::turn_issue)
+            .filter(|issue| issue.agent == attempt.agent)
+            .count(),
+        1
+    );
+    assert!(fixture.records().iter().all(|record| !matches!(
+        record,
+        Record::Pause { .. } | Record::Resume { .. } | Record::AgentHeld { .. }
+    )));
+}
+
+#[test]
+fn repository_loss_before_preparation_recovers_the_same_turn_without_a_launch_failure_hold() {
+    late_repository_loss_recovers(true);
+}
+
+#[test]
+fn repository_loss_at_the_final_host_cut_releases_only_the_no_host_claim_and_recovers() {
+    late_repository_loss_recovers(false);
+}
+
 #[test]
 fn unresolved_current_admission_refuses_a_parked_finite_issue_with_no_charged_goal() {
     let fixture = common::Fixture::new();
