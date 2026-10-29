@@ -300,6 +300,157 @@ struct ScopedFixture {
     issued: Prepared,
 }
 
+struct LiveScopedFixture {
+    setup: super::repository_hire_tests::Setup,
+    host: CountingHost,
+    daemon: TestDaemon,
+    agent: AgentId,
+    turn: TurnId,
+    note_lsn: Lsn,
+    task: String,
+    session: crate::floor_session::SessionIdentity,
+    pause: crate::BrowserLaunchPause,
+}
+
+impl LiveScopedFixture {
+    fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt as _;
+        let setup = super::repository_hire_tests::Setup::with_repositories(&["api"]);
+        let (mut running, hires, params) = setup.start(true);
+        let agent = hires.hire(params).unwrap().agent;
+        running.stop(ExitCause::Ended);
+        let host = CountingHost::new();
+        let program = setup.fixture.runtime.path().join("claude-live-fixture");
+        std::fs::write(&program, b"owned Claude fixture executable").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let program = program.canonicalize().unwrap();
+        let mut daemon = boot_settings(
+            &setup.settings,
+            &host,
+            Provider::Claude,
+            program.to_str().unwrap(),
+        );
+        daemon.ctx.current_repositories.test_hire_capability = true;
+        daemon
+            .sup
+            .observe_repository_admission(daemon.ctx.repository_observation(daemon.sup.world()));
+        daemon
+            .ctx
+            .children
+            .private_roots()
+            .qualify_claude_fixture(b"owned Claude fixture executable");
+        daemon
+            .pump(Input::Command(Command::Resume {
+                agent,
+                browser: None,
+            }))
+            .unwrap();
+        append_scoped_fixture(
+            &mut daemon,
+            Record::GoalSet {
+                agent,
+                goal: dudes_proto::Goal {
+                    id: GoalId::from_parts(6, 1),
+                    text: "Finish the scoped task".into(),
+                    predicate: dudes_proto::Predicate::Command {
+                        argv: vec![common::true_program().into()],
+                        timeout_s: 1,
+                    },
+                    budget: dudes_proto::GoalBudget {
+                        usd: None,
+                        tokens: None,
+                    },
+                    hop_cap: 4,
+                    completion_check: None,
+                    baseline: Some(dudes_proto::CheckBaseline::MayAlreadyPass),
+                },
+                browser_onboarding: None,
+                browser_goal: None,
+                goal_replacement: None,
+            },
+        );
+        let sessions = crate::floor_session::FloorSessions::new(
+            "127.0.0.1:31337".parse().unwrap(),
+            Arc::new(common::TestClock::new()),
+        );
+        let session = sessions
+            .admitted_for_test("127.0.0.1:31337", "http://127.0.0.1:31337")
+            .0;
+        let pause = daemon.browser_launch_pause();
+        pause.arm();
+        let request = Self::request(
+            crate::floor_chat::ChatVerb::Send,
+            agent,
+            "text",
+            "Retain this exact goal note",
+            'B',
+        );
+        let crate::floor_chat::ChatOutcome::Queued { note_lsn, .. } =
+            daemon.browser_chat(&session, &request).unwrap()
+        else {
+            panic!("durable goal note")
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !pause.wait(Duration::from_millis(10)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "scoped worker finishes"
+            );
+            match daemon.jobs.recv_timeout(Duration::from_millis(10)) {
+                Ok(Job::Input(input)) => daemon.pump_runtime_input(*input).unwrap(),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                other => panic!("expected scoped preparation input: {}", other.is_ok()),
+            }
+        }
+        let turn = daemon.sup.world().agents[&agent].open_turn.unwrap();
+        Self {
+            setup,
+            host,
+            task: daemon.sup.world().turns[&turn].task.clone(),
+            daemon,
+            agent,
+            turn,
+            note_lsn,
+            session,
+            pause,
+        }
+    }
+
+    fn request(
+        verb: crate::floor_chat::ChatVerb,
+        agent: AgentId,
+        field: &str,
+        value: &str,
+        key: char,
+    ) -> crate::floor_chat::ChatRequest {
+        let mut request_id = "A".repeat(43);
+        request_id.replace_range(..1, &key.to_string());
+        let body =
+            serde_json::json!({"request_id":request_id,"agent":agent.to_string(),field:value});
+        crate::floor_chat::ChatRequest::parse(verb, &serde_json::to_vec(&body).unwrap()).unwrap()
+    }
+
+    fn completion(&mut self) -> crate::chat_launch::ScopedCompletion {
+        assert_eq!(self.host.spawn_calls(), 0);
+        self.pause.release();
+        let Job::ScopedLaunchPrepared(completion) = self
+            .daemon
+            .jobs
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+        else {
+            panic!("exact scoped completion")
+        };
+        *completion
+    }
+}
+
+impl Drop for LiveScopedFixture {
+    fn drop(&mut self) {
+        self.pause.release();
+    }
+}
+
 impl ScopedFixture {
     fn new() -> Self {
         use std::os::unix::fs::PermissionsExt as _;
@@ -348,6 +499,7 @@ impl ScopedFixture {
         };
         self.daemon.ctx.prepare_scoped_turn(
             self.issued.turn,
+            None,
             launch,
             None,
             &mut queue,
@@ -567,6 +719,121 @@ fn scoped_fixture_payload(
 }
 
 #[test]
+fn a_scoped_goal_note_stays_cancellable_until_actual_host_entry() {
+    let mut f = LiveScopedFixture::new();
+    assert!(
+        matches!(f.daemon.sup.browser_note_cancel_disposition(f.agent, f.note_lsn), dudes_supervisor::machine::BrowserNoteCancelDisposition::CleanIssue { turn } if turn == f.turn)
+    );
+    let request = LiveScopedFixture::request(
+        crate::floor_chat::ChatVerb::Cancel,
+        f.agent,
+        "note_lsn",
+        &f.note_lsn.0.to_string(),
+        'C',
+    );
+    let outcome = f.daemon.browser_chat(&f.session, &request);
+    assert!(
+        outcome.is_ok(),
+        "{outcome:?}; records={:?}",
+        f.setup
+            .fixture
+            .records()
+            .iter()
+            .map(Record::kind)
+            .collect::<Vec<_>>()
+    );
+    let outcome = outcome.unwrap();
+    assert!(!matches!(
+        outcome,
+        crate::floor_chat::ChatOutcome::Refused { .. }
+    ));
+    let completion = f.completion();
+    f.daemon.complete_scoped_launch(completion).unwrap();
+    assert_eq!(f.host.spawn_calls(), 0);
+    assert!(f.daemon.ctx.scoped_launches.is_empty());
+    assert!(f.daemon.sup.world().browser_issue_cancelled(f.turn));
+    assert!(!f.setup.fixture.records().iter().any(|record| matches!(
+        record,
+        Record::TurnSpawned { .. } | Record::ConversationDispatchUncertain { .. }
+    )));
+}
+
+fn control_during_scoped_preparation(halt: bool) {
+    let mut f = LiveScopedFixture::new();
+    let command = if halt {
+        Command::Halt {
+            agent: f.agent,
+            text: None,
+        }
+    } else {
+        Command::Pause {
+            agent: f.agent,
+            browser: None,
+        }
+    };
+    f.daemon.pump(Input::Command(command)).unwrap();
+    let completion = f.completion();
+    f.daemon.complete_scoped_launch(completion).unwrap();
+    assert_eq!(f.host.spawn_calls(), 0);
+    assert!(
+        f.daemon.sup.world().turns[&f.turn].has_ended(),
+        "a controlled current preparation must settle as known not launched"
+    );
+    assert!(f.daemon.ctx.scoped_launches.is_empty());
+    assert!(!f.daemon.sup.has_ungranted_browser_launch(f.agent));
+    let before = f.setup.fixture.records();
+    assert!(before.iter().any(|record| matches!(record, Record::TurnEnded { turn, outcome: Some(TurnOutcome::NotLaunched { .. }), .. } if *turn == f.turn)));
+    assert!(before.iter().any(|record| matches!(record,
+        Record::InstructionObservationBatchFinished(batch)
+            if matches!(batch.owner, InstructionObservationOwner::Managed { turn, .. } if turn == f.turn)
+                && batch.members.iter().all(|member| matches!(member.settlement,
+                    InstructionSettlement::NoProcess { proof: InstructionNoProcessProof::NoHostCall, .. })))));
+    assert!(
+        !before
+            .iter()
+            .any(|record| matches!(record, Record::ConversationDispatchUncertain { .. }))
+    );
+    f.daemon
+        .pump(Input::Command(Command::Resume {
+            agent: f.agent,
+            browser: None,
+        }))
+        .unwrap();
+    let after = f.setup.fixture.records();
+    assert_eq!(
+        after
+            .iter()
+            .filter(|record| record
+                .turn_issue()
+                .is_some_and(|issue| issue.turn == f.turn))
+            .count(),
+        1
+    );
+    assert_eq!(
+        after
+            .iter()
+            .filter(|record| matches!(record, Record::TurnEnded { turn, .. } if *turn == f.turn))
+            .count(),
+        1
+    );
+    assert!(
+        !after
+            .iter()
+            .any(|record| matches!(record, Record::TurnSpawned { turn, .. } if *turn == f.turn))
+    );
+}
+
+#[test]
+fn pause_during_scoped_preparation_settles_the_current_known_no_host_attempt() {
+    control_during_scoped_preparation(false);
+}
+
+#[test]
+fn halt_during_scoped_preparation_settles_the_current_known_no_host_attempt() {
+    control_during_scoped_preparation(true);
+}
+
+#[test]
 fn a_fresh_scoped_conversation_preparation_failure_has_no_false_dispatch_uncertainty() {
     let setup = super::repository_hire_tests::Setup::with_repositories(&["api"]);
     let (mut running, hires, params) = setup.start(true);
@@ -651,7 +918,7 @@ fn a_fresh_scoped_conversation_preparation_failure_has_no_false_dispatch_uncerta
             .iter()
             .filter(|record| matches!(record, Record::BrowserNoteDispatchIntent { .. }))
             .count(),
-        1
+        0
     );
     assert!(records.iter().any(|record| matches!(
         record,
@@ -695,9 +962,14 @@ fn scoped_preparation_refuses_task_model_or_session_drift_before_a_worker_or_hos
             }
         }
         let mut queue = VecDeque::new();
-        f.daemon
-            .ctx
-            .prepare_scoped_turn(f.issued.turn, &seed, None, &mut queue, &f.daemon.sup);
+        f.daemon.ctx.prepare_scoped_turn(
+            f.issued.turn,
+            None,
+            &seed,
+            None,
+            &mut queue,
+            &f.daemon.sup,
+        );
         assert!(
             matches!(queue.pop_front(), Some(Input::LaunchPreparationFailed { turn, .. }) if turn == f.issued.turn)
         );
@@ -712,7 +984,7 @@ fn scoped_preparation_refuses_task_model_or_session_drift_before_a_worker_or_hos
 }
 
 #[test]
-fn claude_scoped_completion_launches_the_original_task_once_with_an_empty_host_install() {
+fn scoped_runtime_capability_refusal_precedes_the_worker_and_host() {
     let mut f = ScopedFixture::new();
     f.daemon.ctx.current_repositories.test_hire_capability = false;
     assert!(
@@ -724,20 +996,29 @@ fn claude_scoped_completion_launches_the_original_task_once_with_an_empty_host_i
         unreachable!();
     };
     let mut refused = VecDeque::new();
-    f.daemon
-        .ctx
-        .prepare_scoped_turn(f.issued.turn, launch, None, &mut refused, &f.daemon.sup);
+    f.daemon.ctx.prepare_scoped_turn(
+        f.issued.turn,
+        None,
+        launch,
+        None,
+        &mut refused,
+        &f.daemon.sup,
+    );
     assert!(
         matches!(refused.pop_front(), Some(Input::LaunchPreparationFailed { turn, .. }) if turn == f.issued.turn)
     );
     assert!(f.daemon.jobs.try_recv().is_err());
     assert_eq!(f.host.spawn_calls(), 0);
-    f.daemon.ctx.current_repositories.test_hire_capability = true;
-    let completion = f.prepare();
+}
+
+#[test]
+fn claude_scoped_completion_launches_the_original_task_once_with_an_empty_host_install() {
+    let mut f = LiveScopedFixture::new();
+    let completion = f.completion();
     let prepared = completion.prepared.as_ref().unwrap();
     assert_eq!(
         prepared.launch.spec.stdin,
-        dudes_providers::launch::LaunchInput::WriteThenClose(f.issued.task.as_bytes().to_vec())
+        dudes_providers::launch::LaunchInput::WriteThenClose(f.task.as_bytes().to_vec())
     );
     assert!(
         prepared
@@ -758,10 +1039,7 @@ fn claude_scoped_completion_launches_the_original_task_once_with_an_empty_host_i
         f.host.installs.lock().unwrap().as_slice(),
         [ManagedInstall::default()]
     );
-    assert_eq!(
-        f.daemon.sup.world().turns[&f.issued.turn].task,
-        f.issued.task
-    );
+    assert_eq!(f.daemon.sup.world().turns[&f.turn].task, f.task);
     f.daemon
         .complete_scoped_launch(crate::chat_launch::ScopedCompletion {
             attempt,
@@ -793,12 +1071,16 @@ fn a_claude_scoped_completion_refuses_a_missing_copy_with_the_original_issue_ret
             .sup
             .world()
             .instructions
-            .current_for_turn(f.issued.turn)
+            .attempt(f.issued.started)
             .unwrap()
-            .1
             .finished
-            .is_none()
+            .is_some()
     );
+    assert!(f.setup.fixture.records().iter().any(|record| matches!(record,
+        Record::InstructionObservationBatchFinished(batch)
+            if batch.baseline == (InstructionBaselineRef::Started { lsn: f.issued.started })
+                && batch.members.iter().all(|member| matches!(member.settlement,
+                    InstructionSettlement::NoProcess { proof: InstructionNoProcessProof::NoHostCall, .. })))));
     assert!(!f.setup.fixture.records().iter().any(
         |record| matches!(record, Record::TurnSpawned { turn, .. } if *turn == f.issued.turn)
     ));
@@ -856,7 +1138,10 @@ fn scoped_preparation_failure_keeps_the_issue_and_enters_the_existing_visible_ho
         started: issued.started,
         owner: issued.owner,
     };
-    daemon.ctx.scoped_launches.insert(issued.turn, attempt);
+    daemon
+        .ctx
+        .scoped_launches
+        .insert(issued.turn, attempt.into());
     let goals = fixture
         .records()
         .iter()
@@ -917,7 +1202,10 @@ fn stale_scoped_completion_cannot_hold_a_different_physical_attempt() {
             started: issued.started,
             owner: issued.owner,
         };
-        daemon.ctx.scoped_launches.insert(issued.turn, attempt);
+        daemon
+            .ctx
+            .scoped_launches
+            .insert(issued.turn, attempt.into());
         let mut stale = attempt;
         if stale_generation {
             stale.generation += 1;
@@ -925,7 +1213,7 @@ fn stale_scoped_completion_cannot_hold_a_different_physical_attempt() {
             stale.started = issued.issue;
         }
         if !stale_generation {
-            daemon.ctx.scoped_launches.insert(issued.turn, stale);
+            daemon.ctx.scoped_launches.insert(issued.turn, stale.into());
         }
         let before = fixture.records();
         let outbox =
@@ -955,7 +1243,7 @@ fn a_retained_preparation_reservation_cannot_silently_wedge_the_current_attempt(
         started: issued.started,
         owner: issued.owner,
     };
-    daemon.ctx.scoped_launches.insert(issued.turn, prior);
+    daemon.ctx.scoped_launches.insert(issued.turn, prior.into());
     daemon.ctx.scoped_generation = prior.generation;
     let Effect::Spawn { ref launch, .. } = issued.spawn else {
         panic!("prepared spawn");
@@ -963,7 +1251,7 @@ fn a_retained_preparation_reservation_cannot_silently_wedge_the_current_attempt(
     let mut queue = VecDeque::new();
     daemon
         .ctx
-        .prepare_scoped_turn(issued.turn, launch, None, &mut queue, &daemon.sup);
+        .prepare_scoped_turn(issued.turn, None, launch, None, &mut queue, &daemon.sup);
     assert!(
         matches!(queue.front(), Some(Input::LaunchPreparationFailed { turn, started_lsn, reason }) if *turn == issued.turn && *started_lsn == issued.started && reason.contains("reservation"))
     );
@@ -992,7 +1280,10 @@ fn pending_control_acknowledgements_fold_before_the_scoped_host_check() {
             started: issued.started,
             owner: issued.owner,
         };
-        daemon.ctx.scoped_launches.insert(issued.turn, attempt);
+        daemon
+            .ctx
+            .scoped_launches
+            .insert(issued.turn, attempt.into());
         let command = match control {
             0 => Command::Pause {
                 agent: issued.agent,
@@ -1032,10 +1323,22 @@ fn pending_control_acknowledgements_fold_before_the_scoped_host_check() {
             record,
             Record::Pause { .. } | Record::Halt { .. } | Record::AgentRetired { .. }
         )));
+        let entries = fixture.entries();
+        let control_lsn = entries
+            .iter()
+            .find_map(|(lsn, entry)| {
+                matches!(
+                    entry.record,
+                    Record::Pause { .. } | Record::Halt { .. } | Record::AgentRetired { .. }
+                )
+                .then_some(*lsn)
+            })
+            .unwrap();
         assert!(
-            !after
+            entries
                 .iter()
-                .any(|record| no_host_finish(record, &issued, None))
+                .filter(|(_, entry)| no_host_finish(&entry.record, &issued, None))
+                .all(|(lsn, _)| *lsn > control_lsn)
         );
         assert!(
             !after
@@ -1059,7 +1362,10 @@ fn a_failed_scoped_preparation_does_not_clear_uncertain_owned_children() {
         started: issued.started,
         owner: issued.owner,
     };
-    daemon.ctx.scoped_launches.insert(issued.turn, attempt);
+    daemon
+        .ctx
+        .scoped_launches
+        .insert(issued.turn, attempt.into());
     daemon
         .ctx
         .children
