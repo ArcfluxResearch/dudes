@@ -187,6 +187,14 @@ class Transport(unittest.TestCase):
 
 
 class Fixtures(unittest.TestCase):
+    def test_linux_bridge_budget_covers_both_socket_names_and_the_nul(self):
+        for temp, fits in [("/tmp/dp-owned/agent/tmp", True), ("/tmp/" + "x" * 100, False)]:
+            result = proof.linux_bridge_path_budget({"private": {"temp": temp}})
+            self.assertEqual(result["http_path_bytes"], len(temp.encode()) + 34)
+            self.assertEqual(result["socks_path_bytes"], len(temp.encode()) + 35)
+            self.assertEqual(result["maximum_with_nul_bytes"], len(temp.encode()) + 36)
+            self.assertEqual(result["fits"], fits)
+
     def test_existing_negative_targets_and_seed_identity_are_rechecked(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

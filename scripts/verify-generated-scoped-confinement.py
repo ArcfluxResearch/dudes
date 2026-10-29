@@ -537,8 +537,14 @@ def resume_stage(args, root, value, model, actions, prepare):
     return result, policy if "policy" in locals() else None, env if "env" in locals() else None
 
 
+def linux_bridge_path_budget(value):
+    temp_bytes = len(os.fsencode(value["private"]["temp"]))
+    return {"private_temp_bytes": temp_bytes, "http_path_bytes": temp_bytes + 34, "socks_path_bytes": temp_bytes + 35, "maximum_with_nul_bytes": temp_bytes + 36, "linux_path_capacity": 108, "fits": temp_bytes + 36 <= 108, "basis": "source-derived socket names; exact embedded native socket names remain unobserved"}
+
+
 def run_claude_resume(args):
     root = Path(tempfile.mkdtemp(prefix="claude-resume-", dir=args.output)).resolve()
+    execution_root = Path(tempfile.mkdtemp(prefix="dp-", dir="/tmp")).resolve() if platform.system() == "Linux" else root
     binary = Path(args.claude).resolve(strict=True)
     if sha256(binary) != compat.PINS.get((platform.system(), platform.machine(), "claude")):
         raise RuntimeError("resume proof requires the exact pinned Claude binary")
@@ -546,7 +552,13 @@ def run_claude_resume(args):
     first_model = ActionModel("claude", False)
     models = [first_model]
     try:
-        first = compat.fixture_input(root, "claude", binary, first_model.endpoint)
+        result["execution_root"] = str(execution_root)
+        first = compat.fixture_input(execution_root, "claude", binary, first_model.endpoint)
+        if platform.system() == "Linux":
+            result["linux_bridge_path_budget"] = linux_bridge_path_budget(first)
+            result["checks"]["linux_bridge_socket_paths_fit"] = result["linux_bridge_path_budget"]["fits"]
+            if not result["checks"]["linux_bridge_socket_paths_fit"]:
+                raise RuntimeError("generated private temp exceeds the Linux bridge pathname budget")
         first["task"] = "Read the owned existing file and finish."
         a = Path(first["legacy_cwd"]) / "resume-existing"
         a.write_text("owned retained session input\n")
@@ -555,7 +567,7 @@ def run_claude_resume(args):
         frozen = {}
         def prepare_first(policy, env):
             selection = compat.inspect_selection("claude", binary, list(policy["argv"]), env, policy, first, first_model)
-            traps = seed_canaries(root, first, "claude")
+            traps = seed_canaries(execution_root, first, "claude")
             make_probe(first, "claude", "command-writable", first_model.endpoint)
             frozen.update({"seed": owned_seed_state(first), "traps": traps})
             return {"first_generated_session_flag_exact": policy["argv"].count("--session-id") == 1 and policy["argv"][policy["argv"].index("--session-id") + 1] == first["session_id"], "owned_seed_rechecked": owned_seed_state(first) == frozen["seed"]}, {"pre_seed_empty_selection": selection, "owned_seed": frozen["seed"]}
@@ -616,6 +628,7 @@ def run_claude_resume(args):
 
 def run_case(args, provider, case):
     root = Path(tempfile.mkdtemp(prefix=provider + "-" + case + "-", dir=args.output)).resolve()
+    execution_root = Path(tempfile.mkdtemp(prefix="dp-", dir="/tmp")).resolve() if platform.system() == "Linux" else root
     binary = Path(getattr(args, provider)).resolve(strict=True)
     if sha256(binary) != compat.PINS.get((platform.system(), platform.machine(), provider)):
         raise RuntimeError("native binary does not match the exact pinned build")
@@ -640,7 +653,13 @@ def run_case(args, provider, case):
         result["checks"]["expected_version"] = version.returncode == 0 and result["version"] == ("2.1.311 (Claude Code)" if provider == "claude" else "codex-cli 0.164.0-alpha.11.1")
         if not result["checks"]["expected_version"]:
             raise RuntimeError("pinned engine version output differs")
-        value = compat.fixture_input(root, provider, binary, model.endpoint)
+        result["execution_root"] = str(execution_root)
+        value = compat.fixture_input(execution_root, provider, binary, model.endpoint)
+        if provider == "claude" and platform.system() == "Linux":
+            result["linux_bridge_path_budget"] = linux_bridge_path_budget(value)
+            result["checks"]["linux_bridge_socket_paths_fit"] = result["linux_bridge_path_budget"]["fits"]
+            if not result["checks"]["linux_bridge_socket_paths_fit"]:
+                raise RuntimeError("generated private temp exceeds the Linux bridge pathname budget")
         value["task"] = "Carry out the single local confinement check and finish."
         policy = compat.project(args.fixture, root, value)
         (root / "generated-policy.json").write_text(json.dumps(policy, indent=2) + "\n")
@@ -653,7 +672,7 @@ def run_case(args, provider, case):
         result["diagnostic_argv"] = argv
         result["materialized_environment_sha256"] = compat.digest(env)
         result["environment_names"] = sorted(env)
-        traps = seed_canaries(root, value, provider)
+        traps = seed_canaries(execution_root, value, provider)
         result["configuration_canaries_seeded_after_empty_profile_inspection"] = True
         probe = make_probe(value, provider, case, model.endpoint, args.macos_sandbox_unavailable)
         model.probe = probe

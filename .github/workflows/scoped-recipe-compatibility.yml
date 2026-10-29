@@ -1,4 +1,4 @@
-name: scoped recipe compatibility
+name: scoped Claude recipe compatibility
 
 on:
   pull_request:
@@ -50,9 +50,18 @@ jobs:
             set -e
             ip link set lo up
             exec runuser -u runner -- "$@"
-          ' compatibility python3 scripts/verify-scoped-recipe-compatibility.py --fixture "$RUNNER_TEMP/compatibility-target/debug/examples/scoped_launch_fixture" --claude "$RUNNER_TEMP/compatibility-binaries/claude" --codex "$RUNNER_TEMP/compatibility-binaries/codex" --output "$RUNNER_TEMP/compatibility-proof"
-      - name: Check generated Claude First confinement in a loopback-only namespace
+          ' compatibility python3 scripts/verify-scoped-recipe-compatibility.py --fixture "$RUNNER_TEMP/compatibility-target/debug/examples/scoped_launch_fixture" --claude "$RUNNER_TEMP/compatibility-binaries/claude" --codex "$RUNNER_TEMP/compatibility-binaries/codex" --case claude --output "$RUNNER_TEMP/compatibility-proof"
+      - name: Check the short-root Claude Bash positive before the matrix
+        id: claude_bash
         if: ${{ !cancelled() && steps.fixture.outcome == 'success' && steps.engines.outcome == 'success' }}
+        run: |
+          sudo unshare --net /bin/sh -c '
+            set -e
+            ip link set lo up
+            exec runuser -u runner -- "$@"
+          ' bridge python3 scripts/verify-generated-scoped-confinement.py --fixture "$RUNNER_TEMP/compatibility-target/debug/examples/scoped_launch_fixture" --claude "$RUNNER_TEMP/compatibility-binaries/claude" --codex "$RUNNER_TEMP/compatibility-binaries/codex" --provider claude --case command-writable --output "$RUNNER_TEMP/generated-bridge-control"
+      - name: Check generated Claude First confinement in a loopback-only namespace
+        if: ${{ !cancelled() && steps.claude_bash.outcome == 'success' }}
         run: |
           sudo unshare --net /bin/sh -c '
             set -e
@@ -60,21 +69,13 @@ jobs:
             exec runuser -u runner -- "$@"
           ' confinement python3 scripts/verify-generated-scoped-confinement.py --fixture "$RUNNER_TEMP/compatibility-target/debug/examples/scoped_launch_fixture" --claude "$RUNNER_TEMP/compatibility-binaries/claude" --codex "$RUNNER_TEMP/compatibility-binaries/codex" --provider claude --output "$RUNNER_TEMP/generated-confinement-proof"
       - name: Check retained Claude session narrowing in a loopback-only namespace
-        if: ${{ !cancelled() && steps.fixture.outcome == 'success' && steps.engines.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.claude_bash.outcome == 'success' }}
         run: |
           sudo unshare --net /bin/sh -c '
             set -e
             ip link set lo up
             exec runuser -u runner -- "$@"
           ' resume python3 scripts/verify-generated-scoped-confinement.py --fixture "$RUNNER_TEMP/compatibility-target/debug/examples/scoped_launch_fixture" --claude "$RUNNER_TEMP/compatibility-binaries/claude" --codex "$RUNNER_TEMP/compatibility-binaries/codex" --provider claude --claude-resume-narrowing --output "$RUNNER_TEMP/generated-resume-proof"
-      - name: Check generated Codex First confinement in a loopback-only namespace
-        if: ${{ !cancelled() && steps.fixture.outcome == 'success' && steps.engines.outcome == 'success' }}
-        run: |
-          sudo unshare --net /bin/sh -c '
-            set -e
-            ip link set lo up
-            exec runuser -u runner -- "$@"
-          ' codex python3 scripts/verify-generated-scoped-confinement.py --fixture "$RUNNER_TEMP/compatibility-target/debug/examples/scoped_launch_fixture" --claude "$RUNNER_TEMP/compatibility-binaries/claude" --codex "$RUNNER_TEMP/compatibility-binaries/codex" --provider codex --output "$RUNNER_TEMP/generated-codex-proof"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
@@ -91,6 +92,14 @@ jobs:
             ${{ runner.temp }}/compatibility-proof/**/stderr.txt
             ${{ runner.temp }}/compatibility-proof/**/outer-network-guard.sb
             ${{ runner.temp }}/compatibility-binaries/downloads.json
+            ${{ runner.temp }}/generated-bridge-control/summary.json
+            ${{ runner.temp }}/generated-bridge-control/**/receipt.json
+            ${{ runner.temp }}/generated-bridge-control/**/generated-policy.json
+            ${{ runner.temp }}/generated-bridge-control/**/fixture-input.json
+            ${{ runner.temp }}/generated-bridge-control/**/fixture-output.json
+            ${{ runner.temp }}/generated-bridge-control/**/model-requests.json
+            ${{ runner.temp }}/generated-bridge-control/**/stdout.jsonl
+            ${{ runner.temp }}/generated-bridge-control/**/stderr.txt
             ${{ runner.temp }}/generated-confinement-proof/summary.json
             ${{ runner.temp }}/generated-confinement-proof/**/receipt.json
             ${{ runner.temp }}/generated-confinement-proof/**/generated-policy.json
@@ -109,13 +118,4 @@ jobs:
             ${{ runner.temp }}/generated-resume-proof/**/stdout.jsonl
             ${{ runner.temp }}/generated-resume-proof/**/stderr.txt
             ${{ runner.temp }}/generated-resume-proof/**/session-artifact.jsonl
-            ${{ runner.temp }}/generated-codex-proof/summary.json
-            ${{ runner.temp }}/generated-codex-proof/**/receipt.json
-            ${{ runner.temp }}/generated-codex-proof/**/fixture-input.json
-            ${{ runner.temp }}/generated-codex-proof/**/fixture-output.json
-            ${{ runner.temp }}/generated-codex-proof/**/generated-policy.json
-            ${{ runner.temp }}/generated-codex-proof/**/model-requests.json
-            ${{ runner.temp }}/generated-codex-proof/**/sent-protocol.json
-            ${{ runner.temp }}/generated-codex-proof/**/stdout.jsonl
-            ${{ runner.temp }}/generated-codex-proof/**/stderr.txt
           retention-days: 7
