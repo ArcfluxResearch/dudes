@@ -305,7 +305,7 @@ class Resume(unittest.TestCase):
                         else:
                             (Path(policy["cwd"]) / "resume-shell").write_text(proof.MARKER)
                             text = "SCOPED_removed-a=refused\nSCOPED_declared-b=written\n"
-                        messages.extend([{"role": "assistant", "content": [{"type": "tool_use", "id": identifier, "name": action.tool, "input": action.arguments}]}, {"role": "user", "content": [{"type": "tool_result", "tool_use_id": identifier, "content": text, "is_error": denied}]}])
+                        messages.extend([{"role": "assistant", "content": [{"type": "tool_use", "id": identifier, "name": action.tool, "input": action.arguments}]}, {"role": "user", "content": [{"type": "tool_result", "tool_use_id": identifier, "content": text, **({"is_error": True} if denied else {})}]}])
                         model.requests.append(request())
                     model.post_attempts = len(model.requests) + (1 if failure == "extra attempt" and value["session_kind"] == "resume" else 0)
                     model.http_total = model.post_attempts
