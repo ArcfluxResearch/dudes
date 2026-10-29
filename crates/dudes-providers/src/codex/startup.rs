@@ -15,6 +15,7 @@ pub struct CodexStartup {
     pub(crate) agent_dir: PathBuf,
     pub(crate) cwd: PathBuf,
     canonical_cwd: Option<PathBuf>,
+    scoped_roots: Option<Box<[PathBuf]>>,
     pub(crate) task: String,
     pub(crate) session: TurnSession,
     pub(crate) selection: ModelSelection,
@@ -36,6 +37,7 @@ impl CodexStartup {
             agent_dir,
             cwd,
             canonical_cwd: None,
+            scoped_roots: None,
             task,
             session,
             selection,
@@ -55,11 +57,23 @@ impl CodexStartup {
     }
 
     pub(crate) fn writable_roots(&self) -> Vec<PathBuf> {
+        if let Some(roots) = &self.scoped_roots {
+            return roots.to_vec();
+        }
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let roots = vec![self.agent_dir.join("tmp"), self.agent_dir.join("outbox")];
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let roots = vec![self.agent_dir.join("tmp")];
         roots
+    }
+
+    pub(crate) fn with_scoped_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.scoped_roots = Some(roots.into_boxed_slice());
+        self
+    }
+
+    pub(crate) const fn is_scoped(&self) -> bool {
+        self.scoped_roots.is_some()
     }
 
     /// Working directory captured with this task.
@@ -107,6 +121,7 @@ impl fmt::Debug for CodexStartup {
             .field("agent_dir", &self.agent_dir)
             .field("cwd", &self.cwd)
             .field("canonical_cwd", &self.canonical_cwd)
+            .field("scoped_roots", &self.scoped_roots)
             .field("task_bytes", &self.task.len())
             .field("session", &self.session)
             .field("selection", &self.selection)

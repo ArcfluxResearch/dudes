@@ -252,6 +252,9 @@ pub const PREDICATE_ENV_ALLOWLIST: &[&str] = &[
 /// Why an adapter refused to compose a managed launch.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum LaunchError {
+    /// The restricted candidate cannot represent these launch inputs.
+    #[error("scoped launch refused: {0}")]
+    Scoped(#[from] crate::scoped::ScopedError),
     /// The recorded repository authority has no supported execution selection.
     #[error("recorded repository authority is unavailable for this launch")]
     RepositoryAuthorityUnavailable,

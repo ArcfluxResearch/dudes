@@ -548,6 +548,15 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
     browser.send(r#"{"type":"floor.subscribe"}"#);
     let before = browser.json();
     assert!(before["projection"].get("closing_progress").is_none());
+    running
+        .handle
+        .ask(Ask::Rename(Box::new(
+            dudes_proto::rpc::agent::RenameParams {
+                agent,
+                name: "Renamed participant".to_owned(),
+            },
+        )))
+        .unwrap();
     let mut client = Client::connect(settings.socket()).unwrap();
     let answer = client
         .call_as_operator(
@@ -557,11 +566,13 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
         )
         .unwrap();
     assert!(answer.error.is_none());
-    let frame = browser.json();
+    let announcement = answer.result.as_ref().unwrap()["announcement"].clone();
+    let frame = first_closing_frame(&mut browser, announcement.as_u64().unwrap());
     assert_eq!(frame["type"], "floor.delta");
     assert_eq!(
         frame["delta"]["closing_time"],
-        serde_json::json!({"kind":"announced"})
+        serde_json::json!({"kind":"announced"}),
+        "{frame}"
     );
     let progress = &frame["delta"]["closing_progress"];
     assert_progress_cut(&fixture, &frame, (0, 0, 2, 2));
@@ -570,7 +581,6 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
         frame["delta"]["lsn"],
         answer.result.as_ref().unwrap()["announcement"]
     );
-    let announcement = answer.result.as_ref().unwrap()["announcement"].clone();
     let token = agent_token(&fixture, &tokens, agent);
     let ack = serde_json::json!({ "action": "ack", "lsn": announcement, "token": token.expose() });
     column.set(dudes_proto::PeerProvenance::Agent(agent));
@@ -659,6 +669,24 @@ fn observe_turn_end(handle: &duded::ports::Handle, fixture: &Fixture, agent: dud
         outcome: dudes_proto::TurnOutcome::Completed,
         last_message: None,
     });
+}
+
+fn first_closing_frame(browser: &mut WebSocket, announcement_lsn: u64) -> Value {
+    let mut saw_preannouncement_delta = false;
+    loop {
+        let frame = browser.json();
+        assert_eq!(frame["type"], "floor.delta");
+        if frame["delta"]["lsn"].as_u64().unwrap() >= announcement_lsn {
+            assert!(
+                saw_preannouncement_delta,
+                "the queued rename must precede the announcement"
+            );
+            return frame;
+        }
+        assert!(frame["delta"].get("closing_time").is_none());
+        assert!(frame["delta"].get("closing_progress").is_none());
+        saw_preannouncement_delta = true;
+    }
 }
 
 fn next_closing_progress(browser: &mut WebSocket) -> Value {

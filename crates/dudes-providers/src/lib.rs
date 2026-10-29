@@ -18,5 +18,6 @@ pub mod mcp;
 pub mod pi;
 pub mod protocol;
 pub mod registry;
+pub mod scoped;
 pub mod steps;
 pub mod stream;
