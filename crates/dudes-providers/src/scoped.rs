@@ -91,7 +91,7 @@ pub struct ScopedInventory {
     pub grant: RepositoryTurnGrant,
     /// Complete frozen hire to which protected metadata belongs.
     pub hired: ScopedRepositories,
-    /// Explicit execution directory; never inferred from the legacy context.
+    /// Frozen grant's execution primary; never inferred from the legacy context.
     pub cwd: PathBuf,
     /// Declared copies plus purpose-labelled private roots.
     pub writable: Vec<WritableLocation>,
@@ -307,7 +307,7 @@ fn inventory(
     let hired = scope.hired;
     let mut protected = protected_repositories(scope)?;
     let declared = grant.repositories.entries().to_vec();
-    let cwd = declared[0].value.execution.directory.clone();
+    let cwd = grant.repositories.primary().execution.directory.clone();
     let private = &scope.private;
     let controls = [
         private.home.clone(),
