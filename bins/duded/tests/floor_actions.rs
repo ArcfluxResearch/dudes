@@ -9008,9 +9008,10 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
         "the real change is reported"
     );
     assert_eq!(result["workspaces"], json!(["repo_1"]));
-    assert!(
-        offered(&page).is_empty(),
-        "unresolved current admission stays closed"
+    assert_eq!(
+        offered(&page),
+        only_repo_1,
+        "a refused read preserves the installed enrollment"
     );
 
     let sha = rewrite(
@@ -9024,9 +9025,10 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
         json!(["repo_3"]),
         "the real change is shown"
     );
-    assert!(
-        offered(&page).is_empty(),
-        "unresolved current admission stays closed"
+    assert_eq!(
+        offered(&page),
+        only_repo_1,
+        "a refused read preserves the installed enrollment"
     );
 
     #[cfg(unix)]
@@ -9042,9 +9044,10 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
             message.contains("project `repo_2` in [floor.onboarding] workspaces whose cwd is not its canonical form"),
             "{message}"
         );
-        assert!(
-            offered(&page).is_empty(),
-            "unresolved current admission stays closed"
+        assert_eq!(
+            offered(&page),
+            only_repo_1,
+            "a refused read preserves the installed enrollment"
         );
     }
 

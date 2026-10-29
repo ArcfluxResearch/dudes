@@ -241,8 +241,7 @@ fn invalid_repository_shapes_and_identity_aliases_cannot_be_observed() {
 }
 
 #[test]
-fn a_malformed_operator_reload_closes_admission_before_reply_and_an_unauthorized_read_cannot_pause()
-{
+fn malformed_and_unauthorized_operator_reads_leave_installed_admission_unchanged() {
     let fixture = Fixture::new();
     let roots = tempfile::tempdir().unwrap();
     let origin = create_origin(&roots.path().canonicalize().unwrap(), "web");
@@ -288,15 +287,8 @@ fn a_malformed_operator_reload_closes_admission_before_reply_and_an_unauthorized
             .error
             .is_some()
     );
-    assert!(fixture.entries().iter().any(
-        |(_, entry)| matches!(entry.record, Record::Pause { agent: who, .. } if who == agent)
-    ));
-    assert!(
-        running
-            .handle
-            .ask(duded::ports::Ask::Resume(agent))
-            .is_err()
-    );
+    assert_eq!(fixture.entries(), before);
+    assert!(running.handle.ask(duded::ports::Ask::Resume(agent)).is_ok());
     assert!(host.spawned().is_empty());
     std::fs::write(&config, original).unwrap();
     let checked = call(&settings, Method::FloorEnrollmentReload, json!({}))
@@ -365,7 +357,7 @@ fn an_owed_pre_expansion_singleton_stays_frozen_and_unlaunched_with_warm_and_col
         )
         .unwrap();
         let row = &daemon.world().agents[&agent];
-        assert!(row.paused);
+        assert!(!row.paused);
         let singleton = row.repositories.singleton().unwrap();
         assert_eq!(singleton.cwd(), origins[0].value.origin.directory);
         assert_eq!(singleton.workspace().unwrap().id, "service");

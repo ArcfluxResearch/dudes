@@ -8,7 +8,6 @@ use dudes_proto::record::TrustedRepository;
 use dudes_proto::repository::{
     CatalogRepository, HireRepositories, RepoId, RepositoryEntry, RepositorySet,
 };
-use dudes_proto::rpc::RpcError;
 use dudes_proto::{Entry, Record};
 use dudes_supervisor::{Clock, ProcessHost, RepositoryAdmission, Rng, World};
 use dudes_types::{AgentId, Lsn, Timestamp};
@@ -16,16 +15,15 @@ use dudes_types::{AgentId, Lsn, Timestamp};
 use super::{Ctx, Daemon, PredicateRunner};
 use crate::floor_actions::{ConfiguredRepository, Enrollment, Profile};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct CurrentRepositories {
-    pub(crate) invalid: bool,
-    pub(crate) invalid_seq: u64,
     pub(crate) observed: BTreeMap<String, ObservedProject>,
     bindings: BTreeMap<String, BTreeMap<RepoId, TrustedRepository>>,
     #[cfg(test)]
     pub(crate) test_hire_capability: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct ObservedProject {
     pub(crate) lsn: Option<Lsn>,
     pub(crate) repositories: RepositorySet<CatalogRepository>,
@@ -152,7 +150,12 @@ fn explicit_repository_roots<'a>(
                     HireRepositories::Legacy(_) => None,
                 })
                 .flat_map(|scope| scope.repositories.entries())
-                .map(|entry| entry.value.recorded.execution.directory.as_path()),
+                .flat_map(|entry| {
+                    [
+                        entry.value.recorded.execution.directory.as_path(),
+                        entry.value.recorded.origin.directory.as_path(),
+                    ]
+                }),
         )
 }
 
@@ -174,10 +177,6 @@ impl<'a> CurrentHireAdmission<'a> {
         world: &World,
         project: &str,
     ) -> Result<(&Profile, &ObservedProject)> {
-        ensure!(
-            !self.current.invalid,
-            "current project configuration is unavailable"
-        );
         let profile = self
             .enrollment
             .profile(project)
@@ -207,11 +206,14 @@ impl<'a> CurrentHireAdmission<'a> {
         Ok((profile, observed))
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "tests may admit a provider capability through this admission instance"
+        )
+    )]
     pub(super) fn require_repository_capability(&self) -> Result<()> {
-        ensure!(
-            !self.current.invalid,
-            "current project configuration is unavailable"
-        );
         #[cfg(test)]
         if self.current.test_hire_capability {
             return Ok(());
@@ -226,14 +228,23 @@ impl<'a> CurrentHireAdmission<'a> {
         at: Timestamp,
     ) -> Result<()> {
         ensure!(
-            !self.current.invalid,
-            "current project configuration must be resolved before hiring"
-        );
-        ensure!(
             !explicit_repository_roots(self.enrollment, world)
                 .any(|root| directory_overlaps(root, cwd)),
             "this folder belongs to an explicitly scoped project; repository execution is not available yet"
         );
+        for origin in self.current.bindings.values().flat_map(BTreeMap::values) {
+            if directory_overlaps(&origin.directory, cwd) {
+                ensure!(
+                    crate::worktree::trust::still_there(
+                        origin,
+                        &origin.directory,
+                        &origin.directory
+                    ) && crate::worktree::plain_git_dir(&origin.directory).as_ref()
+                        == Some(&origin.common_dir),
+                    "an observed repository binding cannot be resolved"
+                );
+            }
+        }
         for profile in &self.enrollment.profiles {
             if directory_overlaps(&profile.cwd, cwd)
                 && let Some(repositories) = catalog(
@@ -282,6 +293,27 @@ impl<'a> CurrentHireAdmission<'a> {
 }
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
+    pub(super) fn project_repositories_current(&self, world: &World, profile: &Profile) -> bool {
+        catalog(
+            profile,
+            world.repository_projects.get(&profile.id),
+            self.current_repositories.bindings.get(&profile.id),
+        )
+        .and_then(|repositories| {
+            if let Some(repositories) = repositories {
+                world.validate_repository_record(&Entry {
+                    at: self.clock.now(),
+                    record: Record::ProjectRepositoriesRecorded {
+                        project: profile.id.clone(),
+                        repositories,
+                    },
+                })?;
+            }
+            Ok(())
+        })
+        .is_ok()
+    }
+
     pub(super) fn require_current_hire(&self, world: &World, cwd: &Path) -> Result<()> {
         CurrentHireAdmission::new(&self.enrollment, &self.current_repositories)
             .require_current_hire(world, cwd, self.clock.now())
@@ -305,10 +337,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let Some(repositories) = &round.repositories else {
             return round.authority.is_none();
         };
-        if round.authority.is_some()
-            || repositories.declared().is_some()
-            || self.current_repositories.invalid
-        {
+        if round.authority.is_some() || repositories.declared().is_some() {
             return false;
         }
         world
@@ -352,13 +381,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 directory_contains(root, repository.cwd()) || directory_contains(root, origin)
             });
         };
-        if self.current_repositories.invalid {
-            return false;
-        }
         let Some(profile) = self.enrollment.profile(&project.id) else {
             return false;
         };
         if profile.repositories.is_some() {
+            return false;
+        }
+        if !self.project_repositories_current(world, profile) {
             return false;
         }
         if let Some(observed) = self.current_repositories.observed.get(&project.id) {
@@ -421,10 +450,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         project: &str,
         repo_id: &dudes_proto::repository::RepoId,
     ) -> Result<crate::worktree::hire::RepositoryTrustTarget> {
-        ensure!(
-            !self.ctx.current_repositories.invalid,
-            "current project configuration is unavailable"
-        );
         let profile = self
             .ctx
             .enrollment
@@ -512,16 +537,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         ))
         .map_err(|error| anyhow!(error.message))?;
         Ok(true)
-    }
-
-    pub(super) fn invalidate_repository_enrollment(&mut self, seq: u64) -> Result<(), RpcError> {
-        if seq < self.ctx.reloads.local_seq() || seq < self.ctx.current_repositories.invalid_seq {
-            return Ok(());
-        }
-        self.ctx.current_repositories.invalid = true;
-        self.ctx.current_repositories.invalid_seq = seq;
-        self.pump(dudes_supervisor::Input::Tick)
-            .map_err(|_| super::refused("current project configuration could not be held"))
     }
 
     pub(super) fn validate_repository_enrollment(&self, candidate: &Enrollment) -> Result<()> {
@@ -623,17 +638,33 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 
     pub(super) fn observe_repository_enrollment(&mut self) -> Result<()> {
-        self.validate_repository_enrollment(&self.ctx.enrollment)?;
         let profiles = self.ctx.enrollment.profiles.clone();
         let mut observed = BTreeMap::new();
+        let mut failure = None;
         for profile in &profiles {
-            let Some(repositories) = catalog(
+            let repositories = match catalog(
                 profile,
                 self.sup.world().repository_projects.get(&profile.id),
                 self.ctx.current_repositories.bindings.get(&profile.id),
-            )?
-            else {
-                continue;
+            )
+            .and_then(|repositories| {
+                if let Some(repositories) = &repositories {
+                    self.sup.world().validate_repository_record(&Entry {
+                        at: self.ctx.clock.now(),
+                        record: Record::ProjectRepositoriesRecorded {
+                            project: profile.id.clone(),
+                            repositories: repositories.clone(),
+                        },
+                    })?;
+                }
+                Ok(repositories)
+            }) {
+                Ok(Some(repositories)) => repositories,
+                Ok(None) => continue,
+                Err(error) => {
+                    failure.get_or_insert(error);
+                    continue;
+                }
             };
             let lsn = self
                 .sup
@@ -660,7 +691,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
         }
         self.ctx.current_repositories.observed = observed;
-        self.ctx.current_repositories.invalid = false;
+        if let Some(failure) = failure {
+            return Err(failure);
+        }
         self.sup
             .observe_repository_admission(self.ctx.repository_observation(self.sup.world()));
         Ok(())

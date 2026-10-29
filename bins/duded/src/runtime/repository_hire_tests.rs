@@ -396,12 +396,32 @@ fn pin_drift_in_an_unleased_member_aborts_every_pending_copy() {
 }
 
 #[test]
-fn current_config_invalidation_aborts_every_pending_copy() {
+fn an_applied_project_removal_aborts_every_pending_copy() {
     let setup = Setup::new();
     let (mut running, hires, params) = setup.start(true);
     let handle = running.handle.clone();
+    let config = setup.settings.operator_config.clone().unwrap();
     setup.runner.after_add(2, false, move || {
-        handle.enrollment_invalid(u64::MAX).unwrap();
+        use dudes_proto::rpc::floor::EnrollmentApply;
+        let original = crate::config::load_operator(&config).unwrap();
+        let mut candidate = original;
+        candidate.enrollment.profiles.clear();
+        let sha256 = "0".repeat(64);
+        let read = crate::enrollment_reload::ReloadRead {
+            seq: 1,
+            sha256: sha256.clone(),
+            path: config,
+            config: candidate,
+            memory_config: dudes_journal::MemoryCondenseConfig::default(),
+            apply: Some(EnrollmentApply {
+                sha256,
+                added: vec![],
+                removed: vec!["service".into()],
+                changed: vec![],
+            }),
+            pid: None,
+        };
+        assert!(handle.enrollment_reload(read).unwrap().applied);
     });
     assert!(hires.hire(params).is_err());
     running.stop(ExitCause::Ended);

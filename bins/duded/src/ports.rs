@@ -1001,13 +1001,6 @@ pub enum Job {
         /// The method's result, or its refusal.
         reply: Sender<Result<dudes_proto::rpc::floor::EnrollmentReloadResult, RpcError>>,
     },
-    /// An authenticated operator reload could not supply a valid current configuration.
-    EnrollmentInvalid {
-        /// The read's sequence, so an older failed read cannot revoke a later adoption.
-        seq: u64,
-        /// Acknowledged after current admission is closed and pauses are durable.
-        reply: Sender<Result<(), RpcError>>,
-    },
     /// The add-only resync window ended.
     EnrollmentResync {
         /// The window that scheduled this wake.
@@ -1790,14 +1783,6 @@ impl Handle {
 
     pub(crate) fn enrollment_resync(&self, window_id: u64) {
         let _ = self.jobs.send(Job::EnrollmentResync { window_id });
-    }
-
-    pub(crate) fn enrollment_invalid(&self, seq: u64) -> Result<(), RpcError> {
-        let (reply, answers) = mpsc::channel();
-        self.jobs
-            .send(Job::EnrollmentInvalid { seq, reply })
-            .map_err(|_| unavailable())?;
-        answers.recv().map_err(|_| unavailable())?
     }
 
     /// Wrap the loop's sender.
