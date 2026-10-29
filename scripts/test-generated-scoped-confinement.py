@@ -96,6 +96,29 @@ class Evidence(unittest.TestCase):
             checks, _, _ = proof.effect_checks("claude", probe, {"target": b"before\n"}, requests)
             self.assertTrue(all(checks.values()))
 
+    def test_composite_refusal_requires_restricted_read_then_unread_edit_and_exact_effects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = proof.Target("target", Path(directory) / "target", False)
+            target.path.write_text("before\n")
+            probe = proof.Probe("file-undeclared", "Edit", {"file_path": str(target.path)}, [target], preread=True)
+            for failure in [None, "missing read", "missing edit", "successful read", "wrong id", "wrong role", "changed target", "extra attempt"]:
+                target.path.write_text("changed\n" if failure == "changed target" else "before\n")
+                requests = requests_for("claude", probe, "File has not been read yet")
+                if failure == "missing edit":
+                    requests[-1]["body"]["messages"].pop(0)
+                identifier = "wrong-read" if failure == "wrong id" else proof.CLAUDE_READ_ID
+                if failure != "missing read":
+                    requests[-1]["body"]["messages"].extend([
+                        {"role": "user" if failure == "wrong role" else "assistant", "content": [{"type": "tool_use", "id": identifier, "name": "Read", "input": {"file_path": str(target.path)}}]},
+                        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": identifier, "content": "before" if failure == "successful read" else "--restricted confines the file tools to the working directory", "is_error": failure != "successful read"}]},
+                    ])
+                requests.insert(1, {"body": {}})
+                checks, outputs, _ = proof.effect_checks("claude", probe, {"target": b"before\n"}, requests)
+                checks.update(proof.compat.model_observation_checks(types.SimpleNamespace(errors=[], requests=requests, post_attempts=4 if failure == "extra attempt" else 3, http_total=3, get_attempts=0, http_overflow=0), 3))
+                self.assertEqual(all(checks.values()), failure is None, failure)
+                observation = proof.read_then_edit_observation(probe, {"target": b"before\n"}, requests, outputs)
+                self.assertFalse(observation["edit_guard_observed"])
+
     def test_unavailable_requires_actual_sandbox_error(self):
         with tempfile.TemporaryDirectory() as directory:
             target = proof.Target("target", Path(directory) / "target", False)

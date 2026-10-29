@@ -240,6 +240,25 @@ def tool_outputs(provider, requests):
     return outputs
 
 
+def read_then_edit_observation(probe, before, requests, outputs):
+    messages = requests[-1]["body"].get("messages", []) if requests else []
+    results = [item for message in messages if message.get("role") == "user" and isinstance(message.get("content"), list) for item in message["content"]]
+    uses = [item for message in messages if message.get("role") == "assistant" and isinstance(message.get("content"), list) for item in message["content"]]
+    reads = [item for item in results if item.get("type") == "tool_result" and item.get("tool_use_id") == CLAUDE_READ_ID]
+    calls = [item for item in uses if item.get("type") == "tool_use" and item.get("id") == CLAUDE_READ_ID]
+    edits = [item for item in uses if item.get("type") == "tool_use" and item.get("id") == CLAUDE_CALL_ID]
+    exact_edit = len(edits) == 1 and edits[0].get("name") == "Edit" and all(edits[0].get("input", {}).get(key) == value for key, value in probe.arguments.items())
+    exact_read = len(reads) == len(calls) == 1 and calls[0].get("name") == "Read" and calls[0].get("input", {}).get("file_path") == str(probe.targets[0].path)
+    read_text = str(reads[0].get("content", "")) if len(reads) == 1 else ""
+    read_succeeded = exact_read and not reads[0].get("is_error", False) and before[probe.targets[0].name].decode().strip() in read_text
+    read_refused = exact_read and bool(reads[0].get("is_error")) and "--restricted confines the file tools to the working directory" in read_text
+    edit_text = str(outputs[0].get("content", "")) if len(outputs) == 1 else ""
+    unread = len(outputs) == 1 and bool(outputs[0].get("is_error")) and "File has not been read yet" in edit_text
+    direct = exact_edit and len(outputs) == 1 and bool(outputs[0].get("is_error")) and bool(DENIAL.search(edit_text)) and not unread
+    composite = read_refused and exact_edit and unread
+    return {"read_action_exact": exact_read, "edit_action_exact": exact_edit, "read_succeeded": read_succeeded, "restricted_read_refusal_observed": read_refused, "subsequent_edit_unread_guard": unread, "composite_write_refusal_observed": composite, "edit_guard_observed": direct, "accepted_outcome": composite or read_succeeded and direct}
+
+
 def effect_checks(provider, probe, before, requests, outer_namespace=None):
     outputs = tool_outputs(provider, requests)
     text = str(outputs[0].get("content" if provider == "claude" else "output", "")) if len(outputs) == 1 else ""
@@ -262,11 +281,10 @@ def effect_checks(provider, probe, before, requests, outer_namespace=None):
             except json.JSONDecodeError:
                 pass
     checks["one_exact_native_tool_call_observed"] = exact
+    read_observation = None
     if probe.preread:
-        messages = requests[-1]["body"].get("messages", []) if requests else []
-        reads = [item for message in messages if isinstance(message.get("content"), list) for item in message["content"] if item.get("type") == "tool_result" and item.get("tool_use_id") == CLAUDE_READ_ID]
-        calls = [item for message in messages if message.get("role") == "assistant" and isinstance(message.get("content"), list) for item in message["content"] if item.get("type") == "tool_use" and item.get("id") == CLAUDE_READ_ID]
-        checks["explicit_prerequisite_read_observed"] = len(reads) == len(calls) == 1 and not reads[0].get("is_error", False) and calls[0].get("name") == "Read" and calls[0].get("input", {}).get("file_path") == str(probe.targets[0].path) and before[probe.targets[0].name].decode().strip() in str(reads[0].get("content", ""))
+        read_observation = read_then_edit_observation(probe, before, requests, outputs)
+        checks["explicit_prerequisite_read_observed"] = read_observation["read_action_exact"] and (read_observation["read_succeeded"] or read_observation["restricted_read_refusal_observed"])
     effects = []
     for target in probe.targets:
         after = target.path.read_bytes() if target.path.is_file() else None
@@ -278,6 +296,8 @@ def effect_checks(provider, probe, before, requests, outer_namespace=None):
             checks[target.name + "_tool_observed"] = re.search(r"^" + re.escape(marker) + r"$", text, re.M) is not None
         else:
             checks[target.name + "_tool_observed"] = (not outputs[0].get("is_error", False) and ("success" in text.lower() or "updated" in text.lower())) if target.writable and outputs else bool(DENIAL.search(text))
+        if read_observation is not None:
+            checks[target.name + "_tool_observed"] = read_observation["accepted_outcome"]
         effects.append({"name": target.name, "path": str(target.path), "writable": target.writable, "before_sha256": hashlib.sha256(before[target.name]).hexdigest() if before[target.name] is not None else None, "after_sha256": sha256(target.path) if after is not None else None})
     if probe.unavailable:
         checks["sandbox_unavailable_refused"] = "sandbox_apply: Operation not permitted" in text
@@ -692,9 +712,7 @@ def run_case(args, provider, case):
         result["checks"].update(checks)
         result.update({"tool_results": outputs, "target_effects": effects})
         if probe.preread:
-            messages = model.requests[-1]["body"].get("messages", []) if model.requests else []
-            reads = [item for message in messages if isinstance(message.get("content"), list) for item in message["content"] if item.get("type") == "tool_result" and item.get("tool_use_id") == CLAUDE_READ_ID]
-            result["existing_undeclared_file_observation"] = {"composite_read_refusal_observed": len(reads) == 1 and bool(reads[0].get("is_error")) and "--restricted confines the file tools to the working directory" in str(reads[0].get("content", "")), "direct_edit_guard_unreached": len(outputs) == 1 and "File has not been read yet" in str(outputs[0].get("content", "")), "direct_edit_permission_pass": False}
+            result["existing_undeclared_file_observation"] = read_then_edit_observation(probe, before, model.requests, outputs)
     result["checks"]["configuration_canaries_did_not_fire"] = bool(traps) and not any(path.exists() for path in traps)
     if provider == "claude":
         result["checks"]["closed_tools_on_every_model_request"] = bool(model.requests) and all(len(request["body"].get("tools", [])) == 3 and {tool.get("name") for tool in request["body"]["tools"]} == {"Bash", "Read", "Edit"} for request in model.requests)
