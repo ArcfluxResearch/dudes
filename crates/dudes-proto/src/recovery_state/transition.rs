@@ -67,6 +67,9 @@ impl RecoveryTransition<'_> {
     #[must_use]
     pub fn sources(self, facts: &RecoveryFacts) -> Vec<Lsn> {
         let mut positions = vec![facts.binding.hired_lsn, facts.source_issue.lsn];
+        if let super::admission::RecoveryAuthority::Scoped { grant, .. } = &facts.authority {
+            positions.extend(grant.ticket.as_ref().map(|round| round.start_lsn));
+        }
         positions.extend(facts.control_lsn);
         positions.extend(facts.attempt.spawn_lsn);
         positions.extend(facts.attempt.end_lsn);
@@ -306,7 +309,7 @@ impl RecoveryState {
         let (authorization, _) = self.claim(record.claim)?;
         if let RecoveryInvalidationEvidence::RecordedChange { reason, lsn } = record.evidence {
             let source = history.at(lsn).map_err(|_| RecoveryStateError::Binding)?;
-            validate_change(authorization, reason, source)?;
+            validate_change(authorization, reason, source, history)?;
         }
         Ok(())
     }
@@ -342,6 +345,7 @@ fn validate_change(
     authorization: &RecoveryAuthorized,
     reason: RecoveryInvalidationReason,
     source: &RecoveryWitness,
+    history: &RecoveryHistory,
 ) -> Result<(), RecoveryStateError> {
     use RecordKind as K;
     use RecoveryInvalidationReason as R;
@@ -381,7 +385,7 @@ fn validate_change(
         }),
         R::LeaseChanged => {
             reference.kind == K::WorktreeRemoved
-                && matches!(reference.owner, O::Worktree(worktree) if binding.worktree == Some(worktree))
+                && matches!(reference.owner, O::Worktree(worktree) if history.hired_worktrees(binding).map_err(|_| RecoveryStateError::Binding)?.contains(&worktree))
         }
         R::ControlChanged => {
             reference.owner == O::Agent(work.agent)
@@ -747,9 +751,10 @@ fn validate_recap(
     for at in &recap.sources {
         let source = prior(history, facts, *at)?;
         let eligible = match (source.reference().kind, source.reference().owner) {
-            (RecordKind::AgentHired, RecoveryWitnessOwner::Agent(agent)) => {
-                agent == work.agent && *at == record.binding.hired_lsn
-            }
+            (
+                RecordKind::AgentHired | RecordKind::AgentHiredWithRepositories,
+                RecoveryWitnessOwner::Agent(agent),
+            ) => agent == work.agent && *at == record.binding.hired_lsn,
             (RecordKind::AgentLookChanged, RecoveryWitnessOwner::Agent(agent)) => {
                 agent == work.agent
             }

@@ -2,7 +2,7 @@ mod record;
 
 use dudes_proto::recovery::RecoveryBinding;
 use dudes_proto::recovery_state::admission::{
-    RecoveryAgentCurrent, RecoveryCurrent, RecoveryGoalCurrent, RecoveryLeaseCurrent,
+    RecoveryAgentCurrent, RecoveryCurrent, RecoveryGoalCurrent,
 };
 use dudes_proto::recovery_state::history::{
     RecoveryAttemptContext, RecoveryHoldWitness, RecoveryPriorControl, RecoveryStandingControl,
@@ -94,20 +94,22 @@ impl World {
                     },
                 )
             });
-        let lease = agent
+        let leases = agent
             .repositories
-            .singleton()
-            .ok_or(RecoveryStateError::Binding)?
-            .worktree()
+            .worktrees()
             .map(|id| {
                 let row = self.worktrees.get(&id).ok_or(RecoveryStateError::Binding)?;
-                Ok(RecoveryLeaseCurrent {
+                Ok(dudes_proto::repository_state::history::RepositoryLease {
                     worktree: id,
+                    leased_lsn: row.leased_lsn,
+                    origin: &row.origin,
+                    path: &row.path,
+                    base: row.base,
                     agent: row.agent,
-                    removed: row.removed,
+                    removed: row.removed.is_some(),
                 })
             })
-            .transpose()?;
+            .collect::<Result<Vec<_>, RecoveryStateError>>()?;
         RecoveryCurrent {
             through,
             agent: current_agent(binding.work.agent, agent)?,
@@ -136,7 +138,8 @@ impl World {
                 confirmation_lsn: turn.confirmation_lsn,
             },
             ticket,
-            lease,
+            repositories,
+            leases,
         }
         .bind(binding, &self.recovery_history)
     }
@@ -354,11 +357,7 @@ fn current_agent(
         agent: id,
         hired_lsn: agent.mcp.hire_lsn,
         provider: agent.provider,
-        worktree: agent
-            .repositories
-            .singleton()
-            .ok_or(RecoveryStateError::Binding)?
-            .worktree(),
+        worktree: agent.repositories.primary_worktree(),
         mode: if agent.attached {
             Mode::Attached
         } else {

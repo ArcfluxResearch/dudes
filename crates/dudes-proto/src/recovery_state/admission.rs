@@ -9,7 +9,11 @@ use super::history::{
 use super::{RecoveryAttempt, RecoveryFacts, RecoveryStateError};
 use crate::diff_stamp::TicketBinding;
 use crate::recovery::{RecoveryBinding, RecoveryIssue};
-use crate::{Predicate, RecordKind, WorktreeRemoval};
+use crate::repository::{
+    HireRepositories, RepositoryTurnGrant, ScopedHireRepositories, TurnRepositories,
+};
+use crate::repository_state::history::RepositoryLease;
+use crate::{Predicate, RecordKind};
 
 #[cfg(test)]
 mod tests;
@@ -66,15 +70,21 @@ pub struct RecoveryGoalCurrent<'a> {
     pub retired_lsn: Option<Lsn>,
 }
 
-/// Current lease values read by identity from its existing fold owner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RecoveryLeaseCurrent {
-    /// Lease identity.
-    pub worktree: WorktreeId,
-    /// First recorded owner.
-    pub agent: Option<AgentId>,
-    /// Recorded removal, if any.
-    pub removed: Option<WorktreeRemoval>,
+/// Full execution authority joined to the original hire and issue at one prefix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveryAuthority {
+    /// Historical singleton semantics, including an explicitly unleased hire.
+    Legacy {
+        /// Original lease, when one was recorded.
+        worktree: Option<WorktreeId>,
+    },
+    /// Every hired copy and the independent issue selection.
+    Scoped {
+        /// Complete normalized hire, including original trust grants.
+        hire: Box<ScopedHireRepositories>,
+        /// Full frozen execution selection.
+        grant: Box<RepositoryTurnGrant>,
+    },
 }
 
 /// A bounded snapshot copied from existing folds at one committed cut.
@@ -96,8 +106,10 @@ pub struct RecoveryCurrent<'a> {
     pub attempt: RecoveryAttempt,
     /// Current active card association and original round.
     pub ticket: Option<TicketBinding>,
-    /// Current original lease row, if any.
-    pub lease: Option<RecoveryLeaseCurrent>,
+    /// Frozen hire and issue selection from the existing turn fold.
+    pub repositories: &'a TurnRepositories,
+    /// Every original hired lease, including copies outside the issue's declaration.
+    pub leases: Vec<RepositoryLease<'a>>,
 }
 
 impl RecoveryCurrent<'_> {
@@ -118,6 +130,13 @@ impl RecoveryCurrent<'_> {
         sources.extend(self.goal.card_change_lsn);
         sources.extend(self.goal.retired_lsn);
         sources.extend(&self.issue.issued.answers);
+        sources.extend(self.leases.iter().map(|lease| lease.leased_lsn));
+        sources.extend(
+            self.repositories
+                .grant()
+                .and_then(|grant| grant.ticket.as_ref())
+                .map(|round| round.start_lsn),
+        );
         sources.sort_unstable();
         sources.dedup();
         sources
@@ -160,10 +179,9 @@ impl RecoveryCurrent<'_> {
         {
             return Err(RecoveryStateError::Binding);
         }
-        Self::validate_hire(requested, history)?;
+        let authority = self.validate_authority(requested, history)?;
         self.validate_goal(requested, history)?;
         self.validate_issue(requested, history)?;
-        self.validate_lease(requested)?;
         self.validate_control(history)?;
         self.validate_session(history)?;
         if self.qualified_pass(history)? {
@@ -173,6 +191,7 @@ impl RecoveryCurrent<'_> {
             through: self.through,
             binding: requested.clone(),
             source_issue: self.issue.clone(),
+            authority,
             attempt: self.attempt,
             control_lsn: current.control_lsn,
             control: current.control,
@@ -180,21 +199,114 @@ impl RecoveryCurrent<'_> {
         })
     }
 
-    fn validate_hire(
+    fn validate_authority(
+        &self,
         requested: &RecoveryBinding,
         history: &RecoveryHistory,
-    ) -> Result<(), RecoveryStateError> {
+    ) -> Result<RecoveryAuthority, RecoveryStateError> {
         let source = history
             .at(requested.hired_lsn)
             .map_err(|_| RecoveryStateError::Binding)?;
-        if source.reference().kind != RecordKind::AgentHired
-            || source.reference().owner != RecoveryWitnessOwner::Agent(requested.work.agent)
+        if source.reference().owner != RecoveryWitnessOwner::Agent(requested.work.agent)
             || !matches!(source.evidence(), RecoveryEvidence::Hire { provider, worktree, .. }
                 if *provider == requested.provider && *worktree == requested.worktree)
+            || self.repositories.hired_lsn() != requested.hired_lsn
         {
             return Err(RecoveryStateError::Binding);
         }
-        Ok(())
+        let issued = history
+            .at(requested.issue_lsn)
+            .map_err(|_| RecoveryStateError::Binding)?;
+        match (self.repositories.hire(), self.repositories.grant()) {
+            (HireRepositories::Legacy(hire), None) => {
+                if source.reference().kind != RecordKind::AgentHired
+                    || hire.worktree() != requested.worktree
+                    || issued.grant().is_some()
+                    || self.leases.len() != usize::from(requested.worktree.is_some())
+                    || self.leases.iter().any(|lease| {
+                        Some(lease.worktree) != requested.worktree
+                            || lease.agent != Some(requested.work.agent)
+                            || lease.removed
+                    })
+                {
+                    return Err(RecoveryStateError::Binding);
+                }
+                Ok(RecoveryAuthority::Legacy {
+                    worktree: requested.worktree,
+                })
+            }
+            (HireRepositories::Scoped(hire), Some(grant)) => {
+                if source
+                    .scoped_hire()
+                    .is_none_or(|record| record.repositories != hire.recorded())
+                    || requested.worktree != Some(hire.repositories.primary().recorded.worktree)
+                    || issued.grant() != Some(grant)
+                    || RepositoryTurnGrant::select(
+                        requested.hired_lsn,
+                        hire,
+                        self.repositories.ticket(),
+                    )
+                    .as_ref()
+                        != Ok(grant)
+                    || self.leases.len() != hire.repositories.entries().len()
+                {
+                    return Err(RecoveryStateError::Binding);
+                }
+                for copy in hire.repositories.entries() {
+                    let repo = &copy.value.recorded;
+                    let lease = self
+                        .leases
+                        .iter()
+                        .find(|lease| lease.worktree == repo.worktree)
+                        .ok_or(RecoveryStateError::Binding)?;
+                    if lease.agent != Some(requested.work.agent)
+                        || lease.removed
+                        || lease.leased_lsn >= requested.hired_lsn
+                        || lease.origin != repo.origin.directory
+                        || lease.path != repo.execution.directory
+                        || lease.base != repo.base
+                    {
+                        return Err(RecoveryStateError::Binding);
+                    }
+                    let witness = history
+                        .at(lease.leased_lsn)
+                        .map_err(|_| RecoveryStateError::Binding)?;
+                    if witness.reference().owner != RecoveryWitnessOwner::Worktree(repo.worktree)
+                        || !matches!(witness.evidence(), RecoveryEvidence::Lease { .. })
+                    {
+                        return Err(RecoveryStateError::Binding);
+                    }
+                }
+                if let Some(round) = &grant.ticket {
+                    let start = history
+                        .at(round.start_lsn)
+                        .map_err(|_| RecoveryStateError::Binding)?;
+                    if round.start_lsn >= requested.issue_lsn
+                        || start.reference().owner
+                            != (RecoveryWitnessOwner::Ticket {
+                                agent: requested.work.agent,
+                                goal: round.goal,
+                                card: round.card,
+                            })
+                        || start.ticket_start() != round.authority.as_ref()
+                        || requested.ticket.is_none_or(|ticket| {
+                            ticket.goal != round.goal
+                                || ticket.card != round.card
+                                || ticket.round != round.round
+                        })
+                    {
+                        return Err(RecoveryStateError::Binding);
+                    }
+                } else if requested.ticket.is_some() {
+                    return Err(RecoveryStateError::Binding);
+                }
+                Ok(RecoveryAuthority::Scoped {
+                    hire: Box::new(hire.clone()),
+                    grant: Box::new(grant.clone()),
+                })
+            }
+            _ => Err(RecoveryStateError::Binding),
+        }
     }
 
     fn validate_goal(
@@ -272,20 +384,6 @@ impl RecoveryCurrent<'_> {
             }
         }
         Ok(())
-    }
-
-    fn validate_lease(&self, requested: &RecoveryBinding) -> Result<(), RecoveryStateError> {
-        match (requested.worktree, self.lease) {
-            (None, None) => Ok(()),
-            (Some(expected), Some(actual))
-                if expected == actual.worktree
-                    && actual.agent == Some(requested.work.agent)
-                    && actual.removed.is_none() =>
-            {
-                Ok(())
-            }
-            _ => Err(RecoveryStateError::Binding),
-        }
     }
 
     fn validate_control(&self, history: &RecoveryHistory) -> Result<(), RecoveryStateError> {
