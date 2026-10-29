@@ -7,6 +7,7 @@ use dudes_supervisor::testing::{Harness, Seen};
 
 fn subjects(
     grant: &RepositoryTurnGrant,
+    hire: &ScopedRepositories,
     baseline: Option<&RepositoryBaselineBatch>,
 ) -> Vec<ReviewSubject> {
     grant
@@ -15,7 +16,7 @@ fn subjects(
         .iter()
         .map(|entry| ReviewSubject {
             repo_id: Some(entry.repo_id.clone()),
-            tree: Tree::Recorded(Box::new(entry.value.clone())),
+            tree: Tree::recorded(&entry.value, hire).unwrap(),
             baseline: baseline
                 .and_then(|batch| {
                     batch
@@ -90,6 +91,7 @@ fn real_three_repository_capture_and_checks_keep_the_declared_pair_and_fake_proc
     let fixture = Fixture::new();
     let mut log = ReviewLog::new(&fixture);
     let agent = log.story.hire.id;
+    let full_hire = log.story.hire.repositories.clone();
     let mut harness = Harness::new();
     harness.launch = false;
     harness.answer_captures = false;
@@ -154,7 +156,7 @@ fn real_three_repository_capture_and_checks_keep_the_declared_pair_and_fake_proc
     ));
     let service = DiffCapture::new(reader, Box::new(|| Timestamp::from_unix_millis(1_000)));
     let baseline = service.baseline_batch(
-        &subjects(&capture.grant, None),
+        &subjects(&capture.grant, &full_hire, None),
         capture.binding,
         Arc::default(),
     );
@@ -279,7 +281,7 @@ fn real_three_repository_capture_and_checks_keep_the_declared_pair_and_fake_proc
         })
         .unwrap();
     let stamp = service.stamp_batch(
-        &subjects(&capture.grant, Some(&baseline)),
+        &subjects(&capture.grant, &full_hire, Some(&baseline)),
         capture.binding,
         baseline_lsn,
         check_lsn,
@@ -314,7 +316,7 @@ fn real_three_repository_capture_and_checks_keep_the_declared_pair_and_fake_proc
         .is_none()
     );
     let unknown = service.stamp_batch(
-        &subjects(&capture.grant, Some(&baseline)),
+        &subjects(&capture.grant, &full_hire, Some(&baseline)),
         capture.binding,
         baseline_lsn,
         check_lsn,

@@ -13,6 +13,7 @@ use dudes_proto::diff_stamp::{
     BaselineOutcome, BaselinePayload, CaptureInterval, DigestHex, STAMP_PAYLOAD_VERSION,
     SamplerVersions, StampOutcome, StampPayload, StampPayloadError, TicketBinding,
 };
+use dudes_proto::repository::{OwnedRepository, RepositorySet};
 use dudes_proto::repository_review::{
     REVIEW_BATCH_VERSION, RepositoryBaselineBatch, RepositoryBaselineMember,
     RepositoryReviewBinding, RepositoryStampBatch, RepositoryStampMember, RepositoryStampOutcome,
@@ -240,17 +241,18 @@ impl DiffCapture {
     #[must_use]
     pub fn baseline_batch_unavailable(
         &self,
-        subjects: &[ReviewSubject],
+        repositories: &RepositorySet<OwnedRepository>,
         binding: RepositoryReviewBinding,
     ) -> RepositoryBaselineBatch {
         let at = (self.clock)();
         RepositoryBaselineBatch {
             v: REVIEW_BATCH_VERSION,
             binding,
-            members: subjects
+            members: repositories
+                .entries()
                 .iter()
-                .map(|subject| RepositoryBaselineMember {
-                    repo_id: subject.repo_id.clone().expect("declared member identity"),
+                .map(|entry| RepositoryBaselineMember {
+                    repo_id: entry.repo_id.clone(),
                     interval: CaptureInterval {
                         started_at: at,
                         ended_at: at,
@@ -268,7 +270,7 @@ impl DiffCapture {
     #[must_use]
     pub fn stamp_batch_unavailable(
         &self,
-        subjects: &[ReviewSubject],
+        repositories: &RepositorySet<OwnedRepository>,
         binding: RepositoryReviewBinding,
         baseline_lsn: Lsn,
         check_lsn: Lsn,
@@ -279,10 +281,11 @@ impl DiffCapture {
             binding,
             baseline_lsn,
             check_lsn,
-            members: subjects
+            members: repositories
+                .entries()
                 .iter()
-                .map(|subject| RepositoryStampMember {
-                    repo_id: subject.repo_id.clone().expect("declared member identity"),
+                .map(|entry| RepositoryStampMember {
+                    repo_id: entry.repo_id.clone(),
                     interval: CaptureInterval {
                         started_at: at,
                         ended_at: at,

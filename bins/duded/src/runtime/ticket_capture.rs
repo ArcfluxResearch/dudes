@@ -30,22 +30,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     ) {
         match effect {
             dudes_supervisor::Effect::CaptureRepositoryBaseline { capture } => {
-                let subjects = repository_subjects(capture, None);
+                let subjects = repository_subjects(sup.world(), capture, None);
                 let service = Arc::clone(&self.ticket_capture);
                 let request = capture.clone();
                 let unavailable: Arc<dyn Fn() -> Input + Send + Sync> = {
                     let service = Arc::clone(&service);
-                    let subjects = subjects.clone();
                     let capture = capture.clone();
                     Arc::new(move || Input::RepositoryBaselineCaptured {
                         capture: capture.clone(),
-                        baseline: service.baseline_batch_unavailable(&subjects, capture.binding),
+                        baseline: service.baseline_batch_unavailable(
+                            &capture.grant.repositories,
+                            capture.binding,
+                        ),
                     })
                 };
                 let cancelled = self.handle.stopping_flag();
+                let failed = Arc::clone(&unavailable);
                 self.answer_capture(
                     format!("dudes-baseline-{}", capture.binding.ticket.goal),
                     move || {
+                        let Some(subjects) = subjects else {
+                            return failed();
+                        };
                         let baseline =
                             service.baseline_batch(&subjects, request.binding, cancelled);
                         Input::RepositoryBaselineCaptured {
@@ -63,41 +69,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 baseline,
                 check_lsn,
             } => {
-                let subjects = repository_subjects(capture, Some(baseline));
-                let service = Arc::clone(&self.ticket_capture);
-                let request = capture.clone();
-                let (baseline_lsn, check_lsn) = (*baseline_lsn, *check_lsn);
-                let unavailable: Arc<dyn Fn() -> Input + Send + Sync> = {
-                    let service = Arc::clone(&service);
-                    let subjects = subjects.clone();
-                    let capture = capture.clone();
-                    Arc::new(move || Input::RepositoryStampCaptured {
-                        capture: capture.clone(),
-                        stamp: service.stamp_batch_unavailable(
-                            &subjects,
-                            capture.binding,
-                            baseline_lsn,
-                            check_lsn,
-                        ),
-                    })
-                };
-                let cancelled = self.handle.stopping_flag();
-                self.answer_capture(
-                    format!("dudes-stamp-{}", capture.binding.ticket.goal),
-                    move || {
-                        let stamp = service.stamp_batch(
-                            &subjects,
-                            request.binding,
-                            baseline_lsn,
-                            check_lsn,
-                            cancelled,
-                        );
-                        Input::RepositoryStampCaptured {
-                            capture: request,
-                            stamp,
-                        }
-                    },
-                    &unavailable,
+                self.capture_repository_stamp(
+                    sup.world(),
+                    capture,
+                    *baseline_lsn,
+                    baseline,
+                    *check_lsn,
                     queue,
                 );
             }
@@ -123,6 +100,56 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             ),
             _ => {}
         }
+    }
+
+    fn capture_repository_stamp(
+        &self,
+        world: &dudes_supervisor::World,
+        capture: &RepositoryCapture,
+        baseline_lsn: Lsn,
+        baseline: &RepositoryBaselineBatch,
+        check_lsn: Lsn,
+        queue: &mut VecDeque<Input>,
+    ) {
+        let subjects = repository_subjects(world, capture, Some(baseline));
+        let service = Arc::clone(&self.ticket_capture);
+        let request = Box::new(capture.clone());
+        let unavailable: Arc<dyn Fn() -> Input + Send + Sync> = {
+            let service = Arc::clone(&service);
+            let capture = Box::new(capture.clone());
+            Arc::new(move || Input::RepositoryStampCaptured {
+                capture: capture.clone(),
+                stamp: service.stamp_batch_unavailable(
+                    &capture.grant.repositories,
+                    capture.binding,
+                    baseline_lsn,
+                    check_lsn,
+                ),
+            })
+        };
+        let cancelled = self.handle.stopping_flag();
+        let failed = Arc::clone(&unavailable);
+        self.answer_capture(
+            format!("dudes-stamp-{}", capture.binding.ticket.goal),
+            move || {
+                let Some(subjects) = subjects else {
+                    return failed();
+                };
+                let stamp = service.stamp_batch(
+                    &subjects,
+                    request.binding,
+                    baseline_lsn,
+                    check_lsn,
+                    cancelled,
+                );
+                Input::RepositoryStampCaptured {
+                    capture: request,
+                    stamp,
+                }
+            },
+            &unavailable,
+            queue,
+        );
     }
 
     fn capture_baseline<R: dudes_supervisor::host::Rng>(
@@ -218,9 +245,21 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
 }
 
 fn repository_subjects(
+    world: &dudes_supervisor::World,
     capture: &RepositoryCapture,
     baseline: Option<&RepositoryBaselineBatch>,
-) -> Vec<ReviewSubject> {
+) -> Option<Vec<ReviewSubject>> {
+    let row = world.agents.get(&capture.binding.ticket.claimant)?;
+    if row.retired
+        || row.mcp.hire_lsn != capture.binding.hired_lsn
+        || capture.grant.hired_lsn != capture.binding.hired_lsn
+    {
+        return None;
+    }
+    let dudes_proto::repository::HireRepositories::Scoped(hire) = &row.repositories else {
+        return None;
+    };
+    let full_hire = hire.recorded();
     capture
         .grant
         .repositories
@@ -249,12 +288,12 @@ fn repository_subjects(
                     }),
                     _ => None,
                 });
-            ReviewSubject {
+            Some(ReviewSubject {
                 repo_id: Some(entry.repo_id.clone()),
-                tree: Tree::Recorded(Box::new(entry.value.clone())),
+                tree: Tree::recorded(&entry.value, &full_hire).ok()?,
                 baseline,
                 stamp: None,
-            }
+            })
         })
         .collect()
 }
