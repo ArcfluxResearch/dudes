@@ -309,6 +309,11 @@ fn inventory(
     let declared = grant.repositories.entries().to_vec();
     let cwd = declared[0].value.execution.directory.clone();
     let private = &scope.private;
+    let controls = [
+        private.home.clone(),
+        private.profile.clone(),
+        ctx.agent_dir.join("inbox"),
+    ];
     if private.work != ctx.agent_dir.join("work")
         || private.outbox != ctx.agent_dir.join("outbox")
         || private.temp != ctx.agent_dir.join("tmp")
@@ -339,8 +344,7 @@ fn inventory(
         if writable[..index]
             .iter()
             .any(|other| overlaps(&root.path, &other.path))
-            || overlaps(&root.path, &private.home)
-            || overlaps(&root.path, &private.profile)
+            || controls.iter().any(|control| overlaps(&root.path, control))
         {
             return Err(ScopedError::Paths);
         }
@@ -354,9 +358,8 @@ fn inventory(
             return Err(ScopedError::Paths);
         }
     }
-    path(&private.home)?;
-    path(&private.profile)?;
-    for control in [&private.home, &private.profile] {
+    for control in &controls {
+        path(control)?;
         if hired.repositories.entries().iter().any(|entry| {
             overlaps(control, &entry.value.origin.directory)
                 || overlaps(control, &entry.value.execution.directory)
@@ -365,11 +368,7 @@ fn inventory(
             return Err(ScopedError::Paths);
         }
     }
-    protected.extend([
-        private.home.clone(),
-        private.profile.clone(),
-        ctx.agent_dir.join("inbox"),
-    ]);
+    protected.extend(controls);
     let mut seen = BTreeSet::new();
     protected.retain(|root| seen.insert(root.clone()));
     Ok(ScopedInventory {

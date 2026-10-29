@@ -579,6 +579,44 @@ fn private_control_locations_and_literal_path_patterns_cannot_expand_authority()
 }
 
 #[test]
+fn inbox_cannot_be_selected_as_a_checkout() {
+    let mut f = Fixture::new(&["b"]);
+    let mut entries = f.hired.repositories.entries().to_vec();
+    entries[1].value.execution.directory = "/private/agent/inbox".into();
+    let selected = entries[1].clone();
+    f.hired.repositories = RepositorySet::new(RepoId::parse("a").unwrap(), entries).unwrap();
+    f.grant.repositories = RepositorySet::new(RepoId::parse("b").unwrap(), vec![selected]).unwrap();
+    let ctx = f.ctx(&[]);
+    let results = [
+        claude()
+            .managed_scoped(
+                &ctx,
+                &f.scope(),
+                "task",
+                &first(),
+                &ModelSelection::named("claude-sonnet-4-6"),
+            )
+            .map(|candidate| candidate.inventory.writable_roots()),
+        codex()
+            .managed_scoped(
+                &ctx,
+                &f.scope(),
+                "task",
+                &TurnSession::Assigned,
+                &ModelSelection::named("gpt-5.5"),
+            )
+            .map(|candidate| candidate.inventory.writable_roots()),
+    ];
+    assert_eq!(
+        results,
+        [
+            Err(LaunchError::Scoped(ScopedError::Paths)),
+            Err(LaunchError::Scoped(ScopedError::Paths))
+        ]
+    );
+}
+
+#[test]
 fn environment_is_selected_and_legacy_launch_and_install_bytes_stay_unchanged() {
     let f = Fixture::new(&["b"]);
     let env = [
