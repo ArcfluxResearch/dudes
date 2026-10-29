@@ -34,6 +34,8 @@
 #![allow(dead_code)]
 
 pub(crate) mod hook_shim;
+#[cfg(test)]
+pub(crate) mod repository_runner;
 mod rng;
 pub(crate) use rng::FixtureRng;
 

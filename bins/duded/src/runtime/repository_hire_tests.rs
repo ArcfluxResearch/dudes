@@ -1,109 +1,20 @@
 use std::ffi::OsStr;
-use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use dudes_config::workspace::{NewWorkspace, RepositoryDefinition};
-use dudes_host::{OneShot, OneShotOutcome};
 use dudes_proto::repository::{RepositoryEntry, RepositorySet};
 use dudes_proto::rpc::agent::{Checkout, HireParams};
 use dudes_proto::{Record, WorktreeRemoval};
-use dudes_providers::launch::LaunchSpec;
 use dudes_types::Provider;
 
 use super::work_test_support as common;
 use super::*;
-use crate::predicate::{PredicateOutcome, PredicateRunner};
 use crate::worktree::git::Git;
 use crate::worktree::hire::{RepositoryHirePlan, WorktreeHires};
-
-type AddCut = Box<dyn FnOnce() + Send>;
-
-#[derive(Default)]
-struct Runner {
-    inner: OneShot,
-    adds: AtomicUsize,
-    cut: Mutex<Option<(usize, bool, AddCut)>>,
-}
-
-impl Runner {
-    fn after_add(&self, nth: usize, fail: bool, cut: impl FnOnce() + Send + 'static) {
-        *self.cut.lock().unwrap() = Some((nth, fail, Box::new(cut)));
-    }
-}
-
-impl PredicateRunner for Runner {
-    fn run(&self, spec: &LaunchSpec, timeout: Duration) -> io::Result<PredicateOutcome> {
-        let result = self.inner.run(spec, timeout)?;
-        if spec
-            .argv
-            .windows(2)
-            .any(|args| args == [OsStr::new("worktree"), OsStr::new("add")])
-        {
-            let nth = self.adds.fetch_add(1, Ordering::SeqCst) + 1;
-            let cut = {
-                let mut cut = self.cut.lock().unwrap();
-                if cut.as_ref().is_some_and(|(at, _, _)| *at == nth) {
-                    cut.take()
-                } else {
-                    None
-                }
-            };
-            if let Some((_, fail, cut)) = cut {
-                cut();
-                if fail {
-                    return Ok(PredicateOutcome::Finished {
-                        exit: Some(1),
-                        output_tail: "injected failure after completed add".into(),
-                        timed_out: false,
-                    });
-                }
-            }
-        }
-        Ok(match result {
-            OneShotOutcome::Finished {
-                exit,
-                output_tail,
-                timed_out,
-            } => PredicateOutcome::Finished {
-                exit,
-                output_tail,
-                timed_out,
-            },
-            OneShotOutcome::Swept => PredicateOutcome::Swept,
-        })
-    }
-
-    fn sweep(&self) {
-        self.inner.sweep();
-    }
-
-    fn run_captured(
-        &self,
-        spec: &LaunchSpec,
-        timeout: Duration,
-        cap: usize,
-    ) -> io::Result<crate::predicate::PredicateCaptured> {
-        self.inner
-            .run_captured(spec, timeout, cap)
-            .map(|result| match result {
-                dudes_host::CapturedOutcome::Finished {
-                    exit,
-                    stdout,
-                    truncated,
-                    timed_out,
-                } => crate::predicate::PredicateCaptured::Finished {
-                    exit,
-                    stdout,
-                    truncated,
-                    timed_out,
-                },
-                dudes_host::CapturedOutcome::Swept => crate::predicate::PredicateCaptured::Swept,
-            })
-    }
-}
+pub(super) use common::repository_runner::Runner;
 
 struct Setup {
     fixture: common::Fixture,
