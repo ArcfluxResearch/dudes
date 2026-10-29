@@ -24,9 +24,37 @@ const CATALOG_SHA: &str = "69af12f94a39dabd1a1ded8f5257b4884d2118902ea2b5b9cffbf
 const MACOS_BINARY_SHA: &str = "97026b7ea245a7a9f17d8522a2ba4a8cd2f1c01dac0f62483a4bfe427d76082e";
 
 #[derive(Debug, Default)]
-pub(crate) struct PrivateRoots(Mutex<u64>);
+pub(crate) struct PrivateRoots(Mutex<std::collections::BTreeMap<PathBuf, Arc<AgentRoots>>>);
 
 impl PrivateRoots {
+    pub(crate) fn agent(&self, path: &Path) -> io::Result<Arc<AgentRoots>> {
+        super::normalized_absolute(path)?;
+        let mut existing = path;
+        let mut suffix = Vec::new();
+        while !existing.try_exists()? {
+            suffix.push(
+                existing
+                    .file_name()
+                    .ok_or_else(|| refusal("private agent root is invalid"))?,
+            );
+            existing = existing
+                .parent()
+                .ok_or_else(|| refusal("private agent parent is unavailable"))?;
+        }
+        let mut canonical = existing.canonicalize()?;
+        canonical.extend(suffix.into_iter().rev());
+        let mut agents = self
+            .0
+            .try_lock()
+            .map_err(|_| refusal("private agent registry is unavailable"))?;
+        Ok(Arc::clone(agents.entry(canonical).or_default()))
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct AgentRoots(Mutex<u64>);
+
+impl AgentRoots {
     pub(crate) fn inspect(&self) -> io::Result<MutexGuard<'_, u64>> {
         self.0
             .try_lock()
@@ -59,6 +87,7 @@ pub(crate) struct PreparedScopedLaunch {
 pub(crate) struct ScopedBinding {
     profile: Arc<CodexProfile>,
     generation: u64,
+    roots: Arc<AgentRoots>,
     startup: CodexStartup,
     inspection: Inspection,
     binary: PinnedFile,
@@ -75,7 +104,7 @@ impl std::fmt::Debug for ScopedBinding {
 
 impl ScopedBinding {
     pub(crate) fn before_task(&self, startup: &CodexStartup) -> io::Result<()> {
-        let generation = self.profile.mutations.inspect()?;
+        let generation = self.roots.inspect()?;
         if *generation != self.generation || startup != &self.startup {
             return Err(refusal("scoped launch preparation changed during startup"));
         }
@@ -108,7 +137,16 @@ impl CodexProfile {
         {
             return Err(refusal("scoped physical attempt identity is unavailable"));
         }
-        let generation = self.mutations.mutate()?;
+        let LaunchInput::Protocol(startup) = &launch.spec.stdin else {
+            return Err(refusal("scoped protocol startup is unavailable"));
+        };
+        if launch.inventory.private.outbox.parent() != Some(startup.agent_dir()) {
+            return Err(refusal(
+                "scoped private roots differ from their agent owner",
+            ));
+        }
+        let roots = self.mutations.agent(startup.agent_dir())?;
+        let generation = roots.mutate()?;
         self.scoped_policy(true)?;
         let deadline = Instant::now() + PROBE_DEADLINE;
         #[cfg(not(test))]
@@ -141,6 +179,7 @@ impl CodexProfile {
         let binding = Arc::new(ScopedBinding {
             profile: Arc::clone(self),
             generation: *generation,
+            roots: Arc::clone(&roots),
             startup: startup.clone(),
             inspection,
             binary,
@@ -271,6 +310,10 @@ impl CodexProfile {
         qualification: &Qualification,
         deadline: Instant,
     ) -> io::Result<PinnedFile> {
+        let _publication = self
+            .catalogs
+            .lock()
+            .map_err(|_| refusal("scoped catalog publication was interrupted"))?;
         let directory = self.home.join("catalogs");
         owner_directory(&directory)?;
         let path = directory.join(format!("{}.json", qualification.catalog_sha));

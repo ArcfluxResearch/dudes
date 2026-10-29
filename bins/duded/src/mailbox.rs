@@ -187,10 +187,16 @@ impl Mailbox {
     ) {
         self.private_roots = roots;
     }
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux")),
+        expect(
+            clippy::unused_self,
+            reason = "unsupported platforms share the mailbox refusal method"
+        )
+    )]
     pub(crate) fn admit_outbox(&self, agent: AgentId) -> std::io::Result<Arc<OutboxGrant>> {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
-            let _mutation = self.private_roots.mutate()?;
             self.unix_admit_outbox(agent)
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -503,10 +509,6 @@ impl Mailbox {
         if self.fenced {
             return;
         }
-        let roots = Arc::clone(&self.private_roots);
-        let Ok(_mutation) = roots.mutate() else {
-            return;
-        };
         *self.observation.borrow_mut() = self
             .report
             .lock()
@@ -597,24 +599,19 @@ mod wake_tests {
     #[test]
     fn a_scoped_inspection_defers_private_mutations_without_waiting_for_the_worker() {
         let (mut mailbox, agent, _) = fixture(0);
-        let roots = Arc::clone(&mailbox.private_roots);
+        let root = tempfile::tempdir().unwrap();
+        mailbox.root = root.path().canonicalize().unwrap();
+        mailbox.codex_agents.insert(agent);
+        let path = mailbox.root.join("agents").join(agent.to_string());
+        let roots = mailbox.private_roots.agent(&path).unwrap();
         let inspection = roots.inspect().unwrap();
-        mailbox.pass(
-            &BTreeMap::new(),
-            || panic!("deferred clock"),
-            || panic!("deferred mint"),
-            |_, _| panic!("deferred append"),
-        );
         assert!(mailbox.admit_outbox(agent).is_err());
-        mailbox.begin_subject_context(
-            agent,
-            dudes_supervisor::Holder::Turn(dudes_types::TurnId::from_parts(1, 3)),
-            dudes_supervisor::Redactor::for_run(),
-        );
-        assert!(mailbox.subject_contexts.is_empty());
+        assert!(!path.exists());
         assert_eq!(*inspection, 0);
         drop(inspection);
-        assert_eq!(*roots.mutate().unwrap(), 1);
+        mailbox.admit_outbox(agent).unwrap();
+        assert!(path.join("outbox").is_dir());
+        assert!(*roots.inspect().unwrap() > 0);
     }
 
     #[test]

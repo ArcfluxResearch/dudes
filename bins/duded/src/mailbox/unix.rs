@@ -96,6 +96,7 @@ struct Directory {
     label: String,
     cap: usize,
     budget: Rc<Budget>,
+    epoch: Arc<crate::codex_profile::scoped::AgentRoots>,
 }
 
 impl AsFd for Directory {
@@ -111,6 +112,7 @@ impl Directory {
             label: label.to_owned(),
             cap: self.cap,
             budget: Rc::clone(&self.budget),
+            epoch: Arc::clone(&self.epoch),
         }
     }
 
@@ -131,6 +133,7 @@ struct Opening {
     create: bool,
     /// How many times this run has visited the recipient.
     turn: usize,
+    epoch: io::Result<Arc<crate::codex_profile::scoped::AgentRoots>>,
 }
 
 #[cfg(test)]
@@ -141,6 +144,7 @@ impl Default for Opening {
             cap: SCAN_CAP,
             create: true,
             turn: 0,
+            epoch: Ok(Arc::default()),
         }
     }
 }
@@ -190,6 +194,7 @@ fn directory(parent: &Directory, name: &str, create: bool) -> io::Result<Directo
     if !create {
         return Err(io::Error::from(io::ErrorKind::NotFound));
     }
+    let _mutation = parent.epoch.mutate()?;
     rustix::fs::mkdirat(parent, name, Mode::RWXU)?;
     parent.sync()?;
     existing_directory(parent, name)
@@ -269,6 +274,7 @@ fn grant_opening() -> Opening {
         cap: SCAN_CAP,
         create: false,
         turn: 0,
+        epoch: Ok(Arc::default()),
     }
 }
 
@@ -302,10 +308,6 @@ impl Mailbox {
         holder: dudes_supervisor::Holder,
         redactor: dudes_supervisor::Redactor,
     ) {
-        let roots = Arc::clone(&self.private_roots);
-        let Ok(_mutation) = roots.mutate() else {
-            return;
-        };
         self.subject_context(agent, holder, redactor, true);
     }
 
@@ -410,14 +412,7 @@ impl Mailbox {
             }
             crate::codex_profile::normalized_absolute(&self.root)?;
             crate::codex_profile::protected_ancestors(&named)?;
-            let tree = Tree::open(
-                &self.root,
-                agent,
-                Opening {
-                    create: true,
-                    ..grant_opening()
-                },
-            )?;
+            let tree = Tree::open(&self.root, agent, self.opening(&Rc::default(), agent, true))?;
             self.remember_outbox(&tree)?;
             self.outboxes
                 .borrow()
@@ -452,6 +447,7 @@ impl Tree {
             label: ".".to_owned(),
             cap: opening.cap,
             budget: Rc::clone(&opening.budget),
+            epoch: opening.epoch?,
         };
         let agents = directory(&root, "agents", opening.create)?;
         let agent = directory(&agents, &id.to_string(), opening.create)?;
@@ -744,6 +740,8 @@ fn remove(
     validate: fn(&Directory, &OsStr, &File) -> io::Result<()>,
 ) -> io::Result<()> {
     validate(directory, name, file)?;
+    let _mutation = directory.epoch.mutate()?;
+    validate(directory, name, file)?;
     rustix::fs::unlinkat(directory, name, AtFlags::empty())?;
     directory.sync()
 }
@@ -765,13 +763,29 @@ fn verify_named_bytes(
 }
 
 fn stage(tree: &Tree, name: &str, bytes: &[u8]) -> io::Result<File> {
+    let mutation = if named_canonical(&tree.staging, OsStr::new(name))? {
+        None
+    } else {
+        Some(tree.staging.epoch.mutate()?)
+    };
     let file = match open(
         &tree.staging,
         name,
-        OFlags::RDWR | OFlags::CREATE | OFlags::EXCL,
+        if mutation.is_some() {
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL
+        } else {
+            OFlags::RDONLY
+        },
     ) {
-        Ok(mut file) => {
+        Ok(mut file) if mutation.is_some() => {
             file.write_all(bytes)?;
+            file
+        }
+        Ok(file) => {
+            let (_, found) = read_file(&tree.staging, OsStr::new(name), OUTBOX_BYTES)?;
+            if found != bytes {
+                return Err(io::Error::other("staging collision"));
+            }
             file
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -824,6 +838,7 @@ fn publish_with(
     }
     tree.validate()?;
     verify_named_bytes(&tree.staging, &staged_name, &file, bytes)?;
+    let _mutation = tree.inbox.epoch.mutate()?;
     rustix::fs::renameat_with(
         &tree.staging,
         staged_name.as_str(),
@@ -1098,6 +1113,9 @@ impl Mailbox {
                 + self.bodies.get(&recipient).copied().unwrap_or(0),
             create,
             turn: self.visits.get(&recipient).copied().unwrap_or(0),
+            epoch: self
+                .private_roots
+                .agent(&self.root.join("agents").join(recipient.to_string())),
         }
     }
 

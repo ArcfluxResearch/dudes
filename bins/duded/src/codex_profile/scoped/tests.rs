@@ -397,6 +397,148 @@ fn poisoned_private_environment_refuses_before_any_probe_or_install() {
 }
 
 #[test]
+fn the_owned_child_checks_the_same_binding_before_enqueuing_its_one_task() {
+    use dudes_providers::protocol::ProtocolAction;
+    #[derive(Debug)]
+    struct Input(Arc<Mutex<Vec<ProtocolAction>>>);
+    impl crate::children::ChildInput for Input {
+        fn send(&self, action: ProtocolAction) -> io::Result<()> {
+            self.0.lock().unwrap().push(action);
+            Ok(())
+        }
+    }
+    for change in 0..4 {
+        let f = Fixture::new(false);
+        let prepared = f.prepare().unwrap();
+        let LaunchInput::Protocol(startup) = &prepared.launch.spec.stdin else {
+            panic!("protocol");
+        };
+        let ends = crate::children::ChildEnds::new();
+        let (sender, _jobs) = std::sync::mpsc::channel();
+        let handle = crate::ports::Handle::new(sender);
+        ends.arm(handle.clone());
+        ends.configure_codex_profile(Arc::clone(&f.profile));
+        ends.prepare_scoped_launch(&prepared, Arc::clone(&f.outbox))
+            .unwrap();
+        ends.read_next_for(
+            Some(Box::new(
+                dudes_providers::codex::app_server::AppServerReader::new(startup.clone()),
+            )),
+            &prepared.launch.spec,
+            None,
+        );
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let key = dudes_supervisor::host::AdoptionKey {
+            pid: 4242,
+            start_time: 900,
+            boot: Some("test".into()),
+        };
+        let mut child = ends.watch_protocol(&key, Box::new(Input(Arc::clone(&captured))));
+        child.line(&serde_json::json!({"id":1,"result":{"userAgent":"dudes/0.164.0-alpha.11.1 (test)","codexHome":startup.home()}}).to_string());
+        match change {
+            1 | 3 => mailbox_during_startup(&f, change == 1),
+            2 => {
+                handle.fence_journal();
+            }
+            _ => {}
+        }
+        child.line(&serde_json::json!({"id":2,"result":{"thread":{"id":"00000000-0000-7000-8000-000000000002","status":{"type":"idle"}},"cwd":startup.cwd(),"model":"gpt-5.5","runtimeWorkspaceRoots":prepared.launch.inventory.writable_roots(),"approvalPolicy":"never","sandbox":{"type":"workspaceWrite","writableRoots":prepared.launch.inventory.additional_roots(),"networkAccess":false,"excludeTmpdirEnvVar":true,"excludeSlashTmp":true}}}).to_string());
+        let actions = captured.lock().unwrap();
+        let tasks: Vec<_> = actions
+            .iter()
+            .filter_map(|action| match action {
+                ProtocolAction::Write(frame) if frame.is_task() => Some(frame),
+                _ => None,
+            })
+            .collect();
+        let delivered = matches!(change, 0 | 3);
+        assert_eq!(tasks.len(), usize::from(delivered));
+        if delivered {
+            let task: serde_json::Value = serde_json::from_slice(tasks[0].bytes()).unwrap();
+            assert_eq!(task["params"]["input"][0]["text"], "exact immutable task");
+            assert_eq!(task["method"], "turn/start");
+        } else {
+            assert_eq!(actions.last(), Some(&ProtocolAction::Fail));
+        }
+    }
+}
+
+fn mailbox_during_startup(f: &Fixture, affected: bool) {
+    use dudes_proto::{Entry, MailAct, MailFrom, MailTo, Record};
+    let agent = AgentId::from_parts(1, 1);
+    let other = AgentId::from_parts(1, 2);
+    let journal = f.root.join("mail-journal");
+    let (mut writer, _) =
+        dudes_journal::open(&journal, dudes_journal::JournalOptions::default()).unwrap();
+    for id in [agent, other] {
+        let record: Record = serde_json::from_value(serde_json::json!({"t":"agent_hired", "id":id, "name":"agent", "role":"worker", "department":"test", "provider":"codex", "cwd":f.root, "budget":{"usd_per_day":null,"tokens_per_day":null}})).unwrap();
+        writer
+            .append(&Entry {
+                at: dudes_types::Timestamp::from_unix_millis(1),
+                record,
+            })
+            .unwrap();
+    }
+    let mut mailbox = crate::mailbox::Mailbox::replay(
+        f.root.join("state"),
+        &dudes_journal::Reader::new(&journal),
+    )
+    .unwrap();
+    mailbox.coordinate_private_roots(f.profile.private_roots());
+    if affected {
+        let entry = Entry {
+            at: dudes_types::Timestamp::from_unix_millis(2),
+            record: Record::Mail {
+                id: dudes_types::MailId::from_parts(1, 3),
+                from: MailFrom::Human,
+                to: MailTo::Agent { agent },
+                act: MailAct::Message,
+                subject: "message".into(),
+                subject_admission: Some(1),
+                body: Some("body".into()),
+                body_len: 4,
+                thread: None,
+                thread_seq: 0,
+                members: Vec::new(),
+                body_path: None,
+                body_blake3: None,
+                state: dudes_types::MailState::Durable,
+                actor: None,
+                provenance: None,
+            },
+        };
+        let lsn = writer.append(&entry).unwrap();
+        mailbox.apply_entry(lsn, &entry);
+    }
+    mailbox.pass(
+        &std::collections::BTreeMap::from([(agent, false), (other, false)]),
+        || panic!("no outgoing mail"),
+        || panic!("no outgoing thread"),
+        |_, _| panic!("no marker acknowledgement"),
+    );
+    assert!(
+        f.root
+            .join("state/agents")
+            .join(other.to_string())
+            .join("outbox")
+            .is_dir()
+    );
+    if affected {
+        assert!(
+            f.launch
+                .inventory
+                .private
+                .outbox
+                .parent()
+                .unwrap()
+                .join("inbox")
+                .join(format!("{}.json", dudes_types::MailId::from_parts(1, 3)))
+                .is_file()
+        );
+    }
+}
+
+#[test]
 fn catalog_truncation_deadline_and_drift_refuse() {
     for (truncated, timed_out, bytes) in [
         (true, false, None),
@@ -447,7 +589,14 @@ fn retained_binding_refuses_catalog_profile_and_mutation_generation_changes() {
                 owner_directory(&f.profile.home).unwrap();
             }
             _ => {
-                drop(f.profile.mutations.mutate().unwrap());
+                drop(
+                    f.profile
+                        .mutations
+                        .agent(startup.agent_dir())
+                        .unwrap()
+                        .mutate()
+                        .unwrap(),
+                );
             }
         }
         assert!(prepared.binding.before_task(startup).is_err());

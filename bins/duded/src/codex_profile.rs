@@ -37,6 +37,7 @@ pub(crate) struct CodexProfile {
     env: Vec<EnvVar>,
     runner: Arc<dyn PredicateRunner>,
     mutations: Arc<scoped::PrivateRoots>,
+    catalogs: std::sync::Mutex<()>,
     #[cfg(test)]
     scoped_test_qualification: Option<(String, String, usize)>,
 }
@@ -60,6 +61,7 @@ impl CodexProfile {
             env: env.to_vec(),
             runner,
             mutations: Arc::default(),
+            catalogs: std::sync::Mutex::default(),
             #[cfg(test)]
             scoped_test_qualification: None,
         })
@@ -104,7 +106,8 @@ impl CodexProfile {
                 "scoped Codex launch requires its retained preparation owner",
             ));
         }
-        let _mutation = self.mutations.mutate()?;
+        let roots = self.mutations.agent(startup.agent_dir())?;
+        let _mutation = roots.mutate()?;
         let program = spec
             .argv
             .first()
@@ -177,7 +180,8 @@ impl CodexProfile {
     }
 
     pub(crate) fn before_task(&self, startup: &CodexStartup) -> io::Result<()> {
-        let _inspection = self.mutations.inspect()?;
+        let roots = self.mutations.agent(startup.agent_dir())?;
+        let _inspection = roots.inspect()?;
         self.machine_policy()?;
         if self.check_home(false)? != startup.home() {
             return Err(refusal("Codex profile path changed during startup"));

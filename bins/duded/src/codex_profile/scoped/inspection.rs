@@ -122,7 +122,7 @@ fn validate_inventory(inventory: &ScopedInventory) -> io::Result<()> {
         .outbox
         .parent()
         .ok_or_else(|| refusal("scoped agent path is unavailable"))?;
-    if p.work != agent.join("work") || p.temp != agent.join("tmp") {
+    if p.work != agent.join("work") || p.temp != agent.join("tmp") || p.home != agent.join("home") {
         return Err(refusal("scoped private paths differ from the agent owner"));
     }
     let mut writable: Vec<_> = grant
