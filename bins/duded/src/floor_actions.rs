@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use dudes_journal::Reader;
 use dudes_proto::record::{BrowserOnboardingHire, Hex32, RecordedWorkspace};
-use dudes_proto::repository::RepositorySet;
+use dudes_proto::repository::{RepoId, RepositorySet};
 use dudes_proto::rpc::floor::{CheckView, ChecksView, WorkspaceChecks};
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, ENROLLED_CHECK_ID};
 use dudes_proto::{AgentBudget, CompletionCheckRef, GoalBudget, Predicate, Record};
@@ -68,6 +68,8 @@ pub struct EnrolledCheck {
     pub predicate: Predicate,
     /// The operator declared that it may already pass, so a goal with it does not run it first.
     pub may_already_pass: bool,
+    /// Configured repository id for a future scoped ticket check. Absence keeps the primary.
+    pub check_repo: Option<RepoId>,
 }
 
 impl EnrolledCheck {
@@ -79,6 +81,7 @@ impl EnrolledCheck {
             label: label.to_owned(),
             predicate,
             may_already_pass: false,
+            check_repo: None,
         }
     }
 
@@ -295,7 +298,7 @@ impl Enrollment {
         }
         for profile in &self.profiles {
             if !valid_display(&profile.label)
-                || !valid_checks(&profile.checks)
+                || !valid_checks(profile)
                 || profile.department.is_empty()
                 || profile.isolation != IsolationMode::Default
                 || profile.hop_cap == 0
@@ -857,12 +860,19 @@ pub(crate) fn valid_display(value: &str) -> bool {
 
 /// A workspace's checks: at least one, each id unique, each label a display label that names
 /// something once trimmed, and each a command with something to run and a positive timeout.
-fn valid_checks(checks: &[EnrolledCheck]) -> bool {
+fn valid_checks(profile: &Profile) -> bool {
+    let checks = &profile.checks;
     !checks.is_empty()
         && checks.iter().enumerate().all(|(at, check)| {
             valid_display(&check.label)
                 && check.reference().is_some()
                 && matches!(&check.predicate, Predicate::Command { argv, timeout_s } if !argv.is_empty() && *timeout_s > 0)
+                && check.check_repo.as_ref().is_none_or(|repo| {
+                    profile.repositories.as_ref().map_or_else(
+                        || repo.as_str() == "primary",
+                        |repositories| repositories.get(repo).is_some(),
+                    )
+                })
                 && checks[..at].iter().all(|earlier| earlier.id != check.id)
         })
 }

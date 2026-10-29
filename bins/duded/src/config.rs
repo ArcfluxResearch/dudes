@@ -510,6 +510,8 @@ struct CheckTable {
     timeout_s: u64,
     #[serde(default)]
     may_already_pass: bool,
+    #[serde(default)]
+    check_repo: Option<RepoId>,
 }
 
 #[derive(Default, Deserialize)]
@@ -1025,6 +1027,7 @@ fn parse_workspace(
             timeout_s: item.predicate_timeout_s,
         },
         may_already_pass: item.may_already_pass,
+        check_repo: None,
     };
     let checks = std::iter::once(own)
         .chain(item.checks.into_iter().map(|row| EnrolledCheck {
@@ -1035,6 +1038,7 @@ fn parse_workspace(
                 timeout_s: row.timeout_s,
             },
             may_already_pass: row.may_already_pass,
+            check_repo: row.check_repo,
         }))
         .collect();
     Ok(Profile {
@@ -1192,6 +1196,174 @@ mod tests {
         ConfigPlatform::Windows,
         ConfigPlatform::Unix,
     ];
+
+    fn named_check_project(root: &Path, explicit: bool, target: Option<&str>) -> String {
+        for name in ["web", "api"] {
+            std::fs::create_dir_all(root.join(name).join(".git")).unwrap();
+        }
+        let web = root.join("web");
+        let api = root.join("api");
+        let repositories = if explicit {
+            format!(
+                "primary_repo = 'web'\nrepositories = [\n\
+                 {{ repo_id = 'web', label = 'Web', path = {web:?} }},\n\
+                 {{ repo_id = 'api', label = 'API', path = {api:?} }},\n]\n"
+            )
+        } else {
+            format!("cwd = {web:?}\n")
+        };
+        let target = target.map_or_else(String::new, |repo| {
+            format!("check_repo = {}\n", serde_json::to_string(repo).unwrap())
+        });
+        format!(
+            "[[floor.onboarding.workspaces]]\nworkspace_id = 'service'\nlabel = 'Service'\n\
+             completion_check_label = 'Default check'\n{repositories}\
+             department = 'engineering'\nisolation = 'default'\nhop_cap = 5\n\
+             predicate_argv = ['external-check']\npredicate_timeout_s = 10\n\
+             [[floor.onboarding.workspaces.checks]]\nid = 'tests'\nlabel = 'Tests'\n\
+             argv = ['external-check', '--fast']\ntimeout_s = 10\n{target}"
+        )
+    }
+
+    #[test]
+    fn configured_named_check_repository_is_retained() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let path = root.join("config.toml");
+        std::fs::write(&path, named_check_project(&root, true, Some("api"))).unwrap();
+        let loaded = super::load_operator(&path).expect("configured check repository");
+        let profile = &loaded.enrollment.profiles[0];
+        assert!(profile.checks[0].check_repo.is_none());
+        assert_eq!(
+            profile.checks[1]
+                .check_repo
+                .as_ref()
+                .map(super::RepoId::as_str),
+            Some("api")
+        );
+    }
+
+    #[test]
+    fn named_check_repository_must_be_an_enrolled_id() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let path = root.join("config.toml");
+        for (explicit, target) in [
+            (true, "other"),
+            (true, "primary"),
+            (true, "API"),
+            (true, "../api"),
+            (true, "/absolute/path/to/api"),
+            (false, "api"),
+        ] {
+            std::fs::write(&path, named_check_project(&root, explicit, Some(target))).unwrap();
+            assert!(super::load_operator(&path).is_err(), "{explicit} {target}");
+        }
+        std::fs::write(&path, named_check_project(&root, false, Some("primary"))).unwrap();
+        assert!(super::load_operator(&path).is_ok());
+    }
+
+    #[test]
+    fn absent_check_repository_keeps_legacy_revisions_and_floor_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let path = root.join("config.toml");
+        for explicit in [false, true] {
+            for (may_already_pass, revision) in [
+                (
+                    false,
+                    "30cb5bd902911e394eeda618c73db6d5b3ba842e1eb87da891cbd3ffc413060d",
+                ),
+                (
+                    true,
+                    "f44785bc561e2eed66778aeebde107197ba6075deb7618022c7d707f20fa4260",
+                ),
+            ] {
+                let text = format!(
+                    "{}may_already_pass = {may_already_pass}\n",
+                    named_check_project(&root, explicit, None)
+                );
+                std::fs::write(&path, text).unwrap();
+                let loaded = super::load_operator(&path).unwrap();
+                assert!(
+                    loaded.enrollment.profiles[0]
+                        .checks
+                        .iter()
+                        .all(|check| check.check_repo.is_none())
+                );
+                assert_eq!(
+                    serde_json::to_string(&loaded.enrollment.checks_view().workspaces[0].checks[1])
+                        .unwrap(),
+                    format!(
+                        r#"{{"id":"tests","label":"Tests","revision":"{revision}","may_already_pass":{may_already_pass}}}"#
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn changing_only_the_configured_check_repository_is_an_enrollment_change() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let path = root.join("config.toml");
+        std::fs::write(&path, named_check_project(&root, true, Some("api"))).unwrap();
+        let before = super::load_operator(&path).unwrap();
+        std::fs::write(&path, named_check_project(&root, true, Some("web"))).unwrap();
+        let after = super::load_operator(&path).unwrap();
+        assert_eq!(
+            before.enrollment.profiles[0].changed_fields(&after.enrollment.profiles[0]),
+            ["checks"]
+        );
+        assert_eq!(
+            serde_json::to_vec(&before.enrollment.checks_view()).unwrap(),
+            serde_json::to_vec(&after.enrollment.checks_view()).unwrap()
+        );
+    }
+
+    #[test]
+    fn existing_check_config_edits_preserve_a_configured_repository() {
+        use dudes_config::workspace::{NewCheck, add_check, remove_check};
+
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let path = root.join("config.toml");
+        let target_line = "check_repo = \"api\" # operator's target";
+        let text = named_check_project(&root, true, Some("api"))
+            .replace("check_repo = \"api\"", target_line);
+        std::fs::write(&path, text).unwrap();
+        let extra = NewCheck {
+            workspace: "service".into(),
+            id: "lint".into(),
+            label: "Lint".into(),
+            argv: vec!["external-lint".into()],
+            timeout_s: 10,
+            may_already_pass: false,
+        };
+        add_check(&path, &extra).unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains(target_line)
+        );
+        let loaded = super::load_operator(&path).unwrap();
+        let checks = &loaded.enrollment.profiles[0].checks;
+        assert_eq!(checks.len(), 3);
+        assert_eq!(checks[1].check_repo.as_ref().unwrap().as_str(), "api");
+        assert!(checks[2].check_repo.is_none());
+        remove_check(&path, "service", "lint").unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains(target_line)
+        );
+        assert_eq!(
+            super::load_operator(&path).unwrap().enrollment.profiles[0]
+                .checks
+                .len(),
+            2
+        );
+    }
 
     /// The platform default is chosen by platform alone, and each one reads only its own root.
     #[test]

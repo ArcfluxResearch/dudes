@@ -14369,6 +14369,7 @@ fn checks_settings(fixture: &Fixture) -> duded::Settings {
                     timeout_s: 10,
                 },
                 may_already_pass,
+                check_repo: None,
             },
         )
         .collect();

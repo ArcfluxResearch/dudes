@@ -219,6 +219,7 @@ fn owned_settings(
                     timeout_s: 1,
                 },
                 may_already_pass: true,
+                check_repo: None,
             }],
             department: "infra".into(),
             isolation: IsolationMode::Default,

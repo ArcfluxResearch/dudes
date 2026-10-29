@@ -55,6 +55,7 @@ fn check(id: &str, program: &str) -> EnrolledCheck {
             timeout_s: 10,
         },
         may_already_pass: true,
+        check_repo: None,
     }
 }
 
