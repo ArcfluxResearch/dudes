@@ -521,7 +521,12 @@ fn fresh_id() -> io::Result<MailId> {
     Ok(MailId::from_parts(millis, u128::from_be_bytes(entropy)))
 }
 
-pub(super) fn run(command: &MailCommand, path: &Path, out: &mut dyn Write) -> io::Result<()> {
+pub(super) fn run(
+    command: &MailCommand,
+    path: &Path,
+    scoped_file_mail: bool,
+    out: &mut dyn Write,
+) -> io::Result<()> {
     let mailbox = Mailbox::open(path)?;
     match command {
         MailCommand::Send(send) => {
@@ -535,7 +540,7 @@ pub(super) fn run(command: &MailCommand, path: &Path, out: &mut dyn Write) -> io
             if items.is_empty() {
                 return writeln!(out, "no unread mail");
             }
-            let mut names_hint = matches!(command, MailCommand::Read);
+            let mut names_hint = matches!(command, MailCommand::Read) && !scoped_file_mail;
             for (item, body) in items {
                 let from = match item.from {
                     MailFrom::Agent { agent } if std::mem::take(&mut names_hint) => {
