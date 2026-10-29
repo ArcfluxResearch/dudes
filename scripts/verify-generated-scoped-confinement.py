@@ -34,12 +34,13 @@ SPEC.loader.exec_module(compat)
 MARKER = "generated confinement marker\n"
 CALL_ID = "call_scoped_action"
 CLAUDE_CALL_ID = "toolu_scoped_action"
+CLAUDE_READ_ID = "toolu_scoped_read"
 CASES = (
     "command-writable", "command-protected", "command-network",
     "file-declared", "file-undeclared", "file-cwd-gitfile", "file-additional-gitfile",
     "file-gitdir", "file-common", "file-home", "file-profile", "file-inbox",
 )
-DENIAL = re.compile(r"permission denied|operation not permitted|not allowed|not permitted|outside.*(?:project|workspace)|(?:write|edit).*denied|denied.*(?:write|edit)|rejected.*(?:project|workspace)|requires approval", re.I)
+DENIAL = re.compile(r"permission denied|operation not permitted|not allowed|not permitted|outside.*(?:project|workspace)|(?:write|edit).*denied|denied.*(?:write|edit)|denied by your permission settings|rejected.*(?:project|workspace)|requires approval", re.I)
 
 
 @dataclass
@@ -57,6 +58,7 @@ class Probe:
     targets: list
     unavailable: bool = False
     network: bool = False
+    preread: bool = False
 
 
 def protected_targets(value):
@@ -111,7 +113,23 @@ def make_probe(root, value, provider, case, endpoint, unavailable=False):
             targets.extend(Target(name, Path(value["private"][name]) / "scoped-proof", not unavailable) for name in ["work", "outbox", "temp"])
         else:
             targets = list(protected.values())
-        command = shell_writes(targets)
+        if case == "command-protected":
+            script = Path(value["private"]["work"]) / "protected-write-probe.py"
+            script.write_text(
+                "from pathlib import Path\n"
+                + "for name, target in " + repr([(target.name, str(target.path)) for target in targets]) + ":\n"
+                + "    try:\n"
+                + "        Path(target).write_text(" + repr(MARKER) + ")\n"
+                + "    except OSError as error:\n"
+                + "        print('SCOPED_' + name + '=refused')\n"
+                + "        print('SCOPED_ERRNO_' + name + '=' + str(error.errno))\n"
+                + "        print(str(error))\n"
+                + "    else:\n"
+                + "        print('SCOPED_' + name + '=written')\n"
+            )
+            command = shlex.join([sys.executable, str(script)])
+        else:
+            command = shell_writes(targets)
     else:
         target = Target("declared", cwd / "scoped-proof", True) if case == "file-declared" else protected[{
             "file-undeclared": "undeclared", "file-cwd-gitfile": "cwd-gitfile", "file-additional-gitfile": "additional-gitfile",
@@ -120,7 +138,7 @@ def make_probe(root, value, provider, case, endpoint, unavailable=False):
         targets = [target]
         if provider == "claude":
             arguments = {"file_path": str(target.path), "old_string": target.path.read_text() if target.path.exists() else "", "new_string": MARKER}
-            return Probe(case, "Edit", arguments, targets)
+            return Probe(case, "Edit", arguments, targets, preread=case == "file-undeclared")
         path = os.path.relpath(target.path, cwd)
         if target.path.exists():
             patch = "*** Update File: " + path + "\n@@\n" + "".join("-" + line + "\n" for line in target.path.read_text().splitlines()) + "+" + MARKER
@@ -140,7 +158,7 @@ class ActionModel(compat.LocalModel):
     def respond(self, handler, body):
         number = len(self.requests)
         probe = self.probe
-        if probe is None or number not in [1, 2]:
+        if probe is None or not 1 <= number <= self.expected_posts:
             raise ValueError("model response has no bounded action")
         tools = body.get("tools", [])
         if self.provider == "codex":
@@ -151,11 +169,17 @@ class ActionModel(compat.LocalModel):
         emit = lambda kind, value: self.event(handler, kind, value)
         if self.provider == "claude":
             emit("message_start", {"type": "message_start", "message": {"id": "msg_scoped_" + str(number), "type": "message", "role": "assistant", "content": [], "model": body["model"], "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 0}}})
-            block, delta = ({"type": "tool_use", "id": CLAUDE_CALL_ID, "name": probe.tool, "input": {}}, {"type": "input_json_delta", "partial_json": json.dumps(probe.arguments)}) if number == 1 else ({"type": "text", "text": ""}, {"type": "text_delta", "text": "finished"})
+            if number < self.expected_posts:
+                read = probe.preread and number == 1
+                block = {"type": "tool_use", "id": CLAUDE_READ_ID if read else CLAUDE_CALL_ID, "name": "Read" if read else probe.tool, "input": {}}
+                arguments = {"file_path": str(probe.targets[0].path)} if read else probe.arguments
+                delta = {"type": "input_json_delta", "partial_json": json.dumps(arguments)}
+            else:
+                block, delta = {"type": "text", "text": ""}, {"type": "text_delta", "text": "finished"}
             emit("content_block_start", {"type": "content_block_start", "index": 0, "content_block": block})
             emit("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": delta})
             emit("content_block_stop", {"type": "content_block_stop", "index": 0})
-            emit("message_delta", {"type": "message_delta", "delta": {"stop_reason": "tool_use" if number == 1 else "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 1}})
+            emit("message_delta", {"type": "message_delta", "delta": {"stop_reason": "tool_use" if number < self.expected_posts else "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 1}})
             emit("message_stop", {"type": "message_stop"})
         else:
             response = {"id": "resp_scoped_" + str(number), "object": "response", "created_at": 0, "status": "in_progress", "model": body["model"], "output": []}
@@ -207,6 +231,11 @@ def effect_checks(provider, probe, before, requests, outer_namespace=None):
             except json.JSONDecodeError:
                 pass
     checks["one_exact_native_tool_call_observed"] = exact
+    if probe.preread:
+        messages = requests[-1]["body"].get("messages", []) if requests else []
+        reads = [item for message in messages if isinstance(message.get("content"), list) for item in message["content"] if item.get("type") == "tool_result" and item.get("tool_use_id") == CLAUDE_READ_ID]
+        calls = [item for message in messages if message.get("role") == "assistant" and isinstance(message.get("content"), list) for item in message["content"] if item.get("type") == "tool_use" and item.get("id") == CLAUDE_READ_ID]
+        checks["explicit_prerequisite_read_observed"] = len(reads) == len(calls) == 1 and not reads[0].get("is_error", False) and calls[0].get("name") == "Read" and calls[0].get("input", {}).get("file_path") == str(probe.targets[0].path) and before[probe.targets[0].name].decode().strip() in str(reads[0].get("content", ""))
     effects = []
     for target in probe.targets:
         after = target.path.read_bytes() if target.path.is_file() else None
@@ -262,7 +291,7 @@ def owned_seed_state(value):
     return state
 
 
-def run_claude(root, argv, env, value, policy):
+def run_claude(root, argv, env, value, policy, probe):
     process = subprocess.Popen(argv, env=env, cwd=policy["cwd"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
     timed_out = False
     try:
@@ -285,7 +314,7 @@ def run_claude(root, argv, env, value, policy):
         "recorded_session_exact": {row.get("session_id") for row in rows if row.get("session_id")} == {value["session_id"]},
         "closed_tool_inventory": len(initializations) == 1 and len(initializations[0].get("tools", [])) == 3 and set(initializations[0]["tools"]) == {"Bash", "Read", "Edit"},
         "native_mcp_absent": len(initializations) == 1 and initializations[0].get("mcp_servers") == [],
-        "one_native_tool_action": len(actions) == 1 and actions[0].get("id") == CLAUDE_CALL_ID,
+        "expected_native_tool_actions": [action.get("id") for action in actions] == ([CLAUDE_READ_ID, CLAUDE_CALL_ID] if probe.preread else [CLAUDE_CALL_ID]),
         "task_completed": len(results) == 1 and results[0].get("subtype") == "success" and not results[0].get("is_error") and results[0].get("result") == "finished",
         "request_model_exact": len(initializations) == 1 and initializations[0].get("model") == value["model"],
     }
@@ -307,6 +336,16 @@ def run_case(args, provider, case):
     previous_alarm = signal.signal(signal.SIGALRM, deadline_expired)
     signal.setitimer(signal.ITIMER_REAL, 40)
     try:
+        version_home = root / "version-home"
+        version_home.mkdir(mode=0o700)
+        (version_home / "tmp").mkdir(mode=0o700)
+        version_env = {"HOME": str(version_home), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR": str(version_home / "tmp"), "TMP": str(version_home / "tmp"), "TEMP": str(version_home / "tmp"), "CODEX_HOME": str(version_home / ".codex"), "CLAUDE_CONFIG_DIR": str(version_home / ".claude"), "ANTHROPIC_API_KEY": compat.DUMMY_CREDENTIAL, "CODEX_API_KEY": compat.DUMMY_CREDENTIAL, "OPENAI_API_KEY": compat.DUMMY_CREDENTIAL}
+        version = subprocess.run([str(binary), "--version"], env=version_env, cwd=version_home, capture_output=True, text=True, timeout=5)
+        result["version"] = version.stdout.strip()
+        result["version_process_uses_separate_scratch_state"] = True
+        result["checks"]["expected_version"] = version.returncode == 0 and result["version"] == ("2.1.311 (Claude Code)" if provider == "claude" else "codex-cli 0.164.0-alpha.11.1")
+        if not result["checks"]["expected_version"]:
+            raise RuntimeError("pinned engine version output differs")
         value = compat.fixture_input(root, provider, binary, model.endpoint)
         value["task"] = "Carry out the single local confinement check and finish."
         policy = compat.project(args.fixture, root, value)
@@ -324,18 +363,14 @@ def run_case(args, provider, case):
         result["configuration_canaries_seeded_after_empty_profile_inspection"] = True
         probe = make_probe(root, value, provider, case, model.endpoint, args.macos_sandbox_unavailable)
         model.probe = probe
+        model.expected_posts = 3 if probe.preread else 2
         before = {target.name: target.path.read_bytes() if target.path.is_file() else None for target in probe.targets}
         seeded = owned_seed_state(value)
         result["owned_seed_files_and_layout"] = seeded
-        result["probe"] = {"name": probe.name, "tool": probe.tool, "arguments": probe.arguments}
+        result["probe"] = {"name": probe.name, "tool": probe.tool, "arguments": probe.arguments, "explicit_prerequisite_read": probe.preread, "exact_model_posts": model.expected_posts}
         result["preflight"] = inspect_writable_roots([Path(item["path"]) for item in policy["inventory"]["writable"]])
         if not result["preflight"]["accepted"]:
             raise RuntimeError("generated writable-root metadata preflight refused")
-        version = subprocess.run([str(binary), "--version"], env=env, cwd=policy["cwd"], capture_output=True, text=True, timeout=5)
-        result["version"] = version.stdout.strip()
-        result["checks"]["expected_version"] = version.returncode == 0 and result["version"] == ("2.1.311 (Claude Code)" if provider == "claude" else "codex-cli 0.164.0-alpha.11.1")
-        if not result["checks"]["expected_version"]:
-            raise RuntimeError("pinned engine version output differs")
         health_argv = ["/usr/bin/curl", "-q", "--max-time", "2", "--noproxy", "*", model.endpoint + "/local-health"]
         if args.macos_sandbox_unavailable:
             health_argv.insert(2, "-6")
@@ -350,7 +385,7 @@ def run_case(args, provider, case):
             raise RuntimeError("owned seeded state changed before the native launch")
         argv = compat.native_command(argv, args.macos_sandbox_unavailable)
         result["spawn_argv_sha256"] = compat.digest(argv)
-        native = run_claude(root, argv, env, value, policy) if provider == "claude" else compat.run_codex(args, root, argv, env, value, policy, model)
+        native = run_claude(root, argv, env, value, policy, probe) if provider == "claude" else compat.run_codex(args, root, argv, env, value, policy, model)
         result["checks"].update(native.pop("checks"))
         result.update(native)
     except Exception as error:
@@ -359,7 +394,7 @@ def run_case(args, provider, case):
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous_alarm)
         model.close()
-    result["checks"].update(compat.model_observation_checks(model, 2))
+    result["checks"].update(compat.model_observation_checks(model, model.expected_posts))
     if probe is not None:
         checks, outputs, effects = effect_checks(provider, probe, before, model.requests, namespace)
         result["checks"].update(checks)
@@ -368,7 +403,7 @@ def run_case(args, provider, case):
     if provider == "claude":
         result["checks"]["closed_tools_on_every_model_request"] = bool(model.requests) and all(len(request["body"].get("tools", [])) == 3 and {tool.get("name") for tool in request["body"]["tools"]} == {"Bash", "Read", "Edit"} for request in model.requests)
         result["checks"]["model_exact_on_every_request"] = bool(model.requests) and all(request["body"].get("model") == "claude-sonnet-4-6" for request in model.requests)
-    result.update({"scratch": str(root), "seconds": time.monotonic() - started, "local_model_requests": len(model.requests), "local_post_attempts": model.post_attempts, "local_http_attempts": model.http_total, "local_get_attempts": model.get_attempts, "http_attempt_log": model.http_attempts, "http_attempt_log_overflow": model.http_overflow, "model_errors": model.errors, "credential_observations": model.credentials, "http_limits": {"total": compat.MAX_HTTP_REQUESTS, "get": compat.MAX_GET_REQUESTS, "post": 2}, "paid_model_calls": 0, "cleanup_observation": {"direct_child_exited": result.get("direct_child_exited"), "stdout_reader_thread_stopped": result.get("stdout_reader_thread_stopped"), "model_accept_thread_stopped": not model.thread.is_alive(), "model_listener_closed": model.server.socket.fileno() == -1, "descendant_cleanup_verified": False}})
+    result.update({"scratch": str(root), "seconds": time.monotonic() - started, "local_model_requests": len(model.requests), "local_post_attempts": model.post_attempts, "local_http_attempts": model.http_total, "local_get_attempts": model.get_attempts, "http_attempt_log": model.http_attempts, "http_attempt_log_overflow": model.http_overflow, "model_errors": model.errors, "credential_observations": model.credentials, "http_limits": {"total": compat.MAX_HTTP_REQUESTS, "get": compat.MAX_GET_REQUESTS, "post": model.expected_posts}, "paid_model_calls": 0, "cleanup_observation": {"direct_child_exited": result.get("direct_child_exited"), "stdout_reader_thread_stopped": result.get("stdout_reader_thread_stopped"), "model_accept_thread_stopped": not model.thread.is_alive(), "model_listener_closed": model.server.socket.fileno() == -1, "descendant_cleanup_verified": False}})
     result["egress_isolation"] = ("unavailable-control outer Seatbelt; prevents nested command sandboxing" if args.macos_sandbox_unavailable else "engine's own sandbox and explicit local dummy-provider controls; no outer loopback-egress isolation") if platform.system() == "Darwin" else "loopback-only ephemeral network namespace; no host sandbox settings altered"
     result["passed"] = not result["error"] and bool(result["checks"]) and all(result["checks"].values())
     (root / "model-requests.json").write_text(json.dumps(model.requests, indent=2) + "\n")
