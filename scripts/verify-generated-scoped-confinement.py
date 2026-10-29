@@ -160,7 +160,7 @@ def make_probe(value, provider, case, endpoint, unavailable=False):
 class ActionModel(compat.LocalModel):
     def __init__(self, provider, unavailable):
         self.probe = None
-        super().__init__(provider, None, "confinement", unavailable)
+        super().__init__(provider, None, "confinement", False)
         self.expected_posts = 2
 
     def respond(self, handler, body):
@@ -281,6 +281,48 @@ def seed_canaries(root, value, provider):
     return traps
 
 
+def unavailable_guard(endpoint):
+    address = compat.urlsplit(endpoint)
+    if address.hostname != "127.0.0.1" or not address.port or compat.OUTER_NETWORK_GUARD.count("localhost:*") != 1:
+        raise ValueError("unavailable stimulus requires the owned IPv4 endpoint and inherited localhost rule")
+    return compat.OUTER_NETWORK_GUARD.replace("localhost:*", "localhost:" + str(address.port))
+
+
+def unavailable_prerequisites(model, other, env, guard):
+    started = time.monotonic()
+    deadline = started + 2
+    attempts = []
+    positive = False
+    negative = []
+    for role, endpoint in [("allowed", model.endpoint), ("blocked", other.endpoint)]:
+        for ordinal in [1, 2]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            argv = ["/usr/bin/sandbox-exec", "-p", guard, "/usr/bin/curl", "-q", "--max-time", str(min(0.4, remaining)), "--noproxy", "*", endpoint + "/local-health"]
+            before = time.monotonic()
+            try:
+                response = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=min(0.5, remaining))
+                observed = {"exit": response.returncode, "stdout": response.stdout, "stderr": response.stderr, "timed_out": False}
+            except subprocess.TimeoutExpired as error:
+                observed = {"exit": None, "stdout": str(error.stdout or ""), "stderr": str(error.stderr or ""), "timed_out": True}
+            attempts.append({"role": role, "ordinal": ordinal, "argv": argv, "seconds": time.monotonic() - before, **observed})
+            if role == "allowed":
+                positive = observed["exit"] == 0 and observed["stdout"] == "local-model-ready"
+                if positive:
+                    break
+            else:
+                negative.append(observed["exit"] not in {None, 0} and not observed["timed_out"])
+        if not positive:
+            break
+    checks = {
+        "owned_endpoint_positive_control": positive,
+        "owned_other_endpoint_blocked": len(negative) == 2 and all(negative) and other.http_total == 0 and not other.errors,
+        "unavailable_readiness_bounded": time.monotonic() <= deadline,
+    }
+    return {"attempts": attempts, "seconds": time.monotonic() - started, "checks": checks, "allowed_endpoint": model.endpoint, "blocked_owned_endpoint": other.endpoint, "blocked_http_attempts": other.http_attempts, "failed_connections_before_http": sum(attempt["exit"] not in {None, 0} for attempt in attempts)}
+
+
 def owned_seed_state(value):
     paths = {Path(value["private"][name]) for name in ["home", "profile"]}
     for entry in value["grant"]["repositories"]["entries"]:
@@ -335,6 +377,7 @@ def run_case(args, provider, case):
     if sha256(binary) != compat.PINS.get((platform.system(), platform.machine(), provider)):
         raise RuntimeError("native binary does not match the exact pinned build")
     model = ActionModel(provider, args.macos_sandbox_unavailable)
+    blocked_model = None
     started = time.monotonic()
     result = {"provider": provider, "case": case, "checks": {}, "error": None, "binary_sha256": sha256(binary), "fixture_sha256": sha256(args.fixture), "script_sha256": sha256(Path(__file__)), "compatibility_script_sha256": sha256(Path(compat.__file__)), "platform": platform.platform(), "production_admission": "unarmed", "session_scope": "first process only; continuation unproved", "execution_mode": "sandbox-unavailable-control" if args.macos_sandbox_unavailable else "normal"}
     probe, before, traps = None, {}, []
@@ -379,16 +422,24 @@ def run_case(args, provider, case):
         result["preflight"] = inspect_writable_roots([Path(item["path"]) for item in policy["inventory"]["writable"]])
         if not result["preflight"]["accepted"]:
             raise RuntimeError("generated writable-root metadata preflight refused")
-        health_argv = ["/usr/bin/curl", "-q", "--max-time", "2", "--noproxy", "*", model.endpoint + "/local-health"]
         if args.macos_sandbox_unavailable:
-            health_argv.insert(2, "-6")
-        health = subprocess.run(compat.native_command(health_argv, args.macos_sandbox_unavailable), env={"HOME": value["private"]["home"], "PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=4)
-        result["local_endpoint_positive_control"] = {"argv": health_argv, "exit": health.returncode, "stdout": health.stdout, "stderr": health.stderr}
-        result["checks"]["owned_endpoint_positive_control"] = health.returncode == 0 and health.stdout == "local-model-ready"
-        if not result["checks"]["owned_endpoint_positive_control"]:
-            raise RuntimeError("owned local endpoint positive control failed")
-        if args.macos_sandbox_unavailable:
-            (root / "outer-network-guard.sb").write_text(compat.OUTER_NETWORK_GUARD + "\n")
+            guard = unavailable_guard(model.endpoint)
+            blocked_model = compat.LocalModel(provider, None, "health-only", False)
+            blocked_model.expected_posts = 0
+            result["outer_guard"] = {"utf8": guard, "sha256": hashlib.sha256(guard.encode()).hexdigest(), "scope": "test stimulus only; inherited localhost wildcard narrowed to owned model port"}
+            (root / "outer-network-guard.sb").write_text(guard)
+            readiness = unavailable_prerequisites(model, blocked_model, {"HOME": value["private"]["home"], "PATH": "/usr/bin:/bin"}, guard)
+            result["unavailable_readiness"] = readiness
+            result["checks"].update(readiness["checks"])
+            if not all(readiness["checks"].values()):
+                raise RuntimeError("narrow unavailable stimulus failed its positive/negative prerequisites")
+        else:
+            health_argv = ["/usr/bin/curl", "-q", "--max-time", "2", "--noproxy", "*", model.endpoint + "/local-health"]
+            health = subprocess.run(compat.native_command(health_argv, False), env={"HOME": value["private"]["home"], "PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=4)
+            result["local_endpoint_positive_control"] = {"argv": health_argv, "exit": health.returncode, "stdout": health.stdout, "stderr": health.stderr}
+            result["checks"]["owned_endpoint_positive_control"] = health.returncode == 0 and health.stdout == "local-model-ready"
+            if not result["checks"]["owned_endpoint_positive_control"]:
+                raise RuntimeError("owned local endpoint positive control failed")
         result["checks"]["owned_seed_identity_content_and_layout_before_spawn"] = owned_seed_state(value) == seeded
         if not result["checks"]["owned_seed_identity_content_and_layout_before_spawn"]:
             raise RuntimeError("owned seeded state changed before the native launch")
@@ -398,7 +449,7 @@ def run_case(args, provider, case):
             if not result["checks"]["undeclared_creation_parent_exists_and_target_absent"]:
                 raise RuntimeError("undeclared creation precondition changed before spawn")
             result["new_file_creation_control"] = {"parent": str(target.parent), "parent_device": target.parent.stat().st_dev, "parent_inode": target.parent.stat().st_ino, "target_initially_absent": True, "same_empty_old_string_as_declared_edit": probe.arguments.get("old_string") == "" if provider == "claude" else None}
-        argv = compat.native_command(argv, args.macos_sandbox_unavailable)
+        argv = ["/usr/bin/sandbox-exec", "-p", guard, *argv] if args.macos_sandbox_unavailable else compat.native_command(argv, False)
         result["spawn_argv_sha256"] = compat.digest(argv)
         native = run_claude(root, argv, env, value, policy, probe) if provider == "claude" else compat.run_codex(args, root, argv, env, value, policy, model)
         result["checks"].update(native.pop("checks"))
@@ -409,6 +460,10 @@ def run_case(args, provider, case):
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous_alarm)
         model.close()
+        if blocked_model is not None:
+            blocked_model.close()
+            result["blocked_owned_listener"] = {"http_attempts": blocked_model.http_attempts, "http_total": blocked_model.http_total, "errors": blocked_model.errors, "closed": blocked_model.server.socket.fileno() == -1, "thread_stopped": not blocked_model.thread.is_alive()}
+            result["checks"]["blocked_owned_listener_unused"] = blocked_model.http_total == 0 and not blocked_model.errors
     result["checks"].update(compat.model_observation_checks(model, model.expected_posts))
     if probe is not None:
         checks, outputs, effects = effect_checks(provider, probe, before, model.requests, namespace)

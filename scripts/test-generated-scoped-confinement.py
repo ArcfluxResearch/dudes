@@ -114,6 +114,21 @@ class Evidence(unittest.TestCase):
 
 
 class Transport(unittest.TestCase):
+    def test_narrow_unavailable_readiness_retains_first_failure_and_requires_owned_denial(self):
+        endpoint = types.SimpleNamespace(endpoint="http://127.0.0.1:12345/v1")
+        other = types.SimpleNamespace(endpoint="http://127.0.0.1:12346/v1", http_total=0, errors=[], http_attempts=[])
+        guard = proof.unavailable_guard(endpoint.endpoint)
+        self.assertIn('localhost:12345', guard)
+        self.assertNotIn('localhost:*', guard)
+        for q_exit, expected in [(7, True), (0, False)]:
+            responses = [subprocess.CompletedProcess([], 7, "", "first local connection failed"), subprocess.CompletedProcess([], 0, "local-model-ready", ""), subprocess.CompletedProcess([], q_exit, "" if q_exit else "local-model-ready", ""), subprocess.CompletedProcess([], q_exit, "" if q_exit else "local-model-ready", "")]
+            with mock.patch.object(proof.subprocess, "run", side_effect=responses):
+                result = proof.unavailable_prerequisites(endpoint, other, {}, guard)
+            self.assertEqual(all(result["checks"].values()), expected)
+            self.assertEqual(len(result["attempts"]), 4)
+            self.assertEqual(result["attempts"][0]["exit"], 7)
+            self.assertEqual(result["attempts"][1]["stdout"], "local-model-ready")
+
     def test_server_sends_exact_custom_patch_then_final_and_retains_all_attempts(self):
         model = proof.ActionModel("codex", False)
         model.probe = proof.Probe("file", "apply_patch", "*** Begin Patch\n*** End Patch", [])
