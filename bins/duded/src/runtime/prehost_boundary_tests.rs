@@ -1077,12 +1077,16 @@ fn a_claude_scoped_completion_refuses_a_missing_copy_with_the_original_issue_ret
             .sup
             .world()
             .instructions
-            .current_for_turn(f.issued.turn)
+            .attempt(f.issued.started)
             .unwrap()
-            .1
             .finished
-            .is_none()
+            .is_some()
     );
+    assert!(f.setup.fixture.records().iter().any(|record| matches!(record,
+        Record::InstructionObservationBatchFinished(batch)
+            if batch.baseline == (InstructionBaselineRef::Started { lsn: f.issued.started })
+                && batch.members.iter().all(|member| matches!(member.settlement,
+                    InstructionSettlement::NoProcess { proof: InstructionNoProcessProof::NoHostCall, .. })))));
     assert!(!f.setup.fixture.records().iter().any(
         |record| matches!(record, Record::TurnSpawned { turn, .. } if *turn == f.issued.turn)
     ));
