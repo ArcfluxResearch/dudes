@@ -18,6 +18,38 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         &mut self,
         completion: ScopedCompletion,
     ) -> anyhow::Result<()> {
+        self.ctx.browser_launches.finish_scoped(completion.attempt);
+        if self.ctx.journal_writes_stopped() || self.ctx.closing_failed_after.is_some() {
+            self.ctx.scoped_launches.remove(&completion.attempt.turn);
+            return Ok(());
+        }
+        if !self.sup.effects().is_empty() {
+            let mut owed = VecDeque::new();
+            let mut acknowledgments = false;
+            let mut requests = std::collections::BTreeSet::new();
+            let executed = self.execute_pump_effects(
+                &mut owed,
+                &mut super::PumpReport::Discard,
+                false,
+                &mut acknowledgments,
+                &mut requests,
+            );
+            self.fence_failed_pump(
+                super::PumpOrigin::Ordinary,
+                &executed,
+                acknowledgments,
+                &owed,
+                requests,
+            );
+            executed?;
+            self.pump_inputs(
+                &mut super::PumpReport::Discard,
+                super::PumpOrigin::Ordinary,
+                owed,
+                &[],
+                |_, _| Ok(super::Handled::default()),
+            )?;
+        }
         let mut inputs = VecDeque::new();
         self.ctx
             .finish_scoped_launch(completion, &mut inputs, &mut self.sup)?;
@@ -41,9 +73,23 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             return;
         }
         let Some((started, physical)) = sup.world().instructions.current_for_turn(turn) else {
+            queue.push_back(Input::SpawnFailed {
+                turn,
+                reason: "scoped physical launch attempt is unavailable".into(),
+            });
             return;
         };
         let Some(generation) = self.scoped_generation.checked_add(1) else {
+            preparation_failed(
+                queue,
+                Attempt {
+                    turn,
+                    generation: self.scoped_generation,
+                    started,
+                    owner: physical.owner,
+                },
+                "scoped preparation generation is exhausted",
+            );
             return;
         };
         self.scoped_generation = generation;
@@ -53,6 +99,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             started,
             owner: physical.owner,
         };
+        if !self.repository_turn_allowed(sup.world(), turn) {
+            preparation_failed(queue, attempt, "scoped repository admission is unavailable");
+            return;
+        }
         let prepared = self.scoped_request(attempt, spec, mcp_grant, sup);
         match prepared {
             Ok(request) if !self.scoped_launches.contains_key(&turn) => {
@@ -185,8 +235,19 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         self.scoped_launches.remove(&attempt.turn);
         if !current_attempt(sup.world(), attempt)
             || self.journal_writes_stopped()
+            || self.closing_failed_after.is_some()
             || !self.recovery_dispatch_allowed(sup, attempt.turn)
         {
+            return Ok(());
+        }
+        let agent = sup.world().turns[&attempt.turn].agent;
+        if let Err(refusal) = self.admit_prior_attempt(sup, agent, Some(attempt.turn)) {
+            queue.push_back(Input::LaunchAdmissionRefused {
+                agent,
+                turn: Some(attempt.turn),
+                refusal,
+                dispatch_token: None,
+            });
             return Ok(());
         }
         let prepared = match completion.prepared {

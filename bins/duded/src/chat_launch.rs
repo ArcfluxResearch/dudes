@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -21,6 +21,11 @@ struct Preparation {
 enum Payload {
     Program(Box<LaunchSpec>),
     Scoped(Box<ScopedPreparation>),
+}
+
+enum WorkerCompletion {
+    Browser(Result<Box<LaunchSpec>, String>),
+    Scoped(Box<ScopedCompletion>),
 }
 
 pub(crate) struct ScopedPreparation {
@@ -50,7 +55,7 @@ impl std::fmt::Debug for ScopedCompletion {
 struct Queue {
     stopping: bool,
     pending: VecDeque<Preparation>,
-    turns: BTreeSet<TurnId>,
+    turns: BTreeMap<TurnId, u64>,
 }
 
 #[derive(Default)]
@@ -201,11 +206,19 @@ impl LaunchPreparations {
         )
     }
 
+    pub(crate) fn finish_scoped(&self, attempt: crate::codex_profile::scoped::Attempt) {
+        let mut queue = self.queue.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if queue.turns.get(&attempt.turn) == Some(&attempt.generation) {
+            queue.turns.remove(&attempt.turn);
+        }
+    }
+
     fn enqueue(&self, turn: TurnId, generation: u64, payload: Payload) -> bool {
         let mut queue = self.queue.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if queue.stopping || queue.turns.len() >= CAPACITY || !queue.turns.insert(turn) {
+        if queue.stopping || queue.turns.len() >= CAPACITY || queue.turns.contains_key(&turn) {
             return false;
         }
+        queue.turns.insert(turn, generation);
         queue.pending.push_back(Preparation {
             turn,
             generation,
@@ -250,11 +263,13 @@ fn resolve(queue: &Arc<(Mutex<Queue>, Condvar)>, pause: &BrowserLaunchPause, han
             state.pending.pop_front().expect("pending preparation")
         };
         let completed = match preparation.payload {
-            Payload::Program(spec) => Ok(crate::program::resolve_launch(*spec)
-                .map(Box::new)
-                .map_err(|reason| {
-                    format!("managed program preparation failed ({:?})", reason.kind())
-                })),
+            Payload::Program(spec) => WorkerCompletion::Browser(
+                crate::program::resolve_launch(*spec)
+                    .map(Box::new)
+                    .map_err(|reason| {
+                        format!("managed program preparation failed ({:?})", reason.kind())
+                    }),
+            ),
             Payload::Scoped(mut request) => {
                 let attempt = request.attempt;
                 let outbox = Arc::clone(&request.outbox);
@@ -269,26 +284,29 @@ fn resolve(queue: &Arc<(Mutex<Queue>, Condvar)>, pause: &BrowserLaunchPause, han
                     .map_err(|reason| {
                         format!("scoped launch preparation failed ({:?})", reason.kind())
                     });
-                Err(ScopedCompletion {
+                WorkerCompletion::Scoped(Box::new(ScopedCompletion {
                     attempt,
                     prepared,
                     outbox,
-                })
+                }))
             }
         };
+        let scoped = matches!(completed, WorkerCompletion::Scoped(_));
         let post = pause.hold();
         let mut state = queue.0.lock().unwrap_or_else(PoisonError::into_inner);
         if post && !state.stopping {
             match completed {
-                Ok(prepared) => handle.input(Input::BrowserLaunchReady {
+                WorkerCompletion::Browser(prepared) => handle.input(Input::BrowserLaunchReady {
                     turn: preparation.turn,
                     generation: preparation.generation,
                     prepared,
                 }),
-                Err(completion) => handle.scoped_launch_prepared(completion),
+                WorkerCompletion::Scoped(completion) => handle.scoped_launch_prepared(*completion),
             }
             pause.returned();
         }
-        state.turns.remove(&preparation.turn);
+        if !scoped || !post || state.stopping {
+            state.turns.remove(&preparation.turn);
+        }
     }
 }

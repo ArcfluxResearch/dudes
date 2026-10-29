@@ -101,6 +101,13 @@ impl CodexProfile {
         mut launch: ScopedManagedLaunch,
         attempt: Attempt,
     ) -> io::Result<PreparedScopedLaunch> {
+        validate_environment(&launch)?;
+        if attempt.started == Lsn::ZERO
+            || attempt.generation == 0
+            || !matches!(attempt.owner, InstructionObservationOwner::Managed { turn, .. } if turn == attempt.turn)
+        {
+            return Err(refusal("scoped physical attempt identity is unavailable"));
+        }
         let generation = self.mutations.mutate()?;
         self.scoped_policy(true)?;
         let deadline = Instant::now() + PROBE_DEADLINE;
@@ -327,6 +334,41 @@ impl CodexProfile {
         let _ = std::fs::remove_dir_all(&scratch);
         result
     }
+}
+
+fn validate_environment(launch: &ScopedManagedLaunch) -> io::Result<()> {
+    use std::ffi::OsStr;
+    let p = &launch.inventory.private;
+    let mut expected = std::collections::BTreeMap::from([
+        ("HOME", p.home.as_os_str()),
+        ("CODEX_HOME", p.profile.as_os_str()),
+        ("TMPDIR", p.temp.as_os_str()),
+        ("TMP", p.temp.as_os_str()),
+        ("TEMP", p.temp.as_os_str()),
+        ("SHELL", OsStr::new("/bin/bash")),
+        ("TERM", OsStr::new("dumb")),
+    ]);
+    let mut seen = BTreeSet::new();
+    for var in &launch.spec.env {
+        let name = var
+            .name()
+            .to_str()
+            .ok_or_else(|| refusal("scoped environment name is invalid"))?;
+        if !seen.insert(name) {
+            return Err(refusal("scoped environment is ambiguous"));
+        }
+        if let Some(value) = expected.remove(name) {
+            if var.expose_value() != value {
+                return Err(refusal("scoped private environment changed"));
+            }
+        } else if !matches!(name, "PATH" | "LANG" | "OPENAI_API_KEY" | "CODEX_API_KEY") {
+            return Err(refusal("scoped environment contains an unowned setting"));
+        }
+    }
+    if !expected.is_empty() {
+        return Err(refusal("scoped private environment is incomplete"));
+    }
+    Ok(())
 }
 
 struct Qualification {

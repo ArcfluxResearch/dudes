@@ -321,7 +321,7 @@ fn scoped_preparation_failure_keeps_the_issue_and_enters_the_existing_visible_ho
         .iter()
         .filter(|record| matches!(record, Record::GoalSet { .. }))
         .count();
-    let issues = fixture
+    let issue_count = fixture
         .records()
         .iter()
         .filter(|record| matches!(record, Record::TurnIssued { .. }))
@@ -355,7 +355,7 @@ fn scoped_preparation_failure_keeps_the_issue_and_enters_the_existing_visible_ho
             .iter()
             .filter(|record| matches!(record, Record::TurnIssued { .. }))
             .count(),
-        issues
+        issue_count
     );
     assert!(!records.iter().any(|record| matches!(
         record,
@@ -400,6 +400,110 @@ fn stale_scoped_completion_cannot_hold_a_different_physical_attempt() {
         assert_eq!(fixture.records(), before);
         assert_eq!(daemon.sup.world().turns[&issued.turn].task, issued.task);
     }
+}
+
+#[test]
+fn pending_control_acknowledgements_fold_before_the_scoped_host_check() {
+    for control in 0..3 {
+        let fixture = common::Fixture::new();
+        let host = CountingHost::new();
+        let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+        let issued = prepared(&mut daemon, &fixture, Provider::Claude);
+        let attempt = crate::codex_profile::scoped::Attempt {
+            turn: issued.turn,
+            generation: 9,
+            started: issued.started,
+            owner: issued.owner,
+        };
+        daemon.ctx.scoped_launches.insert(issued.turn, attempt);
+        let command = match control {
+            0 => Command::Pause {
+                agent: issued.agent,
+                browser: None,
+            },
+            1 => Command::Halt {
+                agent: issued.agent,
+                text: None,
+            },
+            _ => Command::Retire {
+                agent: issued.agent,
+                reason: "retire".into(),
+                browser_retire: None,
+            },
+        };
+        daemon
+            .sup
+            .handle(
+                Input::Command(command),
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .unwrap();
+        let before = fixture.records();
+        let outbox =
+            crate::mailbox::outbox_fixture(&fixture.state.path().join("callback"), issued.agent);
+        daemon
+            .complete_scoped_launch(crate::chat_launch::ScopedCompletion {
+                attempt,
+                prepared: Err("late preparation".into()),
+                outbox,
+            })
+            .unwrap();
+        assert_eq!(host.spawn_calls(), 0);
+        let after = fixture.records();
+        assert!(after.len() > before.len());
+        assert!(after.iter().any(|record| matches!(
+            record,
+            Record::Pause { .. } | Record::Halt { .. } | Record::AgentRetired { .. }
+        )));
+        assert!(
+            !after
+                .iter()
+                .any(|record| no_host_finish(record, &issued, None))
+        );
+        assert!(
+            !after
+                .iter()
+                .any(|record| matches!(record, Record::TurnSpawned { .. }))
+        );
+        assert_eq!(daemon.sup.world().turns[&issued.turn].task, issued.task);
+        assert!(daemon.sup.effects().is_empty());
+    }
+}
+
+#[test]
+fn a_failed_scoped_preparation_does_not_clear_uncertain_owned_children() {
+    let fixture = common::Fixture::new();
+    let host = CountingHost::new();
+    let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+    let issued = prepared(&mut daemon, &fixture, Provider::Claude);
+    let attempt = crate::codex_profile::scoped::Attempt {
+        turn: issued.turn,
+        generation: 9,
+        started: issued.started,
+        owner: issued.owner,
+    };
+    daemon.ctx.scoped_launches.insert(issued.turn, attempt);
+    daemon
+        .ctx
+        .children
+        .retain_uncertain(issued.turn, fixture.state.path());
+    let outbox =
+        crate::mailbox::outbox_fixture(&fixture.state.path().join("callback"), issued.agent);
+    daemon
+        .complete_scoped_launch(crate::chat_launch::ScopedCompletion {
+            attempt,
+            prepared: Err("failed preparation".into()),
+            outbox,
+        })
+        .unwrap();
+    assert_eq!(host.spawn_calls(), 0);
+    assert_eq!(daemon.sup.world().turns[&issued.turn].task, issued.task);
+    assert!(
+        daemon
+            .ctx
+            .admit_prior_attempt(&daemon.sup, issued.agent, Some(issued.turn))
+            .is_err()
+    );
 }
 
 #[test]

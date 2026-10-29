@@ -648,6 +648,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 }
             }
             super::SpawnResult::CleanupUnconfirmed { reason } => {
+                self.children.discard_unlaunched();
                 self.children.retain_uncertain(
                     turn,
                     cwd.as_deref()

@@ -595,6 +595,29 @@ mod wake_tests {
     }
 
     #[test]
+    fn a_scoped_inspection_defers_private_mutations_without_waiting_for_the_worker() {
+        let (mut mailbox, agent, _) = fixture(0);
+        let roots = Arc::clone(&mailbox.private_roots);
+        let inspection = roots.inspect().unwrap();
+        mailbox.pass(
+            &BTreeMap::new(),
+            || panic!("deferred clock"),
+            || panic!("deferred mint"),
+            |_, _| panic!("deferred append"),
+        );
+        assert!(mailbox.admit_outbox(agent).is_err());
+        mailbox.begin_subject_context(
+            agent,
+            dudes_supervisor::Holder::Turn(dudes_types::TurnId::from_parts(1, 3)),
+            dudes_supervisor::Redactor::for_run(),
+        );
+        assert!(mailbox.subject_contexts.is_empty());
+        assert_eq!(*inspection, 0);
+        drop(inspection);
+        assert_eq!(*roots.mutate().unwrap(), 1);
+    }
+
+    #[test]
     fn exact_prepared_advance_is_folded_once_and_terminal_mail_is_preserved() {
         for count in [0, 4] {
             let (mut mailbox, agent, target) = fixture(count);

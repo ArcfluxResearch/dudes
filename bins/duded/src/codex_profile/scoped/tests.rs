@@ -51,8 +51,12 @@ struct Fixture {
 }
 
 impl Fixture {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the fixture creates one complete frozen hire and candidate from current filesystem identities"
+    )]
     fn new(resume: bool) -> Self {
-        use std::os::unix::fs::MetadataExt as _;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let root = tempfile::tempdir().unwrap();
         let path = root.path().canonicalize().unwrap();
         let identity = |path: &Path| {
@@ -150,12 +154,10 @@ impl Fixture {
         };
         let program = path.join("codex");
         std::fs::write(&program, b"binary").unwrap();
-        use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let adapter = CodexAdapter::new(CodexConfig {
             streaming: true,
             command: program.to_string_lossy().into_owned(),
-            ..CodexConfig::default()
         })
         .with_managed_home(profile.home.clone());
         let ctx = AgentCtx {
@@ -251,6 +253,15 @@ fn the_existing_worker_pool_returns_one_private_bundle_without_browser_input() {
         panic!("private worker completion");
     };
     assert_eq!(completion.attempt, Fixture::attempt());
+    assert!(
+        !workers.prepare_scoped(crate::chat_launch::ScopedPreparation {
+            attempt: Fixture::attempt(),
+            launch: f.launch.clone(),
+            profile: Arc::clone(&f.profile),
+            outbox: Arc::clone(&f.outbox),
+        })
+    );
+    workers.finish_scoped(completion.attempt);
     let prepared = completion.prepared.unwrap();
     assert_eq!(prepared.launch.inventory, f.launch.inventory);
     assert_eq!(prepared.launch.install, f.launch.install);
@@ -369,6 +380,23 @@ fn poisoned_home_refuses_before_any_probe_or_install() {
 }
 
 #[test]
+fn poisoned_private_environment_refuses_before_any_probe_or_install() {
+    let f = Fixture::new(false);
+    let mut launch = f.launch.clone();
+    launch
+        .spec
+        .env
+        .push(EnvVar::new("CODEX_HOME", f.root.join("other-profile")));
+    assert!(
+        f.profile
+            .prepare_scoped(launch, Fixture::attempt())
+            .is_err()
+    );
+    assert!(f.runner.calls.lock().unwrap().is_empty());
+    assert!(!f.profile.home.exists());
+}
+
+#[test]
 fn catalog_truncation_deadline_and_drift_refuse() {
     for (truncated, timed_out, bytes) in [
         (true, false, None),
@@ -385,7 +413,7 @@ fn catalog_truncation_deadline_and_drift_refuse() {
         assert!(f.prepare().is_err());
     }
     let f = Fixture::new(false);
-    std::fs::write(&f.root.join("codex"), b"changed binary").unwrap();
+    std::fs::write(f.root.join("codex"), b"changed binary").unwrap();
     assert!(f.prepare().is_err());
     assert!(
         !f.runner

@@ -7110,6 +7110,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let _ = self.ctx.host.kill(&key);
                 }
                 Job::ScopedLaunchPrepared(completion) => {
+                    self.ctx.browser_launches.finish_scoped(completion.attempt);
                     self.ctx.scoped_launches.remove(&completion.attempt.turn);
                 }
                 Job::Input(input) => {
