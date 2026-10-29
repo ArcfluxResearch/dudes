@@ -116,7 +116,7 @@ impl AppServerReader {
                 let Some(body) = response::<wire::ThreadResponse>(text) else {
                     return self.fail();
                 };
-                if !self.posture(&body) {
+                if !self.posture(&body) || !self.scoped_posture(text) {
                     return self.fail();
                 }
                 let Some(id) = body
@@ -198,6 +198,9 @@ impl AppServerReader {
         let Some(agent) = body.user_agent.as_deref() else {
             return self.fail();
         };
+        if self.startup.is_scoped() && agent.split(' ').next() != Some("dudes/0.164.0-alpha.11.1") {
+            return self.fail();
+        }
         if let Err(unsupported) = super::version::check_user_agent(agent) {
             self.refusal = Some(unsupported.to_string());
             return self.fail();
@@ -270,6 +273,20 @@ impl AppServerReader {
                     && sandbox.writable_roots.as_deref()
                         == Some(self.startup.writable_roots().as_slice())
             })
+    }
+
+    fn scoped_posture(&self, text: &str) -> bool {
+        if !self.startup.is_scoped() {
+            return true;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(text) else {
+            return false;
+        };
+        let mut roots = vec![self.startup.cwd.clone()];
+        roots.extend(self.startup.writable_roots());
+        value.pointer("/result/runtimeWorkspaceRoots") == Some(&json!(roots))
+            && value.pointer("/result/model").and_then(Value::as_str)
+                == self.startup.selection.selector()
     }
 
     fn attributed(&mut self, thread: Option<&str>, turn: Option<&str>) -> bool {

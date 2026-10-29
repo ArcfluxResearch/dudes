@@ -311,6 +311,18 @@ pub trait Adapter: Send + Sync {
         session: &TurnSession,
         selection: &ModelSelection,
     ) -> Result<LaunchSpec, LaunchError>;
+    /// Compose an unarmed restricted recipe from frozen repository authority.
+    /// Runtime build, filesystem, transport and session admission remain the daemon's work.
+    fn managed_scoped(
+        &self,
+        _ctx: &AgentCtx<'_>,
+        _scope: &crate::scoped::ScopedLaunchInputs<'_>,
+        _task: &str,
+        _session: &TurnSession,
+        _selection: &ModelSelection,
+    ) -> Result<crate::scoped::ScopedManagedLaunch, LaunchError> {
+        Err(crate::scoped::ScopedError::Provider.into())
+    }
     /// A fresh reader for one managed turn's standard output.
     fn turn_reader(&self) -> Box<dyn TurnReader>;
     /// A reader for the exact prepared launch, including its immutable protocol task.
