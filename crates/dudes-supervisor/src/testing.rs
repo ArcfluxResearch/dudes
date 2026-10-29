@@ -375,6 +375,15 @@ pub enum Seen {
         /// The durable managed-launch permission, absent before an agent's first edit.
         mcp_grant: Option<Lsn>,
     },
+    /// Frozen scoped inputs awaiting the runtime's strict preparation.
+    ScopedSpawn {
+        /// The turn.
+        turn: TurnId,
+        /// Exact physical launch inputs.
+        launch: crate::ManagedSpawn,
+        /// Durable permission, refused by the scoped runtime when present.
+        mcp_grant: Option<Lsn>,
+    },
     /// A signal to a child.
     Kill {
         /// The agent.
@@ -457,6 +466,13 @@ pub enum Seen {
         generation: u64,
         /// Typed launch parts.
         spec: LaunchSpec,
+    },
+    /// A scoped browser preparation retaining its typed launch inputs.
+    PrepareScopedBrowserLaunch {
+        /// The turn.
+        turn: TurnId,
+        /// Unique run-local attempt generation.
+        generation: u64,
     },
     /// Read current canonical ticket eligibility for one pending instruction recovery.
     ResolveInstructionRecoveryTicket {
@@ -550,11 +566,17 @@ impl Seen {
             Effect::PrepareBrowserLaunch {
                 turn,
                 generation,
-                spec,
-            } => Self::PrepareBrowserLaunch {
-                turn: *turn,
-                generation: *generation,
-                spec: spec.clone(),
+                launch,
+            } => match launch {
+                crate::ManagedSpawn::Composed { spec, .. } => Self::PrepareBrowserLaunch {
+                    turn: *turn,
+                    generation: *generation,
+                    spec: spec.as_ref().clone(),
+                },
+                crate::ManagedSpawn::Scoped { .. } => Self::PrepareScopedBrowserLaunch {
+                    turn: *turn,
+                    generation: *generation,
+                },
             },
             Effect::Persist { token, entry } => Self::Persist {
                 token: *token,
@@ -562,14 +584,20 @@ impl Seen {
             },
             Effect::Spawn {
                 turn,
-                spec,
-                install,
+                launch,
                 mcp_grant,
-            } => Self::Spawn {
-                turn: *turn,
-                spec: spec.clone(),
-                install: install.clone(),
-                mcp_grant: *mcp_grant,
+            } => match launch {
+                crate::ManagedSpawn::Composed { spec, install } => Self::Spawn {
+                    turn: *turn,
+                    spec: spec.as_ref().clone(),
+                    install: install.clone(),
+                    mcp_grant: *mcp_grant,
+                },
+                crate::ManagedSpawn::Scoped { .. } => Self::ScopedSpawn {
+                    turn: *turn,
+                    launch: launch.clone(),
+                    mcp_grant: *mcp_grant,
+                },
             },
             Effect::Kill { agent, turn, .. } => Self::Kill {
                 agent: *agent,
@@ -643,8 +671,10 @@ impl Seen {
             Self::MailWakeRefresh { .. } => "MailWakeRefresh",
             Self::MailWakeNotify { .. } => "MailWakeNotify",
             Self::PrepareBrowserLaunch { .. } => "PrepareBrowserLaunch",
+            Self::PrepareScopedBrowserLaunch { .. } => "PrepareScopedBrowserLaunch",
             Self::Persist { .. } => "Persist",
             Self::Spawn { .. } => "Spawn",
+            Self::ScopedSpawn { .. } => "ScopedSpawn",
             Self::Kill { .. } => "Kill",
             Self::Probe { .. } => "Probe",
             Self::RunPredicate { .. } => "RunPredicate",
@@ -1086,6 +1116,9 @@ impl Harness {
                     generation,
                     prepared: Ok(Box::new(spec)),
                 })
+            }
+            Seen::PrepareScopedBrowserLaunch { turn, generation } if self.launch => {
+                Some(Input::BrowserScopedLaunchReady { turn, generation })
             }
             Seen::Persist { token, entry }
                 if self.fsync && !self.unfsynced.contains(&entry.record.kind()) =>

@@ -198,14 +198,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(selection) = self.model_selection(&row) else {
             return;
         };
-        let launch = match self.launch(
-            agent,
-            &row,
-            row.repositories.singleton(),
-            task,
-            &session,
-            &selection,
-        ) {
+        let Some(repositories) = self.issue_repositories(agent) else {
+            return;
+        };
+        let launch = match self.launch(agent, &row, Some(&repositories), task, &session, &selection)
+        {
             ManagedLaunch::Ready(launch) => launch,
             ManagedLaunch::Unavailable => return,
             ManagedLaunch::Refused(error) => {
@@ -222,8 +219,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 return;
             }
         };
-        self.persist(
-            Record::IdentifiedConversationTurnIssued {
+        let record = launch.repositories.record(
+            dudes_proto::issue::ManagedIssuePayload::IdentifiedConversation {
                 agent,
                 turn,
                 note_lsn,
@@ -234,6 +231,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 model_selection: selection,
                 lsn_of_decision,
             },
+        );
+        self.persist(
+            record,
             Then::Spawn {
                 agent,
                 turn,

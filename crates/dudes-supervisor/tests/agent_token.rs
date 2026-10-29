@@ -442,8 +442,10 @@ fn no_effect_debug_prints_the_token_plaintext() {
                 mcp_grant,
             } => Some(Effect::Spawn {
                 turn: *turn,
-                spec: spec.clone(),
-                install: install.clone(),
+                launch: dudes_supervisor::ManagedSpawn::Composed {
+                    spec: Box::new(spec.clone()),
+                    install: install.clone(),
+                },
                 mcp_grant: *mcp_grant,
             }),
             _ => None,
@@ -466,7 +468,11 @@ fn no_effect_debug_prints_the_token_plaintext() {
 
     for effect in [spawn, open_pty] {
         let spec = match &effect {
-            Effect::Spawn { spec, .. } | Effect::OpenPty { spec, .. } => spec,
+            Effect::Spawn {
+                launch: dudes_supervisor::ManagedSpawn::Composed { spec, .. },
+                ..
+            } => spec.as_ref(),
+            Effect::OpenPty { spec, .. } => spec,
             other => unreachable!("{}", other.name()),
         };
         let plaintext = token_of(spec).expect("the spec carries the token");

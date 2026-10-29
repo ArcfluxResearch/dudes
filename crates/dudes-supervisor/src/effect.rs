@@ -25,12 +25,75 @@ use dudes_proto::Entry;
 use dudes_proto::goal::Predicate;
 use dudes_proto::reply::HookReply;
 use dudes_proto::rpc::Notification;
-use dudes_providers::adapter::{HookInstall, ManagedInstall};
-use dudes_providers::launch::LaunchSpec;
-use dudes_types::{AgentId, GoalId, Lsn, TurnId};
+use dudes_providers::adapter::{HookInstall, ManagedInstall, TurnSession};
+use dudes_providers::launch::{EnvVar, LaunchSpec};
+use dudes_types::{AgentId, GoalId, Lsn, ModelSelection, TurnId};
 
 use crate::host::AdoptionKey;
 use crate::input::{ClientId, HookId, InstructionRequest, MailWakeRequest, PersistToken};
+
+/// Immutable inputs for one managed physical launch.
+#[derive(Clone)]
+pub enum ManagedSpawn {
+    /// A complete ordinary adapter recipe.
+    Composed {
+        /// Typed launch parts.
+        spec: Box<LaunchSpec>,
+        /// Adapter-owned files.
+        install: ManagedInstall,
+    },
+    /// Inputs the runtime binds to the issued grant before composing a scoped recipe.
+    Scoped {
+        /// Exact persisted task.
+        task: String,
+        /// Authorized physical-attempt session.
+        session: TurnSession,
+        /// Persisted model choice.
+        selection: ModelSelection,
+        /// Armed daemon environment, scrubbed by the scoped adapter.
+        env: Vec<EnvVar>,
+    },
+}
+
+impl ManagedSpawn {
+    pub(crate) fn environment_mut(&mut self) -> &mut Vec<EnvVar> {
+        match self {
+            Self::Composed { spec, .. } => &mut spec.env,
+            Self::Scoped { env, .. } => env,
+        }
+    }
+}
+
+impl fmt::Debug for ManagedSpawn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Composed { spec, install } => f
+                .debug_struct("Composed")
+                .field("spec", spec)
+                .field(
+                    "install",
+                    &install
+                        .files
+                        .iter()
+                        .map(|(path, _)| path)
+                        .collect::<Vec<_>>(),
+                )
+                .finish(),
+            Self::Scoped {
+                task,
+                session,
+                selection,
+                env,
+            } => f
+                .debug_struct("Scoped")
+                .field("task", task)
+                .field("session", session)
+                .field("selection", selection)
+                .field("env", env)
+                .finish(),
+        }
+    }
+}
 
 /// One thing the runtime must do.
 ///
@@ -82,10 +145,8 @@ pub enum Effect {
     Spawn {
         /// The turn the child serves.
         turn: TurnId,
-        /// argv, env, cwd, stdin — typed parts, never a shell string (invariant 7).
-        spec: LaunchSpec,
-        /// The adapter's files, rewritten before exec: a projection, not state.
-        install: ManagedInstall,
+        /// Complete ordinary recipe or frozen scoped inputs.
+        launch: ManagedSpawn,
         /// The daemon-selected durable permission for this physical attempt.
         mcp_grant: Option<Lsn>,
     },
@@ -222,7 +283,7 @@ pub enum Effect {
         /// A unique run-local preparation generation.
         generation: u64,
         /// The already armed typed launch. Preparation starts no child.
-        spec: LaunchSpec,
+        launch: ManagedSpawn,
     },
     /// Resolve current card eligibility for one historical recovery association without writing.
     ResolveInstructionRecoveryTicket {
@@ -308,28 +369,23 @@ impl fmt::Debug for Effect {
                 .finish(),
             Self::Spawn {
                 turn,
-                spec,
-                install,
+                launch,
                 mcp_grant,
             } => f
                 .debug_struct("Spawn")
                 .field("turn", turn)
                 .field("mcp_grant", mcp_grant)
-                .field("spec", spec)
-                .field(
-                    "install",
-                    &install.files.iter().map(|(p, _)| p).collect::<Vec<_>>(),
-                )
+                .field("launch", launch)
                 .finish(),
             Self::PrepareBrowserLaunch {
                 turn,
                 generation,
-                spec,
+                launch,
             } => f
                 .debug_struct("PrepareBrowserLaunch")
                 .field("turn", turn)
                 .field("generation", generation)
-                .field("spec", spec)
+                .field("launch", launch)
                 .finish(),
             Self::CaptureBaseline {
                 agent,
