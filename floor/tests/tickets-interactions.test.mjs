@@ -191,8 +191,8 @@ function SharedNotices({ floor, children }) {
       createElement(StreamNotice, { floor }), createElement(JournalStoppedBanner, { stopped: floor.journalStopped })), children);
 }
 
-async function mount(cards, { agents = [agent()], onHire = () => {}, hireAvailable = false, strict = false } = {}) {
-  subscribe(store, { cards, agents, checks: TWO_PROJECTS });
+async function mount(cards, { agents = [agent()], onHire = () => {}, hireAvailable = false, strict = false, diff = false } = {}) {
+  subscribe(store, { cards, agents, checks: TWO_PROJECTS, diff });
   const page = pageForTickets();
   const root = createRoot(page.host);
   let floor = { ...store.getFloorState(), onboarding: hireAvailable ? { workspaces: [] } : null };
@@ -991,13 +991,15 @@ test('unknown instruction coverage in an undeclared hired repository blocks Acce
   } : { state: 'assigned', card: body.card, seq: 4, lsn: '14', start: { state: 'started' } }) });
   const app = await mount([ticketCard(1, 'blocked', { claimed_by: ADA }, {
     reason: 'shared_instructions_unknown', instruction_review: instructionSummary(),
-  })]);
+  })], { agents: [agent(ADA, 'Ada', { worktree: { branch: 'dudes/0123456789ab', state: 'active' } })], diff: true });
   try {
     await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
     assert.equal(app.page.host.querySelector('[data-action="accept"]').disabled, true);
     assert.equal(app.page.host.querySelector('[data-action="changes"]').disabled, false);
     assert.ok(textOf(app.page.host).includes('docs'));
     assert.ok(textOf(app.page.host).includes('AGENTS.md'));
+    assert.match(textOf(app.page.host), /reads the agent’s own copy of the project/);
+    assert.doesNotMatch(textOf(app.page.host), /works in the project folder, not in a copy of its own/);
     seen.length = 0;
     let accepted;
     await act(async () => { accepted = await ticket.changeTicket(store.getFloorState().cards[0], { verb: 'accept' }); });
