@@ -48,6 +48,16 @@ macro_rules! managed_issues {
         }
 
         impl ManagedIssuePayload {
+            /// Restore the legacy carrier for this exact semantic payload.
+            #[must_use]
+            pub fn into_legacy_record(self) -> Record {
+                match self {
+                    $( Self::$kind { $($field,)* } => Record::$record { $($field,)* }, )*
+                    Self::MailWake(issue) => Record::MailWakeOnlyTurnIssued(issue),
+                    Self::IdentifiedMailWake(issue) => Record::IdentifiedMailWakeOnlyTurnIssued(issue),
+                }
+            }
+
             /// Borrow the payload without constructing another journal record.
             #[must_use]
             pub fn as_ref(&self) -> ManagedIssueRef<'_> {
@@ -348,6 +358,14 @@ mod tests {
             RecordKind::IdentifiedMailWakeOnlyTurnIssued,
         ] {
             let legacy = samples::record(kind);
+            assert_eq!(
+                legacy
+                    .issue_payload()
+                    .unwrap()
+                    .to_owned()
+                    .into_legacy_record(),
+                legacy
+            );
             let wrapped = scoped(legacy.issue_payload().unwrap().to_owned());
             let encoded = serde_json::to_vec(&wrapped).unwrap();
             let decoded: Record = serde_json::from_slice(&encoded).unwrap();
