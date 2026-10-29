@@ -24,6 +24,10 @@ impl RepositoryAdmission {
         }
     }
 
+    pub(crate) fn refuse(&mut self, agent: AgentId, hire: Lsn) {
+        self.observed.insert(agent, (hire, false));
+    }
+
     pub(crate) fn refused(&self, agent: AgentId, row: &AgentRow) -> bool {
         self.observed.get(&agent) == Some(&(row.mcp.hire_lsn, false))
     }

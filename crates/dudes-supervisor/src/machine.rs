@@ -397,7 +397,7 @@ enum ManagedLaunch {
     Refused(LaunchError),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct PreparedLaunch {
     spec: LaunchSpec,
     install: ManagedInstall,
@@ -534,6 +534,9 @@ pub struct Supervisor<C: Clock, R: Rng> {
     world: World,
     repository_admission: crate::RepositoryAdmission,
     repository_recoveries: BTreeMap<AgentId, Lsn>,
+    host_dispatches: BTreeMap<TurnId, (Lsn, u64, bool)>,
+    owned_launches: BTreeMap<TurnId, Box<PreparedLaunch>>,
+    next_host_dispatch: u64,
     closing_active: bool,
     closing_recovery: bool,
     /// Agents whose recorded worktree is missing, as [`Input::MissingWorktrees`] set them.
@@ -744,6 +747,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             world: World::default(),
             repository_admission: crate::RepositoryAdmission::default(),
             repository_recoveries: BTreeMap::new(),
+            host_dispatches: BTreeMap::new(),
+            owned_launches: BTreeMap::new(),
+            next_host_dispatch: 0,
             closing_active: false,
             closing_recovery: false,
             missing_worktrees: BTreeMap::new(),
@@ -836,6 +842,63 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .is_some_and(|row| row.mcp.hire_lsn == *hire && admission.allows(*agent, row))
         });
         self.repository_admission = admission;
+    }
+
+    /// Correlate one serialized preparation with its unfinished physical attempt.
+    #[must_use]
+    pub fn prepare_host_dispatch(
+        &mut self,
+        turn: TurnId,
+    ) -> Option<crate::input::HostDispatchClaim> {
+        if !self.spawning.contains(&turn)
+            || self.host_dispatches.contains_key(&turn)
+            || self
+                .world
+                .turns
+                .get(&turn)
+                .is_none_or(|row| !row.is_issued_not_spawned())
+        {
+            return None;
+        }
+        let (started_lsn, attempt) = self.world.instructions.current_for_turn(turn)?;
+        if attempt.finished.is_some() || attempt.spawn_lsn.is_some() {
+            return None;
+        }
+        self.next_host_dispatch = self.next_host_dispatch.checked_add(1)?;
+        let generation = self.next_host_dispatch;
+        self.host_dispatches
+            .insert(turn, (started_lsn, generation, false));
+        Some(crate::input::HostDispatchClaim {
+            turn,
+            started_lsn,
+            generation,
+        })
+    }
+
+    /// Consume the exact preparation immediately before its process-host call.
+    #[must_use]
+    pub fn enter_host_dispatch(&mut self, claim: crate::input::HostDispatchClaim) -> bool {
+        let (turn, started_lsn, generation) = claim.into_parts();
+        if self.host_dispatches.get(&turn) != Some(&(started_lsn, generation, false))
+            || !self.spawning.contains(&turn)
+            || self
+                .world
+                .turns
+                .get(&turn)
+                .is_none_or(|row| !row.is_issued_not_spawned())
+            || self
+                .world
+                .instructions
+                .current_for_turn(turn)
+                .is_none_or(|(started, _)| started != started_lsn)
+        {
+            return false;
+        }
+        self.host_dispatches
+            .insert(turn, (started_lsn, generation, true));
+        self.instructions.repository_deferred.remove(&turn);
+        self.owned_launches.remove(&turn);
+        true
     }
 
     /// Whether this exact hire has a current execution observation.
@@ -1243,6 +1306,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 *snapshot,
                 ticket,
                 comparison.map(|comparison| *comparison),
+                operation,
             ),
             Input::RepositoryInstructionsSampled {
                 request,
@@ -1291,6 +1355,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 if let Some(attempt) = attempt {
                     self.finish_spawn_failure(turn, reason, Some(attempt));
                 }
+            }
+            Input::RepositoryLaunchDeferred { claim } => {
+                self.defer_repository_launch(claim);
             }
             Input::LaunchAdmissionRefused {
                 agent,
@@ -1726,6 +1793,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 if self.world.browser_issue_cancelled(*turn) {
                     self.browser_launches.remove(turn);
                     self.spawning.remove(turn);
+                    self.host_dispatches.remove(turn);
+                    self.owned_launches.remove(turn);
+                    self.instructions.repository_deferred.remove(turn);
                     self.reissued.remove(turn);
                     self.reissue_confirmations.remove(turn);
                     self.status
@@ -1736,6 +1806,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 if self.world.browser_issue_cancelled(*turn) {
                     self.browser_launches.remove(turn);
                     self.spawning.remove(turn);
+                    self.host_dispatches.remove(turn);
+                    self.owned_launches.remove(turn);
+                    self.instructions.repository_deferred.remove(turn);
                     self.reissued.remove(turn);
                     self.reissue_confirmations.remove(turn);
                 }
@@ -1747,6 +1820,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             } => {
                 self.browser_launches.remove(turn);
                 self.spawning.remove(turn);
+                self.host_dispatches.remove(turn);
+                self.owned_launches.remove(turn);
+                self.instructions.repository_deferred.remove(turn);
                 self.reissued.remove(turn);
                 self.reissue_confirmations.remove(turn);
                 self.live_issues.remove(turn);
@@ -1758,6 +1834,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.browser_context.remove(agent);
             }
             Record::TurnSpawned { turn, .. } => {
+                self.host_dispatches.remove(turn);
+                self.owned_launches.remove(turn);
+                self.instructions.repository_deferred.remove(turn);
                 // The hand-over: `World::apply` now calls the turn `Spawned`, so crash rule (2)
                 // can no longer see it as re-issuable and the run-local claim can be released.
                 // Releasing at emit time leaves the world `Issued` until this acknowledgement;
@@ -1766,6 +1845,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.browser_launches.remove(turn);
             }
             Record::TurnEnded { agent, turn, .. } => {
+                self.host_dispatches.remove(turn);
+                self.owned_launches.remove(turn);
+                self.instructions.repository_deferred.remove(turn);
                 self.redactor.release(crate::Holder::Turn(*turn));
                 // The hand-over: from here on `TurnRow::has_ended` is what refuses a second end,
                 // so the run-local set does not have to grow for the life of the daemon.
@@ -2299,6 +2381,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return;
         }
+        if self.instructions.repository_deferred.contains_key(&turn) {
+            if let Some(launch) = self.owned_launches.get(&turn).cloned() {
+                self.spawn(agent, turn, launch, operation);
+            }
+            return;
+        }
         let session = self
             .recovery_repeat_context(agent, turn)
             .unwrap_or_else(|| self.announce_session(agent, true));
@@ -2483,6 +2571,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return;
         }
         if self.compose_pair(agent, &mut launch.spec) {
+            self.owned_launches.insert(turn, launch.clone());
             if browser {
                 self.prepare_browser_launch(turn, launch.spec, launch.install, mcp_grant);
             } else {

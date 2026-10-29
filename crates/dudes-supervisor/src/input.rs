@@ -26,6 +26,20 @@ use dudes_types::{
 
 use crate::host::{AdoptionKey, Liveness};
 
+/// One serialized launch preparation, consumed by host entry or known no-host deferral.
+#[derive(Debug)]
+pub struct HostDispatchClaim {
+    pub(crate) turn: TurnId,
+    pub(crate) started_lsn: Lsn,
+    pub(crate) generation: u64,
+}
+
+impl HostDispatchClaim {
+    pub(crate) fn into_parts(self) -> (TurnId, Lsn, u64) {
+        (self.turn, self.started_lsn, self.generation)
+    }
+}
+
 /// The durable progress made by one successfully handled input.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Handled {
@@ -643,6 +657,11 @@ pub enum Input {
         started_lsn: Lsn,
         /// Bounded runtime failure copy.
         reason: String,
+    },
+    /// Current repositories refused this exact physical attempt before any host call.
+    RepositoryLaunchDeferred {
+        /// Exact launch preparation that made no host call.
+        claim: HostDispatchClaim,
     },
     /// Admission refused before the host was called; an issued task remains owed.
     LaunchAdmissionRefused {

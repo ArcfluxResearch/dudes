@@ -7,6 +7,17 @@ use dudes_proto::{BrowserNoteAttribution, BrowserNoteDestination, ChatReason};
 use dudes_supervisor::machine::BrowserNoteCancelDisposition;
 use dudes_supervisor::world::BrowserNoteState;
 
+enum OwnedLaunchFailure {
+    RepositoryDeferred,
+    Preparation(std::io::Error),
+}
+
+impl From<std::io::Error> for OwnedLaunchFailure {
+    fn from(error: std::io::Error) -> Self {
+        Self::Preparation(error)
+    }
+}
+
 impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<H, P, C, R> {
     /// The owned preparation control used by real daemon boundary tests.
     #[doc(hidden)]
@@ -443,7 +454,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         mcp_grant: Option<dudes_types::Lsn>,
         already_resolved: bool,
         sup: &Supervisor<super::Shared<C>, R>,
-    ) -> std::io::Result<dudes_providers::launch::LaunchSpec> {
+    ) -> Result<dudes_providers::launch::LaunchSpec, OwnedLaunchFailure> {
         let issued = sup
             .world()
             .turns
@@ -455,9 +466,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .get(&issued.agent)
             .ok_or_else(|| std::io::Error::other("managed turn owner is unavailable"))?;
         if !self.repository_turn_allowed(sup.world(), turn) {
-            return Err(std::io::Error::other(
-                "current project repositories do not admit this turn",
-            ));
+            return Err(OwnedLaunchFailure::RepositoryDeferred);
         }
         let authority = issued
             .repositories
@@ -470,7 +479,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         if spec.cwd != repository.cwd() {
             return Err(std::io::Error::other(
                 "managed launch differs from its recorded repository",
-            ));
+            )
+            .into());
         }
         if already_resolved {
             Ok(spec.clone())
@@ -509,6 +519,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 .read_next_for(super::turn_reader(sup, turn, &spec), &spec, mcp_grant);
             Ok(spec)
         })
+        .map_err(Into::into)
     }
 
     #[expect(
@@ -524,6 +535,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         queue: &mut std::collections::VecDeque<Input>,
         sup: &mut Supervisor<super::Shared<C>, R>,
     ) -> Result<()> {
+        if !self.repository_turn_allowed(sup.world(), turn) {
+            if let Some(claim) = sup.prepare_host_dispatch(turn) {
+                queue.push_back(Input::RepositoryLaunchDeferred { claim });
+            }
+            return Ok(());
+        }
         if !self.recovery_dispatch_allowed(sup, turn) {
             return Ok(());
         }
@@ -536,7 +553,19 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }) {
             return Ok(());
         }
-        let prepared = self.prepare_owned_launch(turn, spec, mcp_grant, generation.is_some(), sup);
+        let Some(claim) = sup.prepare_host_dispatch(turn) else {
+            return Ok(());
+        };
+        let prepared =
+            match self.prepare_owned_launch(turn, spec, mcp_grant, generation.is_some(), sup) {
+                Err(OwnedLaunchFailure::RepositoryDeferred) => {
+                    self.children.discard_unlaunched();
+                    queue.push_back(Input::RepositoryLaunchDeferred { claim });
+                    return Ok(());
+                }
+                Err(OwnedLaunchFailure::Preparation(error)) => Err(error),
+                Ok(spec) => Ok(spec),
+            };
         let cwd = prepared.as_ref().ok().map(|spec| spec.cwd.clone());
         let actual_host_call = prepared.is_ok();
         match match prepared {
@@ -545,10 +574,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 if let Some(before) = self.before_recovery_dispatch.take() {
                     before();
                 }
-                if !self.recovery_dispatch_allowed(sup, turn) {
+                if !self.repository_turn_allowed(sup.world(), turn) {
+                    queue.push_back(Input::RepositoryLaunchDeferred { claim });
+                    self.children.discard_unlaunched();
                     return Ok(());
                 }
-                if !self.repository_turn_allowed(sup.world(), turn) {
+                if !self.recovery_dispatch_allowed(sup, turn) || !sup.enter_host_dispatch(claim) {
+                    self.children.discard_unlaunched();
                     return Ok(());
                 }
                 let holder = dudes_supervisor::Holder::Turn(turn);

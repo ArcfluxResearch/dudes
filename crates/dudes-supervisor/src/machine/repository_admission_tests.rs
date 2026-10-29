@@ -198,3 +198,37 @@ fn restored_repository_admission_keeps_an_independent_automatic_hold() {
             .all(|record| !matches!(record, Record::Resume { .. }))
     );
 }
+
+#[test]
+fn a_stale_no_host_claim_cannot_release_a_later_or_possibly_dispatched_claim() {
+    fn duplicate(claim: &crate::input::HostDispatchClaim) -> crate::input::HostDispatchClaim {
+        crate::input::HostDispatchClaim {
+            turn: claim.turn,
+            started_lsn: claim.started_lsn,
+            generation: claim.generation,
+        }
+    }
+    let mut harness = crate::testing::Harness::new();
+    harness.launch = false;
+    let (agent, _) = harness.hire_with_goal(&["/usr/bin/true"]);
+    let turn = harness.supervisor.world.agents[&agent].open_turn.unwrap();
+    let claim = harness.supervisor.prepare_host_dispatch(turn).unwrap();
+    let stale = duplicate(&claim);
+    harness.drive(Input::RepositoryLaunchDeferred { claim });
+    assert!(!harness.supervisor.spawning.contains(&turn));
+    harness.supervisor.spawning.insert(turn);
+    let current = harness.supervisor.prepare_host_dispatch(turn).unwrap();
+    harness.drive(Input::RepositoryLaunchDeferred { claim: stale });
+    assert!(harness.supervisor.spawning.contains(&turn));
+    let entered = duplicate(&current);
+    assert!(harness.supervisor.enter_host_dispatch(current));
+    harness.drive(Input::RepositoryLaunchDeferred { claim: entered });
+    assert!(harness.supervisor.spawning.contains(&turn));
+    assert!(
+        !harness
+            .supervisor
+            .instructions
+            .repository_deferred
+            .contains_key(&turn)
+    );
+}

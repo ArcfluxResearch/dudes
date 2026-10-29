@@ -170,6 +170,12 @@ fn execute(daemon: &mut TestDaemon, effect: &Effect, queue: &mut VecDeque<Input>
         .expect("real pre-host persistence and launch executor");
 }
 
+fn pump_queued(daemon: &mut TestDaemon, queue: &mut VecDeque<Input>) {
+    while let Some(input) = queue.pop_front() {
+        daemon.pump(input).unwrap();
+    }
+}
+
 fn next_input(daemon: &TestDaemon, queue: &mut VecDeque<Input>) -> Input {
     queue
         .pop_front()
@@ -180,6 +186,15 @@ fn next_input(daemon: &TestDaemon, queue: &mut VecDeque<Input>) -> Input {
 }
 
 fn prepared(daemon: &mut TestDaemon, fixture: &common::Fixture, provider: Provider) -> Prepared {
+    prepared_with_sample(daemon, fixture, provider, |_| {})
+}
+
+fn prepared_with_sample(
+    daemon: &mut TestDaemon,
+    fixture: &common::Fixture,
+    provider: Provider,
+    mut sample: impl FnMut(&mut Input),
+) -> Prepared {
     let mut hire = common::hire_params(
         daemon
             .ctx
@@ -212,7 +227,8 @@ fn prepared(daemon: &mut TestDaemon, fixture: &common::Fixture, provider: Provid
         baseline: None,
     })]);
     for _ in 0..64 {
-        let input = next_input(daemon, &mut queue);
+        let mut input = next_input(daemon, &mut queue);
+        sample(&mut input);
         daemon
             .sup
             .handle(input, &dudes_supervisor::RecoveryOperation::empty())
@@ -419,9 +435,10 @@ fn current_expansion_holds_an_owed_legacy_launch_before_host_and_resume_cannot_o
     let fixture = common::Fixture::new();
     let host = CountingHost::new();
     let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
-    let root = fixture.state.path().canonicalize().unwrap();
+    let root = fixture.state.path().join("project");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    let root = root.canonicalize().unwrap();
     let other = fixture.runtime.path().canonicalize().unwrap();
-    std::fs::create_dir(root.join(".git")).unwrap();
     std::fs::create_dir(other.join(".git")).unwrap();
     daemon.ctx.enrollment = legacy_enrollment(root.clone());
     daemon.observe_repository_enrollment().unwrap();
@@ -502,6 +519,7 @@ fn current_expansion_holds_an_owed_legacy_launch_before_host_and_resume_cannot_o
     let before = fixture.entries();
     let mut queue = VecDeque::new();
     execute(&mut daemon, &attempt.spawn, &mut queue);
+    pump_queued(&mut daemon, &mut queue);
     assert_eq!(host.spawn_calls(), 0);
     assert_eq!(fixture.entries(), before);
     assert!(!daemon.sup.repository_admitted(attempt.agent));
@@ -534,16 +552,166 @@ fn current_expansion_holds_an_owed_legacy_launch_before_host_and_resume_cannot_o
         daemon.ctx.current_repositories.observed["service"].lsn,
         original_catalog
     );
-    assert!(daemon.ask(Ask::Resume(attempt.agent)).is_ok());
+    await_late_dispatch(&mut daemon, &host);
     assert_eq!(
         daemon.sup.world().agents[&attempt.agent].repositories,
         original
     );
     assert_eq!(daemon.sup.world().turns[&attempt.turn].task, attempt.task);
-    assert_eq!(host.spawn_calls(), 0);
+    assert_eq!(
+        host.spawn_calls(),
+        1,
+        "restored singleton authority retries automatically"
+    );
+    assert!(
+        fixture
+            .records()
+            .iter()
+            .all(|record| !matches!(record, Record::Resume { .. }))
+    );
 }
 
-fn late_repository_loss_recovers(before_preparation: bool) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LateRepositoryControl {
+    None,
+    Pause,
+    NewParticipant,
+    DropKnownInput,
+}
+
+fn await_late_dispatch(daemon: &mut TestDaemon, host: &CountingHost) {
+    poll_late_dispatch(daemon, host, None);
+}
+
+fn poll_late_dispatch(daemon: &mut TestDaemon, host: &CountingHost, drop_from: Option<Lsn>) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while host.spawn_calls() == 0 && std::time::Instant::now() < deadline {
+        if let Ok(Job::Input(mut input)) = daemon.jobs.recv_timeout(Duration::from_millis(20)) {
+            if let (
+                Some(started),
+                Input::InstructionSampled {
+                    snapshot,
+                    comparison,
+                    ..
+                },
+            ) = (drop_from, &mut *input)
+            {
+                let before = daemon
+                    .sup
+                    .world()
+                    .instructions
+                    .attempt(started)
+                    .unwrap()
+                    .snapshot
+                    .as_ref()
+                    .unwrap();
+                let dudes_proto::instruction_state::InstructionSnapshotEvidence::Legacy(before) =
+                    before
+                else {
+                    unreachable!()
+                };
+                for gap in &before.gaps {
+                    if !snapshot.gaps.contains(gap) {
+                        snapshot.gaps.push(gap.clone());
+                    }
+                }
+                let known = snapshot
+                    .inputs
+                    .iter()
+                    .position(|input| {
+                        matches!(
+                            input.fingerprint,
+                            dudes_proto::InstructionFingerprint::File { .. }
+                        )
+                    })
+                    .expect("known sampled file before coverage loss");
+                snapshot.inputs.remove(known);
+                let compared = crate::instruction_sample::compare(before, snapshot);
+                assert!(
+                    compared.changes.is_empty(),
+                    "ordinary ending comparison hides this loss under unknown coverage"
+                );
+                assert!(
+                    compared.gaps.iter().all(|gap| before.gaps.contains(gap))
+                        && before.gaps.iter().all(|gap| compared.gaps.contains(gap)),
+                    "the ordinary comparison has no new gap to expose the lost known input"
+                );
+                *comparison = Some(Box::new(compared));
+            }
+            daemon.pump(*input).unwrap();
+        }
+    }
+}
+
+fn retain_existing_unknown_input_gap(input: &mut Input) {
+    let Input::InstructionSampled { snapshot, .. } = input else {
+        return;
+    };
+    snapshot
+        .gaps
+        .push(dudes_proto::InstructionCoverageGap::metadata_limit());
+    let known = snapshot
+        .inputs
+        .iter()
+        .find(|input| {
+            matches!(
+                input.fingerprint,
+                dudes_proto::InstructionFingerprint::File { .. }
+            )
+        })
+        .unwrap();
+    snapshot.gaps.push(dudes_proto::InstructionCoverageGap {
+        reason: dudes_proto::InstructionGapKind::UninventoriedMember,
+        context: known.context,
+        agent: Some(known.source.agent),
+        path: Some(known.path.clone()),
+        origin: dudes_proto::InstructionGapOrigin::Observed,
+    });
+}
+
+fn assert_unchanged_late_issue(
+    daemon: &TestDaemon,
+    fixture: &common::Fixture,
+    attempt: &Prepared,
+    original_issue: &(Lsn, Entry),
+    repositories: Option<&dudes_proto::repository::TurnRepositories>,
+) {
+    assert_eq!(daemon.sup.world().turns[&attempt.turn].task, attempt.task);
+    assert_eq!(
+        daemon.sup.world().turns[&attempt.turn]
+            .repositories
+            .as_ref(),
+        repositories
+    );
+    assert!(fixture.entries().contains(original_issue));
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter_map(Record::turn_issue)
+            .filter(|issue| issue.agent == attempt.agent)
+            .count(),
+        1
+    );
+}
+
+fn assert_original_dispatch(host: &CountingHost, attempt: &Prepared, fixture: &common::Fixture) {
+    assert_eq!(
+        host.spawn_calls(),
+        1,
+        "the same owed turn dispatches exactly once"
+    );
+    let Effect::Spawn { spec, .. } = &attempt.spawn else {
+        unreachable!()
+    };
+    assert_eq!(host.inner.spawned()[0].argv, spec.argv);
+    assert!(fixture.records().iter().all(|record| !matches!(
+        record,
+        Record::Pause { .. } | Record::Resume { .. } | Record::AgentHeld { .. }
+    )));
+}
+
+fn late_repository_loss_recovers(before_preparation: bool, control: LateRepositoryControl) {
     let fixture = common::Fixture::new();
     let host = CountingHost::new();
     let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
@@ -552,7 +720,19 @@ fn late_repository_loss_recovers(before_preparation: bool) {
     let root = root.canonicalize().unwrap();
     daemon.ctx.enrollment = legacy_enrollment(root.clone());
     daemon.observe_repository_enrollment().unwrap();
-    let attempt = prepared(&mut daemon, &fixture, Provider::Claude);
+    if control == LateRepositoryControl::DropKnownInput {
+        std::fs::write(root.join("AGENTS.md"), "Keep the known instruction file.\n").unwrap();
+    }
+    let attempt = if control == LateRepositoryControl::DropKnownInput {
+        prepared_with_sample(
+            &mut daemon,
+            &fixture,
+            Provider::Claude,
+            retain_existing_unknown_input_gap,
+        )
+    } else {
+        prepared(&mut daemon, &fixture, Provider::Claude)
+    };
     let original_issue = fixture
         .entries()
         .into_iter()
@@ -571,9 +751,7 @@ fn late_repository_loss_recovers(before_preparation: bool) {
     }
     let mut queue = VecDeque::new();
     execute(&mut daemon, &attempt.spawn, &mut queue);
-    while let Some(input) = queue.pop_front() {
-        daemon.pump(input).unwrap();
-    }
+    pump_queued(&mut daemon, &mut queue);
     assert_eq!(host.spawn_calls(), 0);
     assert!(
         daemon.sup.world().agents[&attempt.agent]
@@ -582,50 +760,76 @@ fn late_repository_loss_recovers(before_preparation: bool) {
         "repository-only loss became an independent automatic hold"
     );
     assert!(daemon.sup.world().turns[&attempt.turn].is_issued_not_spawned());
-    std::fs::rename(preserved, root).unwrap();
-    daemon.pump(Input::Tick).unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while host.spawn_calls() == 0 && std::time::Instant::now() < deadline {
-        if let Ok(Job::Input(input)) = daemon.jobs.recv_timeout(Duration::from_millis(20)) {
-            daemon.pump(*input).unwrap();
-        }
+    if control == LateRepositoryControl::Pause {
+        daemon.ask(Ask::Pause(attempt.agent)).unwrap();
     }
-    assert_eq!(
-        host.spawn_calls(),
-        1,
-        "restoring the repository never dispatched the owed turn"
-    );
+    std::fs::rename(preserved, &root).unwrap();
+    if control == LateRepositoryControl::NewParticipant {
+        daemon
+            .ask(Ask::Hire(Box::new(common::hire_params(&root))))
+            .unwrap();
+    }
     daemon.pump(Input::Tick).unwrap();
-    assert_eq!(host.spawn_calls(), 1, "a recovered turn dispatched twice");
-    assert_eq!(daemon.sup.world().turns[&attempt.turn].task, attempt.task);
-    assert_eq!(
-        daemon.sup.world().turns[&attempt.turn].repositories,
-        repositories
+    poll_late_dispatch(
+        &mut daemon,
+        &host,
+        (control == LateRepositoryControl::DropKnownInput).then_some(attempt.started),
     );
-    assert!(fixture.entries().contains(&original_issue));
-    assert_eq!(
-        fixture
-            .records()
-            .iter()
-            .filter_map(Record::turn_issue)
-            .filter(|issue| issue.agent == attempt.agent)
-            .count(),
-        1
+    assert_unchanged_late_issue(
+        &daemon,
+        &fixture,
+        &attempt,
+        &original_issue,
+        repositories.as_ref(),
     );
-    assert!(fixture.records().iter().all(|record| !matches!(
-        record,
-        Record::Pause { .. } | Record::Resume { .. } | Record::AgentHeld { .. }
-    )));
+    if control != LateRepositoryControl::None {
+        assert_eq!(
+            host.spawn_calls(),
+            0,
+            "a standing control or participant drift dispatched"
+        );
+        assert!(daemon.sup.world().turns[&attempt.turn].is_issued_not_spawned());
+        assert!(
+            daemon.sup.world().agents[&attempt.agent]
+                .automatic_hold
+                .is_none()
+        );
+        assert!(
+            fixture
+                .records()
+                .iter()
+                .all(|record| !matches!(record, Record::Resume { .. }))
+        );
+        return;
+    }
+    assert_original_dispatch(&host, &attempt, &fixture);
+    daemon.pump(Input::Tick).unwrap();
+    assert_original_dispatch(&host, &attempt, &fixture);
 }
 
 #[test]
 fn repository_loss_before_preparation_recovers_the_same_turn_without_a_launch_failure_hold() {
-    late_repository_loss_recovers(true);
+    late_repository_loss_recovers(true, LateRepositoryControl::None);
 }
 
 #[test]
 fn repository_loss_at_the_final_host_cut_releases_only_the_no_host_claim_and_recovers() {
-    late_repository_loss_recovers(false);
+    late_repository_loss_recovers(false, LateRepositoryControl::None);
+}
+
+#[test]
+fn a_no_host_repository_continuation_keeps_an_operator_pause() {
+    late_repository_loss_recovers(false, LateRepositoryControl::Pause);
+}
+
+#[test]
+fn a_no_host_repository_continuation_refuses_new_participant_coverage() {
+    late_repository_loss_recovers(false, LateRepositoryControl::NewParticipant);
+}
+
+#[test]
+fn a_no_host_continuation_cannot_lose_a_known_file_under_an_unchanged_unknown_gap() {
+    late_repository_loss_recovers(false, LateRepositoryControl::DropKnownInput);
 }
 
 #[test]

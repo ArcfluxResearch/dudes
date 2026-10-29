@@ -18,7 +18,7 @@ use dudes_proto::repository_instruction::{
 };
 use dudes_supervisor::input::InstructionRequest;
 use dudes_supervisor::{AdoptionKey, Effect, Input, InstructionSource};
-use dudes_types::{AgentId, Mode, ModelSelection, Timestamp, WorktreeId};
+use dudes_types::{AgentId, Lsn, Mode, ModelSelection, Timestamp, WorktreeId};
 
 use dudes_supervisor::host::{MAX_OWNED_TARGET_QUERY_ROWS, OwnedTargetState};
 
@@ -44,6 +44,7 @@ pub(super) struct LegacySampleJob {
     pub(super) uncertain_folders: Vec<PathBuf>,
     pub(super) selection: ModelSelection,
     pub(super) baseline: Option<Box<InstructionSnapshot>>,
+    revalidation: Option<Box<InstructionSnapshot>>,
     pub(super) ticket: Option<InstructionTicketAssociation>,
     pub(super) boot: Option<InstructionBootIdentity>,
     pub(super) pid_namespace: Option<String>,
@@ -295,6 +296,17 @@ fn current_recorded_census(
     actual_cwd: Option<&Path>,
     absent: &[AdoptionKey],
 ) -> CurrentCensus {
+    current_recorded_census_for_attempt(world, owner, baseline, actual_cwd, absent, None)
+}
+
+fn current_recorded_census_for_attempt(
+    world: &dudes_supervisor::World,
+    owner: InstructionObservationOwner,
+    baseline: Option<&InstructionSnapshot>,
+    actual_cwd: Option<&Path>,
+    absent: &[AdoptionKey],
+    no_host: Option<Lsn>,
+) -> CurrentCensus {
     let mut census = CurrentCensus::default();
     let candidate = owner_agent(owner);
     let _ = census.room();
@@ -335,7 +347,10 @@ fn current_recorded_census(
         if census.room().is_err() {
             break;
         }
-        for (_, attempt) in world.instructions.unresolved_launch_attempts(agent) {
+        for (started, attempt) in world.instructions.unresolved_launch_attempts(agent) {
+            if Some(*started) == no_host && attempt.owner == owner {
+                continue;
+            }
             if census.room().is_err() {
                 break;
             }
@@ -343,8 +358,11 @@ fn current_recorded_census(
         }
     }
     add_native_receipts(&mut census, world, absent);
-    add_open_turn_owners(&mut census, world);
-    for (_, attempt) in world.instructions.unfinished() {
+    add_open_turn_owners(&mut census, world, no_host);
+    for (started, attempt) in world.instructions.unfinished() {
+        if Some(started) == no_host && attempt.owner == owner {
+            continue;
+        }
         if census.room().is_err() {
             break;
         }
@@ -439,7 +457,11 @@ fn add_native_receipts(
     }
 }
 
-fn add_open_turn_owners(census: &mut CurrentCensus, world: &dudes_supervisor::World) {
+fn add_open_turn_owners(
+    census: &mut CurrentCensus,
+    world: &dudes_supervisor::World,
+    no_host: Option<Lsn>,
+) {
     for agent in world.open_turn_owner_ids() {
         if census.room().is_err() {
             break;
@@ -449,7 +471,10 @@ fn add_open_turn_owners(census: &mut CurrentCensus, world: &dudes_supervisor::Wo
             .get(agent)
             .and_then(|row| row.open_turn)
             .and_then(|turn| world.instructions.current_for_turn(turn));
-        if let Some((_, attempt)) = attempt {
+        if let Some((started, attempt)) = attempt {
+            if Some(started) == no_host {
+                continue;
+            }
             census.evidence(attempt.owner, attempt.snapshot.as_ref(), false);
         } else {
             if world
@@ -697,7 +722,7 @@ impl SampleJob {
             Self::Legacy(job) => SampleCompletion::Legacy {
                 request: job.request,
                 ticket: job.ticket,
-                baseline: job.baseline.clone(),
+                baseline: job.baseline.clone().or_else(|| job.revalidation.clone()),
             },
             Self::Repositories(job) => SampleCompletion::Repositories {
                 request: job.request,
@@ -1219,6 +1244,15 @@ fn merge_baseline(snapshot: &mut InstructionSnapshot, baseline: Option<&Instruct
     }
 }
 
+#[derive(Clone, Copy)]
+enum SamplingBaseline<'a> {
+    Ordinary(Option<&'a InstructionSnapshot>),
+    NoHost {
+        original: &'a InstructionSnapshot,
+        started: Lsn,
+    },
+}
+
 impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::Ctx<H, P, C> {
     fn absent_native_targets(&self, world: &dudes_supervisor::World) -> Vec<AdoptionKey> {
         if world.managed_native_spawn_receipts().next().is_none() {
@@ -1239,9 +1273,20 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
         owner: InstructionObservationOwner,
         baseline: Option<&InstructionSnapshot>,
         actual_cwd: Option<&Path>,
+        no_host: Option<Lsn>,
     ) -> CurrentCensus {
         let absent = self.absent_native_targets(world);
-        let mut census = current_recorded_census(world, owner, baseline, actual_cwd, &absent);
+        let mut census = match no_host {
+            Some(started) => current_recorded_census_for_attempt(
+                world,
+                owner,
+                baseline,
+                actual_cwd,
+                &absent,
+                Some(started),
+            ),
+            None => current_recorded_census(world, owner, baseline, actual_cwd, &absent),
+        };
         let managed_receipts: Result<(), ()> = self.children.visit_owned(|turn, key, cwd| {
             census.room()?;
             let Some(row) = world.turns.get(&turn) else {
@@ -1291,11 +1336,16 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
         owner: InstructionObservationOwner,
         goal: Option<dudes_types::GoalId>,
         selection: &ModelSelection,
-        baseline: Option<&InstructionSnapshot>,
+        sampling: SamplingBaseline<'_>,
         actual_cwd: Option<&Path>,
     ) -> anyhow::Result<LegacySampleJob> {
+        let (baseline, no_host, comparison_baseline) = match sampling {
+            SamplingBaseline::Ordinary(baseline) => (baseline, None, baseline),
+            SamplingBaseline::NoHost { original, started } => (None, Some(started), Some(original)),
+        };
         let agent = owner_agent(owner);
-        let mut census = self.current_instruction_census(sup.world(), owner, baseline, actual_cwd);
+        let mut census =
+            self.current_instruction_census(sup.world(), owner, baseline, actual_cwd, no_host);
         let candidate_cwd = match (actual_cwd, baseline) {
             (Some(path), _) => Some(path.to_path_buf()),
             (None, Some(before)) => before
@@ -1377,6 +1427,7 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
             uncertain_folders: census.uncertain_folders.into_iter().collect(),
             selection: selection.clone(),
             baseline: baseline.cloned().map(Box::new),
+            revalidation: no_host.and(comparison_baseline).cloned().map(Box::new),
             ticket,
             boot,
             pid_namespace: if cfg!(target_os = "linux") {
@@ -1461,7 +1512,7 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
         } else {
             None
         };
-        let mut census = self.current_instruction_census(world, owner, None, None);
+        let mut census = self.current_instruction_census(world, owner, None, None, None);
         let mut sources = Vec::new();
         for member in std::mem::take(&mut census.members) {
             if let Some(mut source) = sup.instruction_source_for_folder(member.agent, &member.cwd) {
@@ -1516,6 +1567,7 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
                     candidate_context_unknown: false,
                     uncertain_folders: census.uncertain_folders.iter().cloned().collect(),
                     selection: selection.clone(),
+                    revalidation: None,
                     baseline: baseline
                         .and_then(|before| {
                             before
@@ -1551,7 +1603,14 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
         baseline: Option<&InstructionSnapshot>,
         actual_cwd: &Path,
     ) -> anyhow::Result<BoundarySample> {
-        let job = self.instruction_job(sup, owner, goal, selection, baseline, Some(actual_cwd))?;
+        let job = self.instruction_job(
+            sup,
+            owner,
+            goal,
+            selection,
+            SamplingBaseline::Ordinary(baseline),
+            Some(actual_cwd),
+        )?;
         Ok(self.instruction_sampler.boundary(job))
     }
 
@@ -1608,8 +1667,17 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
             anyhow::bail!("instruction sampling requires its sample effect");
         };
         let request = *request;
-        let mut job =
-            self.instruction_job(sup, *owner, *goal, selection, baseline.as_deref(), None)?;
+        let sampling =
+            match sup.repository_revalidation_attempt(request, *owner, baseline.as_deref()) {
+                Some(started) => SamplingBaseline::NoHost {
+                    original: baseline
+                        .as_deref()
+                        .expect("the supervisor confirmed this exact baseline"),
+                    started,
+                },
+                None => SamplingBaseline::Ordinary(baseline.as_deref()),
+            };
+        let mut job = self.instruction_job(sup, *owner, *goal, selection, sampling, None)?;
         job.request = request;
         let agent = job.agent;
         let ticket = job.ticket;
@@ -1625,6 +1693,7 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
             let comparison = job
                 .baseline
                 .as_ref()
+                .or(job.revalidation.as_ref())
                 .map(|before| Box::new(instruction_sample::compare(before, &snapshot)));
             queue.push_back(Input::InstructionSampled {
                 request,
@@ -1736,6 +1805,7 @@ mod tests {
             uncertain_folders: Vec::new(),
             selection: ModelSelection::provider_default(),
             baseline: None,
+            revalidation: None,
             ticket: None,
             boot: None,
             pid_namespace: None,

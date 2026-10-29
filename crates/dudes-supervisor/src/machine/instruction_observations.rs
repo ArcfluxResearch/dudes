@@ -84,11 +84,49 @@ pub(super) struct NoHostAttempt {
     pub(super) baseline: InstructionBaselineRef,
 }
 
+fn no_host_observations_match(
+    original: &InstructionSnapshot,
+    current: &InstructionSnapshot,
+    comparison: &InstructionComparison,
+) -> bool {
+    current.validate().is_ok()
+        && current.source == InstructionSnapshotSource::Fresh
+        && original.source == current.source
+        && current.execution_folder == original.execution_folder
+        && current.boot == original.boot
+        && current.pid_namespace == original.pid_namespace
+        && current.participants == original.participants
+        && current.inputs == original.inputs
+        && current.inventoried == original.inventoried
+        && current.gaps.iter().all(|gap| original.gaps.contains(gap))
+        && original.gaps.iter().all(|gap| current.gaps.contains(gap))
+        && comparison.validate().is_ok()
+        && comparison.changes.is_empty()
+        && comparison
+            .gaps
+            .iter()
+            .all(|gap| original.gaps.contains(gap))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RepositoryDeferred {
+    agent: AgentId,
+    hire: Lsn,
+    turn: TurnId,
+    issue: Lsn,
+    started: Lsn,
+    request: Option<InstructionRequest>,
+    owner: InstructionObservationOwner,
+    ticket: Option<InstructionTicketAssociation>,
+    repositories: Option<dudes_proto::repository::TurnRepositories>,
+}
+
 #[derive(Default)]
 pub(super) struct Observations {
     awaiting: BTreeMap<InstructionRequest, Awaiting>,
     pub(super) pending_agents: BTreeSet<AgentId>,
     pub(super) ready_turns: BTreeSet<TurnId>,
+    pub(super) repository_deferred: BTreeMap<TurnId, RepositoryDeferred>,
     pub(super) ending: BTreeSet<InstructionBaselineRef>,
     next_request: u64,
     recovery: Recovery,
@@ -162,6 +200,7 @@ enum StartAction {
     },
     Retry {
         launch: Box<PreparedLaunch>,
+        deferred: Option<Box<RepositoryDeferred>>,
     },
 }
 
@@ -1137,6 +1176,124 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         self.request_instruction_sample(owner, goal, selection, None, Awaiting::Start(starting));
     }
 
+    pub(super) fn defer_repository_launch(&mut self, claim: crate::input::HostDispatchClaim) {
+        let (turn, started, generation) = claim.into_parts();
+        if self.host_dispatches.get(&turn) != Some(&(started, generation, false))
+            || !self.spawning.contains(&turn)
+        {
+            return;
+        }
+        let Some(issued) = self
+            .world
+            .turns
+            .get(&turn)
+            .filter(|row| row.is_issued_not_spawned())
+        else {
+            return;
+        };
+        let Some((current, attempt)) = self.world.instructions.current_for_turn(turn) else {
+            return;
+        };
+        if current != started
+            || attempt.finished.is_some()
+            || attempt.spawn_lsn.is_some()
+            || !matches!(
+                attempt.snapshot,
+                Some(InstructionSnapshotEvidence::Legacy(_))
+            )
+            || self
+                .mcp_attempts
+                .get(&turn)
+                .is_some_and(|attempt| attempt.key.is_some())
+        {
+            return;
+        }
+        let Some(owner) = self.world.agents.get(&issued.agent) else {
+            return;
+        };
+        let deferred = RepositoryDeferred {
+            agent: issued.agent,
+            hire: owner.mcp.hire_lsn,
+            turn,
+            issue: issued.issue_lsn,
+            started,
+            request: None,
+            owner: attempt.owner,
+            ticket: attempt.ticket,
+            repositories: issued.repositories.clone(),
+        };
+        self.instructions.repository_deferred.insert(turn, deferred);
+        self.instructions.pending_agents.remove(&issued.agent);
+        self.repository_admission
+            .refuse(issued.agent, owner.mcp.hire_lsn);
+        self.repository_recoveries.remove(&issued.agent);
+        self.spawning.remove(&turn);
+        self.host_dispatches.remove(&turn);
+        self.mcp_attempts.remove(&turn);
+    }
+
+    /// Exact positively unhosted attempt whose fresh sample is currently outstanding.
+    #[must_use]
+    pub fn repository_revalidation_attempt(
+        &self,
+        request: InstructionRequest,
+        owner: InstructionObservationOwner,
+        baseline: Option<&InstructionSnapshot>,
+    ) -> Option<Lsn> {
+        let InstructionObservationOwner::Managed { turn, .. } = owner else {
+            return None;
+        };
+        let deferred = self.instructions.repository_deferred.get(&turn)?;
+        if deferred.owner != owner
+            || deferred.request != Some(request)
+            || !self.repository_deferred_current(deferred)
+        {
+            return None;
+        }
+        let expected = self
+            .world
+            .instructions
+            .attempt(deferred.started)?
+            .snapshot
+            .as_ref()?;
+        match expected {
+            InstructionSnapshotEvidence::Legacy(expected) if baseline == Some(expected) => {
+                Some(deferred.started)
+            }
+            _ => None,
+        }
+    }
+
+    fn repository_deferred_current(&self, deferred: &RepositoryDeferred) -> bool {
+        !self
+            .host_dispatches
+            .get(&deferred.turn)
+            .is_some_and(|(_, _, entered)| *entered)
+            && self.instructions.repository_deferred.get(&deferred.turn) == Some(deferred)
+            && self
+                .world
+                .agents
+                .get(&deferred.agent)
+                .is_some_and(|row| row.mcp.hire_lsn == deferred.hire)
+            && self.world.turns.get(&deferred.turn).is_some_and(|row| {
+                row.agent == deferred.agent
+                    && row.issue_lsn == deferred.issue
+                    && row.is_issued_not_spawned()
+                    && row.repositories == deferred.repositories
+            })
+            && self
+                .world
+                .instructions
+                .current_for_turn(deferred.turn)
+                .is_some_and(|(started, attempt)| {
+                    started == deferred.started
+                        && attempt.owner == deferred.owner
+                        && attempt.ticket == deferred.ticket
+                        && attempt.spawn_lsn.is_none()
+                        && attempt.finished.is_none()
+                })
+    }
+
     pub(super) fn observe_retry(
         &mut self,
         agent: AgentId,
@@ -1158,6 +1315,31 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             InstructionIssueAssociation::Issued { issue_lsn },
         );
         let selection = launch.selection.clone();
+        let mut deferred = self
+            .instructions
+            .repository_deferred
+            .get(&turn)
+            .cloned()
+            .map(Box::new);
+        if let Some(deferred) = &mut deferred {
+            deferred.request = Some(InstructionRequest(self.instructions.next_request + 1));
+            self.instructions
+                .repository_deferred
+                .insert(turn, (**deferred).clone());
+        }
+        let baseline = deferred.as_ref().and_then(|deferred| {
+            self.repository_deferred_current(deferred)
+                .then(|| {
+                    self.world
+                        .instructions
+                        .attempt(deferred.started)?
+                        .snapshot
+                        .clone()
+                        .map(Box::new)
+                })
+                .flatten()
+        });
+        let owner = deferred.as_ref().map_or(owner, |deferred| deferred.owner);
         let starting = Starting {
             owner,
             goal,
@@ -1170,9 +1352,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .and_then(|scope| scope.grant())
                 .cloned()
                 .map(Box::new),
-            action: StartAction::Retry { launch },
+            action: StartAction::Retry { launch, deferred },
         };
-        self.request_instruction_sample(owner, goal, selection, None, Awaiting::Start(starting));
+        self.request_instruction_sample(
+            owner,
+            goal,
+            selection,
+            baseline,
+            Awaiting::Start(starting),
+        );
     }
 
     fn request_instruction_sample(
@@ -1271,6 +1459,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         snapshot: InstructionSnapshot,
         ticket: Option<InstructionTicketAssociation>,
         comparison: Option<InstructionComparison>,
+        operation: &crate::RecoveryOperation<'_>,
     ) {
         let Some(awaiting) = self.instructions.awaiting.remove(&request) else {
             return;
@@ -1285,6 +1474,21 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
         match awaiting {
             Awaiting::Start(mut starting) => {
+                if let StartAction::Retry {
+                    deferred: Some(deferred),
+                    launch,
+                } = starting.action
+                {
+                    self.repository_launch_revalidated(
+                        &deferred,
+                        launch,
+                        &snapshot,
+                        ticket,
+                        comparison.as_ref(),
+                        operation,
+                    );
+                    return;
+                }
                 starting.ticket = ticket.filter(|ticket| Some(ticket.goal) == starting.goal);
                 let snapshot = if snapshot.validate().is_ok() {
                     snapshot
@@ -1347,6 +1551,42 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 );
             }
         }
+    }
+
+    fn repository_launch_revalidated(
+        &mut self,
+        deferred: &RepositoryDeferred,
+        launch: Box<PreparedLaunch>,
+        snapshot: &InstructionSnapshot,
+        ticket: Option<InstructionTicketAssociation>,
+        comparison: Option<&InstructionComparison>,
+        operation: &crate::RecoveryOperation<'_>,
+    ) {
+        if !self.repository_deferred_current(deferred) {
+            return;
+        }
+        let original = self
+            .world
+            .instructions
+            .attempt(deferred.started)
+            .and_then(|attempt| attempt.snapshot.as_ref())
+            .and_then(|snapshot| match snapshot {
+                InstructionSnapshotEvidence::Legacy(snapshot) => Some(snapshot),
+                InstructionSnapshotEvidence::Repositories(_) => None,
+            });
+        let admitted = ticket == deferred.ticket
+            && original
+                .zip(comparison.as_ref())
+                .is_some_and(|(original, comparison)| {
+                    no_host_observations_match(original, snapshot, comparison)
+                });
+        if !admitted {
+            self.spawning.remove(&deferred.turn);
+            self.repository_admission
+                .refuse(deferred.agent, deferred.hire);
+            return;
+        }
+        self.spawn_prepared(deferred.agent, deferred.turn, launch, operation);
     }
 
     pub(super) fn repository_instructions_sampled(
@@ -1685,7 +1925,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 };
                 self.persist_unobserved(at, record, *then);
             }
-            StartAction::Retry { launch } => {
+            StartAction::Retry { launch, .. } => {
                 if !self.recovery_launch_allowed(agent, turn, operation) {
                     self.spawning.remove(&turn);
                     return;
@@ -2884,7 +3124,7 @@ mod tests {
                     issue: InstructionIssueAssociation::Issued { .. },
                     ..
                 },
-            action: StartAction::Retry { launch },
+            action: StartAction::Retry { launch, .. },
             ..
         })) = harness.supervisor.instructions.awaiting.get(&request)
         else {

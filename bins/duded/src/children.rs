@@ -219,6 +219,18 @@ impl ChildEnds {
         };
     }
 
+    pub(crate) fn discard_unlaunched(&self) {
+        self.read_next_with(None);
+        *self
+            .next_mcp_grant
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        *self
+            .next_outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
     /// Arm one owned protocol child without admitting another task to the process.
     pub fn watch_protocol(
         self: &Arc<Self>,
