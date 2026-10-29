@@ -1203,7 +1203,7 @@ fn consent_repeat_uses_the_recorded_scoped_task_model_answers_and_grant() {
         .recovery_opportunity(agent)
         .unwrap()
         .expected;
-    let handled = restarted.recover(repeat_command(expected, 71));
+    let handled = restarted.recover(repeat_command(&expected, 71));
     assert_eq!(handled.recovery().unwrap().refusal, None);
     assert_same_owed_issue(&restarted, turn, &original, goal, hops);
     let launch = restarted
@@ -1249,8 +1249,8 @@ fn consent_repeat_uses_the_recorded_scoped_task_model_answers_and_grant() {
         matches!(state.claim_receipt(claim).unwrap().state, dudes_proto::recovery_state::RecoveryClaimState::Superseded { issue, .. } if issue.issued.work == work && issue.lsn == original.issue_lsn)
     );
     assert!(state.current(work).unwrap().authorization_lsn.is_none());
-    let stale = crashed.recover(repeat_command(expected, 73));
-    assert!(stale.recovery().unwrap().refusal.is_some());
+    let refused = crashed.recover(repeat_command(&expected, 73));
+    assert!(refused.recovery().unwrap().refusal.is_some());
     assert!(!has_scoped_spawn(&crashed));
     assert_same_owed_issue(&crashed, turn, &original, goal, hops);
 }
@@ -1310,7 +1310,7 @@ fn an_unknown_scoped_interval_cannot_be_accepted_or_repeated() {
         .recovery_opportunity(agent)
         .unwrap()
         .expected;
-    restarted.recover(repeat_command(expected, 75));
+    restarted.recover(repeat_command(&expected, 75));
     assert!(!has_scoped_spawn(&restarted));
     assert_same_owed_issue(&restarted, turn, &original, goal, hops);
 }
@@ -1342,13 +1342,13 @@ fn restart_scoped(prefix: Vec<Entry>, agent: AgentId, grant: &RepositoryTurnGran
 }
 
 fn repeat_command(
-    expected: crate::input::RecoveryExpected,
+    expected: &crate::input::RecoveryExpected,
     request: u8,
 ) -> crate::input::RecoveryCommand {
     crate::input::RecoveryCommand {
         request_id: Hex32::new([request; 32]),
         digest: Hex32::new([request + 1; 32]),
-        expected,
+        expected: *expected,
         choice: crate::input::RecoveryChoice::RepeatIssuedFresh,
         attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
             pid: 17,
