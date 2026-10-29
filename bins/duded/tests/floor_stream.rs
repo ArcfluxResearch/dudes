@@ -834,7 +834,7 @@ fn an_unfolded_announcement_never_publishes_a_mismatched_closing_cut() {
 }
 
 #[test]
-fn only_generation_five_upgrades_before_any_domain_frame() {
+fn only_generation_six_upgrades_before_any_domain_frame() {
     let fixture = Fixture::new();
     let settings = settings(&fixture, free_port());
     let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
@@ -854,7 +854,7 @@ fn only_generation_five_upgrades_before_any_domain_frame() {
     let issued = issue(&settings);
     let page = exchange(addr, &issued.bootstrap, &clock);
     let before = fixture.entries().len();
-    for generation in [1, 2, 3, 4, 6] {
+    for generation in [1, 2, 3, 4, 5, 7] {
         let protocols = signed_protocols(&page, &format!("dudes-floor-v{generation}"));
         let (mut stream, head) = raw_upgrade(addr, Some(&page.cookie), Some(&protocols), None);
         assert!(head.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{head:?}");
