@@ -37,6 +37,7 @@ fn start(harness: &mut Harness, agent: AgentId, seq: u64) {
         hop_cap: 8,
         completion_check: None,
         expected_seq: Seq(seq),
+        repositories: None,
     }));
 }
 

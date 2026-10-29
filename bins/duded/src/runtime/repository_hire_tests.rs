@@ -8,7 +8,7 @@ use dudes_config::workspace::{NewWorkspace, RepositoryDefinition};
 use dudes_proto::repository::{RepositoryEntry, RepositorySet};
 use dudes_proto::rpc::agent::{Checkout, HireParams};
 use dudes_proto::{Record, WorktreeRemoval};
-use dudes_types::Provider;
+use dudes_types::{IsolationMode, Provider};
 
 use super::work_test_support as common;
 use super::*;
@@ -27,6 +27,10 @@ pub(super) struct Setup {
 
 impl Setup {
     pub(super) fn new() -> Self {
+        Self::with_repositories(&["web", "api", "docs"])
+    }
+
+    pub(super) fn with_repositories(names: &[&str]) -> Self {
         let fixture = common::Fixture::new();
         let roots = tempfile::tempdir().unwrap();
         let root = roots.path().canonicalize().unwrap();
@@ -37,7 +41,7 @@ impl Setup {
             Duration::from_secs(3),
         );
         let mut entries = Vec::new();
-        for name in ["web", "api", "docs"] {
+        for &name in names {
             let path = root.join(name);
             std::fs::create_dir(&path).unwrap();
             command(&git, &path, &["init", "--quiet", "-b", "main"]);
@@ -135,7 +139,14 @@ impl Setup {
         let target = daemon.repository_hire_target("service").unwrap();
         let running = common::start(daemon);
         let hires = WorktreeHires::new(running.handle.clone(), self.git.clone());
-        for name in ["web", "api", "docs"] {
+        for name in self.settings.enrollment.profiles[0]
+            .repositories
+            .as_ref()
+            .unwrap()
+            .entries()
+            .iter()
+            .map(|entry| entry.repo_id.as_str())
+        {
             hires
                 .trust(&dudes_proto::rpc::workspace::TrustParams {
                     workspace_id: "service".into(),
@@ -148,6 +159,7 @@ impl Setup {
         params.project = Some(target);
         params.checkout = Some(Checkout::Worktree);
         params.trusted = true;
+        params.model = Some(dudes_types::ModelName::parse("claude-sonnet-4-6").unwrap());
         (running, hires, params)
     }
 
@@ -273,6 +285,51 @@ fn production_project_capabilities_refuse_before_any_lease() {
         assert!(
             error.message.contains("no verified provider capability"),
             "{error:?}"
+        );
+    }
+    running.stop(ExitCause::Ended);
+    setup.assert_cleaned(0);
+}
+
+#[test]
+fn unsupported_project_providers_and_ignored_options_refuse_before_any_lease() {
+    let setup = Setup::new();
+    let (mut running, hires, params) = setup.start(true);
+    for provider in [Provider::Codex, Provider::Pi] {
+        let mut request = params.clone();
+        request.provider = provider;
+        assert!(
+            hires
+                .hire(request)
+                .unwrap_err()
+                .message
+                .contains("no verified provider capability")
+        );
+    }
+    for isolation in [
+        IsolationMode::Default,
+        IsolationMode::Bare,
+        IsolationMode::Inherit,
+    ] {
+        let mut request = params.clone();
+        request.isolation = Some(isolation);
+        assert!(
+            hires
+                .hire(request)
+                .unwrap_err()
+                .message
+                .contains("isolation override")
+        );
+    }
+    for model in [None, Some(dudes_types::ModelName::parse("sonnet").unwrap())] {
+        let mut request = params.clone();
+        request.model = model;
+        assert!(
+            hires
+                .hire(request)
+                .unwrap_err()
+                .message
+                .contains("explicit claude-sonnet-4-6")
         );
     }
     running.stop(ExitCause::Ended);
@@ -446,6 +503,7 @@ fn a_known_failed_final_append_cleans_every_pending_copy() {
             .unwrap();
     }
     let mut params = common::hire_params(Path::new(""));
+    params.model = Some(dudes_types::ModelName::parse("claude-sonnet-4-6").unwrap());
     params.project = Some(target);
     params.trusted = true;
     params.checkout = Some(Checkout::Worktree);
@@ -474,6 +532,7 @@ fn uncertain_final_hire(point: OnboardingFailurePoint) {
             .unwrap();
     }
     let mut params = common::hire_params(Path::new(""));
+    params.model = Some(dudes_types::ModelName::parse("claude-sonnet-4-6").unwrap());
     params.project = Some(target);
     params.trusted = true;
     params.checkout = Some(Checkout::Worktree);
@@ -589,6 +648,7 @@ fn a_crash_prefix_between_leases_cleans_every_pending_member_on_boot() {
     let mut running = common::start(daemon);
     let hires = WorktreeHires::new(running.handle.clone(), setup.git.clone());
     let mut retry = common::hire_params(Path::new(""));
+    retry.model = Some(dudes_types::ModelName::parse("claude-sonnet-4-6").unwrap());
     retry.project = Some(target);
     retry.checkout = Some(Checkout::Worktree);
     retry.trusted = true;

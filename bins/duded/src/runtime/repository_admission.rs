@@ -355,8 +355,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let Some(row) = world.agents.get(&agent) else {
             return false;
         };
-        let HireRepositories::Legacy(repository) = &row.repositories else {
-            return false;
+        let repository = match &row.repositories {
+            HireRepositories::Legacy(repository) => repository,
+            HireRepositories::Scoped(scope) => {
+                return row.provider == dudes_types::Provider::Claude
+                    && CurrentHireAdmission::new(&self.enrollment, &self.current_repositories)
+                        .require_scoped_hire_authority(world, &scope.recorded())
+                        .is_ok();
+            }
         };
         match world.active_repository_round(agent) {
             Ok(Some(round)) if !self.legacy_ticket_allowed(world, agent, round) => return false,
@@ -432,9 +438,43 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         world.turns.get(&turn).is_some_and(|row| {
             self.repository_allowed(world, row.agent)
                 && row.repositories.as_ref().is_some_and(|scope| {
-                    scope
-                        .ticket()
-                        .is_none_or(|round| self.legacy_ticket_allowed(world, row.agent, round))
+                    let Some(owner) = world.agents.get(&row.agent) else {
+                        return false;
+                    };
+                    if !scope.matches_hire(owner.mcp.hire_lsn, &owner.repositories) {
+                        return false;
+                    }
+                    if let Some(grant) = scope.grant() {
+                        let dudes_proto::repository::HireRepositories::Scoped(hire) = scope.hire()
+                        else {
+                            return false;
+                        };
+                        if dudes_proto::repository::RepositoryTurnGrant::select(
+                            scope.hired_lsn(),
+                            hire,
+                            scope.ticket(),
+                        )
+                        .as_ref()
+                            != Ok(grant)
+                        {
+                            return false;
+                        }
+                        grant.ticket.as_ref().is_none_or(|round| {
+                            world.ticket_repository_round(round.goal) == Some(round)
+                                && round.authority.as_ref().is_some_and(|authority| {
+                                    CurrentHireAdmission::new(
+                                        &self.enrollment,
+                                        &self.current_repositories,
+                                    )
+                                    .current_ticket_hire(world, row.agent, &authority.declaration)
+                                    .is_ok()
+                                })
+                        })
+                    } else {
+                        scope
+                            .ticket()
+                            .is_none_or(|round| self.legacy_ticket_allowed(world, row.agent, round))
+                    }
                 })
         })
     }

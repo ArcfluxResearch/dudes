@@ -166,7 +166,7 @@ pub(crate) struct Mailbox {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     live_agents: BTreeSet<AgentId>,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    codex_agents: BTreeSet<AgentId>,
+    outbox_agents: BTreeSet<AgentId>,
     // Keep the first admitted directory identity for this daemon run. Periodic setup must not
     // refresh a missing or replaced grant; restart admits the current private tree afresh.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -268,7 +268,7 @@ impl Mailbox {
             published: BTreeSet::new(),
             visits: BTreeMap::new(),
             live_agents: BTreeSet::new(),
-            codex_agents: BTreeSet::new(),
+            outbox_agents: BTreeSet::new(),
             outboxes: RefCell::default(),
             next: None,
             fenced: false,
@@ -333,13 +333,23 @@ impl Mailbox {
             Record::AgentHired { id, provider, .. } => {
                 self.live_agents.insert(*id);
                 if *provider == dudes_types::Provider::Codex {
-                    self.codex_agents.insert(*id);
+                    self.outbox_agents.insert(*id);
+                }
+                self.hired += 1;
+            }
+            Record::AgentHiredWithRepositories(hire) => {
+                self.live_agents.insert(hire.id);
+                if matches!(
+                    hire.provider,
+                    dudes_types::Provider::Claude | dudes_types::Provider::Codex
+                ) {
+                    self.outbox_agents.insert(hire.id);
                 }
                 self.hired += 1;
             }
             Record::AgentRetired { id, .. } => {
                 self.live_agents.remove(id);
-                self.codex_agents.remove(id);
+                self.outbox_agents.remove(id);
                 self.outboxes.borrow_mut().remove(id);
                 self.subject_contexts.remove(id);
             }
@@ -555,7 +565,7 @@ mod wake_tests {
             published: BTreeSet::new(),
             visits: BTreeMap::new(),
             live_agents: BTreeSet::from([agent]),
-            codex_agents: BTreeSet::new(),
+            outbox_agents: BTreeSet::new(),
             outboxes: RefCell::default(),
             next: None,
             fenced: false,
@@ -601,7 +611,7 @@ mod wake_tests {
         let (mut mailbox, agent, _) = fixture(0);
         let root = tempfile::tempdir().unwrap();
         mailbox.root = root.path().canonicalize().unwrap();
-        mailbox.codex_agents.insert(agent);
+        mailbox.outbox_agents.insert(agent);
         let path = mailbox.root.join("agents").join(agent.to_string());
         let roots = mailbox.private_roots.agent(&path).unwrap();
         let inspection = roots.inspect().unwrap();

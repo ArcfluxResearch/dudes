@@ -7,7 +7,7 @@ use dudes_proto::repository::{
 use dudes_proto::rpc::agent::{Checkout, HireParams, HireResult, HireTarget, ProjectHireTarget};
 use dudes_proto::rpc::{ErrorCode, RpcError};
 use dudes_supervisor::{Clock, Command, Input, ProcessHost, Rng, World};
-use dudes_types::{AgentId, GitCommit, IsolationMode};
+use dudes_types::{AgentId, GitCommit, IsolationMode, Provider};
 
 use super::repository_admission::CurrentHireAdmission;
 use super::{Ctx, Daemon, PredicateRunner, PreparedWorktreeLease};
@@ -16,6 +16,28 @@ use crate::worktree::hire::{PreparedRepositoryGroup, RepositoryHireOrigin, Repos
 
 fn refused(message: impl Into<String>) -> RpcError {
     crate::worktree::unavailable(message)
+}
+
+fn require_scoped_options(params: &HireParams) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        params.provider == Provider::Claude,
+        "restricted repository execution has no verified provider capability for {}",
+        params.provider
+    );
+    anyhow::ensure!(
+        super::scoped_launch::native_platform()
+            != dudes_providers::scoped::ScopedPlatform::Unsupported,
+        "restricted repository execution has no verified provider capability on this platform"
+    );
+    anyhow::ensure!(
+        params.isolation.is_none(),
+        "restricted repository hires do not accept an isolation override"
+    );
+    anyhow::ensure!(
+        params.model.as_ref().map(dudes_types::ModelName::as_str) == Some("claude-sonnet-4-6"),
+        "restricted repository hires require the explicit claude-sonnet-4-6 model"
+    );
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -49,8 +71,8 @@ impl CurrentHireAdmission<'_> {
             "the project's observed repository revision changed"
         );
         anyhow::ensure!(
-            profile.isolation != IsolationMode::Inherit,
-            "restricted repository hires cannot inherit settings"
+            profile.isolation == IsolationMode::Default,
+            "restricted repository hires require default project isolation"
         );
         let catalog = &observed.repositories;
         let entries = catalog
@@ -91,6 +113,7 @@ impl CurrentHireAdmission<'_> {
         world: &World,
         plan: &RepositoryHirePlan,
     ) -> anyhow::Result<()> {
+        require_scoped_options(&plan.params)?;
         let target = plan
             .params
             .project
@@ -200,9 +223,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 "a project hire requires trusted own copies of every repository, without from",
             ));
         }
-        if params.isolation == Some(IsolationMode::Inherit) || !params.mcp_servers.is_empty() {
+        require_scoped_options(&params).map_err(|error| refused(error.to_string()))?;
+        if !params.mcp_servers.is_empty() {
             return Err(refused(
-                "restricted repository hires cannot inherit settings or enable MCP servers",
+                "restricted repository hires cannot enable MCP servers",
             ));
         }
         self.hire_option_guards(&params)?;

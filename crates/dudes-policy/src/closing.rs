@@ -64,6 +64,18 @@ pub enum ClosingDecided {
 /// The same bounded saving order used at launch and at an admitted hook boundary.
 #[must_use]
 pub fn closing_notice(announcement: Lsn) -> String {
+    closing_notice_for_commands(announcement, dudes_proto::TaskCommandSet::Legacy)
+}
+
+/// Saving guidance for the commands selected from the recorded hire.
+#[must_use]
+pub fn closing_notice_for_commands(
+    announcement: Lsn,
+    commands: dudes_proto::TaskCommandSet,
+) -> String {
+    if commands == dudes_proto::TaskCommandSet::ScopedFileMail {
+        return "Closing time. Save or park current work and record current state and concrete next steps. Start no new work. Then exit this turn normally. This multi-repo ticket cannot acknowledge closing; the supervisor retains the 360-second grace for an unfinished participant.".to_owned();
+    }
     format!(
         "Closing time. Save or park current work and record current state and concrete next steps. \
          Start no new work. While this process is still alive, run \

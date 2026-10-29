@@ -804,6 +804,7 @@ impl OnboardingPause {
                         record,
                         Record::TicketCreatedWithRepositories(_)
                             | Record::TicketEditedWithRepositories(_)
+                            | Record::TicketStartedWithRepositories(_)
                             | Record::TicketAssigned { .. }
                     ) =>
             {
@@ -982,7 +983,7 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) running_mcp: dudes_providers::mcp::DeclaredServers,
     pub(crate) browser_launches: crate::chat_launch::LaunchPreparations,
     pub(crate) resolved_browser_turn: Option<(TurnId, u64)>,
-    pub(crate) scoped_launches: BTreeMap<TurnId, crate::codex_profile::scoped::Attempt>,
+    pub(crate) scoped_launches: BTreeMap<TurnId, scoped_launch::ScopedReservation>,
     pub(crate) scoped_generation: u64,
     /// The operator file the Settings page edits and a reload reads; `None` without one.
     pub(crate) operator_config: Option<PathBuf>,
@@ -8418,30 +8419,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             Effect::PrepareBrowserLaunch {
                 turn,
                 generation,
-                spec,
-            } => {
-                if !self
-                    .browser_launches
-                    .prepare(*turn, *generation, spec.clone())
-                {
-                    queue.push_back(Input::BrowserLaunchReady {
-                        turn: *turn,
-                        generation: *generation,
-                        prepared: Err(
-                            "managed launch preparation capacity is unavailable".to_owned()
-                        ),
-                    });
-                }
-            }
+                launch,
+            } => self.prepare_browser_turn(*turn, *generation, launch, queue, sup),
             Effect::Persist { token, entry } => {
                 self.persist_effect(*token, entry, queue, sup, report)?;
             }
             Effect::Spawn {
                 turn,
-                spec,
-                install,
+                launch,
                 mcp_grant,
-            } => self.spawn_turn(*turn, spec, install, *mcp_grant, queue, sup)?,
+            } => self.spawn_turn(*turn, launch, *mcp_grant, queue, sup)?,
             Effect::Kill { turn, key, .. } => match self.host.kill(key) {
                 KillOutcome::Signalled => {}
                 // A refusal is the reaper's finding by a second route. The host routes
@@ -9021,6 +9008,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let ticket_id = match &entry.record {
             Record::TicketEditedWithRepositories(edited) => Some(edited.card),
             Record::TicketAssigned { card, .. } => Some(*card),
+            Record::TicketStartedWithRepositories(start) => Some(start.card),
             _ => None,
         };
         let ticket = ticket_id

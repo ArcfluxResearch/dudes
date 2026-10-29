@@ -10,7 +10,8 @@ use dudes_types::{AgentId, BreakerRung, GoalId, Lsn, Provenance, Usd};
 use crate::budget::{Admission, BudgetState, Ceilings, admit, reserved};
 use crate::chat::{BrowserNoteInput, CompletedNoteInput, ConversationInput, NoteDecided};
 use crate::closing::{
-    ClosingDecided, ClosingLoopInput, ClosingWorkChoice, ClosingWorkDeferral, closing_notice,
+    ClosingDecided, ClosingLoopInput, ClosingWorkChoice, ClosingWorkDeferral,
+    closing_notice_for_commands,
 };
 use crate::input::{AnswerInput, Control, Decided, GoalInput, LoopInput, WorkInput};
 use crate::mail::{MailWakeDecided, MailWakeInput};
@@ -22,6 +23,7 @@ pub const NEXT_WORK_TASK_MAX_BYTES: usize = 65_536;
 
 const BROWSER_NOTE_PREFIX: &str = "\n\n[browser note]\n";
 const BROWSER_NOTE_SUFFIX: &str = "\n[end browser note]";
+#[cfg(test)]
 use dudes_proto::{IDENTITY_BYTES, MAIL_INSTRUCTION, MEMORY_INSTRUCTION, TEACHING_BYTES};
 
 /// Most UTF-8 bytes of an answered question the answer block repeats.
@@ -340,9 +342,11 @@ pub fn closing_input(
     goal: GoalId,
     ordinary: LoopInput,
 ) -> ClosingLoopInput {
-    let content_budget = NEXT_WORK_TASK_MAX_BYTES - TEACHING_BYTES - IDENTITY_BYTES;
+    let commands = ordinary.command_set;
+    let content_budget =
+        NEXT_WORK_TASK_MAX_BYTES - commands.teaching_bytes() - commands.identity_bytes();
     let (mut task, answers) = answer_block(&ordinary.answers, content_budget);
-    let instruction = closing_notice(announcement);
+    let instruction = closing_notice_for_commands(announcement, commands);
     let separator = if task.is_empty() {
         ""
     } else {
@@ -357,8 +361,8 @@ pub fn closing_input(
             task.push_str(TASK_PART_SEPARATOR);
         }
         task.push_str(&instruction);
-        task.push_str(MEMORY_INSTRUCTION);
-        task.push_str(MAIL_INSTRUCTION);
+        task.push_str(commands.memory_instruction());
+        task.push_str(commands.mail_instruction());
         ClosingWorkChoice::Ready { task, answers }
     } else {
         ClosingWorkChoice::Deferred {
@@ -526,9 +530,13 @@ fn check(gate: Gate, input: PolicyInput<'_>, common: &AdmissionView<'_>) -> Outc
             PolicyInput::Completed(_) | PolicyInput::Mail(_) => Outcome::Pass(None),
         },
         Gate::Work => match input {
-            PolicyInput::Ordinary { input, note } => {
-                work(&input.goal, &input.work, &input.answers, note)
-            }
+            PolicyInput::Ordinary { input, note } => work(
+                &input.goal,
+                &input.work,
+                &input.answers,
+                note,
+                input.command_set,
+            ),
             PolicyInput::Conversation(input) => Outcome::Work {
                 task: dudes_proto::identified_conversation_task(
                     &input.identity,
@@ -757,11 +765,15 @@ fn work(
     work: &WorkInput,
     answers: &[AnswerInput],
     browser_note: Option<&BrowserNoteInput>,
+    commands: dudes_proto::TaskCommandSet,
 ) -> Outcome {
     let note_bytes = browser_note.map_or(0, |note| {
         BROWSER_NOTE_PREFIX.len() + note.text().len() + BROWSER_NOTE_SUFFIX.len()
     });
-    let content_budget = NEXT_WORK_TASK_MAX_BYTES - TEACHING_BYTES - IDENTITY_BYTES - note_bytes;
+    let content_budget = NEXT_WORK_TASK_MAX_BYTES
+        - commands.teaching_bytes()
+        - commands.identity_bytes()
+        - note_bytes;
     let identity = work
         .identity
         .as_ref()
@@ -814,8 +826,8 @@ fn work(
         (task, format!("{} answer(s), then {note}", carried.len()))
     };
     append_coordination(&mut task, work, content_budget + identity_bytes);
-    task.push_str(MEMORY_INSTRUCTION);
-    task.push_str(MAIL_INSTRUCTION);
+    task.push_str(commands.memory_instruction());
+    task.push_str(commands.mail_instruction());
     if let Some(browser_note) = browser_note {
         task.push_str(BROWSER_NOTE_PREFIX);
         task.push_str(browser_note.text());
@@ -832,8 +844,17 @@ fn work(
 /// It contains no goal, answers, memory digest, or mail bodies.
 #[must_use]
 pub fn supplemental_context(work: &WorkInput) -> String {
+    supplemental_context_for_commands(work, dudes_proto::TaskCommandSet::Legacy)
+}
+
+/// Supplemental context with teaching selected from the immutable recorded hire.
+#[must_use]
+pub fn supplemental_context_for_commands(
+    work: &WorkInput,
+    commands: dudes_proto::TaskCommandSet,
+) -> String {
     let mut text = String::new();
-    let budget = NEXT_WORK_TASK_MAX_BYTES - TEACHING_BYTES;
+    let budget = NEXT_WORK_TASK_MAX_BYTES - commands.teaching_bytes();
     if work.unread_mail > 0 {
         append_whole_line(
             &mut text,
@@ -842,8 +863,8 @@ pub fn supplemental_context(work: &WorkInput) -> String {
         );
     }
     append_coordination(&mut text, work, budget);
-    text.push_str(MEMORY_INSTRUCTION);
-    text.push_str(MAIL_INSTRUCTION);
+    text.push_str(commands.memory_instruction());
+    text.push_str(commands.mail_instruction());
     text
 }
 
@@ -1135,6 +1156,7 @@ pub(crate) mod tests {
     /// An input that passes every gate but the last: `Continue` with the goal text.
     pub(crate) fn idle() -> LoopInput {
         LoopInput {
+            command_set: dudes_proto::TaskCommandSet::Legacy,
             control: Control::default(),
             last_turn_end: Some(Provenance::Observed),
             open_question: None,

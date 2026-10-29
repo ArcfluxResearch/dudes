@@ -372,6 +372,7 @@ fn recorded_run_limits_reach_the_first_launch_and_the_reissue() {
 #[test]
 fn neither_recorded_limit_reaches_the_decide_input() {
     let base = LoopInput {
+        command_set: dudes_proto::TaskCommandSet::Legacy,
         control: Control::default(),
         last_turn_end: None,
         open_question: None,
