@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use dudes_proto::record::{FileIdentity, RecordedWorkspace, TrustedRepository};
 use dudes_proto::repository::{
     ExecutionRepository, OwnedRepository, RepoId, RepositoryEntry, RepositoryPolicy, RepositorySet,
-    RepositoryTurnGrant, ScopedRepositories,
+    RepositoryTurnGrant, ScopedHireRepositories, ScopedRepositories,
 };
 use dudes_providers::adapter::{Adapter, AgentCtx, TurnSession};
 use dudes_providers::claude::{
@@ -78,7 +78,7 @@ impl Fixture {
             },
             catalog_lsn: Lsn::from_parts(0, 20).unwrap(),
             policy: RepositoryPolicy::WorkingTreeV1,
-            repositories: RepositorySet::new(primary.clone(), entries).unwrap(),
+            repositories: RepositorySet::new(primary, entries).unwrap(),
         };
         let selected = order
             .iter()
@@ -95,15 +95,7 @@ impl Fixture {
             project: hired.project.id.clone(),
             catalog_lsn: hired.catalog_lsn,
             policy: hired.policy,
-            repositories: RepositorySet::new(
-                if order.contains(&"a") {
-                    primary
-                } else {
-                    RepoId::parse(order[0]).unwrap()
-                },
-                selected,
-            )
-            .unwrap(),
+            repositories: RepositorySet::new(RepoId::parse(order[0]).unwrap(), selected).unwrap(),
             ticket: None,
         };
         let git = hired
@@ -266,6 +258,89 @@ fn declaration_order_and_all_hire_metadata_share_one_unarmed_plan() {
             .missing_proofs
             .contains(&ScopedProofGap::ClaudePersistence)
     );
+}
+
+#[test]
+fn general_grant_uses_its_recorded_primary_without_reordering_roots() {
+    let mut f = Fixture::new(&["a", "b", "c"]);
+    f.hired.repositories = RepositorySet::new(
+        RepoId::parse("b").unwrap(),
+        f.hired.repositories.entries().to_vec(),
+    )
+    .unwrap();
+    let mut normalized = serde_json::to_value(&f.hired).unwrap();
+    for entry in normalized["repositories"]["entries"]
+        .as_array_mut()
+        .unwrap()
+    {
+        entry["value"] = json!({
+            "recorded": entry["value"].take(),
+            "original_pin": {"attributes": "0".repeat(64), "config": "0".repeat(64)},
+        });
+    }
+    let hire: ScopedHireRepositories = serde_json::from_value(normalized).unwrap();
+    f.grant = RepositoryTurnGrant::select(Lsn::from_parts(0, 30).unwrap(), &hire, None).unwrap();
+    assert_eq!(f.grant.repositories, f.hired.repositories);
+    for recipe in [
+        claude()
+            .managed_scoped(
+                &f.ctx(&[]),
+                &f.scope(),
+                "task",
+                &first(),
+                &ModelSelection::named("claude-sonnet-4-6"),
+            )
+            .unwrap(),
+        codex()
+            .managed_scoped(
+                &f.ctx(&[]),
+                &f.scope(),
+                "task",
+                &TurnSession::Assigned,
+                &ModelSelection::named("gpt-5.5"),
+            )
+            .unwrap(),
+    ] {
+        assert_eq!(recipe.spec.cwd, Path::new("/copies/b"));
+        assert_eq!(recipe.inventory.cwd, recipe.spec.cwd);
+        assert_eq!(
+            recipe.inventory.writable_roots(),
+            [
+                "/copies/a",
+                "/copies/b",
+                "/copies/c",
+                "/private/agent/work",
+                "/private/agent/outbox",
+                "/private/agent/tmp",
+            ]
+            .map(PathBuf::from)
+        );
+        assert_eq!(
+            recipe.inventory.additional_roots(),
+            [
+                "/copies/a",
+                "/copies/c",
+                "/private/agent/work",
+                "/private/agent/outbox",
+                "/private/agent/tmp",
+            ]
+            .map(PathBuf::from)
+        );
+        if let LaunchInput::Protocol(startup) = &recipe.spec.stdin {
+            assert_eq!(startup.cwd(), Path::new("/copies/b"));
+        }
+        for repo in ["a", "b", "c"] {
+            for path in [
+                format!("/origins/{repo}/.git"),
+                format!("/copies/{repo}/.git"),
+                format!("/git/{repo}/agent"),
+                format!("/git/{repo}/origin"),
+                format!("/git/{repo}"),
+            ] {
+                assert!(recipe.inventory.protected.contains(&PathBuf::from(path)));
+            }
+        }
+    }
 }
 
 #[test]
