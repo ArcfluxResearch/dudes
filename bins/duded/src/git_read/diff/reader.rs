@@ -998,7 +998,7 @@ impl DiffReader {
         let program = self
             .git
             .program_with_timeout(
-                metadata.work_tree(),
+                tree,
                 budget.remaining()?.min(super::super::COMMAND_DEADLINE),
             )
             .map_err(|_| git_failure(budget))?;
@@ -1043,7 +1043,7 @@ impl DiffReader {
         let program = self
             .git
             .program_with_timeout(
-                shadow.root().path(),
+                shadow.tree(),
                 budget.remaining()?.min(super::super::COMMAND_DEADLINE),
             )
             .map_err(|_| git_failure(budget))?;
@@ -1752,7 +1752,10 @@ mod tests {
         assert!(
             reader
                 .git
-                .program_with_timeout(root.path(), timeout)
+                .program_with_timeout(
+                    &super::super::super::Tree::Checkout(root.path().to_path_buf()),
+                    timeout
+                )
                 .is_ok()
         );
         assert_eq!(*probe.0.lock().unwrap(), vec![timeout]);

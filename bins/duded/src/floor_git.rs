@@ -152,6 +152,7 @@ impl GitTarget {
                 _ => Some(Self::Refused(GitState::InvalidSelection)),
             },
             HireRepositories::Scoped(hire) => {
+                let full_hire = hire.recorded();
                 let ids = match &request.repositories {
                     None if hire.repositories.entries().len() == 1 => hire
                         .repositories
@@ -188,7 +189,7 @@ impl GitTarget {
                                     && lease.origin == copy.origin.directory
                                     && lease.base == copy.base =>
                             {
-                                Ok(Tree::Recorded(Box::new(copy.clone())))
+                                Tree::recorded(copy, &full_hire)
                             }
                             Some(lease) if lease.removed.is_none() && row.retired => {
                                 Err(GitState::WorktreeReleased)
