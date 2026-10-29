@@ -686,6 +686,177 @@ fn a_final_repository_refusal_is_visible_and_operator_resume_can_issue_work() {
     );
 }
 
+fn finite_spend_snapshot(
+    daemon: &TestDaemon,
+    agent: AgentId,
+) -> (dudes_journal::SpendViews, [dudes_proto::Spend; 2]) {
+    let views = daemon
+        .ctx
+        .projections
+        .conversation_spend_views(agent, daemon.ctx.clock.now().utc_day())
+        .unwrap();
+    let per_turn = daemon.sup.config().per_turn_floor;
+    (
+        views,
+        [
+            dudes_policy::budget::reserved(
+                views.agent_today,
+                views.agent_unknown_ends_today,
+                per_turn,
+            ),
+            dudes_policy::budget::reserved(
+                views.floor_today,
+                views.floor_unknown_ends_today,
+                per_turn,
+            ),
+        ],
+    )
+}
+
+fn queue_finite_work(
+    daemon: &mut TestDaemon,
+    agent: AgentId,
+    session: &crate::floor_session::SessionIdentity,
+    request: u8,
+) {
+    let context_lsn = daemon.sup.world().agents[&agent].context_lsn;
+    daemon
+        .pump_runtime_input(Input::Command(Command::ConversationMessageQueued {
+            agent,
+            text: format!("Perform finite request {request}"),
+            context_lsn,
+            context_reset_turn: None,
+            browser: dudes_proto::BrowserNoteAttribution {
+                request_id_digest: dudes_proto::record::Hex32::new([request; 32]),
+                request_digest: dudes_proto::record::Hex32::new([request; 32]),
+                session_digest: session.digest(),
+            },
+        }))
+        .unwrap();
+}
+
+fn after_one_unpriced_finite_end(
+    before: dudes_journal::SpendViews,
+    per_turn: dudes_proto::Spend,
+) -> (dudes_journal::SpendViews, [dudes_proto::Spend; 2]) {
+    let mut failure = before;
+    failure.agent_unknown_ends_today = failure.agent_unknown_ends_today.saturating_add(1);
+    failure.floor_unknown_ends_today = failure.floor_unknown_ends_today.saturating_add(1);
+    (
+        failure,
+        [
+            dudes_policy::budget::reserved(
+                failure.agent_today,
+                failure.agent_unknown_ends_today,
+                per_turn,
+            ),
+            dudes_policy::budget::reserved(
+                failure.floor_today,
+                failure.floor_unknown_ends_today,
+                per_turn,
+            ),
+        ],
+    )
+}
+
+#[test]
+fn a_final_finite_repository_refusal_uses_standard_failure_accounting() {
+    let fixture = common::Fixture::new();
+    let host = CountingHost::new();
+    let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+    let root = fixture.state.path().join("project");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    let root = root.canonicalize().unwrap();
+    daemon.ctx.enrollment = legacy_enrollment(root.clone());
+    daemon.observe_repository_enrollment().unwrap();
+    let Answered::Hired(hired) = daemon
+        .ask(Ask::Hire(Box::new(common::hire_params(&root))))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let agent = hired.agent;
+    let sessions = crate::floor_session::FloorSessions::new(
+        "127.0.0.1:31337".parse().unwrap(),
+        Arc::clone(&daemon.ctx.clock),
+    );
+    let session = sessions
+        .admitted_for_test("127.0.0.1:31337", "http://127.0.0.1:31337")
+        .0;
+    daemon.ctx.browser_session = Some(session.clone());
+    let before = finite_spend_snapshot(&daemon, agent);
+    let expected = after_one_unpriced_finite_end(before.0, daemon.sup.config().per_turn_floor);
+    let saved = root.with_file_name("preserved-project");
+    let hidden = root.clone();
+    let preserved = saved.clone();
+    daemon.ctx.before_recovery_dispatch = Some(Box::new(move || {
+        std::fs::rename(hidden, preserved).unwrap();
+    }));
+    queue_finite_work(&mut daemon, agent, &session, 7);
+    let mut queue = VecDeque::new();
+    for _ in 0..16 {
+        if !root.exists() {
+            break;
+        }
+        let input = next_input(&daemon, &mut queue);
+        daemon.pump_runtime_input(input).unwrap();
+    }
+    assert!(!root.exists());
+    assert_eq!(host.spawn_calls(), 0);
+    assert!(matches!(
+        daemon.sup.world().agents[&agent].automatic_hold,
+        Some(AutomaticHold::LaunchFailed { .. })
+    ));
+    let failed = fixture
+        .records()
+        .iter()
+        .find_map(|record| {
+            record
+                .turn_issue()
+                .filter(|issue| issue.agent == agent)
+                .map(|issue| issue.turn)
+        })
+        .unwrap();
+    assert!(daemon.sup.world().turns[&failed].has_ended());
+    assert_eq!(fixture.records().iter().filter(|record| matches!(record,
+        Record::TurnEnded { turn, usage: None, outcome: Some(TurnOutcome::NotLaunched { .. }), .. } if *turn == failed)).count(), 1);
+    assert_eq!(
+        daemon
+            .sup
+            .world()
+            .browser_issue(failed)
+            .unwrap()
+            .dispatch_intents
+            .len(),
+        1
+    );
+    assert_eq!(finite_spend_snapshot(&daemon, agent), expected);
+    std::fs::rename(saved, root).unwrap();
+    daemon.pump(Input::Tick).unwrap();
+    assert_eq!(host.spawn_calls(), 0);
+    daemon.ask(Ask::Resume(agent)).unwrap();
+    assert_eq!(
+        host.spawn_calls(),
+        0,
+        "Resume does not invent a new conversation request"
+    );
+    queue_finite_work(&mut daemon, agent, &session, 8);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while host.spawn_calls() == 0 && std::time::Instant::now() < deadline {
+        if let Ok(Job::Input(input)) = daemon.jobs.recv_timeout(Duration::from_millis(20)) {
+            daemon.pump_runtime_input(*input).unwrap();
+        }
+    }
+    assert_eq!(host.spawn_calls(), 1, "new operator work runs after Resume");
+    assert_eq!(finite_spend_snapshot(&daemon, agent), expected);
+    assert!(
+        fixture
+            .records()
+            .iter()
+            .all(|record| !matches!(record, Record::ConversationDispatchUncertain { .. }))
+    );
+}
+
 fn ordinary_failure_folded(daemon: &TestDaemon, attempt: &Prepared) -> bool {
     daemon.sup.world().turns[&attempt.turn].has_ended()
         && matches!(

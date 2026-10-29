@@ -536,21 +536,26 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }) {
             return Ok(());
         }
-        let prepared = self.prepare_owned_launch(turn, spec, mcp_grant, generation.is_some(), sup);
+        let mut prepared =
+            self.prepare_owned_launch(turn, spec, mcp_grant, generation.is_some(), sup);
+        if prepared.is_ok() {
+            #[cfg(test)]
+            if let Some(before) = self.before_recovery_dispatch.take() {
+                before();
+            }
+            if !self.recovery_dispatch_allowed(sup, turn) {
+                return Ok(());
+            }
+            if !self.repository_turn_allowed(sup.world(), turn) {
+                prepared = Err(std::io::Error::other(
+                    "current project repositories do not admit this turn",
+                ));
+            }
+        }
         let cwd = prepared.as_ref().ok().map(|spec| spec.cwd.clone());
         let actual_host_call = prepared.is_ok();
         match match prepared {
             Ok(spec) => {
-                #[cfg(test)]
-                if let Some(before) = self.before_recovery_dispatch.take() {
-                    before();
-                }
-                if !self.recovery_dispatch_allowed(sup, turn) {
-                    return Ok(());
-                }
-                if !self.repository_turn_allowed(sup.world(), turn) {
-                    return Ok(());
-                }
                 let holder = dudes_supervisor::Holder::Turn(turn);
                 #[cfg(any(target_os = "macos", target_os = "linux"))]
                 if let Some(mailbox) = &mut self.mailbox
@@ -590,6 +595,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 });
             }
             super::SpawnResult::NotLaunched { reason } => {
+                if !actual_host_call {
+                    self.children.discard_unlaunched();
+                }
                 self.children
                     .redactor()
                     .release(dudes_supervisor::Holder::Turn(turn));
