@@ -256,6 +256,10 @@ impl WorktreeHires {
     }
 
     #[cfg(not(unix))]
+    #[expect(
+        clippy::unused_self,
+        reason = "the Unix implementation inspects through this instance's Git runner"
+    )]
     fn inspect_copy(
         &self,
         _lease: &LeaseView,
