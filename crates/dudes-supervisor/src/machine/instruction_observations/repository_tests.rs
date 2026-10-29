@@ -1411,6 +1411,14 @@ fn complete_review_stamp(
     }
 }
 
+fn resume_and_tick(harness: &mut Harness, agent: AgentId) {
+    harness.drive(Input::Command(crate::Command::Resume {
+        agent,
+        browser: None,
+    }));
+    harness.drive(Input::Tick);
+}
+
 #[test]
 fn only_a_complete_current_scoped_stamp_resumes_the_predicate_decision() {
     use dudes_proto::repository_review::RepositoryStampOutcome;
@@ -1447,7 +1455,7 @@ fn only_a_complete_current_scoped_stamp_resumes_the_predicate_decision() {
                 _ => None,
             })
             .expect("the observed result parks its decision for the declared sample");
-        harness.drive(Input::Started);
+        resume_and_tick(&mut harness, agent);
         assert!(!harness.records().any(|record| matches!(
             record,
             Record::LoopDecided {
@@ -1476,7 +1484,7 @@ fn only_a_complete_current_scoped_stamp_resumes_the_predicate_decision() {
             _ => capture.grant.ticket.as_mut().unwrap().round += 1,
         }
         harness.drive(Input::RepositoryStampCaptured { capture, stamp });
-        harness.drive(Input::Started);
+        resume_and_tick(&mut harness, agent);
         let stamped = harness
             .records()
             .any(|record| matches!(record, Record::TicketReviewBatchStamped(_)));

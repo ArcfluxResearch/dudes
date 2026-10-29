@@ -1425,7 +1425,11 @@ fn legacy_ticket_producers_refuse_declared_work_without_appending_any_record() {
     assert!(read.error.is_none());
     let read: dudes_proto::rpc::ticket::TicketReadResult =
         serde_json::from_value(read.result.unwrap()).unwrap();
-    assert_eq!(read.card.status, dudes_types::CardStatus::Claimed);
+    assert_eq!(read.card.status, dudes_types::CardStatus::Blocked);
+    assert_eq!(
+        read.ticket.reason,
+        Some(dudes_proto::TicketReason::ProjectUnavailable)
+    );
     assert_eq!(read.card.claimed_by, Some(legacy));
     let before_lsn = Reader::open(&fixture.journal_dir()).unwrap().1.end;
     let path = dudes_journal::segment::segment_path(&fixture.journal_dir(), before_lsn.segment());
