@@ -637,6 +637,7 @@ where
     // every `pump` — including step 7's, which runs before the door opens, so the accept thread
     // never reads an empty one.
     let tokens = crate::classify::WorldTokens::new();
+    let scoped_hires = crate::classify::ScopedHires::new(sup.world());
 
     // --- 6 · the reaper ------------------------------------------------------------------------
     let reaping = start_reaper(
@@ -754,6 +755,7 @@ where
             subscribers: Arc::clone(&subscribers),
             last_lsn: Arc::clone(&last_lsn),
             tokens: tokens.clone(),
+            scoped_hires,
             resolver: resolver.clone(),
             append_failure: crate::runtime::AppendFailure::default(),
             #[cfg(all(feature = "testing", any(target_os = "macos", target_os = "linux")))]
@@ -1165,7 +1167,10 @@ where
     C: Clock + Send + Sync + 'static,
     R: Rng,
 {
-    let classifier = dudes_rpc::PeerClassifier::new(door.credential, Arc::new(door.tokens));
+    let classifier = crate::classify::ScopedSocketAuthorizer::new(
+        dudes_rpc::PeerClassifier::new(door.credential, Arc::new(door.tokens)),
+        daemon.ctx.scoped_hires.clone(),
+    );
     let git = crate::worktree::git::Git::new(
         Arc::clone(&daemon.ctx.predicates) as Arc<dyn PredicateRunner>,
         settings.predicate_path.clone(),
@@ -1744,7 +1749,7 @@ where
 )]
 fn dispatch_with_floor<C>(
     settings: &Settings,
-    classifier: dudes_rpc::PeerClassifier,
+    classifier: impl dudes_rpc::auth::Authorizer + 'static,
     hooks: crate::hooks::Ingress<C>,
     journal_dir: &std::path::Path,
     subscribers: &Arc<Subscribers>,

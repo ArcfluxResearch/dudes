@@ -653,7 +653,7 @@ mod tests {
             .unwrap();
         }
         let mut output = Vec::new();
-        run(&MailCommand::Read, &path, &mut output).unwrap();
+        run(&MailCommand::Read, &path, false, &mut output).unwrap();
         let text = String::from_utf8(output).unwrap();
         assert_eq!(text.matches("Use `dudes team`").count(), 1);
         assert!(text.contains(&format!(
@@ -661,7 +661,7 @@ mod tests {
             AgentId::from_parts(1, 2)
         )));
         let mut output = Vec::new();
-        run(&MailCommand::List, &path, &mut output).unwrap();
+        run(&MailCommand::List, &path, false, &mut output).unwrap();
         assert!(
             !String::from_utf8(output)
                 .unwrap()
