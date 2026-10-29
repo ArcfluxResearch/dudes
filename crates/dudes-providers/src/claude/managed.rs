@@ -491,6 +491,16 @@ fn with_env_guard(mut env: Vec<EnvVar>, agent_dir: &Path) -> Vec<EnvVar> {
 }
 
 impl Adapter for ClaudeAdapter {
+    fn managed_scoped(
+        &self,
+        ctx: &AgentCtx<'_>,
+        scope: &crate::scoped::ScopedLaunchInputs<'_>,
+        task: &str,
+        session: &TurnSession,
+        selection: &ModelSelection,
+    ) -> Result<crate::scoped::ScopedManagedLaunch, LaunchError> {
+        crate::scoped::compose_claude(&self.config, ctx, scope, task, session, selection)
+    }
     fn provider(&self) -> Provider {
         Provider::Claude
     }

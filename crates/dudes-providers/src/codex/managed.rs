@@ -146,6 +146,24 @@ impl CodexAdapter {
 }
 
 impl Adapter for CodexAdapter {
+    fn managed_scoped(
+        &self,
+        ctx: &AgentCtx<'_>,
+        scope: &crate::scoped::ScopedLaunchInputs<'_>,
+        task: &str,
+        session: &TurnSession,
+        selection: &ModelSelection,
+    ) -> Result<crate::scoped::ScopedManagedLaunch, LaunchError> {
+        crate::scoped::compose_codex(
+            &self.config,
+            self.home.as_deref(),
+            ctx,
+            scope,
+            task,
+            session,
+            selection,
+        )
+    }
     fn provider(&self) -> Provider {
         Provider::Codex
     }
