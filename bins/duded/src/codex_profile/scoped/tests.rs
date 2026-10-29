@@ -407,7 +407,7 @@ fn the_owned_child_checks_the_same_binding_before_enqueuing_its_one_task() {
             Ok(())
         }
     }
-    for change in 0..4 {
+    for change in 0..6 {
         let f = Fixture::new(false);
         let prepared = f.prepare().unwrap();
         let LaunchInput::Protocol(startup) = &prepared.launch.spec.stdin else {
@@ -436,9 +436,16 @@ fn the_owned_child_checks_the_same_binding_before_enqueuing_its_one_task() {
         let mut child = ends.watch_protocol(&key, Box::new(Input(Arc::clone(&captured))));
         child.line(&serde_json::json!({"id":1,"result":{"userAgent":"dudes/0.164.0-alpha.11.1 (test)","codexHome":startup.home()}}).to_string());
         match change {
-            1 | 3 => mailbox_during_startup(&f, change == 1),
+            1 => mailbox_during_startup(&f, MailboxActivity::Incoming),
             2 => {
                 handle.fence_journal();
+            }
+            3 => mailbox_during_startup(&f, MailboxActivity::NoMail),
+            4 => mailbox_during_startup(&f, MailboxActivity::Outgoing),
+            5 => {
+                let outbox = &f.launch.inventory.private.outbox;
+                std::fs::rename(outbox, f.root.join("retained-outbox")).unwrap();
+                owner_directory(outbox).unwrap();
             }
             _ => {}
         }
@@ -451,7 +458,7 @@ fn the_owned_child_checks_the_same_binding_before_enqueuing_its_one_task() {
                 _ => None,
             })
             .collect();
-        let delivered = matches!(change, 0 | 3);
+        let delivered = matches!(change, 0 | 1 | 3);
         assert_eq!(tasks.len(), usize::from(delivered));
         if delivered {
             let task: serde_json::Value = serde_json::from_slice(tasks[0].bytes()).unwrap();
@@ -463,7 +470,14 @@ fn the_owned_child_checks_the_same_binding_before_enqueuing_its_one_task() {
     }
 }
 
-fn mailbox_during_startup(f: &Fixture, affected: bool) {
+#[derive(Clone, Copy)]
+enum MailboxActivity {
+    NoMail,
+    Incoming,
+    Outgoing,
+}
+
+fn mailbox_during_startup(f: &Fixture, activity: MailboxActivity) {
     use dudes_proto::{Entry, MailAct, MailFrom, MailTo, Record};
     let agent = AgentId::from_parts(1, 1);
     let other = AgentId::from_parts(1, 2);
@@ -485,7 +499,7 @@ fn mailbox_during_startup(f: &Fixture, affected: bool) {
     )
     .unwrap();
     mailbox.coordinate_private_roots(f.profile.private_roots());
-    if affected {
+    if matches!(activity, MailboxActivity::Incoming) {
         let entry = Entry {
             at: dudes_types::Timestamp::from_unix_millis(2),
             record: Record::Mail {
@@ -510,11 +524,27 @@ fn mailbox_during_startup(f: &Fixture, affected: bool) {
         let lsn = writer.append(&entry).unwrap();
         mailbox.apply_entry(lsn, &entry);
     }
+    let outgoing = f
+        .launch
+        .inventory
+        .private
+        .outbox
+        .join(format!("{}.json", dudes_types::MailId::from_parts(1, 5)));
+    if matches!(activity, MailboxActivity::Outgoing) {
+        std::fs::write(&outgoing, serde_json::to_vec(&serde_json::json!({"to":{"kind":"agent","agent":other},"act":"message","subject":"message","body":"body"})).unwrap()).unwrap();
+    }
     mailbox.pass(
         &std::collections::BTreeMap::from([(agent, false), (other, false)]),
-        || panic!("no outgoing mail"),
-        || panic!("no outgoing thread"),
-        |_, _| panic!("no marker acknowledgement"),
+        || dudes_types::Timestamp::from_unix_millis(3),
+        || dudes_types::ThreadId::from_parts(1, 6),
+        |record, at| {
+            let entry = Entry {
+                at: at.unwrap_or(dudes_types::Timestamp::from_unix_millis(3)),
+                record: record.clone(),
+            };
+            let lsn = writer.append(&entry)?;
+            Ok((lsn, entry))
+        },
     );
     assert!(
         f.root
@@ -523,7 +553,7 @@ fn mailbox_during_startup(f: &Fixture, affected: bool) {
             .join("outbox")
             .is_dir()
     );
-    if affected {
+    if matches!(activity, MailboxActivity::Incoming) {
         assert!(
             f.launch
                 .inventory
@@ -534,6 +564,12 @@ fn mailbox_during_startup(f: &Fixture, affected: bool) {
                 .join("inbox")
                 .join(format!("{}.json", dudes_types::MailId::from_parts(1, 3)))
                 .is_file()
+        );
+    }
+    if matches!(activity, MailboxActivity::Outgoing) {
+        assert!(
+            !outgoing.exists(),
+            "the mailbox consumed the inspected outbox file"
         );
     }
 }

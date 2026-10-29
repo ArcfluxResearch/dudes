@@ -96,7 +96,7 @@ struct Directory {
     label: String,
     cap: usize,
     budget: Rc<Budget>,
-    epoch: Arc<crate::codex_profile::scoped::AgentRoots>,
+    epoch: Option<Arc<crate::codex_profile::scoped::AgentRoots>>,
 }
 
 impl AsFd for Directory {
@@ -112,7 +112,7 @@ impl Directory {
             label: label.to_owned(),
             cap: self.cap,
             budget: Rc::clone(&self.budget),
-            epoch: Arc::clone(&self.epoch),
+            epoch: self.epoch.clone(),
         }
     }
 
@@ -122,6 +122,10 @@ impl Directory {
 
     fn sync(&self) -> io::Result<()> {
         self.budget.sync(&self.file)
+    }
+
+    fn mutation(&self) -> io::Result<Option<std::sync::MutexGuard<'_, u64>>> {
+        self.epoch.as_ref().map(|epoch| epoch.mutate()).transpose()
     }
 }
 
@@ -194,7 +198,7 @@ fn directory(parent: &Directory, name: &str, create: bool) -> io::Result<Directo
     if !create {
         return Err(io::Error::from(io::ErrorKind::NotFound));
     }
-    let _mutation = parent.epoch.mutate()?;
+    let _mutation = parent.mutation()?;
     rustix::fs::mkdirat(parent, name, Mode::RWXU)?;
     parent.sync()?;
     existing_directory(parent, name)
@@ -447,13 +451,14 @@ impl Tree {
             label: ".".to_owned(),
             cap: opening.cap,
             budget: Rc::clone(&opening.budget),
-            epoch: opening.epoch?,
+            epoch: None,
         };
         let agents = directory(&root, "agents", opening.create)?;
-        let agent = directory(&agents, &id.to_string(), opening.create)?;
+        let mut agent = directory(&agents, &id.to_string(), opening.create)?;
         let inbox = directory(&agent, "inbox", opening.create)?;
         let done = directory(&inbox, ".done", opening.create)?;
         let staging = directory(&inbox, ".staging", opening.create)?;
+        agent.epoch = Some(opening.epoch?);
         let outbox = directory(&agent, "outbox", opening.create)?;
         Ok(Self {
             root,
@@ -740,7 +745,7 @@ fn remove(
     validate: fn(&Directory, &OsStr, &File) -> io::Result<()>,
 ) -> io::Result<()> {
     validate(directory, name, file)?;
-    let _mutation = directory.epoch.mutate()?;
+    let _mutation = directory.mutation()?;
     validate(directory, name, file)?;
     rustix::fs::unlinkat(directory, name, AtFlags::empty())?;
     directory.sync()
@@ -763,21 +768,22 @@ fn verify_named_bytes(
 }
 
 fn stage(tree: &Tree, name: &str, bytes: &[u8]) -> io::Result<File> {
-    let mutation = if named_canonical(&tree.staging, OsStr::new(name))? {
-        None
+    let create = !named_canonical(&tree.staging, OsStr::new(name))?;
+    let _mutation = if create {
+        tree.staging.mutation()?
     } else {
-        Some(tree.staging.epoch.mutate()?)
+        None
     };
     let file = match open(
         &tree.staging,
         name,
-        if mutation.is_some() {
+        if create {
             OFlags::RDWR | OFlags::CREATE | OFlags::EXCL
         } else {
             OFlags::RDONLY
         },
     ) {
-        Ok(mut file) if mutation.is_some() => {
+        Ok(mut file) if create => {
             file.write_all(bytes)?;
             file
         }
@@ -838,7 +844,7 @@ fn publish_with(
     }
     tree.validate()?;
     verify_named_bytes(&tree.staging, &staged_name, &file, bytes)?;
-    let _mutation = tree.inbox.epoch.mutate()?;
+    let _mutation = tree.inbox.mutation()?;
     rustix::fs::renameat_with(
         &tree.staging,
         staged_name.as_str(),

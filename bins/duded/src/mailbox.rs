@@ -606,7 +606,7 @@ mod wake_tests {
         let roots = mailbox.private_roots.agent(&path).unwrap();
         let inspection = roots.inspect().unwrap();
         assert!(mailbox.admit_outbox(agent).is_err());
-        assert!(!path.exists());
+        assert!(!path.join("outbox").exists());
         assert_eq!(*inspection, 0);
         drop(inspection);
         mailbox.admit_outbox(agent).unwrap();
