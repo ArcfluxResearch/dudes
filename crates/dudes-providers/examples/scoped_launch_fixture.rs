@@ -13,6 +13,40 @@ use dudes_providers::scoped::{ScopedLaunchInputs, ScopedPlatform, ScopedPrivateP
 use dudes_types::{AgentId, Mode, ModelSelection, SessionId};
 use serde_json::{Value, json};
 
+fn protocol_actions(actions: &[ProtocolAction]) -> Result<Vec<Value>, Box<dyn Error>> {
+    actions.iter().map(|action| Ok(match action {
+        ProtocolAction::Write(frame) => json!({"kind":"write","task":frame.is_task(),"message":serde_json::from_slice::<Value>(frame.bytes())?}),
+        ProtocolAction::Started => json!({"kind":"started"}),
+        ProtocolAction::Close => json!({"kind":"close"}),
+        ProtocolAction::Fail => json!({"kind":"fail"}),
+    })).collect()
+}
+
+fn protocol_projection(
+    adapter: &dyn Adapter,
+    spec: &dudes_providers::launch::LaunchSpec,
+    input: &Value,
+) -> Result<(Vec<Value>, Vec<Value>), Box<dyn Error>> {
+    let mut reader = adapter.turn_reader_for(spec);
+    let initial = reader.start();
+    let start = initial
+        .iter()
+        .filter_map(|action| match action {
+            ProtocolAction::Write(frame) => Some(serde_json::from_slice::<Value>(frame.bytes())),
+            _ => None,
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut actions = protocol_actions(&initial)?;
+    if let Some(responses) = input["vendor_responses"].as_array() {
+        for response in responses {
+            actions.extend(protocol_actions(
+                &reader.line(&response.to_string()).actions,
+            )?);
+        }
+    }
+    Ok((start, actions))
+}
+
 fn adapter(input: &Value, profile: &Path) -> Result<Box<dyn Adapter>, Box<dyn Error>> {
     match input["provider"].as_str() {
         Some("claude") => {
@@ -113,16 +147,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         _ => return Err("candidate has an unexpected task delivery".into()),
     };
-    let protocol_start: Vec<_> = adapter
-        .turn_reader_for(&candidate.spec)
-        .start()
-        .into_iter()
-        .filter_map(|action| match action {
-            ProtocolAction::Write(frame) => Some(serde_json::from_slice::<Value>(frame.bytes())),
-            _ => None,
-        })
-        .collect::<Result<_, _>>()?;
-    let output = json!({"argv":candidate.spec.argv.iter().map(|arg|arg.to_str().ok_or("non-text fixture argument")).collect::<Result<Vec<_>,_>>()?,"env":environment,"cwd":candidate.spec.cwd,"stdin":stdin,"protocol_start":protocol_start,"directories":candidate.install.directories,"files":candidate.install.files,"inventory":candidate.inventory,"unarmed":candidate.unarmed});
+    let (protocol_start, protocol_actions) =
+        protocol_projection(adapter.as_ref(), &candidate.spec, &input)?;
+    let output = json!({"argv":candidate.spec.argv.iter().map(|arg|arg.to_str().ok_or("non-text fixture argument")).collect::<Result<Vec<_>,_>>()?,"env":environment,"cwd":candidate.spec.cwd,"stdin":stdin,"protocol_start":protocol_start,"protocol_actions":protocol_actions,"directories":candidate.install.directories,"files":candidate.install.files,"inventory":candidate.inventory,"unarmed":candidate.unarmed});
     std::fs::write(&args[2], serde_json::to_vec_pretty(&output)?)?;
     Ok(())
 }

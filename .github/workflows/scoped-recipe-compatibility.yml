@@ -1,0 +1,64 @@
+name: scoped recipe compatibility
+
+on:
+  pull_request:
+    paths:
+      - crates/dudes-providers/**
+      - scripts/verify-scoped-recipe-compatibility.py
+      - scripts/test-scoped-recipe-compatibility.py
+      - scripts/_engine_confinement.py
+      - scripts/fetch-confinement-engines.py
+      - .github/workflows/scoped-recipe-compatibility.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Check proof admission and dispatch controls
+        run: python3 scripts/test-scoped-recipe-compatibility.py
+      - name: Install sandbox prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y bubblewrap socat
+      - run: rustup toolchain install
+      - name: Build the Rust policy fixture with an isolated home
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/compatibility-build-home"
+          env CARGO_TARGET_DIR="$RUNNER_TEMP/compatibility-target" RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" HOME="$RUNNER_TEMP/compatibility-build-home" cargo build --locked -p dudes-providers --example scoped_launch_fixture
+      - name: Download pinned native engines
+        run: python3 scripts/fetch-confinement-engines.py --output "$RUNNER_TEMP/compatibility-binaries"
+      - name: Check generated recipes without an external network route
+        run: |
+          sudo unshare --net /bin/sh -c '
+            set -e
+            ip link set lo up
+            exec runuser -u runner -- "$@"
+          ' compatibility python3 scripts/verify-scoped-recipe-compatibility.py --fixture "$RUNNER_TEMP/compatibility-target/debug/examples/scoped_launch_fixture" --claude "$RUNNER_TEMP/compatibility-binaries/claude" --codex "$RUNNER_TEMP/compatibility-binaries/codex" --output "$RUNNER_TEMP/compatibility-proof"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: scoped-recipe-compatibility-linux
+          path: |
+            ${{ runner.temp }}/compatibility-proof/summary.json
+            ${{ runner.temp }}/compatibility-proof/**/receipt.json
+            ${{ runner.temp }}/compatibility-proof/**/generated-policy.json
+            ${{ runner.temp }}/compatibility-proof/**/fixture-input.json
+            ${{ runner.temp }}/compatibility-proof/**/fixture-output.json
+            ${{ runner.temp }}/compatibility-proof/**/sent-protocol.json
+            ${{ runner.temp }}/compatibility-proof/**/model-requests.json
+            ${{ runner.temp }}/compatibility-proof/**/stdout.jsonl
+            ${{ runner.temp }}/compatibility-proof/**/stderr.txt
+            ${{ runner.temp }}/compatibility-proof/**/outer-network-guard.sb
+            ${{ runner.temp }}/compatibility-binaries/downloads.json
+          retention-days: 7
