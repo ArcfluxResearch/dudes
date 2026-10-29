@@ -543,7 +543,7 @@ def run_claude_resume(args):
         result["stages"].append(native)
         result["checks"]["first_stage_completed_exactly"] = native["passed"]
         first_read = native["tool_results"].get(read.id, {})
-        result["checks"]["owned_existing_A_read_succeeded"] = not first_read.get("is_error", True) and original.decode().strip() in str(first_read.get("content", "")) and a.read_bytes() == original
+        result["checks"]["owned_existing_A_read_succeeded"] = bool(first_read) and not first_read.get("is_error", False) and original.decode().strip() in str(first_read.get("content", "")) and a.read_bytes() == original
         result["prior_owned_group"] = owned_group_absence(native)
         result["checks"]["first_leader_reaped_and_owned_group_absent"] = result["prior_owned_group"]["absent"]
         if not all(result["checks"].values()):
@@ -575,7 +575,7 @@ def run_claude_resume(args):
         result["checks"]["resumed_stage_completed_exactly"] = resumed["passed"]
         old, new, shell = [resumed["tool_results"].get(action.id, {}) for action in actions]
         old_text, shell_text = str(old.get("content", "")), str(shell.get("content", ""))
-        result["checks"].update({"cached_existing_A_Edit_directly_refused": bool(old.get("is_error")) and bool(DENIAL.search(old_text)) and "File has not been read yet" not in old_text, "removed_A_bytes_preserved": a.read_bytes() == original, "declared_B_Edit_effect_observed": not new.get("is_error", True) and b.is_file() and b.read_text() == MARKER and bool(re.search("updated|success|created", str(new.get("content", "")), re.I)), "resumed_Bash_per_root_effects_observed": not shell.get("is_error", True) and re.search(r"^SCOPED_removed-a=refused$", shell_text, re.M) is not None and re.search(r"^SCOPED_declared-b=written$", shell_text, re.M) is not None and shell_b.is_file() and shell_b.read_text() == MARKER, "configuration_canaries_did_not_fire": not any(path.exists() for path in frozen["traps"])})
+        result["checks"].update({"cached_existing_A_Edit_directly_refused": bool(old.get("is_error")) and bool(DENIAL.search(old_text)) and "File has not been read yet" not in old_text, "removed_A_bytes_preserved": a.read_bytes() == original, "declared_B_Edit_effect_observed": bool(new) and not new.get("is_error", False) and b.is_file() and b.read_text() == MARKER and bool(re.search("updated|success|created", str(new.get("content", "")), re.I)), "resumed_Bash_per_root_effects_observed": bool(shell) and not shell.get("is_error", False) and re.search(r"^SCOPED_removed-a=refused$", shell_text, re.M) is not None and re.search(r"^SCOPED_declared-b=written$", shell_text, re.M) is not None and shell_b.is_file() and shell_b.read_text() == MARKER, "configuration_canaries_did_not_fire": not any(path.exists() for path in frozen["traps"])})
         result["read_cache_observation"] = {"first_successful_Read_in_artifact": True, "resumed_Edit_unread_prerequisite_returned": "File has not been read yet" in old_text, "internal_Read_cache_directly_observable": False}
         after_artifact, after_history = session_artifact(second, read, original)
         result["checks"]["actual_same_session_artifact_retained"] = after_artifact["path"] == artifact["path"] and after_history.startswith(history)
