@@ -1255,6 +1255,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 ticket,
                 comparison.map(|comparison| *comparison),
             ),
+            Input::RepositoryInstructionsSampled {
+                request,
+                sample,
+                comparisons,
+            } => self.repository_instructions_sampled(request, *sample, comparisons),
+            Input::RepositoryInstructionsUnavailable { request } => {
+                self.repository_instructions_unavailable(request);
+            }
             Input::Journaled { append } => return self.mail_journaled(append),
             Input::MailWakeReady {
                 agent,

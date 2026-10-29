@@ -21,6 +21,8 @@ use dudes_proto::record::Hex32;
 use dudes_types::AgentId;
 use sha2::{Digest, Sha256};
 
+pub(crate) mod batch;
+
 pub(crate) const SAMPLE_DEADLINE: Duration = Duration::from_secs(2);
 
 pub(crate) fn digest(bytes: &[u8]) -> Hex32 {
@@ -33,9 +35,23 @@ pub(crate) fn observe(snapshot: InstructionSnapshot) -> InstructionSnapshot {
 }
 
 pub(crate) fn observe_reporting(
-    mut snapshot: InstructionSnapshot,
+    snapshot: InstructionSnapshot,
     progress: Option<Arc<Mutex<InstructionSnapshot>>>,
     deadline: Instant,
+) -> InstructionSnapshot {
+    observe_bounded(
+        snapshot,
+        progress.map(SampleProgress::Legacy),
+        deadline,
+        None,
+    )
+}
+
+fn observe_bounded(
+    mut snapshot: InstructionSnapshot,
+    progress: Option<SampleProgress>,
+    deadline: Instant,
+    budget: Option<batch::Budget>,
 ) -> InstructionSnapshot {
     snapshot.inputs.clear();
     snapshot.inventoried.clear();
@@ -46,11 +62,12 @@ pub(crate) fn observe_reporting(
         deadline,
         failures: 0,
         progress,
+        budget,
     };
     let participants = sample.snapshot.participants.clone();
     for participant in participants {
         for gap in &participant.discovery.gaps {
-            let _ = sample.snapshot.try_push_gap(gap.clone());
+            sample.retain_gap(gap.clone());
         }
         for (index, rule) in participant.discovery.rules.iter().enumerate() {
             let Ok(index) = u16::try_from(index) else {
@@ -165,7 +182,16 @@ struct Sample {
     snapshot: InstructionSnapshot,
     deadline: Instant,
     failures: u64,
-    progress: Option<Arc<Mutex<InstructionSnapshot>>>,
+    progress: Option<SampleProgress>,
+    budget: Option<batch::Budget>,
+}
+
+enum SampleProgress {
+    Legacy(Arc<Mutex<InstructionSnapshot>>),
+    Repositories {
+        progress: Arc<Mutex<batch::Progress>>,
+        member: usize,
+    },
 }
 
 impl Sample {
@@ -173,8 +199,54 @@ impl Sample {
         if let Some(progress) = &self.progress
             && self.snapshot.validate().is_ok()
         {
-            *progress.lock().unwrap_or_else(PoisonError::into_inner) = self.snapshot.clone();
+            match progress {
+                SampleProgress::Legacy(progress) => {
+                    *progress.lock().unwrap_or_else(PoisonError::into_inner) =
+                        self.snapshot.clone();
+                }
+                SampleProgress::Repositories { progress, member } => {
+                    progress
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .sample
+                        .members[*member]
+                        .snapshot = self.snapshot.clone();
+                }
+            }
         }
+    }
+
+    fn fits(&self) -> bool {
+        self.budget
+            .as_ref()
+            .is_none_or(|budget| budget.fits(&self.snapshot))
+    }
+
+    fn usage(&self) -> InstructionSampleUsage {
+        self.budget.as_ref().map_or(self.snapshot.usage, |budget| {
+            budget
+                .used
+                .checked_add(self.snapshot.usage)
+                .expect("remaining work budget")
+        })
+    }
+
+    fn push_input(&mut self, input: InstructionInput) -> bool {
+        let previous = self.budget.as_ref().map(|_| self.snapshot.clone());
+        let retained = self.snapshot.try_push_input(input);
+        if retained && self.fits() {
+            return true;
+        }
+        if let Some(previous) = previous {
+            self.snapshot = previous;
+            self.gap(
+                InstructionGapKind::MetadataLimit,
+                self.budget.as_ref().expect("batch budget").agent,
+                None,
+                InstructionPathContext::Unresolved,
+            );
+        }
+        false
     }
     fn inventory(&mut self, agent: AgentId, rule: u16) {
         if self.snapshot.inventoried.len() == MAX_INSTRUCTION_INPUTS {
@@ -189,7 +261,7 @@ impl Sample {
         self.snapshot
             .inventoried
             .push(InstructionRuleRef { agent, rule });
-        if self.snapshot.validate().is_err() {
+        if self.snapshot.validate().is_err() || !self.fits() {
             self.snapshot.inventoried.pop();
             self.gap(
                 InstructionGapKind::MetadataLimit,
@@ -218,10 +290,28 @@ impl Sample {
             agent: Some(agent),
             path,
         };
+        self.retain_gap(gap);
+        self.checkpoint();
+    }
+
+    fn retain_gap(&mut self, gap: InstructionCoverageGap) {
+        let previous = self.budget.as_ref().map(|_| self.snapshot.gaps.clone());
         if !self.snapshot.gaps.contains(&gap) {
             let _ = self.snapshot.try_push_gap(gap);
         }
-        self.checkpoint();
+        if !self.fits() {
+            self.snapshot.gaps = previous.expect("only batch evidence has a remaining budget");
+            if !self
+                .snapshot
+                .gaps
+                .iter()
+                .any(|gap| gap.reason == InstructionGapKind::MetadataLimit)
+            {
+                let _ = self
+                    .snapshot
+                    .try_push_gap(InstructionCoverageGap::metadata_limit());
+            }
+        }
     }
 
     fn time(&mut self, agent: AgentId, context: InstructionPathContext) -> bool {
@@ -369,7 +459,7 @@ impl Sample {
             if !self.time(agent, context) {
                 break;
             }
-            if self.snapshot.usage.ancestor_steps == MAX_INSTRUCTION_ANCESTORS {
+            if self.usage().ancestor_steps == MAX_INSTRUCTION_ANCESTORS {
                 self.gap(
                     InstructionGapKind::AncestorLimit,
                     agent,
@@ -466,7 +556,7 @@ impl Sample {
             if !self.time(agent, context) {
                 return None;
             }
-            if self.snapshot.usage.descendant_entries == MAX_INSTRUCTION_DESCENDANTS {
+            if self.usage().descendant_entries == MAX_INSTRUCTION_DESCENDANTS {
                 self.gap(
                     InstructionGapKind::DescendantLimit,
                     agent,
@@ -668,7 +758,7 @@ impl Sample {
         let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                let _ = self.snapshot.try_push_input(InstructionInput {
+                let retained = self.push_input(InstructionInput {
                     path: native,
                     resolved_path: None,
                     context,
@@ -677,7 +767,7 @@ impl Sample {
                     shadowed,
                     fingerprint: InstructionFingerprint::Absent,
                 });
-                return Some(InstructionFingerprint::Absent);
+                return retained.then_some(InstructionFingerprint::Absent);
             }
             Err(_) => {
                 self.gap(
@@ -695,7 +785,7 @@ impl Sample {
             digest: digest(&bytes),
             bytes: u64::try_from(bytes.len()).unwrap_or(remaining),
         };
-        if !self.snapshot.try_push_input(InstructionInput {
+        if !self.push_input(InstructionInput {
             path: native,
             resolved_path: Some(resolved.clone()),
             context: self.context(path, context, &source),
@@ -762,8 +852,7 @@ impl Sample {
             );
             return None;
         };
-        let remaining =
-            MAX_INSTRUCTION_SOURCE_BYTES.saturating_sub(self.snapshot.usage.source_bytes);
+        let remaining = MAX_INSTRUCTION_SOURCE_BYTES.saturating_sub(self.usage().source_bytes);
         if metadata.len() > remaining {
             self.gap(
                 InstructionGapKind::SourceBytesLimit,
@@ -937,7 +1026,7 @@ impl Sample {
         }
         for import in imports {
             if chain.len() > usize::from(MAX_CLAUDE_IMPORT_DEPTH)
-                || self.snapshot.usage.import_edges == MAX_INSTRUCTION_IMPORT_EDGES
+                || self.usage().import_edges == MAX_INSTRUCTION_IMPORT_EDGES
             {
                 self.gap(
                     InstructionGapKind::ImportLimit,
@@ -1416,7 +1505,7 @@ mod tests {
         NativeInstructionPath::from_path(path.as_ref()).unwrap()
     }
 
-    fn fixture(directory: &Path) -> InstructionSnapshot {
+    pub(super) fn fixture(directory: &Path) -> InstructionSnapshot {
         let directory = fs::canonicalize(directory).unwrap();
         let agent = "01ARZ3NDEKTSV4RRFFQ69G5FAV".parse().unwrap();
         InstructionSnapshot {
@@ -1761,6 +1850,7 @@ mod tests {
             deadline: Instant::now(),
             failures: 0,
             progress: None,
+            budget: None,
         };
         let root = sample.snapshot.participants[0].discovery.roots[0].clone();
         let agent = sample.snapshot.participants[0].agent;

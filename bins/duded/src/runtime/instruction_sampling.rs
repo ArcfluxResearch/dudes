@@ -10,6 +10,12 @@ use dudes_proto::instruction::{
     InstructionTicketAssociation, MAX_INSTRUCTION_PARTICIPANTS, MAX_INSTRUCTION_PATH_BYTES,
     NativeInstructionPath,
 };
+use dudes_proto::instruction_state::InstructionSnapshotEvidence;
+use dudes_proto::repository::{HireRepositories, RepositoryTurnGrant};
+use dudes_proto::repository_instruction::{
+    INSTRUCTION_BATCH_VERSION, RepositoryInstructionBinding, RepositoryInstructionSnapshot,
+    RepositoryInstructionStart,
+};
 use dudes_supervisor::input::InstructionRequest;
 use dudes_supervisor::{AdoptionKey, Effect, Input, InstructionSource};
 use dudes_types::{AgentId, Mode, ModelSelection, Timestamp, WorktreeId};
@@ -24,7 +30,11 @@ use super::native_boundaries::same_key;
 use crate::instruction_sample::{self, SAMPLE_DEADLINE, digest};
 use crate::ports::Handle;
 
-pub(super) struct SampleJob {
+#[cfg(all(test, unix))]
+#[path = "instruction_sampling/repository_tests.rs"]
+mod repository_tests;
+
+pub(super) struct LegacySampleJob {
     pub(super) request: InstructionRequest,
     pub(super) agent: AgentId,
     candidate_cwd: Option<PathBuf>,
@@ -84,6 +94,72 @@ struct CurrentCensus {
 }
 
 impl CurrentCensus {
+    fn recorded(
+        &mut self,
+        world: &dudes_supervisor::World,
+        agent: AgentId,
+        mode: Mode,
+        uncertain: bool,
+    ) {
+        if let Some(row) = world.agents.get(&agent)
+            && let HireRepositories::Scoped(hire) = &row.repositories
+        {
+            for member in hire.repositories.entries() {
+                if self.room().is_err() {
+                    break;
+                }
+                self.member(
+                    agent,
+                    Some(&member.value.recorded.execution.directory),
+                    mode,
+                    Some(member.value.recorded.worktree),
+                    uncertain,
+                );
+            }
+        } else {
+            let (path, lease) = recorded_path(world, agent)
+                .map_or((None, None), |(path, lease)| (Some(path), lease));
+            self.member(agent, path, mode, lease, uncertain);
+        }
+    }
+
+    fn evidence(
+        &mut self,
+        owner: InstructionObservationOwner,
+        evidence: Option<&InstructionSnapshotEvidence>,
+        uncertain: bool,
+    ) {
+        let Some(evidence) = evidence else {
+            self.membership_unknown = true;
+            return;
+        };
+        for (_, sample) in evidence.samples() {
+            if self.room().is_err() {
+                break;
+            }
+            let _ = self.snapshot(owner, Some(sample), uncertain);
+        }
+    }
+
+    fn native_evidence(
+        &mut self,
+        owner: InstructionObservationOwner,
+        evidence: Option<&InstructionSnapshotEvidence>,
+        key: &AdoptionKey,
+        uncertain: bool,
+    ) {
+        let Some(evidence) = evidence else {
+            self.membership_unknown = true;
+            return;
+        };
+        for (_, sample) in evidence.samples() {
+            if self.room().is_err() {
+                break;
+            }
+            self.native_snapshot(owner, Some(sample), key, uncertain);
+        }
+    }
+
     fn room(&mut self) -> Result<(), ()> {
         if self.examined == MAX_CURRENT_CENSUS_ENTRIES {
             self.membership_unknown = true;
@@ -207,10 +283,7 @@ impl CurrentCensus {
             self.membership_unknown = true;
         }
         let cwd = receipt.map(|(_, path)| path);
-        let lease = cwd.and_then(|cwd| {
-            recorded_path(world, agent)
-                .and_then(|(recorded, lease)| (recorded == cwd).then_some(lease).flatten())
-        });
+        let lease = cwd.and_then(|cwd| recorded_lease(world, agent, cwd));
         self.member(agent, cwd, mode, lease, uncertain);
     }
 }
@@ -242,9 +315,7 @@ fn current_recorded_census(
     } else if baseline.is_some() {
         let _ = census.snapshot(owner, baseline, false);
     } else {
-        let (path, lease) = recorded_path(world, candidate)
-            .map_or((None, None), |(path, lease)| (Some(path), lease));
-        census.member(candidate, path, owner_mode(owner), lease, false);
+        census.recorded(world, candidate, owner_mode(owner), false);
         if matches!(owner, InstructionObservationOwner::AttachedTurn { .. }) {
             census.membership_unknown = true;
         }
@@ -253,14 +324,12 @@ fn current_recorded_census(
         if census.room().is_err() {
             break;
         }
-        let (path, lease) =
-            recorded_path(world, *agent).map_or((None, None), |(path, lease)| (Some(path), lease));
         let mode = if world.agents.get(agent).is_some_and(|row| row.attached) {
             Mode::Attached
         } else {
             Mode::Managed
         };
-        census.member(*agent, path, mode, lease, false);
+        census.recorded(world, *agent, mode, false);
     }
     for agent in world.instructions.unresolved_owners() {
         if census.room().is_err() {
@@ -270,7 +339,7 @@ fn current_recorded_census(
             if census.room().is_err() {
                 break;
             }
-            let _ = census.snapshot(attempt.owner, attempt.legacy_snapshot(), true);
+            census.evidence(attempt.owner, attempt.snapshot.as_ref(), true);
         }
     }
     add_native_receipts(&mut census, world, absent);
@@ -279,7 +348,7 @@ fn current_recorded_census(
         if census.room().is_err() {
             break;
         }
-        let _ = census.snapshot(attempt.owner, attempt.legacy_snapshot(), false);
+        census.evidence(attempt.owner, attempt.snapshot.as_ref(), false);
     }
     for (agent, key) in world.attached_children() {
         if census.room().is_err() {
@@ -287,9 +356,7 @@ fn current_recorded_census(
         }
         if !census.has_native_key(agent, key, Mode::Attached) {
             census.membership_unknown = true;
-            let (path, lease) = recorded_path(world, agent)
-                .map_or((None, None), |(path, lease)| (Some(path), lease));
-            census.member(agent, path, Mode::Attached, lease, true);
+            census.recorded(world, agent, Mode::Attached, true);
         }
     }
     census
@@ -328,9 +395,9 @@ fn add_native_receipts(
                     }
                     _ => true,
                 });
-        census.native_snapshot(
+        census.native_evidence(
             receipt.owner,
-            attempt.legacy_snapshot(),
+            attempt.snapshot.as_ref(),
             &receipt.key,
             retained,
         );
@@ -363,9 +430,9 @@ fn add_native_receipts(
                 }
                 _ => true,
             };
-        census.native_snapshot(
+        census.native_evidence(
             receipt.owner,
-            attempt.legacy_snapshot(),
+            attempt.snapshot.as_ref(),
             &receipt.key,
             retained,
         );
@@ -383,7 +450,7 @@ fn add_open_turn_owners(census: &mut CurrentCensus, world: &dudes_supervisor::Wo
             .and_then(|row| row.open_turn)
             .and_then(|turn| world.instructions.current_for_turn(turn));
         if let Some((_, attempt)) = attempt {
-            let _ = census.snapshot(attempt.owner, attempt.legacy_snapshot(), false);
+            census.evidence(attempt.owner, attempt.snapshot.as_ref(), false);
         } else {
             if world
                 .agents
@@ -396,9 +463,7 @@ fn add_open_turn_owners(census: &mut CurrentCensus, world: &dudes_supervisor::Wo
                 continue;
             }
             census.membership_unknown = true;
-            let (path, lease) = recorded_path(world, *agent)
-                .map_or((None, None), |(path, lease)| (Some(path), lease));
-            census.member(*agent, path, Mode::Managed, lease, true);
+            census.recorded(world, *agent, Mode::Managed, true);
         }
     }
 }
@@ -459,6 +524,47 @@ fn recorded_path(
     })
 }
 
+fn recorded_lease(
+    world: &dudes_supervisor::World,
+    agent: AgentId,
+    cwd: &Path,
+) -> Option<WorktreeId> {
+    let row = world.agents.get(&agent)?;
+    match &row.repositories {
+        HireRepositories::Legacy(_) => recorded_path(world, agent)
+            .and_then(|(recorded, lease)| (recorded == cwd).then_some(lease).flatten()),
+        HireRepositories::Scoped(hire) => hire
+            .repositories
+            .entries()
+            .iter()
+            .find(|member| member.value.recorded.execution.directory == cwd)
+            .map(|member| member.value.recorded.worktree),
+    }
+}
+
+fn recorded_repository_hire<'a>(
+    world: &'a dudes_supervisor::World,
+    owner: InstructionObservationOwner,
+    grant: &RepositoryTurnGrant,
+) -> Option<(dudes_types::Lsn, &'a HireRepositories)> {
+    let issued = match owner {
+        InstructionObservationOwner::Managed { turn, .. } => world.turns.get(&turn),
+        _ => None,
+    };
+    if let Some(issued) = issued {
+        issued
+            .repositories
+            .as_ref()
+            .filter(|scope| scope.grant() == Some(grant))
+            .map(|scope| (scope.hired_lsn(), scope.hire()))
+    } else {
+        world
+            .agents
+            .get(&owner_agent(owner))
+            .map(|row| (row.mcp.hire_lsn, &row.repositories))
+    }
+}
+
 fn scoped_membership_unknown(
     unknown: bool,
     folders: &[PathBuf],
@@ -471,7 +577,7 @@ fn scoped_membership_unknown(
         })
 }
 
-impl SampleJob {
+impl LegacySampleJob {
     pub(super) fn queued(mut self) -> Self {
         self.queued = Instant::now();
         self
@@ -485,17 +591,158 @@ pub(crate) struct InstructionSampler {
     now: Arc<dyn Fn() -> Timestamp + Send + Sync>,
 }
 
+enum SampleJob {
+    Legacy(LegacySampleJob),
+    Repositories(RepositorySampleJob),
+}
+
+struct RepositoryMemberJob {
+    repo_id: dudes_proto::repository::RepoId,
+    root: dudes_proto::record::FileIdentity,
+    job: LegacySampleJob,
+}
+
+struct RepositorySampleJob {
+    request: InstructionRequest,
+    owner: InstructionObservationOwner,
+    binding: RepositoryInstructionBinding,
+    ticket: Option<InstructionTicketAssociation>,
+    members: Vec<RepositoryMemberJob>,
+    baseline: Option<Box<RepositoryInstructionStart>>,
+    queued: Instant,
+}
+
+#[derive(Clone)]
+enum SampleProgress {
+    Legacy(Arc<Mutex<InstructionSnapshot>>),
+    Repositories(Arc<Mutex<instruction_sample::batch::Progress>>),
+}
+
+enum SampleEndpoint {
+    Legacy(InstructionSnapshot),
+    Repositories(RepositoryInstructionStart),
+}
+
+enum SampleCompletion {
+    Legacy {
+        request: InstructionRequest,
+        ticket: Option<InstructionTicketAssociation>,
+        baseline: Option<Box<InstructionSnapshot>>,
+    },
+    Repositories {
+        request: InstructionRequest,
+        baseline: Option<Box<RepositoryInstructionStart>>,
+    },
+}
+
+impl SampleCompletion {
+    fn input(self, endpoint: SampleEndpoint) -> Input {
+        match (self, endpoint) {
+            (
+                Self::Legacy {
+                    request,
+                    ticket,
+                    baseline,
+                },
+                SampleEndpoint::Legacy(snapshot),
+            ) => {
+                let comparison = baseline
+                    .as_ref()
+                    .map(|before| Box::new(instruction_sample::compare(before, &snapshot)));
+                Input::InstructionSampled {
+                    request,
+                    snapshot: Box::new(snapshot),
+                    ticket,
+                    comparison,
+                }
+            }
+            (Self::Repositories { request, baseline }, SampleEndpoint::Repositories(sample)) => {
+                let comparisons = baseline
+                    .as_ref()
+                    .map(|before| instruction_sample::batch::compare(before, &sample));
+                Input::RepositoryInstructionsSampled {
+                    request,
+                    sample: Box::new(sample),
+                    comparisons,
+                }
+            }
+            _ => unreachable!("sample correlation retains its scope"),
+        }
+    }
+}
+
+impl SampleProgress {
+    fn deadline(&self, sampled_at: Timestamp) -> SampleEndpoint {
+        match self {
+            Self::Legacy(progress) => {
+                SampleEndpoint::Legacy(deadline_snapshot(progress, sampled_at))
+            }
+            Self::Repositories(progress) => SampleEndpoint::Repositories(
+                instruction_sample::batch::deadline(progress, sampled_at),
+            ),
+        }
+    }
+}
+
+impl SampleJob {
+    fn deadline(&self) -> Instant {
+        (match self {
+            Self::Legacy(job) => job.queued,
+            Self::Repositories(job) => job.queued,
+        }) + SAMPLE_DEADLINE
+    }
+
+    fn completion(&self) -> SampleCompletion {
+        match self {
+            Self::Legacy(job) => SampleCompletion::Legacy {
+                request: job.request,
+                ticket: job.ticket,
+                baseline: job.baseline.clone(),
+            },
+            Self::Repositories(job) => SampleCompletion::Repositories {
+                request: job.request,
+                baseline: job.baseline.clone(),
+            },
+        }
+    }
+
+    fn observe(self, progress: SampleProgress, sampled_at: Timestamp) -> SampleEndpoint {
+        let deadline = self.deadline();
+        match (self, progress) {
+            (Self::Legacy(job), SampleProgress::Legacy(progress)) => {
+                let seed = instruction_sample::bounded_seed(assemble(&job, sampled_at));
+                *progress.lock().unwrap_or_else(PoisonError::into_inner) = seed.clone();
+                SampleEndpoint::Legacy(instruction_sample::observe_reporting(
+                    seed,
+                    Some(progress),
+                    deadline,
+                ))
+            }
+            (Self::Repositories(job), SampleProgress::Repositories(progress)) => {
+                let seed = assemble_repositories(&job, sampled_at);
+                SampleEndpoint::Repositories(instruction_sample::batch::observe_reporting(
+                    seed,
+                    &progress,
+                    deadline,
+                    job.baseline.is_none(),
+                ))
+            }
+            _ => unreachable!("sample progress retains its scope"),
+        }
+    }
+}
+
 struct QueuedSample {
     job: SampleJob,
     correlation: Arc<()>,
-    progress: Arc<Mutex<InstructionSnapshot>>,
+    progress: SampleProgress,
     reply: Option<mpsc::SyncSender<BoundarySample>>,
 }
 
 struct Work {
     job: SampleJob,
     correlation: Arc<()>,
-    progress: Arc<Mutex<InstructionSnapshot>>,
+    progress: SampleProgress,
 }
 
 impl InstructionSampler {
@@ -518,14 +765,8 @@ impl InstructionSampler {
                     progress,
                 }) = worker.recv()
                 {
-                    let seed = instruction_sample::bounded_seed(assemble(&job, worker_now()));
-                    *progress.lock().unwrap_or_else(PoisonError::into_inner) = seed.clone();
-                    let snapshot = instruction_sample::observe_reporting(
-                        seed,
-                        Some(progress),
-                        job.queued + SAMPLE_DEADLINE,
-                    );
-                    let _ = results.send((correlation, snapshot));
+                    let endpoint = job.observe(progress, worker_now());
+                    let _ = results.send((correlation, endpoint));
                 }
             })?;
         let manager_now = Arc::clone(&now);
@@ -539,31 +780,27 @@ impl InstructionSampler {
                     reply,
                 }) = manager.recv()
                 {
-                    let request = job.request;
-                    let ticket = job.ticket;
-                    let baseline = job.baseline.clone();
-                    let deadline = job.queued + SAMPLE_DEADLINE;
+                    let completion = job.completion();
+                    let deadline = job.deadline();
                     let sent = work
                         .try_send(Work {
                             job,
                             correlation: Arc::clone(&correlation),
-                            progress: Arc::clone(&progress),
+                            progress: progress.clone(),
                         })
                         .is_ok();
-                    let snapshot = await_endpoint(&completed, &correlation, deadline, sent)
-                        .unwrap_or_else(|| deadline_snapshot(&progress, manager_now()));
+                    let endpoint = await_endpoint(&completed, &correlation, deadline, sent)
+                        .unwrap_or_else(|| progress.deadline(manager_now()));
                     if let Some(reply) = reply {
-                        let _ = reply.try_send((snapshot, ticket));
+                        if let (
+                            SampleCompletion::Legacy { ticket, .. },
+                            SampleEndpoint::Legacy(snapshot),
+                        ) = (completion, endpoint)
+                        {
+                            let _ = reply.try_send((snapshot, ticket));
+                        }
                     } else {
-                        let comparison = baseline.as_ref().map(|baseline| {
-                            Box::new(instruction_sample::compare(baseline, &snapshot))
-                        });
-                        handle.input(Input::InstructionSampled {
-                            request,
-                            snapshot: Box::new(snapshot),
-                            ticket,
-                            comparison,
-                        });
+                        handle.input(completion.input(endpoint));
                     }
                 }
             })?;
@@ -571,8 +808,28 @@ impl InstructionSampler {
     }
 
     fn queued(&self, job: SampleJob) -> QueuedSample {
-        let job = job.queued();
-        let progress = Arc::new(Mutex::new(unknown_seed(&job, (self.now)())));
+        let (job, progress) = match job {
+            SampleJob::Legacy(job) => {
+                let job = job.queued();
+                let progress =
+                    SampleProgress::Legacy(Arc::new(Mutex::new(unknown_seed(&job, (self.now)()))));
+                (SampleJob::Legacy(job), progress)
+            }
+            SampleJob::Repositories(mut job) => {
+                job.queued = Instant::now();
+                for member in &mut job.members {
+                    member.job.queued = job.queued;
+                }
+                let sample = repository_unknown_seed(&job, (self.now)());
+                let progress = SampleProgress::Repositories(Arc::new(Mutex::new(
+                    instruction_sample::batch::Progress {
+                        sample,
+                        completed: 0,
+                    },
+                )));
+                (SampleJob::Repositories(job), progress)
+            }
+        };
         QueuedSample {
             job,
             correlation: Arc::new(()),
@@ -581,35 +838,48 @@ impl InstructionSampler {
         }
     }
 
-    pub(super) fn submit(&self, job: SampleJob) -> Result<(), Box<SampleJob>> {
+    fn submit_job(&self, job: SampleJob) -> Result<(), Box<SampleJob>> {
         self.requests
             .send(self.queued(job))
             .map_err(|error| Box::new(error.0.job))
     }
 
-    fn boundary(&self, job: SampleJob) -> BoundarySample {
+    pub(super) fn submit(&self, job: LegacySampleJob) -> Result<(), Box<LegacySampleJob>> {
+        self.submit_job(SampleJob::Legacy(job))
+            .map_err(|job| match *job {
+                SampleJob::Legacy(job) => Box::new(job),
+                SampleJob::Repositories(_) => unreachable!("legacy submission"),
+            })
+    }
+
+    fn boundary(&self, job: LegacySampleJob) -> BoundarySample {
         let (reply, endpoint) = mpsc::sync_channel(1);
-        let mut queued = self.queued(job);
+        let mut queued = self.queued(SampleJob::Legacy(job));
         queued.reply = Some(reply);
-        let deadline = queued.job.queued + SAMPLE_DEADLINE;
-        let ticket = queued.job.ticket;
-        let progress = Arc::clone(&queued.progress);
+        let deadline = queued.job.deadline();
+        let SampleCompletion::Legacy { ticket, .. } = queued.job.completion() else {
+            unreachable!("legacy boundary")
+        };
+        let progress = queued.progress.clone();
         if self.requests.send(queued).is_ok()
             && let Ok(result) =
                 endpoint.recv_timeout(deadline.saturating_duration_since(Instant::now()))
         {
             return result;
         }
-        (deadline_snapshot(&progress, (self.now)()), ticket)
+        let SampleEndpoint::Legacy(snapshot) = progress.deadline((self.now)()) else {
+            unreachable!("legacy boundary")
+        };
+        (snapshot, ticket)
     }
 }
 
-fn await_endpoint(
-    completed: &mpsc::Receiver<(Arc<()>, InstructionSnapshot)>,
+fn await_endpoint<T>(
+    completed: &mpsc::Receiver<(Arc<()>, T)>,
     correlation: &Arc<()>,
     deadline: Instant,
     sent: bool,
-) -> Option<InstructionSnapshot> {
+) -> Option<T> {
     while sent && Instant::now() < deadline {
         match completed.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok((id, snapshot)) if Arc::ptr_eq(&id, correlation) => return Some(snapshot),
@@ -639,7 +909,7 @@ fn deadline_snapshot(
     snapshot
 }
 
-fn unknown_seed(job: &SampleJob, sampled_at: Timestamp) -> InstructionSnapshot {
+fn unknown_seed(job: &LegacySampleJob, sampled_at: Timestamp) -> InstructionSnapshot {
     InstructionSnapshot {
         sampled_at,
         source: InstructionSnapshotSource::Fresh,
@@ -660,6 +930,111 @@ fn unknown_seed(job: &SampleJob, sampled_at: Timestamp) -> InstructionSnapshot {
     }
 }
 
+fn repository_unknown_seed(
+    job: &RepositorySampleJob,
+    sampled_at: Timestamp,
+) -> RepositoryInstructionStart {
+    RepositoryInstructionStart {
+        v: INSTRUCTION_BATCH_VERSION,
+        binding: job.binding,
+        owner: job.owner,
+        ticket: job.ticket,
+        members: job
+            .members
+            .iter()
+            .map(|member| RepositoryInstructionSnapshot {
+                repo_id: member.repo_id.clone(),
+                root: None,
+                snapshot: unknown_seed(&member.job, sampled_at),
+            })
+            .collect(),
+    }
+}
+
+fn assemble_repositories(
+    job: &RepositorySampleJob,
+    sampled_at: Timestamp,
+) -> RepositoryInstructionStart {
+    let mut sample = repository_unknown_seed(job, sampled_at);
+    for (index, member) in job.members.iter().enumerate() {
+        let before = job
+            .baseline
+            .as_ref()
+            .and_then(|before| before.members.get(index));
+        let path = member
+            .job
+            .candidate_cwd
+            .as_deref()
+            .and_then(canonical)
+            .filter(|canonical| Some(canonical.as_path()) == member.job.candidate_cwd.as_deref());
+        let root = path
+            .as_deref()
+            .and_then(|path| crate::worktree::trust::identity(path).ok());
+        let starting = before.is_none();
+        if starting && root != Some(member.root) {
+            continue;
+        }
+        let mut snapshot = if before.is_some_and(|before| before.root.is_none()) {
+            unknown_seed(&member.job, sampled_at)
+        } else {
+            assemble(&member.job, sampled_at)
+        };
+        if let Some(before) = before {
+            let current = std::mem::take(&mut snapshot.participants);
+            snapshot.participants = before
+                .snapshot
+                .participants
+                .iter()
+                .map(|frozen| {
+                    let mut participant = frozen.clone();
+                    if let Some(now) = current.iter().find(|now| now.agent == frozen.agent) {
+                        participant.declaration_digest = now.declaration_digest;
+                    }
+                    participant
+                })
+                .collect();
+        }
+        snapshot.execution_folder = path
+            .as_deref()
+            .filter(|_| root.is_some())
+            .and_then(|path| NativeInstructionPath::from_path(path).ok());
+        if root != Some(member.root) {
+            let _ = snapshot.try_push_gap(InstructionCoverageGap {
+                origin: dudes_proto::InstructionGapOrigin::Observed,
+                reason: if root.is_none() {
+                    InstructionGapKind::PathUnresolved
+                } else {
+                    InstructionGapKind::ChangedDuringRead
+                },
+                context: InstructionPathContext::Unresolved,
+                agent: Some(member.job.agent),
+                path: None,
+            });
+        }
+        sample.members[index].root = root;
+        sample.members[index].snapshot = instruction_sample::bounded_seed(snapshot);
+        while !instruction_sample::batch::seed_fits(&sample) {
+            let snapshot = &mut sample.members[index].snapshot;
+            if snapshot.participants.pop().is_some() {
+                let _ = snapshot.try_push_gap(InstructionCoverageGap::metadata_limit());
+            } else {
+                *snapshot = unknown_seed(&member.job, sampled_at);
+                snapshot.execution_folder = path
+                    .as_deref()
+                    .filter(|_| root.is_some())
+                    .and_then(|path| NativeInstructionPath::from_path(path).ok());
+                let _ = snapshot.try_push_gap(InstructionCoverageGap::metadata_limit());
+                break;
+            }
+        }
+    }
+    assert!(
+        instruction_sample::batch::seed_fits(&sample),
+        "bounded all-hire discovery plan"
+    );
+    sample
+}
+
 fn canonical(path: &Path) -> Option<std::path::PathBuf> {
     if !cfg!(any(target_os = "macos", target_os = "linux")) {
         return None;
@@ -671,7 +1046,7 @@ fn canonical(path: &Path) -> Option<std::path::PathBuf> {
         .then_some(canonical)
 }
 
-fn assemble(job: &SampleJob, sampled_at: Timestamp) -> InstructionSnapshot {
+fn assemble(job: &LegacySampleJob, sampled_at: Timestamp) -> InstructionSnapshot {
     let mut snapshot = unknown_seed(job, sampled_at);
     let Some(candidate) = job.candidate_cwd.as_deref().and_then(canonical) else {
         return snapshot;
@@ -887,8 +1262,7 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
             census.room()?;
             census.membership_unknown = true;
             if let Some(row) = world.turns.get(&turn) {
-                let lease = recorded_path(world, row.agent)
-                    .and_then(|(recorded, lease)| (recorded == cwd).then_some(lease).flatten());
+                let lease = recorded_lease(world, row.agent, cwd);
                 census.member(row.agent, Some(cwd), Mode::Managed, lease, true);
             }
             Ok(())
@@ -919,7 +1293,7 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
         selection: &ModelSelection,
         baseline: Option<&InstructionSnapshot>,
         actual_cwd: Option<&Path>,
-    ) -> anyhow::Result<SampleJob> {
+    ) -> anyhow::Result<LegacySampleJob> {
         let agent = owner_agent(owner);
         let mut census = self.current_instruction_census(sup.world(), owner, baseline, actual_cwd);
         let candidate_cwd = match (actual_cwd, baseline) {
@@ -993,7 +1367,7 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
         } else {
             None
         };
-        Ok(SampleJob {
+        Ok(LegacySampleJob {
             request: InstructionRequest(0),
             agent,
             candidate_cwd,
@@ -1011,6 +1385,160 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
                 None
             },
             queued: Instant::now(),
+        })
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one physical census freezes every hired member before worker dispatch"
+    )]
+    fn repository_instruction_job<R: super::Rng>(
+        &self,
+        sup: &super::Supervisor<super::Shared<C>, R>,
+        request: InstructionRequest,
+        owner: InstructionObservationOwner,
+        grant: &RepositoryTurnGrant,
+        selection: &ModelSelection,
+        baseline: Option<&RepositoryInstructionStart>,
+    ) -> anyhow::Result<RepositorySampleJob> {
+        let agent = owner_agent(owner);
+        let world = sup.world();
+        let hire = recorded_repository_hire(world, owner, grant);
+        let Some((hired_lsn, HireRepositories::Scoped(hire))) = hire else {
+            anyhow::bail!("instruction sampling requires the exact recorded hire");
+        };
+        anyhow::ensure!(
+            RepositoryTurnGrant::select(hired_lsn, hire, grant.ticket.as_ref()).as_ref()
+                == Ok(grant),
+            "instruction sampling grant changed"
+        );
+        let binding = RepositoryInstructionBinding {
+            hired_lsn,
+            ticket_start_lsn: grant.ticket.as_ref().map(|round| round.start_lsn),
+        };
+        let ticket = if let Some(baseline) = baseline {
+            anyhow::ensure!(
+                baseline.binding == binding
+                    && baseline.owner == owner
+                    && baseline
+                        .members
+                        .iter()
+                        .map(|member| &member.repo_id)
+                        .eq(hire
+                            .repositories
+                            .entries()
+                            .iter()
+                            .map(|member| &member.repo_id)),
+                "instruction sampling baseline changed"
+            );
+            baseline.ticket
+        } else if let Some(round) = &grant.ticket {
+            let association = world
+                .instructions
+                .association_for_goal(round.goal, dudes_types::Seq::ZERO)
+                .filter(|association| {
+                    association.card == round.card
+                        && world.ticket_repository_round(round.goal) == Some(round)
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("frozen ticket instruction assignment unavailable")
+                })?;
+            let (card, _) = self
+                .projections
+                .ticket(round.card)?
+                .filter(|(card, ticket)| {
+                    card.status != dudes_types::CardStatus::Done
+                        && card.claimed_by == Some(agent)
+                        && ticket.goal == Some(round.goal)
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("frozen ticket instruction assignment is no longer current")
+                })?;
+            Some(InstructionTicketAssociation {
+                seq_at_start: card.seq,
+                ..association
+            })
+        } else {
+            None
+        };
+        let mut census = self.current_instruction_census(world, owner, None, None);
+        let mut sources = Vec::new();
+        for member in std::mem::take(&mut census.members) {
+            if let Some(mut source) = sup.instruction_source_for_folder(member.agent, &member.cwd) {
+                let before = baseline
+                    .and_then(|before| {
+                        before.members.iter().find(|before| {
+                            before
+                                .snapshot
+                                .execution_folder
+                                .as_ref()
+                                .and_then(|path| path.to_path().ok())
+                                .as_deref()
+                                == Some(member.cwd.as_path())
+                        })
+                    })
+                    .map(|before| &before.snapshot);
+                bind_source(&mut census, member, &mut source, agent, None, before);
+                sources.push(source);
+            } else {
+                census.uncertain_folders.insert(member.cwd);
+            }
+        }
+        let boot = if cfg!(target_os = "linux") {
+            match self.host.boot_identity() {
+                dudes_types::HostBoot::Read(value) => {
+                    Some(InstructionBootIdentity::LinuxKernelBootId { value })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let pid_namespace = if cfg!(target_os = "linux") {
+            self.host.pid_namespace()
+        } else {
+            None
+        };
+        let queued = Instant::now();
+        let members = hire
+            .repositories
+            .entries()
+            .iter()
+            .map(|member| RepositoryMemberJob {
+                repo_id: member.repo_id.clone(),
+                root: member.value.recorded.execution.directory_identity,
+                job: LegacySampleJob {
+                    request,
+                    agent,
+                    candidate_cwd: Some(member.value.recorded.execution.directory.clone()),
+                    sources: sources.clone(),
+                    membership_unknown: census.membership_unknown,
+                    candidate_context_unknown: false,
+                    uncertain_folders: census.uncertain_folders.iter().cloned().collect(),
+                    selection: selection.clone(),
+                    baseline: baseline
+                        .and_then(|before| {
+                            before
+                                .members
+                                .iter()
+                                .find(|before| before.repo_id == member.repo_id)
+                        })
+                        .map(|before| Box::new(before.snapshot.clone())),
+                    ticket,
+                    boot: boot.clone(),
+                    pid_namespace: pid_namespace.clone(),
+                    queued,
+                },
+            })
+            .collect();
+        Ok(RepositorySampleJob {
+            request,
+            owner,
+            binding,
+            ticket,
+            members,
+            baseline: baseline.cloned().map(Box::new),
+            queued,
         })
     }
 
@@ -1033,6 +1561,42 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
         queue: &mut std::collections::VecDeque<Input>,
         sup: &super::Supervisor<super::Shared<C>, R>,
     ) -> anyhow::Result<()> {
+        if let Effect::SampleRepositoryInstructions {
+            request,
+            owner,
+            grant,
+            selection,
+            baseline,
+        } = effect
+        {
+            let job = match self.repository_instruction_job(
+                sup,
+                *request,
+                *owner,
+                grant,
+                selection,
+                baseline.as_deref(),
+            ) {
+                Ok(job) => job,
+                Err(error) => {
+                    tracing::warn!(request = ?request, %error, "repository instruction request unavailable");
+                    queue.push_back(Input::RepositoryInstructionsUnavailable { request: *request });
+                    return Ok(());
+                }
+            };
+            if let Err(job) = self
+                .instruction_sampler
+                .submit_job(SampleJob::Repositories(job))
+            {
+                let completion = job.completion();
+                let SampleJob::Repositories(job) = *job else {
+                    unreachable!("repository submission")
+                };
+                let sample = repository_unknown_seed(&job, self.clock.now());
+                queue.push_back(completion.input(SampleEndpoint::Repositories(sample)));
+            }
+            return Ok(());
+        }
         let Effect::SampleInstructions {
             request,
             owner,
@@ -1161,8 +1725,8 @@ mod tests {
         }
     }
 
-    fn job() -> SampleJob {
-        SampleJob {
+    fn job() -> LegacySampleJob {
+        LegacySampleJob {
             request: InstructionRequest(0),
             agent: AgentId::from_parts(1, 1),
             candidate_cwd: Some(PathBuf::from("/current-folder")),
@@ -1350,9 +1914,22 @@ mod tests {
             requests,
             now: Arc::new(|| Timestamp::UNIX_EPOCH),
         };
-        let first = sampler.queued(job());
-        let second = sampler.queued(job());
-        assert_eq!(first.job.request, second.job.request);
+        let first = sampler.queued(SampleJob::Legacy(job()));
+        let second = sampler.queued(SampleJob::Legacy(job()));
+        assert!(matches!(
+            first.job.completion(),
+            SampleCompletion::Legacy {
+                request: InstructionRequest(0),
+                ..
+            }
+        ));
+        assert!(matches!(
+            second.job.completion(),
+            SampleCompletion::Legacy {
+                request: InstructionRequest(0),
+                ..
+            }
+        ));
         assert!(!Arc::ptr_eq(&first.correlation, &second.correlation));
         let (results, completed) = mpsc::channel();
         results
