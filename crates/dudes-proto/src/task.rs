@@ -51,6 +51,10 @@ impl TaskCommandSet {
 
     /// Whether canonical policy inputs retain their historical serialization.
     #[must_use]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde skip_serializing_if takes a reference"
+    )]
     pub const fn is_legacy(&self) -> bool {
         matches!(self, Self::Legacy)
     }
