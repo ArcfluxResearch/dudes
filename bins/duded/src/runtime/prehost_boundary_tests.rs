@@ -592,6 +592,25 @@ fn scoped_fixture_payload(
 #[test]
 fn claude_scoped_completion_launches_the_original_task_once_with_an_empty_host_install() {
     let mut f = ScopedFixture::new();
+    f.daemon.ctx.current_repositories.test_hire_capability = false;
+    assert!(
+        !f.daemon
+            .ctx
+            .repository_allowed(f.daemon.sup.world(), f.issued.agent)
+    );
+    let Effect::Spawn { spec, .. } = &f.issued.spawn else {
+        unreachable!();
+    };
+    let mut refused = VecDeque::new();
+    f.daemon
+        .ctx
+        .prepare_scoped_turn(f.issued.turn, spec, None, &mut refused, &f.daemon.sup);
+    assert!(
+        matches!(refused.pop_front(), Some(Input::LaunchPreparationFailed { turn, .. }) if turn == f.issued.turn)
+    );
+    assert!(f.daemon.jobs.try_recv().is_err());
+    assert_eq!(f.host.spawn_calls(), 0);
+    f.daemon.ctx.current_repositories.test_hire_capability = true;
     let completion = f.prepare();
     let prepared = completion.prepared.as_ref().unwrap();
     assert_eq!(
