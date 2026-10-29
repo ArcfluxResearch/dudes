@@ -32,7 +32,7 @@ pub const ANSWER_CLOSING: &str =
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskCommandSet {
-    /// Historical teaching for an unrestricted singleton hire.
+    /// Historical teaching for a legacy singleton hire.
     #[default]
     Legacy,
     /// File mail without daemon-socket commands or inbox acknowledgement writes.
