@@ -27,6 +27,10 @@ pub(super) struct Setup {
 
 impl Setup {
     pub(super) fn new() -> Self {
+        Self::with_repositories(&["web", "api", "docs"])
+    }
+
+    pub(super) fn with_repositories(names: &[&str]) -> Self {
         let fixture = common::Fixture::new();
         let roots = tempfile::tempdir().unwrap();
         let root = roots.path().canonicalize().unwrap();
@@ -37,7 +41,7 @@ impl Setup {
             Duration::from_secs(3),
         );
         let mut entries = Vec::new();
-        for name in ["web", "api", "docs"] {
+        for &name in names {
             let path = root.join(name);
             std::fs::create_dir(&path).unwrap();
             command(&git, &path, &["init", "--quiet", "-b", "main"]);
@@ -135,7 +139,14 @@ impl Setup {
         let target = daemon.repository_hire_target("service").unwrap();
         let running = common::start(daemon);
         let hires = WorktreeHires::new(running.handle.clone(), self.git.clone());
-        for name in ["web", "api", "docs"] {
+        for name in self.settings.enrollment.profiles[0]
+            .repositories
+            .as_ref()
+            .unwrap()
+            .entries()
+            .iter()
+            .map(|entry| entry.repo_id.as_str())
+        {
             hires
                 .trust(&dudes_proto::rpc::workspace::TrustParams {
                     workspace_id: "service".into(),

@@ -19,6 +19,7 @@ struct CountingHost {
     inner: common::SharedHost,
     calls: Arc<AtomicUsize>,
     replace_after_hooks: Arc<Mutex<Option<PathBuf>>>,
+    installs: Arc<Mutex<Vec<ManagedInstall>>>,
 }
 
 impl CountingHost {
@@ -27,6 +28,7 @@ impl CountingHost {
             inner: common::SharedHost::new(),
             calls: Arc::new(AtomicUsize::new(0)),
             replace_after_hooks: Arc::new(Mutex::new(None)),
+            installs: Arc::default(),
         }
     }
 
@@ -38,6 +40,7 @@ impl CountingHost {
             }),
             calls: Arc::new(AtomicUsize::new(0)),
             replace_after_hooks: Arc::new(Mutex::new(None)),
+            installs: Arc::default(),
         }
     }
 
@@ -49,6 +52,7 @@ impl CountingHost {
 impl ProcessHost for CountingHost {
     fn spawn(&mut self, spec: &LaunchSpec, install: &ManagedInstall) -> SpawnResult {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.installs.lock().unwrap().push(install.clone());
         self.inner.spawn(spec, install)
     }
 
@@ -131,8 +135,17 @@ fn boot(
     command: &str,
 ) -> TestDaemon {
     let settings = fixture.settings();
+    boot_settings(&settings, host, provider, command)
+}
+
+fn boot_settings(
+    settings: &crate::Settings,
+    host: &CountingHost,
+    provider: Provider,
+    command: &str,
+) -> TestDaemon {
     let mut seams = common::seams(
-        &settings,
+        settings,
         host.clone(),
         Arc::new(common::ScriptedRunner::default()),
         Arc::new(common::TestClock::new()),
@@ -142,6 +155,7 @@ fn boot(
         Provider::Claude => Box::new(dudes_providers::claude::ClaudeAdapter::new(
             dudes_providers::claude::config::ClaudeConfig {
                 command: command.into(),
+                permission_mode: dudes_providers::claude::config::PermissionMode::Default,
                 ..dudes_providers::claude::config::ClaudeConfig::default()
             },
         )),
@@ -154,7 +168,7 @@ fn boot(
         _ => panic!("the pre-host fixtures use Claude or legacy Codex"),
     };
     seams.adapters = [adapter].into_iter().collect();
-    crate::boot(&settings, seams).expect("real pre-host fixture boot")
+    crate::boot(settings, seams).expect("real pre-host fixture boot")
 }
 
 fn execute(daemon: &mut TestDaemon, effect: &Effect, queue: &mut VecDeque<Input>) {
@@ -196,6 +210,14 @@ fn prepared(daemon: &mut TestDaemon, fixture: &common::Fixture, provider: Provid
         panic!("expected a hired managed agent")
     };
     let agent = hired.agent;
+    prepared_for_agent(daemon, fixture, agent)
+}
+
+fn prepared_for_agent(
+    daemon: &mut TestDaemon,
+    fixture: &common::Fixture,
+    agent: AgentId,
+) -> Prepared {
     daemon
         .sup
         .observe_repository_admission(daemon.ctx.repository_observation(daemon.sup.world()));
@@ -269,6 +291,384 @@ fn prepared(daemon: &mut TestDaemon, fixture: &common::Fixture, provider: Provid
         }
     }
     panic!("bounded real preparation did not produce an owned Spawn effect")
+}
+
+struct ScopedFixture {
+    setup: super::repository_hire_tests::Setup,
+    host: CountingHost,
+    daemon: TestDaemon,
+    issued: Prepared,
+}
+
+impl ScopedFixture {
+    fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt as _;
+        let setup = super::repository_hire_tests::Setup::with_repositories(&["api"]);
+        let (mut running, hires, params) = setup.start(true);
+        let agent = hires.hire(params).unwrap().agent;
+        running.stop(ExitCause::Ended);
+        let host = CountingHost::new();
+        let program = setup.fixture.runtime.path().join("claude-fixture");
+        std::fs::write(&program, b"owned Claude fixture executable").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let program = program.canonicalize().unwrap();
+        let mut daemon = boot_settings(
+            &setup.settings,
+            &host,
+            Provider::Claude,
+            program.to_str().unwrap(),
+        );
+        daemon.ctx.current_repositories.test_hire_capability = true;
+        daemon
+            .sup
+            .observe_repository_admission(daemon.ctx.repository_observation(daemon.sup.world()));
+        daemon
+            .ctx
+            .children
+            .private_roots()
+            .qualify_claude_fixture(b"owned Claude fixture executable");
+        let issued = scoped_issued_fixture(&mut daemon, agent);
+        Self {
+            setup,
+            host,
+            daemon,
+            issued,
+        }
+    }
+
+    fn prepare(&mut self) -> crate::chat_launch::ScopedCompletion {
+        assert!(
+            self.daemon
+                .ctx
+                .recovery_dispatch_allowed(&self.daemon.sup, self.issued.turn)
+        );
+        let mut queue = VecDeque::new();
+        execute(&mut self.daemon, &self.issued.spawn, &mut queue);
+        assert!(queue.is_empty(), "scoped work runs in the existing worker");
+        assert_eq!(self.host.spawn_calls(), 0);
+        let Job::ScopedLaunchPrepared(completion) = self
+            .daemon
+            .jobs
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+        else {
+            panic!("private scoped worker completion");
+        };
+        assert!(
+            completion.prepared.is_ok(),
+            "{:?}",
+            completion.prepared.as_ref().err()
+        );
+        *completion
+    }
+}
+
+fn append_scoped_fixture(daemon: &mut TestDaemon, record: Record) -> Lsn {
+    let entry = Entry {
+        at: daemon.ctx.clock.now(),
+        record,
+    };
+    let (lsn, crc) = daemon.ctx.writer.append_witnessed(&entry).unwrap();
+    daemon.ctx.projections.apply(lsn, crc, &entry).unwrap();
+    daemon
+        .sup
+        .handle(
+            Input::Replayed { lsn, entry },
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )
+        .unwrap();
+    assert!(daemon.sup.take_effects().is_empty());
+    lsn
+}
+
+fn scoped_issued_fixture(daemon: &mut TestDaemon, agent: AgentId) -> Prepared {
+    use dudes_proto::repository::{HireRepositories, RepositoryTurnGrant, RepositoryTurnIssued};
+    use dudes_proto::repository_instruction::{
+        RepositoryInstructionBinding, RepositoryInstructionSnapshot, RepositoryInstructionStart,
+    };
+    let turn = TurnId::from_parts(5, 1);
+    let task = "exact immutable scoped task";
+    let owner = InstructionObservationOwner::Managed {
+        agent,
+        turn,
+        issue: InstructionIssueAssociation::Prospective,
+    };
+    let row = &daemon.sup.world().agents[&agent];
+    let HireRepositories::Scoped(hire) = &row.repositories else {
+        panic!("scoped hire fixture");
+    };
+    let grant = RepositoryTurnGrant::select(row.mcp.hire_lsn, hire, None).unwrap();
+    let Record::InstructionObservationStarted { snapshot, .. } =
+        dudes_proto::record::samples::record(
+            dudes_proto::RecordKind::InstructionObservationStarted,
+        )
+    else {
+        unreachable!();
+    };
+    let batch = RepositoryInstructionStart {
+        v: dudes_proto::repository_instruction::INSTRUCTION_BATCH_VERSION,
+        binding: RepositoryInstructionBinding {
+            hired_lsn: grant.hired_lsn,
+            ticket_start_lsn: None,
+        },
+        owner,
+        ticket: None,
+        members: grant
+            .repositories
+            .entries()
+            .iter()
+            .map(|entry| {
+                let mut snapshot = snapshot.clone();
+                snapshot.execution_folder = Some(
+                    dudes_proto::instruction::NativeInstructionPath::from_path(
+                        &entry.value.execution.directory,
+                    )
+                    .unwrap(),
+                );
+                snapshot.gaps[0].agent = Some(agent);
+                RepositoryInstructionSnapshot {
+                    repo_id: entry.repo_id.clone(),
+                    root: Some(entry.value.execution.directory_identity),
+                    snapshot,
+                }
+            })
+            .collect(),
+    };
+    let started = append_scoped_fixture(daemon, Record::InstructionObservationBatchStarted(batch));
+    let (session_id, selection, payload, note_lsn) =
+        scoped_fixture_payload(daemon, agent, turn, task);
+    let issue = append_scoped_fixture(
+        daemon,
+        Record::TurnIssuedWithRepositories(Box::new(RepositoryTurnIssued {
+            grant: grant.clone(),
+            payload,
+        })),
+    );
+    append_scoped_fixture(
+        daemon,
+        Record::BrowserNoteDispatchIntent {
+            agent,
+            note_lsn,
+            turn,
+        },
+    );
+    let spec = scoped_fixture_spec(daemon, agent, &grant, task, session_id, &selection);
+    Prepared {
+        agent,
+        turn,
+        started,
+        owner,
+        ticket: None,
+        issue,
+        task: task.into(),
+        spawn: Effect::Spawn {
+            turn,
+            spec,
+            install: ManagedInstall::default(),
+            mcp_grant: None,
+        },
+    }
+}
+
+fn scoped_fixture_spec(
+    daemon: &TestDaemon,
+    agent: AgentId,
+    grant: &dudes_proto::repository::RepositoryTurnGrant,
+    task: &str,
+    session_id: dudes_types::SessionId,
+    selection: &dudes_types::ModelSelection,
+) -> LaunchSpec {
+    use dudes_providers::adapter::{AgentCtx, TurnSession};
+    let row = &daemon.sup.world().agents[&agent];
+    let agent_dir = daemon.ctx.agents_root.join(agent.to_string());
+    daemon
+        .sup
+        .adapters()
+        .get(Provider::Claude)
+        .unwrap()
+        .managed(
+            &AgentCtx {
+                agent,
+                cwd: &grant.repositories.primary().execution.directory,
+                agent_dir: &agent_dir,
+                daemon_env: &[],
+                sandbox: None,
+                trusted: true,
+                max_turns: row.max_turns,
+                max_budget: row.max_budget,
+                mcp_servers: &[],
+            },
+            task,
+            &TurnSession::First(session_id),
+            selection,
+        )
+        .unwrap()
+}
+
+fn scoped_fixture_payload(
+    daemon: &mut TestDaemon,
+    agent: AgentId,
+    turn: TurnId,
+    task: &str,
+) -> (
+    dudes_types::SessionId,
+    dudes_types::ModelSelection,
+    dudes_proto::issue::ManagedIssuePayload,
+    Lsn,
+) {
+    let goal = GoalId::from_parts(5, 2);
+    append_scoped_fixture(
+        daemon,
+        Record::GoalSet {
+            agent,
+            goal: dudes_proto::Goal {
+                id: goal,
+                text: "Scoped fixture".into(),
+                predicate: Predicate::Command {
+                    argv: vec![common::true_program().into()],
+                    timeout_s: 1,
+                },
+                completion_check: None,
+                baseline: None,
+                budget: dudes_proto::GoalBudget {
+                    usd: None,
+                    tokens: None,
+                },
+                hop_cap: 3,
+            },
+            browser_onboarding: None,
+            browser_goal: None,
+            goal_replacement: None,
+        },
+    );
+    let context_lsn = append_scoped_fixture(daemon, Record::GoalCleared { agent, goal });
+    let Record::BrowserNoteQueued { browser, .. } =
+        dudes_proto::record::samples::record(dudes_proto::RecordKind::BrowserNoteQueued)
+    else {
+        unreachable!();
+    };
+    let charge_scope = dudes_proto::record::ConversationChargeScope::AgentAndFloor;
+    let note_lsn = append_scoped_fixture(
+        daemon,
+        Record::ConversationMessageQueued {
+            agent,
+            text: task.into(),
+            browser,
+            context_lsn,
+            charge_scope,
+        },
+    );
+    let decision = append_scoped_fixture(
+        daemon,
+        Record::ConversationTurnDecided {
+            agent,
+            note_lsn,
+            context_lsn,
+            charge_scope,
+            input_digest: "scoped fixture".into(),
+            decision: dudes_proto::NoteAdmission::Issue { task: task.into() },
+            gate_trace: Vec::new(),
+        },
+    );
+    let session_id = dudes_types::SessionId::new("00000000-0000-7000-8000-000000000001");
+    let selection = dudes_types::ModelSelection::named("claude-sonnet-4-6");
+    let payload = Record::ConversationTurnIssued {
+        agent,
+        turn,
+        note_lsn,
+        context_lsn,
+        charge_scope,
+        task: task.into(),
+        session: Some(session_id.clone()),
+        model_selection: selection.clone(),
+        lsn_of_decision: decision,
+    }
+    .issue_payload()
+    .unwrap()
+    .to_owned();
+    (session_id, selection, payload, note_lsn)
+}
+
+#[test]
+fn claude_scoped_completion_launches_the_original_task_once_with_an_empty_host_install() {
+    let mut f = ScopedFixture::new();
+    let completion = f.prepare();
+    let prepared = completion.prepared.as_ref().unwrap();
+    assert_eq!(
+        prepared.launch.spec.stdin,
+        dudes_providers::launch::LaunchInput::WriteThenClose(f.issued.task.as_bytes().to_vec())
+    );
+    assert!(
+        prepared
+            .launch
+            .install
+            .directories
+            .iter()
+            .all(|root| root.is_dir())
+    );
+    assert!(prepared.launch.install.files.is_empty());
+    let spec = prepared.launch.spec.clone();
+    let attempt = completion.attempt;
+    let outbox = Arc::clone(&completion.outbox);
+    f.daemon.complete_scoped_launch(completion).unwrap();
+    assert_eq!(f.host.spawn_calls(), 1);
+    assert_eq!(f.host.inner.spawned(), [spec]);
+    assert_eq!(
+        f.host.installs.lock().unwrap().as_slice(),
+        [ManagedInstall::default()]
+    );
+    assert_eq!(
+        f.daemon.sup.world().turns[&f.issued.turn].task,
+        f.issued.task
+    );
+    f.daemon
+        .complete_scoped_launch(crate::chat_launch::ScopedCompletion {
+            attempt,
+            prepared: Err("duplicate completion".into()),
+            outbox,
+        })
+        .unwrap();
+    assert_eq!(f.host.spawn_calls(), 1);
+}
+
+#[test]
+fn a_claude_scoped_completion_refuses_a_missing_copy_with_the_original_issue_retained() {
+    let mut f = ScopedFixture::new();
+    let completion = f.prepare();
+    let copy = completion
+        .prepared
+        .as_ref()
+        .unwrap()
+        .launch
+        .inventory
+        .cwd
+        .clone();
+    std::fs::rename(&copy, copy.with_extension("preserved")).unwrap();
+    f.daemon.complete_scoped_launch(completion).unwrap();
+    assert_eq!(f.host.spawn_calls(), 0);
+    assert!(f.daemon.sup.world().turns[&f.issued.turn].is_issued_not_spawned());
+    assert!(
+        f.daemon
+            .sup
+            .world()
+            .instructions
+            .current_for_turn(f.issued.turn)
+            .unwrap()
+            .1
+            .finished
+            .is_none()
+    );
+    assert!(!f.setup.fixture.records().iter().any(
+        |record| matches!(record, Record::TurnSpawned { turn, .. } if *turn == f.issued.turn)
+    ));
+    assert_eq!(
+        f.daemon.sup.world().turns[&f.issued.turn].task,
+        f.issued.task
+    );
+    assert_eq!(
+        f.daemon.sup.world().instructions.issue_lsn(f.issued.turn),
+        Some(f.issued.issue)
+    );
 }
 
 fn legacy_enrollment(root: PathBuf) -> crate::floor_actions::Enrollment {

@@ -40,14 +40,14 @@ impl crate::predicate::PredicateRunner for Runner {
     fn sweep(&self) {}
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     _root: tempfile::TempDir,
-    root: PathBuf,
-    profile: Arc<CodexProfile>,
+    pub(super) root: PathBuf,
+    pub(super) profile: Arc<CodexProfile>,
     runner: Arc<Runner>,
-    launch: ScopedManagedLaunch,
+    pub(super) launch: ScopedManagedLaunch,
     bytes: Vec<u8>,
-    outbox: Arc<crate::mailbox::OutboxGrant>,
+    pub(super) outbox: Arc<crate::mailbox::OutboxGrant>,
 }
 
 impl Fixture {
@@ -55,7 +55,7 @@ impl Fixture {
         clippy::too_many_lines,
         reason = "the fixture creates one complete frozen hire and candidate from current filesystem identities"
     )]
-    fn new(resume: bool) -> Self {
+    pub(super) fn new(resume: bool) -> Self {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let root = tempfile::tempdir().unwrap();
         let path = root.path().canonicalize().unwrap();
@@ -205,7 +205,7 @@ impl Fixture {
         }
     }
 
-    fn attempt() -> Attempt {
+    pub(super) fn attempt() -> Attempt {
         let turn = TurnId::from_parts(1, 1);
         Attempt {
             turn,
@@ -239,7 +239,7 @@ fn the_existing_worker_pool_returns_one_private_bundle_without_browser_input() {
         workers.prepare_scoped(crate::chat_launch::ScopedPreparation {
             attempt: Fixture::attempt(),
             launch: f.launch.clone(),
-            profile: Arc::clone(&f.profile),
+            profile: ScopedProfile::Codex(Arc::clone(&f.profile)),
             outbox: Arc::clone(&f.outbox),
         })
     );
@@ -257,7 +257,7 @@ fn the_existing_worker_pool_returns_one_private_bundle_without_browser_input() {
         !workers.prepare_scoped(crate::chat_launch::ScopedPreparation {
             attempt: Fixture::attempt(),
             launch: f.launch.clone(),
-            profile: Arc::clone(&f.profile),
+            profile: ScopedProfile::Codex(Arc::clone(&f.profile)),
             outbox: Arc::clone(&f.outbox),
         })
     );
@@ -471,13 +471,13 @@ fn the_owned_child_checks_the_same_binding_before_enqueuing_its_one_task() {
 }
 
 #[derive(Clone, Copy)]
-enum MailboxActivity {
+pub(super) enum MailboxActivity {
     NoMail,
     Incoming,
     Outgoing,
 }
 
-fn mailbox_during_startup(f: &Fixture, activity: MailboxActivity) {
+pub(super) fn mailbox_during_startup(f: &Fixture, activity: MailboxActivity) {
     use dudes_proto::{Entry, MailAct, MailFrom, MailTo, Record};
     let agent = AgentId::from_parts(1, 1);
     let other = AgentId::from_parts(1, 2);

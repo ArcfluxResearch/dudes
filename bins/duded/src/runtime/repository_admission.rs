@@ -355,8 +355,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let Some(row) = world.agents.get(&agent) else {
             return false;
         };
-        let HireRepositories::Legacy(repository) = &row.repositories else {
-            return false;
+        let repository = match &row.repositories {
+            HireRepositories::Legacy(repository) => repository,
+            HireRepositories::Scoped(scope) => {
+                return row.provider == dudes_types::Provider::Claude
+                    && CurrentHireAdmission::new(&self.enrollment, &self.current_repositories)
+                        .require_scoped_hire_authority(world, &scope.recorded())
+                        .is_ok();
+            }
         };
         match world.active_repository_round(agent) {
             Ok(Some(round)) if !self.legacy_ticket_allowed(world, agent, round) => return false,
