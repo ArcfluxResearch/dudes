@@ -128,6 +128,11 @@ impl Fixture {
             hired: &self.hired,
             origin_git_dirs: &self.git,
             private: self.private.clone(),
+            codex_catalog: Some(
+                self.private
+                    .profile
+                    .join(format!("catalogs/{}.json", "a".repeat(64))),
+            ),
             mode: Mode::Managed,
             platform: ScopedPlatform::MacOsArm64,
         }
@@ -456,6 +461,135 @@ fn open_response(recipe: &dudes_providers::scoped::ScopedManagedLaunch, extra: b
     json!({"id":2,"result":{"thread":{"id":THREAD,"status":{"type":"idle"}},"cwd":recipe.spec.cwd,"model":"gpt-5.5","approvalPolicy":"never","sandbox":{"type":"workspaceWrite","writableRoots":recipe.inventory.additional_roots(),"networkAccess":false,"excludeTmpdirEnvVar":true,"excludeSlashTmp":true},"runtimeWorkspaceRoots":union}})
 }
 
+fn api_account() -> String {
+    json!({"id":91,"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}}).to_string()
+}
+
+#[test]
+fn scoped_codex_reads_the_api_account_before_opening_a_thread() {
+    let f = Fixture::new(&["b"]);
+    let adapter = codex();
+    for session in [
+        TurnSession::Assigned,
+        TurnSession::Resume(SessionId::new(THREAD)),
+    ] {
+        let recipe = adapter
+            .managed_scoped(
+                &f.ctx(&[]),
+                &f.scope(),
+                "task",
+                &session,
+                &ModelSelection::named("gpt-5.5"),
+            )
+            .unwrap();
+        let mut reader = adapter.turn_reader_for(&recipe.spec);
+        reader.start();
+        let opened = reader.line(&json!({"id":1,"result":{"userAgent":"dudes/0.164.0-alpha.11.1 (fixture)","codexHome":"/private/profile"}}).to_string());
+        let [
+            ProtocolAction::Write(initialized),
+            ProtocolAction::Write(account),
+        ] = opened.actions.as_slice()
+        else {
+            panic!("initialization and account request");
+        };
+        assert!(!initialized.is_task() && !account.is_task());
+        let request: Value = serde_json::from_slice(account.bytes()).unwrap();
+        assert_eq!(
+            request,
+            json!({"id":91,"method":"account/read","params":{"refreshToken":false}})
+        );
+        assert!(reader.line(&json!({"method":"account/read","params":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}}).to_string()).actions.is_empty());
+        let opened = reader.line(&api_account());
+        let [ProtocolAction::Write(thread)] = opened.actions.as_slice() else {
+            panic!("one thread request after the account check");
+        };
+        assert!(!thread.is_task());
+        let request: Value = serde_json::from_slice(thread.bytes()).unwrap();
+        assert_eq!(
+            request["method"],
+            if matches!(session, TurnSession::Assigned) {
+                "thread/start"
+            } else {
+                "thread/resume"
+            }
+        );
+        assert!(reader.line(&api_account()).actions.is_empty());
+        let task = reader.line(&open_response(&recipe, false).to_string());
+        assert!(
+            matches!(task.actions.as_slice(), [ProtocolAction::Write(frame)] if frame.is_task())
+        );
+        assert!(reader.line(&api_account()).actions.is_empty());
+        assert!(
+            reader
+                .line(&open_response(&recipe, false).to_string())
+                .actions
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn scoped_codex_refuses_unqualified_accounts_and_request_shaped_replies() {
+    let f = Fixture::new(&["b"]);
+    let adapter = codex();
+    let recipe = adapter
+        .managed_scoped(
+            &f.ctx(&[]),
+            &f.scope(),
+            "task",
+            &TurnSession::Assigned,
+            &ModelSelection::named("gpt-5.5"),
+        )
+        .unwrap();
+    for response in [
+        json!({"id":90,"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}}),
+        json!({"id":"91","result":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}}),
+        json!({"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}}),
+        json!({"id":91,"result":{"account":null,"requiresOpenaiAuth":true}}),
+        json!({"id":91,"result":{"account":{"type":"chatgpt","email":"dudes-account-secret-marker"},"requiresOpenaiAuth":true}}),
+        json!({"id":91,"result":{"requiresOpenaiAuth":true}}),
+        json!({"id":91,"result":{"account":{"type":"future"},"requiresOpenaiAuth":true}}),
+        json!({"id":91,"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth":false}}),
+        json!({"id":91,"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true,"workspaceRouting":{}}}),
+        json!({"id":91,"method":"account/read","params":{},"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}}),
+        json!({"id":91,"params":{},"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}}),
+        json!({"id":91,"error":{"code":-1,"message":"dudes-account-secret-marker"}}),
+    ] {
+        let mut reader = adapter.turn_reader_for(&recipe.spec);
+        reader.start();
+        reader.line(&json!({"id":1,"result":{"userAgent":"dudes/0.164.0-alpha.11.1 (fixture)","codexHome":"/private/profile"}}).to_string());
+        assert_eq!(
+            reader.line(&response.to_string()).actions,
+            [ProtocolAction::Fail]
+        );
+        assert!(reader.line(&api_account()).actions.is_empty());
+        assert!(
+            reader
+                .line(&open_response(&recipe, false).to_string())
+                .actions
+                .is_empty()
+        );
+        assert!(!format!("{reader:?}").contains("dudes-account-secret-marker"));
+        let end = reader.end(dudes_proto::ExitStatus {
+            code: Some(0),
+            signal: None,
+        });
+        assert!(!format!("{end:?}").contains("dudes-account-secret-marker"));
+    }
+    let mut reader = adapter.turn_reader_for(&recipe.spec);
+    reader.start();
+    let error = json!({"id":1,"error":{"code":-1,"message":"dudes-account-secret-marker"}});
+    assert_eq!(
+        reader.line(&error.to_string()).actions,
+        [ProtocolAction::Fail]
+    );
+    let end = reader.end(dudes_proto::ExitStatus {
+        code: Some(0),
+        signal: None,
+    });
+    assert!(!format!("{end:?}").contains("dudes-account-secret-marker"));
+}
+
 #[test]
 fn codex_profile_startup_and_task_have_the_exact_explicit_and_implicit_union() {
     let f = Fixture::new(&["b", "a"]);
@@ -494,6 +628,7 @@ fn codex_profile_startup_and_task_have_the_exact_explicit_and_implicit_union() {
         reader.start();
         let opened=reader.line(&json!({"id":1,"result":{"userAgent":"dudes/0.164.0-alpha.11.1 (fixture)","codexHome":"/private/profile"}}).to_string());
         assert_eq!(opened.actions.len(), 2);
+        assert_eq!(reader.line(&api_account()).actions.len(), 1);
         let mut response = open_response(&recipe, mutation == "extra_root");
         if mutation == "root_order" {
             response["result"]["runtimeWorkspaceRoots"]
@@ -569,14 +704,11 @@ fn codex_resume_checks_the_current_posture_before_submitting_one_task() {
         let opened = reader.line(
             &json!({"id":1,"result":{"userAgent":"dudes/0.164.0-alpha.11.1 (fixture)","codexHome":"/private/profile"}}).to_string(),
         );
-        let [
-            ProtocolAction::Write(initialized),
-            ProtocolAction::Write(frame),
-        ] = opened.actions.as_slice()
-        else {
-            panic!("initialization and resume request");
+        assert_eq!(opened.actions.len(), 2);
+        let opened = reader.line(&api_account());
+        let [ProtocolAction::Write(frame)] = opened.actions.as_slice() else {
+            panic!("resume request after account check");
         };
-        assert!(!initialized.is_task() && !frame.is_task());
         let request: Value = serde_json::from_slice(frame.bytes()).unwrap();
         assert_eq!(request["method"], "thread/resume");
         assert_eq!(request["params"]["threadId"], THREAD);
@@ -894,7 +1026,11 @@ fn environment_is_selected_and_legacy_launch_and_install_bytes_stay_unchanged() 
             .contains(&EnvVar::new("HOME", "/private/home"))
     );
     let adapter = codex();
-    let ctx = f.ctx(&[]);
+    let env = [
+        EnvVar::new("OPENAI_API_KEY", "dudes-environment-secret-marker"),
+        EnvVar::new("CODEX_API_KEY", "dudes-environment-secret-marker"),
+    ];
+    let ctx = f.ctx(&env);
     let model = ModelSelection::named("gpt-5.5");
     let before = adapter
         .managed(&ctx, "task", &TurnSession::Assigned, &model)
@@ -902,12 +1038,41 @@ fn environment_is_selected_and_legacy_launch_and_install_bytes_stay_unchanged() 
     let install = adapter.managed_install(&ctx, &model);
     let listing = dudes_providers::codex::model_list::argv("codex");
     assert!(before.argv.iter().chain(&listing).all(|arg| {
-        !arg.to_str()
-            .is_some_and(|word| word.starts_with("features.goals="))
+        !arg.to_str().is_some_and(|word| {
+            [
+                "features.goals=",
+                "forced_login_method=",
+                "cli_auth_credentials_store=",
+                "model_catalog_json=",
+            ]
+            .iter()
+            .any(|key| word.starts_with(key))
+        })
     }));
     let scoped = adapter
         .managed_scoped(&ctx, &f.scope(), "task", &TurnSession::Assigned, &model)
         .unwrap();
+    assert!(
+        scoped
+            .spec
+            .env
+            .iter()
+            .all(|var| var.name() != "OPENAI_API_KEY" && var.name() != "CODEX_API_KEY")
+    );
+    for setting in [
+        "forced_login_method=\"api\"",
+        "cli_auth_credentials_store=\"file\"",
+    ] {
+        assert_eq!(
+            scoped
+                .spec
+                .argv
+                .windows(2)
+                .filter(|args| args[0] == "-c" && args[1] == setting)
+                .count(),
+            1
+        );
+    }
     assert_eq!(
         scoped
             .spec

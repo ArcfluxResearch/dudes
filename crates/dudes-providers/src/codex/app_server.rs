@@ -22,6 +22,7 @@ const MAX_EARLY_EVENTS: usize = 128;
 const MAX_EARLY_BYTES: usize = 256 * 1024;
 const MAX_ITEMS: usize = 128;
 const MAX_ID_BYTES: usize = 256;
+const ACCOUNT_READ_ID: u64 = 91;
 
 /// Incremental reader for the opt-in app-server transport.
 pub struct AppServerReader {
@@ -46,6 +47,7 @@ pub struct AppServerReader {
 enum Phase {
     New,
     Initializing,
+    CheckingAccount,
     OpeningThread,
     StartingTurn,
     Active,
@@ -112,6 +114,7 @@ impl AppServerReader {
     fn response(&mut self, id: u64, text: &str) -> LineRead {
         match (self.phase, id) {
             (Phase::Initializing, 1) => self.initialized(text),
+            (Phase::CheckingAccount, ACCOUNT_READ_ID) => self.account(text),
             (Phase::OpeningThread, 2) => {
                 let Some(body) = response::<wire::ThreadResponse>(text) else {
                     return self.fail();
@@ -205,22 +208,16 @@ impl AppServerReader {
             self.refusal = Some(unsupported.to_string());
             return self.fail();
         }
-        self.phase = Phase::OpeningThread;
-        let (method, thread) = match &self.startup.session {
-            TurnSession::Assigned => ("thread/start", None),
-            TurnSession::Resume(id) => ("thread/resume", Some(id.as_str())),
-            TurnSession::First(_) => return self.fail(),
+        let request = if self.startup.is_scoped() {
+            self.phase = Phase::CheckingAccount;
+            frame(
+                &json!({"id":ACCOUNT_READ_ID,"method":"account/read","params":{"refreshToken":false}}),
+                false,
+            )
+        } else {
+            self.open_thread()
         };
-        let mut params =
-            json!({"cwd":self.startup.cwd,"approvalPolicy":"never","sandbox":"workspace-write"});
-        if let Some(thread) = thread {
-            params["threadId"] = thread.into();
-            params["excludeTurns"] = true.into();
-        }
-        if let Some(model) = self.startup.selection.selector() {
-            params["model"] = model.into();
-        }
-        let Some(request) = frame(&json!({"id":2,"method":method,"params":params}), false) else {
+        let Some(request) = request else {
             return self.fail();
         };
         LineRead {
@@ -232,6 +229,53 @@ impl AppServerReader {
             ],
             ..LineRead::default()
         }
+    }
+
+    fn account(&mut self, text: &str) -> LineRead {
+        let valid = serde_json::from_str::<Value>(text).is_ok_and(|body| {
+            body.get("method").is_none()
+                && body.get("params").is_none()
+                && body.get("error").is_none()
+                && body.pointer("/result/account/type").and_then(Value::as_str) == Some("apiKey")
+                && body
+                    .pointer("/result/requiresOpenaiAuth")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                && body
+                    .pointer("/result/workspaceRouting")
+                    .is_none_or(Value::is_null)
+        });
+        if !valid {
+            self.refusal = Some("scoped Codex requires the qualified API-key account".into());
+            return self.fail();
+        }
+        let Some(request) = self.open_thread() else {
+            return self.fail();
+        };
+        LineRead {
+            actions: vec![ProtocolAction::Write(request)],
+            ..LineRead::default()
+        }
+    }
+
+    fn open_thread(&mut self) -> Option<StartupFrame> {
+        let (method, thread) = match &self.startup.session {
+            TurnSession::Assigned => ("thread/start", None),
+            TurnSession::Resume(id) => ("thread/resume", Some(id.as_str())),
+            TurnSession::First(_) => return None,
+        };
+        let mut params =
+            json!({"cwd":self.startup.cwd,"approvalPolicy":"never","sandbox":"workspace-write"});
+        if let Some(thread) = thread {
+            params["threadId"] = thread.into();
+            params["excludeTurns"] = true.into();
+        }
+        if let Some(model) = self.startup.selection.selector() {
+            params["model"] = model.into();
+        }
+        let request = frame(&json!({"id":2,"method":method,"params":params}), false)?;
+        self.phase = Phase::OpeningThread;
+        Some(request)
     }
 
     /// Report a server the first time the turn names it, from a startup report or a tool call.
@@ -474,15 +518,33 @@ impl TurnReader for AppServerReader {
         }
         let Ok(envelope) = serde_json::from_str::<wire::Envelope>(text) else {
             self.unreadable += 1;
+            if self.phase == Phase::CheckingAccount {
+                return self.fail();
+            }
             return LineRead::default();
         };
+        if self.phase == Phase::CheckingAccount
+            && (envelope
+                .id
+                .as_ref()
+                .is_some_and(|id| id.as_u64() != Some(ACCOUNT_READ_ID))
+                || (envelope.id.is_none() && envelope.method.is_none()))
+        {
+            return self.fail();
+        }
         if let Some(id) = envelope.id {
             if envelope.method.is_some() {
                 return self.fail();
             }
             if let Some(error) = &envelope.error {
                 if self.refusal.is_none() {
-                    self.refusal = engine_words(error);
+                    self.refusal = if self.startup.is_scoped()
+                        && matches!(self.phase, Phase::Initializing | Phase::CheckingAccount)
+                    {
+                        Some("scoped Codex account startup failed".into())
+                    } else {
+                        engine_words(error)
+                    };
                 }
                 return self.fail();
             }

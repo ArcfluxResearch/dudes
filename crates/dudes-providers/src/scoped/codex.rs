@@ -36,6 +36,7 @@ pub(crate) fn compose(
     if home != Some(scope.private.profile.as_path()) {
         return Err(ScopedError::Paths.into());
     }
+    let catalog = catalog(scope)?;
     let inventory = inventory(ctx, scope, selection, "gpt-5.5")?;
     let roots = inventory.additional_roots();
     let mut argv = vec![OsString::from(&config.command)];
@@ -47,15 +48,12 @@ pub(crate) fn compose(
     let roots_json = serde_json::to_string(&roots).expect("validated paths serialize");
     let quoted = |path: &Path| serde_json::to_string(path).expect("validated path serializes");
     let mut ancestors = std::collections::BTreeSet::new();
-    for entry in scope.hired.repositories.entries() {
-        ancestors.extend(
-            entry
-                .value
-                .execution
-                .directory
-                .ancestors()
-                .map(Path::to_path_buf),
-        );
+    for path in inventory
+        .writable_roots()
+        .iter()
+        .chain(&inventory.protected)
+    {
+        ancestors.extend(path.ancestors().map(Path::to_path_buf));
     }
     let projects = ancestors
         .iter()
@@ -63,6 +61,9 @@ pub(crate) fn compose(
         .collect::<Vec<_>>()
         .join(",");
     for option in [
+        "forced_login_method=\"api\"".to_owned(),
+        "cli_auth_credentials_store=\"file\"".to_owned(),
+        format!("model_catalog_json={}", quoted(catalog)),
         "features.multi_agent=false".to_owned(),
         // Only the daemon admits another task; native goals can start idle turns.
         "features.goals=false".to_owned(),
@@ -113,4 +114,24 @@ pub(crate) fn compose(
         inventory,
         unarmed: unarmed("0.164.0-alpha.11.1", ScopedProofGap::CodexModelTools),
     })
+}
+
+fn catalog<'a>(scope: &'a ScopedLaunchInputs<'_>) -> Result<&'a Path, ScopedError> {
+    let catalog = scope.codex_catalog.as_deref().ok_or(ScopedError::Paths)?;
+    super::path(catalog)?;
+    if catalog.parent() != Some(scope.private.profile.join("catalogs").as_path())
+        || !catalog
+            .file_stem()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|stem| {
+                stem.len() == 64
+                    && stem
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+        || catalog.extension() != Some(std::ffi::OsStr::new("json"))
+    {
+        return Err(ScopedError::Paths);
+    }
+    Ok(catalog)
 }

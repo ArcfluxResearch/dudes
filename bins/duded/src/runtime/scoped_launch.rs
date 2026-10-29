@@ -208,6 +208,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     hired: &hired,
                     origin_git_dirs: &git,
                     private,
+                    codex_catalog: Some(profile.scoped_catalog_path()),
                     mode: Mode::Managed,
                     platform,
                 },

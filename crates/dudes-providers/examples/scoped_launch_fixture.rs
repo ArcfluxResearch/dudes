@@ -107,6 +107,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             outbox: private("outbox")?,
             temp: private("temp")?,
         },
+        codex_catalog: input["codex_catalog"].as_str().map(Into::into),
         mode: serde_json::from_value::<Mode>(input["mode"].clone())?,
         platform: match field("platform")? {
             "macos_arm64" => ScopedPlatform::MacOsArm64,
