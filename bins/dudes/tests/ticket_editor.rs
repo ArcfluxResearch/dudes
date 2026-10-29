@@ -45,6 +45,7 @@ fn review() -> Review {
                     timeout_s: 10,
                 },
                 may_already_pass: true,
+                check_repo: None,
             }],
             cwd: directory.clone(),
             written_cwd: directory.clone(),

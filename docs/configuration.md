@@ -126,6 +126,15 @@ Repository removal is refused while live hires or unresolved tickets still refer
 
 An unchanged legacy `cwd` entry keeps its existing singleton hire and trust behavior.
 
+A named completion-check row can also store `check_repo = "api"`.
+The value is a repository id from that project's configured list, never a path. An unknown id
+is refused. Without the field, the check keeps the project's primary repository. A legacy `cwd`
+project has only the repository id `primary`.
+
+This field prepares the configured target for scoped tickets. Target-directed check execution
+is unavailable in this version. A future scoped ticket must include that configured repository
+in its declaration. Clients cannot redirect the check to another repository or provide its path.
+
 ## Budgets
 
 Budgets are optional, and none is set by default. An agent with no ceiling still stops at its
