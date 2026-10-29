@@ -190,7 +190,7 @@ pub enum ScopedError {
     /// A configurable escape hatch conflicts with the closed recipe.
     #[error("configured overrides conflict with the scoped recipe")]
     Options,
-    /// A resumed or mismatched session has not been validated.
+    /// The session kind does not match this provider.
     #[error("session mode has no scoped candidate")]
     Session,
     /// A default or other model has no validated tool profile.

@@ -27,7 +27,7 @@ pub(crate) fn compose(
     if let Some(offset) = task.find('\0') {
         return Err(LaunchError::TaskContainsNul { offset });
     }
-    if !matches!(session, TurnSession::Assigned) {
+    if !matches!(session, TurnSession::Assigned | TurnSession::Resume(_)) {
         return Err(ScopedError::Session.into());
     }
     if !config.streaming {
@@ -87,7 +87,7 @@ pub(crate) fn compose(
         ctx.agent_dir.to_owned(),
         inventory.cwd.clone(),
         task.to_owned(),
-        TurnSession::Assigned,
+        session.clone(),
         selection.clone(),
     )
     .with_scoped_roots(roots);
