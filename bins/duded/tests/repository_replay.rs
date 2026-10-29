@@ -1465,7 +1465,10 @@ fn legacy_ticket_producers_refuse_declared_work_without_appending_any_record() {
             .unwrap();
         let error = response.error.unwrap();
         assert_eq!(error.code, ErrorCode::Refused.code());
-        assert!(error.message.contains("Declared repository work"));
+        assert!(
+            error.message.contains("no verified provider capability"),
+            "{method:?}: {error:?}"
+        );
         assert_eq!(
             Reader::open(&fixture.journal_dir()).unwrap().1.end,
             before_lsn

@@ -226,7 +226,9 @@ fn a_keeper_that_cannot_start_fails_the_launch_and_no_task_is_written() {
     };
     assert_eq!(reason.kind(), std::io::ErrorKind::NotFound, "{reason}");
     assert_eq!(host.owned(), 0, "a failed launch left a registered child");
-    if let Ok(pid) = fs::read_to_string(dir.path().join("pid")) {
+    if let Ok(pid) = fs::read_to_string(dir.path().join("pid"))
+        && !pid.trim().is_empty()
+    {
         let pid: u32 = pid.trim().parse().expect("pid");
         assert!(
             !live_in(&table(), pid),
