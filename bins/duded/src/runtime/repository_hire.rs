@@ -25,10 +25,8 @@ fn require_scoped_options(params: &HireParams) -> anyhow::Result<()> {
         params.provider
     );
     anyhow::ensure!(
-        cfg!(any(
-            all(target_os = "macos", target_arch = "aarch64"),
-            all(target_os = "linux", target_arch = "x86_64")
-        )),
+        super::scoped_launch::native_platform()
+            != dudes_providers::scoped::ScopedPlatform::Unsupported,
         "restricted repository execution has no verified provider capability on this platform"
     );
     anyhow::ensure!(

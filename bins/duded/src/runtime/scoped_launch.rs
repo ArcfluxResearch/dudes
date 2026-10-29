@@ -3,7 +3,7 @@ use std::io;
 
 use dudes_proto::instruction::InstructionObservationOwner;
 use dudes_proto::repository::{HireRepositories, RepositoryEntry};
-use dudes_providers::adapter::AgentCtx;
+use dudes_providers::adapter::{AgentCtx, TurnSession};
 use dudes_providers::launch::{LaunchInput, LaunchSpec};
 use dudes_providers::scoped::{ScopedLaunchInputs, ScopedPlatform, ScopedPrivatePaths};
 use dudes_supervisor::{Clock, Input, ProcessHost, Rng, Supervisor};
@@ -11,7 +11,7 @@ use dudes_types::{Lsn, Mode, Provider, TurnId};
 
 use super::{Ctx, Daemon, PredicateRunner, Shared};
 use crate::chat_launch::{ScopedCompletion, ScopedPreparation};
-use crate::codex_profile::scoped::Attempt;
+use crate::codex_profile::scoped::{Attempt, ScopedProfile};
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<H, P, C, R> {
     pub(super) fn complete_scoped_launch(
@@ -138,8 +138,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let refused = || io::Error::other("scoped turn authority is unavailable");
         let row = sup.world().turns.get(&attempt.turn).ok_or_else(refused)?;
         let agent = sup.world().agents.get(&row.agent).ok_or_else(refused)?;
-        if agent.provider != Provider::Codex
-            || mcp_grant.is_some()
+        if mcp_grant.is_some()
             || !matches!(attempt.owner, InstructionObservationOwner::Managed { agent, turn, .. } if agent == row.agent && turn == attempt.turn)
         {
             return Err(refused());
@@ -153,14 +152,30 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let HireRepositories::Scoped(hire) = authority.hire() else {
             return Err(refused());
         };
-        let LaunchInput::Protocol(startup) = &spec.stdin else {
-            return Err(refused());
-        };
-        let profile = self.children.codex_profile().ok_or_else(refused)?;
         let agent_dir = self.agents_root.join(row.agent.to_string());
+        let (profile, profile_home, session) = match agent.provider {
+            Provider::Codex => {
+                let LaunchInput::Protocol(startup) = &spec.stdin else {
+                    return Err(refused());
+                };
+                let profile = self.children.codex_profile().ok_or_else(refused)?;
+                let home = profile.scoped_home().to_owned();
+                (
+                    ScopedProfile::Codex(profile),
+                    home,
+                    startup.session().clone(),
+                )
+            }
+            Provider::Claude => (
+                ScopedProfile::Claude(self.children.private_roots()),
+                agent_dir.join("profile"),
+                claude_session(spec)?,
+            ),
+            _ => return Err(refused()),
+        };
         let private = ScopedPrivatePaths {
             home: agent_dir.join("home"),
-            profile: profile.scoped_home().to_owned(),
+            profile: profile_home,
             work: agent_dir.join("work"),
             outbox: agent_dir.join("outbox"),
             temp: agent_dir.join("tmp"),
@@ -190,16 +205,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             max_budget: agent.max_budget,
             mcp_servers: &[],
         };
-        let platform = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            ScopedPlatform::MacOsArm64
-        } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-            ScopedPlatform::LinuxX86_64
-        } else {
-            ScopedPlatform::Unsupported
-        };
         let launch = sup
             .adapters()
-            .get(Provider::Codex)
+            .get(agent.provider)
             .ok_or_else(refused)?
             .managed_scoped(
                 &ctx,
@@ -209,10 +217,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     origin_git_dirs: &git,
                     private,
                     mode: Mode::Managed,
-                    platform,
+                    platform: native_platform(),
                 },
                 &row.task,
-                startup.session(),
+                &session,
                 row.model_selection.as_ref().ok_or_else(refused)?,
             )
             .map_err(|_| refused())?;
@@ -301,6 +309,49 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             sup,
         )
     }
+}
+
+pub(super) fn native_platform() -> ScopedPlatform {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        ScopedPlatform::MacOsArm64
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        ScopedPlatform::LinuxX86_64
+    } else {
+        ScopedPlatform::Unsupported
+    }
+}
+
+fn claude_session(spec: &LaunchSpec) -> io::Result<TurnSession> {
+    let refused = || io::Error::other("scoped Claude session is unavailable");
+    let dudes_providers::adapter::SessionAcquisition::Pinned {
+        pin,
+        resume: resume_flag,
+    } = dudes_providers::claude::SESSION_ACQUISITION
+    else {
+        return Err(refused());
+    };
+    let args: Vec<_> = spec.argv.iter().take_while(|part| *part != "--").collect();
+    let mut sessions = args.windows(2).filter_map(|parts| {
+        let flag = parts[0].to_str()?;
+        let resume = if flag == pin {
+            false
+        } else if flag == resume_flag {
+            true
+        } else {
+            return None;
+        };
+        Some((resume, parts[1].to_str()))
+    });
+    let (resume, id) = sessions.next().ok_or_else(refused)?;
+    if sessions.next().is_some() {
+        return Err(refused());
+    }
+    let id = dudes_types::SessionId::new(id.filter(|id| !id.is_empty()).ok_or_else(refused)?);
+    Ok(if resume {
+        TurnSession::Resume(id)
+    } else {
+        TurnSession::First(id)
+    })
 }
 
 fn current_attempt(world: &dudes_supervisor::World, attempt: Attempt) -> bool {

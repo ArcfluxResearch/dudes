@@ -17,6 +17,7 @@ use crate::predicate::PredicateCaptured;
 
 mod inspection;
 use inspection::Inspection;
+mod claude;
 
 const CATALOG_LIMIT: usize = 720_896;
 const CATALOG_LENGTH: usize = 658_607;
@@ -24,7 +25,11 @@ const CATALOG_SHA: &str = "69af12f94a39dabd1a1ded8f5257b4884d2118902ea2b5b9cffbf
 const MACOS_BINARY_SHA: &str = "97026b7ea245a7a9f17d8522a2ba4a8cd2f1c01dac0f62483a4bfe427d76082e";
 
 #[derive(Debug, Default)]
-pub(crate) struct PrivateRoots(Mutex<std::collections::BTreeMap<PathBuf, Arc<AgentRoots>>>);
+pub(crate) struct PrivateRoots {
+    agents: Mutex<std::collections::BTreeMap<PathBuf, Arc<AgentRoots>>>,
+    #[cfg(test)]
+    claude_test_sha: Mutex<Option<String>>,
+}
 
 impl PrivateRoots {
     pub(crate) fn agent(&self, path: &Path) -> io::Result<Arc<AgentRoots>> {
@@ -44,10 +49,15 @@ impl PrivateRoots {
         let mut canonical = existing.canonicalize()?;
         canonical.extend(suffix.into_iter().rev());
         let mut agents = self
-            .0
+            .agents
             .try_lock()
             .map_err(|_| refusal("private agent registry is unavailable"))?;
         Ok(Arc::clone(agents.entry(canonical).or_default()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn qualify_claude_fixture(&self, bytes: &[u8]) {
+        *self.claude_test_sha.lock().unwrap() = Some(digest(bytes));
     }
 }
 
@@ -84,14 +94,40 @@ pub(crate) struct PreparedScopedLaunch {
     pub(crate) binding: Arc<ScopedBinding>,
 }
 
+pub(crate) enum ScopedProfile {
+    Codex(Arc<CodexProfile>),
+    Claude(Arc<PrivateRoots>),
+}
+
+impl ScopedProfile {
+    pub(crate) fn prepare_scoped(
+        self,
+        launch: ScopedManagedLaunch,
+        attempt: Attempt,
+    ) -> io::Result<PreparedScopedLaunch> {
+        match self {
+            Self::Codex(profile) => profile.prepare_scoped(launch, attempt),
+            Self::Claude(roots) => claude::prepare(&roots, launch, attempt),
+        }
+    }
+}
+
 pub(crate) struct ScopedBinding {
-    profile: Arc<CodexProfile>,
     generation: u64,
     roots: Arc<AgentRoots>,
-    startup: CodexStartup,
     inspection: Inspection,
     binary: PinnedFile,
-    catalog: PinnedFile,
+    spec: LaunchSpec,
+    provider: ProviderBinding,
+}
+
+enum ProviderBinding {
+    Codex {
+        profile: Arc<CodexProfile>,
+        startup: Box<CodexStartup>,
+        catalog: PinnedFile,
+    },
+    Claude,
 }
 
 impl std::fmt::Debug for ScopedBinding {
@@ -103,16 +139,39 @@ impl std::fmt::Debug for ScopedBinding {
 }
 
 impl ScopedBinding {
-    pub(crate) fn before_task(&self, startup: &CodexStartup) -> io::Result<()> {
+    fn check(&self) -> io::Result<()> {
         let generation = self.roots.inspect()?;
-        if *generation != self.generation || startup != &self.startup {
+        if *generation != self.generation {
             return Err(refusal("scoped launch preparation changed during startup"));
         }
-        self.profile.scoped_policy(false)?;
-        let deadline = Instant::now() + PROBE_DEADLINE;
         self.binary.check_identity()?;
-        self.catalog.check(deadline)?;
+        if let ProviderBinding::Codex {
+            profile, catalog, ..
+        } = &self.provider
+        {
+            profile.scoped_policy(false)?;
+            catalog.check(Instant::now() + PROBE_DEADLINE)?;
+        }
         self.inspection.check_roots()
+    }
+
+    pub(crate) fn before_host(&self, spec: &LaunchSpec) -> io::Result<()> {
+        if spec != &self.spec {
+            return Err(refusal(
+                "scoped launch differs from its immutable preparation",
+            ));
+        }
+        self.check()
+    }
+
+    pub(crate) fn before_task(&self, startup: &CodexStartup) -> io::Result<()> {
+        if !matches!(&self.provider, ProviderBinding::Codex { startup: prepared, .. } if prepared.as_ref() == startup)
+        {
+            return Err(refusal(
+                "scoped protocol differs from its preparation owner",
+            ));
+        }
+        self.check()
     }
 }
 
@@ -177,13 +236,16 @@ impl CodexProfile {
             return Err(refusal("scoped Codex startup is unavailable"));
         };
         let binding = Arc::new(ScopedBinding {
-            profile: Arc::clone(self),
             generation: *generation,
             roots: Arc::clone(&roots),
-            startup: startup.clone(),
             inspection,
             binary,
-            catalog,
+            spec: launch.spec.clone(),
+            provider: ProviderBinding::Codex {
+                profile: Arc::clone(self),
+                startup: Box::new(startup.clone()),
+                catalog,
+            },
         });
         Ok(PreparedScopedLaunch {
             launch,

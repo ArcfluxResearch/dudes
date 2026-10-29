@@ -66,6 +66,7 @@ pub struct ChildEnds {
     next_scoped: Mutex<Option<Arc<crate::codex_profile::scoped::ScopedBinding>>>,
     next_mcp_grant: Mutex<Option<Lsn>>,
     codex_profile: OnceLock<Arc<crate::codex_profile::CodexProfile>>,
+    private_roots: Arc<crate::codex_profile::scoped::PrivateRoots>,
     protocols: Mutex<BTreeMap<ActivityKey, bool>>,
     pending_observation: Mutex<PendingObservations>,
     sampling: AtomicBool,
@@ -127,6 +128,7 @@ impl ChildEnds {
             next_scoped: Mutex::default(),
             next_mcp_grant: Mutex::default(),
             codex_profile: OnceLock::new(),
+            private_roots: Arc::default(),
             protocols: Mutex::default(),
             pending_observation: Mutex::default(),
             sampling: AtomicBool::new(false),
@@ -163,23 +165,36 @@ impl ChildEnds {
         self.codex_profile.get().cloned()
     }
 
+    pub(crate) fn private_roots(&self) -> Arc<crate::codex_profile::scoped::PrivateRoots> {
+        self.codex_profile.get().map_or_else(
+            || Arc::clone(&self.private_roots),
+            |profile| profile.private_roots(),
+        )
+    }
+
+    pub(crate) fn check_scoped_host(&self, spec: &LaunchSpec) -> std::io::Result<bool> {
+        let scoped = self
+            .next_scoped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(binding) = scoped.as_ref() {
+            binding.before_host(spec)?;
+        }
+        Ok(scoped.is_some())
+    }
+
     pub(crate) fn prepare_scoped_launch(
         &self,
         prepared: &crate::codex_profile::scoped::PreparedScopedLaunch,
         outbox: Arc<crate::mailbox::OutboxGrant>,
     ) -> std::io::Result<()> {
-        let LaunchInput::Protocol(startup) = &prepared.launch.spec.stdin else {
-            return Err(std::io::Error::other(
-                "scoped protocol startup is unavailable",
-            ));
-        };
         if outbox.path() != prepared.launch.inventory.private.outbox {
             return Err(std::io::Error::other(
                 "scoped outbox differs from its frozen inventory",
             ));
         }
         outbox.check()?;
-        prepared.binding.before_task(startup)?;
+        prepared.binding.before_host(&prepared.launch.spec)?;
         *self
             .next_scoped
             .lock()
