@@ -81,6 +81,21 @@ class Evidence(unittest.TestCase):
             self.assertTrue(checks["a_tool_observed"])
             self.assertFalse(checks["b_tool_observed"])
 
+    def test_existing_file_edit_requires_the_explicit_read_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = proof.Target("target", Path(directory) / "target", False)
+            target.path.write_text("before\n")
+            probe = proof.Probe("file", "Edit", {"file_path": str(target.path)}, [target], preread=True)
+            requests = requests_for("claude", probe, "denied by your permission settings")
+            checks, _, _ = proof.effect_checks("claude", probe, {"target": b"before\n"}, requests)
+            self.assertFalse(checks["explicit_prerequisite_read_observed"])
+            requests[-1]["body"]["messages"].extend([
+                {"role": "assistant", "content": [{"type": "tool_use", "id": proof.CLAUDE_READ_ID, "name": "Read", "input": {"file_path": str(target.path)}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": proof.CLAUDE_READ_ID, "content": "1: before"}]},
+            ])
+            checks, _, _ = proof.effect_checks("claude", probe, {"target": b"before\n"}, requests)
+            self.assertTrue(all(checks.values()))
+
     def test_unavailable_requires_actual_sandbox_error(self):
         with tempfile.TemporaryDirectory() as directory:
             target = proof.Target("target", Path(directory) / "target", False)
