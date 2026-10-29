@@ -288,26 +288,40 @@ fn startup_warns_once_for_live_relative_cwd_and_preserves_hires() {
         }
     }
     let mut daemon = NativeDaemon::start(&fixture, &env);
+    assert_eq!(fixture.records(), records, "startup preserves the journal");
+    let secret =
+        fs::read_to_string(daemon.runtime.join(dudes_rpc::OPERATOR_CREDENTIAL_NAME)).unwrap();
+    let credential = || OperatorCredential::new(secret.clone()).unwrap();
+    let mut client = Client::connect(&daemon.socket).unwrap();
+    let current = client
+        .call_as_operator(Method::AgentList, Some(serde_json::json!({})), credential())
+        .unwrap();
+    assert!(current.error.is_none());
+    let current: Vec<dudes_proto::AgentView> =
+        serde_json::from_value(current.result.unwrap()).unwrap();
+    for agent in [live, absolute] {
+        assert!(!current.iter().find(|row| row.id == agent).unwrap().paused);
+        let resumed = client
+            .call_as_operator(
+                Method::LoopResume,
+                Some(serde_json::json!({"agent": agent})),
+                credential(),
+            )
+            .unwrap();
+        assert!(resumed.result.is_none());
+        let refusal = resumed.error.expect("unresolved work remains refused");
+        assert_eq!(refusal.code, dudes_proto::rpc::ErrorCode::Refused.code());
+        assert_eq!(
+            refusal.message,
+            "current project repositories must be resolved before resuming"
+        );
+    }
+    drop(client);
     let completion = daemon.stop().expect("native owned cleanup");
     let observed = fixture.records();
     assert_eq!(
-        &observed[..records.len()],
-        records.as_slice(),
-        "historical hires stay exact"
-    );
-    assert_eq!(
-        &observed[records.len()..],
-        [
-            Record::Pause {
-                agent: live,
-                browser: None
-            },
-            Record::Pause {
-                agent: absolute,
-                browser: None
-            }
-        ],
-        "only live hires with unresolved current projects are paused"
+        observed, records,
+        "historical hires stay exact and new work appends nothing"
     );
     let log = fs::read_to_string(fixture.runtime.path().join("daemon.stderr")).unwrap();
     assert!(
