@@ -25,9 +25,9 @@ pub(crate) fn compose(
     if let Some(offset) = task.find('\0') {
         return Err(LaunchError::TaskContainsNul { offset });
     }
-    let TurnSession::First(session) = session else {
-        return Err(ScopedError::Session.into());
-    };
+    let session_args = crate::claude::SESSION_ACQUISITION
+        .argv(session)
+        .map_err(|_| ScopedError::Session)?;
     if config.permission_mode != PermissionMode::Default
         || config.isolation == IsolationMode::Inherit
         || config
@@ -107,11 +107,10 @@ pub(crate) fn compose(
             "--no-chrome",
             "--model",
             "claude-sonnet-4-6",
-            "--session-id",
         ]
         .map(OsString::from),
     );
-    argv.push(session.as_str().into());
+    argv.extend(session_args);
     if let Some(turns) = ctx.max_turns {
         argv.extend(["--max-turns".into(), turns.to_string().into()]);
     }

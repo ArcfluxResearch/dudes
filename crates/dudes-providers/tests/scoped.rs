@@ -383,6 +383,70 @@ fn excluded_hire_primary_is_not_regained_by_cwd_or_additional_roots() {
     }
 }
 
+#[test]
+fn claude_resume_retains_the_exact_session_and_only_the_current_grant() {
+    let mut f = Fixture::new(&["b", "a"]);
+    let adapter = claude();
+    let model = ModelSelection::named("claude-sonnet-4-6");
+    let previous = adapter
+        .managed_scoped(&f.ctx(&[]), &f.scope(), "previous task", &first(), &model)
+        .unwrap();
+    assert!(
+        previous
+            .inventory
+            .writable_roots()
+            .contains(&PathBuf::from("/copies/a"))
+    );
+    f.grant.repositories = RepositorySet::new(
+        RepoId::parse("b").unwrap(),
+        vec![f.grant.repositories.entries()[0].clone()],
+    )
+    .unwrap();
+    let task = "the immutable resumed task";
+    let resumed = adapter
+        .managed_scoped(
+            &f.ctx(&[]),
+            &f.scope(),
+            task,
+            &TurnSession::Resume(SessionId::new(SESSION)),
+            &model,
+        )
+        .unwrap();
+    assert_eq!(resumed.inventory.grant, f.grant);
+    assert_eq!(resumed.spec.cwd, Path::new("/copies/b"));
+    assert_eq!(
+        setting(&resumed.spec)["sandbox"]["filesystem"]["allowWrite"],
+        json!([
+            "/copies/b",
+            "/private/agent/work",
+            "/private/agent/outbox",
+            "/private/agent/tmp"
+        ])
+    );
+    assert_eq!(
+        resumed.spec.stdin,
+        LaunchInput::WriteThenClose(task.as_bytes().to_vec())
+    );
+    let mut fresh = adapter
+        .managed_scoped(&f.ctx(&[]), &f.scope(), task, &first(), &model)
+        .unwrap();
+    let session_flag = fresh
+        .spec
+        .argv
+        .iter()
+        .position(|arg| arg == "--session-id")
+        .unwrap();
+    assert_eq!(fresh.spec.argv[session_flag + 1], SESSION);
+    fresh.spec.argv[session_flag] = "--resume".into();
+    assert_eq!(resumed, fresh);
+    assert!(
+        resumed
+            .unarmed
+            .missing_proofs
+            .contains(&ScopedProofGap::RuntimeAdmission)
+    );
+}
+
 fn open_response(recipe: &dudes_providers::scoped::ScopedManagedLaunch, extra: bool) -> Value {
     let mut union = vec![recipe.spec.cwd.clone()];
     union.extend(recipe.inventory.additional_roots());
@@ -457,17 +521,119 @@ fn codex_profile_startup_and_task_have_the_exact_explicit_and_implicit_union() {
 }
 
 #[test]
-fn unproved_sessions_models_modes_and_platforms_refuse_without_legacy_fallback() {
+fn codex_resume_checks_the_current_posture_before_submitting_one_task() {
+    let mut f = Fixture::new(&["b", "a"]);
+    let adapter = codex();
+    let model = ModelSelection::named("gpt-5.5");
+    let previous = adapter
+        .managed_scoped(
+            &f.ctx(&[]),
+            &f.scope(),
+            "previous task",
+            &TurnSession::Assigned,
+            &model,
+        )
+        .unwrap();
+    f.grant.repositories = RepositorySet::new(
+        RepoId::parse("b").unwrap(),
+        vec![f.grant.repositories.entries()[0].clone()],
+    )
+    .unwrap();
+    let recipe = adapter
+        .managed_scoped(
+            &f.ctx(&[]),
+            &f.scope(),
+            "the immutable resumed task",
+            &TurnSession::Resume(SessionId::new(THREAD)),
+            &model,
+        )
+        .unwrap();
+    assert_eq!(recipe.inventory.grant, f.grant);
+    assert!(
+        recipe
+            .unarmed
+            .missing_proofs
+            .contains(&ScopedProofGap::RuntimeAdmission)
+    );
+    for posture in [
+        "matching",
+        "previous_roots",
+        "wrong_thread",
+        "wrong_cwd",
+        "wrong_model",
+        "busy",
+    ] {
+        let mut reader = adapter.turn_reader_for(&recipe.spec);
+        let initial = reader.start();
+        assert!(matches!(initial.as_slice(), [ProtocolAction::Write(frame)] if !frame.is_task()));
+        let opened = reader.line(
+            &json!({"id":1,"result":{"userAgent":"dudes/0.164.0-alpha.11.1 (fixture)","codexHome":"/private/profile"}}).to_string(),
+        );
+        let [
+            ProtocolAction::Write(initialized),
+            ProtocolAction::Write(frame),
+        ] = opened.actions.as_slice()
+        else {
+            panic!("initialization and resume request");
+        };
+        assert!(!initialized.is_task() && !frame.is_task());
+        let request: Value = serde_json::from_slice(frame.bytes()).unwrap();
+        assert_eq!(request["method"], "thread/resume");
+        assert_eq!(request["params"]["threadId"], THREAD);
+        assert_eq!(request["params"]["excludeTurns"], true);
+        let mut response = open_response(&recipe, false);
+        match posture {
+            "previous_roots" => response = open_response(&previous, false),
+            "wrong_thread" => response["result"]["thread"]["id"] = SESSION.into(),
+            "wrong_cwd" => response["result"]["cwd"] = "/copies/a".into(),
+            "wrong_model" => response["result"]["model"] = "gpt-6.1".into(),
+            "busy" => response["result"]["thread"]["status"]["type"] = "active".into(),
+            "matching" => {}
+            _ => unreachable!(),
+        }
+        let read = reader.line(&response.to_string());
+        if posture == "matching" {
+            let [ProtocolAction::Write(frame)] = read.actions.as_slice() else {
+                panic!("one immutable task");
+            };
+            assert!(frame.is_task());
+            let task: Value = serde_json::from_slice(frame.bytes()).unwrap();
+            assert_eq!(task["method"], "turn/start");
+            assert_eq!(task["params"]["threadId"], THREAD);
+            assert_eq!(task["params"]["cwd"], "/copies/b");
+            assert_eq!(task["params"]["model"], "gpt-5.5");
+            assert_eq!(
+                task["params"]["input"],
+                json!([{"type":"text","text":"the immutable resumed task","text_elements":[]}])
+            );
+            assert_eq!(
+                task["params"]["sandboxPolicy"]["writableRoots"],
+                json!([
+                    "/private/agent/work",
+                    "/private/agent/outbox",
+                    "/private/agent/tmp"
+                ])
+            );
+        } else {
+            assert_eq!(read.actions, [ProtocolAction::Fail]);
+            assert!(read.session.is_none());
+        }
+        assert!(reader.line(&response.to_string()).actions.is_empty());
+        assert_eq!(reader.start(), [ProtocolAction::Fail]);
+    }
+}
+
+#[test]
+fn incompatible_sessions_models_modes_and_platforms_refuse_without_legacy_fallback() {
     let f = Fixture::new(&["b"]);
     let ctx = f.ctx(&[]);
-    let resume = TurnSession::Resume(SessionId::new(SESSION));
     assert_eq!(
         claude()
             .managed_scoped(
                 &ctx,
                 &f.scope(),
                 "task",
-                &resume,
+                &TurnSession::Assigned,
                 &ModelSelection::named("claude-sonnet-4-6")
             )
             .unwrap_err(),
@@ -479,7 +645,7 @@ fn unproved_sessions_models_modes_and_platforms_refuse_without_legacy_fallback()
                 &ctx,
                 &f.scope(),
                 "task",
-                &resume,
+                &first(),
                 &ModelSelection::named("gpt-5.5")
             )
             .unwrap_err(),
