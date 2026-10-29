@@ -627,6 +627,65 @@ fn unresolved_current_admission_refuses_a_parked_finite_issue_with_no_charged_go
     panic!("finite work did not reach its parked issue boundary");
 }
 
+#[test]
+fn a_final_repository_refusal_is_visible_and_operator_resume_can_issue_work() {
+    let fixture = common::Fixture::new();
+    let host = CountingHost::new();
+    let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+    let root = fixture.state.path().join("project");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    let root = root.canonicalize().unwrap();
+    daemon.ctx.enrollment = legacy_enrollment(root.clone());
+    daemon.observe_repository_enrollment().unwrap();
+    let attempt = prepared(&mut daemon, &fixture, Provider::Claude);
+    let saved = root.with_file_name("preserved-project");
+    let hidden = root.clone();
+    let preserved = saved.clone();
+    daemon.ctx.before_recovery_dispatch = Some(Box::new(move || {
+        std::fs::rename(hidden, preserved).unwrap();
+    }));
+    let mut queue = VecDeque::new();
+    execute(&mut daemon, &attempt.spawn, &mut queue);
+    while let Some(input) = queue.pop_front() {
+        daemon.pump(input).unwrap();
+    }
+    assert_eq!(host.spawn_calls(), 0);
+    let visible = matches!(
+        daemon.sup.world().agents[&attempt.agent].automatic_hold,
+        Some(AutomaticHold::LaunchFailed { .. })
+    );
+    std::fs::rename(saved, &root).unwrap();
+    daemon.pump(Input::Tick).unwrap();
+    assert_eq!(
+        host.spawn_calls(),
+        0,
+        "restoration alone cannot resume a visible failure"
+    );
+    daemon.ask(Ask::Resume(attempt.agent)).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while host.spawn_calls() == 0 && std::time::Instant::now() < deadline {
+        if let Ok(Job::Input(input)) = daemon.jobs.recv_timeout(Duration::from_millis(20)) {
+            daemon.pump_runtime_input(*input).unwrap();
+        }
+    }
+    assert_eq!(
+        host.spawn_calls(),
+        1,
+        "the late refusal silently retained its spawning claim"
+    );
+    assert!(
+        visible,
+        "the no-host refusal must expose an operator-resumable failure"
+    );
+    assert!(daemon.sup.world().turns[&attempt.turn].has_ended());
+    assert!(
+        fixture
+            .records()
+            .iter()
+            .any(|record| no_host_finish(record, &attempt, None))
+    );
+}
+
 fn ordinary_failure_folded(daemon: &TestDaemon, attempt: &Prepared) -> bool {
     daemon.sup.world().turns[&attempt.turn].has_ended()
         && matches!(
