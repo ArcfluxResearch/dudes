@@ -37,10 +37,12 @@ jobs:
           sudo apt-get install --no-install-recommends -y bubblewrap socat
       - run: rustup toolchain install
       - name: Build the Rust policy fixture with an isolated home
+        id: fixture
         run: |
           mkdir -m 700 "$RUNNER_TEMP/compatibility-build-home"
           env CARGO_TARGET_DIR="$RUNNER_TEMP/compatibility-target" RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" HOME="$RUNNER_TEMP/compatibility-build-home" cargo build --locked -p dudes-providers --example scoped_launch_fixture
       - name: Download pinned native engines
+        id: engines
         run: python3 scripts/fetch-confinement-engines.py --output "$RUNNER_TEMP/compatibility-binaries"
       - name: Check generated recipes without an external network route
         run: |
@@ -56,6 +58,14 @@ jobs:
             ip link set lo up
             exec runuser -u runner -- "$@"
           ' confinement python3 scripts/verify-generated-scoped-confinement.py --fixture "$RUNNER_TEMP/compatibility-target/debug/examples/scoped_launch_fixture" --claude "$RUNNER_TEMP/compatibility-binaries/claude" --codex "$RUNNER_TEMP/compatibility-binaries/codex" --output "$RUNNER_TEMP/generated-confinement-proof"
+      - name: Check retained Claude session narrowing in a loopback-only namespace
+        if: ${{ !cancelled() && steps.fixture.outcome == 'success' && steps.engines.outcome == 'success' }}
+        run: |
+          sudo unshare --net /bin/sh -c '
+            set -e
+            ip link set lo up
+            exec runuser -u runner -- "$@"
+          ' resume python3 scripts/verify-generated-scoped-confinement.py --fixture "$RUNNER_TEMP/compatibility-target/debug/examples/scoped_launch_fixture" --claude "$RUNNER_TEMP/compatibility-binaries/claude" --codex "$RUNNER_TEMP/compatibility-binaries/codex" --provider claude --claude-resume-narrowing --output "$RUNNER_TEMP/generated-resume-proof"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
@@ -81,4 +91,13 @@ jobs:
             ${{ runner.temp }}/generated-confinement-proof/**/model-requests.json
             ${{ runner.temp }}/generated-confinement-proof/**/stdout.jsonl
             ${{ runner.temp }}/generated-confinement-proof/**/stderr.txt
+            ${{ runner.temp }}/generated-resume-proof/summary.json
+            ${{ runner.temp }}/generated-resume-proof/**/receipt.json
+            ${{ runner.temp }}/generated-resume-proof/**/fixture-input.json
+            ${{ runner.temp }}/generated-resume-proof/**/fixture-output.json
+            ${{ runner.temp }}/generated-resume-proof/**/generated-policy.json
+            ${{ runner.temp }}/generated-resume-proof/**/model-requests.json
+            ${{ runner.temp }}/generated-resume-proof/**/stdout.jsonl
+            ${{ runner.temp }}/generated-resume-proof/**/stderr.txt
+            ${{ runner.temp }}/generated-resume-proof/**/session-artifact.jsonl
           retention-days: 7
