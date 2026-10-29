@@ -871,11 +871,13 @@ pub enum Command {
         /// The declared MCP servers the daemon admitted for this hire, sorted and without repeats.
         mcp_servers: Vec<dudes_types::McpServerName>,
     },
+    /// Assign every already durable lease to one agent atomically.
+    HireWithRepositories(Box<dudes_proto::repository::RepositoryHire>),
     /// Lease a worktree for an agent that is not hired yet. Appended and fsynced
     /// before `git worktree add` runs.
     ///
     /// The caller first mints the lease identity and exclusively creates its root. The machine
-    /// derives the path and branch from that identity and persists the supplied directory authority.
+    /// persists that root and its directory authority, deriving its branch from the lease identity.
     LeaseWorktree {
         /// The identity minted before exclusive directory creation.
         worktree: dudes_types::WorktreeId,
@@ -883,6 +885,8 @@ pub enum Command {
         identity: dudes_proto::record::WorktreeDirectoryAuthority,
         /// The repository the tree is added from.
         origin: PathBuf,
+        /// The canonical, exclusively prepared root.
+        path: PathBuf,
         /// The commit the branch is created at.
         base: dudes_types::GitCommit,
         /// The lease this one is based on.

@@ -34,6 +34,8 @@
 #![allow(dead_code)]
 
 pub(crate) mod hook_shim;
+#[cfg(test)]
+pub(crate) mod repository_runner;
 mod rng;
 pub(crate) use rng::FixtureRng;
 
@@ -1912,6 +1914,7 @@ pub(crate) fn seams_with<H: ProcessHost, P: PredicateRunner>(
 /// `agent.hire` params for a Claude-driven agent in `cwd`.
 pub(crate) fn hire_params(cwd: &Path) -> HireParams {
     HireParams {
+        project: None,
         character: None,
         accent: None,
         name: "Hector".to_owned(),

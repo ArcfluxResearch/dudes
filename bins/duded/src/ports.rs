@@ -610,6 +610,21 @@ pub enum Ask {
     Look(Box<LookParams>),
     /// Step 1 of a worktree hire: admit it, and name the lease it starts from, if any.
     WorktreeAdmit(Box<HireParams>),
+    /// Read a current project target without admitting a hire.
+    RepositoryHireTarget(dudes_proto::rpc::workspace::RepositoryTargetParams),
+    /// Freeze the complete catalog and original trust grants before any lease.
+    RepositoryHireAdmit(Box<HireParams>),
+    /// Revalidate the complete group, then durably lease one member.
+    RepositoryHireLease {
+        /// Original immutable admission.
+        plan: Box<crate::worktree::hire::RepositoryHirePlan>,
+        /// The member being acquired in stable identity order.
+        repo_id: dudes_proto::repository::RepoId,
+        /// Original base resolved before acquiring the first member.
+        base: dudes_types::GitCommit,
+    },
+    /// Validate all actual copies and atomically assign the complete group.
+    RepositoryHireCommit(Box<crate::worktree::hire::PreparedRepositoryGroup>),
     /// Step 3: admit again, then journal the lease before `git worktree add` runs.
     WorktreeLease {
         /// The hire's own params, checked again.
@@ -735,6 +750,12 @@ pub enum Answered {
     PtyWritten(dudes_proto::PtyWriteOutcome),
     /// A worktree hire was admitted, with the lease it is based on when it names one.
     WorktreeAdmitted(Option<crate::worktree::hire::LeaseView>),
+    /// Bounded current project identity and exact observation revision.
+    RepositoryHireTarget(dudes_proto::rpc::agent::ProjectHireTarget),
+    /// The complete original group admission.
+    RepositoryHireAdmitted(Box<crate::worktree::hire::RepositoryHirePlan>),
+    /// Final validation refused before any hire append was attempted.
+    RepositoryHireRejected(RpcError),
     /// The lease journaled for a worktree hire.
     WorktreeLeased(crate::worktree::hire::LeaseView),
     /// A lease, when it is pending.
@@ -2387,7 +2408,10 @@ impl Control for LoopControl {
         // lock and therefore either acquired in the pre-agent epoch or observes this seal. No
         // validation, persistence, provider, or spawn failure below can reopen it.
         self.operator_authority.seal();
-        if params.checkout.is_some() {
+        params
+            .target()
+            .map_err(|message| error(ErrorCode::InvalidParams, message))?;
+        if params.checkout.is_some() || params.project.is_some() {
             return match &self.worktrees {
                 Some(worktrees) => worktrees.hire(params),
                 None => Err(crate::worktree::unavailable(
@@ -2399,6 +2423,18 @@ impl Control for LoopControl {
             Answered::Hired(result) => Ok(result),
             other => Err(internal(format!(
                 "the loop answered {other:?} for agent.hire"
+            ))),
+        }
+    }
+
+    fn workspace_repository_target(
+        &self,
+        params: dudes_proto::rpc::workspace::RepositoryTargetParams,
+    ) -> Result<dudes_proto::rpc::agent::ProjectHireTarget, RpcError> {
+        match self.handle.ask(Ask::RepositoryHireTarget(params))? {
+            Answered::RepositoryHireTarget(target) => Ok(target),
+            other => Err(internal(format!(
+                "the loop answered {other:?} for workspace.repository_target"
             ))),
         }
     }
@@ -3028,6 +3064,7 @@ mod tests {
 
     fn hire_params() -> HireParams {
         HireParams {
+            project: None,
             character: None,
             accent: None,
             name: "Kim".to_owned(),

@@ -248,7 +248,16 @@ fn a_worktree_hire_journals_the_lease_before_the_agent_and_works_in_its_own_tree
     assert_ne!(a.cwd, b.cwd, "each agent has its own tree");
     assert_ne!(a.cwd, repo);
     for tree in [&a, &b] {
-        assert!(tree.cwd.starts_with(fixture.state.path().join("worktrees")));
+        assert!(
+            tree.cwd.starts_with(
+                fixture
+                    .state
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join("worktrees")
+            )
+        );
         assert_eq!(
             std::fs::read_to_string(tree.cwd.join("tracked.txt")).unwrap(),
             "one\n"

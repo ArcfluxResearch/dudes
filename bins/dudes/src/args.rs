@@ -109,6 +109,13 @@ pub enum Command {
     Hire(Box<HireParams>),
     /// A hire whose directory must be selected from the enrolled projects before sending it.
     SelectHire(Box<HireParams>),
+    /// Resolve the selected project's observed revision before hiring.
+    ProjectHire {
+        /// The operator-selected project identity.
+        project: String,
+        /// Ordinary hire options, before resolving the target.
+        params: Box<HireParams>,
+    },
     /// `goal.set`.
     Goal(Box<GoalSetParams>),
     /// Submit one locally reviewed replacement request file.
@@ -897,12 +904,16 @@ USAGE
 const HIRE_HELP: &str = "\
 USAGE
     dudes hire --name <name> --role <role> --department <dept> --provider <provider>
-         [--cwd <path>] [--usd-per-day <n>] [--tokens-per-day <n>] [--sandbox true|false]
+         [--cwd <path> | --project <id> --worktree --trusted]
+         [--usd-per-day <n>] [--tokens-per-day <n>] [--sandbox true|false]
          [--max-turns <n>] [--max-budget-usd <n>] [--model <name>] [--trusted] [--mcp <server>]...
          [--worktree [--from <worktree-id>]]
          [--character c|d|e|f|g|h|i|j|k|l] [--accent amber|coral|mint|sky|violet|rose]
         Hire an agent. A relative --cwd is resolved against the current directory.
         Without --cwd, use the only enrolled project or ask which on a terminal.
+        --project selects an explicitly configured repository set and requires --worktree
+        and --trusted. Every member needs current project trust. Restricted repository
+        execution is refused until a provider has a verified confinement capability.
         With no project, hire in the current directory and warn that the agent can't
         take tickets. An explicit --cwd keeps its own directory choice.
         With --worktree the daemon creates a git worktree of the repository
@@ -3122,6 +3133,10 @@ fn worktree(tail: &[OsString]) -> Result<WorktreeCommand, ArgError> {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one hire parser keeps target selection beside its mutually exclusive options"
+)]
 fn hire(tail: &[OsString]) -> Result<Command, ArgError> {
     let mut flags = Flags::new(tail);
     let (mut name, mut role, mut department, mut provider, mut cwd) =
@@ -3133,6 +3148,7 @@ fn hire(tail: &[OsString]) -> Result<Command, ArgError> {
     let mut trusted = false;
     let (mut worktree, mut from) = (false, None);
     let mut mcp_servers = Vec::new();
+    let mut project = None;
 
     while let Some(arg) = flags.next() {
         match arg.to_string_lossy().as_ref() {
@@ -3167,6 +3183,7 @@ fn hire(tail: &[OsString]) -> Result<Command, ArgError> {
                 provider = Some(flags.parsed::<Provider>("--provider", "a known provider")?);
             }
             "--cwd" => cwd = Some(flags.path("--cwd")?),
+            "--project" => project = Some(flags.value("--project")?),
             "--usd-per-day" => {
                 usd_per_day = Some(flags.parsed::<u64>("--usd-per-day", "whole dollars")?);
             }
@@ -3194,6 +3211,15 @@ fn hire(tail: &[OsString]) -> Result<Command, ArgError> {
         }
     }
 
+    if project.is_some() && cwd.is_some() {
+        return Err(ArgError::Requires("--project", "no --cwd"));
+    }
+    if project.is_some() && from.is_some() {
+        return Err(ArgError::Requires("--project", "no --from"));
+    }
+    if project.is_some() && !worktree {
+        return Err(ArgError::Requires("--project", "--worktree"));
+    }
     if from.is_some() && !worktree {
         return Err(ArgError::Requires("--from", "--worktree"));
     }
@@ -3201,6 +3227,7 @@ fn hire(tail: &[OsString]) -> Result<Command, ArgError> {
         return Err(ArgError::Requires("--worktree", "--trusted"));
     }
     let params = Box::new(HireParams {
+        project: None,
         character,
         accent,
         name: required(name, "--name")?,
@@ -3235,11 +3262,70 @@ fn hire(tail: &[OsString]) -> Result<Command, ArgError> {
         from,
         mcp_servers,
     });
-    Ok(if cwd.is_some() {
+    Ok(if let Some(project) = project {
+        Command::ProjectHire { project, params }
+    } else if cwd.is_some() {
         Command::Hire(params)
     } else {
         Command::SelectHire(params)
     })
+}
+
+#[cfg(test)]
+mod project_hire_tests {
+    use super::*;
+
+    fn command(extra: &[&str]) -> Result<Command, ArgError> {
+        let mut args: Vec<OsString> = [
+            "--name",
+            "Kim",
+            "--role",
+            "engineer",
+            "--department",
+            "engineering",
+            "--provider",
+            "claude",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        args.extend(extra.iter().map(OsString::from));
+        hire(&args)
+    }
+
+    #[test]
+    fn project_selection_keeps_its_identity_until_the_daemon_supplies_a_revision() {
+        let Command::ProjectHire { project, params } =
+            command(&["--project", "service", "--worktree", "--trusted"]).unwrap()
+        else {
+            panic!("explicit project selection")
+        };
+        assert_eq!(project, "service");
+        assert!(params.cwd.as_os_str().is_empty());
+        assert!(params.project.is_none());
+        assert_eq!(
+            params.checkout,
+            Some(dudes_proto::rpc::agent::Checkout::Worktree)
+        );
+    }
+
+    #[test]
+    fn project_selection_refuses_a_directory_or_a_partial_copy_request() {
+        for flags in [
+            vec![
+                "--project",
+                "service",
+                "--cwd",
+                "/work/repo",
+                "--worktree",
+                "--trusted",
+            ],
+            vec!["--project", "service"],
+            vec!["--project", "service", "--worktree"],
+        ] {
+            assert!(command(&flags).is_err(), "{flags:?}");
+        }
+    }
 }
 
 /// `Some(n)` for a positive `n`, or [`ArgError::BadValue`] for a typed `0`.

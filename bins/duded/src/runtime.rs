@@ -130,6 +130,9 @@ mod recovery;
 #[cfg(all(test, unix))]
 mod recovery_fold_tests;
 pub(crate) mod repository_admission;
+mod repository_hire;
+#[cfg(all(test, unix))]
+mod repository_hire_tests;
 mod shared_folder;
 #[cfg(all(test, unix))]
 mod shared_folder_tests;
@@ -339,6 +342,17 @@ impl std::fmt::Display for HireAuthorityRefusal {
 }
 
 impl std::error::Error for HireAuthorityRefusal {}
+
+fn known_preappend_refusal(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<KnownNoEffect>().is_some()
+        || error.downcast_ref::<HireAuthorityRefusal>().is_some()
+}
+
+#[derive(Clone)]
+struct PreparedWorktreeLease {
+    lease: crate::worktree::hire::LeaseView,
+    from: Option<dudes_types::WorktreeId>,
+}
 
 /// Why a browser action's pump stopped, for its route to name in its own outcome.
 enum PumpFailure {
@@ -577,7 +591,8 @@ impl OnboardingFailure {
             Record::AgentHired {
                 browser_onboarding: Some(_),
                 ..
-            } => OnboardingFailurePoint::Hire,
+            }
+            | Record::AgentHiredWithRepositories(_) => OnboardingFailurePoint::Hire,
             Record::GoalSet {
                 browser_onboarding: Some(_),
                 ..
@@ -648,7 +663,7 @@ impl OnboardingFailure {
             Record::AgentHired {
                 browser_onboarding: Some(_),
                 ..
-            }
+            } | Record::AgentHiredWithRepositories(_)
         ) {
             return false;
         }
@@ -707,7 +722,10 @@ impl OnboardingPause {
             Record::AgentHired {
                 browser_onboarding: None,
                 ..
-            } => (None, Some(Point::BeforeSocketHireAppend), None),
+            }
+            | Record::AgentHiredWithRepositories(_) => {
+                (None, Some(Point::BeforeSocketHireAppend), None)
+            }
             record if record.worktree_lease().is_some() => {
                 (None, Some(Point::BeforeWorktreeLeaseAppend), None)
             }
@@ -931,6 +949,7 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// at start, and replaced only by an applied `floor.enrollment.reload`.
     pub(crate) enrollment: crate::floor_actions::Enrollment,
     pub(crate) current_repositories: repository_admission::CurrentRepositories,
+    pub(crate) repository_lease_append: Option<repository_hire::RepositoryLeaseAppend>,
     /// The reload sequence, marks counter and resync window beside that enrollment.
     pub(crate) reloads: crate::enrollment_reload::ReloadState,
     /// Only attributed durable records populate this replayable attempt index.
@@ -2640,6 +2659,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             },
         };
         let params = HireParams {
+            project: None,
             name: request.name.clone(),
             character: request.character,
             accent: request.accent,
@@ -2875,9 +2895,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 .is_some()
             {
                 PumpFailure::Forbidden
-            } else if error.downcast_ref::<KnownNoEffect>().is_some()
-                || error.downcast_ref::<HireAuthorityRefusal>().is_some()
-            {
+            } else if known_preappend_refusal(&error) {
                 PumpFailure::NoEffect
             } else {
                 PumpFailure::Uncertain
@@ -4671,6 +4689,21 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
         }
         match ask {
+            Ask::RepositoryHireTarget(params) => self
+                .repository_hire_target(&params.project_id)
+                .map(Answered::RepositoryHireTarget),
+            Ask::RepositoryHireAdmit(params) => self
+                .repository_hire_plan(*params)
+                .map(|plan| Answered::RepositoryHireAdmitted(Box::new(plan))),
+            Ask::RepositoryHireLease {
+                plan,
+                repo_id,
+                base,
+            } => self.repository_hire_lease(&plan, &repo_id, base),
+            Ask::RepositoryHireCommit(prepared) => self.repository_hire_commit(&prepared),
+            Ask::Hire(params) if params.project.is_some() => Err(crate::worktree::unavailable(
+                "a project hire requires the complete repository group",
+            )),
             Ask::RecoveryInspect { .. } | Ask::RecoveryReceipt { .. } | Ask::Recover { .. } => {
                 unreachable!("recovery routes precede the mutation fence")
             }
@@ -4752,32 +4785,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         ));
                     }
                 }
-                let before: std::collections::BTreeSet<_> =
-                    self.sup.world().worktrees.keys().copied().collect();
-                let worktree = self.sup.mint_worktree_id();
-                let path = self
-                    .sup
-                    .config()
-                    .data_dir
-                    .join("worktrees")
-                    .join(worktree.to_string());
-                let identity = crate::worktree::pending::prepare(&origin, &path)
-                    .map_err(crate::worktree::unavailable)?;
+                let prepared = self.prepare_worktree_lease(origin.clone(), base, from)?;
                 self.worktree_admission(&params)?;
                 self.trust_still_holds(trust.as_deref(), &origin, &params.cwd)?;
-                self.pump_or_refuse(Input::Command(Command::LeaseWorktree {
-                    worktree,
-                    identity,
-                    origin,
-                    base,
-                    from,
-                }))?;
-                let world = self.sup.world();
-                match world.worktrees.iter().find(|(id, _)| !before.contains(*id)) {
-                    Some((id, row)) => Ok(Answered::WorktreeLeased(lease_view(*id, row))),
-                    None => Err(refused("the lease was not journaled")),
-                }
+                self.append_worktree_lease(prepared)
+                    .map(Answered::WorktreeLeased)
+                    .map_err(|failure| refused(&failure.to_string()))
             }
+
             Ask::WorktreeHire { params, worktree } => {
                 let Some(lease) = self.pending_lease(worktree) else {
                     return Err(crate::worktree::unavailable(
@@ -6715,6 +6730,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.ctx
             .require_current_hire(self.sup.world(), &params.cwd)
             .map_err(|failure| crate::worktree::unavailable(failure.to_string()))?;
+        if params.project.is_some() {
+            return Err(crate::worktree::unavailable(
+                "a project hire requires the complete repository group",
+            ));
+        }
+        self.hire_option_guards(params)?;
+        self.refuse_overlap(&params.cwd, own)
+    }
+
+    fn hire_option_guards(&self, params: &HireParams) -> Result<(), RpcError> {
         if self.sup.adapters().get(params.provider).is_none() {
             return Err(no_adapter_refusal(params.provider));
         }
@@ -6731,8 +6756,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 format!("agent.hire: {} does not support `{field}`", params.provider),
             ));
         }
-        self.require_reserve(crate::reserve::Candidate::Agent(&params.budget))?;
-        self.refuse_overlap(&params.cwd, own)
+        self.require_reserve(crate::reserve::Candidate::Agent(&params.budget))
     }
 
     fn refuse_shared_hire(
@@ -6908,6 +6932,60 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 crate::worktree::hire::TRUST_CHANGED,
             ))
         }
+    }
+
+    fn prepare_worktree_lease(
+        &mut self,
+        origin: PathBuf,
+        base: dudes_types::GitCommit,
+        from: Option<dudes_types::WorktreeId>,
+    ) -> Result<PreparedWorktreeLease, RpcError> {
+        let worktree = self.sup.mint_worktree_id();
+        let path = self
+            .sup
+            .config()
+            .data_dir
+            .join("worktrees")
+            .join(worktree.to_string());
+        let identity = crate::worktree::pending::prepare(&origin, &path)
+            .map_err(crate::worktree::unavailable)?;
+        let path = path
+            .canonicalize()
+            .map_err(|error| crate::worktree::unavailable(error.to_string()))?;
+        Ok(PreparedWorktreeLease {
+            lease: crate::worktree::hire::LeaseView {
+                worktree,
+                origin,
+                path,
+                branch: format!("dudes/{}", worktree.short()),
+                base,
+                identity: Some(identity),
+            },
+            from,
+        })
+    }
+
+    fn append_worktree_lease(
+        &mut self,
+        prepared: PreparedWorktreeLease,
+    ) -> Result<crate::worktree::hire::LeaseView> {
+        let lease = prepared.lease;
+        self.pump(Input::Command(Command::LeaseWorktree {
+            worktree: lease.worktree,
+            identity: lease
+                .identity
+                .clone()
+                .context("a new lease requires directory authority")?,
+            origin: lease.origin.clone(),
+            path: lease.path.clone(),
+            base: lease.base,
+            from: prepared.from,
+        }))?;
+        self.pending_lease(lease.worktree)
+            .filter(|recorded| *recorded == lease)
+            .context(
+                "the exact prepared lease was not acknowledged; copies are retained for replay",
+            )
     }
 
     fn pending_lease(
@@ -7600,7 +7678,7 @@ fn unsupported_hire_option(params: &HireParams) -> Option<(&'static str, ErrorCo
     }
     // Only the Claude adapter has a trusted mode; journaling the declaration for another provider
     // would record trust nothing used.
-    if params.trusted {
+    if params.trusted && params.project.is_none() {
         return Some(("trusted", ErrorCode::InvalidParams));
     }
     None
@@ -8682,7 +8760,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         publication: FloorPublication,
         recovery: Option<recovery::AppendSubject<'_>>,
     ) -> Result<CheckedAppend> {
-        if let Some(lease) = entry.record.worktree_lease() {
+        let repository_lease = self
+            .consume_repository_lease(world, entry)
+            .map_err(|error| HireAuthorityRefusal(error.to_string()))?;
+        if let Some(lease) = entry.record.worktree_lease()
+            && repository_lease.is_none()
+        {
             self.require_current_hire(world, lease.origin)?;
         }
         if let Some(hire) = entry.record.hire() {
@@ -8729,7 +8812,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             self.fence_journal();
             return Err(error.context("invalid live goal replacement"));
         }
-        let committed = self.append_checked(world, entry, recovery)?;
+        let committed = self.append_checked(world, entry, recovery, repository_lease.as_ref())?;
         if let Record::AgentRetired { id, .. } = &entry.record {
             crate::floor_chat_file::remove_for(&self.agents_root, *id);
         }
@@ -8886,6 +8969,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         world: &dudes_supervisor::World,
         entry: &Entry,
         recovery: Option<recovery::AppendSubject<'_>>,
+        repository_lease: Option<&repository_hire::RepositoryLeaseAppend>,
     ) -> Result<CheckedAppend> {
         self.ensure_memory_ready()?;
         self.ensure_journal_ready()?;
@@ -8947,9 +9031,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     };
                     pause.at(&entry.record, AppendStage::AfterPermit);
                     if let Some(lease) = entry.record.worktree_lease() {
-                        current_hire
-                            .require_current_hire(world, lease.origin, clock.now())
-                            .map_err(|error| HireAuthorityRefusal(error.to_string()))?;
+                        let admitted = match repository_lease {
+                            Some(admitted) => {
+                                current_hire.require_repository_hire_plan(world, &admitted.plan)
+                            }
+                            None => {
+                                current_hire.require_current_hire(world, lease.origin, clock.now())
+                            }
+                        };
+                        admitted.map_err(|error| HireAuthorityRefusal(error.to_string()))?;
                     }
                     if let Some(hire) = entry.record.hire() {
                         current_hire

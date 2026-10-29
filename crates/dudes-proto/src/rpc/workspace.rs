@@ -3,6 +3,14 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Read the exact current repository observation for a project-target hire.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryTargetParams {
+    /// The enrolled project's stable identity.
+    pub project_id: String,
+}
+
 /// `workspace.trust` params: trust or stop trusting one enrolled project.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

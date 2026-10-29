@@ -187,12 +187,15 @@ pub fn hire<C: Control>(
                 ),
             ));
         }
-        if !request.cwd.is_absolute() {
+        if request.project.is_none() && !request.cwd.is_absolute() {
             return Err(error(
                 ErrorCode::InvalidParams,
                 format!("cwd `{}` is not an absolute path", request.cwd.display()),
             ));
         }
+        request
+            .target()
+            .map_err(|message| error(ErrorCode::InvalidParams, message))?;
         if let Some(wanted) = request.sandbox {
             return Err(sandbox_refused(request.provider, wanted));
         }

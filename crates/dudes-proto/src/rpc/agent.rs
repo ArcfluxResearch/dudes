@@ -1,6 +1,6 @@
 //! `agent.*` params and results.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use dudes_types::{AgentId, IsolationMode, Lsn, Provider, Usd};
 use schemars::JsonSchema;
@@ -15,6 +15,10 @@ use super::pty::PtyId;
 /// `agent.hire` params. Creates a managed agent; attached mode is opt-in later.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("oneOf" = [
+    {"required": ["cwd"], "properties": {"cwd": {"minLength": 1}, "project": {"type": "null"}}},
+    {"required": ["project"], "properties": {"cwd": {"const": ""}, "project": {"type": "object"}}}
+]))]
 pub struct HireParams {
     /// Display name.
     pub name: String,
@@ -31,8 +35,12 @@ pub struct HireParams {
     pub department: String,
     /// Which CLI drives it.
     pub provider: Provider,
-    /// The repository it works in, as an absolute path. A relative one is refused with `-32602`.
+    /// Legacy directory target. Exactly one of `cwd` and `project` is required.
+    #[serde(default, skip_serializing_if = "empty_directory")]
     pub cwd: PathBuf,
+    /// An explicitly selected project and the exact current repository observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectHireTarget>,
     /// Daily ceiling.
     pub budget: AgentBudget,
     /// Whether to pass the provider's sandbox on-switch. Absent and `null` are `None`, which
@@ -109,6 +117,51 @@ pub struct HireParams {
     /// The operator may replace the desired set for later launches through `agent.mcp`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<dudes_types::McpServerName>,
+}
+
+fn empty_directory(path: &Path) -> bool {
+    path.as_os_str().is_empty()
+}
+
+/// An operator-selected project. Execution locations are resolved by the daemon.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectHireTarget {
+    /// The enrolled project's stable identity.
+    #[schemars(length(min = 1, max = 32))]
+    pub project_id: String,
+    /// The exact current catalog record the operator observed.
+    pub expected_revision: Lsn,
+}
+
+/// The exclusive target admitted at the hire boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HireTarget<'a> {
+    /// An absolute legacy directory.
+    Directory(&'a Path),
+    /// A current project observation.
+    Project(&'a ProjectHireTarget),
+}
+
+impl HireParams {
+    /// Resolve the mutually exclusive target fields before any hire work.
+    ///
+    /// # Errors
+    ///
+    /// An absent or mixed target, a relative directory, or an empty project identity.
+    pub fn target(&self) -> Result<HireTarget<'_>, &'static str> {
+        match (self.cwd.as_os_str().is_empty(), &self.project) {
+            (false, None) if self.cwd.is_absolute() => Ok(HireTarget::Directory(&self.cwd)),
+            (false, None) => Err("cwd must be an absolute path"),
+            (true, Some(project))
+                if !project.project_id.is_empty() && project.project_id.len() <= 32 =>
+            {
+                Ok(HireTarget::Project(project))
+            }
+            (true, Some(_)) => Err("project_id must contain one through 32 bytes"),
+            _ => Err("exactly one of cwd and project is required"),
+        }
+    }
 }
 
 /// The working tree an `agent.hire` asks for.
@@ -433,6 +486,60 @@ mod tests {
             "cwd": "/work/repo",
             "budget": {"usd_per_day": 1}
         })
+    }
+
+    #[test]
+    fn project_hire_target_retains_the_exact_revision_and_excludes_a_directory() {
+        let mut wire = required_hire_fields();
+        wire.as_object_mut().unwrap().remove("cwd");
+        wire["project"] = serde_json::json!({"project_id":"service","expected_revision":17});
+        let params: HireParams = serde_json::from_value(wire.clone()).unwrap();
+        let HireTarget::Project(target) = params.target().unwrap() else {
+            panic!("project target")
+        };
+        assert_eq!(target.project_id, "service");
+        assert_eq!(target.expected_revision, Lsn(17));
+        assert_eq!(
+            serde_json::to_value(params).unwrap()["project"],
+            wire["project"]
+        );
+        wire["cwd"] = serde_json::json!("/work/repo");
+        assert!(
+            serde_json::from_value::<HireParams>(wire)
+                .unwrap()
+                .target()
+                .is_err()
+        );
+        let mut missing = required_hire_fields();
+        missing.as_object_mut().unwrap().remove("cwd");
+        assert!(
+            serde_json::from_value::<HireParams>(missing)
+                .unwrap()
+                .target()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn project_hire_target_and_generated_schema_refuse_mixed_or_future_authority() {
+        let mut wire = required_hire_fields();
+        wire.as_object_mut().unwrap().remove("cwd");
+        wire["project"] = serde_json::json!({"project_id":"service","expected_revision":17});
+        let schema = crate::schema::schema_for::<HireParams>().to_value();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        assert!(validator.is_valid(&wire));
+        wire["project"]["execution_path"] = serde_json::json!("/untrusted/client/path");
+        assert!(serde_json::from_value::<HireParams>(wire.clone()).is_err());
+        assert!(!validator.is_valid(&wire));
+        wire["project"]
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_path");
+        wire["cwd"] = serde_json::json!("/work/repo");
+        assert!(!validator.is_valid(&wire));
+        let mut missing = required_hire_fields();
+        missing.as_object_mut().unwrap().remove("cwd");
+        assert!(!validator.is_valid(&missing));
     }
 
     /// an old client omitting `isolation` keeps working, while a client that

@@ -265,7 +265,7 @@ impl ScopedHireRepositories {
 }
 
 /// Ordinary hire fields beside the complete restricted repository authority.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RepositoryHire {
     /// New agent identity.

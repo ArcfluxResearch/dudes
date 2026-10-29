@@ -4632,6 +4632,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     Then::Fold,
                 );
             }
+            Command::HireWithRepositories(mut hire) => {
+                hire.id = AgentId::from_ulid(self.rng.ulid());
+                self.persist(Record::AgentHiredWithRepositories(hire), Then::Fold);
+            }
             Command::SetWorkspaceTrust {
                 workspace_id,
                 trusted,
@@ -4674,6 +4678,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Command::LeaseWorktree {
                 worktree,
                 origin,
+                path,
                 base,
                 from,
                 identity,
@@ -4683,11 +4688,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         identity,
                         worktree,
                         origin,
-                        path: self
-                            .config
-                            .data_dir
-                            .join("worktrees")
-                            .join(worktree.to_string()),
+                        path,
                         branch: format!("dudes/{}", worktree.short()),
                         base,
                         from,

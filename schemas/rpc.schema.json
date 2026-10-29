@@ -3927,6 +3927,24 @@
           ],
           "type": "object"
         },
+        "workspace.repository_target": {
+          "description": "The operator's current project repository observation.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/RepositoryTargetParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/ProjectHireTarget",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "workspace.trust": {
           "description": "Trust or stop trusting an enrolled project, so the Floor may hire into its own copy there.\nOperator-only.",
           "properties": {
@@ -4047,7 +4065,8 @@
         "floor.session.import",
         "recovery.inspect",
         "recovery.submit",
-        "recovery.receipt"
+        "recovery.receipt",
+        "workspace.repository_target"
       ],
       "title": "CurrentMethods",
       "type": "object"
@@ -11154,6 +11173,34 @@
     "HireParams": {
       "additionalProperties": false,
       "description": "`agent.hire` params. Creates a managed agent; attached mode is opt-in later.",
+      "oneOf": [
+        {
+          "properties": {
+            "cwd": {
+              "minLength": 1
+            },
+            "project": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "cwd"
+          ]
+        },
+        {
+          "properties": {
+            "cwd": {
+              "const": ""
+            },
+            "project": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "project"
+          ]
+        }
+      ],
       "properties": {
         "accent": {
           "anyOf": [
@@ -11193,7 +11240,7 @@
           "description": "Where the agent's working tree comes from. Absent means `cwd` itself, as always.\n\n`worktree` asks the daemon to create a git worktree of the repository `cwd` is in, on a new\nbranch, and to hire the agent into it. It requires `trusted`, and is refused for\nCodex and on Windows."
         },
         "cwd": {
-          "description": "The repository it works in, as an absolute path. A relative one is refused with `-32602`.",
+          "description": "Legacy directory target. Exactly one of `cwd` and `project` is required.",
           "type": "string"
         },
         "department": {
@@ -11262,6 +11309,17 @@
           "description": "Display name.",
           "type": "string"
         },
+        "project": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectHireTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "An explicitly selected project and the exact current repository observation."
+        },
         "provider": {
           "$ref": "#/$defs/Provider",
           "description": "Which CLI drives it."
@@ -11287,7 +11345,6 @@
         "role",
         "department",
         "provider",
-        "cwd",
         "budget"
       ],
       "type": "object"
@@ -17917,6 +17974,27 @@
         }
       ]
     },
+    "ProjectHireTarget": {
+      "additionalProperties": false,
+      "description": "An operator-selected project. Execution locations are resolved by the daemon.",
+      "properties": {
+        "expected_revision": {
+          "$ref": "#/$defs/Lsn",
+          "description": "The exact current catalog record the operator observed."
+        },
+        "project_id": {
+          "description": "The enrolled project's stable identity.",
+          "maxLength": 32,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "expected_revision"
+      ],
+      "type": "object"
+    },
     "Provenance": {
       "description": "Provenance of an event or a predicate result.\n\nOrdered: `Observed > Inferred`. `Done` requires an `Observed` predicate result; an `Inferred`\nevent may raise a breaker rung but may never be the sole cause of `Stop` or `Done`\n(invariant 3).",
       "oneOf": [
@@ -20387,6 +20465,20 @@
           "type": "object"
         }
       ]
+    },
+    "RepositoryTargetParams": {
+      "additionalProperties": false,
+      "description": "Read the exact current repository observation for a project-target hire.",
+      "properties": {
+        "project_id": {
+          "description": "The enrolled project's stable identity.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
     },
     "RepositoryTurnGrant": {
       "additionalProperties": false,

@@ -13,7 +13,7 @@
 //! A failure after step 3 asks the loop whether the lease is still pending, and only a pending
 //! lease is cleaned up: a tree an agent was hired into is never touched.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dudes_proto::rpc::RpcError;
@@ -23,6 +23,9 @@ use dudes_types::{GitCommit, Lsn, WorktreeId};
 use super::git::{Git, GitError};
 use super::trust::{TrustRefusal, Vouch};
 use crate::ports::{Answered, Ask, Handle};
+
+mod group;
+pub use group::{PreparedRepositoryGroup, RepositoryHireOrigin, RepositoryHirePlan};
 
 /// What the loop says when a project's trust grant is no longer the one a hire was admitted under.
 pub(crate) const TRUST_CHANGED: &str = "the project's trust changed while the copy was being made";
@@ -134,6 +137,9 @@ impl WorktreeHires {
     /// The refusal of whichever step said no. Proved pending copies are cleaned up.
     /// Uncertain directories and their leases are retained for the operator.
     pub fn hire(&self, params: HireParams) -> Result<HireResult, RpcError> {
+        if params.project.is_some() {
+            return self.hire_project(params);
+        }
         let lease = self
             .prepare(&params, None)
             .map_err(|failure| failure.error)?;
@@ -210,16 +216,7 @@ impl WorktreeHires {
                 origin: origin.clone(),
             })
             .map_err(refuse)?;
-        if self
-            .git
-            .has_hook_config(&origin)
-            .map_err(|error| git_failed(&error))?
-        {
-            return Err(refuse(super::unavailable(
-                "the repository's configuration has `hook.*` keys, which git runs as hooks whatever \
-                 core.hooksPath says; remove them or hire without a worktree",
-            )));
-        }
+        self.refuse_configured_hooks(&origin).map_err(refuse)?;
         if let Some(lease) = &from
             && !super::same_directory(&lease.origin, &origin)
         {
@@ -265,6 +262,20 @@ impl WorktreeHires {
             return Err(refuse(error));
         }
         Ok(lease)
+    }
+
+    fn refuse_configured_hooks(&self, origin: &Path) -> Result<(), RpcError> {
+        if self
+            .git
+            .has_hook_config(origin)
+            .map_err(|error| from_git(&error))?
+        {
+            return Err(super::unavailable(
+                "the repository's configuration has `hook.*` keys, which git runs as hooks whatever \
+                 core.hooksPath says; remove them or hire without a worktree",
+            ));
+        }
+        Ok(())
     }
 
     fn add_copy(&self, lease: &LeaseView) -> Result<(), RpcError> {

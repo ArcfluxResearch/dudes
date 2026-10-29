@@ -22,6 +22,8 @@ pub(crate) struct CurrentRepositories {
     pub(crate) invalid_seq: u64,
     pub(crate) observed: BTreeMap<String, ObservedProject>,
     bindings: BTreeMap<String, BTreeMap<RepoId, TrustedRepository>>,
+    #[cfg(test)]
+    pub(crate) test_hire_capability: bool,
 }
 
 pub(crate) struct ObservedProject {
@@ -167,6 +169,56 @@ impl<'a> CurrentHireAdmission<'a> {
         }
     }
 
+    pub(super) fn current_project_repositories(
+        &self,
+        world: &World,
+        project: &str,
+    ) -> Result<(&Profile, &ObservedProject)> {
+        ensure!(
+            !self.current.invalid,
+            "current project configuration is unavailable"
+        );
+        let profile = self
+            .enrollment
+            .profile(project)
+            .filter(|profile| profile.repositories.is_some())
+            .context("select a project with an explicit repository list")?;
+        let current = catalog(
+            profile,
+            world.repository_projects.get(project),
+            self.current.bindings.get(project),
+        )?
+        .context("current project repositories are unavailable")?;
+        let observed = self
+            .current
+            .observed
+            .get(project)
+            .filter(|observed| observed.repositories == current)
+            .context("current repository observation is unavailable")?;
+        ensure!(
+            observed.lsn.and_then(|lsn| world
+                .repository_projects
+                .get(project)?
+                .revisions
+                .get(&lsn))
+                == Some(&observed.repositories),
+            "repository enrollment is not available yet"
+        );
+        Ok((profile, observed))
+    }
+
+    pub(super) fn require_repository_capability(&self) -> Result<()> {
+        ensure!(
+            !self.current.invalid,
+            "current project configuration is unavailable"
+        );
+        #[cfg(test)]
+        if self.current.test_hire_capability {
+            return Ok(());
+        }
+        anyhow::bail!("restricted repository execution has no verified provider capability yet");
+    }
+
     pub(super) fn require_current_hire(
         &self,
         world: &World,
@@ -222,8 +274,8 @@ impl<'a> CurrentHireAdmission<'a> {
                 };
                 self.require_current_hire(world, origin, at)
             }
-            dudes_proto::repository_state::HireRepositoryRecord::Scoped(_) => {
-                anyhow::bail!("scoped repository execution is not available yet");
+            dudes_proto::repository_state::HireRepositoryRecord::Scoped(scope) => {
+                self.require_scoped_hire_authority(world, scope)
             }
         }
     }

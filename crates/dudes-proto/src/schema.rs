@@ -693,6 +693,7 @@ mod tests {
 
         let rpc = exported_file("rpc.schema.json");
         let hire = crate::rpc::agent::HireParams {
+            project: None,
             character: None,
             accent: None,
             name: "Kim".into(),
@@ -1526,6 +1527,7 @@ mod tests {
                 CurrentMethod::RecoveryInspect.name(),
                 CurrentMethod::RecoverySubmit.name(),
                 CurrentMethod::RecoveryReceipt.name(),
+                CurrentMethod::WorkspaceRepositoryTarget.name(),
             ])
             .collect();
         for schema in [&generated, &committed] {
@@ -1570,6 +1572,11 @@ mod tests {
                     "recovery.receipt",
                     "RecoveryReceiptParams",
                     "RecoveryReceiptResult",
+                ),
+                (
+                    "workspace.repository_target",
+                    "RepositoryTargetParams",
+                    "ProjectHireTarget",
                 ),
             ] {
                 let shape = &schema["$defs"]["CurrentMethods"]["properties"][method];

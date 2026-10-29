@@ -28,6 +28,8 @@ pub enum CurrentMethod {
     RecoverySubmit,
     /// Read the certified receipt for a retained request identity.
     RecoveryReceipt,
+    /// Read the exact current repository target for an operator hire.
+    WorkspaceRepositoryTarget,
 }
 
 impl CurrentMethod {
@@ -42,6 +44,7 @@ impl CurrentMethod {
             Self::RecoveryInspect => "recovery.inspect",
             Self::RecoverySubmit => "recovery.submit",
             Self::RecoveryReceipt => "recovery.receipt",
+            Self::WorkspaceRepositoryTarget => "workspace.repository_target",
         }
     }
 
@@ -55,7 +58,8 @@ impl CurrentMethod {
             | Self::FloorSessionImport
             | Self::RecoveryInspect
             | Self::RecoverySubmit
-            | Self::RecoveryReceipt => None,
+            | Self::RecoveryReceipt
+            | Self::WorkspaceRepositoryTarget => None,
         }
     }
 }
@@ -77,6 +81,7 @@ impl FromStr for CurrentMethod {
             Self::RecoveryInspect,
             Self::RecoverySubmit,
             Self::RecoveryReceipt,
+            Self::WorkspaceRepositoryTarget,
         ]
         .into_iter()
         .find(|method| method.name() == text)
@@ -115,6 +120,10 @@ pub struct CurrentMethods {
     /// The operator's inert historical receipt read.
     #[serde(rename = "recovery.receipt")]
     pub recovery_receipt: MethodShape<RecoveryReceiptParams, RecoveryReceiptResult>,
+    /// The operator's current project repository observation.
+    #[serde(rename = "workspace.repository_target")]
+    pub workspace_repository_target:
+        MethodShape<super::workspace::RepositoryTargetParams, super::agent::ProjectHireTarget>,
 }
 
 #[cfg(test)]
@@ -130,6 +139,7 @@ mod tests {
             CurrentMethod::RecoveryInspect,
             CurrentMethod::RecoverySubmit,
             CurrentMethod::RecoveryReceipt,
+            CurrentMethod::WorkspaceRepositoryTarget,
         ] {
             assert_eq!(method.name().parse::<CurrentMethod>(), Ok(method));
             assert_eq!(method.legacy(), None);

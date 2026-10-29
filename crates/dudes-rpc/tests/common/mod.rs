@@ -90,6 +90,7 @@ pub(crate) fn goal_id() -> GoalId {
 /// A well-formed `agent.hire` request.
 pub(crate) fn hire_params() -> HireParams {
     HireParams {
+        project: None,
         character: None,
         accent: None,
         name: "Kim".to_owned(),
