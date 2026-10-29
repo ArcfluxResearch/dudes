@@ -301,7 +301,7 @@ class Resume(unittest.TestCase):
                 binary, fixture = root / "fake-engine", root / "fake-fixture"
                 binary.write_bytes(b"never launched")
                 fixture.write_bytes(b"never launched")
-                models, calls, prior_messages = [], [], []
+                models, calls, prior_messages, execution_roots = [], [], [], []
                 def model_factory(*_):
                     port = 12345 + len(models)
                     model = types.SimpleNamespace(endpoint="http://127.0.0.1:" + str(port) + "/v1", requests=[], errors=[], credentials=[], post_attempts=0, get_attempts=0, http_total=0, http_attempts=[], http_overflow=0, close=lambda: None, thread=types.SimpleNamespace(is_alive=lambda: False), server=types.SimpleNamespace(server_port=port, socket=types.SimpleNamespace(fileno=lambda: -1)))
@@ -318,6 +318,7 @@ class Resume(unittest.TestCase):
                 def native(stage_root, argv, env, value, policy, probe, expected_ids):
                     model = models[-1]
                     calls.append(value["session_kind"])
+                    execution_roots.append(Path(value["agent_dir"]).parent)
                     messages = [*prior_messages, {"role": "user", "content": value["task"]}]
                     tools = [{"name": name} for name in ["Bash", "Read", "Edit"]]
                     def request():
@@ -349,10 +350,11 @@ class Resume(unittest.TestCase):
                             output.write(json.dumps({"sessionId": value["session_id"], "message": message}) + "\n")
                     prior_messages[:] = messages
                     if failure == "first canary" and value["session_kind"] == "first":
-                        (stage_root.parent / "hook-ran").touch()
+                        (Path(value["agent_dir"]).parent / "hook-ran").touch()
                     return {"checks": {"task_completed": True, "recorded_session_exact": not (failure == "wrong session" and value["session_kind"] == "resume")}, "error": None, "native_initializations": [{"claude_code_version": "2.1.311"}], "leader_reaped": True, "owned_process_group": 123, "native_leader_pid": 123, "direct_child_exited": True}
                 args = types.SimpleNamespace(output=root, claude=str(binary), fixture=fixture)
-                with mock.patch.dict(proof.compat.PINS, {(platform.system(), platform.machine(), "claude"): proof.sha256(binary)}), \
+                with mock.patch.object(proof.platform, "system", return_value="Linux"), \
+                     mock.patch.dict(proof.compat.PINS, {(platform.system(), platform.machine(), "claude"): proof.sha256(binary)}), \
                      mock.patch.object(proof, "ActionModel", side_effect=model_factory), \
                      mock.patch.object(proof.compat, "fixture_input", side_effect=self.synthetic_input), \
                      mock.patch.object(proof.compat, "project", side_effect=project), \
@@ -364,6 +366,10 @@ class Resume(unittest.TestCase):
                     result = proof.run_claude_resume(args)
                 self.assertEqual(result["passed"], failure is None, {"error": result["error"], "checks": result["checks"]})
                 self.assertEqual(calls, ["first"] if failure in {"group present", "first canary", "wide grant"} else ["first", "resume"])
+                self.assertNotEqual(Path(result["execution_root"]), Path(result["scratch"]))
+                self.assertEqual(execution_roots, [Path(result["execution_root"])] * len(calls))
+                self.assertTrue(Path(result["execution_root"]).is_dir())
+                self.assertTrue(result["linux_bridge_path_budget"]["fits"])
                 if failure is None:
                     self.assertEqual([stage["local_post_attempts"] for stage in result["stages"]], [2, 4])
                     self.assertFalse(result["stages"][1]["pre_launch_observations"]["initial_empty_claim_used"])
