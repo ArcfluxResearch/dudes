@@ -126,6 +126,31 @@ pub(super) fn verify_recorded(
     Sources::recorded(copy).map(|_| ())
 }
 
+#[allow(
+    clippy::useless_conversion,
+    reason = "device and inode field widths differ across Unix targets"
+)]
+pub(super) fn verify_execution(
+    execution: &dudes_proto::repository::ExecutionRepository,
+) -> Result<(), Refusal> {
+    for (path, expected) in [
+        (&execution.directory, execution.directory_identity),
+        (&execution.git_dir, execution.git_identity),
+    ] {
+        if fs::canonicalize(path).map_err(|_| Refusal::WorktreeMismatch)? != *path {
+            return Err(Refusal::WorktreeMismatch);
+        }
+        let fd = open_dir(rustix::fs::CWD, path).map_err(|_| Refusal::WorktreeMismatch)?;
+        let stat = fstat(&fd).map_err(|_| Refusal::WorktreeMismatch)?;
+        if u64::try_from(stat.st_dev).ok() != Some(expected.device)
+            || u64::try_from(stat.st_ino).ok() != Some(expected.inode)
+        {
+            return Err(Refusal::WorktreeMismatch);
+        }
+    }
+    Ok(())
+}
+
 impl Sources {
     #[allow(
         clippy::useless_conversion,
@@ -209,6 +234,7 @@ impl Sources {
 /// One built shadow gitdir. Dropping it removes the directory, links as links.
 #[derive(Debug)]
 pub struct Shadow {
+    tree: Tree,
     dir: PathBuf,
     work_tree: PathBuf,
     head: parse::Head,
@@ -216,6 +242,10 @@ pub struct Shadow {
 }
 
 impl Shadow {
+    pub(super) fn tree(&self) -> &Tree {
+        &self.tree
+    }
+
     /// The shadow directory: the child's `GIT_DIR` and its working directory.
     pub(super) fn dir(&self) -> &Path {
         &self.dir
@@ -241,7 +271,7 @@ impl Shadow {
         let sources = match tree {
             Tree::Checkout(cwd) => Sources::checkout(cwd)?,
             Tree::Leased(lease) => Sources::lease(lease)?,
-            Tree::Recorded(copy) => Sources::recorded(copy)?,
+            Tree::Recorded(recorded) => Sources::recorded(&recorded.copy)?,
         };
         let head_bytes = read_small(&sources.own, "HEAD", HEAD_MAX, Refusal::Unreadable)?
             .ok_or(Refusal::Unreadable)?;
@@ -259,6 +289,7 @@ impl Shadow {
             .map_err(|_| Refusal::Unreadable)?;
         // From here the guard owns the directory, so every early return removes it.
         let shadow = Self {
+            tree: tree.clone(),
             dir,
             work_tree: sources.work_tree.clone(),
             head,

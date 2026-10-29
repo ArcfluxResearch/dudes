@@ -1535,10 +1535,26 @@ fn leased_unknown_member(lab: &Lab) -> (RecordedRepository, PathBuf) {
         base: GitCommit::parse(lab.git(&["rev-parse", "HEAD"]).trim()).unwrap(),
         trust_lsn: Lsn(1),
     };
+    let hire = dudes_proto::repository::ScopedRepositories {
+        project: dudes_proto::record::RecordedWorkspace {
+            id: "project".to_owned(),
+            label: "Project".to_owned(),
+        },
+        catalog_lsn: Lsn(1),
+        policy: dudes_proto::repository::RepositoryPolicy::WorkingTreeV1,
+        repositories: dudes_proto::repository::RepositorySet::new(
+            RepoId::parse("api").unwrap(),
+            vec![dudes_proto::repository::RepositoryEntry {
+                repo_id: RepoId::parse("api").unwrap(),
+                value: copy.clone(),
+            }],
+        )
+        .unwrap(),
+    };
     (
         RecordedRepository {
             repo_id: Some(RepoId::parse("api").unwrap()),
-            tree: Tree::Recorded(Box::new(copy)),
+            tree: Tree::recorded(&copy, &hire).unwrap(),
             baseline: None,
             stamp: None,
         },

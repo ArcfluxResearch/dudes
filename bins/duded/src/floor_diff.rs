@@ -30,7 +30,7 @@ use anyhow::{Result, bail};
 use dudes_proto::diff_stamp::{BaselineOutcome, BaselinePayload, StampOutcome, StampPayload};
 use dudes_proto::repository::{
     HireRepositories, OwnedRepository, RepoId, RepositoryEntry, RepositoryTurnGrant,
-    TicketRepositoryRound,
+    ScopedRepositories, TicketRepositoryRound,
 };
 use dudes_proto::repository_review::{RepositoryReview, RepositoryStampOutcome};
 use dudes_proto::{
@@ -347,11 +347,12 @@ fn scoped_recorded(
     if check_copy.execution != authority.check_root {
         return Err(DiffRefusal::StaleTicket);
     }
+    let full_hire = hire.recorded();
     let repositories = grant
         .repositories
         .entries()
         .iter()
-        .map(|entry| recorded_member(world, entry, review))
+        .map(|entry| recorded_member(world, entry, review, &full_hire))
         .collect::<Result<Vec<_>, DiffRefusal>>()?;
     Ok(Recorded {
         card: view.id,
@@ -372,6 +373,7 @@ fn recorded_member(
     world: &World,
     entry: &RepositoryEntry<OwnedRepository>,
     review: &RepositoryReview,
+    full_hire: &ScopedRepositories,
 ) -> Result<RecordedRepository, DiffRefusal> {
     let copy = &entry.value;
     let tree = match world.worktrees.get(&copy.worktree) {
@@ -381,7 +383,7 @@ fn recorded_member(
                 && lease.origin == copy.origin.directory
                 && lease.base == copy.base =>
         {
-            Tree::Recorded(Box::new(copy.clone()))
+            Tree::recorded(copy, full_hire).map_err(|_| DiffRefusal::WorktreeMismatch)?
         }
         _ => return Err(DiffRefusal::WorktreeMismatch),
     };

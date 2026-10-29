@@ -927,7 +927,7 @@ impl ContentSources {
     ) -> Result<Self, DiffRefusal> {
         budget.check()?;
         let recorded = match tree {
-            Tree::Recorded(copy) => Some(copy.as_ref()),
+            Tree::Recorded(recorded) => Some(&recorded.copy),
             _ => None,
         };
         let pinned_root = recorded.map(|copy| RootIdentity {
@@ -1028,6 +1028,7 @@ impl ContentSources {
 
 /// Hardlinks share mutable bytes. Verification detects observed races, not every ABA write.
 pub(super) struct ContentShadow {
+    tree: Tree,
     dir: PathBuf,
     root: Root,
     origin: Option<Root>,
@@ -1102,6 +1103,7 @@ impl ContentShadow {
             .collect::<Result<Vec<_>, _>>()?;
         let root_stamp = Stamp::file(&layout.root)?;
         let shadow = Self {
+            tree: tree.clone(),
             root_stamp,
             index_digest,
             index_summary,
@@ -1119,6 +1121,9 @@ impl ContentShadow {
 
     pub(super) fn dir(&self) -> &Path {
         &self.dir
+    }
+    pub(super) fn tree(&self) -> &Tree {
+        &self.tree
     }
     pub(super) fn root(&self) -> &Root {
         &self.root
@@ -1176,6 +1181,11 @@ impl ContentShadow {
     pub(super) fn verify(&self, budget: &Budget) -> Result<(), DiffRefusal> {
         budget.check()?;
         self.root.verify()?;
+        if matches!(self.tree, Tree::Recorded(_)) {
+            self.tree
+                .program_roots()
+                .map_err(|_| DiffRefusal::WorktreeMismatch)?;
+        }
         if let Some(origin) = &self.origin {
             origin.verify()?;
         }

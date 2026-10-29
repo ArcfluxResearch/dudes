@@ -89,17 +89,68 @@ pub enum Tree {
     /// An agent hired into a worktree the daemon created.
     Leased(Lease),
     /// An owned copy with the immutable identities recorded by its hire.
-    Recorded(Box<dudes_proto::repository::OwnedRepository>),
+    Recorded(Box<RecordedTree>),
+}
+
+/// One selected copy and the complete frozen hire whose writable roots may never supply Git.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct RecordedTree {
+    copy: dudes_proto::repository::OwnedRepository,
+    execution_roots: Vec<dudes_proto::repository::ExecutionRepository>,
 }
 
 impl Tree {
+    /// Bind a selected copy to every execution root in its complete recorded hire.
+    ///
+    /// # Errors
+    /// Refuses a selected copy that does not exactly belong to `hire`.
+    pub fn recorded(
+        copy: &dudes_proto::repository::OwnedRepository,
+        hire: &dudes_proto::repository::ScopedRepositories,
+    ) -> Result<Self, GitState> {
+        if !hire
+            .repositories
+            .entries()
+            .iter()
+            .any(|entry| &entry.value == copy)
+        {
+            return Err(GitState::WorktreeMismatch);
+        }
+        Ok(Self::Recorded(Box::new(RecordedTree {
+            copy: copy.clone(),
+            execution_roots: hire
+                .repositories
+                .entries()
+                .iter()
+                .map(|entry| entry.value.execution.clone())
+                .collect(),
+        })))
+    }
+
     /// The recorded execution path, never a primary or origin fallback.
     #[must_use]
     pub fn path(&self) -> &Path {
         match self {
             Self::Checkout(path) => path,
             Self::Leased(lease) => &lease.path,
-            Self::Recorded(copy) => &copy.execution.directory,
+            Self::Recorded(recorded) => &recorded.copy.execution.directory,
+        }
+    }
+
+    #[cfg(unix)]
+    fn program_roots(&self) -> Result<Vec<PathBuf>, GitState> {
+        match self {
+            Self::Recorded(recorded) => recorded
+                .execution_roots
+                .iter()
+                .map(|execution| {
+                    shadow::verify_execution(execution).map_err(GitState::from)?;
+                    Ok(execution.directory.clone())
+                })
+                .collect(),
+            _ => std::fs::canonicalize(self.path())
+                .map(|root| vec![root])
+                .map_err(|_| GitState::GitUnavailable),
         }
     }
 }
@@ -182,6 +233,13 @@ impl GitReader {
 
     /// Read a complete recorded selection under one deadline and one response/section allowance.
     #[must_use]
+    #[cfg_attr(
+        not(unix),
+        allow(
+            clippy::unused_self,
+            reason = "non-Unix reads refuse without using the reader"
+        )
+    )]
     pub fn read_repositories(
         &self,
         repositories: &[(dudes_proto::repository::RepoId, Result<Tree, GitState>)],
@@ -253,13 +311,14 @@ impl GitReader {
         let (cwd, missing) = match tree {
             Tree::Checkout(cwd) => (cwd, GitState::NotACheckoutRoot),
             Tree::Leased(lease) => (&lease.path, GitState::WorktreeMismatch),
-            Tree::Recorded(copy) => (&copy.execution.directory, GitState::WorktreeMismatch),
+            Tree::Recorded(recorded) => (
+                &recorded.copy.execution.directory,
+                GitState::WorktreeMismatch,
+            ),
         };
-        let work_tree = std::fs::canonicalize(cwd).map_err(|_| missing)?;
-        let program = self.program_with_timeout(
-            &work_tree,
-            deadline.saturating_duration_since(Instant::now()),
-        )?;
+        std::fs::canonicalize(cwd).map_err(|_| missing)?;
+        let program =
+            self.program_with_timeout(tree, deadline.saturating_duration_since(Instant::now()))?;
         let shadow = self.shadow(tree)?;
         let git = Git {
             reader: self,
@@ -268,8 +327,9 @@ impl GitReader {
             deadline,
         };
         let view = git.read(now, budget)?;
-        if let Tree::Recorded(copy) = tree {
-            shadow::verify_recorded(copy).map_err(GitState::from)?;
+        if let Tree::Recorded(recorded) = tree {
+            shadow::verify_recorded(&recorded.copy).map_err(GitState::from)?;
+            tree.program_roots()?;
         }
         Ok(view)
     }
@@ -299,27 +359,26 @@ impl GitReader {
     #[cfg(unix)]
     #[doc(hidden)]
     pub fn launch(&self, shadow: &Shadow, args: &[&str]) -> Result<LaunchSpec, GitState> {
-        let program = self.program(shadow.work_tree())?;
+        let program = self.program(shadow.tree())?;
         Ok(launch(self, &program, shadow, args))
     }
 
     /// The daemon's `git`: resolved by the daemon, canonical, outside the agent's tree, and new
     /// enough. The version is asked once per program.
     #[cfg(unix)]
-    fn program(&self, cwd: &Path) -> Result<PathBuf, GitState> {
-        self.program_with_timeout(cwd, COMMAND_DEADLINE)
+    fn program(&self, tree: &Tree) -> Result<PathBuf, GitState> {
+        self.program_with_timeout(tree, COMMAND_DEADLINE)
     }
 
     #[cfg(unix)]
-    fn program_with_timeout(&self, cwd: &Path, timeout: Duration) -> Result<PathBuf, GitState> {
+    fn program_with_timeout(&self, tree: &Tree, timeout: Duration) -> Result<PathBuf, GitState> {
         if timeout.is_zero() {
             return Err(GitState::TimedOut);
         }
-        let unavailable = |_| GitState::GitUnavailable;
-        let found =
-            crate::predicate::resolve("git", cwd, self.path.as_deref()).map_err(unavailable)?;
-        let tree = std::fs::canonicalize(cwd).map_err(unavailable)?;
-        if Path::new(&found).starts_with(&tree) {
+        let roots = tree.program_roots()?;
+        let found = crate::predicate::resolve("git", tree.path(), self.path.as_deref())
+            .map_err(|_| GitState::GitUnavailable)?;
+        if roots.iter().any(|root| Path::new(&found).starts_with(root)) {
             return Err(GitState::GitUnavailable);
         }
         let mut verified = self.verified.lock().unwrap_or_else(PoisonError::into_inner);
