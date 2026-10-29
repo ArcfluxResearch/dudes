@@ -1,3 +1,5 @@
+mod recovery_census;
+
 use super::work_test_support as common;
 use super::*;
 use dudes_proto::{
@@ -66,6 +68,10 @@ impl ProcessHost for CountingHost {
 
     fn boot_identity(&self) -> HostBoot {
         self.inner.boot_identity()
+    }
+
+    fn owned_targets(&self, limit: usize) -> dudes_supervisor::host::OwnedTargets {
+        self.inner.owned_targets(limit)
     }
 
     fn shutdown(&mut self) -> io::Result<()> {
