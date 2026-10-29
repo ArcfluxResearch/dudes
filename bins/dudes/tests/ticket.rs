@@ -44,6 +44,7 @@ fn profile(id: &str, cwd: &Path) -> Profile {
                 timeout_s: 10,
             },
             may_already_pass: true,
+            check_repo: None,
         }],
         cwd: cwd.to_path_buf(),
         written_cwd: cwd.to_path_buf(),
