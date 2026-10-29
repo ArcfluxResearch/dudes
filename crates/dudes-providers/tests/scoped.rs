@@ -733,13 +733,29 @@ fn environment_is_selected_and_legacy_launch_and_install_bytes_stay_unchanged() 
     let before = adapter
         .managed(&ctx, "task", &TurnSession::Assigned, &model)
         .unwrap();
-    adapter
+    let install = adapter.managed_install(&ctx, &model);
+    let listing = dudes_providers::codex::model_list::argv("codex");
+    assert!(before.argv.iter().chain(&listing).all(|arg| {
+        !arg.to_str()
+            .is_some_and(|word| word.starts_with("features.goals="))
+    }));
+    let scoped = adapter
         .managed_scoped(&ctx, &f.scope(), "task", &TurnSession::Assigned, &model)
         .unwrap();
+    assert_eq!(
+        scoped
+            .spec
+            .argv
+            .windows(2)
+            .filter(|args| args[0] == "-c" && args[1] == "features.goals=false")
+            .count(),
+        1
+    );
     assert_eq!(
         before,
         adapter
             .managed(&ctx, "task", &TurnSession::Assigned, &model)
             .unwrap()
     );
+    assert_eq!(install, adapter.managed_install(&ctx, &model));
 }
