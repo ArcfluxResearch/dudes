@@ -3397,6 +3397,22 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
         if self.retain_failed_browser_replay(turn) {
             self.mcp_attempts.remove(&turn);
+            if let Some(attempt) = prehost
+                && let Some(agent) = self.world.turns.get(&turn).map(|row| row.agent)
+            {
+                self.persist(
+                    Record::AgentHeld {
+                        agent,
+                        provenance: Provenance::Observed,
+                        cause: dudes_proto::AutomaticHold::LaunchRefused { reason },
+                    },
+                    Then::LaunchAdmissionHeld {
+                        agent,
+                        turn: Some(turn),
+                        instruction_attempt: Some(attempt),
+                    },
+                );
+            }
             return;
         }
         self.mcp_attempts.remove(&turn);

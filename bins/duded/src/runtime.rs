@@ -983,7 +983,7 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) running_mcp: dudes_providers::mcp::DeclaredServers,
     pub(crate) browser_launches: crate::chat_launch::LaunchPreparations,
     pub(crate) resolved_browser_turn: Option<(TurnId, u64)>,
-    pub(crate) scoped_launches: BTreeMap<TurnId, crate::codex_profile::scoped::Attempt>,
+    pub(crate) scoped_launches: BTreeMap<TurnId, scoped_launch::ScopedReservation>,
     pub(crate) scoped_generation: u64,
     /// The operator file the Settings page edits and a reload reads; `None` without one.
     pub(crate) operator_config: Option<PathBuf>,
@@ -8386,7 +8386,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 turn,
                 generation,
                 launch,
-            } => self.prepare_browser_turn(*turn, *generation, launch, queue),
+            } => self.prepare_browser_turn(*turn, *generation, launch, queue, sup),
             Effect::Persist { token, entry } => {
                 self.persist_effect(*token, entry, queue, sup, report)?;
             }
