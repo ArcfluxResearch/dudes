@@ -154,7 +154,7 @@ pub struct UnarmedScopedRecipe {
 pub enum ScopedModelProfile {
     /// Explicit Sonnet selector with the proposed Bash/Read/Edit list.
     ClaudeSonnet46,
-    /// The pinned catalog declares `shell_command` and freeform patch and does not disable Node REPL.
+    /// The unarmed profile's pinned native catalog declares `unified_exec` and freeform patch and does not disable Node REPL.
     /// Its tool family differs from the fallback metadata used by the original probe.
     CodexGpt55,
 }
