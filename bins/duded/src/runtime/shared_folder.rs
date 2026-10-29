@@ -8,6 +8,7 @@ use dudes_supervisor::{
 use dudes_types::{AgentId, IsolationMode, Mode, Provider};
 
 use super::{Ctx, Shared};
+use crate::codex_profile::scoped::Attempt;
 use crate::predicate::PredicateRunner;
 
 const MAX_CHILDREN: usize = 512;
@@ -25,6 +26,7 @@ struct Census<'a, H> {
     world: &'a dudes_supervisor::World,
     candidate: Option<AgentId>,
     recovery_consent: Option<&'a dudes_proto::recovery::RecoveryBinding>,
+    scoped_candidate: Option<Attempt>,
     folder: PathBuf,
     examined: usize,
     conflict: Option<(AgentId, String)>,
@@ -358,7 +360,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         agent: Option<AgentId>,
         cwd: &Path,
     ) -> Result<(), SharedFolderRefusal> {
-        self.admit_folder_children_for(sup, agent, cwd, None)
+        let candidate = agent
+            .and_then(|agent| sup.world().agents.get(&agent)?.open_turn)
+            .and_then(|turn| self.scoped_browser_candidate(sup, turn));
+        self.admit_folder_children_for(sup, agent, cwd, None, candidate)
     }
 
     fn admit_folder_children_for<R: Rng>(
@@ -367,6 +372,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         agent: Option<AgentId>,
         cwd: &Path,
         recovery_consent: Option<&dudes_proto::recovery::RecoveryBinding>,
+        scoped_candidate: Option<Attempt>,
     ) -> Result<(), SharedFolderRefusal> {
         let folder = canonical_folder(cwd).ok_or(SharedFolderRefusal::CandidateFolderUnresolved)?;
         let world = sup.world();
@@ -375,6 +381,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             world,
             candidate: agent,
             recovery_consent,
+            scoped_candidate,
             folder,
             examined: 0,
             conflict: None,
@@ -450,7 +457,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     ) -> bool {
         let turn = sup.world().agents.get(&agent).and_then(|row| row.open_turn);
         let owed = super::native_boundaries::missing_spawn_binding(sup, agent, turn);
-        self.recovery_checkout_for(sup, agent, owed.as_ref())
+        self.recovery_checkout_for(sup, agent, owed.as_ref(), None)
     }
 
     pub(super) fn recovery_checkout_clear<R: Rng>(
@@ -458,7 +465,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         sup: &Supervisor<Shared<C>, R>,
         agent: AgentId,
     ) -> bool {
-        self.recovery_checkout_for(sup, agent, None)
+        self.recovery_checkout_clear_for(sup, agent, None)
+    }
+
+    pub(super) fn recovery_checkout_clear_for<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+        candidate: Option<Attempt>,
+    ) -> bool {
+        self.recovery_checkout_for(sup, agent, None, candidate)
     }
 
     fn recovery_checkout_for<R: Rng>(
@@ -466,6 +482,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         sup: &Supervisor<Shared<C>, R>,
         agent: AgentId,
         recovery_consent: Option<&dudes_proto::recovery::RecoveryBinding>,
+        scoped_candidate: Option<Attempt>,
     ) -> bool {
         let Some(row) = sup.world().agents.get(&agent) else {
             return false;
@@ -511,7 +528,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             };
             self.recovery_checks_clear(&folder)
                 && self
-                    .admit_folder_children_for(sup, Some(agent), &folder, recovery_consent)
+                    .admit_folder_children_for(
+                        sup,
+                        Some(agent),
+                        &folder,
+                        recovery_consent,
+                        scoped_candidate,
+                    )
                     .is_ok()
         })
     }
@@ -536,6 +559,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         sup: &Supervisor<Shared<C>, R>,
         turn: dudes_types::TurnId,
     ) -> bool {
+        self.recovery_turn_checkout_clear_for(sup, turn, None)
+    }
+
+    pub(super) fn recovery_turn_checkout_clear_for<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        turn: dudes_types::TurnId,
+        candidate: Option<Attempt>,
+    ) -> bool {
         let Some(row) = sup.world().turns.get(&turn) else {
             return false;
         };
@@ -551,7 +583,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             turn,
         }) {
             Ok(None) => true,
-            Ok(Some(_)) => self.recovery_checkout_clear(sup, row.agent),
+            Ok(Some(_)) => match candidate {
+                Some(attempt) => self.recovery_checkout_clear_for(sup, row.agent, Some(attempt)),
+                None => self.recovery_checkout_clear(sup, row.agent),
+            },
             Err(_) => false,
         }
     }
@@ -563,6 +598,27 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         native_keys: &mut Vec<AdoptionKey>,
     ) -> Result<(), SharedFolderRefusal> {
         let world = census.world;
+        for (turn, reservation) in &self.scoped_launches {
+            census.room()?;
+            if reservation.matches_candidate(
+                *turn,
+                world,
+                census.candidate,
+                census.scoped_candidate,
+            ) {
+                continue;
+            }
+            let owner = super::native_boundaries::owner_agent(reservation.attempt().owner);
+            let Some(folders) = census.owner_folders(owner) else {
+                census
+                    .unknown
+                    .get_or_insert(SharedFolderRefusal::ChildOwnerUnresolved);
+                continue;
+            };
+            for folder in folders {
+                census.attempt_uncertain(owner, Some(&folder));
+            }
+        }
         let current: Result<(), SharedFolderRefusal> =
             self.children.visit_owned(|turn, key, cwd| {
                 if turns.contains(&turn) {

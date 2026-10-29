@@ -164,7 +164,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         sup: &Supervisor<Shared<C>, R>,
         turn: dudes_types::TurnId,
     ) -> bool {
-        if !self.recovery_turn_checkout_clear(sup, turn) {
+        self.recovery_dispatch_allowed_for(sup, turn, None)
+    }
+
+    pub(in crate::runtime) fn recovery_dispatch_allowed_for<R: Rng>(
+        &mut self,
+        sup: &Supervisor<Shared<C>, R>,
+        turn: dudes_types::TurnId,
+        candidate: Option<crate::codex_profile::scoped::Attempt>,
+    ) -> bool {
+        let checkout = match candidate {
+            Some(attempt) => self.recovery_turn_checkout_clear_for(sup, turn, Some(attempt)),
+            None => self.recovery_turn_checkout_clear(sup, turn),
+        };
+        if !checkout {
             return false;
         }
         let Some(row) = sup.world().turns.get(&turn) else {
