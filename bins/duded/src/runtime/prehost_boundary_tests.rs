@@ -833,6 +833,227 @@ fn a_no_host_continuation_cannot_lose_a_known_file_under_an_unchanged_unknown_ga
 }
 
 #[test]
+fn a_revalidation_response_waits_for_the_pending_operator_pause_acknowledgement() {
+    let fixture = common::Fixture::new();
+    let host = CountingHost::new();
+    let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+    let root = fixture.state.path().join("project");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    let root = root.canonicalize().unwrap();
+    daemon.ctx.enrollment = legacy_enrollment(root.clone());
+    daemon.observe_repository_enrollment().unwrap();
+    let attempt = prepared(&mut daemon, &fixture, Provider::Claude);
+    let preserved = root.with_file_name("preserved-project");
+    std::fs::rename(&root, &preserved).unwrap();
+    let mut queue = VecDeque::new();
+    execute(&mut daemon, &attempt.spawn, &mut queue);
+    pump_queued(&mut daemon, &mut queue);
+    std::fs::rename(preserved, root).unwrap();
+    daemon.pump(Input::Tick).unwrap();
+    let response = next_input(&daemon, &mut queue);
+    let Input::InstructionSampled {
+        request: old_request,
+        ..
+    } = &response
+    else {
+        panic!("fresh revalidation response");
+    };
+    let old_request = *old_request;
+    daemon
+        .sup
+        .handle(
+            Input::Command(Command::Pause {
+                agent: attempt.agent,
+                browser: None,
+            }),
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )
+        .unwrap();
+    let pause = daemon.sup.take_effects();
+    assert!(
+        matches!(&pause[..], [Effect::Persist { entry, .. }] if matches!(entry.record, Record::Pause { .. }))
+    );
+    execute(&mut daemon, &pause[0], &mut queue);
+    assert!(
+        !daemon.sup.world().agents[&attempt.agent].paused,
+        "the acknowledgement is held"
+    );
+    daemon.pump(response).unwrap();
+    assert_eq!(
+        host.spawn_calls(),
+        0,
+        "revalidation outran a pending operator pause"
+    );
+    pump_queued(&mut daemon, &mut queue);
+    assert!(daemon.sup.world().agents[&attempt.agent].paused);
+    daemon.pump(Input::Tick).unwrap();
+    assert_eq!(host.spawn_calls(), 0);
+    daemon.ask(Ask::Resume(attempt.agent)).unwrap();
+    let fresh = next_input(&daemon, &mut queue);
+    let Input::InstructionSampled { request, .. } = &fresh else {
+        panic!("resumed revalidation response");
+    };
+    assert_ne!(
+        *request, old_request,
+        "the pre-control proof cannot be reused"
+    );
+    daemon.pump(fresh).unwrap();
+    assert_eq!(host.spawn_calls(), 1);
+    assert_eq!(daemon.sup.world().turns[&attempt.turn].task, attempt.task);
+}
+
+#[test]
+fn a_no_host_finite_dispatch_reuses_its_current_intent_without_charging_uncertainty() {
+    let fixture = common::Fixture::new();
+    let host = CountingHost::new();
+    let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+    let root = fixture.state.path().join("project-b");
+    let a_root = fixture.state.path().join("project-a");
+    for root in [&root, &a_root] {
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+    }
+    let root = root.canonicalize().unwrap();
+    let a_root = a_root.canonicalize().unwrap();
+    daemon.ctx.enrollment = legacy_enrollment(root.clone());
+    daemon.observe_repository_enrollment().unwrap();
+    let Answered::Hired(a) = daemon
+        .ask(Ask::Hire(Box::new(common::hire_params(&a_root))))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let Answered::Hired(b) = daemon
+        .ask(Ask::Hire(Box::new(common::hire_params(&root))))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let agent = b.agent;
+    daemon.pump(Input::Tick).unwrap();
+    let sessions = crate::floor_session::FloorSessions::new(
+        "127.0.0.1:31337".parse().unwrap(),
+        Arc::clone(&daemon.ctx.clock),
+    );
+    let session = sessions
+        .admitted_for_test("127.0.0.1:31337", "http://127.0.0.1:31337")
+        .0;
+    daemon.ctx.browser_session = Some(session.clone());
+    let preserved = root.with_file_name("preserved-project-b");
+    let hidden = root.clone();
+    let saved = preserved.clone();
+    daemon.ctx.before_recovery_dispatch = Some(Box::new(move || {
+        std::fs::rename(hidden, saved).unwrap();
+    }));
+    let context_lsn = daemon.sup.world().agents[&agent].context_lsn;
+    daemon
+        .pump_runtime_input(Input::Command(Command::ConversationMessageQueued {
+            agent,
+            text: "Keep this finite task in project B".into(),
+            context_lsn,
+            context_reset_turn: None,
+            browser: dudes_proto::BrowserNoteAttribution {
+                request_id_digest: dudes_proto::record::Hex32::new([3; 32]),
+                request_digest: dudes_proto::record::Hex32::new([4; 32]),
+                session_digest: session.digest(),
+            },
+        }))
+        .unwrap();
+    let mut queue = VecDeque::new();
+    for _ in 0..16 {
+        if !root.exists() {
+            break;
+        }
+        let input = next_input(&daemon, &mut queue);
+        daemon.pump_runtime_input(input).unwrap();
+    }
+    assert!(!root.exists());
+    assert_eq!(host.spawn_calls(), 0);
+    let turn = daemon.sup.world().agents[&agent].open_turn.unwrap();
+    let original = fixture
+        .entries()
+        .into_iter()
+        .find(|(_, entry)| {
+            entry
+                .record
+                .turn_issue()
+                .is_some_and(|issue| issue.turn == turn)
+        })
+        .unwrap();
+    let intents = daemon
+        .sup
+        .world()
+        .browser_issue(turn)
+        .unwrap()
+        .dispatch_intents
+        .clone();
+    assert_eq!(intents.len(), 1);
+    let day = daemon.ctx.clock.now().utc_day();
+    let goal = GoalId::from_parts(0, 0);
+    let before = daemon
+        .ctx
+        .projections
+        .spend_views(agent, goal, day)
+        .unwrap();
+    let per_turn = daemon.sup.config().per_turn_floor;
+    let reserve = (
+        dudes_policy::budget::reserved(
+            before.agent_today,
+            before.agent_unknown_ends_today,
+            per_turn,
+        ),
+        dudes_policy::budget::reserved(
+            before.floor_today,
+            before.floor_unknown_ends_today,
+            per_turn,
+        ),
+    );
+    std::fs::rename(preserved, root).unwrap();
+    daemon.pump(Input::Tick).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while host.spawn_calls() == 0 && std::time::Instant::now() < deadline {
+        if let Ok(Job::Input(input)) = daemon.jobs.recv_timeout(Duration::from_millis(20)) {
+            daemon.pump_runtime_input(*input).unwrap();
+        }
+    }
+    let after = daemon
+        .ctx
+        .projections
+        .spend_views(agent, goal, day)
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "a known no-host dispatch created uncertainty charges"
+    );
+    assert_eq!(
+        (
+            dudes_policy::budget::reserved(
+                after.agent_today,
+                after.agent_unknown_ends_today,
+                per_turn
+            ),
+            dudes_policy::budget::reserved(
+                after.floor_today,
+                after.floor_unknown_ends_today,
+                per_turn
+            ),
+        ),
+        reserve
+    );
+    assert_eq!(
+        daemon
+            .sup
+            .world()
+            .browser_issue(turn)
+            .unwrap()
+            .dispatch_intents,
+        intents
+    );
+    assert!(fixture.entries().contains(&original));
+    assert_eq!(host.spawn_calls(), 1);
+    assert!(daemon.sup.repository_admitted(a.agent));
+}
+
+#[test]
 fn unresolved_current_admission_refuses_a_parked_finite_issue_with_no_charged_goal() {
     let fixture = common::Fixture::new();
     let host = CountingHost::new();
