@@ -103,9 +103,17 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             preparation_failed(queue, attempt, "scoped repository admission is unavailable");
             return;
         }
+        if self.scoped_launches.contains_key(&turn) {
+            preparation_failed(
+                queue,
+                attempt,
+                "scoped launch already has a preparation reservation",
+            );
+            return;
+        }
         let prepared = self.scoped_request(attempt, spec, mcp_grant, sup);
         match prepared {
-            Ok(request) if !self.scoped_launches.contains_key(&turn) => {
+            Ok(request) => {
                 self.scoped_launches.insert(turn, attempt);
                 if !self.browser_launches.prepare_scoped(request) {
                     self.scoped_launches.remove(&turn);
@@ -116,7 +124,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     );
                 }
             }
-            Ok(_) => {}
             Err(_) => preparation_failed(queue, attempt, "scoped launch preparation was refused"),
         }
     }

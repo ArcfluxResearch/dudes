@@ -403,6 +403,42 @@ fn stale_scoped_completion_cannot_hold_a_different_physical_attempt() {
 }
 
 #[test]
+fn a_retained_preparation_reservation_cannot_silently_wedge_the_current_attempt() {
+    let fixture = common::Fixture::new();
+    let host = CountingHost::new();
+    let mut daemon = boot(&fixture, &host, Provider::Claude, common::true_program());
+    let issued = prepared(&mut daemon, &fixture, Provider::Claude);
+    let prior = crate::codex_profile::scoped::Attempt {
+        turn: issued.turn,
+        generation: 1,
+        started: issued.started,
+        owner: issued.owner,
+    };
+    daemon.ctx.scoped_launches.insert(issued.turn, prior);
+    daemon.ctx.scoped_generation = prior.generation;
+    let Effect::Spawn { ref spec, .. } = issued.spawn else {
+        panic!("prepared spawn");
+    };
+    let mut queue = VecDeque::new();
+    daemon
+        .ctx
+        .prepare_scoped_turn(issued.turn, spec, None, &mut queue, &daemon.sup);
+    assert!(
+        matches!(queue.front(), Some(Input::LaunchPreparationFailed { turn, started_lsn, reason }) if *turn == issued.turn && *started_lsn == issued.started && reason.contains("reservation"))
+    );
+    for input in queue {
+        daemon.pump(input).unwrap();
+    }
+    assert_eq!(host.spawn_calls(), 0);
+    assert!(
+        daemon.sup.world().agents[&issued.agent]
+            .automatic_hold
+            .is_some()
+    );
+    assert_eq!(daemon.sup.world().turns[&issued.turn].task, issued.task);
+}
+
+#[test]
 fn pending_control_acknowledgements_fold_before_the_scoped_host_check() {
     for control in 0..3 {
         let fixture = common::Fixture::new();
