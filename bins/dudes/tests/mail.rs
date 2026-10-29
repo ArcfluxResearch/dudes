@@ -301,14 +301,7 @@ fn round_trip(body: &str, scoped_file_mail: bool) {
         .join("agents")
         .join(recipient.to_string());
     wait(|| source.join("outbox").is_dir() && destination.join("inbox/.done").is_dir());
-    let cli = |path: &Path| {
-        let cli = offline(path);
-        if scoped_file_mail {
-            cli.env("DUDES_COMMAND_TRANSPORT", "file-mail")
-        } else {
-            cli
-        }
-    };
+    let cli = |path: &Path| mail_cli(path, scoped_file_mail);
     let sent = cli(&source)
         .args([
             "mail",
@@ -324,57 +317,9 @@ fn round_trip(body: &str, scoped_file_mail: bool) {
         ])
         .run();
     assert_eq!(sent.code(), 0, "{}", sent.output());
-    let (id, thread, members) =
-        fixture.await_record("structural sender mail", |record| match record {
-            Record::Mail {
-                id,
-                from: MailFrom::Agent { agent: from },
-                to: MailTo::Agent { agent: to },
-                thread,
-                members,
-                body_len,
-                body: inline,
-                body_blake3,
-                ..
-            } if *from == sender && *to == recipient => {
-                assert_eq!(*body_len, body.len() as u64);
-                if body.len() <= 4_096 {
-                    assert_eq!(inline.as_deref(), Some(body));
-                } else {
-                    assert!(inline.is_none());
-                    assert_eq!(
-                        body_blake3.as_deref(),
-                        Some(dudes_journal::mail_body_digest(body.as_bytes()).as_str())
-                    );
-                }
-                Some((*id, thread.unwrap(), members.clone()))
-            }
-            _ => None,
-        });
+    let (id, thread, members) = received(&fixture, sender, recipient, body);
     if scoped_file_mail {
-        let marker = destination.join("inbox").join(format!("{id}.json"));
-        wait(|| marker.exists());
-        let before = fs::read(&marker).unwrap();
-        let journal_before = fixture.entries();
-        let read = cli(&destination).args(["mail", "read"]).run();
-        assert_eq!(read.code(), exit::SUCCESS, "{}", read.output());
-        assert!(read.stdout.contains(body));
-        assert!(!read.stdout.contains("dudes team"));
-        assert!(
-            read.stdout
-                .contains(&format!("dudes mail send --reply-to {id}"))
-        );
-        let list = cli(&destination).args(["mail", "list"]).run();
-        assert_eq!(list.code(), exit::SUCCESS, "{}", list.output());
-        assert!(list.stdout.contains(&format!("mail {id}")));
-        assert_eq!(fs::read(&marker).unwrap(), before);
-        assert_eq!(fixture.entries(), journal_before);
-        assert_eq!(
-            fs::read_dir(destination.join("inbox/.done"))
-                .unwrap()
-                .count(),
-            0
-        );
+        read_scoped(&fixture, &destination, id, body);
     } else {
         read_delivered(&destination, id, body);
     }
@@ -412,18 +357,7 @@ fn round_trip(body: &str, scoped_file_mail: bool) {
         _ => None,
     });
     if scoped_file_mail {
-        let before = fixture.entries();
-        let done = cli(&destination)
-            .args(["mail", "done", &id.to_string()])
-            .run();
-        assert_eq!(done.code(), exit::REFUSED, "{}", done.output());
-        assert!(
-            destination
-                .join("inbox")
-                .join(format!("{id}.json"))
-                .exists()
-        );
-        assert_eq!(fixture.entries(), before);
+        refuse_scoped_done(&fixture, &destination, id);
     } else {
         acknowledge_once(&fixture, &destination, id);
     }
@@ -434,6 +368,90 @@ fn round_trip(body: &str, scoped_file_mail: bool) {
         "both owned sender contexts remain held through the round trip"
     );
     running.stop();
+}
+
+fn received(
+    fixture: &Fixture,
+    sender: AgentId,
+    recipient: AgentId,
+    body: &str,
+) -> (MailId, ThreadId, Vec<AgentId>) {
+    fixture.await_record("structural sender mail", |record| match record {
+        Record::Mail {
+            id,
+            from: MailFrom::Agent { agent: from },
+            to: MailTo::Agent { agent: to },
+            thread,
+            members,
+            body_len,
+            body: inline,
+            body_blake3,
+            ..
+        } if *from == sender && *to == recipient => {
+            assert_eq!(*body_len, body.len() as u64);
+            if body.len() <= 4_096 {
+                assert_eq!(inline.as_deref(), Some(body));
+            } else {
+                assert!(inline.is_none());
+                assert_eq!(
+                    body_blake3.as_deref(),
+                    Some(dudes_journal::mail_body_digest(body.as_bytes()).as_str())
+                );
+            }
+            Some((*id, thread.unwrap(), members.clone()))
+        }
+        _ => None,
+    })
+}
+
+fn mail_cli(path: &Path, scoped_file_mail: bool) -> Cli {
+    let cli = offline(path);
+    if scoped_file_mail {
+        cli.env("DUDES_COMMAND_TRANSPORT", "file-mail")
+    } else {
+        cli
+    }
+}
+
+fn read_scoped(fixture: &Fixture, destination: &Path, id: MailId, body: &str) {
+    let marker = destination.join("inbox").join(format!("{id}.json"));
+    wait(|| marker.exists());
+    let before = fs::read(&marker).unwrap();
+    let journal_before = fixture.entries();
+    let read = mail_cli(destination, true).args(["mail", "read"]).run();
+    assert_eq!(read.code(), exit::SUCCESS, "{}", read.output());
+    assert!(read.stdout.contains(body));
+    assert!(!read.stdout.contains("dudes team"));
+    assert!(
+        read.stdout
+            .contains(&format!("dudes mail send --reply-to {id}"))
+    );
+    let list = mail_cli(destination, true).args(["mail", "list"]).run();
+    assert_eq!(list.code(), exit::SUCCESS, "{}", list.output());
+    assert!(list.stdout.contains(&format!("mail {id}")));
+    assert_eq!(fs::read(&marker).unwrap(), before);
+    assert_eq!(fixture.entries(), journal_before);
+    assert_eq!(
+        fs::read_dir(destination.join("inbox/.done"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+fn refuse_scoped_done(fixture: &Fixture, destination: &Path, id: MailId) {
+    let before = fixture.entries();
+    let done = mail_cli(destination, true)
+        .args(["mail", "done", &id.to_string()])
+        .run();
+    assert_eq!(done.code(), exit::REFUSED, "{}", done.output());
+    assert!(
+        destination
+            .join("inbox")
+            .join(format!("{id}.json"))
+            .exists()
+    );
+    assert_eq!(fixture.entries(), before);
 }
 
 fn read_delivered(destination: &Path, id: MailId, body: &str) {
