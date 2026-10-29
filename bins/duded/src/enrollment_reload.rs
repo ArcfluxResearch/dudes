@@ -80,23 +80,12 @@ impl Reloader {
             *sequence += 1;
             (*sequence, read_operator_for_reload(&path))
         };
-        let bytes = match bytes {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                self.handle.enrollment_invalid(seq)?;
-                return Err(invalid(&error));
-            }
-        };
+        let bytes = bytes.map_err(|error| invalid(&error))?;
         let sha256 = hex(&Sha256::digest(bytes.as_deref().unwrap_or_default()));
         self.pause.hit(OnboardingPausePoint::AfterReloadHash);
         let (startup, memory_config) =
-            match parse_operator_and_memory_with_options(&path, bytes.as_deref()) {
-                Ok(parsed) => parsed,
-                Err(error) => {
-                    self.handle.enrollment_invalid(seq)?;
-                    return Err(invalid(&error));
-                }
-            };
+            parse_operator_and_memory_with_options(&path, bytes.as_deref())
+                .map_err(|error| invalid(&error))?;
         let result = self.handle.enrollment_reload(ReloadRead {
             seq,
             sha256,

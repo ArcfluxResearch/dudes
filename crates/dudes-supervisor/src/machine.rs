@@ -533,6 +533,7 @@ pub struct Supervisor<C: Clock, R: Rng> {
     rng: R,
     world: World,
     repository_admission: crate::RepositoryAdmission,
+    repository_recoveries: BTreeMap<AgentId, Lsn>,
     closing_active: bool,
     closing_recovery: bool,
     /// Agents whose recorded worktree is missing, as [`Input::MissingWorktrees`] set them.
@@ -742,6 +743,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             rng,
             world: World::default(),
             repository_admission: crate::RepositoryAdmission::default(),
+            repository_recoveries: BTreeMap::new(),
             closing_active: false,
             closing_recovery: false,
             missing_worktrees: BTreeMap::new(),
@@ -822,6 +824,17 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     /// Replace current repository observations without changing journal-derived state.
     pub fn observe_repository_admission(&mut self, admission: crate::RepositoryAdmission) {
+        self.repository_recoveries
+            .extend(self.world.agents.iter().filter_map(|(agent, row)| {
+                (self.repository_admission.refused(*agent, row) && admission.allows(*agent, row))
+                    .then_some((*agent, row.mcp.hire_lsn))
+            }));
+        self.repository_recoveries.retain(|agent, hire| {
+            self.world
+                .agents
+                .get(agent)
+                .is_some_and(|row| row.mcp.hire_lsn == *hire && admission.allows(*agent, row))
+        });
         self.repository_admission = admission;
     }
 
@@ -832,24 +845,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             .agents
             .get(&agent)
             .is_some_and(|row| self.repository_admission.allows(agent, row))
-    }
-
-    fn pause_repository_refusals(&mut self) {
-        let agents: Vec<_> = self.world.agents.iter().filter_map(|(agent, row)| {
-            (!row.retired && !row.paused && !self.repository_admitted(*agent)
-                && !self.ledger.values().any(|parked| {
-                    matches!(&parked.entry.record, Record::Pause { agent: pending, .. } if pending == agent)
-                })).then_some(*agent)
-        }).collect();
-        for agent in agents {
-            self.persist(
-                Record::Pause {
-                    agent,
-                    browser: None,
-                },
-                Then::Fold,
-            );
-        }
     }
 
     /// Accept hook and program activity samples for [`Input::ActivityFlush`] to journal.
@@ -1215,12 +1210,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         operation: &crate::RecoveryOperation<'_>,
     ) -> Result<Handled, DurableInputError> {
         self.pending.clear();
-        if !matches!(
-            &input,
-            Input::Replayed { .. } | Input::Spend { .. } | Input::Work { .. }
-        ) {
-            self.pause_repository_refusals();
-        }
         match input {
             Input::MissingWorktrees(agents) => self.set_missing_worktrees(agents),
             Input::Started => self.on_started(operation),
@@ -4200,6 +4189,19 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// again because `World::loop_input` decides nothing for a retired agent at all. `AgentRetired`
     /// is itself a standing kill cause, so a turn it left running is ended by that.
     fn on_tick(&mut self, operation: &crate::RecoveryOperation<'_>) {
+        if self.ledger.is_empty() {
+            for (agent, hire) in std::mem::take(&mut self.repository_recoveries) {
+                if self
+                    .world
+                    .agents
+                    .get(&agent)
+                    .is_some_and(|row| row.mcp.hire_lsn == hire)
+                    && self.repository_admitted(agent)
+                {
+                    self.on_cause_cleared(agent, operation);
+                }
+            }
+        }
         let agents: Vec<AgentId> = self
             .world
             .agents
@@ -5445,11 +5447,16 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 None,
             );
         }
-        if row.paused {
+        if row.paused || !self.repository_admitted(agent) {
+            let reason = if row.paused {
+                "the loop is paused"
+            } else {
+                "current project repositories are unavailable"
+            };
             return (
                 HookReply {
                     decision: HookDecision::Deny {
-                        reason: "the loop is paused".into(),
+                        reason: reason.into(),
                     },
                     context: None,
                 },

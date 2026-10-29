@@ -1373,19 +1373,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     ///
     /// A journal append that did not become durable.
     pub(crate) fn started(&mut self) -> Result<()> {
-        let current_valid = self
-            .validate_repository_enrollment(&self.ctx.enrollment)
-            .is_ok();
-        self.ctx.current_repositories.invalid = !current_valid;
+        if let Err(error) = self.observe_repository_enrollment() {
+            tracing::warn!(%error, "some project repositories are unavailable");
+        }
         self.ctx
             .inherited_native_boundaries
             .capture(self.sup.world());
         let missing = self.missing_worktrees();
         self.pump(Input::MissingWorktrees(missing))?;
         self.pump(Input::Started)?;
-        if current_valid {
-            self.observe_repository_enrollment()?;
-        }
         self.detach_gone_attachments()?;
         if self.sup.recovering_closing() {
             let attached: Vec<_> = self.sup.closing_recovery_attachments().collect();
@@ -1706,10 +1702,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 }
                 Job::EnrollmentReload { read, reply } => {
                     let answer = self.enrollment_reload(&read);
-                    let _ = reply.send(answer);
-                }
-                Job::EnrollmentInvalid { seq, reply } => {
-                    let answer = self.invalidate_repository_enrollment(seq);
                     let _ = reply.send(answer);
                 }
                 Job::EnrollmentResync { window_id } => {
@@ -2298,17 +2290,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         read: &crate::enrollment_reload::ReloadRead,
     ) -> Result<dudes_proto::rpc::floor::EnrollmentReloadResult, dudes_proto::rpc::RpcError> {
         use crate::enrollment_reload::{AddResync, Resync};
-        if read.seq < self.ctx.current_repositories.invalid_seq {
-            return Err(refused(
-                "a newer project configuration read must be resolved first",
-            ));
-        }
-        if let Err(failure) = self.validate_repository_enrollment(&read.config.enrollment) {
-            self.invalidate_repository_enrollment(read.seq)?;
-            return Err(refused(&format!(
-                "project configuration refused: {failure}"
-            )));
-        }
+        self.validate_repository_enrollment(&read.config.enrollment)
+            .map_err(|failure| refused(&format!("project configuration refused: {failure}")))?;
         if read.apply.is_some() {
             self.require_journal_writes()?;
         }
@@ -2335,7 +2318,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             ..crate::config::OperatorConfig::default()
         };
         let previous_reload = self.ctx.reloads.clone();
-        let decision = match crate::enrollment_reload::decide(
+        let decision = crate::enrollment_reload::decide(
             &self.ctx.enrollment,
             &mut self.ctx.reloads,
             read,
@@ -2343,33 +2326,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             self.ctx.memory_config,
             running,
             self.ctx.clock.now(),
-        ) {
-            Ok(decision) => decision,
-            Err(error) => {
-                self.invalidate_repository_enrollment(read.seq)?;
-                return Err(crate::enrollment_reload::invalid(&error));
-            }
-        };
+        )
+        .map_err(|error| crate::enrollment_reload::invalid(&error))?;
         if read.apply.is_some() {
             decision.log(read.pid);
         }
-        if !decision.result.applied
-            && (decision.result.refused.is_some()
-                || !decision.result.removed.is_empty()
-                || decision.result.changed.iter().any(|changed| {
-                    changed.fields.iter().any(|field| {
-                        matches!(field.as_str(), "cwd" | "repositories" | "primary_repo")
-                    })
-                }))
-        {
-            self.invalidate_repository_enrollment(read.seq)?;
-        }
         if decision.result.applied {
             let previous = std::mem::replace(&mut self.ctx.enrollment, decision.candidate);
+            let previous_repositories = self.ctx.current_repositories.clone();
             if let Err(failure) = self.observe_repository_enrollment() {
                 self.ctx.enrollment = previous;
                 self.ctx.reloads = previous_reload;
-                self.invalidate_repository_enrollment(read.seq)?;
+                self.ctx.current_repositories = previous_repositories;
                 return Err(refused(&format!(
                     "project configuration could not be observed: {failure}"
                 )));
@@ -2504,7 +2472,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 
     fn onboarding_profile_eligible(&self, profile: &crate::floor_actions::Profile) -> bool {
-        if profile.repositories.is_some() || self.ctx.current_repositories.invalid {
+        if profile.repositories.is_some()
+            || !self
+                .ctx
+                .project_repositories_current(self.sup.world(), profile)
+        {
             return false;
         }
         let path_valid = profile
@@ -4918,17 +4890,21 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Ok(Answered::Done)
             }
             Ask::TrustTarget(workspace_id) => match self.ctx.enrollment.profile(&workspace_id) {
-                Some(profile)
-                    if profile.repositories.is_none() && !self.ctx.current_repositories.invalid =>
-                {
-                    Ok(Answered::TrustTarget(profile.cwd.clone()))
-                }
                 Some(profile) if profile.repositories.is_some() => {
                     Err(refused("choose the repository to trust with --repo <id>"))
                 }
-                Some(_) => Err(refused(
-                    "current project configuration must be resolved before trusting it",
-                )),
+                Some(profile) => {
+                    if self
+                        .ctx
+                        .project_repositories_current(self.sup.world(), profile)
+                    {
+                        Ok(Answered::TrustTarget(profile.cwd.clone()))
+                    } else {
+                        Err(refused(
+                            "current project repositories must be resolved before trusting it",
+                        ))
+                    }
+                }
                 None => Err(error(
                     ErrorCode::InvalidParams,
                     format!("project trust: no project is named `{workspace_id}`"),
@@ -4970,9 +4946,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     .enrollment
                     .profile(&workspace_id)
                     .is_some_and(|profile| {
-                        !self.ctx.current_repositories.invalid
-                            && profile.repositories.is_none()
+                        profile.repositories.is_none()
                             && profile.cwd == directory
+                            && self
+                                .ctx
+                                .project_repositories_current(self.sup.world(), profile)
                     });
                 if !enrolled {
                     return Err(error(
@@ -7106,9 +7084,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let _ = reply.send(Err("Floor is shutting down".to_owned()));
                 }
                 Job::EnrollmentReload { reply, .. } => {
-                    let _ = reply.send(Err(refused("the daemon is shutting down")));
-                }
-                Job::EnrollmentInvalid { reply, .. } => {
                     let _ = reply.send(Err(refused("the daemon is shutting down")));
                 }
                 Job::ProtocolFailed(key) => {

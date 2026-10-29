@@ -504,7 +504,8 @@ fn current_expansion_holds_an_owed_legacy_launch_before_host_and_resume_cannot_o
     execute(&mut daemon, &attempt.spawn, &mut queue);
     assert_eq!(host.spawn_calls(), 0);
     assert_eq!(fixture.entries(), before);
-    assert!(daemon.sup.world().agents[&attempt.agent].paused);
+    assert!(!daemon.sup.repository_admitted(attempt.agent));
+    assert!(!daemon.sup.world().agents[&attempt.agent].paused);
     assert_eq!(
         daemon.sup.world().agents[&attempt.agent].repositories,
         original
@@ -594,7 +595,7 @@ fn unresolved_current_admission_refuses_a_parked_finite_issue_with_no_charged_go
             {
                 assert_eq!(issue.goal, None);
                 assert_eq!(daemon.sup.world().agents[&agent].goal, None);
-                daemon.invalidate_repository_enrollment(1).unwrap();
+                daemon.ctx.enrollment.profiles.clear();
                 let before = fixture.entries();
                 assert!(
                     daemon
@@ -616,7 +617,8 @@ fn unresolved_current_admission_refuses_a_parked_finite_issue_with_no_charged_go
                         .iter()
                         .all(|(_, entry)| entry.record.turn_issue().is_none())
                 );
-                assert!(daemon.sup.world().agents[&agent].paused);
+                assert!(!daemon.ctx.repository_allowed(daemon.sup.world(), agent));
+                assert!(!daemon.sup.world().agents[&agent].paused);
                 return;
             }
             execute(&mut daemon, &effect, &mut queue);

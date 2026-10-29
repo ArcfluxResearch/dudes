@@ -178,7 +178,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             },
         }
         .ok_or_else(|| refusal(TicketRefusal::ProjectUnavailable, CardStatus::Todo))?;
-        if profile.repositories.is_some() || self.ctx.current_repositories.invalid {
+        if profile.repositories.is_some()
+            || !self
+                .ctx
+                .project_repositories_current(self.sup.world(), profile)
+        {
             return Err(refusal(TicketRefusal::ProjectUnavailable, CardStatus::Todo));
         }
         let done_when = check_of(

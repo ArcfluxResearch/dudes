@@ -1342,6 +1342,7 @@ fn a_check_that_cannot_run_sends_the_ticket_to_needs_you() {
 const CHECK_CANNOT_RUN: &str = "The check cannot run: its program is missing, or it is a file inside the project that an agent could change. Install the program, or use one outside the project's repository. To use a script from the repository, run it through its interpreter, for example `sh test.sh` for a shell script; an agent can still edit that script, so review its changes before you accept the work. Then Give to agent. If the check itself is wrong, Remove this ticket and create it again.";
 const CEILING_REQUIRED: &str = "Set a spending limit first, because your account bills per use. Add one to the project's enrollment (`dudes project add`) or the agent's hire, then Give to agent.";
 const RESERVE_MISSING: &str = "A per-turn spending reserve is missing. Run `dudes config set budget.per_turn_floor.usd <dollars>` (or `budget.per_turn_floor.tokens <count>`), then Give to agent.";
+const PROJECT_UNAVAILABLE: &str = "This project is not set up any more. Enroll it again with `dudes project add`, then Give to agent, or Remove the ticket.";
 
 /// A ticket the daemon moved to Needs you at boot: its reason, the literal sentence the operator
 /// reads, and that it left the queue.
@@ -1355,6 +1356,40 @@ fn assert_needs_you(flow: &mut Flow, card: CardId, reason: TicketReason, sentenc
     assert_eq!(ticket.reason, Some(reason));
     assert_eq!(reason.sentence(), sentence);
     assert_eq!(ticket.queue, None, "it left the queue");
+}
+
+fn assert_unavailable_start(
+    flow: &mut Flow,
+    fixture: &Fixture,
+    card: CardId,
+    initial: &[Record],
+    expected_seq: Seq,
+) {
+    assert_needs_you(
+        flow,
+        card,
+        TicketReason::ProjectUnavailable,
+        PROJECT_UNAVAILABLE,
+    );
+    assert_eq!(flow.card(card).claimed_by, Some(sample_agent()));
+    assert!(flow.read(card).waiting.is_none());
+    let agent = flow.agent(sample_agent());
+    assert!(!agent.paused, "lost authority does not synthesize Pause");
+    let mut expected = initial.to_vec();
+    expected.push(Record::CardTransition {
+        card,
+        from: CardStatus::Claimed,
+        to: CardStatus::Blocked,
+        by: Actor::System,
+        expected_seq,
+        reason: Some(TicketReason::ProjectUnavailable),
+    });
+    assert_eq!(
+        fixture.records(),
+        expected,
+        "only the start refusal appends"
+    );
+    assert!(flow.host.spawned().is_empty());
 }
 
 fn seeded_hire(project: &str, repo: &Path, budget: Option<AgentBudget>) -> Record {
@@ -1506,7 +1541,7 @@ fn an_agent_hired_without_a_project_starts_nothing() {
     flow.stop();
 }
 
-/// An unresolved current project holds queued work. Budget and reserve refusals move it to Needs you.
+/// An unavailable project and budget or reserve refusals move a queued start to Needs you.
 #[test]
 fn boot_holds_unavailable_projects_and_reports_budget_refusals() {
     let card = CardId::from_parts(4, 1);
@@ -1520,14 +1555,10 @@ fn boot_holds_unavailable_projects_and_reports_budget_refusals() {
     settings.enrollment = Enrollment {
         profiles: Vec::new(),
     };
-    seed(&fixture, given("service", &repo, None, card));
+    let initial = given("service", &repo, None, card);
+    seed(&fixture, initial.clone());
     let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
-    assert_eq!(flow.card(card).status, CardStatus::Claimed);
-    assert_eq!(
-        flow.read(card).waiting.unwrap().wait,
-        TicketWait::AgentPaused
-    );
-    assert!(started_goals(&fixture.records()).is_empty());
+    assert_unavailable_start(&mut flow, &fixture, card, &initial, Seq(1));
     flow.stop();
 
     let fixture = Fixture::new();
@@ -1883,9 +1914,9 @@ fn a_started_ticket_records_its_baseline_before_its_first_turn() {
     flow.stop();
 }
 
-/// An unknown recorded lease holds the agent before any baseline or issue.
+/// An unknown recorded lease blocks the ticket start before any baseline or issue.
 #[test]
-fn a_round_with_an_unresolved_lease_stays_queued_without_issuing() {
+fn a_round_with_an_unresolved_lease_is_blocked_without_issuing() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
     let card = CardId::from_parts(4, 1);
@@ -1894,13 +1925,9 @@ fn a_round_with_an_unresolved_lease_stays_queued_without_issuing() {
         unreachable!("the first record is the hire");
     };
     *worktree = Some(dudes_types::WorktreeId::from_bytes([0xab; 16]));
-    seed(&fixture, records);
+    seed(&fixture, records.clone());
     let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
-    assert_eq!(flow.card(card).status, CardStatus::Claimed);
-    assert_eq!(
-        flow.read(card).waiting.unwrap().wait,
-        TicketWait::AgentPaused
-    );
+    assert_unavailable_start(&mut flow, &fixture, card, &records, Seq(1));
     assert!(
         fixture
             .records()
@@ -2045,7 +2072,7 @@ fn a_crash_before_completed_instruction_review_accepts_the_same_goal_once() {
     assert_eq!(started_goals(&records).len(), 1);
 }
 
-/// Unresolved current authority holds rework in its queue without reusing the previous round's pass.
+/// Unresolved current authority blocks rework without reusing the previous round's pass.
 #[test]
 fn a_reworked_ticket_whose_start_is_refused_does_not_return_on_the_old_pass() {
     let card = CardId::from_parts(4, 1);
@@ -2068,6 +2095,24 @@ fn a_reworked_ticket_whose_start_is_refused_does_not_return_on_the_old_pass() {
         },
         hop_cap: 4,
     };
+    let Record::TicketBaselineRecorded { mut baseline, .. } =
+        samples::record(RecordKind::TicketBaselineRecorded)
+    else {
+        unreachable!("the sample is a baseline");
+    };
+    baseline.binding = dudes_proto::diff_stamp::TicketBinding {
+        card,
+        round: 1,
+        goal: first.id,
+        claimant: agent,
+    };
+    baseline.interval = dudes_proto::diff_stamp::CaptureInterval {
+        started_at: Timestamp::from_unix_millis(1_000),
+        ended_at: Timestamp::from_unix_millis(1_000),
+    };
+    baseline.outcome = dudes_proto::diff_stamp::BaselineOutcome::Unavailable {
+        reason: dudes_proto::DiffRefusal::Unreadable,
+    };
     let mut records = given("service", &repo, None, card);
     records.extend([
         Record::TicketStarted {
@@ -2075,6 +2120,11 @@ fn a_reworked_ticket_whose_start_is_refused_does_not_return_on_the_old_pass() {
             agent,
             goal: first.clone(),
             expected_seq: Seq(1),
+        },
+        Record::TicketBaselineRecorded {
+            card,
+            goal: first.id,
+            baseline,
         },
         Record::PredicateResult {
             goal: first.id,
@@ -2111,19 +2161,19 @@ fn a_reworked_ticket_whose_start_is_refused_does_not_return_on_the_old_pass() {
             priority: None,
         },
     ]);
-    seed(&fixture, records);
+    seed(&fixture, records.clone());
     let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
-    assert_eq!(flow.card(card).status, CardStatus::Claimed);
-    assert_eq!(
-        flow.read(card).waiting.unwrap().wait,
-        TicketWait::AgentPaused
-    );
+    assert_unavailable_start(&mut flow, &fixture, card, &records, Seq(4));
+    assert_eq!(flow.read(card).ticket.goal, None);
     let after = settled(&fixture, fixture.records().len());
     flow.stop();
     assert_eq!(
         transitions(&after, card),
-        [(CardStatus::Doing, CardStatus::Review, Actor::System)],
-        "the old pass moved the ticket once; current admission holds rework in its queue"
+        [
+            (CardStatus::Doing, CardStatus::Review, Actor::System),
+            (CardStatus::Claimed, CardStatus::Blocked, Actor::System),
+        ],
+        "the old pass moved the previous round once; current admission refuses the new start"
     );
 }
 

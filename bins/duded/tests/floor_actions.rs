@@ -9008,9 +9008,10 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
         "the real change is reported"
     );
     assert_eq!(result["workspaces"], json!(["repo_1"]));
-    assert!(
-        offered(&page).is_empty(),
-        "unresolved current admission stays closed"
+    assert_eq!(
+        offered(&page),
+        only_repo_1,
+        "a refused read preserves the installed enrollment"
     );
 
     let sha = rewrite(
@@ -9024,9 +9025,10 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
         json!(["repo_3"]),
         "the real change is shown"
     );
-    assert!(
-        offered(&page).is_empty(),
-        "unresolved current admission stays closed"
+    assert_eq!(
+        offered(&page),
+        only_repo_1,
+        "a refused read preserves the installed enrollment"
     );
 
     #[cfg(unix)]
@@ -9042,9 +9044,10 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
             message.contains("project `repo_2` in [floor.onboarding] workspaces whose cwd is not its canonical form"),
             "{message}"
         );
-        assert!(
-            offered(&page).is_empty(),
-            "unresolved current admission stays closed"
+        assert_eq!(
+            offered(&page),
+            only_repo_1,
+            "a refused read preserves the installed enrollment"
         );
     }
 
@@ -13042,15 +13045,9 @@ fn browser_renew_refuses_under_the_billing_guard() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// A renewal funds only an agent whose recorded workspace still enrolls the directory it was hired
-/// from. An agent hired in an unenrolled directory, an agent after its workspace was removed by a
-/// reload, and one after a reload re-pointed the workspace's id at another directory each get
-/// `workspace_unavailable`; one presenting the numbers a reload replaced gets `profile_changed`.
-/// None appends a `GoalSet`. Control: an agent hired into a worktree whose lease came from the
-/// enrolled directory applies, although its own directory is the tree.
-///
-/// Mutants: compare the agent's directory instead of its lease's origin, and the control is
-/// refused; drop the directory check, and the re-pointed arm appends.
+/// Renewal uses the installed profile and original repository identity. Refused reloads keep that
+/// profile, while a replaced origin refuses renewal without appending. An owned copy uses its
+/// lease's origin, and a page with old allowance values still refuses after an applied change.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -13159,23 +13156,52 @@ fn browser_renew_refuses_unenrolled_moved_and_changed_workspaces() {
 
     let repointed = renew_config(&renew_entry("repo_1", &moved, 7, Some("1"), None));
     let sha = rewrite(&settings, &repointed);
+    let before = fixture.records();
     operator_reload(&settings, apply(&sha, &[], &[], &["repo_1"]))
         .expect_err("a recorded origin cannot be rebound");
-    let before = fixture.records();
-    let (head, response) = renew(agent, goal, ("7", Some("1000000"), None));
-    refused(&head, &response, "workspace_unavailable");
-    assert_eq!(fixture.records(), before, "an id re-pointed elsewhere");
+    assert_eq!(fixture.records(), before, "a refused remap appended");
+    let (head, response) = renew(agent, goal, SHOWN);
+    refused(&head, &response, "profile_changed");
+    assert_eq!(fixture.records(), before, "the installed allowance remains");
 
     let sha = rewrite(&settings, &renew_config(""));
+    let before = fixture.records();
     operator_reload(&settings, apply(&sha, &[], &["repo_1"], &[]))
         .expect_err("live hires retain their project");
+    assert_eq!(fixture.records(), before, "a refused removal appended");
+
+    let original = fixture.state.path().join("original-renew-repo");
+    let replacement = fixture.state.path().join("replacement-renew-repo");
+    std::fs::rename(&repo, &original).unwrap();
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::write(repo.join("sentinel"), b"replacement origin").unwrap();
     let before = fixture.records();
     let (head, response) = renew(agent, goal, ("7", Some("1000000"), None));
     refused(&head, &response, "workspace_unavailable");
-    assert_eq!(fixture.records(), before, "a removed workspace");
-    for agent in [unenrolled, agent] {
-        assert!(browser_goals(&fixture, agent).is_empty(), "{agent}");
-    }
+    assert_eq!(fixture.records(), before, "a replaced origin appended");
+    assert_eq!(
+        std::fs::read(repo.join("sentinel")).unwrap(),
+        b"replacement origin"
+    );
+    std::fs::rename(&repo, &replacement).unwrap();
+    std::fs::rename(&original, &repo).unwrap();
+
+    let (head, response) = renew(agent, goal, ("7", Some("1000000"), None));
+    let next = renewed(&head, &response);
+    let observed = renewals(&fixture, agent);
+    assert_eq!(
+        observed.len(),
+        1,
+        "the installed profile still admits renewal"
+    );
+    assert_eq!(observed[0].1.id, next);
+    assert_eq!(observed[0].1.hop_cap, 7);
+    assert_eq!(observed[0].2.replaced_goal, goal);
+    assert!(browser_goals(&fixture, unenrolled).is_empty());
+    assert_eq!(
+        std::fs::read(replacement.join("sentinel")).unwrap(),
+        b"replacement origin"
+    );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
@@ -16086,6 +16112,8 @@ mod project_add {
         let app = project_repo(scratch.path(), "app");
         let hand = project_repo(scratch.path(), "by-hand");
         add_app(&page, &app);
+        let installed = offered(&page);
+        let records = fixture.records();
 
         let lock = running.handle.reload_lock();
         let reload_running = lock.lock().unwrap();
@@ -16108,10 +16136,12 @@ mod project_add {
         assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
         assert_eq!(body["reason"], "config_changed", "{body}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "put back");
-        assert!(
-            offered(&page).is_empty(),
-            "unadopted configuration closes admission"
+        assert_eq!(
+            offered(&page),
+            installed,
+            "the installed project stays offered"
         );
+        assert_eq!(fixture.records(), records, "a refused remove appended");
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
 }

@@ -201,7 +201,7 @@ fn a_plain_operator_hire_cannot_bypass_a_nonprimary_member_or_its_descendant() {
 }
 
 #[test]
-fn unresolved_current_configuration_refuses_a_plain_operator_hire_before_append() {
+fn an_unapplied_malformed_file_keeps_the_installed_plain_hire_authority() {
     let fixture = Fixture::new();
     let roots = tempfile::tempdir().unwrap();
     let origin = create_origin(&roots.path().canonicalize().unwrap(), "web");
@@ -216,12 +216,14 @@ fn unresolved_current_configuration_refuses_a_plain_operator_hire_before_append(
     );
     let before = fixture.entries();
     let response = plain_hire(&settings, &origin.value.origin.directory);
+    assert!(response.error.is_none(), "{:?}", response.error);
     assert!(
-        response.error.is_some(),
-        "plain hire escaped unresolved current facts: {:?}",
-        response.result
+        fixture
+            .entries()
+            .iter()
+            .skip(before.len())
+            .all(|(_, entry)| { !matches!(entry.record, Record::Pause { .. }) })
     );
-    assert_eq!(fixture.entries(), before);
     assert!(host.spawned().is_empty());
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -504,7 +506,7 @@ fn a_missing_current_project_cannot_release_live_recorded_authority_or_admit_a_p
             std::fs::remove_file(settings.state_dir.join(duded::boot::PROJECTION_FILE)).unwrap();
         }
         let daemon = open(&settings, &host);
-        assert!(daemon.world().agents[&story.hire.id].paused);
+        assert!(!daemon.world().agents[&story.hire.id].paused);
         assert_eq!(
             scoped_hire(daemon.world(), story.hire.id).recorded(),
             story.hire.repositories

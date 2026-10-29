@@ -24,6 +24,10 @@ impl RepositoryAdmission {
         }
     }
 
+    pub(crate) fn refused(&self, agent: AgentId, row: &AgentRow) -> bool {
+        self.observed.get(&agent) == Some(&(row.mcp.hire_lsn, false))
+    }
+
     pub(crate) fn allows(&self, agent: AgentId, row: &AgentRow) -> bool {
         if let Some((hire, allowed)) = self.observed.get(&agent) {
             return *hire == row.mcp.hire_lsn && *allowed;

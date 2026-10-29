@@ -653,7 +653,7 @@ fn losing_a_nonprimary_copy_holds_the_whole_hire_and_retains_the_other_copies() 
 }
 
 #[test]
-fn a_replayed_scoped_goal_is_paused_before_any_legacy_issue_or_provider_spawn() {
+fn a_replayed_scoped_goal_is_held_before_any_legacy_issue_or_provider_spawn() {
     let fixture = Fixture::new();
     let story = Story::seed(&fixture);
     let mut goal = samples::record(RecordKind::GoalSet);
@@ -680,7 +680,7 @@ fn a_replayed_scoped_goal_is_paused_before_any_legacy_issue_or_provider_spawn() 
         fixture
             .records()
             .iter()
-            .any(|record| matches!(record, Record::Pause {
+            .all(|record| !matches!(record, Record::Pause {
         agent, ..
     } if *agent == story.hire.id))
     );
