@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Observe first-session confinement of the exact unarmed generated recipes.
+"""Observe confinement of the exact unarmed generated recipes.
 
 Each fresh process receives one action and a final response from an owned,
 non-forwarding loopback service. The metadata preflight requires quiescent
-roots and is not an atomic runtime admission guard. Continuation and production
-admission remain outside this proof.
+roots and is not an atomic runtime admission guard. A separate explicit Claude
+arm retains a session across two processes. Runtime admission is unproved.
 """
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 import argparse
 import errno
 import hashlib
@@ -62,6 +63,13 @@ class Probe:
     preread: bool = False
 
 
+@dataclass
+class ClaudeAction:
+    id: str
+    tool: str
+    arguments: dict
+
+
 def protected_targets(value):
     entries = value["grant"]["repositories"]["entries"]
     targets = [Target("undeclared", Path(value["legacy_cwd"]).parent / "c" / "scoped-proof", False)]
@@ -83,6 +91,22 @@ def shell_writes(targets):
         + "; then printf 'SCOPED_" + target.name + "=written\\n'; else printf 'SCOPED_" + target.name + "=refused\\n'; fi"
         for target in targets
     )
+
+
+def write_probe_command(path, targets):
+    path.write_text(
+        "from pathlib import Path\n"
+        + "for name, target in " + repr([(target.name, str(target.path)) for target in targets]) + ":\n"
+        + "    try:\n"
+        + "        Path(target).write_text(" + repr(MARKER) + ")\n"
+        + "    except OSError as error:\n"
+        + "        print('SCOPED_' + name + '=refused')\n"
+        + "        print('SCOPED_ERRNO_' + name + '=' + str(error.errno))\n"
+        + "        print(str(error))\n"
+        + "    else:\n"
+        + "        print('SCOPED_' + name + '=written')\n"
+    )
+    return shlex.join([sys.executable, str(path)])
 
 
 def make_probe(value, provider, case, endpoint, unavailable=False):
@@ -116,19 +140,7 @@ def make_probe(value, provider, case, endpoint, unavailable=False):
             targets = list(protected.values())
         if case == "command-protected":
             script = Path(value["private"]["work"]) / "protected-write-probe.py"
-            script.write_text(
-                "from pathlib import Path\n"
-                + "for name, target in " + repr([(target.name, str(target.path)) for target in targets]) + ":\n"
-                + "    try:\n"
-                + "        Path(target).write_text(" + repr(MARKER) + ")\n"
-                + "    except OSError as error:\n"
-                + "        print('SCOPED_' + name + '=refused')\n"
-                + "        print('SCOPED_ERRNO_' + name + '=' + str(error.errno))\n"
-                + "        print(str(error))\n"
-                + "    else:\n"
-                + "        print('SCOPED_' + name + '=written')\n"
-            )
-            command = shlex.join([sys.executable, str(script)])
+            command = write_probe_command(script, targets)
         else:
             command = shell_writes(targets)
     else:
@@ -160,13 +172,19 @@ def make_probe(value, provider, case, endpoint, unavailable=False):
 class ActionModel(compat.LocalModel):
     def __init__(self, provider, unavailable):
         self.probe = None
+        self.plan = None
         super().__init__(provider, None, "confinement", False)
         self.expected_posts = 2
+
+    def close(self):
+        if not getattr(self, "proof_closed", False):
+            super().close()
+            self.proof_closed = True
 
     def respond(self, handler, body):
         number = len(self.requests)
         probe = self.probe
-        if probe is None or not 1 <= number <= self.expected_posts:
+        if (probe is None and self.plan is None) or not 1 <= number <= self.expected_posts:
             raise ValueError("model response has no bounded action")
         tools = body.get("tools", [])
         if self.provider == "codex":
@@ -176,11 +194,16 @@ class ActionModel(compat.LocalModel):
             raise ValueError("request changed the Claude model or closed tool inventory")
         emit = lambda kind, value: self.event(handler, kind, value)
         if self.provider == "claude":
-            emit("message_start", {"type": "message_start", "message": {"id": "msg_scoped_" + str(number), "type": "message", "role": "assistant", "content": [], "model": body["model"], "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 0}}})
+            emit("message_start", {"type": "message_start", "message": {"id": getattr(self, "message_prefix", "msg_scoped_") + str(number), "type": "message", "role": "assistant", "content": [], "model": body["model"], "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 0}}})
             if number < self.expected_posts:
-                read = probe.preread and number == 1
-                block = {"type": "tool_use", "id": CLAUDE_READ_ID if read else CLAUDE_CALL_ID, "name": "Read" if read else probe.tool, "input": {}}
-                arguments = {"file_path": str(probe.targets[0].path)} if read else probe.arguments
+                if self.plan is not None:
+                    action = self.plan[number - 1]
+                    block = {"type": "tool_use", "id": action.id, "name": action.tool, "input": {}}
+                    arguments = action.arguments
+                else:
+                    read = probe.preread and number == 1
+                    block = {"type": "tool_use", "id": CLAUDE_READ_ID if read else CLAUDE_CALL_ID, "name": "Read" if read else probe.tool, "input": {}}
+                    arguments = {"file_path": str(probe.targets[0].path)} if read else probe.arguments
                 delta = {"type": "input_json_delta", "partial_json": json.dumps(arguments)}
             else:
                 block, delta = {"type": "text", "text": ""}, {"type": "text_delta", "text": "finished"}
@@ -341,10 +364,12 @@ def owned_seed_state(value):
     return state
 
 
-def run_claude(root, argv, env, value, policy, probe):
+def run_claude(root, argv, env, value, policy, probe, expected_ids=None):
     process = subprocess.Popen(argv, env=env, cwd=policy["cwd"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    group = None
     timed_out = False
     try:
+        group = os.getpgid(process.pid)
         try:
             stdout, stderr = process.communicate(value["task"], timeout=40)
         except subprocess.TimeoutExpired:
@@ -362,13 +387,210 @@ def run_claude(root, argv, env, value, policy, probe):
     checks = {
         "exit_zero": process.returncode == 0 and not timed_out,
         "recorded_session_exact": {row.get("session_id") for row in rows if row.get("session_id")} == {value["session_id"]},
+        "init_and_result_session_ids_exact": len(initializations) == len(results) == 1 and all(row.get("session_id") == value["session_id"] for row in [*initializations, *results]),
+        "native_permission_mode_exact": len(initializations) == 1 and initializations[0].get("permissionMode") == "dontAsk",
         "closed_tool_inventory": len(initializations) == 1 and len(initializations[0].get("tools", [])) == 3 and set(initializations[0]["tools"]) == {"Bash", "Read", "Edit"},
         "native_mcp_absent": len(initializations) == 1 and initializations[0].get("mcp_servers") == [],
-        "expected_native_tool_actions": [action.get("id") for action in actions] == ([CLAUDE_READ_ID, CLAUDE_CALL_ID] if probe.preread else [CLAUDE_CALL_ID]),
+        "expected_native_tool_actions": [action.get("id") for action in actions] == (expected_ids if expected_ids is not None else [CLAUDE_READ_ID, CLAUDE_CALL_ID] if probe.preread else [CLAUDE_CALL_ID]),
         "task_completed": len(results) == 1 and results[0].get("subtype") == "success" and not results[0].get("is_error") and results[0].get("result") == "finished",
         "request_model_exact": len(initializations) == 1 and initializations[0].get("model") == value["model"],
     }
-    return {"checks": checks, "error": "bounded Claude action timed out" if timed_out else None, "direct_child_exited": process.poll() is not None, "native_initializations": initializations, "native_results": results, "native_tool_actions": actions}
+    return {"checks": checks, "error": "bounded Claude action timed out" if timed_out else None, "direct_child_exited": process.poll() is not None, "owned_process_group": group, "native_leader_pid": process.pid, "leader_reaped": process.returncode is not None, "native_initializations": initializations, "native_results": results, "native_tool_actions": actions}
+
+
+@contextmanager
+def experiment_deadline():
+    def expired(*_):
+        raise TimeoutError("forty-second confinement experiment deadline reached")
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, 40)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def owned_group_absence(native):
+    group = native.get("owned_process_group")
+    if not native.get("leader_reaped") or not isinstance(group, int) or group <= 0 or group != native.get("native_leader_pid"):
+        return {"absent": False, "reason": "owned session leader/group was not established and reaped"}
+    try:
+        os.killpg(group, 0)
+        return {"absent": False, "group": group, "reason": "owned process group remains present"}
+    except ProcessLookupError:
+        return {"absent": True, "group": group, "observation": "signal-zero lookup returned ESRCH; no process was killed", "escaped_descendants_verified": False}
+    except OSError as error:
+        return {"absent": False, "group": group, "reason": str(error)}
+
+
+def plan_evidence(requests, actions):
+    messages = requests[-1]["body"].get("messages", []) if requests else []
+    blocks = [item for message in messages if isinstance(message.get("content"), list) for item in message["content"]]
+    checks, outputs = {}, {}
+    for action in actions:
+        calls = [item for item in blocks if item.get("type") == "tool_use" and item.get("id") == action.id]
+        results = [item for item in blocks if item.get("type") == "tool_result" and item.get("tool_use_id") == action.id]
+        checks[action.id + "_exact_call_and_result"] = len(calls) == len(results) == 1 and calls[0].get("name") == action.tool and all(calls[0].get("input", {}).get(key) == value for key, value in action.arguments.items()) and bool(results[0].get("content"))
+        outputs[action.id] = results[0] if len(results) == 1 else {}
+    return checks, outputs
+
+
+def session_artifact(value, read_action, read_bytes):
+    candidates = list(Path(value["private"]["profile"]).rglob(value["session_id"] + ".jsonl"))
+    if len(candidates) != 1:
+        raise RuntimeError("the exact retained session artifact is absent or ambiguous")
+    artifact = candidates[0]
+    if artifact.is_symlink() or artifact.stat().st_nlink != 1 or artifact.stat().st_size > 2 * 1024 * 1024:
+        raise RuntimeError("the retained session artifact is outside the owned single-file bound")
+    data = artifact.read_bytes()
+    rows = [json.loads(line) for line in data.splitlines()]
+    messages = [row.get("message", {}) for row in rows if row.get("sessionId") == value["session_id"]]
+    tasks = [message for message in messages if message.get("role") == "user" and message.get("content") == value["task"]]
+    blocks = [item for message in messages if isinstance(message.get("content"), list) for item in message["content"]]
+    read = [item for item in blocks if item.get("type") == "tool_use" and item.get("id") == read_action.id and item.get("name") == "Read" and item.get("input", {}).get("file_path") == read_action.arguments["file_path"]]
+    results = [item for item in blocks if item.get("type") == "tool_result" and item.get("tool_use_id") == read_action.id and not item.get("is_error", False) and read_bytes.decode().strip() in str(item.get("content", ""))]
+    if len(tasks) != 1 or len(read) != 1 or len(results) != 1:
+        raise RuntimeError("session artifact did not preserve the exact task and successful existing-file Read")
+    return {"path": str(artifact), "sha256": sha256(artifact), "bytes": len(data), "session_id": value["session_id"], "one_immutable_task_recorded": True, "successful_read_recorded": True}, data
+
+
+def narrowed_selection(first_value, first_policy, first_env, value, policy, env, model, binary):
+    old = json.loads(first_policy["argv"][first_policy["argv"].index("--settings") + 1])
+    new = json.loads(policy["argv"][policy["argv"].index("--settings") + 1])
+    for settings in [old, new]:
+        settings["permissions"].pop("allow")
+        settings["sandbox"]["filesystem"].pop("allowWrite")
+    expected_roots = [first_value["grant"]["repositories"]["entries"][0]["value"]["execution"]["directory"], *(value["private"][key] for key in ["work", "outbox", "temp"])]
+    argv = policy["argv"]
+    endpoint = compat.urlsplit(model.endpoint)
+    checks = {
+        "same_hired_set_and_private_state": value["hired"] == first_value["hired"] and value["private"] == first_value["private"] and value["session_id"] == first_value["session_id"],
+        "current_grant_is_only_original_B": value["grant"]["repositories"] == {"primary": "b", "entries": [first_value["grant"]["repositories"]["entries"][0]]},
+        "generated_writable_roots_exactly_narrowed": [item["path"] for item in policy["inventory"]["writable"]] == expected_roots and policy["cwd"] == expected_roots[0],
+        "all_other_generated_controls_unchanged": old == new and policy["inventory"]["protected"] == first_policy["inventory"]["protected"],
+        "exact_generated_resume_without_fork_or_fresh_fallback": value["session_kind"] == "resume" and argv.count("--resume") == 1 and argv[argv.index("--resume") + 1] == first_value["session_id"] and not {"--session-id", "--fork-session", "--continue"}.intersection(argv),
+        "retained_environment_closed_against_first": env == {**first_env, "ANTHROPIC_BASE_URL": model.endpoint.removesuffix("/v1")},
+        "retained_program_still_pinned": argv[0] == str(binary) and sha256(binary) == compat.PINS[(platform.system(), platform.machine(), "claude")],
+        "retained_endpoint_is_owned_loopback": endpoint.scheme == "http" and endpoint.hostname == "127.0.0.1" and endpoint.port == model.server.server_port and endpoint.path == "/v1" and not any([endpoint.username, endpoint.password, endpoint.query, endpoint.fragment]),
+    }
+    return checks
+
+
+def resume_stage(args, root, value, model, actions, prepare):
+    root.mkdir(mode=0o700)
+    started = time.monotonic()
+    result = {"session_kind": value["session_kind"], "session_id": value["session_id"], "task": value["task"], "checks": {}, "error": None}
+    model.plan, model.expected_posts = actions, len(actions) + 1
+    model.message_prefix = "msg_" + value["session_kind"] + "_"
+    try:
+        with experiment_deadline():
+            policy = compat.project(args.fixture, root, value)
+            (root / "generated-policy.json").write_text(json.dumps(policy, indent=2) + "\n")
+            env = {item["name"]: value["env"][item["source"]][1] for item in policy["env"]}
+            result["policy_sha256"] = compat.digest(policy)
+            checks, observations = prepare(policy, env)
+            result["checks"].update(checks)
+            result["pre_launch_observations"] = observations
+            if not checks or not all(checks.values()):
+                raise RuntimeError("native session stage preparation refused")
+            result["preflight"] = inspect_writable_roots([Path(item["path"]) for item in policy["inventory"]["writable"]])
+            if not result["preflight"]["accepted"]:
+                raise RuntimeError("native session stage writable-root preflight refused")
+            argv = compat.native_command(list(policy["argv"]), False)
+            native = run_claude(root, argv, env, value, policy, None, [action.id for action in actions])
+            result["checks"].update(native.pop("checks"))
+            result.update(native)
+            result["checks"]["pinned_native_version"] = all(item.get("claude_code_version") == "2.1.311" for item in result["native_initializations"])
+    except Exception as error:
+        result["error"] = str(error)
+    finally:
+        model.close()
+    result["checks"].update(compat.model_observation_checks(model, len(actions) + 1))
+    checks, outputs = plan_evidence(model.requests, actions)
+    result["checks"].update(checks)
+    result["checks"]["closed_tools_and_model_on_every_request"] = bool(model.requests) and all(request["body"].get("model") == "claude-sonnet-4-6" and len(request["body"].get("tools", [])) == 3 and {item.get("name") for item in request["body"]["tools"]} == {"Bash", "Read", "Edit"} for request in model.requests)
+    result.update({"tool_results": outputs, "seconds": time.monotonic() - started, "local_model_requests": len(model.requests), "local_post_attempts": model.post_attempts, "local_http_attempts": model.http_total, "local_get_attempts": model.get_attempts, "http_attempt_log": model.http_attempts, "http_attempt_log_overflow": model.http_overflow, "credential_observations": model.credentials, "model_errors": model.errors, "exact_posts": len(actions) + 1, "paid_model_calls": 0, "cleanup_observation": {"direct_child_exited": result.get("direct_child_exited"), "model_listener_closed": model.server.socket.fileno() == -1, "model_accept_thread_stopped": not model.thread.is_alive(), "escaped_descendants_verified": False}})
+    result["passed"] = not result["error"] and bool(result["checks"]) and all(result["checks"].values())
+    (root / "model-requests.json").write_text(json.dumps(model.requests, indent=2) + "\n")
+    (root / "receipt.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result, policy if "policy" in locals() else None, env if "env" in locals() else None
+
+
+def run_claude_resume(args):
+    root = Path(tempfile.mkdtemp(prefix="claude-resume-", dir=args.output)).resolve()
+    binary = Path(args.claude).resolve(strict=True)
+    if sha256(binary) != compat.PINS.get((platform.system(), platform.machine(), "claude")):
+        raise RuntimeError("resume proof requires the exact pinned Claude binary")
+    result = {"provider": "claude", "case": "resume-narrowing", "checks": {}, "error": None, "stages": [], "production_admission": "unarmed", "binary_sha256": sha256(binary), "fixture_sha256": sha256(args.fixture), "script_sha256": sha256(Path(__file__)), "scratch": str(root)}
+    first_model = ActionModel("claude", False)
+    models = [first_model]
+    try:
+        first = compat.fixture_input(root, "claude", binary, first_model.endpoint)
+        first["task"] = "Read the owned existing file and finish."
+        a = Path(first["legacy_cwd"]) / "resume-existing"
+        a.write_text("owned retained session input\n")
+        original = a.read_bytes()
+        read = ClaudeAction("toolu_resume_read", "Read", {"file_path": str(a)})
+        frozen = {}
+        def prepare_first(policy, env):
+            selection = compat.inspect_selection("claude", binary, list(policy["argv"]), env, policy, first, first_model)
+            traps = seed_canaries(root, first, "claude")
+            make_probe(first, "claude", "command-writable", first_model.endpoint)
+            frozen.update({"seed": owned_seed_state(first), "traps": traps})
+            return {"first_generated_session_flag_exact": policy["argv"].count("--session-id") == 1 and policy["argv"][policy["argv"].index("--session-id") + 1] == first["session_id"], "owned_seed_rechecked": owned_seed_state(first) == frozen["seed"]}, {"pre_seed_empty_selection": selection, "owned_seed": frozen["seed"]}
+        native, first_policy, first_env = resume_stage(args, root / "first", first, first_model, [read], prepare_first)
+        result["stages"].append(native)
+        result["checks"]["first_stage_completed_exactly"] = native["passed"]
+        first_read = native["tool_results"].get(read.id, {})
+        result["checks"]["owned_existing_A_read_succeeded"] = not first_read.get("is_error", True) and original.decode().strip() in str(first_read.get("content", "")) and a.read_bytes() == original
+        result["prior_owned_group"] = owned_group_absence(native)
+        result["checks"]["first_leader_reaped_and_owned_group_absent"] = result["prior_owned_group"]["absent"]
+        if not all(result["checks"].values()):
+            raise RuntimeError("first session/group prerequisite refused; no resumed process launched")
+        artifact, history = session_artifact(first, read, original)
+        result["retained_first_session"] = artifact
+        (root / "first" / "session-artifact.jsonl").write_bytes(history)
+        state = owned_seed_state(first)
+        seed_files = {item["path"]: item for item in frozen["seed"] if item["kind"] == "file"}
+        result["checks"]["known_seed_files_unchanged_after_first"] = all(item in state for item in seed_files.values())
+        if not result["checks"]["known_seed_files_unchanged_after_first"]:
+            raise RuntimeError("known configuration seed changed in first session")
+        second_model = ActionModel("claude", False)
+        models.append(second_model)
+        second = json.loads(json.dumps(first))
+        second["session_kind"], second["task"] = "resume", "Run the bounded resumed confinement check and finish."
+        second["grant"]["repositories"]["entries"] = [second["grant"]["repositories"]["entries"][0]]
+        second["env"] = [(name, second_model.endpoint.removesuffix("/v1") if name == "ANTHROPIC_BASE_URL" else value) for name, value in second["env"]]
+        b = Path(first_policy["cwd"]) / "resume-created"
+        shell_b = b.with_name("resume-shell")
+        command = write_probe_command(Path(first["private"]["work"]) / "resume-write-probe.py", [Target("removed-a", a, False), Target("declared-b", shell_b, True)])
+        actions = [ClaudeAction("toolu_resume_old_edit", "Edit", {"file_path": str(a), "old_string": original.decode(), "new_string": MARKER}), ClaudeAction("toolu_resume_new_edit", "Edit", {"file_path": str(b), "old_string": "", "new_string": MARKER}), ClaudeAction("toolu_resume_shell", "Bash", {"command": command, "description": "Bounded resumed root check", "timeout": 5000})]
+        def prepare_second(policy, env):
+            checks = narrowed_selection(first, first_policy, first_env, second, policy, env, second_model, binary)
+            checks.update({"retained_known_state_identity_and_content": owned_seed_state(first) == state, "retained_artifact_exact_before_resume": Path(artifact["path"]).read_bytes() == history, "existing_A_unchanged_and_B_targets_absent": a.read_bytes() == original and not b.exists() and not shell_b.exists()})
+            return checks, {"retained_state": state, "retained_session": artifact, "initial_empty_claim_used": False}
+        resumed, _, _ = resume_stage(args, root / "resume", second, second_model, actions, prepare_second)
+        result["stages"].append(resumed)
+        result["checks"]["resumed_stage_completed_exactly"] = resumed["passed"]
+        old, new, shell = [resumed["tool_results"].get(action.id, {}) for action in actions]
+        old_text, shell_text = str(old.get("content", "")), str(shell.get("content", ""))
+        result["checks"].update({"cached_existing_A_Edit_directly_refused": bool(old.get("is_error")) and bool(DENIAL.search(old_text)) and "File has not been read yet" not in old_text, "removed_A_bytes_preserved": a.read_bytes() == original, "declared_B_Edit_effect_observed": not new.get("is_error", True) and b.is_file() and b.read_text() == MARKER and bool(re.search("updated|success|created", str(new.get("content", "")), re.I)), "resumed_Bash_per_root_effects_observed": not shell.get("is_error", True) and re.search(r"^SCOPED_removed-a=refused$", shell_text, re.M) is not None and re.search(r"^SCOPED_declared-b=written$", shell_text, re.M) is not None and shell_b.is_file() and shell_b.read_text() == MARKER, "configuration_canaries_did_not_fire": not any(path.exists() for path in frozen["traps"])})
+        result["read_cache_observation"] = {"first_successful_Read_in_artifact": True, "resumed_Edit_unread_prerequisite_returned": "File has not been read yet" in old_text, "internal_Read_cache_directly_observable": False}
+        after_artifact, after_history = session_artifact(second, read, original)
+        result["checks"]["actual_same_session_artifact_retained"] = after_artifact["path"] == artifact["path"] and after_history.startswith(history)
+        result["retained_resumed_session"] = after_artifact
+        (root / "resume" / "session-artifact.jsonl").write_bytes(after_history)
+    except Exception as error:
+        result["error"] = str(error)
+    finally:
+        for model in models:
+            model.close()
+    result["passed"] = not result["error"] and bool(result["checks"]) and all(result["checks"].values())
+    result.update({"local_model_requests": sum(stage["local_model_requests"] for stage in result["stages"]), "local_post_attempts": sum(stage["local_post_attempts"] for stage in result["stages"]), "local_get_attempts": sum(stage["local_get_attempts"] for stage in result["stages"]), "local_http_attempts": sum(stage["local_http_attempts"] for stage in result["stages"]), "paid_model_calls": 0, "escaped_descendants_verified": False, "qualification": "two generated Claude processes only; not daemon lifetime, runtime or transport qualification"})
+    (root / "receipt.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps({"receipt": str(root / "receipt.json"), "passed": result["passed"], "error": result["error"], "failed_checks": [name for name, passed in result["checks"].items() if not passed]}, indent=2), flush=True)
+    return result
 
 
 def run_case(args, provider, case):
@@ -495,12 +717,19 @@ def main():
     parser.add_argument("--provider", choices=["claude", "codex", "all"], default="all")
     parser.add_argument("--case", choices=[*CASES, "all"], default="all")
     parser.add_argument("--macos-sandbox-unavailable", action="store_true")
+    parser.add_argument("--claude-resume-narrowing", action="store_true")
     args = parser.parse_args()
+    if args.claude_resume_narrowing and (args.provider != "claude" or args.macos_sandbox_unavailable or args.case != "all"):
+        parser.error("the explicit resume proof requires --provider claude, normal sandbox and no individual First case")
     if args.macos_sandbox_unavailable and (platform.system() != "Darwin" or args.case != "command-writable"):
         parser.error("the separate unavailable control requires macOS and --case command-writable")
     args.fixture = args.fixture.resolve(strict=True)
     args.output.mkdir(mode=0o700, parents=True, exist_ok=True)
     results = []
+    if args.claude_resume_narrowing:
+        results.append(run_claude_resume(args))
+        (args.output / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
+        return results[0]["passed"]
     for provider in ["claude", "codex"] if args.provider == "all" else [args.provider]:
         for case in CASES if args.case == "all" else [args.case]:
             results.append(run_case(args, provider, case))

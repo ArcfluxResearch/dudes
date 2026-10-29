@@ -233,5 +233,108 @@ class Fixtures(unittest.TestCase):
                 self.assertTrue(Path(result["scratch"], "receipt.json").is_file())
 
 
+class Resume(unittest.TestCase):
+    def test_native_stage_requires_the_actual_init_and_result_session_ids(self):
+        for missing in [None, "init", "result"]:
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                initial = {"type": "system", "subtype": "init", "session_id": "session", "tools": ["Bash", "Read", "Edit"], "mcp_servers": [], "permissionMode": "dontAsk", "model": "claude-sonnet-4-6"}
+                result = {"type": "result", "subtype": "success", "session_id": "session", "result": "finished", "is_error": False}
+                if missing:
+                    (initial if missing == "init" else result).pop("session_id")
+                rows = [initial, {"type": "assistant", "session_id": "session", "message": {"content": [{"type": "tool_use", "id": "read"}]}}, result]
+                process = types.SimpleNamespace(pid=321, returncode=0, communicate=lambda *_args, **_kwargs: ("\n".join(json.dumps(row) for row in rows), ""), poll=lambda: 0)
+                with mock.patch.object(proof.subprocess, "Popen", return_value=process), mock.patch.object(proof.os, "getpgid", return_value=321), mock.patch.object(proof, "stop"):
+                    observed = proof.run_claude(Path(directory), ["fake"], {}, {"task": "one task", "session_id": "session", "model": "claude-sonnet-4-6"}, {"cwd": directory}, None, ["read"])
+                self.assertEqual(all(observed["checks"].values()), missing is None)
+
+    @staticmethod
+    def synthetic_input(root, provider, binary, endpoint):
+        entries = []
+        for name in ["a", "b", "c"]:
+            copy, origin = root / "copies" / name, root / "origins" / name
+            gitdir = origin / ".git" / "worktrees" / name
+            copy.mkdir(parents=True)
+            gitdir.mkdir(parents=True)
+            (copy / ".git").write_text("gitdir: " + str(gitdir) + "\n")
+            entries.append({"repo_id": name, "value": {"execution": {"directory": str(copy), "git_dir": str(gitdir)}, "origin": {"directory": str(origin), "common_dir": str(origin / ".git")}}})
+        private = {"home": str(root / "home"), "profile": str(root / "profile"), **{name: str(root / "agent" / directory) for name, directory in [("work", "work"), ("outbox", "outbox"), ("temp", "tmp")]}}
+        for path in [*private.values(), str(root / "agent" / "inbox")]:
+            Path(path).mkdir(parents=True)
+        env = {"HOME": private["home"], "CLAUDE_CONFIG_DIR": private["profile"], "ANTHROPIC_API_KEY": proof.compat.DUMMY_CREDENTIAL, "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"), "PATH": "/usr/bin:/bin"}
+        return {"private": private, "env": list(env.items()), "hired": {"repositories": {"primary": "a", "entries": entries}}, "grant": {"repositories": {"primary": "b", "entries": [entries[1], entries[0]]}}, "legacy_cwd": entries[0]["value"]["execution"]["directory"], "agent_dir": str(root / "agent"), "session_id": "owned-session", "session_kind": "first", "model": "claude-sonnet-4-6", "task": "synthetic"}
+
+    def test_actual_two_stage_checker_requires_identity_grant_actions_and_exact_counts(self):
+        for failure in [None, "group present", "wide grant", "wrong session", "extra attempt", "wrong action", "unread file"]:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                binary, fixture = root / "fake-engine", root / "fake-fixture"
+                binary.write_bytes(b"never launched")
+                fixture.write_bytes(b"never launched")
+                models, calls, prior_messages = [], [], []
+                def model_factory(*_):
+                    port = 12345 + len(models)
+                    model = types.SimpleNamespace(endpoint="http://127.0.0.1:" + str(port) + "/v1", requests=[], errors=[], credentials=[], post_attempts=0, get_attempts=0, http_total=0, http_attempts=[], http_overflow=0, close=lambda: None, thread=types.SimpleNamespace(is_alive=lambda: False), server=types.SimpleNamespace(server_port=port, socket=types.SimpleNamespace(fileno=lambda: -1)))
+                    models.append(model)
+                    return model
+                def project(_, __, value):
+                    roots = [entry["value"]["execution"]["directory"] for entry in value["grant"]["repositories"]["entries"]] + [value["private"][name] for name in ["work", "outbox", "temp"]]
+                    if failure == "wide grant" and value["session_kind"] == "resume":
+                        roots.append(value["legacy_cwd"])
+                    protected = [str(target.path) for target in proof.protected_targets({**value, "grant": {"repositories": {"entries": [value["hired"]["repositories"]["entries"][1], value["hired"]["repositories"]["entries"][0]]}}})]
+                    settings = {"permissions": {"allow": roots}, "sandbox": {"filesystem": {"allowWrite": roots, "denyWrite": protected}}}
+                    argv = [str(binary.resolve()), "--settings", json.dumps(settings), "--session-id" if value["session_kind"] == "first" else "--resume", value["session_id"]]
+                    return {"argv": argv, "cwd": roots[0], "env": [{"name": name, "source": index} for index, (name, _) in enumerate(value["env"])], "inventory": {"writable": [{"path": path} for path in roots], "protected": protected}}
+                def native(stage_root, argv, env, value, policy, probe, expected_ids):
+                    model = models[-1]
+                    calls.append(value["session_kind"])
+                    messages = [*prior_messages, {"role": "user", "content": value["task"]}]
+                    tools = [{"name": name} for name in ["Bash", "Read", "Edit"]]
+                    def request():
+                        return {"body": {"model": value["model"], "tools": tools, "messages": json.loads(json.dumps(messages))}}
+                    model.requests = [request()]
+                    for action in model.plan:
+                        identifier = "unexpected-action" if failure == "wrong action" and action.tool == "Bash" else action.id
+                        denied = action.id == "toolu_resume_old_edit"
+                        if action.tool == "Read":
+                            text = Path(action.arguments["file_path"]).read_text()
+                        elif denied:
+                            text = "File has not been read yet" if failure == "unread file" else "denied by your permission settings"
+                        elif action.tool == "Edit":
+                            Path(action.arguments["file_path"]).write_text(proof.MARKER)
+                            text = "Success. Updated"
+                        else:
+                            (Path(policy["cwd"]) / "resume-shell").write_text(proof.MARKER)
+                            text = "SCOPED_removed-a=refused\nSCOPED_declared-b=written\n"
+                        messages.extend([{"role": "assistant", "content": [{"type": "tool_use", "id": identifier, "name": action.tool, "input": action.arguments}]}, {"role": "user", "content": [{"type": "tool_result", "tool_use_id": identifier, "content": text, "is_error": denied}]}])
+                        model.requests.append(request())
+                    model.post_attempts = len(model.requests) + (1 if failure == "extra attempt" and value["session_kind"] == "resume" else 0)
+                    model.http_total = model.post_attempts
+                    artifact = Path(value["private"]["profile"]) / "projects" / (value["session_id"] + ".jsonl")
+                    artifact.parent.mkdir(exist_ok=True)
+                    if value["session_kind"] == "first":
+                        artifact.write_text("")
+                    with artifact.open("a") as output:
+                        for message in messages[len(prior_messages):]:
+                            output.write(json.dumps({"sessionId": value["session_id"], "message": message}) + "\n")
+                    prior_messages[:] = messages
+                    return {"checks": {"task_completed": True, "recorded_session_exact": not (failure == "wrong session" and value["session_kind"] == "resume")}, "error": None, "native_initializations": [{"claude_code_version": "2.1.311"}], "leader_reaped": True, "owned_process_group": 123, "native_leader_pid": 123, "direct_child_exited": True}
+                args = types.SimpleNamespace(output=root, claude=str(binary), fixture=fixture)
+                with mock.patch.dict(proof.compat.PINS, {(platform.system(), platform.machine(), "claude"): proof.sha256(binary)}), \
+                     mock.patch.object(proof, "ActionModel", side_effect=model_factory), \
+                     mock.patch.object(proof.compat, "fixture_input", side_effect=self.synthetic_input), \
+                     mock.patch.object(proof.compat, "project", side_effect=project), \
+                     mock.patch.object(proof.compat, "inspect_selection", return_value={"profile_initially_empty": True}), \
+                     mock.patch.object(proof.compat, "native_command", side_effect=lambda argv, _: argv), \
+                     mock.patch.object(proof, "run_claude", side_effect=native), \
+                     mock.patch.object(proof, "owned_group_absence", return_value={"absent": failure != "group present"}), \
+                     mock.patch("builtins.print"):
+                    result = proof.run_claude_resume(args)
+                self.assertEqual(result["passed"], failure is None, {"error": result["error"], "checks": result["checks"]})
+                self.assertEqual(calls, ["first"] if failure in {"group present", "wide grant"} else ["first", "resume"])
+                if failure is None:
+                    self.assertEqual([stage["local_post_attempts"] for stage in result["stages"]], [2, 4])
+                    self.assertFalse(result["stages"][1]["pre_launch_observations"]["initial_empty_claim_used"])
+
+
 if __name__ == "__main__":
     unittest.main()
