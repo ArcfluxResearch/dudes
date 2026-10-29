@@ -99,5 +99,11 @@ test('the project step names every mandatory copy and preserves the single proje
     assert.match(markup, /one project queue/);
     for (const label of ['Website', 'API', 'Documentation', 'primary']) assert.ok(markup.includes(label));
     assert.doesNotMatch(markup, /name="own_copy"/);
+    view.showSection('engine', floor());
+    const engine = renderToStaticMarkup(createElement(HireWizardView, { hire: view.getHireState(), floor: floor(), onClose() {} }));
+    assert.match(engine, /Writes are limited to this project/);
+    assert.match(engine, /completion check runs with your account/);
+    assert.match(engine, /claude-sonnet-4-6/);
+    assert.doesNotMatch(engine, /change any file|name="own_copy"/);
   } finally { await server.close(); }
 });

@@ -1015,6 +1015,8 @@ impl OnboardRequest {
         if bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
             bail!("browser onboarding request is not one JSON object");
         }
+        let raw: OnboardJson =
+            serde_json::from_slice(bytes).context("invalid browser onboarding JSON")?;
         let value: serde_json::Value =
             serde_json::from_slice(bytes).context("invalid browser onboarding JSON")?;
         let group_form = value.get("project").is_some();
@@ -1028,8 +1030,6 @@ impl OnboardRequest {
             ]
             .iter()
             .any(|field| value.get(*field).is_some());
-        let raw: OnboardJson =
-            serde_json::from_value(value).context("invalid browser onboarding JSON")?;
         let attempt_id =
             decode_attempt(&raw.attempt_id).context("invalid browser onboarding attempt id")?;
         let target = raw.target(group_form, mixed_group)?;
@@ -1273,6 +1273,27 @@ mod tests {
             value["project"]["repo_ids"] = ids;
             assert!(parse_project(&value).is_err());
         }
+    }
+
+    #[test]
+    fn group_request_inspection_does_not_hide_duplicate_json_members() {
+        let body = serde_json::to_string(&project_request()).unwrap();
+        for (field, value) in [
+            ("project_id", "service"),
+            ("model", "claude-sonnet-4-6"),
+            ("name", "Kim"),
+        ] {
+            let member = format!("\"{field}\":\"{value}\"");
+            let duplicate = body.replace(&member, &format!("{member},{member}"));
+            assert_ne!(duplicate, body);
+            assert!(
+                OnboardRequest::parse(duplicate.as_bytes()).is_err(),
+                "{field}"
+            );
+        }
+        let mut mixed = project_request();
+        mixed["workspace_id"] = serde_json::Value::Null;
+        assert!(parse_project(&mixed).is_err());
     }
 
     #[test]
